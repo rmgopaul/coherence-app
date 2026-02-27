@@ -1,5 +1,6 @@
 import { eq, and, desc, asc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
+import { createPool, type PoolOptions } from "mysql2";
 import { 
   InsertUser, 
   users, 
@@ -102,11 +103,61 @@ async function withDbRetry<T>(operation: string, action: () => Promise<T>, maxAt
   throw buildDbUnavailableError(operation, lastError);
 }
 
+function parseDatabaseUrl(connectionString: string) {
+  const url = new URL(connectionString);
+  const database = url.pathname.replace(/^\//, "");
+  if (!database) {
+    throw new Error("DATABASE_URL must include a database name");
+  }
+
+  const port = url.port ? Number(url.port) : 3306;
+  if (!Number.isFinite(port)) {
+    throw new Error("DATABASE_URL contains an invalid port");
+  }
+
+  return {
+    host: url.hostname,
+    port,
+    user: url.username ? decodeURIComponent(url.username) : undefined,
+    password: url.password ? decodeURIComponent(url.password) : undefined,
+    database,
+  };
+}
+
+function buildPoolOptions(connectionString: string): PoolOptions {
+  const parsed = parseDatabaseUrl(connectionString);
+  const sslEnabled = !["false", "0", "off"].includes(
+    (process.env.DATABASE_SSL ?? "").trim().toLowerCase()
+  );
+  const sslRejectUnauthorized = !["false", "0", "off"].includes(
+    (process.env.DATABASE_SSL_REJECT_UNAUTHORIZED ?? "").trim().toLowerCase()
+  );
+
+  return {
+    ...parsed,
+    waitForConnections: true,
+    connectionLimit: 10,
+    maxIdle: 10,
+    idleTimeout: 60_000,
+    queueLimit: 0,
+    ...(sslEnabled
+      ? {
+          ssl: {
+            minVersion: "TLSv1.2",
+            rejectUnauthorized: sslRejectUnauthorized,
+          },
+        }
+      : {}),
+  };
+}
+
 // Lazily create the drizzle instance so local tooling can run without a DB.
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      const pool = createPool(buildPoolOptions(process.env.DATABASE_URL));
+      await pool.promise().query("select 1");
+      _db = drizzle(pool);
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
