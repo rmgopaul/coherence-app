@@ -17,9 +17,11 @@ import type {
 // Utility function
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
+const isTruthyEnvFlag = (value: string | undefined): boolean =>
+  typeof value === "string" && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
 const isAuthBypassEnabled =
-  process.env.DEV_BYPASS_AUTH === "true" ||
-  process.env.AUTH_BYPASS === "true";
+  isTruthyEnvFlag(process.env.DEV_BYPASS_AUTH) ||
+  isTruthyEnvFlag(process.env.AUTH_BYPASS);
 
 export type SessionPayload = {
   openId: string;

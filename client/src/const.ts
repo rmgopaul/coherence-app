@@ -10,6 +10,14 @@ export const APP_LOGO =
 export const getLoginUrl = () => {
   const oauthPortalUrl = import.meta.env.VITE_OAUTH_PORTAL_URL;
   const appId = import.meta.env.VITE_APP_ID;
+  const normalizedAppId = typeof appId === "string" ? appId.trim() : "";
+  const isPlaceholderAppId =
+    normalizedAppId.length === 0 ||
+    normalizedAppId === "proj_abc123def456" ||
+    normalizedAppId.toLowerCase().includes("example");
+  if (!oauthPortalUrl || isPlaceholderAppId) {
+    return "/dashboard";
+  }
   const redirectUri = `${window.location.origin}/api/oauth/callback`;
   const state = btoa(redirectUri);
 
