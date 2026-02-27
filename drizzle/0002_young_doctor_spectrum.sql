@@ -1,0 +1,1 @@
+ALTER TABLE `oauthCredentials` ADD CONSTRAINT `user_provider_idx` UNIQUE(`userId`,`provider`);
