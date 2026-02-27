@@ -22,12 +22,11 @@ import {
   FolderOpen,
   HeartPulse,
   Smartphone,
-  Pencil,
-  Check,
-  X,
   Pill,
   Target,
   BarChart3,
+  Clock3,
+  CloudSun,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -187,7 +186,6 @@ export default function Dashboard() {
   const [todoistFilter, setTodoistFilter] = useState("all");
   const [dailyOverview, setDailyOverview] = useState<string>("");
   const [dailyOverviewDate, setDailyOverviewDate] = useState<string | null>(null);
-  const [isEditingWelcomeName, setIsEditingWelcomeName] = useState(false);
   const [welcomeDisplayNameInput, setWelcomeDisplayNameInput] = useState("");
   const [weather, setWeather] = useState<{
     loading: boolean;
@@ -207,6 +205,7 @@ export default function Dashboard() {
   const [manualSleepScoreInput, setManualSleepScoreInput] = useState("");
   const [manualEnergyScoreInput, setManualEnergyScoreInput] = useState("");
   const [editingSamsungField, setEditingSamsungField] = useState<"sleep" | "energy" | null>(null);
+  const [currentTime, setCurrentTime] = useState(() => new Date());
   const [supplementName, setSupplementName] = useState("");
   const [supplementDose, setSupplementDose] = useState("");
   const [supplementDoseUnit, setSupplementDoseUnit] =
@@ -326,9 +325,8 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!user) return;
-    if (isEditingWelcomeName) return;
     setWelcomeDisplayNameInput(greetingDisplayName);
-  }, [user?.id, greetingDisplayName, isEditingWelcomeName]);
+  }, [user?.id, greetingDisplayName]);
   
   const { data: calendarEvents, isLoading: calendarLoading, refetch: refetchCalendar } = trpc.google.getCalendarEvents.useQuery(undefined, {
     enabled: !!user && hasGoogle,
@@ -518,6 +516,46 @@ export default function Dashboard() {
         location: event.location || "",
       }));
   }, [calendarEvents]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const nextCalendarEvent = useMemo(() => {
+    const nowMs = currentTime.getTime();
+    const todayStart = new Date(currentTime);
+    todayStart.setHours(0, 0, 0, 0);
+
+    const candidates = (calendarEvents || [])
+      .map((event: any) => {
+        if (event?.start?.dateTime) {
+          return {
+            event,
+            startDate: new Date(event.start.dateTime),
+            isAllDay: false,
+          };
+        }
+        if (event?.start?.date) {
+          return {
+            event,
+            startDate: new Date(`${event.start.date}T00:00:00`),
+            isAllDay: true,
+          };
+        }
+        return null;
+      })
+      .filter((item: any) => {
+        if (!item) return false;
+        if (item.isAllDay) return item.startDate.getTime() >= todayStart.getTime();
+        return item.startDate.getTime() >= nowMs;
+      })
+      .sort((a: any, b: any) => a.startDate.getTime() - b.startDate.getTime());
+
+    return candidates[0] ?? null;
+  }, [calendarEvents, currentTime]);
 
   const prioritizedEmails = useMemo(() => {
     const urgentPattern =
@@ -753,7 +791,6 @@ export default function Dashboard() {
   const updatePreferences = trpc.preferences.update.useMutation({
     onSuccess: () => {
       refetchPreferences();
-      setIsEditingWelcomeName(false);
       toast.success("Header name updated");
     },
     onError: (error) => {
@@ -794,8 +831,11 @@ export default function Dashboard() {
 
   const handleSaveWelcomeName = () => {
     const trimmed = welcomeDisplayNameInput.trim();
+    const nextDisplayName = trimmed.length > 0 ? trimmed : null;
+    const currentDisplayName = preferences?.displayName ?? null;
+    if ((currentDisplayName ?? "") === (nextDisplayName ?? "")) return;
     updatePreferences.mutate({
-      displayName: trimmed.length > 0 ? trimmed : null,
+      displayName: nextDisplayName,
     });
   };
 
@@ -1260,50 +1300,22 @@ export default function Dashboard() {
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Coherence</h1>
-            <div className="flex items-center gap-2">
-              {isEditingWelcomeName ? (
-                <>
-                  <p className="text-sm text-gray-600">Welcome,</p>
-                  <Input
-                    value={welcomeDisplayNameInput}
-                    onChange={(e) => setWelcomeDisplayNameInput(e.target.value)}
-                    className="h-7 w-56 text-sm"
-                    maxLength={120}
-                  />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2"
-                    onClick={handleSaveWelcomeName}
-                    disabled={updatePreferences.isPending}
-                  >
-                    <Check className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2"
-                    onClick={() => {
-                      setIsEditingWelcomeName(false);
-                      setWelcomeDisplayNameInput(greetingDisplayName);
-                    }}
-                    disabled={updatePreferences.isPending}
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <p className="text-sm text-gray-600">Welcome, {greetingDisplayName}</p>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 px-2"
-                    onClick={() => setIsEditingWelcomeName(true)}
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                </>
+            <div className="mt-1 flex items-center gap-2">
+              <Input
+                value={welcomeDisplayNameInput}
+                onChange={(e) => setWelcomeDisplayNameInput(e.target.value)}
+                onBlur={handleSaveWelcomeName}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    (e.currentTarget as HTMLInputElement).blur();
+                  }
+                }}
+                className="h-8 w-64 text-sm bg-white"
+                maxLength={120}
+                placeholder="Enter display name"
+              />
+              {updatePreferences.isPending && (
+                <span className="text-xs text-slate-500">Saving...</span>
               )}
             </div>
           </div>
@@ -1315,6 +1327,57 @@ export default function Dashboard() {
       </header>
 
       <div className="sticky top-[76px] z-20 bg-gradient-to-br from-blue-50/95 via-white/95 to-purple-50/95 backdrop-blur-sm">
+        <div className="container mx-auto px-4 pt-3">
+          <Card className="border-sky-200 bg-gradient-to-r from-sky-50 via-white to-blue-50">
+            <CardContent className="py-3">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Current Time</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <Clock3 className="h-4 w-4 text-slate-600" />
+                    {currentTime.toLocaleTimeString("en-US", {
+                      hour: "numeric",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </p>
+                </div>
+
+                <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Weather</p>
+                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
+                    <CloudSun className="h-4 w-4 text-sky-600" />
+                    {weather.loading
+                      ? "Loading..."
+                      : weather.error
+                        ? "Unavailable"
+                        : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}F` : ""}`}
+                  </p>
+                </div>
+
+                <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Next Event</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    {!hasGoogle
+                      ? "Connect Google Calendar"
+                      : calendarLoading
+                        ? "Loading..."
+                        : nextCalendarEvent
+                          ? `${nextCalendarEvent.event?.summary || "Untitled event"} · ${
+                              nextCalendarEvent.isAllDay
+                                ? "All day"
+                                : nextCalendarEvent.startDate.toLocaleTimeString("en-US", {
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  })
+                            }`
+                          : "No upcoming events"}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
         <div className="container mx-auto px-4 py-2">
           <div className="rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-red-50 px-3 py-2 shadow-[0_10px_28px_rgba(225,29,72,0.12)]">
           <div className="flex flex-wrap items-center gap-2">
