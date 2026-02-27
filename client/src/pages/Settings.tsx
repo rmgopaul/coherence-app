@@ -5,7 +5,18 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Activity, Calendar, CheckSquare, Mail, MessageSquare, StickyNote, Trash2, ArrowLeft, Plus } from "lucide-react";
+import {
+  Activity,
+  Calendar,
+  CheckSquare,
+  MessageSquare,
+  StickyNote,
+  Trash2,
+  ArrowLeft,
+  Plus,
+  Smartphone,
+  RefreshCw,
+} from "lucide-react";
 import { useState, useEffect } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -383,6 +394,36 @@ export default function Settings() {
   }
 
   const connectedProviders = new Set(integrations?.map((i) => i.provider) || []);
+  const samsungIntegration = integrations?.find((i) => i.provider === "samsung-health") ?? null;
+  const samsungSnapshot = (() => {
+    if (!samsungIntegration?.metadata) return null;
+    try {
+      const parsed = JSON.parse(samsungIntegration.metadata) as Record<string, any>;
+      const summary = (parsed.summary ?? {}) as Record<string, any>;
+      const sync = (parsed.sync ?? {}) as Record<string, any>;
+      const asNumber = (value: unknown): number | null =>
+        typeof value === "number" && Number.isFinite(value) ? value : null;
+
+      return {
+        receivedAt: typeof parsed.receivedAt === "string" ? parsed.receivedAt : null,
+        sourceProvider:
+          typeof summary.sourceProvider === "string" && summary.sourceProvider.length > 0
+            ? summary.sourceProvider
+            : "unknown",
+        steps: asNumber(summary.steps),
+        sleepMinutes: asNumber(summary.sleepTotalMinutes),
+        spo2Avg: asNumber(summary.spo2AvgPercent),
+        permissionsGranted: Boolean(sync.permissionsGranted),
+        warnings: Array.isArray(sync.warnings) ? (sync.warnings as string[]) : [],
+      };
+    } catch {
+      return null;
+    }
+  })();
+  const samsungWebhookUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api/webhooks/samsung-health`
+      : "/api/webhooks/samsung-health";
 
   const handleDisconnect = (integrationId: string) => {
     if (confirm("Are you sure you want to disconnect this integration?")) {
@@ -1456,6 +1497,71 @@ export default function Settings() {
                   </p>
                 </CardContent>
               )}
+            </Card>
+
+            <Card className="mt-4">
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-slate-100 text-sky-600">
+                      <Smartphone className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">Samsung Health</CardTitle>
+                      <CardDescription className="text-sm">
+                        Companion app sync via webhook (Health Connect data)
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Button variant="ghost" size="sm" onClick={() => refetch()}>
+                    <RefreshCw className="w-4 h-4" />
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <p className="text-sm text-slate-700">
+                  Webhook URL: <code className="text-xs">{samsungWebhookUrl}</code>
+                </p>
+                {!samsungIntegration ? (
+                  <p className="text-sm text-slate-600">
+                    No Samsung payload has been linked to your account yet.
+                  </p>
+                ) : (
+                  <div className="space-y-1 text-sm text-slate-700">
+                    <p>
+                      Last sync:{" "}
+                      {samsungSnapshot?.receivedAt
+                        ? new Date(samsungSnapshot.receivedAt).toLocaleString()
+                        : "unknown"}
+                    </p>
+                    <p>Source: {samsungSnapshot?.sourceProvider ?? "unknown"}</p>
+                    <p>
+                      Permissions:{" "}
+                      {samsungSnapshot?.permissionsGranted ? "granted" : "incomplete"}
+                    </p>
+                    <p>
+                      Latest: steps{" "}
+                      {samsungSnapshot?.steps !== null && samsungSnapshot?.steps !== undefined
+                        ? Math.round(samsungSnapshot.steps).toLocaleString()
+                        : "-"}
+                      , sleep{" "}
+                      {samsungSnapshot?.sleepMinutes !== null &&
+                      samsungSnapshot?.sleepMinutes !== undefined
+                        ? `${(samsungSnapshot.sleepMinutes / 60).toFixed(1)}h`
+                        : "-"}
+                      , SpO2{" "}
+                      {samsungSnapshot?.spo2Avg !== null && samsungSnapshot?.spo2Avg !== undefined
+                        ? `${samsungSnapshot.spo2Avg.toFixed(1)}%`
+                        : "-"}
+                    </p>
+                    {samsungSnapshot?.warnings?.length ? (
+                      <p className="text-amber-700">
+                        Warning: {samsungSnapshot.warnings[0]}
+                      </p>
+                    ) : null}
+                  </div>
+                )}
+              </CardContent>
             </Card>
           </div>
 

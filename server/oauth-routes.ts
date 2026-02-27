@@ -563,25 +563,38 @@ router.post("/webhooks/samsung-health", async (req, res) => {
     const incomingSteps = asNumber(payloadActivity.steps);
     const existingSteps = asNumber(existingSummary.steps);
 
-    // Keep step totals monotonic for the same day so transient partial reads
-    // cannot regress the dashboard from a previously higher valid value.
+    // Keep steps monotonic for the same day without discarding valid higher values.
+    // We only preserve existing steps when the incoming step value is missing,
+    // regressive, or a warning-only (<=0) background read.
     if (sameDateAsExisting && existingSteps !== null && existingSteps > 0) {
-      if (incomingSteps === null || incomingSteps < existingSteps || anyStepReadWarning) {
+      const shouldKeepExistingSteps =
+        incomingSteps === null ||
+        incomingSteps < existingSteps ||
+        (anyStepReadWarning && incomingSteps <= 0);
+
+      if (shouldKeepExistingSteps) {
         payloadRecord.activity = {
-          ...payloadActivity,
+          ...asRecord(payloadRecord.activity),
           steps: existingSteps,
         };
       }
     }
 
-    if (foregroundStepWarning && incomingSteps !== null && incomingSteps <= 0 && existingSteps !== null && existingSteps > 0) {
+    if (
+      foregroundStepWarning &&
+      existingSteps !== null &&
+      existingSteps > 0 &&
+      (incomingSteps === null || incomingSteps <= 0)
+    ) {
       payloadRecord.activity = {
-        ...payloadActivity,
+        ...asRecord(payloadRecord.activity),
         steps: existingSteps,
       };
       payloadRecord.sync = {
-        ...payloadSync,
-        warnings: warningsWithoutForeground.filter((warning) => !warning.toLowerCase().includes("steps read failed")),
+        ...asRecord(payloadRecord.sync),
+        warnings: warningsWithoutForeground.filter(
+          (warning) => !warning.toLowerCase().includes("steps read failed")
+        ),
       };
     }
 
