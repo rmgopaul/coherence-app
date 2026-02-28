@@ -784,6 +784,16 @@ export const appRouter = router({
   }),
 
   samsungHealth: router({
+    getConfig: protectedProcedure.query(async () => {
+      const syncKey = process.env.SAMSUNG_HEALTH_SYNC_KEY?.trim() || "";
+      const userIdRaw = process.env.SAMSUNG_HEALTH_USER_ID?.trim() || "1";
+      const userId = Number.parseInt(userIdRaw, 10);
+      return {
+        syncKey,
+        hasSyncKey: syncKey.length > 0,
+        userId: Number.isFinite(userId) && userId > 0 ? userId : 1,
+      };
+    }),
     saveManualScores: protectedProcedure
       .input(
         z.object({

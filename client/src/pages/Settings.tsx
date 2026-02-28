@@ -12,6 +12,7 @@ import {
   Calendar,
   CheckSquare,
   MessageSquare,
+  Copy,
   Trash2,
   ArrowLeft,
   Plus,
@@ -134,6 +135,10 @@ export default function Settings() {
       enabled: !!user,
       retry: false,
     });
+  const { data: samsungHealthConfig } = trpc.samsungHealth.getConfig.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+  });
   
   const connectTodoist = trpc.todoist.connect.useMutation({
     onSuccess: () => {
@@ -414,6 +419,7 @@ export default function Settings() {
     typeof window !== "undefined"
       ? `${window.location.origin}/api/webhooks/samsung-health`
       : "/api/webhooks/samsung-health";
+  const samsungSyncKey = samsungHealthConfig?.syncKey?.trim() || "";
 
   const handleDisconnect = (integrationId: string) => {
     if (confirm("Are you sure you want to disconnect this integration?")) {
@@ -726,7 +732,7 @@ export default function Settings() {
             </Card>
           </div>
 
-          <div className="order-last">
+          <div style={{ order: 9999 }}>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Supplements</h2>
             <Card>
               <Accordion type="single" collapsible className="w-full">
@@ -1450,9 +1456,44 @@ export default function Settings() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                <p className="text-sm text-slate-700">
-                  Webhook URL: <code className="text-xs">{samsungWebhookUrl}</code>
-                </p>
+                <div className="space-y-1">
+                  <p className="text-sm text-slate-700">
+                    Webhook URL: <code className="text-xs">{samsungWebhookUrl}</code>
+                  </p>
+                  <p className="text-sm text-slate-700">
+                    Sync Key:{" "}
+                    <code className="text-xs">
+                      {samsungSyncKey || "SAMSUNG_HEALTH_SYNC_KEY not configured"}
+                    </code>
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        if (!samsungSyncKey) {
+                          toast.error("No sync key is configured on the server");
+                          return;
+                        }
+                        try {
+                          await navigator.clipboard.writeText(samsungSyncKey);
+                          toast.success("Sync key copied");
+                        } catch {
+                          toast.error("Failed to copy sync key");
+                        }
+                      }}
+                      disabled={!samsungSyncKey}
+                    >
+                      <Copy className="w-4 h-4 mr-2" />
+                      Copy Sync Key
+                    </Button>
+                    {samsungHealthConfig?.userId ? (
+                      <span className="text-xs text-slate-500">
+                        Target user id: {samsungHealthConfig.userId}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
                 {!samsungIntegration ? (
                   <p className="text-sm text-slate-600">
                     No Samsung payload has been linked to your account yet.
