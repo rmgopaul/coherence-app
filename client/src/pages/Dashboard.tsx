@@ -1,6 +1,7 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import UniversalDropDock from "@/components/UniversalDropDock";
+import { DailyBriefModule } from "@/components/daily-brief/DailyBriefModule";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -8,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import { buildDailyBrief, MOCK_DAILY_BRIEF, withFreshness, type DailyBrief, type DailyBriefAction } from "@/lib/dailyBrief";
 import {
   Calendar,
   CheckSquare,
@@ -35,7 +37,7 @@ import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
 
-const DAILY_OVERVIEW_CACHE_KEY = "dailyOverviewCache";
+const DAILY_BRIEF_CACHE_KEY = "dailyBriefCacheV1";
 
 const WEATHER_CODE_LABELS: Record<number, string> = {
   0: "Clear",
@@ -131,65 +133,6 @@ const isSameLocalDay = (dateA: Date, dateB: Date) => {
   );
 };
 
-const OVERVIEW_SECTION_ORDER = [
-  "Summary",
-  "Must Do Today",
-  "Priority Emails",
-  "Risks & Follow-ups",
-] as const;
-
-type OverviewSection = {
-  title: (typeof OVERVIEW_SECTION_ORDER)[number];
-  items: string[];
-};
-
-const normalizeOverviewHeading = (line: string): OverviewSection["title"] | null => {
-  const clean = line
-    .replace(/^#+\s*/, "")
-    .replace(/[*_`]/g, "")
-    .replace(/<u>|<\/u>/g, "")
-    .replace(/[:]/g, "")
-    .trim()
-    .toLowerCase();
-
-  if (clean === "summary") return "Summary";
-  if (clean === "must do today") return "Must Do Today";
-  if (clean === "priority emails") return "Priority Emails";
-  if (clean === "risks & follow-ups" || clean === "risks and follow-ups")
-    return "Risks & Follow-ups";
-  return null;
-};
-
-const parseDailyOverviewSections = (content: string): OverviewSection[] => {
-  const sections = new Map<OverviewSection["title"], string[]>();
-  OVERVIEW_SECTION_ORDER.forEach((title) => sections.set(title, []));
-
-  let currentTitle: OverviewSection["title"] = "Summary";
-
-  for (const rawLine of content.replace(/\r\n/g, "\n").split("\n")) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const heading = normalizeOverviewHeading(line);
-    if (heading) {
-      currentTitle = heading;
-      continue;
-    }
-
-    const item = line
-      .replace(/^[-*•]\s+/, "")
-      .replace(/^\d+\.\s+/, "")
-      .trim();
-    if (!item) continue;
-    sections.get(currentTitle)?.push(item);
-  }
-
-  return OVERVIEW_SECTION_ORDER.map((title) => ({
-    title,
-    items: sections.get(title) || [],
-  }));
-};
-
 const HABIT_COLOR_STYLES: Record<string, { active: string; inactive: string }> = {
   slate: {
     active: "bg-slate-900 text-white border-slate-900",
@@ -229,8 +172,9 @@ export default function Dashboard() {
   const [driveSearchResults, setDriveSearchResults] = useState<any[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [todoistFilter, setTodoistFilter] = useState("all");
-  const [dailyOverview, setDailyOverview] = useState<string>("");
-  const [dailyOverviewDate, setDailyOverviewDate] = useState<string | null>(null);
+  const [dailyBrief, setDailyBrief] = useState<DailyBrief | null>(null);
+  const [dailyBriefDate, setDailyBriefDate] = useState<string | null>(null);
+  const [isGeneratingDailyBrief, setIsGeneratingDailyBrief] = useState(false);
   const [welcomeDisplayNameInput, setWelcomeDisplayNameInput] = useState("");
   const [weather, setWeather] = useState<{
     loading: boolean;
@@ -773,6 +717,8 @@ export default function Dashboard() {
         }
 
         return {
+          id: String(message.id || ""),
+          threadId: String(message.threadId || ""),
           from,
           subject: subject || "(No subject)",
           snippet,
@@ -831,17 +777,6 @@ export default function Dashboard() {
     onSettled: () => {
       setMarkingEmailId(null);
       refetchEmails();
-    },
-  });
-
-  const createTaskFromOverview = trpc.todoist.createTask.useMutation({
-    onSuccess: () => {
-      toast.success("Overview item added to Todoist");
-      refetchTasks();
-      refetchDueTodayTasks();
-    },
-    onError: (error) => {
-      toast.error(`Failed to add to Todoist: ${error.message}`);
     },
   });
 
@@ -1080,16 +1015,6 @@ export default function Dashboard() {
     const body = message.bodyText || message.snippet || '';
     
     createTaskFromEmail.mutate({ subject, emailLink, body });
-  };
-
-  const handleAddOverviewItemToTodoist = (item: string, e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (!hasTodoist) {
-      toast.error("Connect Todoist in Settings first");
-      return;
-    }
-    createTaskFromOverview.mutate({ content: item });
   };
 
   const handleMarkEmailAsRead = (messageId: string, e: React.MouseEvent) => {
@@ -1364,64 +1289,49 @@ export default function Dashboard() {
     },
   });
 
-  const generateDailyOverview = trpc.openai.generateDailyOverview.useMutation({
-    onError: (error) => {
-      toast.error(`Failed to generate daily overview: ${error.message}`);
-    },
-  });
-
-  const saveDailyOverviewCache = (content: string, date: string) => {
-    setDailyOverview(content);
-    setDailyOverviewDate(date);
+  const saveDailyBriefCache = (brief: DailyBrief, date: string) => {
+    setDailyBrief(brief);
+    setDailyBriefDate(date);
     localStorage.setItem(
-      DAILY_OVERVIEW_CACHE_KEY,
+      DAILY_BRIEF_CACHE_KEY,
       JSON.stringify({
         date,
-        content,
+        brief,
       })
     );
   };
 
-  const refreshDailyOverview = async () => {
-    if (!hasOpenAI) return;
-
-    const weatherSummary = weather.error
-      ? "Weather unavailable"
-      : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}F` : ""}`;
-
-    const overview = await generateDailyOverview.mutateAsync({
-      date: todayKey,
-      weather: {
-        summary: weatherSummary,
-        location: weather.location || undefined,
-        temperatureF: weather.temperatureF ?? undefined,
-      },
-      todoistTasks: (dueTodayTasks || []).slice(0, 10).map((task: any) => ({
-        content: task.content,
-        due: task.due?.date,
-        priority: task.priority,
-      })),
-      calendarEvents: todaysCalendarEvents.slice(0, 10),
-      prioritizedEmails: prioritizedEmails.map((email) => ({
-        from: email.from,
-        subject: email.subject,
-        snippet: email.snippet,
-        date: email.date,
-        reason: email.reason,
-      })),
-    });
-
-    saveDailyOverviewCache(overview.overview, todayKey);
+  const regenerateDailyBrief = async () => {
+    try {
+      setIsGeneratingDailyBrief(true);
+      const brief = buildDailyBrief({
+        now: new Date(),
+        todayKey,
+        calendarEvents: calendarEvents || [],
+        todoistTasks: dueTodayTasks || [],
+        prioritizedEmails,
+        whoopSummary,
+        samsungHealthSnapshot,
+        notes: notes || [],
+      });
+      saveDailyBriefCache(withFreshness(brief, new Date()), todayKey);
+    } catch (error) {
+      console.error("Failed to build daily brief:", error);
+      // Safe fallback keeps the section operational if upstream data is malformed.
+      saveDailyBriefCache(withFreshness({ ...MOCK_DAILY_BRIEF, generatedAt: new Date().toISOString() }, new Date()), todayKey);
+    } finally {
+      setIsGeneratingDailyBrief(false);
+    }
   };
 
   useEffect(() => {
-    const cached = localStorage.getItem(DAILY_OVERVIEW_CACHE_KEY);
+    const cached = localStorage.getItem(DAILY_BRIEF_CACHE_KEY);
     if (!cached) return;
     try {
       const parsed = JSON.parse(cached);
-      if (parsed?.date === todayKey && typeof parsed?.content === "string") {
-        setDailyOverview(parsed.content);
-        setDailyOverviewDate(parsed.date);
+      if (parsed?.date === todayKey && parsed?.brief && typeof parsed.brief === "object") {
+        setDailyBrief(withFreshness(parsed.brief as DailyBrief, new Date()));
+        setDailyBriefDate(parsed.date);
       }
     } catch {
       // Ignore malformed cache and regenerate.
@@ -1499,24 +1409,23 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (!hasOpenAI || !user) return;
-    if (generateDailyOverview.isPending) return;
-    if (dailyOverviewDate === todayKey && dailyOverview) return;
+    if (!user) return;
+    if (isGeneratingDailyBrief) return;
+    if (dailyBriefDate === todayKey && dailyBrief) return;
 
     const googleReady = !hasGoogle || (!calendarLoading && !emailsLoading);
     const todoistReady = !hasTodoist || !dueTodayTasksLoading;
     const weatherReady = !weather.loading;
     if (!googleReady || !todoistReady || !weatherReady) return;
 
-    refreshDailyOverview().catch((error) => {
-      console.error("Daily overview generation failed:", error);
+    regenerateDailyBrief().catch((error) => {
+      console.error("Daily brief generation failed:", error);
     });
   }, [
-    hasOpenAI,
     user,
-    generateDailyOverview.isPending,
-    dailyOverviewDate,
-    dailyOverview,
+    isGeneratingDailyBrief,
+    dailyBriefDate,
+    dailyBrief,
     todayKey,
     hasGoogle,
     calendarLoading,
@@ -1524,6 +1433,12 @@ export default function Dashboard() {
     hasTodoist,
     dueTodayTasksLoading,
     weather.loading,
+    prioritizedEmails,
+    dueTodayTasks,
+    calendarEvents,
+    whoopSummary,
+    samsungHealthSnapshot,
+    notes,
   ]);
 
   useEffect(() => {
@@ -1593,34 +1508,96 @@ export default function Dashboard() {
     }
   }, [loading, user, setLocation]);
 
-  const weatherLabel = weather.error
-    ? "Weather unavailable"
-    : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}F` : ""}${
-        weather.location ? ` (${weather.location})` : ""
-      }`;
+  const effectiveDailyBrief = useMemo(() => {
+    if (dailyBrief) return withFreshness(dailyBrief, new Date());
+    return withFreshness({ ...MOCK_DAILY_BRIEF, generatedAt: new Date().toISOString() }, new Date());
+  }, [dailyBrief, currentTime]);
 
-  const fallbackDailyOverview = [
-    "### Snapshot",
-    `- Weather: ${weatherLabel}`,
-    `- Todoist due today: ${(dueTodayTasks || []).length}`,
-    `- Calendar events today: ${todaysCalendarEvents.length}`,
-    `- Priority emails to review: ${prioritizedEmails.length}`,
-    "",
-    "### Focus Now",
-    ...(dueTodayTasks || []).slice(0, 3).map((task: any) => `- Task: ${task.content}`),
-    ...todaysCalendarEvents.slice(0, 3).map((event) => `- Event: ${event.summary}`),
-    ...prioritizedEmails
-      .slice(0, 3)
-      .map((email) => `- Email: ${email.subject} (${email.reason})`),
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const toGoogleCalendarUtcStamp = (value: Date) =>
+    value
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}Z$/, "Z");
 
-  const overviewSections = useMemo(
-    () => parseDailyOverviewSections(dailyOverview || fallbackDailyOverview),
-    [dailyOverview, fallbackDailyOverview]
-  );
-  const overviewLoading = hasOpenAI && generateDailyOverview.isPending && !dailyOverview;
+  const handleDailyBriefAction = (action: DailyBriefAction) => {
+    const openUrl = (url: unknown) => {
+      if (typeof url === "string" && url.trim()) {
+        if (url.startsWith("/")) {
+          setLocation(url);
+        } else {
+          window.open(url, "_blank", "noopener,noreferrer");
+        }
+      }
+    };
+
+    switch (action.kind) {
+      case "open_email":
+      case "open_event":
+      case "open_task":
+      case "open_note":
+        openUrl(action.payload?.url);
+        return;
+      case "insert_draft": {
+        const text = typeof action.payload?.text === "string" ? action.payload.text : "";
+        if (!text) {
+          toast.error("No draft text available");
+          return;
+        }
+        navigator.clipboard
+          .writeText(text)
+          .then(() => toast.success("Draft copied to clipboard"))
+          .catch(() => toast.error("Failed to copy draft"));
+        return;
+      }
+      case "create_task": {
+        const content = typeof action.payload?.content === "string" ? action.payload.content.trim() : "";
+        if (!content) {
+          toast.error("No task content provided");
+          return;
+        }
+        if (!hasTodoist) {
+          toast.error("Connect Todoist to create tasks");
+          return;
+        }
+        quickAddTodoistTask.mutate({ content });
+        return;
+      }
+      case "schedule_block": {
+        const title = typeof action.payload?.title === "string" ? action.payload.title : "Focus block";
+        const startIso = typeof action.payload?.startTime === "string" ? action.payload.startTime : "";
+        const endIso = typeof action.payload?.endTime === "string" ? action.payload.endTime : "";
+        const start = startIso ? new Date(startIso) : new Date();
+        const end = endIso ? new Date(endIso) : new Date(start.getTime() + 45 * 60 * 1000);
+
+        if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+          toast.error("Invalid time range for scheduled block");
+          return;
+        }
+
+        const calendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
+          title
+        )}&dates=${toGoogleCalendarUtcStamp(start)}/${toGoogleCalendarUtcStamp(end)}&details=${encodeURIComponent(
+          "Created from Coherence Daily Brief"
+        )}`;
+        window.open(calendarUrl, "_blank", "noopener,noreferrer");
+        return;
+      }
+      case "send_message": {
+        const text = typeof action.payload?.text === "string" ? action.payload.text : "";
+        if (!text) {
+          toast.error("No message available");
+          return;
+        }
+        navigator.clipboard
+          .writeText(text)
+          .then(() => toast.success("Message copied"))
+          .catch(() => toast.error("Failed to copy message"));
+        return;
+      }
+      default:
+        return;
+    }
+  };
   
   if (loading || isLoading) {
     return (
@@ -1773,7 +1750,7 @@ export default function Dashboard() {
               onClick={() => scrollToSection("section-overview")}
             >
               <FileText className="h-3.5 w-3.5 mr-1.5 text-slate-700" />
-              Daily Overview
+              Daily Brief
             </Button>
             <Button
               variant="ghost"
@@ -1825,73 +1802,19 @@ export default function Dashboard() {
       </div>
       </div>
 
-      {/* Daily Overview */}
+      {/* Daily Brief */}
       <div id="section-overview" className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <div>
-              <CardTitle className="text-lg">Daily Overview</CardTitle>
-              <p className="text-xs text-gray-600 mt-1">
-                {hasOpenAI ? "Generated by ChatGPT using today's data" : "Connect OpenAI to enable AI-generated overview"}
-              </p>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs px-2.5"
-              onClick={() => refreshDailyOverview().catch(() => null)}
-              disabled={!hasOpenAI || generateDailyOverview.isPending}
-            >
-              <RefreshCw className={`h-4 w-4 mr-2 ${generateDailyOverview.isPending ? "animate-spin" : ""}`} />
-              Regenerate
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {overviewLoading ? (
-              <div className="flex items-center gap-2 text-sm text-gray-600">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Generating today&apos;s overview...
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                {overviewSections.map((section) => (
-                  <div key={section.title} className="rounded-md bg-slate-50/70 border border-slate-200 p-2.5">
-                    <h3 className="text-xs font-semibold text-slate-800 underline underline-offset-4 decoration-slate-300">
-                      {section.title}
-                    </h3>
-                    {section.items.length > 0 ? (
-                      <ul className="mt-1.5 space-y-1">
-                        {section.items.map((item, index) => (
-                          <li
-                            key={`${section.title}-${index}`}
-                            className="group relative pr-7 text-xs text-slate-700 leading-5"
-                          >
-                            <span className="font-semibold mr-2">•</span>
-                            {item}
-                            {hasTodoist && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="absolute right-0 top-0 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                                onClick={(e) => handleAddOverviewItemToTodoist(item, e)}
-                                disabled={createTaskFromOverview.isPending}
-                                title="Add to Todoist"
-                              >
-                                <CheckSquare className="h-3.5 w-3.5 text-red-600" />
-                              </Button>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-1.5 text-xs text-slate-500">No notable items.</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <DailyBriefModule
+          brief={effectiveDailyBrief}
+          isLoading={isGeneratingDailyBrief && !dailyBrief}
+          isRegenerating={isGeneratingDailyBrief}
+          onRegenerate={() => {
+            regenerateDailyBrief().catch(() => {
+              toast.error("Failed to regenerate daily brief");
+            });
+          }}
+          onAction={handleDailyBriefAction}
+        />
       </div>
 
       {/* Health Row */}
