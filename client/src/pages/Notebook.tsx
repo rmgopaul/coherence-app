@@ -228,6 +228,7 @@ export default function Notebook() {
   const [mobilePanel, setMobilePanel] = useState<"list" | "editor">("list");
 
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
 
   const loadNoteIntoEditor = useCallback((note: any) => {
     const notebookValue = (note?.notebook || "General").trim() || "General";
@@ -243,6 +244,13 @@ export default function Notebook() {
     // Force the contentEditable surface to update immediately when switching notes.
     if (editorRef.current) {
       editorRef.current.innerHTML = htmlValue;
+    }
+  }, []);
+
+  const clearAutosaveTimer = useCallback(() => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
     }
   }, []);
 
@@ -694,11 +702,17 @@ export default function Notebook() {
   useEffect(() => {
     if (!isDirty) return;
     setSaveState("unsaved");
-    const timer = window.setTimeout(() => {
+    clearAutosaveTimer();
+    const scheduledNoteId = selectedNoteId;
+    const scheduledIsDraft = isDraftMode;
+    autosaveTimerRef.current = window.setTimeout(() => {
+      // Ignore autosave if the user switched notes/draft state before timer fired.
+      if (scheduledIsDraft !== isDraftMode) return;
+      if (!scheduledIsDraft && scheduledNoteId !== selectedNoteId) return;
       void persistNote();
     }, 850);
-    return () => window.clearTimeout(timer);
-  }, [isDirty, persistNote]);
+    return clearAutosaveTimer;
+  }, [isDirty, selectedNoteId, isDraftMode, persistNote, clearAutosaveTimer]);
 
   const runEditorCommand = (command: string, value?: string) => {
     const editor = editorRef.current;
@@ -718,6 +732,7 @@ export default function Notebook() {
   };
 
   const createDraft = () => {
+    clearAutosaveTimer();
     setIsDraftMode(true);
     setSelectedNoteId(null);
 
@@ -740,6 +755,7 @@ export default function Notebook() {
   };
 
   const selectNote = (noteId: string) => {
+    clearAutosaveTimer();
     const note = (notes || []).find((row: any) => row.id === noteId);
     setIsDraftMode(false);
     setSelectedNoteId(noteId);
