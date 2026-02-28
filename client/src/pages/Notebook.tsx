@@ -229,6 +229,7 @@ export default function Notebook() {
 
   const editorRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
+  const isSwitchingNoteRef = useRef(false);
 
   const loadNoteIntoEditor = useCallback((note: any) => {
     const notebookValue = (note?.notebook || "General").trim() || "General";
@@ -518,7 +519,7 @@ export default function Notebook() {
   }, [notes, calendarFilterOptionByKey]);
 
   const selectedNote = useMemo(
-    () => (notes || []).find((note) => note.id === selectedNoteId) || null,
+    () => (notes || []).find((note) => String(note.id) === String(selectedNoteId || "")) || null,
     [notes, selectedNoteId]
   );
 
@@ -619,7 +620,7 @@ export default function Notebook() {
   useEffect(() => {
     if (isDraftMode) return;
     if (!selectedNoteId && visibleNotes.length > 0) {
-      setSelectedNoteId(visibleNotes[0].id);
+      setSelectedNoteId(String(visibleNotes[0].id));
     }
   }, [selectedNoteId, visibleNotes, isDraftMode]);
 
@@ -754,15 +755,16 @@ export default function Notebook() {
     }
   };
 
-  const selectNote = (noteId: string) => {
+  const selectNote = (note: any) => {
     clearAutosaveTimer();
-    const note = (notes || []).find((row: any) => row.id === noteId);
+    isSwitchingNoteRef.current = true;
     setIsDraftMode(false);
-    setSelectedNoteId(noteId);
-    if (note) {
-      loadNoteIntoEditor(note);
-    }
+    setSelectedNoteId(String(note.id));
+    loadNoteIntoEditor(note);
     setMobilePanel("editor");
+    window.requestAnimationFrame(() => {
+      isSwitchingNoteRef.current = false;
+    });
   };
 
   const deleteSelectedNote = async () => {
@@ -1218,7 +1220,7 @@ export default function Notebook() {
                 <button
                   key={note.id}
                   type="button"
-                  onClick={() => selectNote(note.id)}
+                  onClick={() => selectNote(note)}
                   className={`w-full border-b border-slate-100 px-3 py-2.5 text-left last:border-b-0 ${
                     active ? "bg-emerald-50" : "hover:bg-slate-50"
                   }`}
@@ -1399,6 +1401,7 @@ export default function Notebook() {
                   setIsDirty(true);
                 }}
                 onBlur={() => {
+                  if (isSwitchingNoteRef.current) return;
                   if (!editorRef.current) return;
                   const sanitized = sanitizeEditorHtml(editorRef.current.innerHTML || "<p></p>");
                   editorRef.current.innerHTML = sanitized;
