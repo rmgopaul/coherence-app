@@ -463,14 +463,12 @@ router.post("/webhooks/samsung-health", async (req, res) => {
     const incomingSteps = asNumber(payloadActivity.steps);
     const existingSteps = asNumber(existingSummary.steps);
 
-    // Keep steps monotonic for the same day without discarding valid higher values.
-    // We only preserve existing steps when the incoming step value is missing,
-    // regressive, or a warning-only (<=0) background read.
+    // Preserve existing steps only when the incoming reading appears degraded.
+    // Do not block legitimate lower values (for example, after a test payload or source correction).
     if (sameDateAsExisting && existingSteps !== null && existingSteps > 0) {
       const shouldKeepExistingSteps =
         incomingSteps === null ||
-        incomingSteps < existingSteps ||
-        (anyStepReadWarning && incomingSteps <= 0);
+        (anyStepReadWarning && (incomingSteps <= 0 || incomingSteps < existingSteps));
 
       if (shouldKeepExistingSteps) {
         payloadRecord.activity = {
