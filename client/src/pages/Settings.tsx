@@ -4,13 +4,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { trpc } from "@/lib/trpc";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   Activity,
   Calendar,
   CheckSquare,
   MessageSquare,
-  StickyNote,
   Trash2,
   ArrowLeft,
   Plus,
@@ -63,6 +64,7 @@ type SupplementEditorState = {
 
 export default function Settings() {
   const { user, loading } = useAuth();
+  const { theme, setTheme } = useTheme();
   const [, setLocation] = useLocation();
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiModel, setOpenaiModel] = useState("gpt-4.1");
@@ -70,11 +72,10 @@ export default function Settings() {
   const [todoistDefaultFilter, setTodoistDefaultFilter] = useState("all");
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleClientSecret, setGoogleClientSecret] = useState("");
-  const [microsoftClientId, setMicrosoftClientId] = useState("");
-  const [microsoftClientSecret, setMicrosoftClientSecret] = useState("");
   const [whoopClientId, setWhoopClientId] = useState("");
   const [whoopClientSecret, setWhoopClientSecret] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [selectedThemeMode, setSelectedThemeMode] = useState<"light" | "dark">(theme);
   const [newHabitName, setNewHabitName] = useState("");
   const [newHabitColor, setNewHabitColor] = useState("slate");
   const [newSupplementName, setNewSupplementName] = useState("");
@@ -109,11 +110,6 @@ export default function Settings() {
     { enabled: !!user }
   );
   
-  const { data: microsoftCreds } = trpc.oauthCreds.get.useQuery(
-    { provider: "microsoft" },
-    { enabled: !!user }
-  );
-
   const { data: whoopCreds } = trpc.oauthCreds.get.useQuery(
     { provider: "whoop" },
     { enabled: !!user }
@@ -171,15 +167,6 @@ export default function Settings() {
   const saveGoogleCreds = trpc.oauthCreds.save.useMutation({
     onSuccess: () => {
       toast.success("Google credentials saved successfully");
-    },
-    onError: (error) => {
-      toast.error(`Failed to save credentials: ${error.message}`);
-    },
-  });
-
-  const saveMicrosoftCreds = trpc.oauthCreds.save.useMutation({
-    onSuccess: () => {
-      toast.success("Microsoft credentials saved successfully");
     },
     onError: (error) => {
       toast.error(`Failed to save credentials: ${error.message}`);
@@ -284,13 +271,6 @@ export default function Settings() {
   }, [googleCreds]);
   
   useEffect(() => {
-    if (microsoftCreds) {
-      setMicrosoftClientId(microsoftCreds.clientId || "");
-      setMicrosoftClientSecret(microsoftCreds.clientSecret || "");
-    }
-  }, [microsoftCreds]);
-
-  useEffect(() => {
     if (whoopCreds) {
       setWhoopClientId(whoopCreds.clientId || "");
       setWhoopClientSecret(whoopCreds.clientSecret || "");
@@ -300,6 +280,16 @@ export default function Settings() {
   useEffect(() => {
     setDisplayName(preferences?.displayName || user?.name || "");
   }, [preferences?.displayName, user?.name]);
+
+  useEffect(() => {
+    const preferenceTheme = preferences?.theme;
+    if (preferenceTheme === "light" || preferenceTheme === "dark") {
+      setSelectedThemeMode(preferenceTheme);
+      setTheme?.(preferenceTheme);
+      return;
+    }
+    setSelectedThemeMode(theme);
+  }, [preferences?.theme, setTheme, theme]);
 
   useEffect(() => {
     if (!supplementDefinitions) return;
@@ -456,18 +446,6 @@ export default function Settings() {
     });
   };
 
-  const handleSaveMicrosoftCreds = () => {
-    if (!microsoftClientId.trim() || !microsoftClientSecret.trim()) {
-      toast.error("Please enter both Client ID and Client Secret");
-      return;
-    }
-    saveMicrosoftCreds.mutate({
-      provider: "microsoft",
-      clientId: microsoftClientId,
-      clientSecret: microsoftClientSecret,
-    });
-  };
-
   const handleSaveWhoopCreds = () => {
     if (!whoopClientId.trim() || !whoopClientSecret.trim()) {
       toast.error("Please enter both WHOOP Client ID and Client Secret");
@@ -510,6 +488,13 @@ export default function Settings() {
     const trimmed = displayName.trim();
     updatePreferences.mutate({
       displayName: trimmed.length > 0 ? trimmed : null,
+    });
+  };
+
+  const handleSaveTheme = () => {
+    setTheme?.(selectedThemeMode);
+    updatePreferences.mutate({
+      theme: selectedThemeMode,
     });
   };
 
@@ -644,20 +629,20 @@ export default function Settings() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-10">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950">
+      <header className="border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4">
           <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
             <ArrowLeft className="w-4 h-4 mr-2" />
             Back to Dashboard
           </Button>
-          <h1 className="text-2xl font-bold text-slate-900">Settings</h1>
-          <p className="text-sm text-slate-600">Manage your integrations and preferences</p>
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Settings</h1>
+          <p className="text-sm text-slate-600 dark:text-slate-300">Manage your integrations and preferences</p>
         </div>
       </header>
 
       <main className="container max-w-4xl mx-auto px-4 py-8">
-        <div className="space-y-8">
+        <div className="flex flex-col gap-8">
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Data Export</h2>
             <Card>
@@ -710,15 +695,54 @@ export default function Settings() {
           </div>
 
           <div>
-            <h2 className="text-xl font-semibold text-slate-900 mb-4">Supplements</h2>
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">Appearance</h2>
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Supplement Table</CardTitle>
+                <CardTitle className="text-base">Theme Mode</CardTitle>
                 <CardDescription className="text-sm">
-                  Add and manage supplement metadata: brand, link, bottle pricing, quantity, and dose per unit.
+                  Choose Light Mode or Dark Mode (night mode uses a blue palette).
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-6">
+              <CardContent className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="theme-mode">Mode</Label>
+                  <Select
+                    value={selectedThemeMode}
+                    onValueChange={(value) => setSelectedThemeMode(value as "light" | "dark")}
+                  >
+                    <SelectTrigger id="theme-mode">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="light">Light Mode</SelectItem>
+                      <SelectItem value="dark">Dark Mode</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button onClick={handleSaveTheme} disabled={updatePreferences.isPending}>
+                  {updatePreferences.isPending ? "Saving..." : "Save Theme"}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="order-last">
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">Supplements</h2>
+            <Card>
+              <Accordion type="single" collapsible className="w-full">
+                <AccordionItem value="supplements" className="border-b-0">
+                  <CardHeader className="pb-3">
+                    <AccordionTrigger className="py-0 hover:no-underline">
+                      <div className="text-left">
+                        <CardTitle className="text-base">Supplement Table</CardTitle>
+                        <CardDescription className="text-sm">
+                          Add and manage supplement metadata: brand, link, bottle pricing, quantity, and dose per unit.
+                        </CardDescription>
+                      </div>
+                    </AccordionTrigger>
+                  </CardHeader>
+                  <AccordionContent>
+                    <CardContent className="space-y-6 pt-0">
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
                   <p className="text-sm font-medium text-slate-900">Add Supplement</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1005,7 +1029,10 @@ export default function Settings() {
                     })
                   )}
                 </div>
-              </CardContent>
+                    </CardContent>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
             </Card>
           </div>
 
@@ -1207,7 +1234,7 @@ export default function Settings() {
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">OAuth Credentials</h2>
             <p className="text-sm text-slate-600 mb-4">
-              Configure your OAuth credentials to enable Google and Microsoft integrations. These credentials are stored securely and only used for authentication.
+              Configure your OAuth credentials to enable Google and WHOOP integrations. These credentials are stored securely and only used for authentication.
             </p>
             
             {/* Google Credentials */}
@@ -1252,52 +1279,6 @@ export default function Settings() {
                 </p>
                 <Button onClick={handleSaveGoogleCreds} disabled={saveGoogleCreds.isPending}>
                   {saveGoogleCreds.isPending ? "Saving..." : "Save Google Credentials"}
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Microsoft Credentials */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Microsoft OAuth Credentials</CardTitle>
-                <CardDescription className="text-sm">
-                  Required for OneNote integration
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="microsoft-client-id">Client ID</Label>
-                  <Input
-                    id="microsoft-client-id"
-                    type="text"
-                    placeholder="Enter Microsoft Application (client) ID"
-                    value={microsoftClientId}
-                    onChange={(e) => setMicrosoftClientId(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="microsoft-client-secret">Client Secret</Label>
-                  <Input
-                    id="microsoft-client-secret"
-                    type="password"
-                    placeholder="Enter Microsoft Client Secret"
-                    value={microsoftClientSecret}
-                    onChange={(e) => setMicrosoftClientSecret(e.target.value)}
-                  />
-                </div>
-                <p className="text-xs text-slate-500">
-                  Get credentials from{" "}
-                  <a
-                    href="https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline"
-                  >
-                    Azure Portal
-                  </a>
-                </p>
-                <Button onClick={handleSaveMicrosoftCreds} disabled={saveMicrosoftCreds.isPending}>
-                  {saveMicrosoftCreds.isPending ? "Saving..." : "Save Microsoft Credentials"}
                 </Button>
               </CardContent>
             </Card>
@@ -1394,56 +1375,6 @@ export default function Settings() {
                   </Button>
                   <p className="text-xs text-slate-500 mt-2">
                     You'll be redirected to Google to authorize access to your Calendar and Gmail
-                  </p>
-                </CardContent>
-              )}
-            </Card>
-          </div>
-
-          {/* Microsoft Integration */}
-          <div>
-            <h2 className="text-xl font-semibold text-slate-900 mb-4">Microsoft Services</h2>
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-lg bg-slate-100 text-purple-600">
-                      <StickyNote className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base">OneNote</CardTitle>
-                      <CardDescription className="text-sm">
-                        Connect to access your OneNote notebooks and pages
-                      </CardDescription>
-                    </div>
-                  </div>
-                  {connectedProviders.has("microsoft") && (
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 text-sm text-green-600">
-                        <div className="w-2 h-2 bg-green-600 rounded-full"></div>
-                        Connected
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          const integration = integrations?.find((i) => i.provider === "microsoft");
-                          if (integration) handleDisconnect(integration.id);
-                        }}
-                      >
-                        <Trash2 className="w-4 h-4 text-red-600" />
-                      </Button>
-                    </div>
-                  )}
-                </div>
-              </CardHeader>
-              {!connectedProviders.has("microsoft") && (
-                <CardContent>
-                  <Button onClick={() => window.location.href = "/api/oauth/microsoft"}>
-                    Connect with Microsoft
-                  </Button>
-                  <p className="text-xs text-slate-500 mt-2">
-                    You'll be redirected to Microsoft to authorize access to your OneNote
                   </p>
                 </CardContent>
               )}

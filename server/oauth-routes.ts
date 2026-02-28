@@ -2,7 +2,6 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { upsertIntegration, getOAuthCredential, getIntegrationByProvider, addSamsungSyncPayload } from "./db";
 import { exchangeGoogleCode } from "./services/google";
-import { exchangeMicrosoftCode } from "./services/microsoft";
 import { exchangeWhoopCode } from "./services/whoop";
 import { sdk } from "./_core/sdk";
 import { ENV } from "./_core/env";
@@ -289,105 +288,6 @@ router.get("/oauth/google/callback", async (req, res) => {
   } catch (error) {
     console.error("Google OAuth error:", error);
     res.redirect(`/settings?error=google&message=${encodeURIComponent((error as Error).message)}`);
-  }
-});
-
-// Microsoft OAuth initiation
-router.get("/oauth/microsoft", async (req, res) => {
-  try {
-    // Authenticate user first
-    const user = await sdk.authenticateRequest(req);
-    if (!user?.id) {
-      return res.redirect("/settings?error=microsoft&message=not_authenticated");
-    }
-
-    // Get OAuth credentials from database
-    const creds = await getOAuthCredential(user.id, "microsoft");
-    
-    if (!creds?.clientId) {
-      return res.redirect("/settings?error=microsoft&message=credentials_not_configured");
-    }
-    
-    const clientId = creds.clientId;
-
-    // Generate state parameter to maintain user context
-    const state = crypto.randomBytes(32).toString("hex");
-    oauthStates.set(state, { userId: user.id, timestamp: Date.now() });
-
-    const redirectUri = `${getBaseUrl(req)}/api/oauth/microsoft/callback`;
-    const scope = [
-      "Notes.Read",
-      "Notes.Read.All",
-      "User.Read",
-      "offline_access",
-    ].join(" ");
-
-    const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${new URLSearchParams({
-      client_id: clientId,
-      redirect_uri: redirectUri,
-      response_type: "code",
-      scope,
-      response_mode: "query",
-      state,
-    })}`;
-
-    res.redirect(authUrl);
-  } catch (error) {
-    console.error("Microsoft OAuth initiation error:", error);
-    res.redirect("/settings?error=microsoft&message=initiation_failed");
-  }
-});
-
-// Microsoft OAuth callback
-router.get("/oauth/microsoft/callback", async (req, res) => {
-  const { code, error, state } = req.query;
-
-  if (error) {
-    return res.redirect(`/settings?error=microsoft&message=${error}`);
-  }
-
-  if (!code || !state) {
-    return res.redirect("/settings?error=microsoft&message=no_code_or_state");
-  }
-
-  try {
-    // Retrieve user ID from state
-    const stateData = oauthStates.get(state as string);
-    if (!stateData) {
-      return res.redirect("/settings?error=microsoft&message=invalid_state");
-    }
-
-    // Clean up used state
-    oauthStates.delete(state as string);
-
-    const userId = stateData.userId;
-
-    // Get OAuth credentials from database
-    const creds = await getOAuthCredential(userId, "microsoft");
-    if (!creds?.clientId || !creds?.clientSecret) {
-      return res.redirect("/settings?error=microsoft&message=credentials_not_configured");
-    }
-
-    const redirectUri = `${getBaseUrl(req)}/api/oauth/microsoft/callback`;
-    const tokenData = await exchangeMicrosoftCode(code as string, redirectUri, creds.clientId, creds.clientSecret);
-
-    const expiresAt = new Date(Date.now() + tokenData.expires_in * 1000);
-
-    await upsertIntegration({
-      id: nanoid(),
-      userId,
-      provider: "microsoft",
-      accessToken: tokenData.access_token,
-      refreshToken: tokenData.refresh_token || null,
-      expiresAt,
-      scope: tokenData.scope,
-      metadata: null,
-    });
-
-    res.redirect("/settings?success=microsoft");
-  } catch (error) {
-    console.error("Microsoft OAuth error:", error);
-    res.redirect(`/settings?error=microsoft&message=${encodeURIComponent((error as Error).message)}`);
   }
 });
 

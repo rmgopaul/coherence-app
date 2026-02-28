@@ -7,12 +7,12 @@ import PinGate from "./components/PinGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Dashboard from "./pages/Dashboard";
+import Notebook from "./pages/Notebook";
 import Settings from "./pages/Settings";
 import TodoistWidget from "./pages/TodoistWidget";
 import ChatGPTWidget from "./pages/ChatGPTWidget";
 import GoogleCalendarWidget from "./pages/GoogleCalendarWidget";
 import GmailWidget from "./pages/GmailWidget";
-import OneNoteWidget from "./pages/OneNoteWidget";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -20,12 +20,12 @@ function Router() {
     <Switch>
       <Route path={"/"} component={Home} />
       <Route path={"/dashboard"} component={Dashboard} />
+      <Route path={"/notes"} component={Notebook} />
       <Route path={"/settings"} component={Settings} />
       <Route path={"/widget/todoist"} component={TodoistWidget} />
       <Route path={"/widget/chatgpt"} component={ChatGPTWidget} />
       <Route path={"/widget/google-calendar"} component={GoogleCalendarWidget} />
       <Route path={"/widget/gmail"} component={GmailWidget} />
-      <Route path={"/widget/onenote"} component={OneNoteWidget} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
@@ -43,7 +43,7 @@ function App() {
     <ErrorBoundary>
       <ThemeProvider
         defaultTheme="light"
-        // switchable
+        switchable
       >
         <TooltipProvider>
           <Toaster />

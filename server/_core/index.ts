@@ -41,7 +41,7 @@ async function startServer() {
   registerPinGate(app);
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
-  // Custom OAuth routes for integrations (Google, Todoist, Microsoft)
+  // Custom OAuth routes for integrations (Google, Todoist, WHOOP, Samsung webhook)
   app.use("/api", oauthRouter);
   // tRPC API
   app.use(

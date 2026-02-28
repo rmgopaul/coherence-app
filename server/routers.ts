@@ -774,21 +774,6 @@ export const appRouter = router({
       }),
   }),
 
-  microsoft: router({
-    getNotebooks: protectedProcedure.query(async ({ ctx }) => {
-      const { getValidMicrosoftToken } = await import("./helpers/tokenRefresh");
-      const accessToken = await getValidMicrosoftToken(ctx.user.id);
-      const { getOneNoteNotebooks } = await import("./services/microsoft");
-      return getOneNoteNotebooks(accessToken);
-    }),
-    getPages: protectedProcedure.query(async ({ ctx }) => {
-      const { getValidMicrosoftToken } = await import("./helpers/tokenRefresh");
-      const accessToken = await getValidMicrosoftToken(ctx.user.id);
-      const { getOneNotePages } = await import("./services/microsoft");
-      return getOneNotePages(accessToken);
-    }),
-  }),
-
   whoop: router({
     getSummary: protectedProcedure.query(async ({ ctx }) => {
       const { getValidWhoopToken } = await import("./helpers/tokenRefresh");
@@ -1164,6 +1149,242 @@ export const appRouter = router({
         }
         await upsertHabitCompletion(ctx.user.id, input.habitId, dateKey, input.completed);
         return { success: true };
+      }),
+  }),
+
+  notes: router({
+    list: protectedProcedure
+      .input(
+        z
+          .object({
+            limit: z.number().min(1).max(1000).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const { listNotes, listNoteLinks } = await import("./db");
+        const limit = input?.limit ?? 100;
+        const [noteRows, linkRows] = await Promise.all([
+          listNotes(ctx.user.id, limit),
+          listNoteLinks(ctx.user.id, undefined, Math.max(limit * 10, 200)),
+        ]);
+
+        const linksByNoteId = new Map<string, any[]>();
+        for (const link of linkRows) {
+          const bucket = linksByNoteId.get(link.noteId) ?? [];
+          bucket.push(link);
+          linksByNoteId.set(link.noteId, bucket);
+        }
+
+        return noteRows.map((note) => ({
+          ...note,
+          links: linksByNoteId.get(note.id) ?? [],
+        }));
+      }),
+    create: protectedProcedure
+      .input(
+        z.object({
+          notebook: z.string().min(1).max(120).optional(),
+          title: z.string().min(1).max(180),
+          content: z.string().max(20000).optional(),
+          pinned: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { nanoid } = await import("nanoid");
+        const { createNote } = await import("./db");
+
+        const noteId = nanoid();
+        await createNote({
+          id: noteId,
+          userId: ctx.user.id,
+          notebook: input.notebook?.trim() || "General",
+          title: input.title.trim(),
+          content: input.content?.trim() || "",
+          pinned: input.pinned ?? false,
+        });
+
+        return { success: true, noteId };
+      }),
+    update: protectedProcedure
+      .input(
+        z.object({
+          noteId: z.string(),
+          notebook: z.string().min(1).max(120).optional(),
+          title: z.string().min(1).max(180).optional(),
+          content: z.string().max(20000).optional(),
+          pinned: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getNoteById, updateNote } = await import("./db");
+        const existing = await getNoteById(ctx.user.id, input.noteId);
+        if (!existing) throw new Error("Note not found");
+
+        await updateNote(ctx.user.id, input.noteId, {
+          notebook: input.notebook?.trim(),
+          title: input.title?.trim(),
+          content: input.content,
+          pinned: input.pinned,
+        });
+
+        return { success: true };
+      }),
+    delete: protectedProcedure
+      .input(z.object({ noteId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const { deleteNote } = await import("./db");
+        await deleteNote(ctx.user.id, input.noteId);
+        return { success: true };
+      }),
+    addLink: protectedProcedure
+      .input(
+        z.object({
+          noteId: z.string(),
+          linkType: z.enum(["todoist_task", "google_calendar_event"]),
+          externalId: z.string().min(1).max(255),
+          seriesId: z.string().max(255).optional(),
+          occurrenceStartIso: z.string().max(64).optional(),
+          sourceUrl: z.string().max(4096).optional(),
+          sourceTitle: z.string().max(255).optional(),
+          metadata: z.record(z.string(), z.any()).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { nanoid } = await import("nanoid");
+        const { getNoteById, addNoteLink, updateNote } = await import("./db");
+        const note = await getNoteById(ctx.user.id, input.noteId);
+        if (!note) throw new Error("Note not found");
+
+        const linkResult = await addNoteLink({
+          id: nanoid(),
+          userId: ctx.user.id,
+          noteId: input.noteId,
+          linkType: input.linkType,
+          externalId: input.externalId.trim(),
+          seriesId: input.seriesId?.trim() || "",
+          occurrenceStartIso: input.occurrenceStartIso?.trim() || "",
+          sourceUrl: input.sourceUrl?.trim() || null,
+          sourceTitle: input.sourceTitle?.trim() || null,
+          metadata: input.metadata ? JSON.stringify(input.metadata) : null,
+        });
+
+        if (linkResult.created) {
+          await updateNote(ctx.user.id, input.noteId, {});
+        }
+        return { success: true, alreadyLinked: !linkResult.created };
+      }),
+    removeLink: protectedProcedure
+      .input(z.object({ linkId: z.string() }))
+      .mutation(async ({ ctx, input }) => {
+        const { deleteNoteLink } = await import("./db");
+        await deleteNoteLink(ctx.user.id, input.linkId);
+        return { success: true };
+      }),
+    createFromTodoistTask: protectedProcedure
+      .input(
+        z.object({
+          taskId: z.string().min(1).max(255),
+          taskContent: z.string().min(1).max(1000),
+          taskUrl: z.string().max(4096).optional(),
+          dueDate: z.string().max(128).optional(),
+          projectName: z.string().max(255).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { nanoid } = await import("nanoid");
+        const { createNote, addNoteLink } = await import("./db");
+        const noteId = nanoid();
+
+        const title = `Task: ${input.taskContent.slice(0, 120)}`;
+        const contentLines = [
+          `Task: ${input.taskContent}`,
+          input.projectName ? `Project: ${input.projectName}` : null,
+          input.dueDate ? `Due: ${input.dueDate}` : null,
+          input.taskUrl ? `URL: ${input.taskUrl}` : null,
+          "",
+        ].filter(Boolean);
+
+        await createNote({
+          id: noteId,
+          userId: ctx.user.id,
+          notebook: "Tasks",
+          title,
+          content: contentLines.join("\n"),
+          pinned: false,
+        });
+
+        await addNoteLink({
+          id: nanoid(),
+          userId: ctx.user.id,
+          noteId,
+          linkType: "todoist_task",
+          externalId: input.taskId,
+          seriesId: "",
+          occurrenceStartIso: "",
+          sourceUrl: input.taskUrl?.trim() || null,
+          sourceTitle: input.taskContent.slice(0, 255),
+          metadata: JSON.stringify({
+            dueDate: input.dueDate ?? null,
+            projectName: input.projectName ?? null,
+          }),
+        });
+
+        return { success: true, noteId };
+      }),
+    createFromCalendarEvent: protectedProcedure
+      .input(
+        z.object({
+          eventId: z.string().min(1).max(255),
+          eventSummary: z.string().min(1).max(1000),
+          eventUrl: z.string().max(4096).optional(),
+          start: z.string().max(128).optional(),
+          location: z.string().max(500).optional(),
+          recurringEventId: z.string().max(255).optional(),
+          iCalUID: z.string().max(255).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { nanoid } = await import("nanoid");
+        const { createNote, addNoteLink } = await import("./db");
+        const noteId = nanoid();
+
+        const title = `Event: ${input.eventSummary.slice(0, 120)}`;
+        const contentLines = [
+          `Event: ${input.eventSummary}`,
+          input.start ? `Start: ${input.start}` : null,
+          input.location ? `Location: ${input.location}` : null,
+          input.eventUrl ? `URL: ${input.eventUrl}` : null,
+          "",
+        ].filter(Boolean);
+
+        await createNote({
+          id: noteId,
+          userId: ctx.user.id,
+          notebook: "Meetings",
+          title,
+          content: contentLines.join("\n"),
+          pinned: false,
+        });
+
+        await addNoteLink({
+          id: nanoid(),
+          userId: ctx.user.id,
+          noteId,
+          linkType: "google_calendar_event",
+          externalId: input.eventId,
+          seriesId: (input.recurringEventId || input.iCalUID || "").trim(),
+          occurrenceStartIso: input.start?.trim() || "",
+          sourceUrl: input.eventUrl?.trim() || null,
+          sourceTitle: input.eventSummary.slice(0, 255),
+          metadata: JSON.stringify({
+            location: input.location ?? null,
+            recurringEventId: input.recurringEventId ?? null,
+            iCalUID: input.iCalUID ?? null,
+          }),
+        });
+
+        return { success: true, noteId };
       }),
   }),
 

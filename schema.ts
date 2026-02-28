@@ -24,7 +24,7 @@ Latest content with line numbers:
 22	export const integrations = mysqlTable("integrations", {
 23	  id: varchar("id", { length: 64 }).primaryKey(),
 24	  userId: varchar("userId", { length: 64 }).notNull(),
-25	  provider: varchar("provider", { length: 64 }).notNull(), // todoist, google, microsoft, openai
+25	  provider: varchar("provider", { length: 64 }).notNull(), // todoist, google, whoop, samsung-health, openai
 26	  accessToken: text("accessToken"),
 27	  refreshToken: text("refreshToken"),
 28	  expiresAt: timestamp("expiresAt"),
@@ -55,7 +55,7 @@ Latest content with line numbers:
 53	export const oauthCredentials = mysqlTable("oauthCredentials", {
 54	  id: varchar("id", { length: 64 }).primaryKey(),
 55	  userId: varchar("userId", { length: 64 }).notNull(),
-56	  provider: varchar("provider", { length: 64 }).notNull(), // google, microsoft
+56	  provider: varchar("provider", { length: 64 }).notNull(), // google, whoop
 57	  clientId: text("clientId"),
 58	  clientSecret: text("clientSecret"),
 59	  createdAt: timestamp("createdAt").defaultNow(),

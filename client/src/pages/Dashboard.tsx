@@ -4,7 +4,9 @@ import UniversalDropDock from "@/components/UniversalDropDock";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import {
   Calendar,
@@ -70,6 +72,49 @@ const getWeatherLabel = (code?: number) => {
   if (typeof code !== "number") return "Weather unavailable";
   return WEATHER_CODE_LABELS[code] || "Weather unavailable";
 };
+
+const decodeHtmlEntities = (content: string) => {
+  if (typeof window === "undefined") return content.replace(/&nbsp;/gi, " ");
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = content;
+  return textarea.value;
+};
+
+const toPlainText = (content: string) =>
+  decodeHtmlEntities(
+    content
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+  )
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const formatCalendarEventLabel = (event: any) => {
+  const summary = String(event?.summary || "Untitled event").trim() || "Untitled event";
+  const startDateTime = event?.start?.dateTime;
+  const startDate = event?.start?.date;
+  const raw = startDateTime || startDate;
+  if (!raw) return summary;
+
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return summary;
+
+  const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
+  if (startDateTime) {
+    const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return `${summary} · ${weekday} ${time}`;
+  }
+  return `${summary} · ${weekday} all-day`;
+};
+
+const normalizeEventText = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const buildLocalDateKey = (date = new Date()) => {
   const year = date.getFullYear();
@@ -155,8 +200,8 @@ const HABIT_COLOR_STYLES: Record<string, { active: string; inactive: string }> =
     inactive: "bg-emerald-50 text-emerald-700 border-emerald-200",
   },
   blue: {
-    active: "bg-blue-600 text-white border-blue-700",
-    inactive: "bg-blue-50 text-blue-700 border-blue-200",
+    active: "bg-emerald-700 text-white border-emerald-800",
+    inactive: "bg-emerald-50 text-emerald-700 border-emerald-200",
   },
   violet: {
     active: "bg-violet-600 text-white border-violet-700",
@@ -206,6 +251,15 @@ export default function Dashboard() {
   const [manualEnergyScoreInput, setManualEnergyScoreInput] = useState("");
   const [editingSamsungField, setEditingSamsungField] = useState<"sleep" | "energy" | null>(null);
   const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [noteTitleInput, setNoteTitleInput] = useState("");
+  const [noteContentInput, setNoteContentInput] = useState("");
+  const [noteNotebookInput, setNoteNotebookInput] = useState("General");
+  const [noteNotebookFilter, setNoteNotebookFilter] = useState("all");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [linkNoteId, setLinkNoteId] = useState<string>("");
+  const [linkTaskId, setLinkTaskId] = useState<string>("");
+  const [linkEventId, setLinkEventId] = useState<string>("");
+  const [selectedCalendarHistoryEventId, setSelectedCalendarHistoryEventId] = useState<string | null>(null);
   const [supplementName, setSupplementName] = useState("");
   const [supplementDose, setSupplementDose] = useState("");
   const [supplementDoseUnit, setSupplementDoseUnit] =
@@ -360,11 +414,11 @@ export default function Dashboard() {
   
   // Color palette for different days
   const dayColors = [
-    { bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-900', header: 'bg-blue-100' },
-    { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-900', header: 'bg-green-100' },
-    { bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-900', header: 'bg-purple-100' },
-    { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-900', header: 'bg-orange-100' },
-    { bg: 'bg-pink-50', border: 'border-pink-200', text: 'text-pink-900', header: 'bg-pink-100' },
+    { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", header: "bg-emerald-100" },
+    { bg: "bg-lime-50", border: "border-lime-200", text: "text-lime-900", header: "bg-lime-100" },
+    { bg: "bg-teal-50", border: "border-teal-200", text: "text-teal-900", header: "bg-teal-100" },
+    { bg: "bg-slate-100", border: "border-slate-300", text: "text-slate-900", header: "bg-slate-200" },
+    { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-900", header: "bg-amber-100" },
   ];
   
   const dateKeys = Object.keys(groupedEvents);
@@ -499,6 +553,132 @@ export default function Dashboard() {
       retry: false,
     }
   );
+
+  const { data: notes, isLoading: notesLoading, refetch: refetchNotes } = trpc.notes.list.useQuery(
+    { limit: 300 },
+    {
+      enabled: !!user,
+      retry: false,
+    }
+  );
+
+  const noteNotebookOptions = useMemo(() => {
+    const values = new Set<string>(["General", "Meetings", "Tasks"]);
+    for (const note of notes || []) {
+      const notebook = typeof note?.notebook === "string" ? note.notebook.trim() : "";
+      if (notebook) values.add(notebook);
+    }
+    return Array.from(values).sort((a, b) => a.localeCompare(b));
+  }, [notes]);
+
+  const filteredNotes = useMemo(() => {
+    if (!notes) return [];
+    if (noteNotebookFilter === "all") return notes;
+    return notes.filter((note: any) => (note.notebook || "General") === noteNotebookFilter);
+  }, [notes, noteNotebookFilter]);
+
+  const selectedTaskForLink = useMemo(
+    () => (todayTasks || []).find((task: any) => String(task.id) === linkTaskId) || null,
+    [todayTasks, linkTaskId]
+  );
+
+  const selectedEventForLink = useMemo(
+    () => upcomingEvents.find((event: any) => String(event.id || "") === linkEventId) || null,
+    [upcomingEvents, linkEventId]
+  );
+
+  const selectedCalendarHistoryEvent = useMemo(
+    () =>
+      upcomingEvents.find((event: any) => String(event.id || "") === selectedCalendarHistoryEventId) || null,
+    [upcomingEvents, selectedCalendarHistoryEventId]
+  );
+
+  const calendarLinkedNotes = useMemo(() => {
+    if (!selectedCalendarHistoryEvent || !notes) return [];
+    const eventId = String(selectedCalendarHistoryEvent.id || "");
+    const recurringId = String(selectedCalendarHistoryEvent.recurringEventId || "");
+    const iCalUID = String(selectedCalendarHistoryEvent.iCalUID || "");
+    const eventSummary = normalizeEventText(String(selectedCalendarHistoryEvent.summary || ""));
+    const eventStart = String(
+      selectedCalendarHistoryEvent.start?.dateTime || selectedCalendarHistoryEvent.start?.date || ""
+    );
+
+    const targetSeries = [recurringId, iCalUID].filter((value) => value.length > 0);
+
+    const matchesLink = (link: any) => {
+      if (link?.linkType !== "google_calendar_event") return false;
+      if (String(link.externalId || "") === eventId) return true;
+
+      let parsedMetadata: Record<string, unknown> = {};
+      if (typeof link.metadata === "string" && link.metadata.trim()) {
+        try {
+          parsedMetadata = JSON.parse(link.metadata);
+        } catch {
+          parsedMetadata = {};
+        }
+      }
+
+      const linkSeriesCandidates = [
+        String(link.seriesId || ""),
+        String(parsedMetadata.recurringEventId || ""),
+        String(parsedMetadata.iCalUID || ""),
+      ].filter((value) => value.length > 0);
+
+      if (targetSeries.length > 0 && linkSeriesCandidates.length > 0) {
+        if (linkSeriesCandidates.some((value) => targetSeries.includes(value))) {
+          return true;
+        }
+      }
+
+      // If the selected event has no series but the link does, treat as non-match.
+      if (targetSeries.length === 0 && linkSeriesCandidates.length > 0) {
+        return false;
+      }
+
+      const occurrence = String(link.occurrenceStartIso || "");
+      if (!eventStart || !occurrence) return false;
+      if (occurrence === eventStart) return true;
+
+      const eventStartDate = new Date(eventStart);
+      const occurrenceDate = new Date(occurrence);
+      if (Number.isNaN(eventStartDate.getTime()) || Number.isNaN(occurrenceDate.getTime())) {
+        return false;
+      }
+
+      const sameDay =
+        eventStartDate.getFullYear() === occurrenceDate.getFullYear() &&
+        eventStartDate.getMonth() === occurrenceDate.getMonth() &&
+        eventStartDate.getDate() === occurrenceDate.getDate();
+
+      if (!sameDay) return false;
+
+      const linkTitle = normalizeEventText(
+        String(parsedMetadata.sourceTitle || link.sourceTitle || "")
+      );
+      if (eventSummary && linkTitle && eventSummary !== linkTitle) {
+        return false;
+      }
+
+      return true;
+    };
+
+    return notes
+      .map((note: any) => {
+        const matchingLinks = (Array.isArray(note.links) ? note.links : []).filter(matchesLink);
+        if (matchingLinks.length === 0) return null;
+        const latestOccurrence = matchingLinks
+          .map((link: any) => String(link.occurrenceStartIso || ""))
+          .filter((value: string) => value.length > 0)
+          .sort((a: string, b: string) => new Date(b).getTime() - new Date(a).getTime())[0];
+        return { ...note, matchingLinks, latestOccurrence };
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => {
+        const aTs = new Date(a.updatedAt || a.createdAt || 0).getTime();
+        const bTs = new Date(b.updatedAt || b.createdAt || 0).getTime();
+        return bTs - aTs;
+      });
+  }, [selectedCalendarHistoryEvent, notes]);
 
   const todaysCalendarEvents = useMemo(() => {
     const now = new Date();
@@ -779,6 +959,96 @@ export default function Dashboard() {
     },
   });
 
+  const createNoteMutation = trpc.notes.create.useMutation({
+    onSuccess: () => {
+      toast.success("Note created");
+      setNoteTitleInput("");
+      setNoteContentInput("");
+      setNoteNotebookInput("General");
+      setEditingNoteId(null);
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to create note: ${error.message}`);
+    },
+  });
+
+  const updateNoteMutation = trpc.notes.update.useMutation({
+    onSuccess: () => {
+      toast.success("Note updated");
+      setNoteTitleInput("");
+      setNoteContentInput("");
+      setNoteNotebookInput("General");
+      setEditingNoteId(null);
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to update note: ${error.message}`);
+    },
+  });
+
+  const deleteNoteMutation = trpc.notes.delete.useMutation({
+    onSuccess: () => {
+      toast.success("Note deleted");
+      if (editingNoteId) {
+        setEditingNoteId(null);
+        setNoteTitleInput("");
+        setNoteContentInput("");
+        setNoteNotebookInput("General");
+      }
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to delete note: ${error.message}`);
+    },
+  });
+
+  const addNoteLinkMutation = trpc.notes.addLink.useMutation({
+    onSuccess: (result) => {
+      if (result?.alreadyLinked) {
+        toast.info("This item is already linked to the note");
+      } else {
+        toast.success("Link added");
+      }
+      setLinkTaskId("");
+      setLinkEventId("");
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to add link: ${error.message}`);
+    },
+  });
+
+  const removeNoteLinkMutation = trpc.notes.removeLink.useMutation({
+    onSuccess: () => {
+      toast.success("Link removed");
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to remove link: ${error.message}`);
+    },
+  });
+
+  const createNoteFromTaskMutation = trpc.notes.createFromTodoistTask.useMutation({
+    onSuccess: () => {
+      toast.success("Task note created");
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to create task note: ${error.message}`);
+    },
+  });
+
+  const createNoteFromCalendarMutation = trpc.notes.createFromCalendarEvent.useMutation({
+    onSuccess: () => {
+      toast.success("Event note created");
+      refetchNotes();
+    },
+    onError: (error) => {
+      toast.error(`Failed to create event note: ${error.message}`);
+    },
+  });
+
   const setHabitCompletion = trpc.habits.setCompletion.useMutation({
     onSuccess: () => {
       refetchHabitsForToday();
@@ -881,6 +1151,115 @@ export default function Dashboard() {
       timing: supplementTiming,
       dateKey: todayKey,
     });
+  };
+
+  const handleSubmitNote = () => {
+    const title = noteTitleInput.trim();
+    const notebook = noteNotebookInput.trim() || "General";
+    if (!title) {
+      toast.error("Note title is required");
+      return;
+    }
+    if (editingNoteId) {
+      updateNoteMutation.mutate({
+        noteId: editingNoteId,
+        notebook,
+        title,
+        content: noteContentInput,
+      });
+      return;
+    }
+    createNoteMutation.mutate({
+      notebook,
+      title,
+      content: noteContentInput,
+    });
+  };
+
+  const handleEditNote = (note: any) => {
+    setEditingNoteId(note.id);
+    setNoteNotebookInput(note.notebook || "General");
+    setNoteTitleInput(note.title || "");
+    setNoteContentInput(toPlainText(String(note.content || "")));
+  };
+
+  const handleLinkExistingNoteToTask = () => {
+    if (!linkNoteId || !selectedTaskForLink) {
+      toast.error("Select a note and a task");
+      return;
+    }
+    addNoteLinkMutation.mutate({
+      noteId: linkNoteId,
+      linkType: "todoist_task",
+      externalId: String(selectedTaskForLink.id),
+      sourceUrl:
+        (selectedTaskForLink as any).url ||
+        `https://todoist.com/app/task/${selectedTaskForLink.id}`,
+      sourceTitle: String(selectedTaskForLink.content || "Todoist task"),
+      metadata: {
+        dueDate: selectedTaskForLink.due?.date ?? selectedTaskForLink.due?.string ?? null,
+      },
+    });
+  };
+
+  const handleLinkExistingNoteToEvent = () => {
+    if (!linkNoteId || !selectedEventForLink) {
+      toast.error("Select a note and an event");
+      return;
+    }
+    addNoteLinkMutation.mutate({
+      noteId: linkNoteId,
+      linkType: "google_calendar_event",
+      externalId: String(selectedEventForLink.id || ""),
+      seriesId: selectedEventForLink.recurringEventId || selectedEventForLink.iCalUID || "",
+      occurrenceStartIso:
+        selectedEventForLink.start?.dateTime || selectedEventForLink.start?.date || "",
+      sourceUrl: selectedEventForLink.htmlLink || undefined,
+      sourceTitle: String(selectedEventForLink.summary || "Google Calendar event"),
+      metadata: {
+        location: selectedEventForLink.location || null,
+        recurringEventId: selectedEventForLink.recurringEventId || null,
+        iCalUID: selectedEventForLink.iCalUID || null,
+      },
+    });
+  };
+
+  const handleCreateNoteFromTask = (task: any) => {
+    createNoteFromTaskMutation.mutate({
+      taskId: String(task.id),
+      taskContent: String(task.content || "Untitled task"),
+      taskUrl: task.url || `https://todoist.com/app/task/${task.id}`,
+      dueDate: task.due?.date ?? task.due?.string ?? undefined,
+      projectName:
+        todoistFilter.startsWith("project_")
+          ? todoistProjects?.find((p: any) => p.id === todoistFilter.replace("project_", ""))?.name
+          : undefined,
+    });
+  };
+
+  const handleCreateNoteFromCalendarEvent = (event: any) => {
+    createNoteFromCalendarMutation.mutate({
+      eventId: String(event.id || ""),
+      eventSummary: String(event.summary || "Untitled event"),
+      eventUrl: event.htmlLink || undefined,
+      start: event.start?.dateTime || event.start?.date || undefined,
+      location: event.location || undefined,
+      recurringEventId: event.recurringEventId || undefined,
+      iCalUID: event.iCalUID || undefined,
+    });
+  };
+
+  const openNotebookForCalendarEvent = (event: any) => {
+    const params = new URLSearchParams();
+    params.set("notebook", "Meetings");
+    if (event?.id) {
+      params.set("eventId", String(event.id));
+    }
+    const seriesId = String(event?.recurringEventId || event?.iCalUID || "");
+    if (seriesId) {
+      params.set("seriesId", seriesId);
+    }
+    setLocation(`/notes?${params.toString()}`);
   };
 
   const handleAddSupplementDefinition = () => {
@@ -1246,7 +1625,7 @@ export default function Dashboard() {
   if (loading || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
       </div>
     );
   }
@@ -1294,12 +1673,12 @@ export default function Dashboard() {
   };
 
   return (
-    <div id="dashboard-top" className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex flex-col">
+    <div id="dashboard-top" className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b sticky top-0 z-10">
+      <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border-b sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Coherence</h1>
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-slate-100">Coherence</h1>
             <div className="mt-1 flex items-center gap-2">
               <Input
                 value={welcomeDisplayNameInput}
@@ -1310,7 +1689,7 @@ export default function Dashboard() {
                     (e.currentTarget as HTMLInputElement).blur();
                   }
                 }}
-                className="h-8 w-64 text-sm bg-white"
+                className="h-8 w-64 text-sm bg-white dark:bg-slate-900"
                 maxLength={120}
                 placeholder="Enter display name"
               />
@@ -1319,16 +1698,22 @@ export default function Dashboard() {
               )}
             </div>
           </div>
-          <Button variant="outline" onClick={() => setLocation("/settings")}>
-            <SettingsIcon className="h-4 w-4 mr-2" />
-            Settings
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setLocation("/notes")}>
+              <FileText className="h-4 w-4 mr-2" />
+              Notebook
+            </Button>
+            <Button variant="outline" onClick={() => setLocation("/settings")}>
+              <SettingsIcon className="h-4 w-4 mr-2" />
+              Settings
+            </Button>
+          </div>
         </div>
       </header>
 
-      <div className="sticky top-[76px] z-20 bg-gradient-to-br from-blue-50/95 via-white/95 to-purple-50/95 backdrop-blur-sm">
+      <div className="sticky top-[76px] z-20 bg-gradient-to-br from-slate-100/95 via-white/95 to-emerald-50/95 dark:from-slate-950/95 dark:via-slate-900/95 dark:to-blue-950/95 backdrop-blur-sm">
         <div className="container mx-auto px-4 pt-3">
-          <Card className="border-sky-200 bg-gradient-to-r from-sky-50 via-white to-blue-50">
+          <Card className="border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50">
             <CardContent className="py-3">
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
@@ -1346,7 +1731,7 @@ export default function Dashboard() {
                 <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
                   <p className="text-[11px] uppercase tracking-wide text-slate-500">Weather</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                    <CloudSun className="h-4 w-4 text-sky-600" />
+                    <CloudSun className="h-4 w-4 text-emerald-600" />
                     {weather.loading
                       ? "Loading..."
                       : weather.error
@@ -1402,10 +1787,10 @@ export default function Dashboard() {
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 text-xs border border-indigo-200 bg-indigo-50 hover:bg-indigo-100"
+              className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
               onClick={() => scrollToSection("section-tracking")}
             >
-              <BarChart3 className="h-3.5 w-3.5 mr-1.5 text-indigo-700" />
+              <BarChart3 className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
               Tracking
             </Button>
             <Button
@@ -1512,10 +1897,10 @@ export default function Dashboard() {
       {/* Health Row */}
       <div id="section-health" className="container mx-auto px-4 pt-4 scroll-mt-40">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card className="flex flex-col border-blue-200 bg-gradient-to-br from-blue-50 via-cyan-50 to-sky-100 text-slate-900 shadow-[0_14px_34px_rgba(14,116,144,0.18)]">
+          <Card className="flex flex-col border-emerald-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-slate-100 text-slate-900 shadow-[0_14px_34px_rgba(22,101,52,0.18)]">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
-                <Smartphone className="h-4 w-4 text-sky-700" />
+                <Smartphone className="h-4 w-4 text-emerald-700" />
                 <CardTitle className="text-base text-slate-900">Samsung Health</CardTitle>
               </div>
               <Button
@@ -1531,7 +1916,7 @@ export default function Dashboard() {
             <CardContent className="space-y-3">
               {!hasSamsungHealth ? (
                 <div className="text-center py-5 text-slate-700">
-                  <Smartphone className="h-8 w-8 mx-auto mb-2 text-sky-400" />
+                  <Smartphone className="h-8 w-8 mx-auto mb-2 text-emerald-400" />
                   <p className="text-sm">No Samsung Health sync detected yet.</p>
                   <p className="text-xs mt-2 text-slate-600">
                     Run the Android companion and tap Sync Now.
@@ -1539,7 +1924,7 @@ export default function Dashboard() {
                 </div>
               ) : !samsungHealthSnapshot ? (
                 <div className="text-center py-5 text-slate-700">
-                  <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-sky-600" />
+                  <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-emerald-600" />
                   <p className="text-sm">Waiting for Samsung sync payload...</p>
                 </div>
               ) : (
@@ -1554,7 +1939,7 @@ export default function Dashboard() {
                       : "No sync timestamp."}
                   </p>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    <div className="rounded-md border border-blue-200 bg-white/80 p-2">
+                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
                       <p className="text-xs text-slate-500">Steps</p>
                       <p className="text-sm font-semibold text-slate-900">
                         {samsungHealthSnapshot.steps !== null
@@ -1562,7 +1947,7 @@ export default function Dashboard() {
                           : "-"}
                       </p>
                     </div>
-                    <div className="rounded-md border border-blue-200 bg-white/80 p-2">
+                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
                       <p className="text-xs text-slate-500">Sleep</p>
                       <p className="text-sm font-semibold text-slate-900">
                         {samsungHealthSnapshot.sleepTotalMinutes !== null
@@ -1570,7 +1955,7 @@ export default function Dashboard() {
                           : "-"}
                       </p>
                     </div>
-                    <div className="rounded-md border border-blue-200 bg-white/80 p-2">
+                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
                       <p className="text-xs text-slate-500">SpO2 Avg</p>
                       <p className="text-sm font-semibold text-slate-900">
                         {samsungHealthSnapshot.spo2AvgPercent !== null && samsungHealthSnapshot.spo2AvgPercent > 0
@@ -1578,7 +1963,7 @@ export default function Dashboard() {
                           : "-"}
                       </p>
                     </div>
-                    <div className="rounded-md border border-blue-200 bg-white/80 p-2">
+                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
                       <p className="text-xs text-slate-500">Sleep Sessions</p>
                       <p className="text-sm font-semibold text-slate-900">
                         {samsungHealthSnapshot.sleepSessionsCount !== null
@@ -1587,7 +1972,7 @@ export default function Dashboard() {
                       </p>
                     </div>
                     <div
-                      className="rounded-md border border-blue-200 bg-white/80 p-2 cursor-pointer"
+                      className="rounded-md border border-emerald-200 bg-white/80 p-2 cursor-pointer"
                       onClick={() => setEditingSamsungField("sleep")}
                     >
                       <p className="text-xs text-slate-500">Sleep Score</p>
@@ -1629,7 +2014,7 @@ export default function Dashboard() {
                       )}
                     </div>
                     <div
-                      className="rounded-md border border-blue-200 bg-white/80 p-2 cursor-pointer"
+                      className="rounded-md border border-emerald-200 bg-white/80 p-2 cursor-pointer"
                       onClick={() => setEditingSamsungField("energy")}
                     >
                       <p className="text-xs text-slate-500">Energy Score</p>
@@ -1671,7 +2056,7 @@ export default function Dashboard() {
                       )}
                     </div>
                   </div>
-                  <div className="rounded-md border border-blue-200 bg-white/80 p-2">
+                  <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
                     <p className="text-xs text-slate-500">Sync Health</p>
                     <p className="text-sm font-semibold text-slate-900">
                       {samsungHealthSnapshot.permissionsGranted ? "Permissions granted" : "Permissions incomplete"}
@@ -1891,11 +2276,11 @@ export default function Dashboard() {
 
       {/* Tracking Row */}
       <div id="section-tracking" className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
           <Card className="flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-indigo-600" />
+                <BarChart3 className="h-4 w-4 text-emerald-600" />
                 <CardTitle className="text-base">Daily Log Trend</CardTitle>
               </div>
               <Button
@@ -2141,6 +2526,233 @@ export default function Dashboard() {
               )}
             </CardContent>
           </Card>
+
+          <Card className="flex flex-col">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <div className="flex items-center gap-2">
+                <FileText className="h-4 w-4 text-emerald-600" />
+                <CardTitle className="text-base">Notes</CardTitle>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => refetchNotes()}>
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="grid grid-cols-2 gap-2">
+                <Input
+                  value={noteNotebookInput}
+                  onChange={(e) => setNoteNotebookInput(e.target.value)}
+                  placeholder="Notebook"
+                  className="h-8 text-xs"
+                />
+                <Select value={noteNotebookFilter} onValueChange={setNoteNotebookFilter}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue placeholder="Filter notebook" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All notebooks</SelectItem>
+                    {noteNotebookOptions.map((notebook) => (
+                      <SelectItem key={notebook} value={notebook}>
+                        {notebook}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Input
+                value={noteTitleInput}
+                onChange={(e) => setNoteTitleInput(e.target.value)}
+                placeholder="Note title"
+                className="h-8 text-xs"
+              />
+              <Textarea
+                value={noteContentInput}
+                onChange={(e) => setNoteContentInput(e.target.value)}
+                placeholder="Write note content..."
+                className="min-h-[84px] text-xs"
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={handleSubmitNote}
+                  disabled={createNoteMutation.isPending || updateNoteMutation.isPending}
+                >
+                  {editingNoteId ? "Update Note" : "Create Note"}
+                </Button>
+                {editingNoteId && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs"
+                    onClick={() => {
+                      setEditingNoteId(null);
+                      setNoteNotebookInput("General");
+                      setNoteTitleInput("");
+                      setNoteContentInput("");
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </div>
+
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
+                <p className="text-[11px] font-semibold text-slate-600">Link Existing Note</p>
+                <Select value={linkNoteId || "__none"} onValueChange={(value) => setLinkNoteId(value === "__none" ? "" : value)}>
+                  <SelectTrigger className="h-8 text-xs bg-white">
+                    <SelectValue placeholder="Select note" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none">Select note</SelectItem>
+                    {(notes || []).map((note: any) => (
+                      <SelectItem key={note.id} value={note.id}>
+                        {note.notebook || "General"} • {note.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="grid grid-cols-1 gap-2">
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={linkTaskId || "__none"}
+                      onValueChange={(value) => setLinkTaskId(value === "__none" ? "" : value)}
+                    >
+                      <SelectTrigger className="h-8 text-xs bg-white flex-1">
+                        <SelectValue placeholder="Link to Todoist task" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none">Select Todoist task</SelectItem>
+                        {(todayTasks || []).slice(0, 50).map((task: any) => (
+                          <SelectItem key={task.id} value={String(task.id)}>
+                            {task.content}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={handleLinkExistingNoteToTask}
+                      disabled={addNoteLinkMutation.isPending}
+                    >
+                      Link Task
+                    </Button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={linkEventId || "__none"}
+                      onValueChange={(value) => setLinkEventId(value === "__none" ? "" : value)}
+                    >
+                      <SelectTrigger className="h-8 text-xs bg-white flex-1">
+                        <SelectValue placeholder="Link to calendar event" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none">Select calendar event</SelectItem>
+                        {upcomingEvents.slice(0, 50).map((event: any) => (
+                          <SelectItem key={event.id} value={String(event.id || "")}>
+                            {formatCalendarEventLabel(event)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="sm"
+                      className="h-8 text-xs"
+                      onClick={handleLinkExistingNoteToEvent}
+                      disabled={addNoteLinkMutation.isPending}
+                    >
+                      Link Event
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+                {notesLoading ? (
+                  <div className="flex justify-center py-3">
+                    <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+                  </div>
+                ) : filteredNotes.length === 0 ? (
+                  <p className="text-xs text-slate-500">No notes for this notebook filter.</p>
+                ) : (
+                  filteredNotes.map((note: any) => (
+                    <div key={note.id} className="rounded-md border border-emerald-100 bg-emerald-50/60 px-2 py-2 space-y-1.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <button type="button" className="min-w-0 text-left" onClick={() => handleEditNote(note)}>
+                          <p className="text-xs font-semibold text-slate-900 truncate">{note.title}</p>
+                          <p className="text-[11px] text-slate-600 line-clamp-2 mt-1">
+                            {toPlainText(String(note.content || "")) || "No content"}
+                          </p>
+                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            size="sm"
+                            variant={note.pinned ? "default" : "outline"}
+                            className="h-6 px-2 text-[11px]"
+                            onClick={() =>
+                              updateNoteMutation.mutate({
+                                noteId: note.id,
+                                pinned: !note.pinned,
+                              })
+                            }
+                          >
+                            {note.pinned ? "Pinned" : "Pin"}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 w-6 p-0"
+                            onClick={() => deleteNoteMutation.mutate({ noteId: note.id })}
+                          >
+                            <Trash2 className="h-3 w-3 text-slate-600" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <Badge variant="outline" className="text-[10px]">
+                          Notebook: {note.notebook || "General"}
+                        </Badge>
+                        <span className="text-[10px] text-slate-500">
+                          {new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            hour: "numeric",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {Array.isArray(note.links) && note.links.length > 0 ? (
+                          note.links.map((link: any) => (
+                            <Badge key={link.id} variant="outline" className="text-[10px] gap-1">
+                              {link.linkType === "todoist_task" ? "Task" : "Event"}
+                              {link.seriesId ? " • Recurring" : ""}
+                              <button
+                                type="button"
+                                className="ml-1 text-slate-500 hover:text-slate-900"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  removeNoteLinkMutation.mutate({ linkId: link.id });
+                                }}
+                                aria-label="Remove link"
+                              >
+                                ×
+                              </button>
+                            </Badge>
+                          ))
+                        ) : (
+                          <span className="text-[11px] text-slate-500">No links</span>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </div>
 
@@ -2156,7 +2768,7 @@ export default function Dashboard() {
           <Card className="lg:col-span-1 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-blue-600" />
+                <Calendar className="h-4 w-4 text-emerald-600" />
                 <CardTitle className="text-base">Today's Events</CardTitle>
               </div>
               {hasGoogle && (
@@ -2181,7 +2793,7 @@ export default function Dashboard() {
                 </div>
               ) : calendarLoading ? (
                 <div className="flex justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+                  <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
                 </div>
               ) : upcomingEvents.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
@@ -2195,25 +2807,123 @@ export default function Dashboard() {
                     </div>
                     <div className="space-y-1 mt-1">
                       {events.map((event: any) => (
-                        <a
+                        <div
                           key={event.id}
-                          href={event.htmlLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`block p-2 ${colors.bg} rounded-md border ${colors.border} hover:opacity-80 transition-opacity`}
+                          className={`p-2 ${colors.bg} rounded-md border ${colors.border} hover:opacity-95 transition-opacity ${
+                            selectedCalendarHistoryEventId === String(event.id || "")
+                              ? "ring-1 ring-emerald-500"
+                              : ""
+                          } cursor-pointer`}
+                          onClick={() =>
+                            setSelectedCalendarHistoryEventId((current) =>
+                              current === String(event.id || "") ? null : String(event.id || "")
+                            )
+                          }
                         >
                           <div className="flex items-start gap-2">
-                            <div className="flex-1 min-w-0">
+                            <a
+                              href={event.htmlLink}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-1 min-w-0"
+                            >
                               <p className={`font-medium text-xs ${colors.text} truncate leading-4`}>{event.summary}</p>
                               <p className="text-[11px] text-gray-600">{formatEventTime(event)}</p>
                               {event.location && (
                                 <p className="text-[11px] text-gray-500 truncate">{event.location}</p>
                               )}
-                            </div>
+                            </a>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 w-6 p-0 shrink-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setSelectedCalendarHistoryEventId((current) =>
+                                  current === String(event.id || "") ? null : String(event.id || "")
+                                );
+                              }}
+                              title="Show related notes"
+                            >
+                              <MessageSquare className="h-3.5 w-3.5 text-emerald-700" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 w-6 p-0 shrink-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                openNotebookForCalendarEvent(event);
+                              }}
+                              title="Open in notebook"
+                            >
+                              <FolderOpen className="h-3.5 w-3.5 text-emerald-700" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 w-6 p-0 shrink-0"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                handleCreateNoteFromCalendarEvent(event);
+                              }}
+                              disabled={createNoteFromCalendarMutation.isPending}
+                              title="Create linked note"
+                            >
+                              <FileText className="h-3.5 w-3.5 text-emerald-700" />
+                            </Button>
                           </div>
-                        </a>
+                        </div>
                       ))}
                     </div>
+                    {selectedCalendarHistoryEvent &&
+                      events.some(
+                        (event: any) =>
+                          String(event.id || "") === String(selectedCalendarHistoryEvent.id || "")
+                      ) && (
+                        <div className="mt-1.5 rounded-md border border-emerald-200 bg-emerald-50/70 p-2">
+                          <p className="text-[11px] font-semibold text-emerald-900 mb-1">
+                            Linked notes for this event series
+                          </p>
+                          {calendarLinkedNotes.length === 0 ? (
+                            <p className="text-[11px] text-emerald-800">
+                              No linked notes yet. Link an existing note from the Notes card or create one.
+                            </p>
+                          ) : (
+                            <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                              {calendarLinkedNotes.slice(0, 12).map((note: any) => (
+                                <button
+                                  key={note.id}
+                                  type="button"
+                                  onClick={() => handleEditNote(note)}
+                                  className="w-full text-left rounded border border-emerald-200 bg-white px-2 py-1.5 hover:bg-emerald-50"
+                                >
+                                  <p className="text-[11px] font-semibold text-slate-900 truncate">
+                                    {note.notebook || "General"} • {note.title}
+                                  </p>
+                                  <p className="text-[11px] text-slate-600 line-clamp-1">
+                                    {toPlainText(String(note.content || "")) || "No content"}
+                                  </p>
+                                  {note.latestOccurrence && (
+                                    <p className="text-[10px] text-emerald-700 mt-0.5">
+                                      Linked occurrence:{" "}
+                                      {new Date(note.latestOccurrence).toLocaleString("en-US", {
+                                        month: "short",
+                                        day: "numeric",
+                                        hour: "numeric",
+                                        minute: "2-digit",
+                                      })}
+                                    </p>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                   </div>
                 ))
               )}
@@ -2370,6 +3080,16 @@ export default function Dashboard() {
                         )}
                       </div>
                     </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 w-7 p-0 shrink-0 text-white hover:bg-white/20 hover:text-white"
+                      onClick={() => handleCreateNoteFromTask(task)}
+                      disabled={createNoteFromTaskMutation.isPending}
+                      title="Create linked note"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
                 ))
               )}
@@ -2606,7 +3326,7 @@ export default function Dashboard() {
                     <div
                       key={conv.id}
                       className={`p-2 rounded cursor-pointer text-sm flex items-center justify-between group ${
-                        selectedConversationId === conv.id ? "bg-blue-100" : "hover:bg-gray-100"
+                        selectedConversationId === conv.id ? "bg-emerald-100" : "hover:bg-gray-100"
                       }`}
                       onClick={() => setSelectedConversationId(conv.id)}
                     >
@@ -2660,7 +3380,7 @@ export default function Dashboard() {
                         <div
                           className={`max-w-[80%] p-3 rounded-lg ${
                             msg.role === "user"
-                              ? "bg-blue-600 text-white"
+                              ? "bg-emerald-700 text-white"
                               : "bg-gray-100 text-gray-900"
                           }`}
                         >

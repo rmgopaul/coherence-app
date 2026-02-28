@@ -35,7 +35,7 @@ export type InsertUser = typeof users.$inferInsert;
 export const integrations = mysqlTable("integrations", {
   id: varchar("id", { length: 64 }).primaryKey(),
   userId: int("userId").notNull(),
-  provider: varchar("provider", { length: 64 }).notNull(), // todoist, google, microsoft, openai
+  provider: varchar("provider", { length: 64 }).notNull(), // todoist, google, whoop, samsung-health, openai
   accessToken: text("accessToken"),
   refreshToken: text("refreshToken"),
   expiresAt: timestamp("expiresAt"),
@@ -67,7 +67,7 @@ export type InsertUserPreference = typeof userPreferences.$inferInsert;
 export const oauthCredentials = mysqlTable("oauthCredentials", {
   id: varchar("id", { length: 64 }).primaryKey(),
   userId: int("userId").notNull(),
-  provider: varchar("provider", { length: 64 }).notNull(), // google, microsoft
+  provider: varchar("provider", { length: 64 }).notNull(), // google, whoop
   clientId: text("clientId"),
   clientSecret: text("clientSecret"),
   createdAt: timestamp("createdAt").defaultNow(),
@@ -241,6 +241,61 @@ export const habitCompletions = mysqlTable(
 
 export type HabitCompletion = typeof habitCompletions.$inferSelect;
 export type InsertHabitCompletion = typeof habitCompletions.$inferInsert;
+
+// User-authored notes stored natively in Coherence.
+export const notes = mysqlTable(
+  "notes",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    notebook: varchar("notebook", { length: 120 }).default("General").notNull(),
+    title: varchar("title", { length: 180 }).notNull(),
+    content: text("content").notNull(),
+    pinned: boolean("pinned").default(false).notNull(),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userUpdatedIdx: index("notes_user_updated_idx").on(table.userId, table.updatedAt),
+    userPinnedIdx: index("notes_user_pinned_idx").on(table.userId, table.pinned),
+    userNotebookIdx: index("notes_user_notebook_idx").on(table.userId, table.notebook),
+  })
+);
+
+export type Note = typeof notes.$inferSelect;
+export type InsertNote = typeof notes.$inferInsert;
+
+// Link notes to external productivity objects (Todoist tasks, Google Calendar events).
+export const noteLinks = mysqlTable(
+  "noteLinks",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    noteId: varchar("noteId", { length: 64 }).notNull(),
+    linkType: varchar("linkType", { length: 48 }).notNull(), // todoist_task | google_calendar_event
+    externalId: varchar("externalId", { length: 255 }).notNull(),
+    seriesId: varchar("seriesId", { length: 255 }).default("").notNull(),
+    occurrenceStartIso: varchar("occurrenceStartIso", { length: 64 }).default("").notNull(),
+    sourceUrl: text("sourceUrl"),
+    sourceTitle: varchar("sourceTitle", { length: 255 }),
+    metadata: text("metadata"),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    userNoteIdx: index("note_links_user_note_idx").on(table.userId, table.noteId),
+    userTypeIdx: index("note_links_user_type_idx").on(table.userId, table.linkType),
+    noteUniqueIdx: uniqueIndex("note_links_unique_idx").on(
+      table.noteId,
+      table.linkType,
+      table.externalId,
+      table.seriesId,
+      table.occurrenceStartIso
+    ),
+  })
+);
+
+export type NoteLink = typeof noteLinks.$inferSelect;
+export type InsertNoteLink = typeof noteLinks.$inferInsert;
 
 // Full nightly snapshot to preserve all collected datapoints/state.
 export const dailySnapshots = mysqlTable(

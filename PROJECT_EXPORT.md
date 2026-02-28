@@ -92,7 +92,7 @@ A full-stack productivity dashboard integrating Google Calendar, Gmail, Google D
 ### integrations
 - id (int, primary key)
 - userId (int, foreign key)
-- provider (enum: 'google', 'microsoft', 'todoist', 'openai')
+- provider (enum: 'google', 'whoop', 'todoist', 'samsung-health', 'openai')
 - accessToken, refreshToken, expiresAt
 - metadata (json)
 - createdAt, updatedAt
@@ -167,8 +167,6 @@ A full-stack productivity dashboard integrating Google Calendar, Gmail, Google D
 - `/api/oauth/google/callback`: Google OAuth callback
 - `/api/oauth/todoist`: Todoist OAuth initiation
 - `/api/oauth/todoist/callback`: Todoist OAuth callback
-- `/api/oauth/microsoft`: Microsoft OAuth initiation
-- `/api/oauth/microsoft/callback`: Microsoft OAuth callback
 
 ## Key Files Structure
 
@@ -183,8 +181,7 @@ productivity-hub/
 │   │   │   ├── TodoistWidget.tsx      # Todoist detail view
 │   │   │   ├── GoogleCalendarWidget.tsx
 │   │   │   ├── GmailWidget.tsx
-│   │   │   ├── ChatGPTWidget.tsx
-│   │   │   └── OneNoteWidget.tsx
+│   │   │   └── ChatGPTWidget.tsx
 │   │   ├── components/
 │   │   │   ├── UniversalDropDock.tsx  # Drop dock component
 │   │   │   └── ui/                    # shadcn components
@@ -205,8 +202,7 @@ productivity-hub/
 │   ├── oauth-routes.ts                # Custom OAuth routes
 │   ├── services/
 │   │   ├── google.ts                  # Google API calls
-│   │   ├── todoist.ts                 # Todoist API calls
-│   │   └── microsoft.ts               # Microsoft API calls
+│   │   └── todoist.ts                 # Todoist API calls
 │   └── helpers/
 │       └── tokenRefresh.ts            # Token refresh logic
 ├── drizzle/
@@ -310,4 +306,3 @@ productivity-hub/
 8. Advanced search across all services
 9. Custom dashboard layouts
 10. Team collaboration features
-
