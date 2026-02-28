@@ -53,6 +53,7 @@ import {
   PinOff,
   Plus,
   Search,
+  Save,
   Trash2,
   Underline,
   Unlink,
@@ -227,6 +228,23 @@ export default function Notebook() {
   const [mobilePanel, setMobilePanel] = useState<"list" | "editor">("list");
 
   const editorRef = useRef<HTMLDivElement | null>(null);
+
+  const loadNoteIntoEditor = useCallback((note: any) => {
+    const notebookValue = (note?.notebook || "General").trim() || "General";
+    const titleValue = String(note?.title || "");
+    const htmlValue = normalizeStoredHtml(note?.content);
+
+    setNoteNotebookInput(notebookValue);
+    setNoteTitleInput(titleValue);
+    setNoteContentHtml(htmlValue);
+    setIsDirty(false);
+    setSaveState("saved");
+
+    // Force the contentEditable surface to update immediately when switching notes.
+    if (editorRef.current) {
+      editorRef.current.innerHTML = htmlValue;
+    }
+  }, []);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -599,12 +617,8 @@ export default function Notebook() {
 
   useEffect(() => {
     if (!selectedNote || isDraftMode) return;
-    setNoteNotebookInput((selectedNote.notebook || "General").trim() || "General");
-    setNoteTitleInput(selectedNote.title || "");
-    setNoteContentHtml(normalizeStoredHtml(selectedNote.content));
-    setIsDirty(false);
-    setSaveState("saved");
-  }, [selectedNote?.id, isDraftMode]);
+    loadNoteIntoEditor(selectedNote);
+  }, [selectedNote?.id, selectedNote?.updatedAt, selectedNote?.content, isDraftMode, loadNoteIntoEditor]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -615,7 +629,7 @@ export default function Notebook() {
     }
   }, [noteContentHtml]);
 
-  const persistNote = useCallback(async () => {
+  const persistNote = useCallback(async (showSuccessToast = false) => {
     const notebook = noteNotebookInput.trim() || "General";
     const titleInput = noteTitleInput.trim();
     const rawContent = editorRef.current?.innerHTML || noteContentHtml || "<p></p>";
@@ -641,6 +655,9 @@ export default function Notebook() {
         setIsDirty(false);
         setSaveState("saved");
         await refetchNotes();
+        if (showSuccessToast) {
+          toast.success("Note saved");
+        }
         return;
       }
 
@@ -656,6 +673,9 @@ export default function Notebook() {
       setIsDirty(false);
       setSaveState("saved");
       await refetchNotes();
+      if (showSuccessToast) {
+        toast.success("Note saved");
+      }
     } catch (error: any) {
       setSaveState("error");
       toast.error(`Failed to save note: ${error?.message || "Unknown error"}`);
@@ -720,8 +740,12 @@ export default function Notebook() {
   };
 
   const selectNote = (noteId: string) => {
+    const note = (notes || []).find((row: any) => row.id === noteId);
     setIsDraftMode(false);
     setSelectedNoteId(noteId);
+    if (note) {
+      loadNoteIntoEditor(note);
+    }
     setMobilePanel("editor");
   };
 
@@ -1219,66 +1243,76 @@ export default function Notebook() {
   const editorPane = (
     <Card className="h-full">
       <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <CardTitle className="text-base">Editor</CardTitle>
-            <p className="mt-1 text-xs text-slate-500">{getSaveStateLabel(saveState)}</p>
-          </div>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <CardTitle className="text-base">Editor</CardTitle>
+                  <p className="mt-1 text-xs text-slate-500">{getSaveStateLabel(saveState)}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="default"
+                    size="sm"
+                    onClick={() => void persistNote(true)}
+                    disabled={saveState === "saving" || (!selectedNoteId && !isDraftMode)}
+                  >
+                    <Save className="mr-1 h-4 w-4" />
+                    Save
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="outline"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label="More note actions"
+                        disabled={!selectedNoteId || isDraftMode}
+                      >
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-56" aria-label="Note actions menu">
+                      <DropdownMenuItem onClick={togglePin} disabled={!selectedNoteId || isDraftMode}>
+                        {selectedNote?.pinned ? (
+                          <>
+                            <PinOff className="h-4 w-4" />
+                            Unpin note
+                          </>
+                        ) : (
+                          <>
+                            <Pin className="h-4 w-4" />
+                            Pin note
+                          </>
+                        )}
+                      </DropdownMenuItem>
 
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="icon"
-                className="h-8 w-8"
-                aria-label="More note actions"
-                disabled={!selectedNoteId || isDraftMode}
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56" aria-label="Note actions menu">
-              <DropdownMenuItem onClick={togglePin} disabled={!selectedNoteId || isDraftMode}>
-                {selectedNote?.pinned ? (
-                  <>
-                    <PinOff className="h-4 w-4" />
-                    Unpin note
-                  </>
-                ) : (
-                  <>
-                    <Pin className="h-4 w-4" />
-                    Pin note
-                  </>
-                )}
-              </DropdownMenuItem>
+                      <DropdownMenuSeparator />
 
-              <DropdownMenuSeparator />
+                      {(notebooks.length > 0 ? notebooks : [{ name: "General", count: 0 }]).slice(0, 12).map((row) => (
+                        <DropdownMenuItem
+                          key={row.name}
+                          onClick={() => void moveSelectedNoteToNotebook(row.name)}
+                          disabled={!selectedNoteId || isDraftMode || row.name === (selectedNote?.notebook || "General")}
+                        >
+                          <FolderOpen className="h-4 w-4" />
+                          Move to {row.name}
+                        </DropdownMenuItem>
+                      ))}
 
-              {(notebooks.length > 0 ? notebooks : [{ name: "General", count: 0 }]).slice(0, 12).map((row) => (
-                <DropdownMenuItem
-                  key={row.name}
-                  onClick={() => void moveSelectedNoteToNotebook(row.name)}
-                  disabled={!selectedNoteId || isDraftMode || row.name === (selectedNote?.notebook || "General")}
-                >
-                  <FolderOpen className="h-4 w-4" />
-                  Move to {row.name}
-                </DropdownMenuItem>
-              ))}
+                      <DropdownMenuSeparator />
 
-              <DropdownMenuSeparator />
-
-              <DropdownMenuItem
-                onClick={() => setIsDeleteDialogOpen(true)}
-                disabled={!selectedNoteId || isDraftMode}
-                className="text-rose-700 focus:text-rose-700"
-              >
-                <Trash2 className="h-4 w-4" />
-                Delete note
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-      </CardHeader>
+                      <DropdownMenuItem
+                        onClick={() => setIsDeleteDialogOpen(true)}
+                        disabled={!selectedNoteId || isDraftMode}
+                        className="text-rose-700 focus:text-rose-700"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete note
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            </CardHeader>
 
       <CardContent className="space-y-3">
         {!selectedNoteId && !isDraftMode ? (
