@@ -1259,7 +1259,7 @@ export const appRouter = router({
       .input(
         z.object({
           noteId: z.string(),
-          linkType: z.enum(["todoist_task", "google_calendar_event"]),
+          linkType: z.enum(["todoist_task", "google_calendar_event", "note_link", "google_drive_file"]),
           externalId: z.string().min(1).max(255),
           seriesId: z.string().max(255).optional(),
           occurrenceStartIso: z.string().max(64).optional(),

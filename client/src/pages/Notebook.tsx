@@ -18,6 +18,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LinkMenu, type LinkMenuOptionKey } from "@/components/notebook/LinkMenu";
+import { NotebookSidebar } from "@/components/notebook/NotebookSidebar";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -40,7 +42,6 @@ import { trpc } from "@/lib/trpc";
 import {
   getSelectionDraftKey,
   resolveNotebookEditorSnapshot,
-  shouldApplySelectionUpdate,
   type NotebookEditorDraft,
 } from "@/lib/notebookEditorSync";
 import {
@@ -49,6 +50,7 @@ import {
   Calendar,
   CheckSquare,
   Copy,
+  FileText,
   Filter,
   FolderOpen,
   Link2,
@@ -72,7 +74,7 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 
 type SmartView = "all" | "pinned" | "linked";
-type AttachTarget = "calendar" | "todoist";
+type AttachTarget = "calendar" | "todoist" | "note" | "drive";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type NotesSort = "context" | "updated_desc" | "created_desc" | "title_asc";
 type NavigationSelection =
@@ -218,8 +220,6 @@ export default function Notebook() {
   const [calendarFilterQuery, setCalendarFilterQuery] = useState("");
   const [seriesOnlyFilter, setSeriesOnlyFilter] = useState(false);
   const [linkedOnlyFilter, setLinkedOnlyFilter] = useState(false);
-  const [smartViewsExpanded, setSmartViewsExpanded] = useState(true);
-  const [notebooksExpanded, setNotebooksExpanded] = useState(true);
 
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
   const [noteTitleInput, setNoteTitleInput] = useState("");
@@ -232,6 +232,7 @@ export default function Notebook() {
   const [attachType, setAttachType] = useState<AttachTarget>("calendar");
   const [attachQuery, setAttachQuery] = useState("");
   const [attachSelectionId, setAttachSelectionId] = useState("");
+  const [isLinkMenuOpen, setIsLinkMenuOpen] = useState(false);
 
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -240,10 +241,6 @@ export default function Notebook() {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const isSwitchingNoteRef = useRef(false);
-  const selectedNoteIdRef = useRef<string | null>(null);
-  const selectionRequestRef = useRef(0);
-  const editorSessionRef = useRef(1);
-  const [editorSession, setEditorSession] = useState(1);
 
   const clearAutosaveTimer = useCallback(() => {
     if (autosaveTimerRef.current !== null) {
@@ -265,9 +262,6 @@ export default function Notebook() {
     setNoteContentHtml(htmlValue);
     setIsDirty(Boolean(snapshot.dirty));
     setSaveState(snapshot.dirty ? "unsaved" : "saved");
-
-    editorSessionRef.current += 1;
-    setEditorSession(editorSessionRef.current);
   }, []);
 
   const stashCurrentDraft = useCallback(() => {
@@ -293,10 +287,6 @@ export default function Notebook() {
       setLocation("/");
     }
   }, [loading, user, setLocation]);
-
-  useEffect(() => {
-    selectedNoteIdRef.current = selectedNoteId;
-  }, [selectedNoteId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -363,6 +353,11 @@ export default function Notebook() {
   });
 
   const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(undefined, {
+    enabled: !!user && hasGoogle,
+    retry: false,
+  });
+
+  const { data: driveFiles } = trpc.google.getDriveFiles.useQuery(undefined, {
     enabled: !!user && hasGoogle,
     retry: false,
   });
@@ -622,8 +617,6 @@ export default function Notebook() {
   }, [selectedNoteId, visibleNotes, isDraftMode]);
 
   useEffect(() => {
-    const requestId = ++selectionRequestRef.current;
-    const requestedNoteId = selectedNoteId;
     const snapshot = resolveNotebookEditorSnapshot({
       selectedNoteId,
       isDraftMode,
@@ -631,17 +624,6 @@ export default function Notebook() {
       draftsByKey,
     });
     if (!snapshot) return;
-
-    if (
-      !shouldApplySelectionUpdate({
-        requestId,
-        currentRequestId: selectionRequestRef.current,
-        requestedNoteId,
-        currentSelectedNoteId: selectedNoteIdRef.current,
-      })
-    ) {
-      return;
-    }
 
     applyEditorSnapshot({
       source: snapshot.source,
@@ -810,6 +792,58 @@ export default function Notebook() {
     isSwitchingNoteRef.current = false;
   }, [selectedNoteId, isDraftMode]);
 
+  useEffect(() => {
+    setIsLinkMenuOpen(false);
+  }, [selectedNoteId, isDraftMode, mobilePanel]);
+
+  const handleLinkMenuSelect = (target: LinkMenuOptionKey) => {
+    if (!selectedNoteId || isDraftMode) {
+      toast.error("Save the note first, then add links.");
+      return;
+    }
+
+    if (target === "calendar") {
+      if (!hasGoogle) {
+        toast.error("Connect Google to link calendar events.");
+        return;
+      }
+      setAttachType("calendar");
+      setAttachSelectionId("");
+      setAttachQuery("");
+      setAttachOpen(true);
+      return;
+    }
+
+    if (target === "todoist") {
+      if (!hasTodoist) {
+        toast.error("Connect Todoist to link tasks.");
+        return;
+      }
+      setAttachType("todoist");
+      setAttachSelectionId("");
+      setAttachQuery("");
+      setAttachOpen(true);
+      return;
+    }
+
+    if (target === "drive") {
+      if (!hasGoogle) {
+        toast.error("Connect Google to link Drive files.");
+        return;
+      }
+      setAttachType("drive");
+      setAttachSelectionId("");
+      setAttachQuery("");
+      setAttachOpen(true);
+      return;
+    }
+
+    setAttachType("note");
+    setAttachSelectionId("");
+    setAttachQuery("");
+    setAttachOpen(true);
+  };
+
   const deleteSelectedNote = async () => {
     if (!selectedNoteId || isDraftMode) {
       toast.error("Select a saved note first");
@@ -929,6 +963,32 @@ export default function Notebook() {
         .slice(0, 200);
     }
 
+    if (attachType === "note") {
+      const rows = (notes || [])
+        .filter((note: any) => String(note.id) !== String(selectedNoteId || ""))
+        .map((note: any) => ({
+          id: String(note.id),
+          title: String(note.title || "Untitled note"),
+          subtitle: String(note.notebook || "General"),
+        }));
+      if (!query) return rows.slice(0, 200);
+      return rows
+        .filter((row) => row.title.toLowerCase().includes(query) || String(row.subtitle || "").toLowerCase().includes(query))
+        .slice(0, 200);
+    }
+
+    if (attachType === "drive") {
+      const rows = (driveFiles || []).map((file: any) => ({
+        id: String(file.id || ""),
+        title: String(file.name || "Untitled file"),
+        subtitle: String(file.mimeType || "").trim() || "Google Drive file",
+      }));
+      if (!query) return rows.slice(0, 200);
+      return rows
+        .filter((row) => row.title.toLowerCase().includes(query) || String(row.subtitle || "").toLowerCase().includes(query))
+        .slice(0, 200);
+    }
+
     const rows = calendarEventOptions.map((event: any) => ({
       id: String(event.id || ""),
       title: formatEventOptionLabel(event),
@@ -938,7 +998,7 @@ export default function Notebook() {
     return rows
       .filter((row) => row.title.toLowerCase().includes(query) || String(row.subtitle || "").toLowerCase().includes(query))
       .slice(0, 200);
-  }, [attachType, attachQuery, todoistTasks, calendarEventOptions]);
+  }, [attachType, attachQuery, todoistTasks, notes, selectedNoteId, driveFiles, calendarEventOptions]);
 
   const selectedAttachItem = useMemo(
     () => attachItems.find((row) => row.id === attachSelectionId) || null,
@@ -951,6 +1011,18 @@ export default function Notebook() {
     if (attachType === "todoist") {
       return selectedLinks.some(
         (link: any) => link.linkType === "todoist_task" && String(link.externalId || "") === selectedAttachItem.id
+      );
+    }
+
+    if (attachType === "note") {
+      return selectedLinks.some(
+        (link: any) => link.linkType === "note_link" && String(link.externalId || "") === selectedAttachItem.id
+      );
+    }
+
+    if (attachType === "drive") {
+      return selectedLinks.some(
+        (link: any) => link.linkType === "google_drive_file" && String(link.externalId || "") === selectedAttachItem.id
       );
     }
 
@@ -967,7 +1039,7 @@ export default function Notebook() {
 
   const attachSelectedItem = async () => {
     if (!selectedNoteId || isDraftMode) {
-      toast.error("Save the note first, then attach an event or task");
+      toast.error("Save the note first, then add links.");
       return;
     }
 
@@ -998,7 +1070,53 @@ export default function Notebook() {
         if (result?.alreadyLinked) {
           toast.info("This task is already linked");
         } else {
-          toast.success("Task attached");
+          toast.success("Task linked");
+        }
+      } else if (attachType === "note") {
+        const note = (notes || []).find((row: any) => String(row.id) === selectedAttachItem.id);
+        if (!note) {
+          toast.error("Note not found");
+          return;
+        }
+
+        const result = await addNoteLinkMutation.mutateAsync({
+          noteId: selectedNoteId,
+          linkType: "note_link",
+          externalId: String(note.id),
+          sourceUrl: `/notes?noteId=${encodeURIComponent(String(note.id))}`,
+          sourceTitle: String(note.title || "Linked note"),
+          metadata: {
+            notebook: note.notebook || "General",
+          },
+        });
+
+        if (result?.alreadyLinked) {
+          toast.info("This note is already linked");
+        } else {
+          toast.success("Note linked");
+        }
+      } else if (attachType === "drive") {
+        const file = (driveFiles || []).find((row: any) => String(row.id || "") === selectedAttachItem.id);
+        if (!file) {
+          toast.error("Drive file not found");
+          return;
+        }
+
+        const result = await addNoteLinkMutation.mutateAsync({
+          noteId: selectedNoteId,
+          linkType: "google_drive_file",
+          externalId: String(file.id || ""),
+          sourceUrl: file.webViewLink || undefined,
+          sourceTitle: String(file.name || "Google Drive file"),
+          metadata: {
+            mimeType: file.mimeType || null,
+          },
+        });
+
+        if (result?.alreadyLinked) {
+          toast.info("This Drive file is already linked");
+        } else {
+          toast.success("Drive file linked");
         }
       } else {
         const event = calendarEventOptions.find((row: any) => String(row.id || "") === selectedAttachItem.id);
@@ -1025,7 +1143,7 @@ export default function Notebook() {
         if (result?.alreadyLinked) {
           toast.info("This event is already linked");
         } else {
-          toast.success("Event attached");
+          toast.success("Event linked");
         }
       }
 
@@ -1157,94 +1275,65 @@ export default function Notebook() {
     setLinkedOnlyFilter(false);
   };
 
-  const sidebarNav = (
-    <div className="space-y-3">
-      <div className="rounded-md border border-slate-200 bg-white">
-        <button
-          type="button"
-          onClick={() => setSmartViewsExpanded((prev) => !prev)}
-          className="flex w-full items-center justify-between px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-          aria-label="Toggle smart views section"
-          aria-expanded={smartViewsExpanded}
-        >
-          Smart views
-          <span className="text-xs">{smartViewsExpanded ? "−" : "+"}</span>
-        </button>
-        {smartViewsExpanded && (
-          <div className="space-y-1 border-t border-slate-200 p-1.5">
-            {([
-              { key: "all", label: "All Notes", count: smartViewCounts.all },
-              { key: "pinned", label: "Pinned", count: smartViewCounts.pinned },
-              { key: "linked", label: "Linked", count: smartViewCounts.linked },
-            ] as const).map((row) => {
-              const active = activeNav.kind === "view" && activeNav.key === row.key;
-              return (
-                <button
-                  key={row.key}
-                  type="button"
-                  onClick={() => {
-                    setActiveNav({ kind: "view", key: row.key });
-                    setIsSidebarOpen(false);
-                    setMobilePanel("list");
-                  }}
-                  className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                    active
-                      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span>{row.label}</span>
-                    <span className="text-[11px]">{row.count}</span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
+  const calendarLinkedCount = useMemo(() => {
+    return (notes || []).filter((note: any) =>
+      (Array.isArray(note.links) ? note.links : []).some((link: any) => link.linkType === "google_calendar_event")
+    ).length;
+  }, [notes]);
 
-      <div className="rounded-md border border-slate-200 bg-white">
-        <button
-          type="button"
-          onClick={() => setNotebooksExpanded((prev) => !prev)}
-          className="flex w-full items-center justify-between px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-          aria-label="Toggle notebooks section"
-          aria-expanded={notebooksExpanded}
-        >
-          Notebooks
-          <span className="text-xs">{notebooksExpanded ? "−" : "+"}</span>
-        </button>
-        {notebooksExpanded && (
-          <div className="space-y-1 border-t border-slate-200 p-1.5">
-            {notebooks.map((notebook) => {
-              const active = activeNav.kind === "notebook" && activeNav.name === notebook.name;
-              return (
-                <button
-                  key={notebook.name}
-                  type="button"
-                  onClick={() => {
-                    setActiveNav({ kind: "notebook", name: notebook.name });
-                    setIsSidebarOpen(false);
-                    setMobilePanel("list");
-                  }}
-                  className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                    active
-                      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                  }`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="truncate">{notebook.name}</span>
-                    <span className="text-[11px]">{notebook.count}</span>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-    </div>
+  const sidebarSelected = useMemo(() => {
+    if (activeNav.kind === "notebook") {
+      return { kind: "notebook" as const, notebookName: activeNav.name };
+    }
+
+    if (activeEventFilterKey) {
+      return { kind: "system" as const, key: "calendar" as const };
+    }
+
+    if (activeNav.key === "pinned") {
+      return { kind: "system" as const, key: "pinned" as const };
+    }
+
+    return { kind: "system" as const, key: "all" as const };
+  }, [activeNav, activeEventFilterKey]);
+
+  const handleSelectSystemView = (key: "all" | "calendar" | "pinned") => {
+    if (key === "calendar") {
+      setActiveNav({ kind: "view", key: "all" });
+      setIsSidebarOpen(false);
+      setMobilePanel("list");
+      setCalendarFilterQuery("");
+      setIsCalendarFilterOpen(true);
+      return;
+    }
+
+    if (key === "all") {
+      setActiveNav({ kind: "view", key: "all" });
+      clearAllFilters();
+    } else {
+      setActiveNav({ kind: "view", key: "pinned" });
+    }
+
+    setIsSidebarOpen(false);
+    setMobilePanel("list");
+  };
+
+  const sidebarNav = (
+    <NotebookSidebar
+      notebooks={notebooks}
+      systemCounts={{
+        all: smartViewCounts.all,
+        calendar: calendarLinkedCount,
+        pinned: smartViewCounts.pinned,
+      }}
+      selected={sidebarSelected}
+      onSelectSystem={handleSelectSystemView}
+      onSelectNotebook={(name) => {
+        setActiveNav({ kind: "notebook", name });
+        setIsSidebarOpen(false);
+        setMobilePanel("list");
+      }}
+    />
   );
 
   const notesListPane = (
@@ -1434,19 +1523,12 @@ export default function Notebook() {
             <Button
               type="button"
               variant="outline"
-              size="icon"
-              className="h-8 w-8"
-              aria-label="Attach event or task"
-              disabled={!selectedNoteId || isDraftMode}
-              onClick={() => {
-                if (!selectedNoteId || isDraftMode) {
-                  toast.error("Save the note first, then attach");
-                  return;
-                }
-                setAttachOpen(true);
-              }}
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => void persistNote(true)}
+              disabled={saveState === "saving" || (!selectedNoteId && !isDraftMode) || !isDirty}
             >
-              <Plus className="h-4 w-4" />
+              {saveState === "saving" ? "Saving..." : "Save"}
             </Button>
             <Button
               type="button"
@@ -1550,13 +1632,22 @@ export default function Notebook() {
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-xs font-medium text-slate-600">Linked:</span>
                 {selectedLinks.length === 0 ? (
-                  <span className="text-xs text-slate-500">No linked events yet.</span>
+                  <span className="text-xs text-slate-500">No linked items yet.</span>
                 ) : (
                   selectedLinks.map((link: any) => {
                     const isCalendar = link.linkType === "google_calendar_event";
+                    const isTodoist = link.linkType === "todoist_task";
+                    const isNote = link.linkType === "note_link";
+                    const isDrive = link.linkType === "google_drive_file";
                     const label = isCalendar
                       ? linkedEventLabelByLinkId.get(link.id) || link.sourceTitle || "Calendar event"
-                      : link.sourceTitle || "Todoist task";
+                      : isTodoist
+                        ? link.sourceTitle || "Todoist task"
+                        : isNote
+                          ? link.sourceTitle || "Linked note"
+                          : isDrive
+                            ? link.sourceTitle || "Google Drive file"
+                            : link.sourceTitle || "Linked item";
 
                     return (
                       <Badge key={link.id} variant="outline" className="max-w-[260px] gap-1 truncate text-[11px]">
@@ -1573,21 +1664,30 @@ export default function Notebook() {
                     );
                   })
                 )}
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto h-7 px-2 text-xs"
-                  onClick={() => {
-                    if (!selectedNoteId || isDraftMode) {
-                      toast.error("Save the note first, then attach");
-                      return;
-                    }
-                    setAttachOpen(true);
-                  }}
-                >
-                  Attach...
-                </Button>
+                <div className="relative ml-auto">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-7 gap-1 px-2 text-xs"
+                    onClick={() => {
+                      if (!selectedNoteId || isDraftMode) {
+                        toast.error("Save the note first, then link it.");
+                        return;
+                      }
+                      setIsLinkMenuOpen((prev) => !prev);
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Link to...
+                  </Button>
+                  <LinkMenu
+                    open={isLinkMenuOpen}
+                    onClose={() => setIsLinkMenuOpen(false)}
+                    onSelect={handleLinkMenuSelect}
+                    className="right-0 top-full mt-1"
+                  />
+                </div>
               </div>
             </div>
 
@@ -1619,20 +1719,15 @@ export default function Notebook() {
               <div
                 key={isDraftMode ? "draft-editor" : `note-editor-${selectedNoteId || "none"}`}
                 ref={editorRef}
-                data-editor-session={editorSession}
                 contentEditable
                 suppressContentEditableWarning
                 onInput={(event) => {
-                  const eventSession = Number(event.currentTarget.dataset.editorSession || 0);
-                  if (eventSession !== editorSessionRef.current) return;
                   const sanitized = sanitizeEditorHtml(editorRef.current?.innerHTML || "<p></p>");
                   setNoteContentHtml(sanitized);
                   setIsDirty(true);
                 }}
                 onBlur={(event) => {
                   if (isSwitchingNoteRef.current) return;
-                  const eventSession = Number(event.currentTarget.dataset.editorSession || 0);
-                  if (eventSession !== editorSessionRef.current) return;
                   if (!editorRef.current) return;
                   const sanitized = sanitizeEditorHtml(editorRef.current.innerHTML || "<p></p>");
                   editorRef.current.innerHTML = sanitized;
@@ -1667,7 +1762,7 @@ export default function Notebook() {
               <SheetContent side="left" className="w-[320px] sm:max-w-[320px]">
                 <SheetHeader>
                   <SheetTitle>Notebook Navigation</SheetTitle>
-                  <SheetDescription>Switch smart views and notebooks.</SheetDescription>
+                  <SheetDescription>Switch system views and notebooks.</SheetDescription>
                 </SheetHeader>
                 <div className="px-4 pb-4">{sidebarNav}</div>
               </SheetContent>
@@ -1838,7 +1933,7 @@ export default function Notebook() {
           <DialogHeader>
             <DialogTitle>Attach to note</DialogTitle>
             <DialogDescription>
-              Link and unlink calendar events or Todoist tasks in one place.
+              Link and unlink calendar events, tasks, notes, and Drive files in one place.
             </DialogDescription>
           </DialogHeader>
 
@@ -1851,9 +1946,18 @@ export default function Notebook() {
                 ) : (
                   selectedLinks.map((link: any) => {
                     const isCalendar = link.linkType === "google_calendar_event";
+                    const isTodoist = link.linkType === "todoist_task";
+                    const isNote = link.linkType === "note_link";
+                    const isDrive = link.linkType === "google_drive_file";
                     const label = isCalendar
                       ? linkedEventLabelByLinkId.get(link.id) || link.sourceTitle || "Calendar event"
-                      : link.sourceTitle || "Todoist task";
+                      : isTodoist
+                        ? link.sourceTitle || "Todoist task"
+                        : isNote
+                          ? link.sourceTitle || "Linked note"
+                          : isDrive
+                            ? link.sourceTitle || "Google Drive file"
+                            : link.sourceTitle || "Linked item";
 
                     return (
                       <Badge key={link.id} variant="outline" className="max-w-[290px] gap-1 truncate text-[11px]">
@@ -1904,12 +2008,48 @@ export default function Notebook() {
                   Todoist
                 </Button>
               )}
+              <Button
+                type="button"
+                size="sm"
+                variant={attachType === "note" ? "default" : "outline"}
+                onClick={() => {
+                  setAttachType("note");
+                  setAttachSelectionId("");
+                  setAttachQuery("");
+                }}
+              >
+                <FileText className="mr-1 h-3.5 w-3.5" />
+                Note
+              </Button>
+              {hasGoogle && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={attachType === "drive" ? "default" : "outline"}
+                  onClick={() => {
+                    setAttachType("drive");
+                    setAttachSelectionId("");
+                    setAttachQuery("");
+                  }}
+                >
+                  <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                  Drive
+                </Button>
+              )}
             </div>
 
             <Input
               value={attachQuery}
               onChange={(e) => setAttachQuery(e.target.value)}
-              placeholder={attachType === "calendar" ? "Search events" : "Search tasks"}
+              placeholder={
+                attachType === "calendar"
+                  ? "Search events"
+                  : attachType === "todoist"
+                    ? "Search tasks"
+                    : attachType === "note"
+                      ? "Search notes"
+                      : "Search Drive files"
+              }
               className="h-9"
               aria-label="Search attach items"
             />
