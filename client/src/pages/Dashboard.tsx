@@ -2359,66 +2359,68 @@ export default function Dashboard() {
                 <CardTitle className="text-base">Supplements</CardTitle>
               </div>
             </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+            <CardContent className="space-y-3 min-w-0">
+              <div className="space-y-2 min-w-0">
                 <Input
                   value={supplementName}
                   onChange={(e) => setSupplementName(e.target.value)}
                   placeholder="Supplement"
-                  className="md:col-span-2 h-8 text-xs"
+                  className="h-9 min-w-0 text-sm"
                 />
-                <Input
-                  value={supplementDose}
-                  onChange={(e) => setSupplementDose(e.target.value)}
-                  placeholder="Dose"
-                  className="h-8 text-xs"
-                />
-                <Select
-                  value={supplementDoseUnit}
-                  onValueChange={(value) => setSupplementDoseUnit(value as (typeof SUPPLEMENT_UNITS)[number])}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUPPLEMENT_UNITS.map((unit) => (
-                      <SelectItem key={unit} value={unit}>
-                        {unit}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-                <Select
-                  value={supplementTiming}
-                  onValueChange={(value) => setSupplementTiming(value as "am" | "pm")}
-                >
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="am">am</SelectItem>
-                    <SelectItem value="pm">pm</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-8 text-xs md:justify-self-start"
-                  onClick={handleAddSupplementDefinition}
-                  disabled={createSupplementDefinition.isPending}
-                >
-                  Add to List
-                </Button>
-                <Button
-                  size="sm"
-                  className="h-8 text-xs"
-                  onClick={handleAddSupplementLog}
-                  disabled={addSupplementLog.isPending}
-                >
-                  Log Once
-                </Button>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 min-w-0">
+                  <Input
+                    value={supplementDose}
+                    onChange={(e) => setSupplementDose(e.target.value)}
+                    placeholder="Dose"
+                    className="h-9 min-w-0 text-sm"
+                  />
+                  <Select
+                    value={supplementDoseUnit}
+                    onValueChange={(value) => setSupplementDoseUnit(value as (typeof SUPPLEMENT_UNITS)[number])}
+                  >
+                    <SelectTrigger className="h-9 w-full min-w-0 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SUPPLEMENT_UNITS.map((unit) => (
+                        <SelectItem key={unit} value={unit}>
+                          {unit}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 min-w-0">
+                  <Select
+                    value={supplementTiming}
+                    onValueChange={(value) => setSupplementTiming(value as "am" | "pm")}
+                  >
+                    <SelectTrigger className="h-9 w-full min-w-0 text-sm">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="am">am</SelectItem>
+                      <SelectItem value="pm">pm</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-9 w-full text-sm"
+                    onClick={handleAddSupplementDefinition}
+                    disabled={createSupplementDefinition.isPending}
+                  >
+                    Add to List
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-9 w-full text-sm"
+                    onClick={handleAddSupplementLog}
+                    disabled={addSupplementLog.isPending}
+                  >
+                    Log Once
+                  </Button>
+                </div>
               </div>
               <p className="text-[11px] text-slate-500">
                 Lock items below to auto-log daily.
@@ -2431,12 +2433,12 @@ export default function Dashboard() {
                   (supplementDefinitions || []).map((definition: any) => (
                     <div
                       key={definition.id}
-                      className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5"
+                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5"
                     >
-                      <p className="text-xs text-slate-800 flex-1 min-w-0 truncate pr-2">
+                      <p className="min-w-0 break-words pr-1 text-xs leading-tight text-slate-800">
                         {definition.name} • {definition.dose} {definition.doseUnit} • {definition.timing}
                       </p>
-                      <div className="flex items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-1">
                         <Button
                           variant={definition.isLocked ? "default" : "outline"}
                           size="sm"
@@ -2470,10 +2472,10 @@ export default function Dashboard() {
                   (supplementLogs || []).map((log: any) => (
                     <div
                       key={log.id}
-                      className="flex items-center justify-between rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5"
+                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5"
                     >
-                      <div className="min-w-0 pr-2">
-                        <p className="text-xs font-medium text-emerald-900 truncate">
+                      <div className="min-w-0 pr-1">
+                        <p className="break-words text-xs font-medium leading-tight text-emerald-900">
                           {log.name} • {log.dose} {log.doseUnit} • {log.timing}
                           {log.autoLogged ? " • auto" : ""}
                         </p>
@@ -2487,7 +2489,7 @@ export default function Dashboard() {
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-6 w-6 p-0"
+                        className="h-6 w-6 shrink-0 p-0"
                         onClick={() => deleteSupplementLog.mutate({ id: log.id })}
                       >
                         <Trash2 className="h-3 w-3 text-emerald-700" />
