@@ -206,6 +206,29 @@ function getSaveStateLabel(state: SaveState): string {
   return "Saved";
 }
 
+function getErrorMessage(error: unknown): string {
+  if (!error) return "";
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === "string") return maybeMessage;
+  }
+  return "";
+}
+
+function isIntegrationNotConnectedError(error: unknown): boolean {
+  const msg = getErrorMessage(error).toLowerCase();
+  if (!msg) return false;
+  return (
+    msg.includes("not connected") ||
+    msg.includes("connect google") ||
+    msg.includes("connect todoist") ||
+    msg.includes("integration not found") ||
+    msg.includes("missing integration")
+  );
+}
+
 export default function Notebook() {
   const { user, loading } = useAuth();
   const [, setLocation] = useLocation();
@@ -315,19 +338,6 @@ export default function Notebook() {
     retry: false,
   });
 
-  const hasTodoist = integrations?.some((integration) => integration.provider === "todoist") ?? false;
-  const hasGoogle = integrations?.some((integration) => integration.provider === "google") ?? false;
-
-  useEffect(() => {
-    if (hasGoogle) {
-      setAttachType("calendar");
-      return;
-    }
-    if (hasTodoist) {
-      setAttachType("todoist");
-    }
-  }, [hasGoogle, hasTodoist]);
-
   useEffect(() => {
     if (activeNav.kind === "view" && activeNav.key === "linked" && linkedOnlyFilter) {
       setLinkedOnlyFilter(false);
@@ -347,20 +357,42 @@ export default function Notebook() {
     }
   );
 
-  const { data: todoistTasks } = trpc.todoist.getTasks.useQuery(undefined, {
-    enabled: !!user && hasTodoist,
+  const todoistTasksQuery = trpc.todoist.getTasks.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+  });
+  const calendarEventsQuery = trpc.google.getCalendarEvents.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+  });
+  const driveFilesQuery = trpc.google.getDriveFiles.useQuery(undefined, {
+    enabled: !!user,
     retry: false,
   });
 
-  const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(undefined, {
-    enabled: !!user && hasGoogle,
-    retry: false,
-  });
+  const todoistTasks = todoistTasksQuery.data || [];
+  const calendarEvents = calendarEventsQuery.data || [];
+  const driveFiles = driveFilesQuery.data || [];
 
-  const { data: driveFiles } = trpc.google.getDriveFiles.useQuery(undefined, {
-    enabled: !!user && hasGoogle,
-    retry: false,
-  });
+  const hasTodoistIntegration = integrations?.some((integration) => integration.provider === "todoist") ?? false;
+  const hasGoogleIntegration = integrations?.some((integration) => integration.provider === "google") ?? false;
+  const hasTodoist = hasTodoistIntegration || !isIntegrationNotConnectedError(todoistTasksQuery.error);
+  const hasGoogle =
+    hasGoogleIntegration ||
+    !isIntegrationNotConnectedError(calendarEventsQuery.error) ||
+    !isIntegrationNotConnectedError(driveFilesQuery.error);
+
+  useEffect(() => {
+    if (hasGoogle) {
+      setAttachType("calendar");
+      return;
+    }
+    if (hasTodoist) {
+      setAttachType("todoist");
+      return;
+    }
+    setAttachType("note");
+  }, [hasGoogle, hasTodoist]);
 
   const createNoteMutation = trpc.notes.create.useMutation();
   const updateNoteMutation = trpc.notes.update.useMutation();
@@ -643,7 +675,7 @@ export default function Notebook() {
     }
   }, [noteContentHtml]);
 
-  const persistNote = useCallback(async (showSuccessToast = false) => {
+  const persistNote = useCallback(async (showSuccessToast = false): Promise<string | null> => {
     const notebook = noteNotebookInput.trim() || "General";
     const titleInput = noteTitleInput.trim();
     const rawContent = editorRef.current?.innerHTML || noteContentHtml || "<p></p>";
@@ -653,7 +685,7 @@ export default function Notebook() {
     if (isDraftMode && !titleInput && !contentText) {
       setIsDirty(false);
       setSaveState("saved");
-      return;
+      return null;
     }
 
     setSaveState("saving");
@@ -681,7 +713,7 @@ export default function Notebook() {
         if (showSuccessToast) {
           toast.success("Note saved");
         }
-        return;
+        return selectedNoteId;
       }
 
       const result = await createNoteMutation.mutateAsync({
@@ -708,9 +740,11 @@ export default function Notebook() {
       if (showSuccessToast) {
         toast.success("Note saved");
       }
+      return result.noteId;
     } catch (error: any) {
       setSaveState("error");
       toast.error(`Failed to save note: ${error?.message || "Unknown error"}`);
+      return null;
     }
   }, [
     noteNotebookInput,
@@ -746,6 +780,14 @@ export default function Notebook() {
     setNoteContentHtml(sanitizeEditorHtml(editor.innerHTML || "<p></p>"));
     setIsDirty(true);
   };
+
+  const captureEditorContentAndMarkDirty = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sanitized = sanitizeEditorHtml(editor.innerHTML || "<p></p>");
+    setNoteContentHtml((prev) => (prev === sanitized ? prev : sanitized));
+    setIsDirty(true);
+  }, []);
 
   const handleInsertLink = () => {
     const input = window.prompt("Enter URL (https://...)");
@@ -796,53 +838,48 @@ export default function Notebook() {
     setIsLinkMenuOpen(false);
   }, [selectedNoteId, isDraftMode, mobilePanel]);
 
-  const handleLinkMenuSelect = (target: LinkMenuOptionKey) => {
-    if (!selectedNoteId || isDraftMode) {
-      toast.error("Save the note first, then add links.");
-      return;
+  const ensureSavedNoteForLinking = useCallback(async (): Promise<string | null> => {
+    if (!isDraftMode && selectedNoteId) return selectedNoteId;
+    const savedNoteId = await persistNote(false);
+    if (!savedNoteId) {
+      toast.error("Save the note title/body first, then add links.");
+      return null;
     }
+    return String(savedNoteId);
+  }, [isDraftMode, selectedNoteId, persistNote]);
 
-    if (target === "calendar") {
-      if (!hasGoogle) {
-        toast.error("Connect Google to link calendar events.");
-        return;
+  const handleLinkMenuSelect = useCallback(
+    async (target: LinkMenuOptionKey) => {
+      const noteId = await ensureSavedNoteForLinking();
+      if (!noteId) return;
+
+      setSelectedNoteId(noteId);
+      setIsDraftMode(false);
+
+      if (target === "todoist" && isIntegrationNotConnectedError(todoistTasksQuery.error)) {
+        toast.error("Todoist is not connected. Open Settings to connect it.");
       }
-      setAttachType("calendar");
+
+      if (
+        (target === "calendar" || target === "drive") &&
+        (isIntegrationNotConnectedError(calendarEventsQuery.error) ||
+          isIntegrationNotConnectedError(driveFilesQuery.error))
+      ) {
+        toast.error("Google integration is not connected. Open Settings to connect it.");
+      }
+
+      setAttachType(target);
       setAttachSelectionId("");
       setAttachQuery("");
       setAttachOpen(true);
-      return;
-    }
-
-    if (target === "todoist") {
-      if (!hasTodoist) {
-        toast.error("Connect Todoist to link tasks.");
-        return;
-      }
-      setAttachType("todoist");
-      setAttachSelectionId("");
-      setAttachQuery("");
-      setAttachOpen(true);
-      return;
-    }
-
-    if (target === "drive") {
-      if (!hasGoogle) {
-        toast.error("Connect Google to link Drive files.");
-        return;
-      }
-      setAttachType("drive");
-      setAttachSelectionId("");
-      setAttachQuery("");
-      setAttachOpen(true);
-      return;
-    }
-
-    setAttachType("note");
-    setAttachSelectionId("");
-    setAttachQuery("");
-    setAttachOpen(true);
-  };
+    },
+    [
+      ensureSavedNoteForLinking,
+      todoistTasksQuery.error,
+      calendarEventsQuery.error,
+      driveFilesQuery.error,
+    ]
+  );
 
   const deleteSelectedNote = async () => {
     if (!selectedNoteId || isDraftMode) {
@@ -1037,9 +1074,45 @@ export default function Notebook() {
     });
   }, [selectedAttachItem, attachType, selectedLinks, calendarEventOptions]);
 
+  const attachEmptyStateMessage = useMemo(() => {
+    if (attachType === "todoist") {
+      if (todoistTasksQuery.isLoading) return "Loading Todoist tasks...";
+      if (isIntegrationNotConnectedError(todoistTasksQuery.error)) {
+        return "Todoist is not connected. Open Settings to connect it.";
+      }
+      return "No Todoist tasks match your search.";
+    }
+
+    if (attachType === "calendar") {
+      if (calendarEventsQuery.isLoading) return "Loading calendar events...";
+      if (isIntegrationNotConnectedError(calendarEventsQuery.error)) {
+        return "Google Calendar is not connected. Open Settings to connect it.";
+      }
+      return "No calendar events match your search.";
+    }
+
+    if (attachType === "drive") {
+      if (driveFilesQuery.isLoading) return "Loading Drive files...";
+      if (isIntegrationNotConnectedError(driveFilesQuery.error)) {
+        return "Google Drive is not connected. Open Settings to connect it.";
+      }
+      return "No Drive files match your search.";
+    }
+
+    return "No notes match your search.";
+  }, [
+    attachType,
+    todoistTasksQuery.isLoading,
+    todoistTasksQuery.error,
+    calendarEventsQuery.isLoading,
+    calendarEventsQuery.error,
+    driveFilesQuery.isLoading,
+    driveFilesQuery.error,
+  ]);
+
   const attachSelectedItem = async () => {
-    if (!selectedNoteId || isDraftMode) {
-      toast.error("Save the note first, then add links.");
+    const ensuredNoteId = await ensureSavedNoteForLinking();
+    if (!ensuredNoteId) {
       return;
     }
 
@@ -1050,6 +1123,10 @@ export default function Notebook() {
 
     try {
       if (attachType === "todoist") {
+        if (isIntegrationNotConnectedError(todoistTasksQuery.error)) {
+          toast.error("Todoist is not connected. Open Settings to connect it.");
+          return;
+        }
         const task = (todoistTasks || []).find((row: any) => String(row.id) === selectedAttachItem.id);
         if (!task) {
           toast.error("Task not found");
@@ -1057,7 +1134,7 @@ export default function Notebook() {
         }
 
         const result = await addNoteLinkMutation.mutateAsync({
-          noteId: selectedNoteId,
+          noteId: ensuredNoteId,
           linkType: "todoist_task",
           externalId: String(task.id),
           sourceUrl: (task as any).url || `https://todoist.com/app/task/${task.id}`,
@@ -1080,7 +1157,7 @@ export default function Notebook() {
         }
 
         const result = await addNoteLinkMutation.mutateAsync({
-          noteId: selectedNoteId,
+          noteId: ensuredNoteId,
           linkType: "note_link",
           externalId: String(note.id),
           sourceUrl: `/notes?noteId=${encodeURIComponent(String(note.id))}`,
@@ -1096,6 +1173,10 @@ export default function Notebook() {
           toast.success("Note linked");
         }
       } else if (attachType === "drive") {
+        if (isIntegrationNotConnectedError(driveFilesQuery.error)) {
+          toast.error("Google Drive is not connected. Open Settings to connect it.");
+          return;
+        }
         const file = (driveFiles || []).find((row: any) => String(row.id || "") === selectedAttachItem.id);
         if (!file) {
           toast.error("Drive file not found");
@@ -1103,7 +1184,7 @@ export default function Notebook() {
         }
 
         const result = await addNoteLinkMutation.mutateAsync({
-          noteId: selectedNoteId,
+          noteId: ensuredNoteId,
           linkType: "google_drive_file",
           externalId: String(file.id || ""),
           sourceUrl: file.webViewLink || undefined,
@@ -1119,6 +1200,10 @@ export default function Notebook() {
           toast.success("Drive file linked");
         }
       } else {
+        if (isIntegrationNotConnectedError(calendarEventsQuery.error)) {
+          toast.error("Google Calendar is not connected. Open Settings to connect it.");
+          return;
+        }
         const event = calendarEventOptions.find((row: any) => String(row.id || "") === selectedAttachItem.id);
         if (!event) {
           toast.error("Event not found");
@@ -1126,7 +1211,7 @@ export default function Notebook() {
         }
 
         const result = await addNoteLinkMutation.mutateAsync({
-          noteId: selectedNoteId,
+          noteId: ensuredNoteId,
           linkType: "google_calendar_event",
           externalId: String(event.id || ""),
           seriesId: event.recurringEventId || event.iCalUID || "",
@@ -1148,6 +1233,7 @@ export default function Notebook() {
       }
 
       await refetchNotes();
+      setSelectedNoteId(ensuredNoteId);
       setAttachOpen(false);
       setAttachSelectionId("");
       setAttachQuery("");
@@ -1526,7 +1612,7 @@ export default function Notebook() {
               size="sm"
               className="h-8 px-2 text-xs"
               onClick={() => void persistNote(true)}
-              disabled={saveState === "saving" || (!selectedNoteId && !isDraftMode) || !isDirty}
+              disabled={saveState === "saving" || (!selectedNoteId && !isDraftMode)}
             >
               {saveState === "saving" ? "Saving..." : "Save"}
             </Button>
@@ -1721,11 +1807,10 @@ export default function Notebook() {
                 ref={editorRef}
                 contentEditable
                 suppressContentEditableWarning
-                onInput={(event) => {
-                  const sanitized = sanitizeEditorHtml(editorRef.current?.innerHTML || "<p></p>");
-                  setNoteContentHtml(sanitized);
-                  setIsDirty(true);
-                }}
+                onInput={captureEditorContentAndMarkDirty}
+                onKeyUp={captureEditorContentAndMarkDirty}
+                onPaste={() => window.setTimeout(captureEditorContentAndMarkDirty, 0)}
+                onDrop={() => window.setTimeout(captureEditorContentAndMarkDirty, 0)}
                 onBlur={(event) => {
                   if (isSwitchingNoteRef.current) return;
                   if (!editorRef.current) return;
@@ -1978,36 +2063,32 @@ export default function Notebook() {
             </div>
 
             <div className="flex flex-wrap gap-2">
-              {hasGoogle && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={attachType === "calendar" ? "default" : "outline"}
-                  onClick={() => {
-                    setAttachType("calendar");
-                    setAttachSelectionId("");
-                    setAttachQuery("");
-                  }}
-                >
-                  <Calendar className="mr-1 h-3.5 w-3.5" />
-                  Calendar
-                </Button>
-              )}
-              {hasTodoist && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={attachType === "todoist" ? "default" : "outline"}
-                  onClick={() => {
-                    setAttachType("todoist");
-                    setAttachSelectionId("");
-                    setAttachQuery("");
-                  }}
-                >
-                  <CheckSquare className="mr-1 h-3.5 w-3.5" />
-                  Todoist
-                </Button>
-              )}
+              <Button
+                type="button"
+                size="sm"
+                variant={attachType === "calendar" ? "default" : "outline"}
+                onClick={() => {
+                  setAttachType("calendar");
+                  setAttachSelectionId("");
+                  setAttachQuery("");
+                }}
+              >
+                <Calendar className="mr-1 h-3.5 w-3.5" />
+                Calendar
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant={attachType === "todoist" ? "default" : "outline"}
+                onClick={() => {
+                  setAttachType("todoist");
+                  setAttachSelectionId("");
+                  setAttachQuery("");
+                }}
+              >
+                <CheckSquare className="mr-1 h-3.5 w-3.5" />
+                Todoist
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -2021,21 +2102,19 @@ export default function Notebook() {
                 <FileText className="mr-1 h-3.5 w-3.5" />
                 Note
               </Button>
-              {hasGoogle && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={attachType === "drive" ? "default" : "outline"}
-                  onClick={() => {
-                    setAttachType("drive");
-                    setAttachSelectionId("");
-                    setAttachQuery("");
-                  }}
-                >
-                  <FolderOpen className="mr-1 h-3.5 w-3.5" />
-                  Drive
-                </Button>
-              )}
+              <Button
+                type="button"
+                size="sm"
+                variant={attachType === "drive" ? "default" : "outline"}
+                onClick={() => {
+                  setAttachType("drive");
+                  setAttachSelectionId("");
+                  setAttachQuery("");
+                }}
+              >
+                <FolderOpen className="mr-1 h-3.5 w-3.5" />
+                Drive
+              </Button>
             </div>
 
             <Input
@@ -2056,7 +2135,7 @@ export default function Notebook() {
 
             <div className="max-h-72 overflow-y-auto rounded-md border border-slate-200">
               {attachItems.length === 0 ? (
-                <p className="px-3 py-6 text-sm text-slate-500">No items match your search.</p>
+                <p className="px-3 py-6 text-sm text-slate-500">{attachEmptyStateMessage}</p>
               ) : (
                 attachItems.map((item) => {
                   const active = attachSelectionId === item.id;

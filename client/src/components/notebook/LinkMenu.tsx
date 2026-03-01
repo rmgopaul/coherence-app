@@ -12,7 +12,7 @@ type LinkMenuOption = {
 type LinkMenuProps = {
   open: boolean;
   onClose: () => void;
-  onSelect: (option: LinkMenuOptionKey) => void;
+  onSelect: (option: LinkMenuOptionKey) => void | Promise<void>;
   className?: string;
 };
 
@@ -77,4 +77,3 @@ export function LinkMenu({ open, onClose, onSelect, className = "" }: LinkMenuPr
     </div>
   );
 }
-
