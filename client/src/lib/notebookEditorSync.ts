@@ -36,20 +36,20 @@ export function resolveNotebookEditorSnapshot(params: {
   draftsByKey: Record<string, NotebookEditorDraft>;
 }): NotebookEditorSnapshot | null {
   const { selectedNoteId, isDraftMode, notes, draftsByKey } = params;
-  const draftKey = getSelectionDraftKey(selectedNoteId, isDraftMode);
-  const draft = draftKey ? draftsByKey[draftKey] : undefined;
-
-  if (draft) {
-    return {
-      source: "draft",
-      title: draft.title || "",
-      notebook: (draft.notebook || "General").trim() || "General",
-      content: draft.contentHtml || "",
-      dirty: Boolean(draft.dirty),
-    };
-  }
 
   if (isDraftMode) {
+    const draftKey = getSelectionDraftKey(selectedNoteId, true);
+    const draft = draftKey ? draftsByKey[draftKey] : undefined;
+    if (draft) {
+      return {
+        source: "draft",
+        title: draft.title || "",
+        notebook: (draft.notebook || "General").trim() || "General",
+        content: draft.contentHtml || "",
+        dirty: Boolean(draft.dirty),
+      };
+    }
+
     return {
       source: "empty",
       title: "",
@@ -61,6 +61,20 @@ export function resolveNotebookEditorSnapshot(params: {
 
   if (selectedNoteId) {
     const note = notes.find((row) => String(row.id) === String(selectedNoteId));
+    const draftKey = getSelectionDraftKey(selectedNoteId, false);
+    const draft = draftKey ? draftsByKey[draftKey] : undefined;
+
+    // Prefer saved note content by default; only use draft if it is explicitly dirty.
+    if (draft && draft.dirty && !note) {
+      return {
+        source: "draft",
+        title: draft.title || "",
+        notebook: (draft.notebook || "General").trim() || "General",
+        content: draft.contentHtml || "",
+        dirty: true,
+      };
+    }
+
     if (note) {
       return {
         source: "note",
