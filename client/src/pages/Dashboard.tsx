@@ -448,6 +448,17 @@ export default function Dashboard() {
     refetchOnMount: false,
     refetchOnWindowFocus: false,
   });
+
+  const {
+    data: gmailWaitingOn,
+    isLoading: waitingOnLoading,
+    error: waitingOnError,
+  } = trpc.google.getGmailWaitingOn.useQuery({ maxResults: 25 }, {
+    enabled: !!user && hasGoogle,
+    retry: false,
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
+  });
   
   const { data: driveFiles, isLoading: driveLoading, refetch: refetchDrive } = trpc.google.getDriveFiles.useQuery(undefined, {
     enabled: !!user && hasGoogle,
@@ -1310,6 +1321,7 @@ export default function Dashboard() {
         calendarEvents: calendarEvents || [],
         todoistTasks: dueTodayTasks || [],
         prioritizedEmails,
+        waitingOnEmails: gmailWaitingOn || [],
         whoopSummary,
         samsungHealthSnapshot,
         notes: notes || [],
@@ -1413,7 +1425,8 @@ export default function Dashboard() {
     if (isGeneratingDailyBrief) return;
     if (dailyBriefDate === todayKey && dailyBrief) return;
 
-    const googleReady = !hasGoogle || (!calendarLoading && !emailsLoading);
+    const googleReady =
+      !hasGoogle || (!calendarLoading && !emailsLoading && (!waitingOnLoading || Boolean(waitingOnError)));
     const todoistReady = !hasTodoist || !dueTodayTasksLoading;
     const weatherReady = !weather.loading;
     if (!googleReady || !todoistReady || !weatherReady) return;
@@ -1434,11 +1447,14 @@ export default function Dashboard() {
     dueTodayTasksLoading,
     weather.loading,
     prioritizedEmails,
+    gmailWaitingOn,
     dueTodayTasks,
     calendarEvents,
     whoopSummary,
     samsungHealthSnapshot,
     notes,
+    waitingOnLoading,
+    waitingOnError,
   ]);
 
   useEffect(() => {

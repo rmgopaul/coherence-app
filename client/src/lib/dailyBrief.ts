@@ -101,11 +101,13 @@ export type PrioritizedEmailInput = {
   id: string;
   threadId?: string;
   from: string;
+  to?: string;
   subject: string;
   snippet?: string;
   date?: string;
   reason?: string;
   score: number;
+  url?: string;
 };
 
 export type BuildDailyBriefInput = {
@@ -114,6 +116,7 @@ export type BuildDailyBriefInput = {
   calendarEvents: any[];
   todoistTasks: any[];
   prioritizedEmails: PrioritizedEmailInput[];
+  waitingOnEmails?: PrioritizedEmailInput[];
   whoopSummary?: any | null;
   samsungHealthSnapshot?: any | null;
   notes?: any[];
@@ -332,8 +335,8 @@ const taskSourceRef = (task: any): SourceRef => ({
 
 const emailSourceRef = (email: PrioritizedEmailInput): SourceRef => ({
   kind: "email",
-  id: email.id,
-  url: `https://mail.google.com/mail/u/0/#inbox/${email.id}`,
+  id: email.threadId || email.id,
+  url: email.url || `https://mail.google.com/mail/u/0/#inbox/${email.id}`,
 });
 
 const getDurationMinutes = (window: TimeWindow) =>
@@ -586,8 +589,27 @@ export function buildDailyBrief(input: BuildDailyBriefInput): DailyBrief {
     };
   });
 
-  const decisions: DailyBrief["decisions"] = [];
-  if (topTask) {
+  const decisions: DailyBrief["decisions"] = input.prioritizedEmails.slice(0, 3).map((email) => {
+    const urgency = urgencyFromScore(email.score);
+    const dueBy =
+      urgency === "high"
+        ? new Date(now.getTime() + 90 * MINUTE_MS).toISOString()
+        : urgency === "med"
+          ? new Date(now.getTime() + 3 * 60 * MINUTE_MS).toISOString()
+          : undefined;
+
+    return {
+      decision: `Inbox action: ${email.subject}`,
+      dueBy,
+      suggestedMessage:
+        urgency === "high"
+          ? "Reply with owner + deadline now, then convert follow-up to a task."
+          : "Triage this thread and send the next clear action.",
+      sourceRefs: [emailSourceRef(email)],
+    };
+  });
+
+  if (decisions.length < 3 && topTask) {
     decisions.push({
       decision: `Commit first deep block to: ${String(topTask.content || "Top task")}`,
       dueBy: focusWindow.end.toISOString(),
@@ -595,7 +617,8 @@ export function buildDailyBrief(input: BuildDailyBriefInput): DailyBrief {
       sourceRefs: [taskSourceRef(topTask)],
     });
   }
-  if (topEvent) {
+
+  if (decisions.length < 3 && topEvent) {
     decisions.push({
       decision: `Define desired outcome for ${topEvent.title}`,
       dueBy: topEvent.start.toISOString(),
@@ -604,12 +627,32 @@ export function buildDailyBrief(input: BuildDailyBriefInput): DailyBrief {
     });
   }
 
-  const waitingOn: DailyBrief["waitingOn"] = input.prioritizedEmails.slice(0, 3).map((email) => ({
-    person: email.from || "Unknown",
-    blocker: email.subject,
-    suggestedNudge: "Quick nudge: can you confirm owner + ETA on this today?",
-    sourceRefs: [emailSourceRef(email)],
-  }));
+  const waitingCandidates = (input.waitingOnEmails && input.waitingOnEmails.length > 0
+    ? input.waitingOnEmails
+    : input.prioritizedEmails
+  )
+    .filter((email) => Boolean(email?.subject))
+    .slice(0, 6);
+
+  const seenWaiting = new Set<string>();
+  const waitingOn: DailyBrief["waitingOn"] = waitingCandidates
+    .filter((email) => {
+      const key = String(email.threadId || email.id || email.subject).toLowerCase();
+      if (seenWaiting.has(key)) return false;
+      seenWaiting.add(key);
+      return true;
+    })
+    .slice(0, 3)
+    .map((email) => {
+      const recipient = String(email.to || email.from || "").trim();
+      const person = recipient || "Recipient";
+      return {
+        person,
+        blocker: email.subject,
+        suggestedNudge: `Quick follow-up on "${email.subject}" — can you share status and ETA today?`,
+        sourceRefs: [emailSourceRef(email)],
+      };
+    });
 
   const risks: DailyBrief["risks"] = [];
   if (deepWorkMinutesAvailable < focusTargetMinutes && input.todoistTasks.length > 0) {

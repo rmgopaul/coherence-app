@@ -95,6 +95,100 @@ export async function getGmailMessages(accessToken: string, maxResults = 50): Pr
     .slice(0, cappedTotal);
 }
 
+function getHeaderValue(message: any, name: string): string {
+  const headers = Array.isArray(message?.payload?.headers) ? message.payload.headers : [];
+  const found = headers.find((h: any) => String(h?.name || "").toLowerCase() === name.toLowerCase());
+  return String(found?.value || "");
+}
+
+export async function getGmailWaitingOn(accessToken: string, maxResults = 25): Promise<any[]> {
+  // Approximation for "awaiting response": latest message in thread is SENT by me.
+  const cappedTotal = Math.max(1, Math.min(maxResults, 100));
+  const scanLimit = Math.max(30, Math.min(cappedTotal * 4, 200));
+  const query = encodeURIComponent("in:sent newer_than:30d");
+  const threadIds: Array<{ id: string }> = [];
+  let pageToken: string | undefined;
+
+  while (threadIds.length < scanLimit) {
+    const pageSize = Math.min(100, scanLimit - threadIds.length);
+    const pageTokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "";
+    const response = await makeGoogleApiCall(
+      `https://gmail.googleapis.com/gmail/v1/users/me/threads?maxResults=${pageSize}&q=${query}${pageTokenParam}`,
+      accessToken
+    );
+
+    if (!response.ok) {
+      throw new Error(`Gmail API error: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    if (Array.isArray(data.threads)) {
+      threadIds.push(...data.threads);
+    }
+    if (!data.nextPageToken) break;
+    pageToken = data.nextPageToken;
+  }
+
+  if (threadIds.length === 0) return [];
+
+  const rows: any[] = [];
+  const chunkSize = 20;
+
+  for (let i = 0; i < threadIds.length; i += chunkSize) {
+    const chunk = threadIds.slice(i, i + chunkSize);
+    const threads = await Promise.all(
+      chunk.map(async (thread) => {
+        const threadResponse = await makeGoogleApiCall(
+          `https://gmail.googleapis.com/gmail/v1/users/me/threads/${thread.id}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`,
+          accessToken
+        );
+        if (!threadResponse.ok) return null;
+        return threadResponse.json();
+      })
+    );
+
+    for (const thread of threads) {
+      if (!thread || !Array.isArray(thread.messages) || thread.messages.length === 0) continue;
+
+      const latest = [...thread.messages].sort(
+        (a: any, b: any) => Number(b?.internalDate || 0) - Number(a?.internalDate || 0)
+      )[0];
+      if (!latest) continue;
+
+      const latestLabels = new Set<string>(Array.isArray(latest.labelIds) ? latest.labelIds : []);
+      if (!latestLabels.has("SENT")) continue;
+
+      const to = getHeaderValue(latest, "To");
+      const from = getHeaderValue(latest, "From");
+      const subject = getHeaderValue(latest, "Subject") || "(No subject)";
+      const date = getHeaderValue(latest, "Date");
+
+      rows.push({
+        id: String(latest.id || ""),
+        threadId: String(thread.id || latest.threadId || ""),
+        from,
+        to,
+        subject,
+        snippet: String(latest.snippet || ""),
+        date,
+        reason: "Awaiting response to sent email",
+        score: 3,
+        url: `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(String(thread.id || latest.threadId || latest.id || ""))}`,
+      });
+    }
+  }
+
+  return rows
+    .sort((a, b) => {
+      const aTs = new Date(a.date || 0).getTime();
+      const bTs = new Date(b.date || 0).getTime();
+      const safeA = Number.isFinite(aTs) ? aTs : 0;
+      const safeB = Number.isFinite(bTs) ? bTs : 0;
+      return safeB - safeA;
+    })
+    .slice(0, cappedTotal);
+}
+
 export async function markGmailMessageAsRead(accessToken: string, messageId: string): Promise<void> {
   const response = await fetch(
     `https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}/modify`,

@@ -720,6 +720,14 @@ export const appRouter = router({
       const { getGmailMessages } = await import("./services/google");
       return getGmailMessages(accessToken, input?.maxResults ?? 50);
     }),
+    getGmailWaitingOn: protectedProcedure
+      .input(z.object({ maxResults: z.number().int().min(1).max(100).optional() }).optional())
+      .query(async ({ ctx, input }) => {
+        const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
+        const accessToken = await getValidGoogleToken(ctx.user.id);
+        const { getGmailWaitingOn } = await import("./services/google");
+        return getGmailWaitingOn(accessToken, input?.maxResults ?? 25);
+      }),
     markGmailAsRead: protectedProcedure
       .input(z.object({ messageId: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {

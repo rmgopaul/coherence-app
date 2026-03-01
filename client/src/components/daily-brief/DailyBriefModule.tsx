@@ -189,7 +189,7 @@ function RightNowBlock({ brief, onAction }: { brief: DailyBrief; onAction: (acti
   const { focusBlock, adminBlock, breakSuggestion } = brief.rightNow;
 
   return (
-    <Card className="sticky top-24 z-[6] border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-emerald-100 shadow-[0_10px_24px_rgba(22,101,52,0.12)]">
+    <Card className="border-emerald-300 bg-gradient-to-r from-emerald-50 via-white to-emerald-100 shadow-[0_10px_24px_rgba(22,101,52,0.12)]">
       <CardHeader className="pb-2">
         <CardTitle className="text-base">Right now (next 60-90 min)</CardTitle>
       </CardHeader>

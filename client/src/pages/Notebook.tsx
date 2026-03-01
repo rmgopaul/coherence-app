@@ -38,11 +38,18 @@ import {
 } from "@/components/ui/sheet";
 import { trpc } from "@/lib/trpc";
 import {
+  getSelectionDraftKey,
+  resolveNotebookEditorSnapshot,
+  shouldApplySelectionUpdate,
+  type NotebookEditorDraft,
+} from "@/lib/notebookEditorSync";
+import {
   ArrowLeft,
   Bold,
   Calendar,
   CheckSquare,
-  CircleDashed,
+  Copy,
+  Filter,
   FolderOpen,
   Link2,
   List,
@@ -53,7 +60,6 @@ import {
   PinOff,
   Plus,
   Search,
-  Save,
   Trash2,
   Underline,
   Unlink,
@@ -68,6 +74,7 @@ import { toast } from "sonner";
 type SmartView = "all" | "pinned" | "linked";
 type AttachTarget = "calendar" | "todoist";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
+type NotesSort = "context" | "updated_desc" | "created_desc" | "title_asc";
 type NavigationSelection =
   | { kind: "view"; key: SmartView }
   | { kind: "notebook"; name: string };
@@ -92,12 +99,11 @@ function decodeHtmlEntities(content: string): string {
 }
 
 function stripHtml(content: string): string {
-  return decodeHtmlEntities(
-    content
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-  )
+  const decoded = decodeHtmlEntities(content || "");
+  return decoded
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -113,12 +119,6 @@ function formatDateTime(value: unknown): string {
     hour: "numeric",
     minute: "2-digit",
   });
-}
-
-function formatSeriesIdentifier(value: string): string {
-  const cleaned = value.trim();
-  if (cleaned.length <= 18) return cleaned;
-  return `${cleaned.slice(0, 7)}...${cleaned.slice(-6)}`;
 }
 
 function getEventStartMs(event: any): number | null {
@@ -159,8 +159,10 @@ function escapeHtml(value: string): string {
 function normalizeStoredHtml(content: string | null | undefined): string {
   const raw = (content || "").trim();
   if (!raw) return "<p></p>";
-  if (/<[a-z][\s\S]*>/i.test(raw)) return raw;
-  return `<p>${escapeHtml(raw).replace(/\n/g, "<br/>")}</p>`;
+  const decoded = decodeHtmlEntities(raw).trim();
+  if (/<[a-z][\s\S]*>/i.test(decoded)) return sanitizeEditorHtml(decoded);
+  if (/<[a-z][\s\S]*>/i.test(raw)) return sanitizeEditorHtml(raw);
+  return `<p>${escapeHtml(decoded).replace(/\n/g, "<br/>")}</p>`;
 }
 
 function sanitizeEditorHtml(rawHtml: string): string {
@@ -211,12 +213,20 @@ export default function Notebook() {
   const [isDraftMode, setIsDraftMode] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeEventFilterKey, setActiveEventFilterKey] = useState("");
+  const [notesSort, setNotesSort] = useState<NotesSort>("context");
+  const [isCalendarFilterOpen, setIsCalendarFilterOpen] = useState(false);
+  const [calendarFilterQuery, setCalendarFilterQuery] = useState("");
+  const [seriesOnlyFilter, setSeriesOnlyFilter] = useState(false);
+  const [linkedOnlyFilter, setLinkedOnlyFilter] = useState(false);
+  const [smartViewsExpanded, setSmartViewsExpanded] = useState(true);
+  const [notebooksExpanded, setNotebooksExpanded] = useState(true);
 
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
   const [noteTitleInput, setNoteTitleInput] = useState("");
   const [noteContentHtml, setNoteContentHtml] = useState("<p></p>");
   const [isDirty, setIsDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("saved");
+  const [draftsByKey, setDraftsByKey] = useState<Record<string, NotebookEditorDraft>>({});
 
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachType, setAttachType] = useState<AttachTarget>("calendar");
@@ -230,23 +240,10 @@ export default function Notebook() {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const isSwitchingNoteRef = useRef(false);
-
-  const loadNoteIntoEditor = useCallback((note: any) => {
-    const notebookValue = (note?.notebook || "General").trim() || "General";
-    const titleValue = String(note?.title || "");
-    const htmlValue = normalizeStoredHtml(note?.content);
-
-    setNoteNotebookInput(notebookValue);
-    setNoteTitleInput(titleValue);
-    setNoteContentHtml(htmlValue);
-    setIsDirty(false);
-    setSaveState("saved");
-
-    // Force the contentEditable surface to update immediately when switching notes.
-    if (editorRef.current) {
-      editorRef.current.innerHTML = htmlValue;
-    }
-  }, []);
+  const selectedNoteIdRef = useRef<string | null>(null);
+  const selectionRequestRef = useRef(0);
+  const editorSessionRef = useRef(1);
+  const [editorSession, setEditorSession] = useState(1);
 
   const clearAutosaveTimer = useCallback(() => {
     if (autosaveTimerRef.current !== null) {
@@ -255,11 +252,51 @@ export default function Notebook() {
     }
   }, []);
 
+  const applyEditorSnapshot = useCallback((snapshot: { title: string; notebook: string; content: string; dirty: boolean; source: "note" | "draft" | "empty" }) => {
+    const notebookValue = (snapshot.notebook || "General").trim() || "General";
+    const titleValue = String(snapshot.title || "");
+    const htmlValue =
+      snapshot.source === "note"
+        ? normalizeStoredHtml(snapshot.content)
+        : sanitizeEditorHtml(snapshot.content || "<p></p>");
+
+    setNoteNotebookInput(notebookValue);
+    setNoteTitleInput(titleValue);
+    setNoteContentHtml(htmlValue);
+    setIsDirty(Boolean(snapshot.dirty));
+    setSaveState(snapshot.dirty ? "unsaved" : "saved");
+
+    editorSessionRef.current += 1;
+    setEditorSession(editorSessionRef.current);
+  }, []);
+
+  const stashCurrentDraft = useCallback(() => {
+    if (!isDirty) return;
+    const draftKey = getSelectionDraftKey(selectedNoteId, isDraftMode);
+    if (!draftKey) return;
+
+    const sanitized = sanitizeEditorHtml(editorRef.current?.innerHTML || noteContentHtml || "<p></p>");
+    setDraftsByKey((prev) => ({
+      ...prev,
+      [draftKey]: {
+        title: noteTitleInput,
+        notebook: noteNotebookInput.trim() || "General",
+        contentHtml: sanitized,
+        dirty: true,
+        updatedAt: Date.now(),
+      },
+    }));
+  }, [isDirty, selectedNoteId, isDraftMode, noteContentHtml, noteTitleInput, noteNotebookInput]);
+
   useEffect(() => {
     if (!loading && !user) {
       setLocation("/");
     }
   }, [loading, user, setLocation]);
+
+  useEffect(() => {
+    selectedNoteIdRef.current = selectedNoteId;
+  }, [selectedNoteId]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -300,6 +337,12 @@ export default function Notebook() {
       setAttachType("todoist");
     }
   }, [hasGoogle, hasTodoist]);
+
+  useEffect(() => {
+    if (activeNav.kind === "view" && activeNav.key === "linked" && linkedOnlyFilter) {
+      setLinkedOnlyFilter(false);
+    }
+  }, [activeNav, linkedOnlyFilter]);
 
   const {
     data: notes,
@@ -444,79 +487,23 @@ export default function Notebook() {
     [activeEventFilterKey, calendarFilterOptionByKey]
   );
 
-  const meetingFolders = useMemo(() => {
-    if (!notes) return [];
-
-    const groups = new Map<
-      string,
-      {
-        key: string;
-        seriesId: string;
-        eventId: string;
-        fallbackTitle: string;
-        noteIds: Set<string>;
-        occurrences: number[];
-      }
-    >();
-
-    for (const note of notes) {
-      const links = Array.isArray((note as any).links) ? (note as any).links : [];
-      for (const link of links) {
-        if (link?.linkType !== "google_calendar_event") continue;
-        const seriesId = String(link.seriesId || "").trim();
-        const eventId = String(link.externalId || "").trim();
-        if (!seriesId && !eventId) continue;
-
-        const key = seriesId ? `series:${seriesId}` : `event:${eventId}`;
-        const existing = groups.get(key) || {
-          key,
-          seriesId,
-          eventId,
-          fallbackTitle: String(link.sourceTitle || "").trim(),
-          noteIds: new Set<string>(),
-          occurrences: [],
-        };
-
-        existing.noteIds.add(String(note.id));
-        if (!existing.fallbackTitle && link.sourceTitle) {
-          existing.fallbackTitle = String(link.sourceTitle);
-        }
-
-        const occurrenceTs = new Date(String(link.occurrenceStartIso || "")).getTime();
-        if (Number.isFinite(occurrenceTs)) existing.occurrences.push(occurrenceTs);
-
-        groups.set(key, existing);
-      }
+  const effectiveEventFilterKey = useMemo(() => {
+    if (!activeEventFilterKey) return "";
+    if (!seriesOnlyFilter) return activeEventFilterKey;
+    const selected = calendarFilterOptionByKey.get(activeEventFilterKey);
+    if (selected?.seriesId) {
+      return `series:${selected.seriesId}`;
     }
+    return activeEventFilterKey;
+  }, [activeEventFilterKey, seriesOnlyFilter, calendarFilterOptionByKey]);
 
-    const nowMs = Date.now();
+  const canToggleSeriesOnly = Boolean(selectedEventFilter?.seriesId);
 
-    return Array.from(groups.values())
-      .map((group) => {
-        const option = calendarFilterOptionByKey.get(group.key);
-        const sortTsFromLinks =
-          group.occurrences.length > 0 ? [...group.occurrences].sort((a, b) => b - a)[0] : null;
-
-        return {
-          key: group.key,
-          label: option?.label || group.fallbackTitle || "Meeting",
-          summary: option?.summary || group.fallbackTitle || "Meeting",
-          isRecurring: option?.isRecurring ?? group.key.startsWith("series:"),
-          sortTs: option?.sortTs ?? sortTsFromLinks,
-          noteCount: group.noteIds.size,
-        };
-      })
-      .sort((a, b) => {
-        const aTs = a.sortTs ?? 0;
-        const bTs = b.sortTs ?? 0;
-        const aFuture = a.sortTs !== null && aTs >= nowMs;
-        const bFuture = b.sortTs !== null && bTs >= nowMs;
-        if (aFuture !== bFuture) return aFuture ? -1 : 1;
-        if (aFuture && bFuture) return aTs - bTs;
-        if (!aFuture && !bFuture) return bTs - aTs;
-        return a.label.localeCompare(b.label);
-      });
-  }, [notes, calendarFilterOptionByKey]);
+  useEffect(() => {
+    if (!canToggleSeriesOnly && seriesOnlyFilter) {
+      setSeriesOnlyFilter(false);
+    }
+  }, [canToggleSeriesOnly, seriesOnlyFilter]);
 
   const selectedNote = useMemo(
     () => (notes || []).find((note) => String(note.id) === String(selectedNoteId || "")) || null,
@@ -527,15 +514,6 @@ export default function Notebook() {
     () => (Array.isArray(selectedNote?.links) ? selectedNote.links : []),
     [selectedNote]
   );
-
-  const recurringLinkFilterKey = useMemo(() => {
-    for (const link of selectedLinks) {
-      if (link?.linkType !== "google_calendar_event") continue;
-      const seriesId = String(link.seriesId || "").trim();
-      if (seriesId) return `series:${seriesId}`;
-    }
-    return "";
-  }, [selectedLinks]);
 
   const visibleNotes = useMemo(() => {
     let rows = [...(notes || [])];
@@ -550,17 +528,21 @@ export default function Notebook() {
       rows = rows.filter((note: any) => (note.notebook || "General") === activeNav.name);
     }
 
-    if (activeEventFilterKey) {
+    if (linkedOnlyFilter && !(activeNav.kind === "view" && activeNav.key === "linked")) {
+      rows = rows.filter((note: any) => (Array.isArray(note.links) ? note.links.length > 0 : false));
+    }
+
+    if (effectiveEventFilterKey) {
       rows = rows.filter((note: any) => {
         const links = Array.isArray(note.links) ? note.links : [];
         return links.some((link: any) => {
           if (link.linkType !== "google_calendar_event") return false;
           const externalId = String(link.externalId || "");
           const seriesId = String(link.seriesId || "");
-          if (activeEventFilterKey.startsWith("series:")) {
-            return `series:${seriesId}` === activeEventFilterKey;
+          if (effectiveEventFilterKey.startsWith("series:")) {
+            return `series:${seriesId}` === effectiveEventFilterKey;
           }
-          return `event:${externalId}` === activeEventFilterKey;
+          return `event:${externalId}` === effectiveEventFilterKey;
         });
       });
     }
@@ -576,16 +558,33 @@ export default function Notebook() {
     }
 
     const nowMs = Date.now();
+    const getUpdatedTs = (note: any) => new Date(note.updatedAt || note.createdAt || 0).getTime();
+    const alphaCompare = (a: any, b: any) =>
+      String(a.title || "Untitled").localeCompare(String(b.title || "Untitled"), undefined, {
+        sensitivity: "base",
+      });
 
     return [...rows].sort((a: any, b: any) => {
-      if (activeEventFilterKey) {
+      if (notesSort === "updated_desc") {
+        return getUpdatedTs(b) - getUpdatedTs(a);
+      }
+      if (notesSort === "created_desc") {
+        const aCreated = new Date(a.createdAt || 0).getTime();
+        const bCreated = new Date(b.createdAt || 0).getTime();
+        return bCreated - aCreated;
+      }
+      if (notesSort === "title_asc") {
+        return alphaCompare(a, b);
+      }
+
+      if (effectiveEventFilterKey) {
         const buildMeta = (note: any) => {
           const links = (Array.isArray(note.links) ? note.links : []).filter((link: any) => {
             if (link.linkType !== "google_calendar_event") return false;
-            if (activeEventFilterKey.startsWith("series:")) {
-              return `series:${String(link.seriesId || "")}` === activeEventFilterKey;
+            if (effectiveEventFilterKey.startsWith("series:")) {
+              return `series:${String(link.seriesId || "")}` === effectiveEventFilterKey;
             }
-            return `event:${String(link.externalId || "")}` === activeEventFilterKey;
+            return `event:${String(link.externalId || "")}` === effectiveEventFilterKey;
           });
 
           const times = links
@@ -611,11 +610,9 @@ export default function Notebook() {
       const aPinned = a.pinned ? 1 : 0;
       const bPinned = b.pinned ? 1 : 0;
       if (aPinned !== bPinned) return bPinned - aPinned;
-      const aTs = new Date(a.updatedAt || a.createdAt || 0).getTime();
-      const bTs = new Date(b.updatedAt || b.createdAt || 0).getTime();
-      return bTs - aTs;
+      return getUpdatedTs(b) - getUpdatedTs(a);
     });
-  }, [notes, activeNav, activeEventFilterKey, searchQuery]);
+  }, [notes, activeNav, linkedOnlyFilter, effectiveEventFilterKey, searchQuery, notesSort]);
 
   useEffect(() => {
     if (isDraftMode) return;
@@ -625,9 +622,35 @@ export default function Notebook() {
   }, [selectedNoteId, visibleNotes, isDraftMode]);
 
   useEffect(() => {
-    if (!selectedNote || isDraftMode) return;
-    loadNoteIntoEditor(selectedNote);
-  }, [selectedNote?.id, selectedNote?.updatedAt, selectedNote?.content, isDraftMode, loadNoteIntoEditor]);
+    const requestId = ++selectionRequestRef.current;
+    const requestedNoteId = selectedNoteId;
+    const snapshot = resolveNotebookEditorSnapshot({
+      selectedNoteId,
+      isDraftMode,
+      notes: (notes || []) as Array<{ id: string; title?: string; notebook?: string; content?: string }>,
+      draftsByKey,
+    });
+    if (!snapshot) return;
+
+    if (
+      !shouldApplySelectionUpdate({
+        requestId,
+        currentRequestId: selectionRequestRef.current,
+        requestedNoteId,
+        currentSelectedNoteId: selectedNoteIdRef.current,
+      })
+    ) {
+      return;
+    }
+
+    applyEditorSnapshot({
+      source: snapshot.source,
+      title: snapshot.title,
+      notebook: snapshot.notebook,
+      content: snapshot.content,
+      dirty: snapshot.dirty,
+    });
+  }, [selectedNoteId, isDraftMode, notes, draftsByKey, applyEditorSnapshot]);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -661,6 +684,15 @@ export default function Notebook() {
           title: titleInput || "Untitled note",
           content,
         });
+        const savedDraftKey = getSelectionDraftKey(selectedNoteId, false);
+        if (savedDraftKey) {
+          setDraftsByKey((prev) => {
+            if (!prev[savedDraftKey]) return prev;
+            const next = { ...prev };
+            delete next[savedDraftKey];
+            return next;
+          });
+        }
         setIsDirty(false);
         setSaveState("saved");
         await refetchNotes();
@@ -677,6 +709,15 @@ export default function Notebook() {
         pinned: false,
       });
 
+      const draftKey = getSelectionDraftKey(null, true);
+      if (draftKey) {
+        setDraftsByKey((prev) => {
+          if (!prev[draftKey]) return prev;
+          const next = { ...prev };
+          delete next[draftKey];
+          return next;
+        });
+      }
       setSelectedNoteId(result.noteId);
       setIsDraftMode(false);
       setIsDirty(false);
@@ -734,38 +775,40 @@ export default function Notebook() {
 
   const createDraft = () => {
     clearAutosaveTimer();
+    stashCurrentDraft();
     setIsDraftMode(true);
     setSelectedNoteId(null);
-
-    if (activeNav.kind === "notebook") {
-      setNoteNotebookInput(activeNav.name);
-    } else {
-      setNoteNotebookInput("General");
-    }
-
-    setNoteTitleInput("");
-    setNoteContentHtml("<p></p>");
-    setIsDirty(false);
-    setSaveState("saved");
     setMobilePanel("editor");
-
-    if (editorRef.current) {
-      editorRef.current.innerHTML = "<p></p>";
-      editorRef.current.focus();
+    const draftKey = getSelectionDraftKey(null, true);
+    if (draftKey) {
+      setDraftsByKey((prev) => {
+        if (prev[draftKey]) return prev;
+        return {
+          ...prev,
+          [draftKey]: {
+            title: "",
+            notebook: activeNav.kind === "notebook" ? activeNav.name : "General",
+            contentHtml: "<p></p>",
+            dirty: false,
+            updatedAt: Date.now(),
+          },
+        };
+      });
     }
   };
 
   const selectNote = (note: any) => {
     clearAutosaveTimer();
+    stashCurrentDraft();
     isSwitchingNoteRef.current = true;
     setIsDraftMode(false);
     setSelectedNoteId(String(note.id));
-    loadNoteIntoEditor(note);
     setMobilePanel("editor");
-    window.requestAnimationFrame(() => {
-      isSwitchingNoteRef.current = false;
-    });
   };
+
+  useEffect(() => {
+    isSwitchingNoteRef.current = false;
+  }, [selectedNoteId, isDraftMode]);
 
   const deleteSelectedNote = async () => {
     if (!selectedNoteId || isDraftMode) {
@@ -775,6 +818,15 @@ export default function Notebook() {
 
     try {
       await deleteNoteMutation.mutateAsync({ noteId: selectedNoteId });
+      const deletedDraftKey = getSelectionDraftKey(selectedNoteId, false);
+      if (deletedDraftKey) {
+        setDraftsByKey((prev) => {
+          if (!prev[deletedDraftKey]) return prev;
+          const next = { ...prev };
+          delete next[deletedDraftKey];
+          return next;
+        });
+      }
       setIsDeleteDialogOpen(false);
       setSelectedNoteId(null);
       setIsDraftMode(false);
@@ -822,6 +874,30 @@ export default function Notebook() {
       toast.success(`Moved to ${targetNotebook}`);
     } catch (error: any) {
       toast.error(`Failed to move note: ${error?.message || "Unknown error"}`);
+    }
+  };
+
+  const duplicateSelectedNote = async () => {
+    if (!selectedNote || isDraftMode) {
+      toast.error("Select a saved note first");
+      return;
+    }
+
+    try {
+      const result = await createNoteMutation.mutateAsync({
+        notebook: String(selectedNote.notebook || "General"),
+        title: `${String(selectedNote.title || "Untitled note")} (Copy)`,
+        content: normalizeStoredHtml(selectedNote.content),
+        pinned: false,
+      });
+
+      await refetchNotes();
+      setSelectedNoteId(String(result.noteId));
+      setIsDraftMode(false);
+      setMobilePanel("editor");
+      toast.success("Note duplicated");
+    } catch (error: any) {
+      toast.error(`Failed to duplicate note: ${error?.message || "Unknown error"}`);
     }
   };
 
@@ -972,13 +1048,6 @@ export default function Notebook() {
     }
   };
 
-  const applyMeetingFilter = (meetingKey: string) => {
-    setActiveNav({ kind: "notebook", name: "Meetings" });
-    setActiveEventFilterKey(meetingKey);
-    setIsSidebarOpen(false);
-    setMobilePanel("list");
-  };
-
   const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       const selection = window.getSelection();
@@ -1047,156 +1116,243 @@ export default function Notebook() {
 
   const clearEventFilter = () => {
     setActiveEventFilterKey("");
+    setSeriesOnlyFilter(false);
   };
 
   const navHeaderLabel = useMemo(() => {
     if (activeNav.kind === "view") {
       if (activeNav.key === "all") return "All notes";
-      if (activeNav.key === "pinned") return "Pinned notes";
-      return "Linked notes";
+      if (activeNav.key === "pinned") return "Pinned";
+      return "Linked";
     }
     return activeNav.name;
   }, [activeNav]);
 
+  const scopeBreadcrumb = useMemo(() => {
+    if (!selectedEventFilter) return navHeaderLabel;
+    if (seriesOnlyFilter && selectedEventFilter.seriesId) {
+      return `${navHeaderLabel} • ${selectedEventFilter.summary} (series)`;
+    }
+    return `${navHeaderLabel} • ${selectedEventFilter.label}`;
+  }, [navHeaderLabel, selectedEventFilter, seriesOnlyFilter]);
+
+  const hasAnyFilter = Boolean(activeEventFilterKey || linkedOnlyFilter || searchQuery.trim());
+
+  const filteredCalendarFilterOptions = useMemo(() => {
+    const query = calendarFilterQuery.trim().toLowerCase();
+    if (!query) return calendarFilterOptions;
+    return calendarFilterOptions.filter((option) => {
+      return (
+        option.label.toLowerCase().includes(query) ||
+        option.summary.toLowerCase().includes(query) ||
+        option.seriesId.toLowerCase().includes(query)
+      );
+    });
+  }, [calendarFilterOptions, calendarFilterQuery]);
+
+  const clearAllFilters = () => {
+    setSearchQuery("");
+    setActiveEventFilterKey("");
+    setSeriesOnlyFilter(false);
+    setLinkedOnlyFilter(false);
+  };
+
   const sidebarNav = (
-    <div className="space-y-5">
-      <div>
-        <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Smart Views</p>
-        <div className="space-y-1">
-          {([
-            { key: "all", label: "All Notes", count: smartViewCounts.all },
-            { key: "pinned", label: "Pinned", count: smartViewCounts.pinned },
-            { key: "linked", label: "Linked", count: smartViewCounts.linked },
-          ] as const).map((row) => {
-            const active = activeNav.kind === "view" && activeNav.key === row.key;
-            return (
-              <button
-                key={row.key}
-                type="button"
-                onClick={() => {
-                  setActiveNav({ kind: "view", key: row.key });
-                  setActiveEventFilterKey("");
-                  setIsSidebarOpen(false);
-                  setMobilePanel("list");
-                }}
-                className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  active
-                    ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span>{row.label}</span>
-                  <span className="text-[11px]">{row.count}</span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div>
-        <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Notebooks</p>
-        <div className="space-y-1">
-          {notebooks.map((notebook) => {
-            const active = activeNav.kind === "notebook" && activeNav.name === notebook.name;
-            return (
-              <button
-                key={notebook.name}
-                type="button"
-                onClick={() => {
-                  setActiveNav({ kind: "notebook", name: notebook.name });
-                  setActiveEventFilterKey("");
-                  setIsSidebarOpen(false);
-                  setMobilePanel("list");
-                }}
-                className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors ${
-                  active
-                    ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate">{notebook.name}</span>
-                  <span className="text-[11px]">{notebook.count}</span>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {activeNav.kind === "notebook" && activeNav.name === "Meetings" && meetingFolders.length > 0 && (
-        <div>
-          <p className="mb-2 px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Meeting Folders</p>
-          <div className="max-h-[240px] space-y-1 overflow-y-auto pr-1">
-            {meetingFolders.map((meeting) => {
-              const active = activeEventFilterKey === meeting.key;
+    <div className="space-y-3">
+      <div className="rounded-md border border-slate-200 bg-white">
+        <button
+          type="button"
+          onClick={() => setSmartViewsExpanded((prev) => !prev)}
+          className="flex w-full items-center justify-between px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          aria-label="Toggle smart views section"
+          aria-expanded={smartViewsExpanded}
+        >
+          Smart views
+          <span className="text-xs">{smartViewsExpanded ? "−" : "+"}</span>
+        </button>
+        {smartViewsExpanded && (
+          <div className="space-y-1 border-t border-slate-200 p-1.5">
+            {([
+              { key: "all", label: "All Notes", count: smartViewCounts.all },
+              { key: "pinned", label: "Pinned", count: smartViewCounts.pinned },
+              { key: "linked", label: "Linked", count: smartViewCounts.linked },
+            ] as const).map((row) => {
+              const active = activeNav.kind === "view" && activeNav.key === row.key;
               return (
                 <button
-                  key={meeting.key}
+                  key={row.key}
                   type="button"
-                  onClick={() => applyMeetingFilter(meeting.key)}
-                  className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors ${
+                  onClick={() => {
+                    setActiveNav({ kind: "view", key: row.key });
+                    setIsSidebarOpen(false);
+                    setMobilePanel("list");
+                  }}
+                  className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                     active
                       ? "border-emerald-300 bg-emerald-50 text-emerald-900"
                       : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
                   }`}
                 >
-                  <p className="truncate font-medium">{meeting.label}</p>
-                  <p className="mt-0.5 text-[10px] opacity-80">
-                    {meeting.noteCount} note{meeting.noteCount === 1 ? "" : "s"}
-                  </p>
+                  <div className="flex items-center justify-between">
+                    <span>{row.label}</span>
+                    <span className="text-[11px]">{row.count}</span>
+                  </div>
                 </button>
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
+
+      <div className="rounded-md border border-slate-200 bg-white">
+        <button
+          type="button"
+          onClick={() => setNotebooksExpanded((prev) => !prev)}
+          className="flex w-full items-center justify-between px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          aria-label="Toggle notebooks section"
+          aria-expanded={notebooksExpanded}
+        >
+          Notebooks
+          <span className="text-xs">{notebooksExpanded ? "−" : "+"}</span>
+        </button>
+        {notebooksExpanded && (
+          <div className="space-y-1 border-t border-slate-200 p-1.5">
+            {notebooks.map((notebook) => {
+              const active = activeNav.kind === "notebook" && activeNav.name === notebook.name;
+              return (
+                <button
+                  key={notebook.name}
+                  type="button"
+                  onClick={() => {
+                    setActiveNav({ kind: "notebook", name: notebook.name });
+                    setIsSidebarOpen(false);
+                    setMobilePanel("list");
+                  }}
+                  className={`w-full rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                    active
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                      : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate">{notebook.name}</span>
+                    <span className="text-[11px]">{notebook.count}</span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 
   const notesListPane = (
     <Card className="h-full">
-      <CardHeader className="pb-3">
-        <CardTitle className="text-base">{navHeaderLabel}</CardTitle>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="truncate text-base" title={scopeBreadcrumb}>
+            {scopeBreadcrumb}
+          </CardTitle>
+          <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
+            <span>{visibleNotes.length}</span>
+            {hasAnyFilter && (
+              <button
+                type="button"
+                className="text-emerald-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                onClick={clearAllFilters}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="space-y-2.5">
         <div className="flex items-center gap-2">
-          <div className="relative flex-1">
+          <div className="relative min-w-0 flex-1">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
             <Input
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search notes"
+              placeholder="Search notes..."
               className="h-9 pl-8 text-sm"
               aria-label="Search notes"
             />
           </div>
-          {searchQuery.trim() && (
-            <Button variant="outline" size="sm" onClick={() => setSearchQuery("")}>
-              Clear
-            </Button>
-          )}
+
+          <select
+            value={notesSort}
+            onChange={(e) => setNotesSort(e.target.value as NotesSort)}
+            aria-label="Sort notes"
+            className="h-9 rounded-md border border-slate-300 bg-white px-2.5 text-xs text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          >
+            <option value="context">Context</option>
+            <option value="updated_desc">Updated</option>
+            <option value="created_desc">Created</option>
+            <option value="title_asc">Title</option>
+          </select>
+
+          <Button
+            variant={activeEventFilterKey || linkedOnlyFilter ? "default" : "outline"}
+            size="sm"
+            onClick={() => {
+              setCalendarFilterQuery("");
+              setIsCalendarFilterOpen(true);
+            }}
+            aria-label="Open notes filter"
+            className="h-9 px-2.5 focus-visible:ring-2 focus-visible:ring-emerald-500"
+          >
+            <Filter className="h-3.5 w-3.5" />
+          </Button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-          <span>{visibleNotes.length} shown</span>
-          {selectedEventFilter && (
-            <Badge variant="outline" className="gap-1 text-[11px]">
-              <Calendar className="h-3 w-3" />
-              {selectedEventFilter.label}
-              <button
-                type="button"
-                onClick={clearEventFilter}
-                className="ml-0.5 rounded-full p-0.5 hover:bg-slate-100"
-                aria-label="Clear event filter"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </Badge>
-          )}
-        </div>
+        {(activeEventFilterKey || linkedOnlyFilter || seriesOnlyFilter) && (
+          <div className="flex flex-wrap items-center gap-1">
+            {selectedEventFilter && (
+              <Badge variant="outline" className="gap-1 text-[11px]">
+                <Calendar className="h-3 w-3" />
+                {seriesOnlyFilter && selectedEventFilter.seriesId
+                  ? `Calendar: ${selectedEventFilter.summary} (series)`
+                  : `Calendar: ${selectedEventFilter.label}`}
+                <button
+                  type="button"
+                  onClick={clearEventFilter}
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  aria-label="Clear calendar filter"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            )}
+            {seriesOnlyFilter && selectedEventFilter?.seriesId && (
+              <Badge variant="outline" className="gap-1 text-[11px]">
+                Series only
+                <button
+                  type="button"
+                  onClick={() => setSeriesOnlyFilter(false)}
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  aria-label="Disable series only filter"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            )}
+            {linkedOnlyFilter && (
+              <Badge variant="outline" className="gap-1 text-[11px]">
+                Linked only
+                <button
+                  type="button"
+                  onClick={() => setLinkedOnlyFilter(false)}
+                  className="ml-0.5 rounded-full p-0.5 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                  aria-label="Disable linked only filter"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            )}
+          </div>
+        )}
 
         {notesLoading ? (
           <div className="flex items-center justify-center py-10">
@@ -1208,46 +1364,54 @@ export default function Notebook() {
           </p>
         ) : visibleNotes.length === 0 ? (
           <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-600">
-            No notes match your filters. Try a different view or clear search.
+            No notes match this filter.
           </div>
         ) : (
-          <div className="max-h-[calc(100vh-290px)] overflow-y-auto rounded-md border border-slate-200 bg-white">
+          <div className="max-h-[calc(100vh-245px)] overflow-y-auto rounded-md border border-slate-200 bg-white">
             {visibleNotes.map((note: any) => {
-              const active = !isDraftMode && selectedNoteId === note.id;
+              const active = !isDraftMode && String(selectedNoteId || "") === String(note.id);
               const links = Array.isArray(note.links) ? note.links.length : 0;
+              const preview = stripHtml(note.content || "");
+              const showNotebookChip = activeNav.kind !== "notebook";
 
               return (
                 <button
                   key={note.id}
                   type="button"
+                  onMouseDown={() => {
+                    // Mark switch before contentEditable blur fires to avoid stale editor write-back.
+                    isSwitchingNoteRef.current = true;
+                  }}
                   onClick={() => selectNote(note)}
-                  className={`w-full border-b border-slate-100 px-3 py-2.5 text-left last:border-b-0 ${
+                  className={`w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                     active ? "bg-emerald-50" : "hover:bg-slate-50"
                   }`}
+                  aria-label={`Open note ${String(note.title || "Untitled note")}`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-slate-900">{note.title}</p>
-                      <p className="mt-0.5 line-clamp-2 text-xs text-slate-600">
-                        {stripHtml(note.content || "") || "No content"}
-                      </p>
-                      <div className="mt-2 flex flex-wrap items-center gap-1">
-                        <Badge variant="outline" className="text-[10px]">
-                          {note.notebook || "General"}
-                        </Badge>
-                        {note.pinned && (
-                          <Badge variant="outline" className="text-[10px]">
-                            Pinned
-                          </Badge>
-                        )}
-                        {links > 0 && (
-                          <Badge variant="outline" className="text-[10px]">
-                            {links} link{links === 1 ? "" : "s"}
-                          </Badge>
-                        )}
+                      {preview ? <p className="mt-0.5 line-clamp-1 text-xs text-slate-600">{preview}</p> : null}
+                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                        <div className="min-w-0">
+                          {showNotebookChip ? (
+                            <Badge variant="outline" className="max-w-full truncate text-[10px]">
+                              {note.notebook || "General"}
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {links > 0 ? (
+                            <span className="inline-flex items-center gap-1" title={`${links} linked items`}>
+                              <Link2 className="h-3 w-3" />
+                              {links}
+                            </span>
+                          ) : null}
+                          {note.pinned ? <Pin className="h-3 w-3" aria-label="Pinned note" /> : null}
+                          <span>{formatDateTime(note.updatedAt || note.createdAt)}</span>
+                        </div>
                       </div>
                     </div>
-                    <span className="shrink-0 text-[11px] text-slate-500">{formatDateTime(note.updatedAt || note.createdAt)}</span>
                   </div>
                 </button>
               );
@@ -1260,77 +1424,93 @@ export default function Notebook() {
 
   const editorPane = (
     <Card className="h-full">
-      <CardHeader className="pb-3">
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <CardTitle className="text-base">Editor</CardTitle>
-                  <p className="mt-1 text-xs text-slate-500">{getSaveStateLabel(saveState)}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="default"
-                    size="sm"
-                    onClick={() => void persistNote(true)}
-                    disabled={saveState === "saving" || (!selectedNoteId && !isDraftMode)}
+      <CardHeader className="sticky top-0 z-10 border-b bg-white/95 pb-3 backdrop-blur">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <CardTitle className="text-base">Editor</CardTitle>
+            <p className="mt-1 text-xs text-slate-500">{getSaveStateLabel(saveState)}</p>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              aria-label="Attach event or task"
+              disabled={!selectedNoteId || isDraftMode}
+              onClick={() => {
+                if (!selectedNoteId || isDraftMode) {
+                  toast.error("Save the note first, then attach");
+                  return;
+                }
+                setAttachOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="h-8 w-8"
+              aria-label={selectedNote?.pinned ? "Unpin note" : "Pin note"}
+              disabled={!selectedNoteId || isDraftMode}
+              onClick={() => void togglePin()}
+            >
+              {selectedNote?.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-8 w-8"
+                  aria-label="More note actions"
+                  disabled={!selectedNoteId && !isDraftMode}
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56" aria-label="Note actions menu">
+                <DropdownMenuItem onClick={() => void persistNote(true)} disabled={saveState === "saving"}>
+                  Save now
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                <DropdownMenuItem onClick={() => void duplicateSelectedNote()} disabled={!selectedNoteId || isDraftMode}>
+                  <Copy className="h-4 w-4" />
+                  Duplicate
+                </DropdownMenuItem>
+
+                <DropdownMenuSeparator />
+
+                {(notebooks.length > 0 ? notebooks : [{ name: "General", count: 0 }]).slice(0, 12).map((row) => (
+                  <DropdownMenuItem
+                    key={row.name}
+                    onClick={() => void moveSelectedNoteToNotebook(row.name)}
+                    disabled={!selectedNoteId || isDraftMode || row.name === (selectedNote?.notebook || "General")}
                   >
-                    <Save className="mr-1 h-4 w-4" />
-                    Save
-                  </Button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        className="h-8 w-8"
-                        aria-label="More note actions"
-                        disabled={!selectedNoteId || isDraftMode}
-                      >
-                        <MoreHorizontal className="h-4 w-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-56" aria-label="Note actions menu">
-                      <DropdownMenuItem onClick={togglePin} disabled={!selectedNoteId || isDraftMode}>
-                        {selectedNote?.pinned ? (
-                          <>
-                            <PinOff className="h-4 w-4" />
-                            Unpin note
-                          </>
-                        ) : (
-                          <>
-                            <Pin className="h-4 w-4" />
-                            Pin note
-                          </>
-                        )}
-                      </DropdownMenuItem>
+                    <FolderOpen className="h-4 w-4" />
+                    Move to {row.name}
+                  </DropdownMenuItem>
+                ))}
 
-                      <DropdownMenuSeparator />
+                <DropdownMenuSeparator />
 
-                      {(notebooks.length > 0 ? notebooks : [{ name: "General", count: 0 }]).slice(0, 12).map((row) => (
-                        <DropdownMenuItem
-                          key={row.name}
-                          onClick={() => void moveSelectedNoteToNotebook(row.name)}
-                          disabled={!selectedNoteId || isDraftMode || row.name === (selectedNote?.notebook || "General")}
-                        >
-                          <FolderOpen className="h-4 w-4" />
-                          Move to {row.name}
-                        </DropdownMenuItem>
-                      ))}
-
-                      <DropdownMenuSeparator />
-
-                      <DropdownMenuItem
-                        onClick={() => setIsDeleteDialogOpen(true)}
-                        disabled={!selectedNoteId || isDraftMode}
-                        className="text-rose-700 focus:text-rose-700"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        Delete note
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              </div>
-            </CardHeader>
+                <DropdownMenuItem
+                  onClick={() => setIsDeleteDialogOpen(true)}
+                  disabled={!selectedNoteId || isDraftMode}
+                  className="text-rose-700 focus:text-rose-700"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete note
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </CardHeader>
 
       <CardContent className="space-y-3">
         {!selectedNoteId && !isDraftMode ? (
@@ -1350,7 +1530,7 @@ export default function Notebook() {
               aria-label="Note title"
             />
 
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[140px_minmax(0,1fr)] sm:items-center">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center">
               <label className="text-xs font-medium text-slate-600" htmlFor="notebook-name-input">
                 Notebook
               </label>
@@ -1364,6 +1544,51 @@ export default function Notebook() {
                 className="h-8 text-xs"
                 placeholder="Notebook name"
               />
+            </div>
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs font-medium text-slate-600">Linked:</span>
+                {selectedLinks.length === 0 ? (
+                  <span className="text-xs text-slate-500">No linked events yet.</span>
+                ) : (
+                  selectedLinks.map((link: any) => {
+                    const isCalendar = link.linkType === "google_calendar_event";
+                    const label = isCalendar
+                      ? linkedEventLabelByLinkId.get(link.id) || link.sourceTitle || "Calendar event"
+                      : link.sourceTitle || "Todoist task";
+
+                    return (
+                      <Badge key={link.id} variant="outline" className="max-w-[260px] gap-1 truncate text-[11px]">
+                        <span className="truncate">{label}</span>
+                        <button
+                          type="button"
+                          className="rounded-full p-0.5 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          aria-label={`Unlink ${label}`}
+                          onClick={() => void removeLink(link.id)}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    );
+                  })
+                )}
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-7 px-2 text-xs"
+                  onClick={() => {
+                    if (!selectedNoteId || isDraftMode) {
+                      toast.error("Save the note first, then attach");
+                      return;
+                    }
+                    setAttachOpen(true);
+                  }}
+                >
+                  Attach...
+                </Button>
+              </div>
             </div>
 
             <div className="rounded-md border border-slate-200 bg-white">
@@ -1392,16 +1617,22 @@ export default function Notebook() {
               </div>
 
               <div
+                key={isDraftMode ? "draft-editor" : `note-editor-${selectedNoteId || "none"}`}
                 ref={editorRef}
+                data-editor-session={editorSession}
                 contentEditable
                 suppressContentEditableWarning
-                onInput={() => {
+                onInput={(event) => {
+                  const eventSession = Number(event.currentTarget.dataset.editorSession || 0);
+                  if (eventSession !== editorSessionRef.current) return;
                   const sanitized = sanitizeEditorHtml(editorRef.current?.innerHTML || "<p></p>");
                   setNoteContentHtml(sanitized);
                   setIsDirty(true);
                 }}
-                onBlur={() => {
+                onBlur={(event) => {
                   if (isSwitchingNoteRef.current) return;
+                  const eventSession = Number(event.currentTarget.dataset.editorSession || 0);
+                  if (eventSession !== editorSessionRef.current) return;
                   if (!editorRef.current) return;
                   const sanitized = sanitizeEditorHtml(editorRef.current.innerHTML || "<p></p>");
                   editorRef.current.innerHTML = sanitized;
@@ -1410,86 +1641,6 @@ export default function Notebook() {
                 onKeyDown={handleEditorKeyDown}
                 className="notes-richtext min-h-[260px] max-h-[calc(100vh-480px)] overflow-y-auto p-3 text-sm outline-none"
               />
-            </div>
-
-            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-slate-700">Linked to</p>
-                <div className="flex items-center gap-2">
-                  {recurringLinkFilterKey && (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant={activeEventFilterKey === recurringLinkFilterKey ? "default" : "outline"}
-                      className="h-7 px-2 text-xs"
-                      onClick={() => {
-                        setActiveEventFilterKey(
-                          activeEventFilterKey === recurringLinkFilterKey ? "" : recurringLinkFilterKey
-                        );
-                      }}
-                    >
-                      <CircleDashed className="mr-1 h-3.5 w-3.5" />
-                      {activeEventFilterKey === recurringLinkFilterKey ? "Viewing series" : "View series notes"}
-                    </Button>
-                  )}
-
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    onClick={() => {
-                      if (!selectedNoteId || isDraftMode) {
-                        toast.error("Save the note first, then attach");
-                        return;
-                      }
-                      setAttachOpen(true);
-                    }}
-                  >
-                    <Plus className="mr-1 h-3.5 w-3.5" />
-                    Attach...
-                  </Button>
-                </div>
-              </div>
-
-              <div className="mt-2 space-y-2">
-                {selectedLinks.length === 0 ? (
-                  <p className="text-xs text-slate-500">No linked events or tasks yet.</p>
-                ) : (
-                  selectedLinks.map((link: any) => {
-                    const isCalendar = link.linkType === "google_calendar_event";
-                    const label = isCalendar
-                      ? linkedEventLabelByLinkId.get(link.id) || link.sourceTitle || "Calendar event"
-                      : link.sourceTitle || "Todoist task";
-
-                    return (
-                      <div
-                        key={link.id}
-                        className="flex items-start justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1.5"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-xs font-medium text-slate-800">{label}</p>
-                          <p className="mt-0.5 truncate text-[11px] text-slate-500">
-                            {isCalendar ? "Event" : "Task"}
-                            {link.seriesId ? ` · Series ${formatSeriesIdentifier(String(link.seriesId))}` : ""}
-                            {link.occurrenceStartIso ? ` · ${formatDateTime(link.occurrenceStartIso)}` : ""}
-                          </p>
-                        </div>
-
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-6 w-6"
-                          onClick={() => void removeLink(link.id)}
-                          aria-label="Unlink item"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
             </div>
           </>
         )}
@@ -1516,7 +1667,7 @@ export default function Notebook() {
               <SheetContent side="left" className="w-[320px] sm:max-w-[320px]">
                 <SheetHeader>
                   <SheetTitle>Notebook Navigation</SheetTitle>
-                  <SheetDescription>Switch notebooks, smart views, or meeting folders.</SheetDescription>
+                  <SheetDescription>Switch smart views and notebooks.</SheetDescription>
                 </SheetHeader>
                 <div className="px-4 pb-4">{sidebarNav}</div>
               </SheetContent>
@@ -1538,7 +1689,7 @@ export default function Notebook() {
       </header>
 
       <main className="container mx-auto px-4 py-4">
-        <div className="hidden gap-4 lg:grid lg:grid-cols-[260px_380px_minmax(0,1fr)]">
+        <div className="hidden gap-4 lg:grid lg:grid-cols-[240px_400px_minmax(0,1fr)]">
           <Card className="h-full">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">Browse</CardTitle>
@@ -1569,6 +1720,111 @@ export default function Notebook() {
       </main>
 
       <Dialog
+        open={isCalendarFilterOpen}
+        onOpenChange={(open) => {
+          setIsCalendarFilterOpen(open);
+          if (!open) {
+            setCalendarFilterQuery("");
+          }
+        }}
+      >
+      <DialogContent className="sm:max-w-xl" aria-label="Calendar filter dialog">
+        <DialogHeader>
+          <DialogTitle>Filters</DialogTitle>
+          <DialogDescription>Refine notes by calendar context and linked state.</DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <Input
+            value={calendarFilterQuery}
+            onChange={(e) => setCalendarFilterQuery(e.target.value)}
+            placeholder="Search events or series"
+            className="h-9"
+            aria-label="Search calendar filters"
+          />
+
+          {activeNav.kind !== "view" || activeNav.key !== "linked" ? (
+            <label className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <span>Linked only</span>
+              <input
+                type="checkbox"
+                checked={linkedOnlyFilter}
+                onChange={(e) => setLinkedOnlyFilter(e.target.checked)}
+                aria-label="Linked only filter"
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+            </label>
+          ) : null}
+
+          {canToggleSeriesOnly ? (
+            <label className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-700">
+              <span>Series only</span>
+              <input
+                type="checkbox"
+                checked={seriesOnlyFilter}
+                onChange={(e) => setSeriesOnlyFilter(e.target.checked)}
+                aria-label="Series only filter"
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+            </label>
+          ) : null}
+
+          <div className="max-h-80 overflow-y-auto rounded-md border border-slate-200">
+            <button
+              type="button"
+              onClick={() => {
+                clearEventFilter();
+                setIsCalendarFilterOpen(false);
+                }}
+                className={`w-full border-b border-slate-100 px-3 py-2 text-left hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                  !selectedEventFilter ? "bg-emerald-50" : ""
+                }`}
+                aria-label="Show notes from all calendar events"
+              >
+                <p className="text-sm font-medium text-slate-900">All calendar events</p>
+                <p className="text-xs text-slate-500">No calendar filter</p>
+              </button>
+
+              {filteredCalendarFilterOptions.length === 0 ? (
+                <p className="px-3 py-6 text-sm text-slate-500">No calendar events match your search.</p>
+              ) : (
+                filteredCalendarFilterOptions.map((option) => {
+                  const active = effectiveEventFilterKey === option.key;
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      onClick={() => {
+                        setActiveEventFilterKey(option.key);
+                        setSeriesOnlyFilter(option.key.startsWith("series:"));
+                        setIsCalendarFilterOpen(false);
+                      }}
+                      className={`w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                        active ? "bg-emerald-50" : ""
+                      }`}
+                      aria-label={`Filter notes by ${option.label}`}
+                    >
+                      <p className="truncate text-sm font-medium text-slate-900">{option.label}</p>
+                      <p className="text-xs text-slate-500">{option.isRecurring ? "Recurring series" : "Single event"}</p>
+                    </button>
+                  );
+                })
+              )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={clearAllFilters}>
+            Clear all
+          </Button>
+          <Button type="button" variant="outline" onClick={() => setIsCalendarFilterOpen(false)}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={attachOpen}
         onOpenChange={(open) => {
           setAttachOpen(open);
@@ -1582,11 +1838,41 @@ export default function Notebook() {
           <DialogHeader>
             <DialogTitle>Attach to note</DialogTitle>
             <DialogDescription>
-              Link this note to a calendar event or Todoist task from one place.
+              Link and unlink calendar events or Todoist tasks in one place.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+              <p className="mb-1 text-xs font-medium text-slate-700">Currently linked</p>
+              <div className="flex flex-wrap gap-1.5">
+                {selectedLinks.length === 0 ? (
+                  <p className="text-xs text-slate-500">No linked items yet.</p>
+                ) : (
+                  selectedLinks.map((link: any) => {
+                    const isCalendar = link.linkType === "google_calendar_event";
+                    const label = isCalendar
+                      ? linkedEventLabelByLinkId.get(link.id) || link.sourceTitle || "Calendar event"
+                      : link.sourceTitle || "Todoist task";
+
+                    return (
+                      <Badge key={link.id} variant="outline" className="max-w-[290px] gap-1 truncate text-[11px]">
+                        <span className="truncate">{label}</span>
+                        <button
+                          type="button"
+                          className="rounded-full p-0.5 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                          aria-label={`Unlink ${label}`}
+                          onClick={() => void removeLink(link.id)}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
             <div className="flex flex-wrap gap-2">
               {hasGoogle && (
                 <Button
