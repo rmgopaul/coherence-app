@@ -13,7 +13,7 @@ import {
   savePlanOverrides,
   type PersistedPlanOverrides,
 } from "./persistence";
-import { buildDayPlanSeed, PLAN_SOURCE_PRIORITY } from "./scheduler";
+import { buildDayPlanSeed } from "./scheduler";
 import type { PlanItemData } from "./types";
 
 type TodaysPlanProps = {
@@ -22,6 +22,7 @@ type TodaysPlanProps = {
   emails: any[];
   habits: any[];
   onCompleteHabit?: (habitId: string) => void;
+  onRegenerate?: () => void;
 };
 
 type SuggestedPlanAction = {
@@ -33,7 +34,7 @@ type SuggestedPlanAction = {
 
 type GroupedRow = {
   slotKey: string;
-  sortMs: number;
+  firstIndex: number;
   items: PlanItemData[];
 };
 
@@ -67,7 +68,15 @@ const toSlotKey = (item: PlanItemData): string => {
   return `item:${item.id}`;
 };
 
-export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCompleteHabit }: TodaysPlanProps) {
+export function TodaysPlan({
+  calendarEvents,
+  todoistTasks,
+  emails,
+  habits,
+  onCompleteHabit,
+  onRegenerate,
+}: TodaysPlanProps) {
+  const [planNowMs, setPlanNowMs] = useState(() => Date.now());
   const seed = useMemo(
     () =>
       buildDayPlanSeed({
@@ -75,13 +84,21 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCom
         todoistTasks: todoistTasks || [],
         emails: emails || [],
         habits: habits || [],
+        now: new Date(planNowMs),
       }),
-    [calendarEvents, todoistTasks, emails, habits]
+    [calendarEvents, todoistTasks, emails, habits, planNowMs]
   );
 
   const [overrides, setOverrides] = useState<PersistedPlanOverrides>({ addedItems: [], removedIds: [] });
   const [planItems, setPlanItems] = useState<PlanItemData[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setPlanNowMs(Date.now());
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     const loaded = loadPlanOverrides(seed.dateKey);
@@ -168,16 +185,16 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCom
     onCompleteHabit(habitId);
   };
 
-  const groupedRows = useMemo<GroupedRow[]>(() => {
-    const sorted = [...planItems].sort((a, b) => {
-      if (a.sortMs !== b.sortMs) return a.sortMs - b.sortMs;
-      const sourcePriorityDelta = (PLAN_SOURCE_PRIORITY[a.source] ?? 99) - (PLAN_SOURCE_PRIORITY[b.source] ?? 99);
-      if (sourcePriorityDelta !== 0) return sourcePriorityDelta;
-      return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
-    });
+  const handleRegenerate = () => {
+    setPlanNowMs(Date.now());
+    onRegenerate?.();
+    toast.success("Today's plan regenerated");
+  };
 
+  const groupedRows = useMemo<GroupedRow[]>(() => {
     const rowsByKey = new Map<string, GroupedRow>();
-    for (const item of sorted) {
+    for (let index = 0; index < planItems.length; index += 1) {
+      const item = planItems[index];
       const slotKey = toSlotKey(item);
       const existing = rowsByKey.get(slotKey);
       if (existing) {
@@ -186,12 +203,12 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCom
       }
       rowsByKey.set(slotKey, {
         slotKey,
-        sortMs: item.sortMs,
+        firstIndex: index,
         items: [item],
       });
     }
 
-    return Array.from(rowsByKey.values()).sort((a, b) => a.sortMs - b.sortMs);
+    return Array.from(rowsByKey.values()).sort((a, b) => a.firstIndex - b.firstIndex);
   }, [planItems]);
 
   return (
@@ -202,10 +219,21 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCom
         <CardHeader className="pb-2">
           <div className="flex items-center justify-between gap-2">
             <CardTitle className="text-base">{seed.dayLabel}</CardTitle>
-            <span className="inline-flex items-center gap-1 text-xs text-slate-500">
-              <RefreshCw className="h-3.5 w-3.5" />
-              Drag to reorder
-            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRegenerate}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                aria-label="Regenerate today's plan"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Regenerate
+              </button>
+              <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                <RefreshCw className="h-3.5 w-3.5" />
+                Drag to reorder
+              </span>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -223,9 +251,7 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCom
                         key={item.id}
                         item={item}
                         onDragStart={(id) => setDraggingId(id)}
-                        onDragOver={() => {
-                          // Allow drop while preserving keyboard/tab flow.
-                        }}
+                        onDragEnd={() => setDraggingId(null)}
                         onDrop={(targetId) => {
                           if (!draggingId) return;
                           setPlanItems((prev) => reorderPlan(prev, draggingId, targetId));

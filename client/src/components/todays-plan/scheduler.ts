@@ -6,6 +6,7 @@ const DAY_END_HOUR = 20;
 const DEFAULT_EMAIL_DEADLINE_HOUR = 17;
 const DEFAULT_HABIT_DURATION_MINUTES = 10;
 const MORNING_HABIT_WINDOW_HOUR = 10;
+const SCHEDULER_ROUNDING_MINUTES = 5;
 
 type CalendarEventInput = any;
 type TodoistTaskInput = any;
@@ -76,6 +77,12 @@ const formatTimeLabel = (startMs: number, durationMinutes?: number): string => {
 };
 
 const dueTimeLabel = (startMs: number): string => `Due ${formatTime(new Date(startMs))}`;
+const overdueTimeLabel = (originalDueMs: number): string => `Overdue • Due ${formatTime(new Date(originalDueMs))}`;
+
+const roundUpToMinutes = (ms: number, minutes: number): number => {
+  const intervalMs = minutes * 60 * 1000;
+  return Math.ceil(ms / intervalMs) * intervalMs;
+};
 
 const getTaskDueDate = (task: TodoistTaskInput): Date | null => {
   if (typeof task?.due?.datetime === "string") {
@@ -86,6 +93,16 @@ const getTaskDueDate = (task: TodoistTaskInput): Date | null => {
     return parseDateSafe(`${task.due.date}T23:59:00`);
   }
   return null;
+};
+
+const isTaskCompleted = (task: TodoistTaskInput): boolean => {
+  const candidateFlags = [
+    (task as any)?.isCompleted,
+    (task as any)?.is_completed,
+    (task as any)?.completed,
+    (task as any)?.checked,
+  ];
+  return candidateFlags.some((value) => value === true || value === 1 || value === "1");
 };
 
 const taskHasExplicitDueTime = (task: TodoistTaskInput): boolean => {
@@ -135,6 +152,38 @@ const tokenize = (value: string): string[] =>
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((part) => part.length >= 3);
+
+const STOPWORD_TOKENS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "from",
+  "that",
+  "this",
+  "todo",
+  "task",
+  "call",
+  "email",
+  "follow",
+  "meeting",
+  "project",
+  "update",
+  "review",
+  "check",
+  "plan",
+  "prep",
+]);
+
+const getSimilarityToken = (value: string): string | null => {
+  const parts = tokenize(value);
+  for (const token of parts) {
+    if (token.length < 4) continue;
+    if (STOPWORD_TOKENS.has(token)) continue;
+    return token;
+  }
+  return parts.length > 0 ? parts[0] : null;
+};
 
 const matchEventForTask = (
   taskTitle: string,
@@ -324,9 +373,14 @@ const buildDayBounds = (dateKey: string): { dayStartMs: number; dayEndMs: number
   return { dayStartMs: dayStart.getTime(), dayEndMs: dayEnd.getTime() };
 };
 
-const buildFreeBlocks = (dateKey: string, timedEvents: Array<{ startMs: number; endMs: number }>): FreeBlock[] => {
+const buildFreeBlocks = (
+  dateKey: string,
+  timedEvents: Array<{ startMs: number; endMs: number }>,
+  earliestStartMs?: number
+): FreeBlock[] => {
   const { dayStartMs, dayEndMs } = buildDayBounds(dateKey);
-  if (timedEvents.length === 0) return [{ startMs: dayStartMs, endMs: dayEndMs }];
+  const effectiveStartMs = Math.max(dayStartMs, earliestStartMs ?? dayStartMs);
+  if (timedEvents.length === 0) return [{ startMs: effectiveStartMs, endMs: dayEndMs }];
 
   const sorted = [...timedEvents]
     .map((event) => ({
@@ -336,7 +390,7 @@ const buildFreeBlocks = (dateKey: string, timedEvents: Array<{ startMs: number; 
     .filter((event) => event.endMs > event.startMs)
     .sort((a, b) => a.startMs - b.startMs);
 
-  if (sorted.length === 0) return [{ startMs: dayStartMs, endMs: dayEndMs }];
+  if (sorted.length === 0) return [{ startMs: effectiveStartMs, endMs: dayEndMs }];
 
   const merged: Array<{ startMs: number; endMs: number }> = [];
   for (const event of sorted) {
@@ -349,7 +403,7 @@ const buildFreeBlocks = (dateKey: string, timedEvents: Array<{ startMs: number; 
   }
 
   const free: FreeBlock[] = [];
-  let cursor = dayStartMs;
+  let cursor = effectiveStartMs;
   for (const event of merged) {
     if (event.startMs > cursor) {
       free.push({ startMs: cursor, endMs: event.startMs });
@@ -401,6 +455,32 @@ const placeInFreeBlocks = (
   return null;
 };
 
+const placeInFreeBlocksAtOrAfter = (
+  freeBlocks: FreeBlock[],
+  durationMinutes: number,
+  startAtMs: number
+): number | null => {
+  const durationMs = durationMinutes * 60 * 1000;
+  for (let i = 0; i < freeBlocks.length; i += 1) {
+    const block = freeBlocks[i];
+    const candidateStart = Math.max(block.startMs, startAtMs);
+    const candidateEnd = candidateStart + durationMs;
+    if (candidateEnd > block.endMs) continue;
+
+    const original = { ...block };
+    const replacement: FreeBlock[] = [];
+    if (candidateStart > original.startMs) {
+      replacement.push({ startMs: original.startMs, endMs: candidateStart });
+    }
+    if (candidateEnd < original.endMs) {
+      replacement.push({ startMs: candidateEnd, endMs: original.endMs });
+    }
+    freeBlocks.splice(i, 1, ...replacement);
+    return candidateStart;
+  }
+  return null;
+};
+
 const buildTaskUrl = (task: TodoistTaskInput): string => {
   if (typeof task?.url === "string" && task.url.trim().length > 0) return task.url;
   return `https://todoist.com/app/task/${String(task?.id || "")}`;
@@ -414,6 +494,7 @@ export function buildDayPlanSeed(params: {
   now?: Date;
 }): DayPlanSeed {
   const now = params.now || new Date();
+  const nowMs = now.getTime();
   const todayKey = toDateKey(now);
   const tomorrow = new Date(now);
   tomorrow.setDate(tomorrow.getDate() + 1);
@@ -447,9 +528,13 @@ export function buildDayPlanSeed(params: {
   const hasTodayCoreItems =
     todayEvents.length + todayTasks.length + todayDeadlineEmails.length + todayHabits.length > 0;
   const dateKey = hasTodayCoreItems ? todayKey : tomorrowKey;
+  const isTodayPlan = dateKey === todayKey;
+  const { dayStartMs, dayEndMs } = buildDayBounds(dateKey);
+  const nowRoundedMs = roundUpToMinutes(nowMs, SCHEDULER_ROUNDING_MINUTES);
+  const effectivePlanStartMs = isTodayPlan ? Math.min(dayEndMs, Math.max(dayStartMs, nowRoundedMs)) : dayStartMs;
   const dayLabel: DayPlanSeed["dayLabel"] = hasTodayCoreItems ? "Today's Plan" : "Tomorrow's Plan";
   const events = hasTodayCoreItems ? todayEvents : tomorrowEvents;
-  const tasksForDay = hasTodayCoreItems ? todayTasks : tomorrowTasks;
+  const tasksForDay = (hasTodayCoreItems ? todayTasks : tomorrowTasks).filter((task) => !isTaskCompleted(task));
   const habits = hasTodayCoreItems ? todayHabits : [];
   const deadlineEmails = hasTodayCoreItems ? todayDeadlineEmails : tomorrowDeadlineEmails;
 
@@ -457,6 +542,9 @@ export function buildDayPlanSeed(params: {
     .map((event) => {
       const timing = getEventStartEnd(event);
       if (!timing) return null;
+      const isPastTimedEvent = isTodayPlan && !timing.allDay && timing.endMs <= nowMs;
+      if (isPastTimedEvent) return null;
+
       return {
         id: String(event.id || Math.random()),
         title: String(event.summary || "Untitled event"),
@@ -476,13 +564,19 @@ export function buildDayPlanSeed(params: {
   }>;
 
   const eventItems: PlanItemData[] = normalizedEvents.map((event) => ({
+    // Ongoing timed events are anchored at "now" so the plan reflects current state.
+    // All-day events keep their existing label.
     id: `event:${event.id}`,
     type: "event",
     source: "calendar",
     title: event.title,
-    timeLabel: event.allDay ? "All-day" : formatTimeLabel(event.startMs),
-    sortMs: event.startMs,
-    startMs: event.startMs,
+    timeLabel: event.allDay
+      ? "All-day"
+      : isTodayPlan && event.startMs < effectivePlanStartMs
+        ? `Now • until ${formatTime(new Date(event.endMs))}`
+        : formatTimeLabel(event.startMs),
+    sortMs: event.allDay ? event.startMs : Math.max(event.startMs, effectivePlanStartMs),
+    startMs: event.allDay ? event.startMs : Math.max(event.startMs, effectivePlanStartMs),
     durationMinutes: Math.max(15, Math.round((event.endMs - event.startMs) / 60000)),
     dueTime: false,
     dateKey,
@@ -496,14 +590,15 @@ export function buildDayPlanSeed(params: {
       const dueMs = dueDate ? dueDate.getTime() : null;
       if (!dueMs) return null;
       const durationMinutes = parseDurationMinutesFromTask(task);
+      const scheduledMs = isTodayPlan ? Math.max(dueMs, effectivePlanStartMs) : dueMs;
       return {
         id: `task:${String(task.id || Math.random())}`,
         type: "task" as const,
         source: "todoist" as const,
         title: String(task.content || "Untitled task"),
-        timeLabel: dueTimeLabel(dueMs),
-        sortMs: dueMs,
-        startMs: dueMs,
+        timeLabel: isTodayPlan && dueMs < effectivePlanStartMs ? overdueTimeLabel(dueMs) : dueTimeLabel(dueMs),
+        sortMs: scheduledMs,
+        startMs: scheduledMs,
         durationMinutes,
         dueTime: true,
         dateKey,
@@ -517,9 +612,12 @@ export function buildDayPlanSeed(params: {
     type: "task",
     source: "email",
     title: email.title,
-    timeLabel: dueTimeLabel(email.deadlineMs),
-    sortMs: email.deadlineMs,
-    startMs: email.deadlineMs,
+    timeLabel:
+      isTodayPlan && email.deadlineMs < effectivePlanStartMs
+        ? overdueTimeLabel(email.deadlineMs)
+        : dueTimeLabel(email.deadlineMs),
+    sortMs: isTodayPlan ? Math.max(email.deadlineMs, effectivePlanStartMs) : email.deadlineMs,
+    startMs: isTodayPlan ? Math.max(email.deadlineMs, effectivePlanStartMs) : email.deadlineMs,
     durationMinutes: DEFAULT_TASK_DURATION_MINUTES,
     dueTime: true,
     dateKey,
@@ -527,7 +625,7 @@ export function buildDayPlanSeed(params: {
   }));
 
   const timedEvents = normalizedEvents.filter((event) => !event.allDay);
-  const freeBlocks = buildFreeBlocks(dateKey, timedEvents);
+  const freeBlocks = buildFreeBlocks(dateKey, timedEvents, effectivePlanStartMs);
 
   const eventContext = normalizedEvents.map((event) => ({
     id: event.id,
@@ -535,19 +633,47 @@ export function buildDayPlanSeed(params: {
     startMs: event.startMs,
   }));
 
+  const parentTaskIds = new Set(
+    tasksForDay
+      .map((task) => String((task as any)?.parentId || (task as any)?.parent_id || "").trim())
+      .filter((id) => id.length > 0)
+  );
+
   const schedulableTasksRaw = tasksForDay.filter((task) => !taskHasExplicitDueTime(task)).map((task) => {
     const durationMinutes = parseDurationMinutesFromTask(task);
     const dueDate = getTaskDueDate(task);
     const match = matchEventForTask(String(task?.content || ""), eventContext);
+    const taskId = String(task?.id || Math.random());
+    const parentId = String((task as any)?.parentId || (task as any)?.parent_id || "").trim();
+    const projectId = String((task as any)?.projectId || (task as any)?.project_id || "").trim();
+    const lexicalToken = getSimilarityToken(String(task?.content || ""));
+
+    let groupKey = "";
+    if (parentId) {
+      groupKey = `parent:${parentId}`;
+    } else if (parentTaskIds.has(taskId)) {
+      groupKey = `parent:${taskId}`;
+    } else if (projectId && lexicalToken) {
+      groupKey = `project:${projectId}:${lexicalToken}`;
+    } else if (projectId) {
+      groupKey = `project:${projectId}`;
+    } else if (lexicalToken) {
+      groupKey = `topic:${lexicalToken}`;
+    } else {
+      groupKey = `task:${taskId}`;
+    }
+
     return {
       task,
-      id: `task:${String(task.id || Math.random())}`,
+      id: `task:${taskId}`,
       title: String(task.content || "Untitled task"),
       durationMinutes,
       dueDateMs: dueDate ? dueDate.getTime() : null,
       prepBeforeMs: match.score > 0 ? match.eventStartMs : null,
       prepScore: match.score,
       sourceUrl: buildTaskUrl(task),
+      groupKey,
+      lexicalToken,
     };
   });
 
@@ -557,6 +683,16 @@ export function buildDayPlanSeed(params: {
     }
     if (a.prepBeforeMs && !b.prepBeforeMs) return -1;
     if (!a.prepBeforeMs && b.prepBeforeMs) return 1;
+
+    if (a.groupKey !== b.groupKey) {
+      if (a.dueDateMs && b.dueDateMs && a.dueDateMs !== b.dueDateMs) {
+        return a.dueDateMs - b.dueDateMs;
+      }
+      if (a.dueDateMs && !b.dueDateMs) return -1;
+      if (!a.dueDateMs && b.dueDateMs) return 1;
+      return a.groupKey.localeCompare(b.groupKey, undefined, { sensitivity: "base" });
+    }
+
     if (a.dueDateMs && b.dueDateMs && a.dueDateMs !== b.dueDateMs) return a.dueDateMs - b.dueDateMs;
     if (a.dueDateMs && !b.dueDateMs) return -1;
     if (!a.dueDateMs && b.dueDateMs) return 1;
@@ -564,9 +700,21 @@ export function buildDayPlanSeed(params: {
   });
 
   const scheduledTaskItems: PlanItemData[] = [];
+  const lastGroupEndByKey = new Map<string, number>();
   for (const candidate of schedulableTasksRaw) {
-    const startMs = placeInFreeBlocks(freeBlocks, candidate.durationMinutes, candidate.prepBeforeMs);
+    let startMs: number | null = null;
+    const previousGroupEnd = lastGroupEndByKey.get(candidate.groupKey);
+    if (previousGroupEnd) {
+      startMs = placeInFreeBlocksAtOrAfter(freeBlocks, candidate.durationMinutes, previousGroupEnd);
+    }
+    if (!startMs) {
+      startMs = placeInFreeBlocks(freeBlocks, candidate.durationMinutes, candidate.prepBeforeMs);
+    }
+    if (!startMs) {
+      startMs = placeInFreeBlocksAtOrAfter(freeBlocks, candidate.durationMinutes, effectivePlanStartMs);
+    }
     if (!startMs) continue;
+
     scheduledTaskItems.push({
       id: candidate.id,
       type: "task",
@@ -580,10 +728,10 @@ export function buildDayPlanSeed(params: {
       dateKey,
       sourceUrl: candidate.sourceUrl,
     });
+    lastGroupEndByKey.set(candidate.groupKey, startMs + candidate.durationMinutes * 60 * 1000);
   }
 
   const habitItems: PlanItemData[] = [];
-  const { dayStartMs, dayEndMs } = buildDayBounds(dateKey);
   const filteredHabits = habits
     .map((habit) => ({
       id: `habit:${String(habit?.id || Math.random())}`,
@@ -604,11 +752,11 @@ export function buildDayPlanSeed(params: {
   for (const habit of habitCandidates) {
     let startMs: number | null = null;
     if (isFlossHabit(habit.name)) {
-      startMs = placeInFreeBlocks(
-        freeBlocks,
-        DEFAULT_HABIT_DURATION_MINUTES,
+      const morningAnchor = Math.max(
+        effectivePlanStartMs,
         dayStartMs + (MORNING_HABIT_WINDOW_HOUR - DAY_START_HOUR) * 60 * 60 * 1000
       );
+      startMs = placeInFreeBlocks(freeBlocks, DEFAULT_HABIT_DURATION_MINUTES, morningAnchor);
     } else if (isBtanHabit(habit.name)) {
       startMs = placeInFreeBlocks(freeBlocks, DEFAULT_HABIT_DURATION_MINUTES, dayEndMs);
     } else {

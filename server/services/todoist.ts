@@ -3,10 +3,12 @@ export interface TodoistTask {
   content: string;
   description: string;
   projectId: string;
+  parentId?: string;
   priority: number;
   labels: string[];
   due?: {
     date: string;
+    datetime?: string;
     string: string;
   };
 }
@@ -28,17 +30,24 @@ export interface TodoistCompletedTask {
 const TODOIST_API_BASE = "https://api.todoist.com/api/v1";
 
 function mapTask(task: any): TodoistTask {
+  const dueDateTime = task?.due?.datetime ?? undefined;
+  const dueDateOnly =
+    task?.due?.date ??
+    (typeof dueDateTime === "string" && dueDateTime.length >= 10 ? dueDateTime.slice(0, 10) : "");
+
   return {
     id: String(task.id),
     content: task.content ?? "",
     description: task.description ?? "",
     projectId: task.projectId ?? task.project_id ?? "",
+    parentId: task.parentId ?? task.parent_id ?? undefined,
     priority: task.priority ?? 1,
     labels: Array.isArray(task.labels) ? task.labels.map(String) : [],
     due: task.due
       ? {
-        date: task.due.date ?? task.due.datetime ?? "",
-        string: task.due.string ?? task.due.date ?? "",
+        date: dueDateOnly,
+        datetime: dueDateTime,
+        string: task.due.string ?? task.due.date ?? task.due.datetime ?? "",
       }
       : undefined,
   };

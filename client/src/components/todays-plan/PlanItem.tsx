@@ -4,7 +4,7 @@ import type { PlanItemData } from "./types";
 type PlanItemProps = {
   item: PlanItemData;
   onDragStart: (id: string) => void;
-  onDragOver: () => void;
+  onDragEnd?: () => void;
   onDrop: (targetId: string) => void;
   onRemove?: (id: string) => void;
   onOpenSource?: (item: PlanItemData) => void;
@@ -16,7 +16,7 @@ export const PLAN_ITEM_TITLE_CLASS = "whitespace-normal break-words text-sm font
 export function PlanItem({
   item,
   onDragStart,
-  onDragOver,
+  onDragEnd,
   onDrop,
   onRemove,
   onOpenSource,
@@ -29,12 +29,18 @@ export function PlanItem({
   const canOpenSource = Boolean(item.sourceUrl) && !isHabit;
 
   return (
-    <li
+    <div
       draggable
-      onDragStart={() => onDragStart(item.id)}
+      onDragStart={(event) => {
+        // Some browsers require a transfer payload for drag-and-drop to activate.
+        event.dataTransfer.setData("text/plain", item.id);
+        event.dataTransfer.effectAllowed = "move";
+        onDragStart(item.id);
+      }}
+      onDragEnd={() => onDragEnd?.()}
       onDragOver={(event) => {
         event.preventDefault();
-        onDragOver();
+        event.dataTransfer.dropEffect = "move";
       }}
       onDrop={(event) => {
         event.preventDefault();
@@ -109,6 +115,6 @@ export function PlanItem({
           </button>
         ) : null}
       </div>
-    </li>
+    </div>
   );
 }

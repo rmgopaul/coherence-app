@@ -27,6 +27,56 @@ describe("Todoist duration parsing", () => {
 });
 
 describe("Today plan scheduling", () => {
+  it("removes timed calendar events that have already ended today", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T14:00:00-06:00"),
+      calendarEvents: [
+        {
+          id: "event-past",
+          summary: "Morning standup",
+          start: { dateTime: "2026-03-01T09:00:00-06:00" },
+          end: { dateTime: "2026-03-01T09:30:00-06:00" },
+        },
+        {
+          id: "event-upcoming",
+          summary: "Afternoon sync",
+          start: { dateTime: "2026-03-01T15:00:00-06:00" },
+          end: { dateTime: "2026-03-01T15:30:00-06:00" },
+        },
+      ],
+      todoistTasks: [],
+      emails: [],
+      habits: [],
+    });
+
+    expect(seed.autoItems.some((item) => item.id === "event:event-past")).toBe(false);
+    expect(seed.autoItems.some((item) => item.id === "event:event-upcoming")).toBe(true);
+  });
+
+  it("shifts overdue due-time tasks forward to now window and labels as overdue", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T14:07:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [
+        {
+          id: "task-overdue",
+          content: "Submit report",
+          labels: ["15m"],
+          due: { datetime: "2026-03-01T13:00:00-06:00" },
+        },
+      ],
+      emails: [],
+      habits: [],
+    });
+
+    const task = seed.autoItems.find((item) => item.id === "task:task-overdue");
+    const expectedRoundedNow = new Date("2026-03-01T14:10:00-06:00").getTime();
+
+    expect(task).toBeTruthy();
+    expect(task?.startMs).toBe(expectedRoundedNow);
+    expect(task?.timeLabel.toLowerCase()).toContain("overdue");
+  });
+
   it("keeps due-time tasks at their exact due time, even when overlapping an event", () => {
     const seed = buildDayPlanSeed({
       now: new Date("2026-03-01T09:00:00-06:00"),
@@ -144,6 +194,72 @@ describe("Today plan scheduling", () => {
     expect(noAlcohol).toBeUndefined();
     expect(no420).toBeUndefined();
     expect((floss?.startMs || 0) < (btan?.startMs || Number.MAX_SAFE_INTEGER)).toBe(true);
+  });
+
+  it("keeps sibling subtasks together using parent relationship when time allows", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T09:00:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [
+        {
+          id: "child-1",
+          parentId: "parent-1",
+          projectId: "project-a",
+          content: "ABP prep packet",
+          labels: ["10m"],
+          due: { date: "2026-03-01" },
+        },
+        {
+          id: "child-2",
+          parentId: "parent-1",
+          projectId: "project-a",
+          content: "ABP send packet",
+          labels: ["15m"],
+          due: { date: "2026-03-01" },
+        },
+      ],
+      emails: [],
+      habits: [],
+    });
+
+    const first = seed.autoItems.find((item) => item.id === "task:child-1");
+    const second = seed.autoItems.find((item) => item.id === "task:child-2");
+
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    expect(second?.startMs).toBe((first?.startMs || 0) + 10 * 60 * 1000);
+  });
+
+  it("groups similar tasks by project and shared wording token", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T09:00:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [
+        {
+          id: "contract-1",
+          projectId: "project-abp",
+          content: "ABP contract review",
+          labels: ["10m"],
+          due: { date: "2026-03-01" },
+        },
+        {
+          id: "contract-2",
+          projectId: "project-abp",
+          content: "ABP contract update",
+          labels: ["10m"],
+          due: { date: "2026-03-01" },
+        },
+      ],
+      emails: [],
+      habits: [],
+    });
+
+    const first = seed.autoItems.find((item) => item.id === "task:contract-1");
+    const second = seed.autoItems.find((item) => item.id === "task:contract-2");
+
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    expect(second?.startMs).toBe((first?.startMs || 0) + 10 * 60 * 1000);
   });
 });
 

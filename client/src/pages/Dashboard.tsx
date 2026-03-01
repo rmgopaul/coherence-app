@@ -412,7 +412,7 @@ export default function Dashboard() {
     }
   );
 
-  const { data: allTodoistTasks } = trpc.todoist.getTasks.useQuery(undefined, {
+  const { data: allTodoistTasks, refetch: refetchAllTodoistTasks } = trpc.todoist.getTasks.useQuery(undefined, {
     enabled: !!user && hasTodoist,
     retry: false,
   });
@@ -1274,6 +1274,15 @@ export default function Dashboard() {
   const handleCompleteHabitFromPlan = (habitId: string) => {
     handleToggleHabit(habitId, true);
   };
+
+  const handleRegenerateTodaysPlan = () => {
+    refetchCalendar();
+    refetchDueTodayTasks();
+    refetchTasks();
+    refetchAllTodoistTasks();
+    refetchEmails();
+    refetchHabitsForToday();
+  };
   
   const searchDriveMutation = trpc.google.searchDrive.useQuery(
     { query: driveSearchQuery },
@@ -1890,6 +1899,7 @@ export default function Dashboard() {
             emails={gmailMessages || []}
             habits={habitsForToday || []}
             onCompleteHabit={handleCompleteHabitFromPlan}
+            onRegenerate={handleRegenerateTodaysPlan}
           />
 
           <div className="min-w-0 space-y-4">
