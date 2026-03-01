@@ -50,6 +50,13 @@ const HABIT_COLOR_OPTIONS = [
 
 const SUPPLEMENT_UNITS = ["capsule", "tablet", "mg", "mcg", "g", "ml", "drop", "scoop", "other"] as const;
 
+const toDateKeyLocal = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 type SupplementEditorState = {
   name: string;
   brand: string;
@@ -79,6 +86,7 @@ export default function Settings() {
   const [selectedThemeMode, setSelectedThemeMode] = useState<"light" | "dark">(theme);
   const [newHabitName, setNewHabitName] = useState("");
   const [newHabitColor, setNewHabitColor] = useState("slate");
+  const [habitHistoryDate, setHabitHistoryDate] = useState(() => toDateKeyLocal(new Date()));
   const [newSupplementName, setNewSupplementName] = useState("");
   const [newSupplementBrand, setNewSupplementBrand] = useState("");
   const [newSupplementDose, setNewSupplementDose] = useState("");
@@ -128,6 +136,17 @@ export default function Settings() {
   const { data: habitDefinitions, refetch: refetchHabits } = trpc.habits.listDefinitions.useQuery(
     undefined,
     { enabled: !!user }
+  );
+  const {
+    data: habitsForHistoryDate,
+    refetch: refetchHabitsForHistoryDate,
+    isLoading: habitHistoryLoading,
+  } = trpc.habits.getForDate.useQuery(
+    { dateKey: habitHistoryDate },
+    {
+      enabled: !!user,
+      retry: false,
+    }
   );
 
   const { data: supplementDefinitions, refetch: refetchSupplementDefinitions } =
@@ -261,9 +280,19 @@ export default function Settings() {
     onSuccess: () => {
       toast.success("Habit removed");
       refetchHabits();
+      refetchHabitsForHistoryDate();
     },
     onError: (error) => {
       toast.error(`Failed to remove habit: ${error.message}`);
+    },
+  });
+  
+  const setHabitCompletionForDate = trpc.habits.setCompletion.useMutation({
+    onSuccess: () => {
+      refetchHabitsForHistoryDate();
+    },
+    onError: (error) => {
+      toast.error(`Failed to update habit: ${error.message}`);
     },
   });
 
@@ -589,6 +618,14 @@ export default function Settings() {
     createHabitDefinition.mutate({
       name: newHabitName.trim(),
       color: newHabitColor,
+    });
+  };
+
+  const handleToggleHabitForHistoryDate = (habitId: string, completed: boolean) => {
+    setHabitCompletionForDate.mutate({
+      habitId,
+      completed: !completed,
+      dateKey: habitHistoryDate,
     });
   };
 
@@ -1603,6 +1640,73 @@ export default function Settings() {
                   ) : (
                     <p className="text-sm text-slate-500">No habits yet.</p>
                   )}
+                </div>
+
+                <div className="pt-2">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">Habit History (Retroactive)</p>
+                      <p className="text-xs text-slate-500">
+                        Pick any date and mark habits if you forgot to track that day.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setHabitHistoryDate(toDateKeyLocal(new Date()))}
+                      >
+                        Today
+                      </Button>
+                      <Input
+                        type="date"
+                        value={habitHistoryDate}
+                        onChange={(e) => setHabitHistoryDate(e.target.value)}
+                        className="h-9 w-[170px]"
+                        aria-label="Select habit history date"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 rounded-md border bg-slate-50/60 p-3">
+                    {habitHistoryLoading ? (
+                      <p className="text-sm text-slate-500">Loading habits for {habitHistoryDate}...</p>
+                    ) : (habitsForHistoryDate || []).length === 0 ? (
+                      <p className="text-sm text-slate-500">No habits configured yet.</p>
+                    ) : (
+                      (habitsForHistoryDate || []).map((habit: any) => {
+                        const done = Boolean(habit.completed);
+                        return (
+                          <button
+                            key={`${habit.id}-${habitHistoryDate}`}
+                            type="button"
+                            onClick={() => handleToggleHabitForHistoryDate(habit.id, done)}
+                            disabled={setHabitCompletionForDate.isPending}
+                            className={`w-full rounded-md border px-3 py-2 text-left transition ${
+                              done
+                                ? "border-emerald-300 bg-emerald-50"
+                                : "border-slate-200 bg-white hover:bg-slate-50"
+                            }`}
+                            aria-label={`${done ? "Mark incomplete" : "Mark complete"} for ${habit.name} on ${habitHistoryDate}`}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div>
+                                <p className="text-sm font-medium text-slate-900">{habit.name}</p>
+                                <p className="text-xs text-slate-500">{habitHistoryDate}</p>
+                              </div>
+                              <span
+                                className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-semibold ${
+                                  done ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"
+                                }`}
+                              >
+                                {done ? "Completed" : "Not completed"}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </CardContent>
             </Card>
