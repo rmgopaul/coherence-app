@@ -1,7 +1,9 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import UniversalDropDock from "@/components/UniversalDropDock";
-import { DailyBriefModule } from "@/components/daily-brief/DailyBriefModule";
+import { TodaysPlan } from "@/components/todays-plan/TodaysPlan";
+import { TriageEmail } from "@/components/todays-plan/TriageEmail";
+import { DecisionsWidget } from "@/components/todays-plan/DecisionsWidget";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -741,6 +743,31 @@ export default function Dashboard() {
       .sort((a, b) => b.score - a.score)
       .slice(0, 6);
   }, [gmailMessages]);
+
+  const triageEmails = useMemo(() => {
+    return prioritizedEmails.slice(0, 5).map((email) => ({
+      id: email.id,
+      sender: email.from || "Unknown sender",
+      subject: email.subject || "(No subject)",
+      preview: email.snippet || "No preview",
+    }));
+  }, [prioritizedEmails]);
+
+  const decisionsToMake = useMemo(() => {
+    return prioritizedEmails.slice(0, 4).map((email) => ({
+      id: `decision:${email.id}`,
+      title: `Respond: ${email.subject}`,
+      detail: email.reason || "Requires follow-up",
+    }));
+  }, [prioritizedEmails]);
+
+  const waitingOnItems = useMemo(() => {
+    return (gmailWaitingOn || []).slice(0, 4).map((item: any) => ({
+      id: String(item.threadId || item.id || ""),
+      title: item.subject || "(No subject)",
+      detail: item.to || item.from || "Awaiting response",
+    }));
+  }, [gmailWaitingOn]);
   
   const createSpreadsheet = trpc.google.createSpreadsheet.useMutation({
     onSuccess: (data) => {
@@ -1033,6 +1060,31 @@ export default function Dashboard() {
     e.stopPropagation();
     if (markEmailAsRead.isPending) return;
     markEmailAsRead.mutate({ messageId });
+  };
+
+  const handleTriageReply = (email: { id: string }) => {
+    window.open(`https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(email.id)}`, "_blank", "noopener,noreferrer");
+  };
+
+  const handleTriageArchive = (email: { id: string }) => {
+    if (markEmailAsRead.isPending) return;
+    markEmailAsRead.mutate({ messageId: email.id });
+  };
+
+  const handleTriageMakeTask = (email: { id: string; subject: string; preview: string }) => {
+    createTaskFromEmail.mutate({
+      subject: email.subject,
+      emailLink: `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(email.id)}`,
+      body: email.preview || "",
+    });
+  };
+
+  const handleSendNudge = (item: { id: string }) => {
+    const source = (gmailWaitingOn || []).find((row: any) => String(row.threadId || row.id || "") === item.id);
+    const url = typeof source?.url === "string" && source.url.length > 0
+      ? source.url
+      : `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(item.id)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const handleSaveWelcomeName = () => {
@@ -1766,7 +1818,7 @@ export default function Dashboard() {
               onClick={() => scrollToSection("section-overview")}
             >
               <FileText className="h-3.5 w-3.5 mr-1.5 text-slate-700" />
-              Daily Brief
+              Today's Plan
             </Button>
             <Button
               variant="ghost"
@@ -1818,19 +1870,46 @@ export default function Dashboard() {
       </div>
       </div>
 
-      {/* Daily Brief */}
+      {/* Today's Plan */}
       <div id="section-overview" className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <DailyBriefModule
-          brief={effectiveDailyBrief}
-          isLoading={isGeneratingDailyBrief && !dailyBrief}
-          isRegenerating={isGeneratingDailyBrief}
-          onRegenerate={() => {
-            regenerateDailyBrief().catch(() => {
-              toast.error("Failed to regenerate daily brief");
-            });
-          }}
-          onAction={handleDailyBriefAction}
-        />
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <TodaysPlan
+            calendarEvents={calendarEvents || []}
+            todoistTasks={allTodoistTasks || []}
+            habits={habitsForToday || []}
+          />
+
+          <div className="space-y-4">
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">Triage Inbox</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {triageEmails.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+                    No priority emails to triage right now.
+                  </p>
+                ) : (
+                  triageEmails.map((email) => (
+                    <TriageEmail
+                      key={email.id}
+                      email={email}
+                      onReply={handleTriageReply}
+                      onArchive={handleTriageArchive}
+                      onMakeTask={handleTriageMakeTask}
+                    />
+                  ))
+                )}
+              </CardContent>
+            </Card>
+
+            <DecisionsWidget
+              decisions={decisionsToMake}
+              waitingOn={waitingOnItems}
+              onSendNudge={handleSendNudge}
+            />
+          </div>
+        </div>
       </div>
 
       {/* Health Row */}
