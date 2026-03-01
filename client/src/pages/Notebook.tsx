@@ -149,6 +149,40 @@ function formatEventOptionLabel(event: any): string {
   return `${summary} · ${weekday} all-day`;
 }
 
+function getCalendarSeriesCandidates(link: any): string[] {
+  const directSeriesId = String(link?.seriesId || "").trim();
+  let metadataSeriesId = "";
+  let metadataICalUid = "";
+  if (typeof link?.metadata === "string" && link.metadata.trim()) {
+    try {
+      const parsed = JSON.parse(link.metadata);
+      metadataSeriesId = String(parsed?.recurringEventId || "").trim();
+      metadataICalUid = String(parsed?.iCalUID || "").trim();
+    } catch {
+      metadataSeriesId = "";
+      metadataICalUid = "";
+    }
+  } else if (typeof link?.metadata === "object" && link.metadata !== null) {
+    metadataSeriesId = String((link.metadata as any).recurringEventId || "").trim();
+    metadataICalUid = String((link.metadata as any).iCalUID || "").trim();
+  }
+
+  return Array.from(new Set([directSeriesId, metadataSeriesId, metadataICalUid].filter(Boolean)));
+}
+
+function noteLinkMatchesCalendarFilter(link: any, filterKey: string): boolean {
+  if (link?.linkType !== "google_calendar_event") return false;
+  if (filterKey.startsWith("series:")) {
+    const targetSeriesId = filterKey.slice("series:".length);
+    if (!targetSeriesId) return false;
+    const candidates = getCalendarSeriesCandidates(link);
+    return candidates.includes(targetSeriesId);
+  }
+
+  const externalId = String(link?.externalId || "");
+  return `event:${externalId}` === filterKey;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -243,6 +277,7 @@ export default function Notebook() {
   const [calendarFilterQuery, setCalendarFilterQuery] = useState("");
   const [seriesOnlyFilter, setSeriesOnlyFilter] = useState(false);
   const [linkedOnlyFilter, setLinkedOnlyFilter] = useState(false);
+  const [shouldAutoSelectFromRoute, setShouldAutoSelectFromRoute] = useState(false);
 
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
   const [noteTitleInput, setNoteTitleInput] = useState("");
@@ -314,9 +349,19 @@ export default function Notebook() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
+    const view = params.get("view");
     const notebook = params.get("notebook");
     const eventId = params.get("eventId");
     const seriesId = params.get("seriesId");
+    const noteId = params.get("noteId");
+    const routeWantsCalendarContext =
+      view?.trim().toLowerCase() === "calendar" ||
+      Boolean(eventId?.trim()) ||
+      Boolean(seriesId?.trim());
+
+    if (view?.trim().toLowerCase() === "calendar") {
+      setActiveNav({ kind: "view", key: "all" });
+    }
 
     if (notebook && notebook.trim()) {
       if (notebook.trim().toLowerCase() === "all") {
@@ -330,6 +375,18 @@ export default function Notebook() {
       setActiveEventFilterKey(`series:${seriesId.trim()}`);
     } else if (eventId && eventId.trim()) {
       setActiveEventFilterKey(`event:${eventId.trim()}`);
+    }
+
+    if (noteId && noteId.trim()) {
+      setIsDraftMode(false);
+      setSelectedNoteId(noteId.trim());
+      setMobilePanel("editor");
+      return;
+    }
+
+    if (routeWantsCalendarContext) {
+      setShouldAutoSelectFromRoute(true);
+      setMobilePanel("list");
     }
   }, []);
 
@@ -562,15 +619,7 @@ export default function Notebook() {
     if (effectiveEventFilterKey) {
       rows = rows.filter((note: any) => {
         const links = Array.isArray(note.links) ? note.links : [];
-        return links.some((link: any) => {
-          if (link.linkType !== "google_calendar_event") return false;
-          const externalId = String(link.externalId || "");
-          const seriesId = String(link.seriesId || "");
-          if (effectiveEventFilterKey.startsWith("series:")) {
-            return `series:${seriesId}` === effectiveEventFilterKey;
-          }
-          return `event:${externalId}` === effectiveEventFilterKey;
-        });
+        return links.some((link: any) => noteLinkMatchesCalendarFilter(link, effectiveEventFilterKey));
       });
     }
 
@@ -607,11 +656,7 @@ export default function Notebook() {
       if (effectiveEventFilterKey) {
         const buildMeta = (note: any) => {
           const links = (Array.isArray(note.links) ? note.links : []).filter((link: any) => {
-            if (link.linkType !== "google_calendar_event") return false;
-            if (effectiveEventFilterKey.startsWith("series:")) {
-              return `series:${String(link.seriesId || "")}` === effectiveEventFilterKey;
-            }
-            return `event:${String(link.externalId || "")}` === effectiveEventFilterKey;
+            return noteLinkMatchesCalendarFilter(link, effectiveEventFilterKey);
           });
 
           const times = links
@@ -643,10 +688,16 @@ export default function Notebook() {
 
   useEffect(() => {
     if (isDraftMode) return;
-    if (!selectedNoteId && visibleNotes.length > 0) {
-      setSelectedNoteId(String(visibleNotes[0].id));
+    if (!shouldAutoSelectFromRoute) return;
+    if (selectedNoteId) {
+      setShouldAutoSelectFromRoute(false);
+      return;
     }
-  }, [selectedNoteId, visibleNotes, isDraftMode]);
+    if (visibleNotes.length === 0) return;
+    setSelectedNoteId(String(visibleNotes[0].id));
+    setMobilePanel("editor");
+    setShouldAutoSelectFromRoute(false);
+  }, [isDraftMode, shouldAutoSelectFromRoute, selectedNoteId, visibleNotes]);
 
   useEffect(() => {
     const snapshot = resolveNotebookEditorSnapshot({

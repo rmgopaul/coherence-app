@@ -1239,7 +1239,7 @@ export default function Dashboard() {
 
   const openNotebookForCalendarEvent = (event: any) => {
     const params = new URLSearchParams();
-    params.set("notebook", "Meetings");
+    params.set("view", "calendar");
     if (event?.id) {
       params.set("eventId", String(event.id));
     }
@@ -1713,7 +1713,14 @@ export default function Dashboard() {
     value === null ? null : Number(((value * 9) / 5 + 32).toFixed(1));
   const kilojouleToCalories = (value: number | null) =>
     value === null ? null : Number((value / 4.184).toFixed(0));
-  const formatHours = (minutes: number) => `${(minutes / 60).toFixed(1)}h`;
+  const formatHoursAndMinutes = (minutes: number) => {
+    const totalMinutes = Math.max(0, Math.round(minutes));
+    const hours = Math.floor(totalMinutes / 60);
+    const remainder = totalMinutes % 60;
+    if (hours > 0 && remainder > 0) return `${hours}h ${remainder}m`;
+    if (hours > 0) return `${hours}h`;
+    return `${remainder}m`;
+  };
   const recentMetricRows = (metricHistory || []).slice(0, 7);
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
@@ -1975,7 +1982,7 @@ export default function Dashboard() {
                       <p className="text-xs text-slate-500">Sleep</p>
                       <p className="text-sm font-semibold text-slate-900">
                         {samsungHealthSnapshot.sleepTotalMinutes !== null
-                          ? formatHours(samsungHealthSnapshot.sleepTotalMinutes)
+                          ? formatHoursAndMinutes(samsungHealthSnapshot.sleepTotalMinutes)
                           : "-"}
                       </p>
                     </div>
