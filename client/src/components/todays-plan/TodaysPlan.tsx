@@ -195,7 +195,7 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCom
   }, [planItems]);
 
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <RightNow item={planItems[0] ?? null} onPrimaryAction={handlePrimaryAction} />
 
       <Card>

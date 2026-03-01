@@ -22,12 +22,12 @@ type DecisionsWidgetProps = {
 
 export function DecisionsWidget({ decisions, waitingOn, onSendNudge }: DecisionsWidgetProps) {
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader className="pb-2">
         <CardTitle className="text-base">Decisions &amp; Waiting</CardTitle>
       </CardHeader>
-      <CardContent className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <section>
+      <CardContent className="grid grid-cols-1 gap-3">
+        <section className="min-w-0">
           <p className="mb-2 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
             <CheckCircle2 className="h-3.5 w-3.5" />
             Decisions to Make
@@ -37,16 +37,16 @@ export function DecisionsWidget({ decisions, waitingOn, onSendNudge }: Decisions
           ) : (
             <ul className="space-y-2">
               {decisions.map((item) => (
-                <li key={item.id} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
-                  <p className="text-sm font-medium text-slate-900">{item.title}</p>
-                  {item.detail ? <p className="mt-0.5 text-xs text-slate-600">{item.detail}</p> : null}
+                <li key={item.id} className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
+                  <p className="text-sm font-medium text-slate-900 break-words">{item.title}</p>
+                  {item.detail ? <p className="mt-0.5 text-xs text-slate-600 break-words">{item.detail}</p> : null}
                 </li>
               ))}
             </ul>
           )}
         </section>
 
-        <section>
+        <section className="min-w-0">
           <p className="mb-2 inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
             <Clock3 className="h-3.5 w-3.5" />
             Waiting On
@@ -56,9 +56,9 @@ export function DecisionsWidget({ decisions, waitingOn, onSendNudge }: Decisions
           ) : (
             <ul className="space-y-2">
               {waitingOn.map((item) => (
-                <li key={item.id} className="rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
-                  <p className="text-sm font-medium text-slate-900">{item.title}</p>
-                  {item.detail ? <p className="mt-0.5 text-xs text-slate-600">{item.detail}</p> : null}
+                <li key={item.id} className="min-w-0 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-2">
+                  <p className="text-sm font-medium text-slate-900 break-words">{item.title}</p>
+                  {item.detail ? <p className="mt-0.5 text-xs text-slate-600 break-all">{item.detail}</p> : null}
                   <div className="mt-2">
                     <Button
                       size="sm"
@@ -83,4 +83,3 @@ export function DecisionsWidget({ decisions, waitingOn, onSendNudge }: Decisions
 }
 
 export type { DecisionItem, WaitingOnItem };
-

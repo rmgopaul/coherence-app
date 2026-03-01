@@ -1722,7 +1722,7 @@ export default function Dashboard() {
   };
 
   return (
-    <div id="dashboard-top" className="min-h-screen bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
+    <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
       {/* Header */}
       <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border-b sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
@@ -1876,7 +1876,7 @@ export default function Dashboard() {
 
       {/* Today's Plan */}
       <div id="section-overview" className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
           <TodaysPlan
             calendarEvents={calendarEvents || []}
             todoistTasks={allTodoistTasks || []}
@@ -1885,7 +1885,7 @@ export default function Dashboard() {
             onCompleteHabit={handleCompleteHabitFromPlan}
           />
 
-          <div className="space-y-4">
+          <div className="min-w-0 space-y-4">
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">Triage Inbox</CardTitle>
@@ -2300,8 +2300,8 @@ export default function Dashboard() {
 
       {/* Tracking Row */}
       <div id="section-tracking" className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-          <Card className="flex flex-col">
+        <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-4">
+          <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
                 <BarChart3 className="h-4 w-4 text-emerald-600" />
@@ -2352,7 +2352,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="flex flex-col">
+          <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
                 <Pill className="h-4 w-4 text-emerald-600" />
@@ -2499,7 +2499,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="flex flex-col">
+          <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
                 <Target className="h-4 w-4 text-rose-600" />
@@ -2551,7 +2551,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="flex flex-col">
+          <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
                 <FileText className="h-4 w-4 text-emerald-600" />
@@ -2638,12 +2638,12 @@ export default function Dashboard() {
                   </SelectContent>
                 </Select>
                 <div className="grid grid-cols-1 gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                     <Select
                       value={linkTaskId || "__none"}
                       onValueChange={(value) => setLinkTaskId(value === "__none" ? "" : value)}
                     >
-                      <SelectTrigger className="h-8 text-xs bg-white flex-1">
+                      <SelectTrigger className="h-8 min-w-0 text-xs bg-white sm:flex-1">
                         <SelectValue placeholder="Link to Todoist task" />
                       </SelectTrigger>
                       <SelectContent>
@@ -2657,19 +2657,19 @@ export default function Dashboard() {
                     </Select>
                     <Button
                       size="sm"
-                      className="h-8 text-xs"
+                      className="h-8 text-xs sm:shrink-0"
                       onClick={handleLinkExistingNoteToTask}
                       disabled={addNoteLinkMutation.isPending}
                     >
                       Link Task
                     </Button>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                     <Select
                       value={linkEventId || "__none"}
                       onValueChange={(value) => setLinkEventId(value === "__none" ? "" : value)}
                     >
-                      <SelectTrigger className="h-8 text-xs bg-white flex-1">
+                      <SelectTrigger className="h-8 min-w-0 text-xs bg-white sm:flex-1">
                         <SelectValue placeholder="Link to calendar event" />
                       </SelectTrigger>
                       <SelectContent>
@@ -2683,7 +2683,7 @@ export default function Dashboard() {
                     </Select>
                     <Button
                       size="sm"
-                      className="h-8 text-xs"
+                      className="h-8 text-xs sm:shrink-0"
                       onClick={handleLinkExistingNoteToEvent}
                       disabled={addNoteLinkMutation.isPending}
                     >

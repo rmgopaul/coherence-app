@@ -17,10 +17,10 @@ type TriageEmailProps = {
 
 export function TriageEmail({ email, onReply, onArchive, onMakeTask }: TriageEmailProps) {
   return (
-    <article className="rounded-lg border border-slate-200 bg-white px-3 py-2.5">
-      <p className="truncate text-xs font-semibold uppercase tracking-wide text-slate-500">{email.sender}</p>
-      <h4 className="mt-1 truncate text-sm font-semibold text-slate-900">{email.subject}</h4>
-      <p className="mt-1 line-clamp-2 text-xs text-slate-600">{email.preview}</p>
+    <article className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+      <p className="line-clamp-2 break-all text-xs font-semibold uppercase tracking-wide text-slate-500">{email.sender}</p>
+      <h4 className="mt-1 line-clamp-2 break-words text-sm font-semibold text-slate-900">{email.subject}</h4>
+      <p className="mt-1 line-clamp-2 break-words text-xs text-slate-600">{email.preview}</p>
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         <Button
@@ -56,4 +56,3 @@ export function TriageEmail({ email, onReply, onArchive, onMakeTask }: TriageEma
 }
 
 export type { TriageEmailData };
-
