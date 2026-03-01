@@ -21,6 +21,7 @@ type TodaysPlanProps = {
   todoistTasks: any[];
   emails: any[];
   habits: any[];
+  onCompleteHabit?: (habitId: string) => void;
 };
 
 type SuggestedPlanAction = {
@@ -66,7 +67,7 @@ const toSlotKey = (item: PlanItemData): string => {
   return `item:${item.id}`;
 };
 
-export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits }: TodaysPlanProps) {
+export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits, onCompleteHabit }: TodaysPlanProps) {
   const seed = useMemo(
     () =>
       buildDayPlanSeed({
@@ -123,6 +124,12 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits }: Tod
       window.open(item.sourceUrl, "_blank", "noopener,noreferrer");
       return;
     }
+    if (item.type === "habit" && onCompleteHabit) {
+      const habitId = item.id.startsWith("habit:") ? item.id.slice("habit:".length) : item.id;
+      onCompleteHabit(habitId);
+      return;
+    }
+    toast.info("No linked source available for this item yet.");
   };
 
   const handleAddSuggestionToPlan = (suggestion: SuggestedPlanAction) => {
@@ -153,6 +160,12 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits }: Tod
     setOverrides((prev) => removePlanItemOverride(prev, itemId));
     setPlanItems((prev) => prev.filter((item) => item.id !== itemId));
     toast.success("Removed from today's plan");
+  };
+
+  const handleCompleteHabitFromPlan = (item: PlanItemData) => {
+    if (!onCompleteHabit) return;
+    const habitId = item.id.startsWith("habit:") ? item.id.slice("habit:".length) : item.id;
+    onCompleteHabit(habitId);
   };
 
   const groupedRows = useMemo<GroupedRow[]>(() => {
@@ -218,6 +231,8 @@ export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits }: Tod
                           setPlanItems((prev) => reorderPlan(prev, draggingId, targetId));
                           setDraggingId(null);
                         }}
+                        onOpenSource={handlePrimaryAction}
+                        onCompleteHabit={handleCompleteHabitFromPlan}
                         onRemove={handleRemovePlanItem}
                       />
                     ))}

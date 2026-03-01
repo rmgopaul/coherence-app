@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Calendar, CheckSquare, PlayCircle, Target } from "lucide-react";
+import { Calendar, CheckSquare, Mail, PlayCircle, Target } from "lucide-react";
 import type { PlanItemData } from "./types";
 
 type RightNowProps = {
@@ -19,14 +19,23 @@ export function RightNow({ item, onPrimaryAction }: RightNowProps) {
 
   const isTask = item.type === "task";
   const isEvent = item.type === "event";
-  const buttonLabel = isTask ? "Start Focus Session" : isEvent ? "Join Meeting" : "Start Habit";
+  const isEmailDeadline = item.source === "email";
+  const buttonLabel = isEmailDeadline
+    ? "Open Email"
+    : isTask
+      ? "Start Focus Session"
+      : isEvent
+        ? "Join Meeting"
+        : "Mark Habit Done";
 
   return (
     <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50 p-4 shadow-[0_10px_24px_rgba(16,185,129,0.14)]">
       <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">Right now</p>
       <div className="mt-2 flex items-start gap-3">
         <span className="rounded-md bg-white p-2 text-emerald-700">
-          {isTask ? (
+          {isEmailDeadline ? (
+            <Mail className="h-5 w-5" />
+          ) : isTask ? (
             <CheckSquare className="h-5 w-5" />
           ) : isEvent ? (
             <Calendar className="h-5 w-5" />

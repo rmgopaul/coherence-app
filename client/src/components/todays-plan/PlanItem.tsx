@@ -7,14 +7,26 @@ type PlanItemProps = {
   onDragOver: () => void;
   onDrop: (targetId: string) => void;
   onRemove?: (id: string) => void;
+  onOpenSource?: (item: PlanItemData) => void;
+  onCompleteHabit?: (item: PlanItemData) => void;
 };
 
 export const PLAN_ITEM_TITLE_CLASS = "whitespace-normal break-words text-sm font-semibold text-slate-900";
 
-export function PlanItem({ item, onDragStart, onDragOver, onDrop, onRemove }: PlanItemProps) {
+export function PlanItem({
+  item,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onRemove,
+  onOpenSource,
+  onCompleteHabit,
+}: PlanItemProps) {
   const isEvent = item.type === "event";
   const isEmailDeadline = item.source === "email";
   const isTask = item.type === "task" && !isEmailDeadline;
+  const isHabit = item.type === "habit";
+  const canOpenSource = Boolean(item.sourceUrl) && !isHabit;
 
   return (
     <li
@@ -56,19 +68,47 @@ export function PlanItem({ item, onDragStart, onDragOver, onDrop, onRemove }: Pl
         <p className="text-xs text-slate-500">{item.timeLabel}</p>
       </div>
 
-      {onRemove ? (
-        <button
-          type="button"
-          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
-          aria-label={`Remove ${item.title} from plan`}
-          onClick={(event) => {
-            event.stopPropagation();
-            onRemove(item.id);
-          }}
-        >
-          <X className="h-4 w-4" />
-        </button>
-      ) : null}
+      <div className="flex items-center gap-1.5">
+        {canOpenSource && onOpenSource ? (
+          <button
+            type="button"
+            className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            aria-label={`Open ${item.title}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenSource(item);
+            }}
+          >
+            Open
+          </button>
+        ) : null}
+        {isHabit && onCompleteHabit ? (
+          <button
+            type="button"
+            className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            aria-label={`Mark ${item.title} done`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onCompleteHabit(item);
+            }}
+          >
+            Mark done
+          </button>
+        ) : null}
+        {onRemove ? (
+          <button
+            type="button"
+            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            aria-label={`Remove ${item.title} from plan`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onRemove(item.id);
+            }}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        ) : null}
+      </div>
     </li>
   );
 }

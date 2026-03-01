@@ -1270,6 +1270,10 @@ export default function Dashboard() {
       dateKey: todayKey,
     });
   };
+
+  const handleCompleteHabitFromPlan = (habitId: string) => {
+    handleToggleHabit(habitId, true);
+  };
   
   const searchDriveMutation = trpc.google.searchDrive.useQuery(
     { query: driveSearchQuery },
@@ -1878,6 +1882,7 @@ export default function Dashboard() {
             todoistTasks={allTodoistTasks || []}
             emails={gmailMessages || []}
             habits={habitsForToday || []}
+            onCompleteHabit={handleCompleteHabitFromPlan}
           />
 
           <div className="space-y-4">
