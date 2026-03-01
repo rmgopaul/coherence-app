@@ -1,5 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Calendar, CheckSquare, RefreshCw, Target } from "lucide-react";
+import { Calendar, CheckSquare, Mail, RefreshCw, Target } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { PlanItem } from "./PlanItem";
@@ -13,12 +13,13 @@ import {
   savePlanOverrides,
   type PersistedPlanOverrides,
 } from "./persistence";
-import { buildDayPlanSeed } from "./scheduler";
+import { buildDayPlanSeed, PLAN_SOURCE_PRIORITY } from "./scheduler";
 import type { PlanItemData } from "./types";
 
 type TodaysPlanProps = {
   calendarEvents: any[];
   todoistTasks: any[];
+  emails: any[];
   habits: any[];
 };
 
@@ -65,10 +66,16 @@ const toSlotKey = (item: PlanItemData): string => {
   return `item:${item.id}`;
 };
 
-export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanProps) {
+export function TodaysPlan({ calendarEvents, todoistTasks, emails, habits }: TodaysPlanProps) {
   const seed = useMemo(
-    () => buildDayPlanSeed({ calendarEvents: calendarEvents || [], todoistTasks: todoistTasks || [], habits: habits || [] }),
-    [calendarEvents, todoistTasks, habits]
+    () =>
+      buildDayPlanSeed({
+        calendarEvents: calendarEvents || [],
+        todoistTasks: todoistTasks || [],
+        emails: emails || [],
+        habits: habits || [],
+      }),
+    [calendarEvents, todoistTasks, emails, habits]
   );
 
   const [overrides, setOverrides] = useState<PersistedPlanOverrides>({ addedItems: [], removedIds: [] });
@@ -151,8 +158,8 @@ export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanP
   const groupedRows = useMemo<GroupedRow[]>(() => {
     const sorted = [...planItems].sort((a, b) => {
       if (a.sortMs !== b.sortMs) return a.sortMs - b.sortMs;
-      if (a.type === "event" && b.type !== "event") return -1;
-      if (a.type !== "event" && b.type === "event") return 1;
+      const sourcePriorityDelta = (PLAN_SOURCE_PRIORITY[a.source] ?? 99) - (PLAN_SOURCE_PRIORITY[b.source] ?? 99);
+      if (sourcePriorityDelta !== 0) return sourcePriorityDelta;
       return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
     });
 
@@ -232,6 +239,10 @@ export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanP
                 Task
               </span>
               <span className="inline-flex items-center gap-1">
+                <Mail className="h-3.5 w-3.5" />
+                Email deadline
+              </span>
+              <span className="inline-flex items-center gap-1">
                 <Target className="h-3.5 w-3.5" />
                 Habit
               </span>
@@ -258,4 +269,3 @@ export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanP
     </div>
   );
 }
-

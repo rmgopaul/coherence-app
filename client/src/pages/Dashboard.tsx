@@ -1876,6 +1876,7 @@ export default function Dashboard() {
           <TodaysPlan
             calendarEvents={calendarEvents || []}
             todoistTasks={allTodoistTasks || []}
+            emails={gmailMessages || []}
             habits={habitsForToday || []}
           />
 

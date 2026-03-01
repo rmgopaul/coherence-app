@@ -46,6 +46,7 @@ describe("Today plan scheduling", () => {
           due: { datetime: "2026-03-01T15:00:00-06:00" },
         },
       ],
+      emails: [],
       habits: [],
     });
 
@@ -57,6 +58,92 @@ describe("Today plan scheduling", () => {
     expect(task?.dueTime).toBe(true);
     expect(task?.startMs).toBe(event?.startMs);
     expect(task?.timeLabel.toLowerCase()).toContain("due");
+  });
+
+  it("excludes Todoist tasks without due dates from Today's Plan", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T09:00:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [
+        {
+          id: "task-dated",
+          content: "Task with due date",
+          labels: ["10m"],
+          due: { date: "2026-03-01" },
+        },
+        {
+          id: "task-undated",
+          content: "Undated task should not appear",
+          labels: ["5m"],
+        },
+      ],
+      emails: [],
+      habits: [],
+    });
+
+    expect(seed.autoItems.some((item) => item.id === "task:task-dated")).toBe(true);
+    expect(seed.autoItems.some((item) => item.id === "task:task-undated")).toBe(false);
+  });
+
+  it("includes emails with explicit same-day deadlines and places them at deadline time", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T09:00:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [
+        {
+          id: "task-1",
+          content: "Prep docs",
+          due: { date: "2026-03-01" },
+        },
+      ],
+      emails: [
+        {
+          id: "gmail-1",
+          threadId: "thread-1",
+          snippet: "Need this by 3:30 PM today.",
+          payload: {
+            headers: [
+              { name: "Subject", value: "Submit contract update" },
+              { name: "From", value: "Client Team" },
+            ],
+          },
+        },
+      ],
+      habits: [],
+    });
+
+    const emailItem = seed.autoItems.find((item) => item.id === "email:gmail-1");
+    expect(emailItem).toBeTruthy();
+    expect(emailItem?.source).toBe("email");
+    expect(emailItem?.timeLabel).toContain("Due");
+    const expected = new Date("2026-03-01T15:30:00-06:00").getTime();
+    expect(emailItem?.startMs).toBe(expected);
+  });
+
+  it("applies habit placement rules (Floss early, BTAN late, no alcohol/no 420 hidden)", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T08:00:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [],
+      emails: [],
+      habits: [
+        { id: "habit-floss", name: "Floss", completed: false },
+        { id: "habit-btan", name: "BTAN", completed: false },
+        { id: "habit-avoid1", name: "No alcohol", completed: false },
+        { id: "habit-avoid2", name: "No 420", completed: false },
+      ],
+    });
+
+    const floss = seed.autoItems.find((item) => item.id === "habit:habit-floss");
+    const btan = seed.autoItems.find((item) => item.id === "habit:habit-btan");
+    const noAlcohol = seed.autoItems.find((item) => item.id === "habit:habit-avoid1");
+    const no420 = seed.autoItems.find((item) => item.id === "habit:habit-avoid2");
+
+    expect(floss).toBeTruthy();
+    expect(btan).toBeTruthy();
+    expect(noAlcohol).toBeUndefined();
+    expect(no420).toBeUndefined();
+    expect((floss?.startMs || 0) < (btan?.startMs || Number.MAX_SAFE_INTEGER)).toBe(true);
   });
 });
 
@@ -141,4 +228,3 @@ describe("Plan item text wrapping", () => {
     expect(PLAN_ITEM_TITLE_CLASS).toContain("break-words");
   });
 });
-

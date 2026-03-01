@@ -1,4 +1,4 @@
-import { Calendar, CheckSquare, GripVertical, Target, X } from "lucide-react";
+import { Calendar, CheckSquare, GripVertical, Mail, Target, X } from "lucide-react";
 import type { PlanItemData } from "./types";
 
 type PlanItemProps = {
@@ -13,7 +13,8 @@ export const PLAN_ITEM_TITLE_CLASS = "whitespace-normal break-words text-sm font
 
 export function PlanItem({ item, onDragStart, onDragOver, onDrop, onRemove }: PlanItemProps) {
   const isEvent = item.type === "event";
-  const isTask = item.type === "task";
+  const isEmailDeadline = item.source === "email";
+  const isTask = item.type === "task" && !isEmailDeadline;
 
   return (
     <li
@@ -28,7 +29,7 @@ export function PlanItem({ item, onDragStart, onDragOver, onDrop, onRemove }: Pl
         onDrop(item.id);
       }}
       className="group flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 transition hover:bg-slate-50"
-      aria-label={`${isEvent ? "Calendar event" : "Task"} ${item.title}`}
+      aria-label={`${isEvent ? "Calendar event" : isEmailDeadline ? "Email deadline" : isTask ? "Task" : "Habit"} ${item.title}`}
     >
       <span
         className="cursor-grab rounded p-1 text-slate-400 transition group-hover:text-slate-600"
@@ -41,6 +42,8 @@ export function PlanItem({ item, onDragStart, onDragOver, onDrop, onRemove }: Pl
       <span className="rounded-md bg-slate-100 p-1.5 text-slate-700" aria-hidden="true">
         {isEvent ? (
           <Calendar className="h-4 w-4" />
+        ) : isEmailDeadline ? (
+          <Mail className="h-4 w-4" />
         ) : isTask ? (
           <CheckSquare className="h-4 w-4" />
         ) : (

@@ -1,5 +1,5 @@
 export type PlanItemType = "event" | "task" | "habit";
-export type PlanItemSource = "calendar" | "todoist" | "habit" | "suggestion";
+export type PlanItemSource = "calendar" | "todoist" | "email" | "habit" | "suggestion";
 
 export type PlanItemData = {
   id: string;
