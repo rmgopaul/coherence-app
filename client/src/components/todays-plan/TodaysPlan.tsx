@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calendar, CheckSquare, RefreshCw, Target } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { PlanItem } from "./PlanItem";
 import { RightNow } from "./RightNow";
 import { SuggestedAction } from "./SuggestedAction";
@@ -10,6 +11,13 @@ type TodaysPlanProps = {
   calendarEvents: any[];
   todoistTasks: any[];
   habits: any[];
+};
+
+type SuggestedPlanAction = {
+  id: string;
+  description: string;
+  title: string;
+  timeLabel: string;
 };
 
 const toDateKey = (date: Date): string => {
@@ -192,10 +200,20 @@ export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanP
     setPlanItems(mergedPlanItems);
   }, [mergedPlanItems]);
 
-  const suggestions = useMemo(
+  const suggestions = useMemo<SuggestedPlanAction[]>(
     () => [
-      "Your WHOOP recovery is low. Schedule a 15-min walk?",
-      "You have multiple tasks due today. Add a 30-min focus sprint now?",
+      {
+        id: "suggestion:walk-break",
+        description: "Your WHOOP recovery is low. Schedule a 15-min walk?",
+        title: "15-min recovery walk",
+        timeLabel: "Suggested action",
+      },
+      {
+        id: "suggestion:focus-sprint",
+        description: "You have multiple tasks due today. Add a 30-min focus sprint now?",
+        title: "30-min focus sprint",
+        timeLabel: "Suggested action",
+      },
     ],
     []
   );
@@ -206,6 +224,26 @@ export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanP
       return;
     }
     console.log("[RightNow] primary action clicked", item);
+  };
+
+  const handleAddSuggestionToPlan = (suggestion: SuggestedPlanAction) => {
+    setPlanItems((prev) => {
+      if (prev.some((item) => item.id === suggestion.id)) return prev;
+
+      const newItem: PlanItemData = {
+        id: suggestion.id,
+        type: "task",
+        title: suggestion.title,
+        timeLabel: suggestion.timeLabel,
+        sortMs: Date.now(),
+      };
+
+      // Keep "Right now" as first element if present, and insert suggestion next.
+      if (prev.length > 0) return [prev[0], newItem, ...prev.slice(1)];
+      return [newItem];
+    });
+
+    toast.success("Added to today's plan");
   };
 
   return (
@@ -272,13 +310,12 @@ export function TodaysPlan({ calendarEvents, todoistTasks, habits }: TodaysPlanP
           <CardTitle className="text-base">Suggested Actions</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {suggestions.map((description, index) => (
+          {suggestions.map((suggestion) => (
             <SuggestedAction
-              key={`${description}-${index}`}
-              description={description}
-              onAddToPlan={() => {
-                console.log("[SuggestedAction] Add to plan clicked:", description);
-              }}
+              key={suggestion.id}
+              description={suggestion.description}
+              added={planItems.some((item) => item.id === suggestion.id)}
+              onAddToPlan={() => handleAddSuggestionToPlan(suggestion)}
             />
           ))}
         </CardContent>
