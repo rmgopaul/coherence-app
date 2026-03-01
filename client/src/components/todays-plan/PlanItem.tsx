@@ -1,4 +1,4 @@
-import { Calendar, CheckSquare, GripVertical, Target } from "lucide-react";
+import { Calendar, CheckSquare, GripVertical, Target, X } from "lucide-react";
 import type { PlanItemData } from "./types";
 
 type PlanItemProps = {
@@ -6,9 +6,12 @@ type PlanItemProps = {
   onDragStart: (id: string) => void;
   onDragOver: () => void;
   onDrop: (targetId: string) => void;
+  onRemove?: (id: string) => void;
 };
 
-export function PlanItem({ item, onDragStart, onDragOver, onDrop }: PlanItemProps) {
+export const PLAN_ITEM_TITLE_CLASS = "whitespace-normal break-words text-sm font-semibold text-slate-900";
+
+export function PlanItem({ item, onDragStart, onDragOver, onDrop, onRemove }: PlanItemProps) {
   const isEvent = item.type === "event";
   const isTask = item.type === "task";
 
@@ -46,9 +49,23 @@ export function PlanItem({ item, onDragStart, onDragOver, onDrop }: PlanItemProp
       </span>
 
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-slate-900">{item.title}</p>
+        <p className={PLAN_ITEM_TITLE_CLASS}>{item.title}</p>
         <p className="text-xs text-slate-500">{item.timeLabel}</p>
       </div>
+
+      {onRemove ? (
+        <button
+          type="button"
+          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+          aria-label={`Remove ${item.title} from plan`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove(item.id);
+          }}
+        >
+          <X className="h-4 w-4" />
+        </button>
+      ) : null}
     </li>
   );
 }

@@ -57,9 +57,10 @@ describe("resolveNotebookEditorSnapshot", () => {
       notes,
       draftsByKey,
     });
-    expect(backToA.source).toBe("draft");
-    expect(backToA.content).toContain("Alpha unsaved draft");
-    expect(backToA.dirty).toBe(true);
+    // Saved note is preferred over stale draft for selected notes.
+    expect(backToA.source).toBe("note");
+    expect(backToA.content).toContain("Alpha content");
+    expect(backToA.dirty).toBe(false);
   });
 
   it("does not force-blank when selected note is temporarily missing during async refresh", () => {
