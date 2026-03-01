@@ -1869,33 +1869,36 @@ export default function Notebook() {
       </header>
 
       <main className="container mx-auto px-4 py-4">
-        <div className="hidden gap-4 lg:grid lg:grid-cols-[240px_400px_minmax(0,1fr)]">
-          <Card className="h-full">
+        <div className="grid gap-4 lg:grid-cols-[240px_400px_minmax(0,1fr)]">
+          <Card className="hidden h-full lg:block">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm">Browse</CardTitle>
             </CardHeader>
             <CardContent>{sidebarNav}</CardContent>
           </Card>
 
-          {notesListPane}
-          {editorPane}
-        </div>
+          <div
+            className={`${
+              mobilePanel === "list" ? "block" : "hidden"
+            } lg:block`}
+          >
+            {notesListPane}
+          </div>
 
-        <div className="space-y-4 lg:hidden">
-          {mobilePanel === "list" ? (
-            <>{notesListPane}</>
-          ) : (
-            <>
-              <div className="flex items-center justify-between">
-                <Button type="button" variant="outline" size="sm" onClick={() => setMobilePanel("list")}>
-                  <ArrowLeft className="mr-1 h-4 w-4" />
-                  Back to list
-                </Button>
-                <span className="text-xs text-slate-500">{getSaveStateLabel(saveState)}</span>
-              </div>
-              {editorPane}
-            </>
-          )}
+          <div
+            className={`${
+              mobilePanel === "editor" ? "block" : "hidden"
+            } lg:block`}
+          >
+            <div className="mb-3 flex items-center justify-between lg:hidden">
+              <Button type="button" variant="outline" size="sm" onClick={() => setMobilePanel("list")}>
+                <ArrowLeft className="mr-1 h-4 w-4" />
+                Back to list
+              </Button>
+              <span className="text-xs text-slate-500">{getSaveStateLabel(saveState)}</span>
+            </div>
+            {editorPane}
+          </div>
         </div>
       </main>
 
