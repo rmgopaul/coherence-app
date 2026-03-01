@@ -2017,7 +2017,10 @@ export default function Notebook() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-xl" aria-label="Attach event or task dialog">
+        <DialogContent
+          className="w-[min(96vw,48rem)] max-w-[min(96vw,48rem)] min-w-0 max-h-[85vh] overflow-hidden sm:max-w-xl"
+          aria-label="Attach event or task dialog"
+        >
           <DialogHeader>
             <DialogTitle>Attach to note</DialogTitle>
             <DialogDescription>
@@ -2025,8 +2028,8 @@ export default function Notebook() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-3">
-            <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+          <div className="min-w-0 space-y-3 overflow-hidden">
+            <div className="min-w-0 overflow-hidden rounded-md border border-slate-200 bg-slate-50 p-2.5">
               <p className="mb-1 text-xs font-medium text-slate-700">Currently linked</p>
               <div className="flex flex-wrap gap-1.5">
                 {selectedLinks.length === 0 ? (
@@ -2136,7 +2139,7 @@ export default function Notebook() {
               aria-label="Search attach items"
             />
 
-            <div className="max-h-72 overflow-y-auto rounded-md border border-slate-200">
+            <div className="min-w-0 max-h-72 overflow-x-hidden overflow-y-auto rounded-md border border-slate-200">
               {attachItems.length === 0 ? (
                 <p className="px-3 py-6 text-sm text-slate-500">{attachEmptyStateMessage}</p>
               ) : (
@@ -2147,12 +2150,14 @@ export default function Notebook() {
                       key={item.id}
                       type="button"
                       onClick={() => setAttachSelectionId(item.id)}
-                      className={`w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 ${
+                      className={`w-full min-w-0 overflow-hidden border-b border-slate-100 px-3 py-2 text-left last:border-b-0 ${
                         active ? "bg-emerald-50" : "hover:bg-slate-50"
                       }`}
                     >
-                      <p className="truncate text-sm font-medium text-slate-900">{item.title}</p>
-                      {item.subtitle && <p className="truncate text-xs text-slate-500">{item.subtitle}</p>}
+                      <p className="line-clamp-2 break-all text-sm font-medium text-slate-900">{item.title}</p>
+                      {item.subtitle && (
+                        <p className="line-clamp-1 break-all text-xs text-slate-500">{item.subtitle}</p>
+                      )}
                     </button>
                   );
                 })
