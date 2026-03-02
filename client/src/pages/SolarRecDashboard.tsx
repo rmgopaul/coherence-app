@@ -186,6 +186,17 @@ type RecPerformanceResultRow = {
   drawdownPayment: number;
 };
 
+type OfflineBreakdownRow = {
+  key: string;
+  label: string;
+  totalSystems: number;
+  offlineSystems: number;
+  offlinePercent: number | null;
+  offlineContractValue: number;
+  totalContractValue: number;
+  offlineContractValuePercent: number | null;
+};
+
 type SystemBuilder = {
   key: string;
   systemId: string | null;
@@ -207,6 +218,8 @@ type SystemBuilder = {
   zillowSoldDate: Date | null;
   transferSeen: boolean;
   statusText: string;
+  monitoringType: string | null;
+  installerName: string | null;
 };
 
 type SystemRecord = {
@@ -234,6 +247,8 @@ type SystemRecord = {
   zillowStatus: string | null;
   zillowSoldDate: Date | null;
   contractedDate: Date | null;
+  monitoringType: string;
+  installerName: string;
 };
 
 const DATASET_DEFINITIONS: Record<
@@ -373,6 +388,13 @@ function maxDate(current: Date | null, candidate: Date | null): Date | null {
 function firstNonNull(...values: Array<number | null>): number | null {
   for (const value of values) {
     if (value !== null) return value;
+  }
+  return null;
+}
+
+function firstNonEmptyString(...values: string[]): string | null {
+  for (const value of values) {
+    if (clean(value)) return clean(value);
   }
   return null;
 }
@@ -800,6 +822,21 @@ export default function SolarRecDashboard() {
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
   const [changeOwnershipSearch, setChangeOwnershipSearch] = useState("");
+  const [offlineMonitoringFilter, setOfflineMonitoringFilter] = useState("All");
+  const [offlineInstallerFilter, setOfflineInstallerFilter] = useState("All");
+  const [offlineSearch, setOfflineSearch] = useState("");
+  const [offlineMonitoringSortBy, setOfflineMonitoringSortBy] = useState<
+    "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
+  >("offlineSystems");
+  const [offlineMonitoringSortDir, setOfflineMonitoringSortDir] = useState<"asc" | "desc">("desc");
+  const [offlineInstallerSortBy, setOfflineInstallerSortBy] = useState<
+    "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
+  >("offlineSystems");
+  const [offlineInstallerSortDir, setOfflineInstallerSortDir] = useState<"asc" | "desc">("desc");
+  const [offlineDetailSortBy, setOfflineDetailSortBy] = useState<
+    "systemName" | "monitoringType" | "installerName" | "contractedValue" | "latestReportingDate"
+  >("contractedValue");
+  const [offlineDetailSortDir, setOfflineDetailSortDir] = useState<"asc" | "desc">("desc");
   const [performanceContractId, setPerformanceContractId] = useState("");
   const [performanceDeliveryYearKey, setPerformanceDeliveryYearKey] = useState("");
   const [performancePreviousSurplusInput, setPerformancePreviousSurplusInput] = useState("0");
@@ -945,6 +982,8 @@ export default function SolarRecDashboard() {
         zillowSoldDate: null,
         transferSeen: false,
         statusText: "",
+        monitoringType: null,
+        installerName: null,
       };
 
       builders.set(key, created);
@@ -1028,6 +1067,23 @@ export default function SolarRecDashboard() {
 
       const zillowStatus = clean(row["zillowData.status"]) || clean(row.Zillow_Status);
       if (zillowStatus) builder.zillowStatus = zillowStatus;
+
+      const monitoringType = firstNonEmptyString(
+        clean(row.online_monitoring_access_type),
+        clean(row.online_monitoring),
+        clean(row.online_monitoring_entry_method),
+        clean(row.reporting_entity)
+      );
+      if (monitoringType) builder.monitoringType = monitoringType;
+
+      const installerName = firstNonEmptyString(
+        clean(row["partnerCompany.name"]),
+        clean(row.installer_company_name),
+        clean(row.installer_name),
+        clean(row.system_installer),
+        clean(row["lastInstallerUpdatedBy.name"])
+      );
+      if (installerName) builder.installerName = installerName;
 
       builder.zillowSoldDate = maxDate(
         builder.zillowSoldDate,
@@ -1187,6 +1243,8 @@ export default function SolarRecDashboard() {
           zillowStatus: builder.zillowStatus,
           zillowSoldDate: builder.zillowSoldDate,
           contractedDate: builder.contractedDate,
+          monitoringType: builder.monitoringType || "Unknown",
+          installerName: builder.installerName || "Unknown",
         } satisfies SystemRecord;
       })
       .filter((system) => {
@@ -1365,6 +1423,198 @@ export default function SolarRecDashboard() {
       return haystack.includes(normalizedSearch);
     });
   }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
+
+  const offlineSystems = useMemo(() => systems.filter((system) => !system.isReporting), [systems]);
+
+  const offlineMonitoringOptions = useMemo(
+    () =>
+      Array.from(new Set(systems.map((system) => system.monitoringType || "Unknown"))).sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+      ),
+    [systems]
+  );
+
+  const offlineInstallerOptions = useMemo(
+    () =>
+      Array.from(new Set(systems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+      ),
+    [systems]
+  );
+
+  const offlineMonitoringBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
+    const groups = new Map<
+      string,
+      { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
+    >();
+
+    systems.forEach((system) => {
+      const label = system.monitoringType || "Unknown";
+      let current = groups.get(label);
+      if (!current) {
+        current = { label, totalSystems: 0, offlineSystems: 0, totalContractValue: 0, offlineContractValue: 0 };
+        groups.set(label, current);
+      }
+      current.totalSystems += 1;
+      current.totalContractValue += system.contractedValue ?? 0;
+      if (!system.isReporting) {
+        current.offlineSystems += 1;
+        current.offlineContractValue += system.contractedValue ?? 0;
+      }
+    });
+
+    const rows = Array.from(groups.values()).map((group) => ({
+      key: group.label,
+      label: group.label,
+      totalSystems: group.totalSystems,
+      offlineSystems: group.offlineSystems,
+      offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
+      offlineContractValue: group.offlineContractValue,
+      totalContractValue: group.totalContractValue,
+      offlineContractValuePercent: toPercentValue(group.offlineContractValue, group.totalContractValue),
+    }));
+
+    rows.sort((a, b) => {
+      const direction = offlineMonitoringSortDir === "asc" ? 1 : -1;
+      const byLabel =
+        a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }) * direction;
+      if (offlineMonitoringSortBy === "label") return byLabel;
+      const aValue = a[offlineMonitoringSortBy] ?? -Infinity;
+      const bValue = b[offlineMonitoringSortBy] ?? -Infinity;
+      if (aValue === bValue) return byLabel;
+      return ((aValue as number) - (bValue as number)) * direction;
+    });
+    return rows;
+  }, [offlineMonitoringSortBy, offlineMonitoringSortDir, systems]);
+
+  const offlineInstallerBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
+    const groups = new Map<
+      string,
+      { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
+    >();
+
+    systems.forEach((system) => {
+      const label = system.installerName || "Unknown";
+      let current = groups.get(label);
+      if (!current) {
+        current = { label, totalSystems: 0, offlineSystems: 0, totalContractValue: 0, offlineContractValue: 0 };
+        groups.set(label, current);
+      }
+      current.totalSystems += 1;
+      current.totalContractValue += system.contractedValue ?? 0;
+      if (!system.isReporting) {
+        current.offlineSystems += 1;
+        current.offlineContractValue += system.contractedValue ?? 0;
+      }
+    });
+
+    const rows = Array.from(groups.values()).map((group) => ({
+      key: group.label,
+      label: group.label,
+      totalSystems: group.totalSystems,
+      offlineSystems: group.offlineSystems,
+      offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
+      offlineContractValue: group.offlineContractValue,
+      totalContractValue: group.totalContractValue,
+      offlineContractValuePercent: toPercentValue(group.offlineContractValue, group.totalContractValue),
+    }));
+
+    rows.sort((a, b) => {
+      const direction = offlineInstallerSortDir === "asc" ? 1 : -1;
+      const byLabel =
+        a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }) * direction;
+      if (offlineInstallerSortBy === "label") return byLabel;
+      const aValue = a[offlineInstallerSortBy] ?? -Infinity;
+      const bValue = b[offlineInstallerSortBy] ?? -Infinity;
+      if (aValue === bValue) return byLabel;
+      return ((aValue as number) - (bValue as number)) * direction;
+    });
+    return rows;
+  }, [offlineInstallerSortBy, offlineInstallerSortDir, systems]);
+
+  const filteredOfflineSystems = useMemo(() => {
+    const normalizedSearch = offlineSearch.trim().toLowerCase();
+    const rows = offlineSystems.filter((system) => {
+      const monitoringMatch =
+        offlineMonitoringFilter === "All" ? true : system.monitoringType === offlineMonitoringFilter;
+      if (!monitoringMatch) return false;
+      const installerMatch = offlineInstallerFilter === "All" ? true : system.installerName === offlineInstallerFilter;
+      if (!installerMatch) return false;
+      if (!normalizedSearch) return true;
+      const haystack = [
+        system.systemName,
+        system.systemId ?? "",
+        system.trackingSystemRefId ?? "",
+        system.monitoringType,
+        system.installerName,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(normalizedSearch);
+    });
+
+    rows.sort((a, b) => {
+      const direction = offlineDetailSortDir === "asc" ? 1 : -1;
+      if (offlineDetailSortBy === "systemName") {
+        return (
+          a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
+        );
+      }
+      if (offlineDetailSortBy === "monitoringType") {
+        return (
+          a.monitoringType.localeCompare(b.monitoringType, undefined, { sensitivity: "base", numeric: true }) *
+          direction
+        );
+      }
+      if (offlineDetailSortBy === "installerName") {
+        return (
+          a.installerName.localeCompare(b.installerName, undefined, { sensitivity: "base", numeric: true }) *
+          direction
+        );
+      }
+      if (offlineDetailSortBy === "latestReportingDate") {
+        const aTime = a.latestReportingDate?.getTime() ?? -Infinity;
+        const bTime = b.latestReportingDate?.getTime() ?? -Infinity;
+        if (aTime === bTime) {
+          return (
+            a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
+          );
+        }
+        return (aTime - bTime) * direction;
+      }
+      const aValue = a.contractedValue ?? -Infinity;
+      const bValue = b.contractedValue ?? -Infinity;
+      if (aValue === bValue) {
+        return (
+          a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
+        );
+      }
+      return (aValue - bValue) * direction;
+    });
+    return rows;
+  }, [
+    offlineDetailSortBy,
+    offlineDetailSortDir,
+    offlineInstallerFilter,
+    offlineMonitoringFilter,
+    offlineSearch,
+    offlineSystems,
+  ]);
+
+  const offlineSummary = useMemo(() => {
+    const totalOfflineContractValue = offlineSystems.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    const totalPortfolioContractValue = systems.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    return {
+      offlineSystemCount: offlineSystems.length,
+      offlineSystemPercent: toPercentValue(offlineSystems.length, systems.length),
+      filteredOfflineCount: filteredOfflineSystems.length,
+      monitoringTypeCount: offlineMonitoringBreakdownRows.length,
+      installerCount: offlineInstallerBreakdownRows.length,
+      totalOfflineContractValue,
+      totalPortfolioContractValue,
+      offlineContractValuePercent: toPercentValue(totalOfflineContractValue, totalPortfolioContractValue),
+    };
+  }, [filteredOfflineSystems.length, offlineInstallerBreakdownRows.length, offlineMonitoringBreakdownRows.length, offlineSystems, systems]);
 
   const recPriceByTrackingId = useMemo(() => {
     const mapping = new Map<string, number>();
@@ -2417,7 +2667,7 @@ export default function SolarRecDashboard() {
         ) : null}
 
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-9 h-auto">
+          <TabsList className="grid w-full grid-cols-10 h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="size">Size + Reporting</TabsTrigger>
             <TabsTrigger value="value">REC Value</TabsTrigger>
@@ -2426,6 +2676,7 @@ export default function SolarRecDashboard() {
             <TabsTrigger value="performance-eval">REC Performance Eval</TabsTrigger>
             <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
             <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
+            <TabsTrigger value="offline-monitoring">Offline by Monitoring</TabsTrigger>
             <TabsTrigger value="snapshot-log">Snapshot Log</TabsTrigger>
           </TabsList>
 
@@ -3422,6 +3673,307 @@ export default function SolarRecDashboard() {
                         <TableCell>{system.contractType ?? "N/A"}</TableCell>
                         <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
                         <TableCell>{formatDate(system.contractedDate)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="offline-monitoring" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Non-Reporting Systems by Monitoring Type and Installer</CardTitle>
+                <CardDescription>
+                  Offline status means not reporting to GATS within the last 3 months.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+              <Card>
+                <CardHeader>
+                  <CardDescription>Total Offline Systems</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.offlineSystemCount)}</CardTitle>
+                  <CardDescription>{formatPercent(offlineSummary.offlineSystemPercent)}</CardDescription>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Filtered Offline Systems</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.filteredOfflineCount)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Monitoring Types</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.monitoringTypeCount)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Installers</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.installerCount)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Offline Contract Value</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(offlineSummary.totalOfflineContractValue)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Offline Value % of Portfolio</CardDescription>
+                  <CardTitle className="text-2xl">{formatPercent(offlineSummary.offlineContractValuePercent)}</CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <CardTitle className="text-base">Offline by Monitoring Type</CardTitle>
+                      <CardDescription>
+                        Includes offline percentage and contract value by monitoring type.
+                      </CardDescription>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-700">Sort by</label>
+                        <select
+                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
+                          value={offlineMonitoringSortBy}
+                          onChange={(event) =>
+                            setOfflineMonitoringSortBy(
+                              event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
+                            )
+                          }
+                        >
+                          <option value="offlineSystems">Offline Systems</option>
+                          <option value="offlinePercent">Offline %</option>
+                          <option value="offlineContractValue">Offline Contract Value</option>
+                          <option value="label">Monitoring Type</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-700">Direction</label>
+                        <select
+                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
+                          value={offlineMonitoringSortDir}
+                          onChange={(event) => setOfflineMonitoringSortDir(event.target.value as "asc" | "desc")}
+                        >
+                          <option value="desc">Descending</option>
+                          <option value="asc">Ascending</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Monitoring Type</TableHead>
+                        <TableHead>Total Systems</TableHead>
+                        <TableHead>Offline Systems</TableHead>
+                        <TableHead>Offline %</TableHead>
+                        <TableHead>Offline Contract Value</TableHead>
+                        <TableHead>Offline Value %</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {offlineMonitoringBreakdownRows.map((row) => (
+                        <TableRow key={row.key}>
+                          <TableCell className="font-medium">{row.label}</TableCell>
+                          <TableCell>{formatNumber(row.totalSystems)}</TableCell>
+                          <TableCell>{formatNumber(row.offlineSystems)}</TableCell>
+                          <TableCell>{formatPercent(row.offlinePercent)}</TableCell>
+                          <TableCell>{formatCurrency(row.offlineContractValue)}</TableCell>
+                          <TableCell>{formatPercent(row.offlineContractValuePercent)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                      <CardTitle className="text-base">Offline by Installer</CardTitle>
+                      <CardDescription>
+                        Includes offline percentage and contract value by installer.
+                      </CardDescription>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-700">Sort by</label>
+                        <select
+                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
+                          value={offlineInstallerSortBy}
+                          onChange={(event) =>
+                            setOfflineInstallerSortBy(
+                              event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
+                            )
+                          }
+                        >
+                          <option value="offlineSystems">Offline Systems</option>
+                          <option value="offlinePercent">Offline %</option>
+                          <option value="offlineContractValue">Offline Contract Value</option>
+                          <option value="label">Installer</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-xs font-medium text-slate-700">Direction</label>
+                        <select
+                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
+                          value={offlineInstallerSortDir}
+                          onChange={(event) => setOfflineInstallerSortDir(event.target.value as "asc" | "desc")}
+                        >
+                          <option value="desc">Descending</option>
+                          <option value="asc">Ascending</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Installer</TableHead>
+                        <TableHead>Total Systems</TableHead>
+                        <TableHead>Offline Systems</TableHead>
+                        <TableHead>Offline %</TableHead>
+                        <TableHead>Offline Contract Value</TableHead>
+                        <TableHead>Offline Value %</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {offlineInstallerBreakdownRows.map((row) => (
+                        <TableRow key={row.key}>
+                          <TableCell className="font-medium">{row.label}</TableCell>
+                          <TableCell>{formatNumber(row.totalSystems)}</TableCell>
+                          <TableCell>{formatNumber(row.offlineSystems)}</TableCell>
+                          <TableCell>{formatPercent(row.offlinePercent)}</TableCell>
+                          <TableCell>{formatCurrency(row.offlineContractValue)}</TableCell>
+                          <TableCell>{formatPercent(row.offlineContractValuePercent)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Offline Systems Detail</CardTitle>
+                <CardDescription>Filterable and sortable list of non-reporting systems.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Monitoring type</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={offlineMonitoringFilter}
+                      onChange={(event) => setOfflineMonitoringFilter(event.target.value)}
+                    >
+                      <option value="All">All Monitoring Types</option>
+                      {offlineMonitoringOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Installer</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={offlineInstallerFilter}
+                      onChange={(event) => setOfflineInstallerFilter(event.target.value)}
+                    >
+                      <option value="All">All Installers</option>
+                      {offlineInstallerOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Sort by</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={offlineDetailSortBy}
+                      onChange={(event) =>
+                        setOfflineDetailSortBy(
+                          event.target.value as
+                            | "systemName"
+                            | "monitoringType"
+                            | "installerName"
+                            | "contractedValue"
+                            | "latestReportingDate"
+                        )
+                      }
+                    >
+                      <option value="contractedValue">Contract Value</option>
+                      <option value="latestReportingDate">Last Reporting Date</option>
+                      <option value="systemName">System Name</option>
+                      <option value="monitoringType">Monitoring Type</option>
+                      <option value="installerName">Installer</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Direction</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={offlineDetailSortDir}
+                      onChange={(event) => setOfflineDetailSortDir(event.target.value as "asc" | "desc")}
+                    >
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Search</label>
+                    <Input
+                      placeholder="System, IDs, monitoring, installer..."
+                      value={offlineSearch}
+                      onChange={(event) => setOfflineSearch(event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>System</TableHead>
+                      <TableHead>system_id</TableHead>
+                      <TableHead>Tracking ID</TableHead>
+                      <TableHead>Monitoring Type</TableHead>
+                      <TableHead>Installer</TableHead>
+                      <TableHead>Last Reporting Date</TableHead>
+                      <TableHead>Contract Value</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredOfflineSystems.slice(0, 1000).map((system) => (
+                      <TableRow key={system.key}>
+                        <TableCell className="font-medium">{system.systemName}</TableCell>
+                        <TableCell>{system.systemId ?? "N/A"}</TableCell>
+                        <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
+                        <TableCell>{system.monitoringType}</TableCell>
+                        <TableCell>{system.installerName}</TableCell>
+                        <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
+                        <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
