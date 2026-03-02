@@ -50,7 +50,13 @@ type ContractDeliveryAggregate = {
   required: number;
   delivered: number;
   gap: number;
+  deliveredPercent: number | null;
+  requiredValue: number;
+  deliveredValue: number;
+  valueGap: number;
+  valueDeliveredPercent: number | null;
   projectCount: number;
+  pricedProjectCount: number;
 };
 
 type DashboardLogEntry = {
@@ -58,7 +64,9 @@ type DashboardLogEntry = {
   createdAt: Date;
   totalSystems: number;
   reportingSystems: number;
+  reportingPercent: number | null;
   changeOwnershipSystems: number;
+  changeOwnershipPercent: number | null;
   transferredReporting: number;
   transferredNotReporting: number;
   terminatedReporting: number;
@@ -68,6 +76,9 @@ type DashboardLogEntry = {
   totalContractedValue: number;
   totalDeliveredValue: number;
   totalGap: number;
+  contractedValueReporting: number;
+  contractedValueNotReporting: number;
+  contractedValueReportingPercent: number | null;
   datasets: Array<{
     key: DatasetKey;
     label: string;
@@ -279,6 +290,16 @@ function formatNumber(value: number | null, digits = 0): string {
   if (value === null) return "N/A";
   if (digits > 0) return value.toFixed(digits);
   return NUMBER_FORMATTER.format(value);
+}
+
+function toPercentValue(numerator: number, denominator: number): number | null {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return null;
+  return (numerator / denominator) * 100;
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "N/A";
+  return `${value.toFixed(1)}%`;
 }
 
 function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
@@ -537,7 +558,9 @@ function loadPersistedLogs(): DashboardLogEntry[] {
       createdAt: string;
       totalSystems: number;
       reportingSystems: number;
+      reportingPercent?: number | null;
       changeOwnershipSystems: number;
+      changeOwnershipPercent?: number | null;
       transferredReporting: number;
       transferredNotReporting: number;
       terminatedReporting: number;
@@ -547,6 +570,9 @@ function loadPersistedLogs(): DashboardLogEntry[] {
       totalContractedValue: number;
       totalDeliveredValue: number;
       totalGap: number;
+      contractedValueReporting?: number;
+      contractedValueNotReporting?: number;
+      contractedValueReportingPercent?: number | null;
       datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
     }>;
     return parsed
@@ -560,7 +586,19 @@ function loadPersistedLogs(): DashboardLogEntry[] {
             return { ...dataset, updatedAt };
           })
           .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null);
-        return { ...entry, createdAt, datasets };
+        return {
+          ...entry,
+          createdAt,
+          reportingPercent: entry.reportingPercent ?? toPercentValue(entry.reportingSystems, entry.totalSystems),
+          changeOwnershipPercent:
+            entry.changeOwnershipPercent ?? toPercentValue(entry.changeOwnershipSystems, entry.totalSystems),
+          contractedValueReporting: entry.contractedValueReporting ?? 0,
+          contractedValueNotReporting: entry.contractedValueNotReporting ?? 0,
+          contractedValueReportingPercent:
+            entry.contractedValueReportingPercent ??
+            toPercentValue(entry.contractedValueReporting ?? 0, entry.totalContractedValue),
+          datasets,
+        };
       })
       .filter((entry): entry is DashboardLogEntry => entry !== null);
   } catch {
@@ -899,27 +937,23 @@ export default function SolarRecDashboard() {
         const valueGap =
           contractedValue !== null && deliveredValue !== null ? contractedValue - deliveredValue : null;
 
-        const statusText = builder.statusText.toLowerCase();
-        const isTerminated =
-          statusText.includes("terminated") ||
-          statusText.includes("termination") ||
-          statusText.includes("closed") ||
-          statusText.includes("withdrawn") ||
-          statusText.includes("cancel");
-
         const contractTypeNormalized = clean(builder.contractType).toLowerCase();
+        const isContractTransferred = contractTypeNormalized.includes("il abp - transferred");
+        const isContractTerminated = contractTypeNormalized.includes("il abp - terminated");
+        const isTerminated = isContractTerminated;
         const zillowStatusNormalized = clean(builder.zillowStatus).toLowerCase();
         const isZillowSold = zillowStatusNormalized.includes("sold");
-        const hasChangedOwnership =
+        const hasZillowConfirmedOwnershipChange =
           isZillowSold &&
           !!builder.zillowSoldDate &&
           !!builder.contractedDate &&
           builder.zillowSoldDate > builder.contractedDate;
+        const hasChangedOwnership = isContractTransferred || isContractTerminated || hasZillowConfirmedOwnershipChange;
 
         let ownershipStatus: OwnershipStatus;
         if (isTerminated) {
           ownershipStatus = isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting";
-        } else if (builder.transferSeen) {
+        } else if (builder.transferSeen || isContractTransferred) {
           ownershipStatus = isReporting ? "Transferred and Reporting" : "Transferred and Not Reporting";
         } else {
           ownershipStatus = isReporting ? "Not Transferred and Reporting" : "Not Transferred and Not Reporting";
@@ -982,6 +1016,7 @@ export default function SolarRecDashboard() {
   const summary = useMemo(() => {
     const totalSystems = abpEligibleTotalSystems;
     const reportingSystems = systems.filter((system) => system.isReporting).length;
+    const reportingPercent = toPercentValue(reportingSystems, totalSystems);
     const smallSystems = systems.filter((system) => system.sizeBucket === "<=10 kW AC").length;
     const largeSystems = systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
     const unknownSizeSystems = systems.filter((system) => system.sizeBucket === "Unknown").length;
@@ -989,6 +1024,10 @@ export default function SolarRecDashboard() {
     const ownershipCounts = OWNERSHIP_ORDER.map((status) => ({
       status,
       count: systems.filter((system) => system.ownershipStatus === status).length,
+      percent: toPercentValue(
+        systems.filter((system) => system.ownershipStatus === status).length,
+        totalSystems
+      ),
     }));
 
     const withValueData = systems.filter(
@@ -996,10 +1035,17 @@ export default function SolarRecDashboard() {
     );
     const totalContractedValue = withValueData.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
     const totalDeliveredValue = withValueData.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
+    const contractedValueReporting = withValueData
+      .filter((system) => system.isReporting)
+      .reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    const contractedValueNotReporting = totalContractedValue - contractedValueReporting;
+    const contractedValueReportingPercent = toPercentValue(contractedValueReporting, totalContractedValue);
+    const deliveredValuePercent = toPercentValue(totalDeliveredValue, totalContractedValue);
 
     return {
       totalSystems,
       reportingSystems,
+      reportingPercent,
       smallSystems,
       largeSystems,
       unknownSizeSystems,
@@ -1008,6 +1054,10 @@ export default function SolarRecDashboard() {
       totalContractedValue,
       totalDeliveredValue,
       totalGap: totalContractedValue - totalDeliveredValue,
+      contractedValueReporting,
+      contractedValueNotReporting,
+      contractedValueReportingPercent,
+      deliveredValuePercent,
     };
   }, [abpEligibleTotalSystems, systems]);
 
@@ -1017,7 +1067,19 @@ export default function SolarRecDashboard() {
       const scoped = systems.filter((system) => system.sizeBucket === bucket);
       const reporting = scoped.filter((system) => system.isReporting).length;
       const notReporting = scoped.length - reporting;
-      return { bucket, total: scoped.length, reporting, notReporting };
+      const reportingPercent = toPercentValue(reporting, scoped.length);
+      const contractedValue = scoped.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+      const deliveredValue = scoped.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
+      return {
+        bucket,
+        total: scoped.length,
+        reporting,
+        notReporting,
+        reportingPercent,
+        contractedValue,
+        deliveredValue,
+        valueDeliveredPercent: toPercentValue(deliveredValue, contractedValue),
+      };
     });
   }, [systems]);
 
@@ -1058,11 +1120,33 @@ export default function SolarRecDashboard() {
     const total = changeOwnershipRows.length;
     const reporting = changeOwnershipRows.filter((system) => system.isReporting).length;
     const notReporting = total - reporting;
+    const reportingPercent = toPercentValue(reporting, total);
+    const contractedValueTotal = changeOwnershipRows.reduce(
+      (sum, system) => sum + (system.contractedValue ?? 0),
+      0
+    );
+    const contractedValueReporting = changeOwnershipRows
+      .filter((system) => system.isReporting)
+      .reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    const contractedValueNotReporting = contractedValueTotal - contractedValueReporting;
     const counts = CHANGE_OWNERSHIP_ORDER.map((status) => ({
       status,
       count: changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length,
+      percent: toPercentValue(
+        changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length,
+        total
+      ),
     }));
-    return { total, reporting, notReporting, counts };
+    return {
+      total,
+      reporting,
+      notReporting,
+      reportingPercent,
+      contractedValueTotal,
+      contractedValueReporting,
+      contractedValueNotReporting,
+      counts,
+    };
   }, [changeOwnershipRows]);
 
   const filteredChangeOwnershipRows = useMemo(() => {
@@ -1087,6 +1171,24 @@ export default function SolarRecDashboard() {
     });
   }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
 
+  const recPriceByTrackingId = useMemo(() => {
+    const mapping = new Map<string, number>();
+    systems.forEach((system) => {
+      if (!system.trackingSystemRefId || system.recPrice === null) return;
+      mapping.set(system.trackingSystemRefId, system.recPrice);
+    });
+    return mapping;
+  }, [systems]);
+
+  const eligibleTrackingIds = useMemo(() => {
+    const ids = new Set<string>();
+    systems.forEach((system) => {
+      if (!system.trackingSystemRefId) return;
+      ids.add(system.trackingSystemRefId);
+    });
+    return ids;
+  }, [systems]);
+
   const contractDeliveryRows = useMemo<ContractDeliveryAggregate[]>(() => {
     const groups = new Map<
       string,
@@ -1096,47 +1198,54 @@ export default function SolarRecDashboard() {
         deliveryStartRaw: string;
         required: number;
         delivered: number;
+        requiredValue: number;
+        deliveredValue: number;
         trackingIds: Set<string>;
+        pricedTrackingIds: Set<string>;
       }
     >();
 
     (datasets.recDeliverySchedules?.rows ?? []).forEach((row) => {
       const contractId = clean(row.utility_contract_number) || "Unassigned";
       const trackingId = clean(row.tracking_system_ref_id);
+      if (!trackingId || !eligibleTrackingIds.has(trackingId)) return;
 
-      for (let year = 1; year <= 15; year += 1) {
-        const startHeader = `year${year}_start_date`;
-        const requiredHeader = `year${year}_quantity_required`;
-        const deliveredHeader = `year${year}_quantity_delivered`;
+      const deliveryStartRaw = clean(row.year1_start_date);
+      if (!deliveryStartRaw) return;
 
-        const deliveryStartRaw = clean(row[startHeader]);
-        if (!deliveryStartRaw) continue;
+      const deliveryStartDate = parseDate(deliveryStartRaw);
+      const required = parseNumber(row.year1_quantity_required) ?? 0;
+      const delivered = parseNumber(row.year1_quantity_delivered) ?? 0;
+      const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
-        const deliveryStartDate = parseDate(deliveryStartRaw);
-        const required = parseNumber(row[requiredHeader]) ?? 0;
-        const delivered = parseNumber(row[deliveredHeader]) ?? 0;
+      const dateKey = deliveryStartDate
+        ? `${deliveryStartDate.getFullYear()}-${String(deliveryStartDate.getMonth() + 1).padStart(2, "0")}-${String(deliveryStartDate.getDate()).padStart(2, "0")}`
+        : deliveryStartRaw;
+      const key = `${contractId}__${dateKey}`;
 
-        const dateKey = deliveryStartDate
-          ? `${deliveryStartDate.getFullYear()}-${String(deliveryStartDate.getMonth() + 1).padStart(2, "0")}-${String(deliveryStartDate.getDate()).padStart(2, "0")}`
-          : deliveryStartRaw;
-        const key = `${contractId}__${dateKey}`;
+      let current = groups.get(key);
+      if (!current) {
+        current = {
+          contractId,
+          deliveryStartDate,
+          deliveryStartRaw,
+          required: 0,
+          delivered: 0,
+          requiredValue: 0,
+          deliveredValue: 0,
+          trackingIds: new Set<string>(),
+          pricedTrackingIds: new Set<string>(),
+        };
+        groups.set(key, current);
+      }
 
-        let current = groups.get(key);
-        if (!current) {
-          current = {
-            contractId,
-            deliveryStartDate,
-            deliveryStartRaw,
-            required: 0,
-            delivered: 0,
-            trackingIds: new Set<string>(),
-          };
-          groups.set(key, current);
-        }
-
-        current.required += required;
-        current.delivered += delivered;
-        if (trackingId) current.trackingIds.add(trackingId);
+      current.required += required;
+      current.delivered += delivered;
+      current.trackingIds.add(trackingId);
+      if (recPrice !== null) {
+        current.requiredValue += required * recPrice;
+        current.deliveredValue += delivered * recPrice;
+        current.pricedTrackingIds.add(trackingId);
       }
     });
 
@@ -1148,7 +1257,13 @@ export default function SolarRecDashboard() {
         required: group.required,
         delivered: group.delivered,
         gap: group.required - group.delivered,
+        deliveredPercent: toPercentValue(group.delivered, group.required),
+        requiredValue: group.requiredValue,
+        deliveredValue: group.deliveredValue,
+        valueGap: group.requiredValue - group.deliveredValue,
+        valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
         projectCount: group.trackingIds.size,
+        pricedProjectCount: group.pricedTrackingIds.size,
       }))
       .sort((a, b) => {
         const contractCompare = a.contractId.localeCompare(b.contractId);
@@ -1157,12 +1272,21 @@ export default function SolarRecDashboard() {
         const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
         return aTime - bTime;
       });
-  }, [datasets.recDeliverySchedules]);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, recPriceByTrackingId]);
 
   const contractSummaryRows = useMemo(() => {
     const groups = new Map<
       string,
-      { contractId: string; required: number; delivered: number; startDates: Set<string>; projectCount: number }
+      {
+        contractId: string;
+        required: number;
+        delivered: number;
+        requiredValue: number;
+        deliveredValue: number;
+        startDates: Set<string>;
+        projectCount: number;
+        pricedProjectCount: number;
+      }
     >();
 
     contractDeliveryRows.forEach((row) => {
@@ -1172,15 +1296,21 @@ export default function SolarRecDashboard() {
           contractId: row.contractId,
           required: 0,
           delivered: 0,
+          requiredValue: 0,
+          deliveredValue: 0,
           startDates: new Set<string>(),
           projectCount: 0,
+          pricedProjectCount: 0,
         };
         groups.set(row.contractId, current);
       }
       current.required += row.required;
       current.delivered += row.delivered;
+      current.requiredValue += row.requiredValue;
+      current.deliveredValue += row.deliveredValue;
       current.startDates.add(row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw);
       current.projectCount += row.projectCount;
+      current.pricedProjectCount += row.pricedProjectCount;
     });
 
     return Array.from(groups.values())
@@ -1189,8 +1319,14 @@ export default function SolarRecDashboard() {
         required: group.required,
         delivered: group.delivered,
         gap: group.required - group.delivered,
+        deliveredPercent: toPercentValue(group.delivered, group.required),
+        requiredValue: group.requiredValue,
+        deliveredValue: group.deliveredValue,
+        valueGap: group.requiredValue - group.deliveredValue,
+        valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
         startDateCount: group.startDates.size,
         projectCount: group.projectCount,
+        pricedProjectCount: group.pricedProjectCount,
       }))
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
   }, [contractDeliveryRows]);
@@ -1260,7 +1396,9 @@ export default function SolarRecDashboard() {
       createdAt: new Date(),
       totalSystems: summary.totalSystems,
       reportingSystems: summary.reportingSystems,
+      reportingPercent: summary.reportingPercent,
       changeOwnershipSystems: changeOwnershipSummary.total,
+      changeOwnershipPercent: toPercentValue(changeOwnershipSummary.total, summary.totalSystems),
       transferredReporting: statusCount("Transferred and Reporting"),
       transferredNotReporting: statusCount("Transferred and Not Reporting"),
       terminatedReporting: statusCount("Terminated and Reporting"),
@@ -1270,6 +1408,9 @@ export default function SolarRecDashboard() {
       totalContractedValue: summary.totalContractedValue,
       totalDeliveredValue: summary.totalDeliveredValue,
       totalGap: summary.totalGap,
+      contractedValueReporting: summary.contractedValueReporting,
+      contractedValueNotReporting: summary.contractedValueNotReporting,
+      contractedValueReportingPercent: summary.contractedValueReportingPercent,
       datasets: (Object.keys(DATASET_DEFINITIONS) as DatasetKey[])
         .map((key) => {
           const dataset = datasets[key];
@@ -1291,6 +1432,89 @@ export default function SolarRecDashboard() {
   const clearLogs = () => {
     setLogEntries([]);
   };
+
+  const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
+
+  const snapshotMetricRows = useMemo(
+    () => [
+      { label: "Part II Verified ABP Customers", value: (entry: DashboardLogEntry) => formatNumber(entry.totalSystems) },
+      {
+        label: "Quantity Reporting to GATS",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.reportingSystems),
+      },
+      {
+        label: "Percentage Reporting to GATS",
+        value: (entry: DashboardLogEntry) => formatPercent(entry.reportingPercent),
+      },
+      {
+        label: "Quantity Change of Ownership",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.changeOwnershipSystems),
+      },
+      {
+        label: "Percentage Change of Ownership",
+        value: (entry: DashboardLogEntry) => formatPercent(entry.changeOwnershipPercent),
+      },
+      {
+        label: "IL ABP - Terminated",
+        value: (entry: DashboardLogEntry) =>
+          formatNumber(entry.terminatedReporting + entry.terminatedNotReporting),
+      },
+      {
+        label: "IL ABP - Transferred",
+        value: (entry: DashboardLogEntry) =>
+          formatNumber(entry.transferredReporting + entry.transferredNotReporting),
+      },
+      {
+        label: "Transferred and Reporting",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.transferredReporting),
+      },
+      {
+        label: "Transferred and Not Reporting",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.transferredNotReporting),
+      },
+      {
+        label: "Terminated and Reporting",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.terminatedReporting),
+      },
+      {
+        label: "Terminated and Not Reporting",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.terminatedNotReporting),
+      },
+      {
+        label: "COO - Not Transferred and Reporting",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.changedNotTransferredReporting),
+      },
+      {
+        label: "COO - Not Transferred and Not Reporting",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.changedNotTransferredNotReporting),
+      },
+      {
+        label: "Total Contract Value",
+        value: (entry: DashboardLogEntry) => formatCurrency(entry.totalContractedValue),
+      },
+      {
+        label: "Total Contract Value Reporting",
+        value: (entry: DashboardLogEntry) => formatCurrency(entry.contractedValueReporting),
+      },
+      {
+        label: "Total Contract Value Not Reporting",
+        value: (entry: DashboardLogEntry) => formatCurrency(entry.contractedValueNotReporting),
+      },
+      {
+        label: "Percent Contract Value Reporting",
+        value: (entry: DashboardLogEntry) => formatPercent(entry.contractedValueReportingPercent),
+      },
+      {
+        label: "Total Delivered Value",
+        value: (entry: DashboardLogEntry) => formatCurrency(entry.totalDeliveredValue),
+      },
+      {
+        label: "Total Value Gap",
+        value: (entry: DashboardLogEntry) => formatCurrency(entry.totalGap),
+      },
+    ],
+    []
+  );
 
   const missingCoreDatasets = datasetsHydrated
     ? ([
@@ -1414,74 +1638,19 @@ export default function SolarRecDashboard() {
           </Card>
         ) : null}
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <CardTitle className="text-base">Dashboard Log History</CardTitle>
-                <CardDescription>
-                  Click <span className="font-medium">Log Snapshot</span> to create a dated record of current
-                  dashboard metrics.
-                </CardDescription>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={createLogEntry}>
-                  Log Snapshot
-                </Button>
-                <Button variant="ghost" size="sm" onClick={clearLogs} disabled={logEntries.length === 0}>
-                  Clear Logs
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {logEntries.length === 0 ? (
-              <p className="text-sm text-slate-600">No snapshots logged yet.</p>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Logged At</TableHead>
-                    <TableHead>Total Systems</TableHead>
-                    <TableHead>Reporting</TableHead>
-                    <TableHead>Change of Ownership</TableHead>
-                    <TableHead>Transferred (R/NR)</TableHead>
-                    <TableHead>Terminated (R/NR)</TableHead>
-                    <TableHead>Not Transferred (R/NR)</TableHead>
-                    <TableHead>Value Gap</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {logEntries.slice(0, 200).map((entry) => (
-                    <TableRow key={entry.id}>
-                      <TableCell>{entry.createdAt.toLocaleString()}</TableCell>
-                      <TableCell>{formatNumber(entry.totalSystems)}</TableCell>
-                      <TableCell>{formatNumber(entry.reportingSystems)}</TableCell>
-                      <TableCell>{formatNumber(entry.changeOwnershipSystems)}</TableCell>
-                      <TableCell>{`${entry.transferredReporting}/${entry.transferredNotReporting}`}</TableCell>
-                      <TableCell>{`${entry.terminatedReporting}/${entry.terminatedNotReporting}`}</TableCell>
-                      <TableCell>{`${entry.changedNotTransferredReporting}/${entry.changedNotTransferredNotReporting}`}</TableCell>
-                      <TableCell>{formatCurrency(entry.totalGap)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </CardContent>
-        </Card>
-
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-6 h-auto">
+          <TabsList className="grid w-full grid-cols-7 h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="size">Size + Reporting</TabsTrigger>
             <TabsTrigger value="value">REC Value</TabsTrigger>
             <TabsTrigger value="contracts">Utility Contracts</TabsTrigger>
             <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
             <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
+            <TabsTrigger value="snapshot-log">Snapshot Log</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
               <Card>
                 <CardHeader>
                   <CardDescription>Total Systems</CardDescription>
@@ -1492,6 +1661,7 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <CardDescription>Reporting in Last 3 Months</CardDescription>
                   <CardTitle className="text-2xl">{formatNumber(summary.reportingSystems)}</CardTitle>
+                  <CardDescription>{formatPercent(summary.reportingPercent)}</CardDescription>
                 </CardHeader>
               </Card>
               <Card>
@@ -1512,6 +1682,12 @@ export default function SolarRecDashboard() {
                   <CardTitle className="text-2xl">{formatNumber(summary.unknownSizeSystems)}</CardTitle>
                 </CardHeader>
               </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Delivered Value %</CardDescription>
+                  <CardTitle className="text-2xl">{formatPercent(summary.deliveredValuePercent)}</CardTitle>
+                </CardHeader>
+              </Card>
             </div>
 
             <Card>
@@ -1526,6 +1702,7 @@ export default function SolarRecDashboard() {
                   <div key={item.status} className="rounded-lg border border-slate-200 p-3 bg-white">
                     <p className="text-xs text-slate-500">{item.status}</p>
                     <p className="text-2xl font-semibold text-slate-900">{formatNumber(item.count)}</p>
+                    <p className="text-xs text-slate-500">{formatPercent(item.percent)}</p>
                   </div>
                 ))}
               </CardContent>
@@ -1548,6 +1725,10 @@ export default function SolarRecDashboard() {
                       <TableHead>Total Systems</TableHead>
                       <TableHead>Reporting</TableHead>
                       <TableHead>Not Reporting</TableHead>
+                      <TableHead>Reporting %</TableHead>
+                      <TableHead>Contracted Value</TableHead>
+                      <TableHead>Delivered Value</TableHead>
+                      <TableHead>Value Delivered %</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1557,6 +1738,10 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatNumber(row.total)}</TableCell>
                         <TableCell>{formatNumber(row.reporting)}</TableCell>
                         <TableCell>{formatNumber(row.notReporting)}</TableCell>
+                        <TableCell>{formatPercent(row.reportingPercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.contractedValue)}</TableCell>
+                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
+                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -1597,7 +1782,7 @@ export default function SolarRecDashboard() {
           </TabsContent>
 
           <TabsContent value="value" className="space-y-4 mt-4">
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 md:grid-cols-4">
               <Card>
                 <CardHeader>
                   <CardDescription>Systems with Value Data</CardDescription>
@@ -1614,6 +1799,12 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <CardDescription>Value Gap (Contracted - Delivered)</CardDescription>
                   <CardTitle className="text-2xl">{formatCurrency(summary.totalGap)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Contract Value Reporting %</CardDescription>
+                  <CardTitle className="text-2xl">{formatPercent(summary.contractedValueReportingPercent)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
@@ -1634,8 +1825,10 @@ export default function SolarRecDashboard() {
                       <TableHead>REC Price</TableHead>
                       <TableHead>Contracted RECs</TableHead>
                       <TableHead>Delivered RECs</TableHead>
+                      <TableHead>% Delivered RECs</TableHead>
                       <TableHead>Contracted Value</TableHead>
                       <TableHead>Delivered Value</TableHead>
+                      <TableHead>% Delivered Value</TableHead>
                       <TableHead>Gap</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1647,8 +1840,18 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatCurrency(system.recPrice)}</TableCell>
                         <TableCell>{formatNumber(system.contractedRecs)}</TableCell>
                         <TableCell>{formatNumber(system.deliveredRecs)}</TableCell>
+                        <TableCell>
+                          {formatPercent(
+                            toPercentValue(system.deliveredRecs ?? 0, system.contractedRecs ?? 0)
+                          )}
+                        </TableCell>
                         <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
                         <TableCell>{formatCurrency(system.deliveredValue)}</TableCell>
+                        <TableCell>
+                          {formatPercent(
+                            toPercentValue(system.deliveredValue ?? 0, system.contractedValue ?? 0)
+                          )}
+                        </TableCell>
                         <TableCell className={system.valueGap !== null && system.valueGap > 0 ? "text-amber-700" : ""}>
                           {formatCurrency(system.valueGap)}
                         </TableCell>
@@ -1665,7 +1868,8 @@ export default function SolarRecDashboard() {
               <CardHeader>
                 <CardTitle className="text-base">Utility Contract ID Tracking</CardTitle>
                 <CardDescription>
-                  Aggregated by Utility Contract ID and Project Delivery Start Date (same-date rows are combined).
+                  Aggregated by Utility Contract ID and <code>year1_start_date</code>. Matching Contract ID + start
+                  date rows are combined.
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -1684,6 +1888,10 @@ export default function SolarRecDashboard() {
                       <TableHead>Projects</TableHead>
                       <TableHead>Total Required</TableHead>
                       <TableHead>Total Delivered</TableHead>
+                      <TableHead>Delivered %</TableHead>
+                      <TableHead>Contracted Value</TableHead>
+                      <TableHead>Delivered Value</TableHead>
+                      <TableHead>Value Delivered %</TableHead>
                       <TableHead>Gap</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1695,6 +1903,10 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatNumber(row.projectCount)}</TableCell>
                         <TableCell>{formatNumber(row.required)}</TableCell>
                         <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell>{formatPercent(row.deliveredPercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.requiredValue)}</TableCell>
+                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
+                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
                         <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>
                           {formatNumber(row.gap)}
                         </TableCell>
@@ -1719,8 +1931,13 @@ export default function SolarRecDashboard() {
                       <TableHead>Utility Contract ID</TableHead>
                       <TableHead>Project Delivery Start Date</TableHead>
                       <TableHead>Projects</TableHead>
+                      <TableHead>Priced Projects</TableHead>
                       <TableHead>Required</TableHead>
                       <TableHead>Delivered</TableHead>
+                      <TableHead>Delivered %</TableHead>
+                      <TableHead>Contracted Value</TableHead>
+                      <TableHead>Delivered Value</TableHead>
+                      <TableHead>Value Delivered %</TableHead>
                       <TableHead>Gap</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1730,8 +1947,13 @@ export default function SolarRecDashboard() {
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
                         <TableCell>{formatNumber(row.projectCount)}</TableCell>
+                        <TableCell>{formatNumber(row.pricedProjectCount)}</TableCell>
                         <TableCell>{formatNumber(row.required)}</TableCell>
                         <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell>{formatPercent(row.deliveredPercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.requiredValue)}</TableCell>
+                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
+                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
                         <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>
                           {formatNumber(row.gap)}
                         </TableCell>
@@ -1748,7 +1970,8 @@ export default function SolarRecDashboard() {
               <CardHeader>
                 <CardTitle className="text-base">Change of Ownership Logic</CardTitle>
                 <CardDescription>
-                  A system is flagged when Zillow indicates Sold and the Zillow sold date is after the contract date.
+                  A system is flagged for COO when contract type is IL ABP - Transferred/Terminated, or when Zillow is
+                  Sold and sold date is after contract date.
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -1764,12 +1987,34 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <CardDescription>Reporting (Last 3 Months)</CardDescription>
                   <CardTitle className="text-2xl">{formatNumber(changeOwnershipSummary.reporting)}</CardTitle>
+                  <CardDescription>{formatPercent(changeOwnershipSummary.reportingPercent)}</CardDescription>
                 </CardHeader>
               </Card>
               <Card>
                 <CardHeader>
                   <CardDescription>Not Reporting (Last 3 Months)</CardDescription>
                   <CardTitle className="text-2xl">{formatNumber(changeOwnershipSummary.notReporting)}</CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card>
+                <CardHeader>
+                  <CardDescription>Contract Value (COO Total)</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(changeOwnershipSummary.contractedValueTotal)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Contract Value Reporting</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(changeOwnershipSummary.contractedValueReporting)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Contract Value Not Reporting</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(changeOwnershipSummary.contractedValueNotReporting)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
@@ -1787,6 +2032,7 @@ export default function SolarRecDashboard() {
                   <div key={item.status} className="rounded-lg border border-slate-200 p-3 bg-white">
                     <p className="text-xs text-slate-500">{item.status}</p>
                     <p className="text-2xl font-semibold text-slate-900">{formatNumber(item.count)}</p>
+                    <p className="text-xs text-slate-500">{formatPercent(item.percent)}</p>
                   </div>
                 ))}
               </CardContent>
@@ -1914,6 +2160,7 @@ export default function SolarRecDashboard() {
                       <TableHead>Reporting?</TableHead>
                       <TableHead>Transferred?</TableHead>
                       <TableHead>Terminated?</TableHead>
+                      <TableHead>Contract Type</TableHead>
                       <TableHead>Last Reporting Date</TableHead>
                       <TableHead>Contracted Date</TableHead>
                     </TableRow>
@@ -1934,12 +2181,62 @@ export default function SolarRecDashboard() {
                         <TableCell>{system.isReporting ? "Yes" : "No"}</TableCell>
                         <TableCell>{system.isTransferred ? "Yes" : "No"}</TableCell>
                         <TableCell>{system.isTerminated ? "Yes" : "No"}</TableCell>
+                        <TableCell>{system.contractType ?? "N/A"}</TableCell>
                         <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
                         <TableCell>{formatDate(system.contractedDate)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="snapshot-log" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Vertical Snapshot Log</CardTitle>
+                    <CardDescription>
+                      Each click of <span className="font-medium">Log Snapshot</span> creates a new dated column.
+                    </CardDescription>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={createLogEntry}>
+                      Log Snapshot
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={clearLogs} disabled={logEntries.length === 0}>
+                      Clear Logs
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                {snapshotLogColumns.length === 0 ? (
+                  <p className="text-sm text-slate-600">No snapshots logged yet.</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Metric</TableHead>
+                        {snapshotLogColumns.map((entry) => (
+                          <TableHead key={entry.id}>{entry.createdAt.toLocaleDateString()} {entry.createdAt.toLocaleTimeString()}</TableHead>
+                        ))}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {snapshotMetricRows.map((metric) => (
+                        <TableRow key={metric.label}>
+                          <TableCell className="font-medium">{metric.label}</TableCell>
+                          {snapshotLogColumns.map((entry) => (
+                            <TableCell key={`${entry.id}-${metric.label}`}>{metric.value(entry)}</TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
