@@ -1476,30 +1476,42 @@ export default function SolarRecDashboard() {
   const performancePreviousDrawdown = parseNumber(performancePreviousDrawdownInput) ?? 0;
 
   const recPerformanceEvaluation = useMemo(() => {
-    const now = new Date();
-
     const baseRows: RecPerformanceResultRow[] = performanceSourceRows
       .filter((row) => row.contractId === effectivePerformanceContractId)
       .map((row) => {
         const targetYearIndex = row.years.findIndex((year) => year.key === effectivePerformanceDeliveryYearKey);
         if (targetYearIndex === -1) return null;
+        // Do not include projects that are not in their 3rd delivery year or later.
+        if (targetYearIndex < 2) return null;
 
-        const selected = [targetYearIndex - 2, targetYearIndex - 1, targetYearIndex].map((index) =>
-          index >= 0 ? row.years[index] : null
-        );
+        const dyOneYear = row.years[targetYearIndex - 2];
+        const dyTwoYear = row.years[targetYearIndex - 1];
+        const dyThreeYear = row.years[targetYearIndex];
+        if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
 
-        const values = selected.map((year) => {
-          if (!year) return { value: 0, source: "Expected" as const };
-          const useActual = !!year.endDate && year.endDate < now;
-          return {
-            value: useActual ? year.delivered : year.required,
-            source: useActual ? ("Actual" as const) : ("Expected" as const),
-          };
-        });
+        const isThirdDeliveryYear = targetYearIndex === 2;
+        const isFourthOrLaterDeliveryYear = targetYearIndex >= 3;
 
-        const divisor = selected.filter((year) => year !== null).length;
-        const rollingAverage = divisor > 0 ? Math.floor(values.reduce((sum, item) => sum + item.value, 0) / divisor) : 0;
-        const expectedRecs = row.years[targetYearIndex]?.required ?? 0;
+        const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
+          ? [
+              { value: dyOneYear.delivered, source: "Actual" },
+              { value: dyTwoYear.delivered, source: "Actual" },
+              { value: dyThreeYear.delivered, source: "Actual" },
+            ]
+          : isFourthOrLaterDeliveryYear
+            ? [
+                { value: dyOneYear.required, source: "Expected" },
+                { value: dyTwoYear.required, source: "Expected" },
+                { value: dyThreeYear.delivered, source: "Actual" },
+              ]
+            : [
+                { value: dyOneYear.required, source: "Expected" },
+                { value: dyTwoYear.required, source: "Expected" },
+                { value: dyThreeYear.required, source: "Expected" },
+              ];
+
+        const rollingAverage = Math.floor((values[0].value + values[1].value + values[2].value) / 3);
+        const expectedRecs = dyThreeYear.required;
         const surplusShortfall = rollingAverage - expectedRecs;
 
         return {
