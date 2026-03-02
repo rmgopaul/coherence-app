@@ -219,6 +219,7 @@ type SystemBuilder = {
   transferSeen: boolean;
   statusText: string;
   monitoringType: string | null;
+  monitoringPlatform: string | null;
   installerName: string | null;
 };
 
@@ -248,6 +249,7 @@ type SystemRecord = {
   zillowSoldDate: Date | null;
   contractedDate: Date | null;
   monitoringType: string;
+  monitoringPlatform: string;
   installerName: string;
 };
 
@@ -397,6 +399,85 @@ function firstNonEmptyString(...values: string[]): string | null {
     if (clean(value)) return clean(value);
   }
   return null;
+}
+
+function normalizeMonitoringMethod(accessTypeRaw: string, entryMethodRaw: string, selfReportRaw: string): string {
+  const accessType = clean(accessTypeRaw).toLowerCase();
+  if (accessType === "granted") return "Granted Access";
+  if (accessType === "pwd" || accessType === "password") return "Password";
+  if (accessType === "link") return "Link";
+  if (accessType === "self") return "Self-Report";
+  if (accessType.includes("grant")) return "Granted Access";
+  if (accessType.includes("pass")) return "Password";
+  if (accessType.includes("link")) return "Link";
+  if (accessType.includes("self")) return "Self-Report";
+
+  const selfReport = clean(selfReportRaw).toLowerCase();
+  if (["1", "true", "yes", "y"].includes(selfReport)) return "Self-Report";
+
+  const entryMethod = clean(entryMethodRaw);
+  if (entryMethod) return `Other - ${entryMethod}`;
+
+  return "Unknown";
+}
+
+function normalizeMonitoringPlatform(platformRaw: string, websiteRaw: string, notesRaw: string): string {
+  const candidates = [clean(platformRaw), clean(websiteRaw), clean(notesRaw)]
+    .filter(Boolean)
+    .map((value) => value.toLowerCase());
+
+  const inferFromText = (text: string): string | null => {
+    if (text.includes("solaredge") || text.includes("solar edge")) return "SolarEdge";
+    if (text.includes("enphase")) return "Enphase";
+    if (text.includes("hoymiles") || text.includes("s-miles")) return "Hoymiles S-Miles Cloud";
+    if (text.includes("fronius") || text.includes("solar.web") || text.includes("solarweb.com")) return "Fronius Solar.web";
+    if (text.includes("apsystems")) return "APSystems";
+    if (text.includes("ennexos")) return "ennexOS";
+    if (text.includes("tesla")) return "Tesla";
+    if (text.includes("egauge") || text.includes("eguage")) return "eGauge";
+    if (text.includes("sunpower")) return "SUNPOWER";
+    if (text.includes("sdsi") || text.includes("arraymeter")) return "SDSI ArrayMeter";
+    if (text.includes("generac") || text.includes("pwrfleet") || text.includes("pwrcell")) return "Generac PWRfleet";
+    if (text.includes("chilicon")) return "Chilicon Power";
+    if (text.includes("solis")) return "Solis";
+    if (text.includes("encompass") || text.includes("ekm")) return "EKM Encompass.io";
+    if (text.includes("duracell")) return "DURACELL Power Center";
+    if (text.includes("solar-log") || text.includes("solarlog")) return "Solar-Log";
+    if (text.includes("sensergm")) return "SenseRGM";
+    if (text.includes("sems") || text.includes("goodwe")) return "GoodWe SEMS Portal";
+    if (text.includes("alsoenergy")) return "AlsoEnergy";
+    if (text.includes("locus")) return "Locus Energy";
+    if (text.includes("sol-ark")) return "Sol-Ark PowerView Inteless";
+    if (text.includes("mysolark")) return "MySolArk";
+    if (text.includes("chint")) return "Chint Power Systems";
+    if (text.includes("growatt")) return "Growatt";
+    if (text.includes("sunnyportal")) return "SunnyPortal";
+    if (text.includes("eg4")) return "EG4Electronics";
+    if (text.includes("tigo")) return "Tigo";
+    if (text.includes("vision metering")) return "Vision Metering";
+    if (text.includes("solectria") || text.includes("solrenview")) return "Solectria SolrenView";
+    if (text.includes("sigenergy") || text.includes("sigencloud")) return "Sigenergy";
+    if (text.includes("savant")) return "Savant Power Storage";
+    if (text.includes("aurora vision")) return "Aurora Vision";
+    if (text.includes("franklin")) return "FranklinWH";
+    if (text.includes("outback optics")) return "Outback Optics RE";
+    if (text.includes("elkor")) return "ELKOR Cloud";
+    if (text.includes("emporia")) return "Emporia Energy";
+    if (text.includes("wattch")) return "Wattch.io";
+    if (text.includes("aptos")) return "Aptos Solar";
+    if (text.includes("insight cloud")) return "Insight Cloud";
+    if (text.includes("third part")) return "Third Party Reporting";
+    return null;
+  };
+
+  for (const candidate of candidates) {
+    const inferred = inferFromText(candidate);
+    if (inferred) return inferred;
+  }
+
+  const primary = clean(platformRaw);
+  if (primary && !primary.toLowerCase().startsWith("http")) return primary;
+  return "Unknown";
 }
 
 function formatDate(value: Date | null): string {
@@ -823,18 +904,23 @@ export default function SolarRecDashboard() {
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
   const [changeOwnershipSearch, setChangeOwnershipSearch] = useState("");
   const [offlineMonitoringFilter, setOfflineMonitoringFilter] = useState("All");
+  const [offlinePlatformFilter, setOfflinePlatformFilter] = useState("All");
   const [offlineInstallerFilter, setOfflineInstallerFilter] = useState("All");
   const [offlineSearch, setOfflineSearch] = useState("");
   const [offlineMonitoringSortBy, setOfflineMonitoringSortBy] = useState<
     "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
   >("offlineSystems");
   const [offlineMonitoringSortDir, setOfflineMonitoringSortDir] = useState<"asc" | "desc">("desc");
+  const [offlinePlatformSortBy, setOfflinePlatformSortBy] = useState<
+    "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
+  >("offlineSystems");
+  const [offlinePlatformSortDir, setOfflinePlatformSortDir] = useState<"asc" | "desc">("desc");
   const [offlineInstallerSortBy, setOfflineInstallerSortBy] = useState<
     "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
   >("offlineSystems");
   const [offlineInstallerSortDir, setOfflineInstallerSortDir] = useState<"asc" | "desc">("desc");
   const [offlineDetailSortBy, setOfflineDetailSortBy] = useState<
-    "systemName" | "monitoringType" | "installerName" | "contractedValue" | "latestReportingDate"
+    "systemName" | "monitoringType" | "monitoringPlatform" | "installerName" | "contractedValue" | "latestReportingDate"
   >("contractedValue");
   const [offlineDetailSortDir, setOfflineDetailSortDir] = useState<"asc" | "desc">("desc");
   const [performanceContractId, setPerformanceContractId] = useState("");
@@ -983,6 +1069,7 @@ export default function SolarRecDashboard() {
         transferSeen: false,
         statusText: "",
         monitoringType: null,
+        monitoringPlatform: null,
         installerName: null,
       };
 
@@ -1068,13 +1155,16 @@ export default function SolarRecDashboard() {
       const zillowStatus = clean(row["zillowData.status"]) || clean(row.Zillow_Status);
       if (zillowStatus) builder.zillowStatus = zillowStatus;
 
-      const monitoringType = firstNonEmptyString(
-        clean(row.online_monitoring_access_type),
-        clean(row.online_monitoring),
-        clean(row.online_monitoring_entry_method),
-        clean(row.reporting_entity)
+      builder.monitoringType = normalizeMonitoringMethod(
+        row.online_monitoring_access_type,
+        row.online_monitoring_entry_method,
+        row.online_monitoring_self_report
       );
-      if (monitoringType) builder.monitoringType = monitoringType;
+      builder.monitoringPlatform = normalizeMonitoringPlatform(
+        row.online_monitoring,
+        row.online_monitoring_website_api_link,
+        row.online_monitoring_notes
+      );
 
       const installerName = firstNonEmptyString(
         clean(row["partnerCompany.name"]),
@@ -1244,6 +1334,7 @@ export default function SolarRecDashboard() {
           zillowSoldDate: builder.zillowSoldDate,
           contractedDate: builder.contractedDate,
           monitoringType: builder.monitoringType || "Unknown",
+          monitoringPlatform: builder.monitoringPlatform || "Unknown",
           installerName: builder.installerName || "Unknown",
         } satisfies SystemRecord;
       })
@@ -1434,6 +1525,14 @@ export default function SolarRecDashboard() {
     [systems]
   );
 
+  const offlinePlatformOptions = useMemo(
+    () =>
+      Array.from(new Set(systems.map((system) => system.monitoringPlatform || "Unknown"))).sort((a, b) =>
+        a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
+      ),
+    [systems]
+  );
+
   const offlineInstallerOptions = useMemo(
     () =>
       Array.from(new Set(systems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
@@ -1532,12 +1631,60 @@ export default function SolarRecDashboard() {
     return rows;
   }, [offlineInstallerSortBy, offlineInstallerSortDir, systems]);
 
+  const offlinePlatformBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
+    const groups = new Map<
+      string,
+      { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
+    >();
+
+    systems.forEach((system) => {
+      const label = system.monitoringPlatform || "Unknown";
+      let current = groups.get(label);
+      if (!current) {
+        current = { label, totalSystems: 0, offlineSystems: 0, totalContractValue: 0, offlineContractValue: 0 };
+        groups.set(label, current);
+      }
+      current.totalSystems += 1;
+      current.totalContractValue += system.contractedValue ?? 0;
+      if (!system.isReporting) {
+        current.offlineSystems += 1;
+        current.offlineContractValue += system.contractedValue ?? 0;
+      }
+    });
+
+    const rows = Array.from(groups.values()).map((group) => ({
+      key: group.label,
+      label: group.label,
+      totalSystems: group.totalSystems,
+      offlineSystems: group.offlineSystems,
+      offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
+      offlineContractValue: group.offlineContractValue,
+      totalContractValue: group.totalContractValue,
+      offlineContractValuePercent: toPercentValue(group.offlineContractValue, group.totalContractValue),
+    }));
+
+    rows.sort((a, b) => {
+      const direction = offlinePlatformSortDir === "asc" ? 1 : -1;
+      const byLabel =
+        a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }) * direction;
+      if (offlinePlatformSortBy === "label") return byLabel;
+      const aValue = a[offlinePlatformSortBy] ?? -Infinity;
+      const bValue = b[offlinePlatformSortBy] ?? -Infinity;
+      if (aValue === bValue) return byLabel;
+      return ((aValue as number) - (bValue as number)) * direction;
+    });
+    return rows;
+  }, [offlinePlatformSortBy, offlinePlatformSortDir, systems]);
+
   const filteredOfflineSystems = useMemo(() => {
     const normalizedSearch = offlineSearch.trim().toLowerCase();
     const rows = offlineSystems.filter((system) => {
       const monitoringMatch =
         offlineMonitoringFilter === "All" ? true : system.monitoringType === offlineMonitoringFilter;
       if (!monitoringMatch) return false;
+      const platformMatch =
+        offlinePlatformFilter === "All" ? true : system.monitoringPlatform === offlinePlatformFilter;
+      if (!platformMatch) return false;
       const installerMatch = offlineInstallerFilter === "All" ? true : system.installerName === offlineInstallerFilter;
       if (!installerMatch) return false;
       if (!normalizedSearch) return true;
@@ -1546,6 +1693,7 @@ export default function SolarRecDashboard() {
         system.systemId ?? "",
         system.trackingSystemRefId ?? "",
         system.monitoringType,
+        system.monitoringPlatform,
         system.installerName,
       ]
         .join(" ")
@@ -1563,6 +1711,12 @@ export default function SolarRecDashboard() {
       if (offlineDetailSortBy === "monitoringType") {
         return (
           a.monitoringType.localeCompare(b.monitoringType, undefined, { sensitivity: "base", numeric: true }) *
+          direction
+        );
+      }
+      if (offlineDetailSortBy === "monitoringPlatform") {
+        return (
+          a.monitoringPlatform.localeCompare(b.monitoringPlatform, undefined, { sensitivity: "base", numeric: true }) *
           direction
         );
       }
@@ -1597,6 +1751,7 @@ export default function SolarRecDashboard() {
     offlineDetailSortDir,
     offlineInstallerFilter,
     offlineMonitoringFilter,
+    offlinePlatformFilter,
     offlineSearch,
     offlineSystems,
   ]);
@@ -1609,12 +1764,20 @@ export default function SolarRecDashboard() {
       offlineSystemPercent: toPercentValue(offlineSystems.length, systems.length),
       filteredOfflineCount: filteredOfflineSystems.length,
       monitoringTypeCount: offlineMonitoringBreakdownRows.length,
+      monitoringPlatformCount: offlinePlatformBreakdownRows.length,
       installerCount: offlineInstallerBreakdownRows.length,
       totalOfflineContractValue,
       totalPortfolioContractValue,
       offlineContractValuePercent: toPercentValue(totalOfflineContractValue, totalPortfolioContractValue),
     };
-  }, [filteredOfflineSystems.length, offlineInstallerBreakdownRows.length, offlineMonitoringBreakdownRows.length, offlineSystems, systems]);
+  }, [
+    filteredOfflineSystems.length,
+    offlineInstallerBreakdownRows.length,
+    offlineMonitoringBreakdownRows.length,
+    offlinePlatformBreakdownRows.length,
+    offlineSystems,
+    systems,
+  ]);
 
   const recPriceByTrackingId = useMemo(() => {
     const mapping = new Map<string, number>();
@@ -3684,7 +3847,7 @@ export default function SolarRecDashboard() {
           <TabsContent value="offline-monitoring" className="space-y-4 mt-4">
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Non-Reporting Systems by Monitoring Type and Installer</CardTitle>
+                <CardTitle className="text-base">Non-Reporting Systems by Monitoring Method, Platform, and Installer</CardTitle>
                 <CardDescription>
                   Offline status means not reporting to GATS within the last 3 months.
                 </CardDescription>
@@ -3707,8 +3870,14 @@ export default function SolarRecDashboard() {
               </Card>
               <Card>
                 <CardHeader>
-                  <CardDescription>Monitoring Types</CardDescription>
+                  <CardDescription>Monitoring Methods</CardDescription>
                   <CardTitle className="text-2xl">{formatNumber(offlineSummary.monitoringTypeCount)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Monitoring Platforms</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.monitoringPlatformCount)}</CardTitle>
                 </CardHeader>
               </Card>
               <Card>
@@ -3721,12 +3890,7 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <CardDescription>Offline Contract Value</CardDescription>
                   <CardTitle className="text-2xl">{formatCurrency(offlineSummary.totalOfflineContractValue)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Offline Value % of Portfolio</CardDescription>
-                  <CardTitle className="text-2xl">{formatPercent(offlineSummary.offlineContractValuePercent)}</CardTitle>
+                  <CardDescription>{formatPercent(offlineSummary.offlineContractValuePercent)}</CardDescription>
                 </CardHeader>
               </Card>
             </div>
@@ -3736,9 +3900,9 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                     <div>
-                      <CardTitle className="text-base">Offline by Monitoring Type</CardTitle>
+                      <CardTitle className="text-base">Offline by Monitoring Method</CardTitle>
                       <CardDescription>
-                        Includes offline percentage and contract value by monitoring type.
+                        Includes offline percentage and contract value by monitoring method (Granted Access, Password, Link, etc).
                       </CardDescription>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">
@@ -3756,7 +3920,7 @@ export default function SolarRecDashboard() {
                           <option value="offlineSystems">Offline Systems</option>
                           <option value="offlinePercent">Offline %</option>
                           <option value="offlineContractValue">Offline Contract Value</option>
-                          <option value="label">Monitoring Type</option>
+                          <option value="label">Monitoring Method</option>
                         </select>
                       </div>
                       <div className="space-y-1">
@@ -3777,7 +3941,7 @@ export default function SolarRecDashboard() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Monitoring Type</TableHead>
+                        <TableHead>Monitoring Method</TableHead>
                         <TableHead>Total Systems</TableHead>
                         <TableHead>Offline Systems</TableHead>
                         <TableHead>Offline %</TableHead>
@@ -3805,9 +3969,9 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                     <div>
-                      <CardTitle className="text-base">Offline by Installer</CardTitle>
+                      <CardTitle className="text-base">Offline by Monitoring Platform</CardTitle>
                       <CardDescription>
-                        Includes offline percentage and contract value by installer.
+                        Includes offline percentage and contract value by monitoring platform (SolarEdge, Enphase, ennexOS, etc).
                       </CardDescription>
                     </div>
                     <div className="grid gap-2 sm:grid-cols-2">
@@ -3815,9 +3979,9 @@ export default function SolarRecDashboard() {
                         <label className="text-xs font-medium text-slate-700">Sort by</label>
                         <select
                           className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                          value={offlineInstallerSortBy}
+                          value={offlinePlatformSortBy}
                           onChange={(event) =>
-                            setOfflineInstallerSortBy(
+                            setOfflinePlatformSortBy(
                               event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
                             )
                           }
@@ -3825,15 +3989,15 @@ export default function SolarRecDashboard() {
                           <option value="offlineSystems">Offline Systems</option>
                           <option value="offlinePercent">Offline %</option>
                           <option value="offlineContractValue">Offline Contract Value</option>
-                          <option value="label">Installer</option>
+                          <option value="label">Monitoring Platform</option>
                         </select>
                       </div>
                       <div className="space-y-1">
                         <label className="text-xs font-medium text-slate-700">Direction</label>
                         <select
                           className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                          value={offlineInstallerSortDir}
-                          onChange={(event) => setOfflineInstallerSortDir(event.target.value as "asc" | "desc")}
+                          value={offlinePlatformSortDir}
+                          onChange={(event) => setOfflinePlatformSortDir(event.target.value as "asc" | "desc")}
                         >
                           <option value="desc">Descending</option>
                           <option value="asc">Ascending</option>
@@ -3846,7 +4010,7 @@ export default function SolarRecDashboard() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Installer</TableHead>
+                        <TableHead>Monitoring Platform</TableHead>
                         <TableHead>Total Systems</TableHead>
                         <TableHead>Offline Systems</TableHead>
                         <TableHead>Offline %</TableHead>
@@ -3855,7 +4019,7 @@ export default function SolarRecDashboard() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {offlineInstallerBreakdownRows.map((row) => (
+                      {offlinePlatformBreakdownRows.map((row) => (
                         <TableRow key={row.key}>
                           <TableCell className="font-medium">{row.label}</TableCell>
                           <TableCell>{formatNumber(row.totalSystems)}</TableCell>
@@ -3873,20 +4037,104 @@ export default function SolarRecDashboard() {
 
             <Card>
               <CardHeader>
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                  <div>
+                    <CardTitle className="text-base">Offline by Installer</CardTitle>
+                    <CardDescription>
+                      Includes offline percentage and contract value by installer.
+                    </CardDescription>
+                  </div>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-700">Sort by</label>
+                      <select
+                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
+                        value={offlineInstallerSortBy}
+                        onChange={(event) =>
+                          setOfflineInstallerSortBy(
+                            event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
+                          )
+                        }
+                      >
+                        <option value="offlineSystems">Offline Systems</option>
+                        <option value="offlinePercent">Offline %</option>
+                        <option value="offlineContractValue">Offline Contract Value</option>
+                        <option value="label">Installer</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-medium text-slate-700">Direction</label>
+                      <select
+                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
+                        value={offlineInstallerSortDir}
+                        onChange={(event) => setOfflineInstallerSortDir(event.target.value as "asc" | "desc")}
+                      >
+                        <option value="desc">Descending</option>
+                        <option value="asc">Ascending</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Installer</TableHead>
+                      <TableHead>Total Systems</TableHead>
+                      <TableHead>Offline Systems</TableHead>
+                      <TableHead>Offline %</TableHead>
+                      <TableHead>Offline Contract Value</TableHead>
+                      <TableHead>Offline Value %</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {offlineInstallerBreakdownRows.map((row) => (
+                      <TableRow key={row.key}>
+                        <TableCell className="font-medium">{row.label}</TableCell>
+                        <TableCell>{formatNumber(row.totalSystems)}</TableCell>
+                        <TableCell>{formatNumber(row.offlineSystems)}</TableCell>
+                        <TableCell>{formatPercent(row.offlinePercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.offlineContractValue)}</TableCell>
+                        <TableCell>{formatPercent(row.offlineContractValuePercent)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
                 <CardTitle className="text-base">Offline Systems Detail</CardTitle>
                 <CardDescription>Filterable and sortable list of non-reporting systems.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
                   <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Monitoring type</label>
+                    <label className="text-sm font-medium text-slate-700">Monitoring method</label>
                     <select
                       className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
                       value={offlineMonitoringFilter}
                       onChange={(event) => setOfflineMonitoringFilter(event.target.value)}
                     >
-                      <option value="All">All Monitoring Types</option>
+                      <option value="All">All Monitoring Methods</option>
                       {offlineMonitoringOptions.map((value) => (
+                        <option key={value} value={value}>
+                          {value}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Monitoring platform</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={offlinePlatformFilter}
+                      onChange={(event) => setOfflinePlatformFilter(event.target.value)}
+                    >
+                      <option value="All">All Platforms</option>
+                      {offlinePlatformOptions.map((value) => (
                         <option key={value} value={value}>
                           {value}
                         </option>
@@ -3918,6 +4166,7 @@ export default function SolarRecDashboard() {
                           event.target.value as
                             | "systemName"
                             | "monitoringType"
+                            | "monitoringPlatform"
                             | "installerName"
                             | "contractedValue"
                             | "latestReportingDate"
@@ -3927,7 +4176,8 @@ export default function SolarRecDashboard() {
                       <option value="contractedValue">Contract Value</option>
                       <option value="latestReportingDate">Last Reporting Date</option>
                       <option value="systemName">System Name</option>
-                      <option value="monitoringType">Monitoring Type</option>
+                      <option value="monitoringType">Monitoring Method</option>
+                      <option value="monitoringPlatform">Monitoring Platform</option>
                       <option value="installerName">Installer</option>
                     </select>
                   </div>
@@ -3945,7 +4195,7 @@ export default function SolarRecDashboard() {
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-slate-700">Search</label>
                     <Input
-                      placeholder="System, IDs, monitoring, installer..."
+                      placeholder="System, IDs, method, platform, installer..."
                       value={offlineSearch}
                       onChange={(event) => setOfflineSearch(event.target.value)}
                     />
@@ -3958,7 +4208,8 @@ export default function SolarRecDashboard() {
                       <TableHead>System</TableHead>
                       <TableHead>system_id</TableHead>
                       <TableHead>Tracking ID</TableHead>
-                      <TableHead>Monitoring Type</TableHead>
+                      <TableHead>Monitoring Method</TableHead>
+                      <TableHead>Monitoring Platform</TableHead>
                       <TableHead>Installer</TableHead>
                       <TableHead>Last Reporting Date</TableHead>
                       <TableHead>Contract Value</TableHead>
@@ -3971,6 +4222,7 @@ export default function SolarRecDashboard() {
                         <TableCell>{system.systemId ?? "N/A"}</TableCell>
                         <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
                         <TableCell>{system.monitoringType}</TableCell>
+                        <TableCell>{system.monitoringPlatform}</TableCell>
                         <TableCell>{system.installerName}</TableCell>
                         <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
                         <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
