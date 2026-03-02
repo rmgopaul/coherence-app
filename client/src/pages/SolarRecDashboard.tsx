@@ -143,6 +143,49 @@ type SnapshotMetricRow =
       metricTone?: "default" | "neutral" | "warn";
     };
 
+type ScheduleYearEntry = {
+  yearIndex: number;
+  required: number;
+  delivered: number;
+  startDate: Date | null;
+  endDate: Date | null;
+  startRaw: string;
+  endRaw: string;
+  key: string;
+};
+
+type PerformanceSourceRow = {
+  key: string;
+  contractId: string;
+  systemId: string | null;
+  trackingSystemRefId: string;
+  systemName: string;
+  batchId: string | null;
+  recPrice: number | null;
+  years: ScheduleYearEntry[];
+};
+
+type RecPerformanceResultRow = {
+  key: string;
+  applicationId: string;
+  unitId: string;
+  batchId: string;
+  systemName: string;
+  contractId: string;
+  deliveryYearOne: number;
+  deliveryYearTwo: number;
+  deliveryYearThree: number;
+  deliveryYearOneSource: "Actual" | "Expected";
+  deliveryYearTwoSource: "Actual" | "Expected";
+  deliveryYearThreeSource: "Actual" | "Expected";
+  rollingAverage: number;
+  contractPrice: number | null;
+  expectedRecs: number;
+  surplusShortfall: number;
+  allocatedRecs: number;
+  drawdownPayment: number;
+};
+
 type SystemBuilder = {
   key: string;
   systemId: string | null;
@@ -358,6 +401,61 @@ function toPercentValue(numerator: number, denominator: number): number | null {
 function formatPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "N/A";
   return `${value.toFixed(1)}%`;
+}
+
+function formatSignedNumber(value: number): string {
+  if (!Number.isFinite(value)) return "N/A";
+  if (value > 0) return `+${NUMBER_FORMATTER.format(value)}`;
+  if (value < 0) return `-${NUMBER_FORMATTER.format(Math.abs(value))}`;
+  return "0";
+}
+
+function buildDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: string, endRaw: string): string {
+  if (start && end) {
+    return `${start.getFullYear()}-${end.getFullYear()}`;
+  }
+  if (startRaw && endRaw) return `${startRaw} to ${endRaw}`;
+  if (startRaw) return startRaw;
+  if (start) return formatDate(start);
+  return "Unknown";
+}
+
+function buildScheduleYearEntries(row: CsvRow): ScheduleYearEntry[] {
+  const entries: ScheduleYearEntry[] = [];
+
+  for (let yearIndex = 1; yearIndex <= 15; yearIndex += 1) {
+    const requiredRaw = row[`year${yearIndex}_quantity_required`];
+    const deliveredRaw = row[`year${yearIndex}_quantity_delivered`];
+    const startRaw = clean(row[`year${yearIndex}_start_date`]);
+    const endRaw = clean(row[`year${yearIndex}_end_date`]);
+
+    const required = parseNumber(requiredRaw) ?? 0;
+    const delivered = parseNumber(deliveredRaw) ?? 0;
+    const startDate = parseDate(startRaw);
+    const endDate = parseDate(endRaw);
+
+    if (!startRaw && !endRaw && required === 0 && delivered === 0) continue;
+
+    const key = startDate ? startDate.toISOString().slice(0, 10) : `${startRaw}-${yearIndex}`;
+
+    entries.push({
+      yearIndex,
+      required,
+      delivered,
+      startDate,
+      endDate,
+      startRaw,
+      endRaw,
+      key,
+    });
+  }
+
+  return entries.sort((a, b) => {
+    const aTime = a.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
+    const bTime = b.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
+    if (aTime !== bTime) return aTime - bTime;
+    return a.yearIndex - b.yearIndex;
+  });
 }
 
 function buildSystemSnapshotKey(system: SystemRecord): string {
@@ -702,6 +800,10 @@ export default function SolarRecDashboard() {
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
   const [changeOwnershipSearch, setChangeOwnershipSearch] = useState("");
+  const [performanceContractId, setPerformanceContractId] = useState("");
+  const [performanceDeliveryYearKey, setPerformanceDeliveryYearKey] = useState("");
+  const [performancePreviousSurplusInput, setPerformancePreviousSurplusInput] = useState("0");
+  const [performancePreviousDrawdownInput, setPerformancePreviousDrawdownInput] = useState("0");
 
   const handleUpload = async (key: DatasetKey, file: File | null) => {
     if (!file) return;
@@ -1290,6 +1392,200 @@ export default function SolarRecDashboard() {
     });
     return mapping;
   }, [systems]);
+
+  const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
+    return (datasets.recDeliverySchedules?.rows ?? [])
+      .map((row, rowIndex) => {
+        const trackingSystemRefId = clean(row.tracking_system_ref_id);
+        if (!trackingSystemRefId || !eligibleTrackingIds.has(trackingSystemRefId)) return null;
+        const system = systemsByTrackingId.get(trackingSystemRefId);
+        const years = buildScheduleYearEntries(row);
+        if (years.length === 0) return null;
+
+        return {
+          key: `${trackingSystemRefId}-${rowIndex}`,
+          contractId: clean(row.utility_contract_number) || "Unassigned",
+          systemId: system?.systemId ?? null,
+          trackingSystemRefId,
+          systemName: clean(row.system_name) || system?.systemName || trackingSystemRefId,
+          batchId: clean(row.batch_id) || clean(row.state_certification_number) || null,
+          recPrice: system?.recPrice ?? null,
+          years,
+        } satisfies PerformanceSourceRow;
+      })
+      .filter((row): row is PerformanceSourceRow => row !== null);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, systemsByTrackingId]);
+
+  const performanceContractOptions = useMemo(
+    () =>
+      Array.from(new Set(performanceSourceRows.map((row) => row.contractId))).sort((a, b) =>
+        a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
+      ),
+    [performanceSourceRows]
+  );
+
+  const effectivePerformanceContractId =
+    performanceContractOptions.includes(performanceContractId)
+      ? performanceContractId
+      : (performanceContractOptions[0] ?? "");
+
+  const performanceDeliveryYearOptions = useMemo(() => {
+    const byKey = new Map<
+      string,
+      {
+        key: string;
+        label: string;
+        startDate: Date | null;
+        endDate: Date | null;
+      }
+    >();
+
+    performanceSourceRows
+      .filter((row) => row.contractId === effectivePerformanceContractId)
+      .forEach((row) => {
+        row.years.forEach((year) => {
+          const existing = byKey.get(year.key);
+          const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+          if (existing) return;
+          byKey.set(year.key, {
+            key: year.key,
+            label,
+            startDate: year.startDate,
+            endDate: year.endDate,
+          });
+        });
+      });
+
+    return Array.from(byKey.values()).sort((a, b) => {
+      const aTime = a.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
+      const bTime = b.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
+      return aTime - bTime;
+    });
+  }, [effectivePerformanceContractId, performanceSourceRows]);
+
+  const effectivePerformanceDeliveryYearKey =
+    performanceDeliveryYearOptions.some((option) => option.key === performanceDeliveryYearKey)
+      ? performanceDeliveryYearKey
+      : (performanceDeliveryYearOptions[performanceDeliveryYearOptions.length - 1]?.key ?? "");
+
+  const performanceSelectedDeliveryYearLabel =
+    performanceDeliveryYearOptions.find((option) => option.key === effectivePerformanceDeliveryYearKey)?.label ??
+    "N/A";
+
+  const performancePreviousSurplus = parseNumber(performancePreviousSurplusInput) ?? 0;
+  const performancePreviousDrawdown = parseNumber(performancePreviousDrawdownInput) ?? 0;
+
+  const recPerformanceEvaluation = useMemo(() => {
+    const now = new Date();
+
+    const baseRows: RecPerformanceResultRow[] = performanceSourceRows
+      .filter((row) => row.contractId === effectivePerformanceContractId)
+      .map((row) => {
+        const targetYearIndex = row.years.findIndex((year) => year.key === effectivePerformanceDeliveryYearKey);
+        if (targetYearIndex === -1) return null;
+
+        const selected = [targetYearIndex - 2, targetYearIndex - 1, targetYearIndex].map((index) =>
+          index >= 0 ? row.years[index] : null
+        );
+
+        const values = selected.map((year) => {
+          if (!year) return { value: 0, source: "Expected" as const };
+          const useActual = !!year.endDate && year.endDate < now;
+          return {
+            value: useActual ? year.delivered : year.required,
+            source: useActual ? ("Actual" as const) : ("Expected" as const),
+          };
+        });
+
+        const divisor = selected.filter((year) => year !== null).length;
+        const rollingAverage = divisor > 0 ? Math.floor(values.reduce((sum, item) => sum + item.value, 0) / divisor) : 0;
+        const expectedRecs = row.years[targetYearIndex]?.required ?? 0;
+        const surplusShortfall = rollingAverage - expectedRecs;
+
+        return {
+          key: row.key,
+          applicationId: row.systemId ?? "N/A",
+          unitId: row.trackingSystemRefId,
+          batchId: row.batchId ?? "N/A",
+          systemName: row.systemName,
+          contractId: row.contractId,
+          deliveryYearOne: values[0]?.value ?? 0,
+          deliveryYearTwo: values[1]?.value ?? 0,
+          deliveryYearThree: values[2]?.value ?? 0,
+          deliveryYearOneSource: values[0]?.source ?? "Expected",
+          deliveryYearTwoSource: values[1]?.source ?? "Expected",
+          deliveryYearThreeSource: values[2]?.source ?? "Expected",
+          rollingAverage,
+          contractPrice: row.recPrice,
+          expectedRecs,
+          surplusShortfall,
+          allocatedRecs: 0,
+          drawdownPayment: 0,
+        } satisfies RecPerformanceResultRow;
+      })
+      .filter((row): row is RecPerformanceResultRow => row !== null)
+      .sort((a, b) => a.applicationId.localeCompare(b.applicationId, undefined, { numeric: true, sensitivity: "base" }));
+
+    const surplusBeforeAllocation = baseRows.reduce((sum, row) => sum + Math.max(0, row.surplusShortfall), 0);
+    let remainingPool = performancePreviousSurplus + surplusBeforeAllocation;
+
+    const deficitIndexes = baseRows
+      .map((row, index) => ({ row, index }))
+      .filter((entry) => entry.row.surplusShortfall < 0)
+      .sort((a, b) => {
+        const aPrice = a.row.contractPrice ?? Number.POSITIVE_INFINITY;
+        const bPrice = b.row.contractPrice ?? Number.POSITIVE_INFINITY;
+        if (aPrice !== bPrice) return aPrice - bPrice;
+        return a.row.applicationId.localeCompare(b.row.applicationId, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+
+    deficitIndexes.forEach(({ index }) => {
+      const row = baseRows[index];
+      const shortfall = Math.abs(row.surplusShortfall);
+      const allocated = Math.min(shortfall, remainingPool);
+      remainingPool -= allocated;
+      const remainingShortfall = shortfall - allocated;
+      const drawdown = -remainingShortfall * (row.contractPrice ?? 0);
+
+      baseRows[index] = {
+        ...row,
+        allocatedRecs: allocated,
+        drawdownPayment: Number(drawdown.toFixed(2)),
+      };
+    });
+
+    const totalAllocatedRecs = baseRows.reduce((sum, row) => sum + row.allocatedRecs, 0);
+    const drawdownThisReport = baseRows.reduce(
+      (sum, row) => sum + Math.abs(Math.min(row.drawdownPayment, 0)),
+      0
+    );
+    const unallocatedShortfallRecs = baseRows.reduce(
+      (sum, row) => sum + Math.max(0, Math.abs(Math.min(0, row.surplusShortfall)) - row.allocatedRecs),
+      0
+    );
+
+    return {
+      rows: baseRows,
+      systemCount: baseRows.length,
+      surplusSystemCount: baseRows.filter((row) => row.surplusShortfall > 0).length,
+      shortfallSystemCount: baseRows.filter((row) => row.surplusShortfall < 0).length,
+      surplusBeforeAllocation,
+      totalAllocatedRecs,
+      netSurplusAfterAllocation: performancePreviousSurplus + surplusBeforeAllocation - totalAllocatedRecs,
+      unallocatedShortfallRecs,
+      drawdownThisReport,
+      drawdownCumulative: drawdownThisReport + performancePreviousDrawdown,
+    };
+  }, [
+    effectivePerformanceContractId,
+    effectivePerformanceDeliveryYearKey,
+    performancePreviousDrawdown,
+    performancePreviousSurplus,
+    performanceSourceRows,
+  ]);
 
   const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(() => {
     const groups = new Map<
@@ -2109,12 +2405,13 @@ export default function SolarRecDashboard() {
         ) : null}
 
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-8 h-auto">
+          <TabsList className="grid w-full grid-cols-9 h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="size">Size + Reporting</TabsTrigger>
             <TabsTrigger value="value">REC Value</TabsTrigger>
             <TabsTrigger value="contracts">Utility Contracts</TabsTrigger>
             <TabsTrigger value="annual-review">Annual REC Review</TabsTrigger>
+            <TabsTrigger value="performance-eval">REC Performance Eval</TabsTrigger>
             <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
             <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
             <TabsTrigger value="snapshot-log">Snapshot Log</TabsTrigger>
@@ -2676,6 +2973,222 @@ export default function SolarRecDashboard() {
                 </Table>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="performance-eval" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">3-Year Rolling Average Annual Report Logic</CardTitle>
+                <CardDescription>
+                  Mirrors the REC Performance Evaluation model: rolling average by system, expected delivery, surplus
+                  allocation, and drawdown payments.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
+            {performanceContractOptions.length === 0 ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">No Performance Data Available</CardTitle>
+                  <CardDescription>
+                    Upload ABP Report, Solar Applications, and REC Delivery Schedules to calculate performance
+                    evaluation metrics.
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            ) : (
+              <>
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Evaluation Controls</CardTitle>
+                    <CardDescription>
+                      Select the contract and delivery year, then set prior carry-forward values if needed.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">Contract ID</label>
+                      <select
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                        value={effectivePerformanceContractId}
+                        onChange={(event) => setPerformanceContractId(event.target.value)}
+                      >
+                        {performanceContractOptions.map((contractId) => (
+                          <option key={contractId} value={contractId}>
+                            {contractId}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">Delivery Year</label>
+                      <select
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                        value={effectivePerformanceDeliveryYearKey}
+                        onChange={(event) => setPerformanceDeliveryYearKey(event.target.value)}
+                      >
+                        {performanceDeliveryYearOptions.map((option) => (
+                          <option key={option.key} value={option.key}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">
+                        Previous DY Aggregate Surplus RECs (after allocation)
+                      </label>
+                      <Input
+                        type="number"
+                        step="1"
+                        value={performancePreviousSurplusInput}
+                        onChange={(event) => setPerformancePreviousSurplusInput(event.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">
+                        Previous DY Aggregate Drawdown Payments (&lt;$5,000)
+                      </label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        value={performancePreviousDrawdownInput}
+                        onChange={(event) => setPerformancePreviousDrawdownInput(event.target.value)}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Contract ID</CardDescription>
+                      <CardTitle className="text-2xl">{effectivePerformanceContractId || "N/A"}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Delivery Year</CardDescription>
+                      <CardTitle className="text-2xl">{performanceSelectedDeliveryYearLabel}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Systems in Evaluation</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(recPerformanceEvaluation.systemCount)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Shortfall Systems</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(recPerformanceEvaluation.shortfallSystemCount)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Surplus RECs (before allocation, this report)</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(recPerformanceEvaluation.surplusBeforeAllocation)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>RECs Allocated (lowest price first)</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(recPerformanceEvaluation.totalAllocatedRecs)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Net Surplus RECs After Allocation</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(recPerformanceEvaluation.netSurplusAfterAllocation)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Unallocated Shortfall RECs</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(recPerformanceEvaluation.unallocatedShortfallRecs)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Drawdown Payments (this report)</CardDescription>
+                      <CardTitle className="text-2xl">{formatCurrency(recPerformanceEvaluation.drawdownThisReport)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Drawdown Payments (cumulative)</CardDescription>
+                      <CardTitle className="text-2xl">{formatCurrency(recPerformanceEvaluation.drawdownCumulative)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Results by System</CardTitle>
+                    <CardDescription>
+                      Columns follow the REC Performance Evaluation workbook structure.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Application ID</TableHead>
+                          <TableHead>Unit ID</TableHead>
+                          <TableHead>Batch ID</TableHead>
+                          <TableHead>System</TableHead>
+                          <TableHead>DY 1 (RECs)</TableHead>
+                          <TableHead>DY 2 (RECs)</TableHead>
+                          <TableHead>DY 3 (RECs)</TableHead>
+                          <TableHead>3-Year Avg (Floor)</TableHead>
+                          <TableHead>Contract Price ($/REC)</TableHead>
+                          <TableHead>Expected RECs</TableHead>
+                          <TableHead>Surplus / (Shortfall)</TableHead>
+                          <TableHead>RECs Allocated</TableHead>
+                          <TableHead>Drawdown Payment</TableHead>
+                          <TableHead>DY 1 Source</TableHead>
+                          <TableHead>DY 2 Source</TableHead>
+                          <TableHead>DY 3 Source</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {recPerformanceEvaluation.rows.map((row) => (
+                          <TableRow key={row.key}>
+                            <TableCell>{row.applicationId}</TableCell>
+                            <TableCell>{row.unitId}</TableCell>
+                            <TableCell>{row.batchId}</TableCell>
+                            <TableCell className="font-medium">{row.systemName}</TableCell>
+                            <TableCell>{formatNumber(row.deliveryYearOne)}</TableCell>
+                            <TableCell>{formatNumber(row.deliveryYearTwo)}</TableCell>
+                            <TableCell>{formatNumber(row.deliveryYearThree)}</TableCell>
+                            <TableCell>{formatNumber(row.rollingAverage)}</TableCell>
+                            <TableCell>{formatCurrency(row.contractPrice)}</TableCell>
+                            <TableCell>{formatNumber(row.expectedRecs)}</TableCell>
+                            <TableCell
+                              className={
+                                row.surplusShortfall < 0 ? "text-rose-700 font-semibold" : row.surplusShortfall > 0 ? "text-emerald-700 font-semibold" : ""
+                              }
+                            >
+                              {formatSignedNumber(row.surplusShortfall)}
+                            </TableCell>
+                            <TableCell>{formatNumber(row.allocatedRecs)}</TableCell>
+                            <TableCell className={row.drawdownPayment < 0 ? "text-rose-700 font-semibold" : ""}>
+                              {formatCurrency(row.drawdownPayment)}
+                            </TableCell>
+                            <TableCell>{row.deliveryYearOneSource}</TableCell>
+                            <TableCell>{row.deliveryYearTwoSource}</TableCell>
+                            <TableCell>{row.deliveryYearThreeSource}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              </>
+            )}
           </TabsContent>
 
           <TabsContent value="change-ownership" className="space-y-4 mt-4">
