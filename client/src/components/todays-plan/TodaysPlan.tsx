@@ -10,6 +10,7 @@ import {
   loadPlanOverrides,
   mergePlanWithOverrides,
   removePlanItemOverride,
+  setPlanOrderOverride,
   savePlanOverrides,
   type PersistedPlanOverrides,
 } from "./persistence";
@@ -34,6 +35,7 @@ type SuggestedPlanAction = {
 
 type GroupedRow = {
   slotKey: string;
+  timeLabel: string;
   firstIndex: number;
   items: PlanItemData[];
 };
@@ -58,7 +60,49 @@ const formatStartTimeLabel = (startMs: number, durationMinutes: number): string 
   return `${date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} • ${durationMinutes}m`;
 };
 
+const formatPlannerTime = (item: PlanItemData): string => {
+  if (item.type === "event" && item.timeLabel.toLowerCase().includes("all-day")) return "All day";
+  if (Number.isFinite(item.startMs)) {
+    return new Date(item.startMs as number).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+  const dueMatch = item.timeLabel.match(/(?:due|overdue)\s*(\d{1,2}:\d{2}\s*(?:AM|PM))/i);
+  if (dueMatch?.[1]) return dueMatch[1].toUpperCase();
+  return item.timeLabel.split("•")[0]?.trim() || item.timeLabel;
+};
+
+const isFixedTimeItem = (item: PlanItemData): boolean => {
+  if (item.type === "event") return true;
+  if (item.source === "email") return true;
+  if (item.dueTime) return true;
+  return false;
+};
+
+const applyManualTimeline = (items: PlanItemData[], nowMs: number): PlanItemData[] => {
+  const cursorStart = roundToNextFiveMinutes(nowMs);
+  let cursor = cursorStart;
+  return items.map((item) => {
+    const durationMinutes = Math.max(5, item.durationMinutes || 30);
+    if (isFixedTimeItem(item)) {
+      const startMs = Number.isFinite(item.startMs) ? (item.startMs as number) : item.sortMs;
+      cursor = Math.max(cursor, startMs + durationMinutes * 60 * 1000);
+      return item;
+    }
+
+    const startMs = cursor;
+    cursor = startMs + durationMinutes * 60 * 1000;
+    return {
+      ...item,
+      startMs,
+      sortMs: startMs,
+      timeLabel: formatStartTimeLabel(startMs, durationMinutes),
+    };
+  });
+};
+
 const toSlotKey = (item: PlanItemData): string => {
+  if (item.type === "event" && item.timeLabel.toLowerCase().includes("all-day")) {
+    return `all-day:${item.id}`;
+  }
   if (Number.isFinite(item.startMs)) {
     const date = new Date(item.startMs as number);
     const h = String(date.getHours()).padStart(2, "0");
@@ -89,7 +133,11 @@ export function TodaysPlan({
     [calendarEvents, todoistTasks, emails, habits, planNowMs]
   );
 
-  const [overrides, setOverrides] = useState<PersistedPlanOverrides>({ addedItems: [], removedIds: [] });
+  const [overrides, setOverrides] = useState<PersistedPlanOverrides>({
+    addedItems: [],
+    removedIds: [],
+    orderedIds: [],
+  });
   const [planItems, setPlanItems] = useState<PlanItemData[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
@@ -114,9 +162,14 @@ export function TodaysPlan({
     [seed.autoItems, overrides]
   );
 
+  const displayedPlanItems = useMemo(() => {
+    if (overrides.orderedIds.length === 0) return mergedPlanItems;
+    return applyManualTimeline(mergedPlanItems, planNowMs);
+  }, [mergedPlanItems, overrides.orderedIds, planNowMs]);
+
   useEffect(() => {
-    setPlanItems(mergedPlanItems);
-  }, [mergedPlanItems]);
+    setPlanItems(displayedPlanItems);
+  }, [displayedPlanItems]);
 
   const suggestions = useMemo<SuggestedPlanAction[]>(
     () => [
@@ -203,6 +256,7 @@ export function TodaysPlan({
       }
       rowsByKey.set(slotKey, {
         slotKey,
+        timeLabel: formatPlannerTime(item),
         firstIndex: index,
         items: [item],
       });
@@ -244,24 +298,32 @@ export function TodaysPlan({
           ) : (
             <ul className="space-y-2">
               {groupedRows.map((row) => (
-                <li key={row.slotKey} className="space-y-2">
-                  <div className={`grid gap-2 ${row.items.length > 1 ? "md:grid-cols-2" : "grid-cols-1"}`}>
-                    {row.items.map((item) => (
-                      <PlanItem
-                        key={item.id}
-                        item={item}
-                        onDragStart={(id) => setDraggingId(id)}
-                        onDragEnd={() => setDraggingId(null)}
-                        onDrop={(targetId) => {
-                          if (!draggingId) return;
-                          setPlanItems((prev) => reorderPlan(prev, draggingId, targetId));
-                          setDraggingId(null);
-                        }}
-                        onOpenSource={handlePrimaryAction}
-                        onCompleteHabit={handleCompleteHabitFromPlan}
-                        onRemove={handleRemovePlanItem}
-                      />
-                    ))}
+                <li key={row.slotKey} className="grid grid-cols-[78px_minmax(0,1fr)] gap-3">
+                  <div className="pt-2 text-xs font-semibold tabular-nums text-slate-500">{row.timeLabel}</div>
+                  <div className="min-w-0 border-l border-slate-200 pl-3">
+                    <div className={`grid gap-2 ${row.items.length > 1 ? "md:grid-cols-2" : "grid-cols-1"}`}>
+                      {row.items.map((item) => (
+                        <PlanItem
+                          key={item.id}
+                          item={item}
+                          hideTimeLabel
+                          onDragStart={(id) => setDraggingId(id)}
+                          onDragEnd={() => setDraggingId(null)}
+                          onDrop={(targetId) => {
+                            if (!draggingId) return;
+                            setPlanItems((prev) => {
+                              const reordered = reorderPlan(prev, draggingId, targetId);
+                              setOverrides((current) => setPlanOrderOverride(current, reordered.map((entry) => entry.id)));
+                              return reordered;
+                            });
+                            setDraggingId(null);
+                          }}
+                          onOpenSource={handlePrimaryAction}
+                          onCompleteHabit={handleCompleteHabitFromPlan}
+                          onRemove={handleRemovePlanItem}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </li>
               ))}

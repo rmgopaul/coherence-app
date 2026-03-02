@@ -5,6 +5,7 @@ import {
   loadPlanOverrides,
   mergePlanWithOverrides,
   removePlanItemOverride,
+  setPlanOrderOverride,
   savePlanOverrides,
 } from "../client/src/components/todays-plan/persistence";
 import {
@@ -332,9 +333,49 @@ describe("Today plan persistence", () => {
       },
     ];
 
-    const removed = removePlanItemOverride({ addedItems: [], removedIds: [] }, "task:base");
+    const removed = removePlanItemOverride({ addedItems: [], removedIds: [], orderedIds: [] }, "task:base");
     const merged = mergePlanWithOverrides(autoItems, removed);
     expect(merged.find((item) => item.id === "task:base")).toBeUndefined();
+  });
+
+  it("respects persisted manual order across reload", () => {
+    const dateKey = "2026-03-01";
+    const storage = createMemoryStorage();
+    const autoItems: PlanItemData[] = [
+      {
+        id: "task:first",
+        type: "task",
+        source: "todoist",
+        title: "First task",
+        timeLabel: "10:00 AM • 30m",
+        sortMs: 10,
+        startMs: 10,
+        durationMinutes: 30,
+        dueTime: false,
+        dateKey,
+      },
+      {
+        id: "task:second",
+        type: "task",
+        source: "todoist",
+        title: "Second task",
+        timeLabel: "10:30 AM • 30m",
+        sortMs: 20,
+        startMs: 20,
+        durationMinutes: 30,
+        dueTime: false,
+        dateKey,
+      },
+    ];
+
+    const initial = loadPlanOverrides(dateKey, storage);
+    const reordered = setPlanOrderOverride(initial, ["task:second", "task:first"]);
+    savePlanOverrides(dateKey, reordered, storage);
+    const loaded = loadPlanOverrides(dateKey, storage);
+    const merged = mergePlanWithOverrides(autoItems, loaded);
+
+    expect(merged[0]?.id).toBe("task:second");
+    expect(merged[1]?.id).toBe("task:first");
   });
 });
 

@@ -7,6 +7,7 @@ import PinGate from "./components/PinGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Dashboard from "./pages/Dashboard";
+import SolarRecDashboard from "./pages/SolarRecDashboard";
 import Notebook from "./pages/Notebook";
 import Settings from "./pages/Settings";
 import TodoistWidget from "./pages/TodoistWidget";
@@ -20,6 +21,7 @@ function Router() {
     <Switch>
       <Route path={"/"} component={Home} />
       <Route path={"/dashboard"} component={Dashboard} />
+      <Route path={"/solar-rec-dashboard"} component={SolarRecDashboard} />
       <Route path={"/notes"} component={Notebook} />
       <Route path={"/settings"} component={Settings} />
       <Route path={"/widget/todoist"} component={TodoistWidget} />

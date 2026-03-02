@@ -5,11 +5,13 @@ const STORAGE_PREFIX = "todays-plan-overrides:v1:";
 export type PersistedPlanOverrides = {
   addedItems: PlanItemData[];
   removedIds: string[];
+  orderedIds: string[];
 };
 
 const defaultOverrides = (): PersistedPlanOverrides => ({
   addedItems: [],
   removedIds: [],
+  orderedIds: [],
 });
 
 const keyForDate = (dateKey: string): string => `${STORAGE_PREFIX}${dateKey}`;
@@ -31,7 +33,10 @@ export const loadPlanOverrides = (
     const removedIds = Array.isArray(parsed?.removedIds)
       ? parsed?.removedIds.filter((id): id is string => typeof id === "string")
       : [];
-    return { addedItems, removedIds };
+    const orderedIds = Array.isArray(parsed?.orderedIds)
+      ? parsed?.orderedIds.filter((id): id is string => typeof id === "string")
+      : [];
+    return { addedItems, removedIds, orderedIds };
   } catch {
     return defaultOverrides();
   }
@@ -67,7 +72,16 @@ export const mergePlanWithOverrides = (
     deduped.set(item.id, item);
   }
 
+  const orderedIds = overrides.orderedIds || [];
+  const orderedIndex = new Map<string, number>();
+  orderedIds.forEach((id, index) => orderedIndex.set(id, index));
+
   return Array.from(deduped.values()).sort((a, b) => {
+    const aOrder = orderedIndex.get(a.id);
+    const bOrder = orderedIndex.get(b.id);
+    if (typeof aOrder === "number" && typeof bOrder === "number" && aOrder !== bOrder) return aOrder - bOrder;
+    if (typeof aOrder === "number" && typeof bOrder !== "number") return -1;
+    if (typeof aOrder !== "number" && typeof bOrder === "number") return 1;
     if (a.sortMs !== b.sortMs) return a.sortMs - b.sortMs;
     return a.title.localeCompare(b.title, undefined, { sensitivity: "base" });
   });
@@ -81,6 +95,7 @@ export const addOverrideItem = (
   return {
     addedItems: [...overrides.addedItems, item],
     removedIds: overrides.removedIds.filter((id) => id !== item.id),
+    orderedIds: overrides.orderedIds.includes(item.id) ? overrides.orderedIds : [...overrides.orderedIds, item.id],
   };
 };
 
@@ -95,6 +110,22 @@ export const removePlanItemOverride = (
   return {
     addedItems: nextAdded,
     removedIds,
+    orderedIds: overrides.orderedIds.filter((id) => id !== itemId),
   };
 };
 
+export const setPlanOrderOverride = (
+  overrides: PersistedPlanOverrides,
+  orderedIds: string[]
+): PersistedPlanOverrides => {
+  const seen = new Set<string>();
+  const normalized = orderedIds.filter((id) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+  return {
+    ...overrides,
+    orderedIds: normalized,
+  };
+};

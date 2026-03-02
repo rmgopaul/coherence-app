@@ -6,6 +6,7 @@ type PlanItemProps = {
   onDragStart: (id: string) => void;
   onDragEnd?: () => void;
   onDrop: (targetId: string) => void;
+  hideTimeLabel?: boolean;
   onRemove?: (id: string) => void;
   onOpenSource?: (item: PlanItemData) => void;
   onCompleteHabit?: (item: PlanItemData) => void;
@@ -18,6 +19,7 @@ export function PlanItem({
   onDragStart,
   onDragEnd,
   onDrop,
+  hideTimeLabel = false,
   onRemove,
   onOpenSource,
   onCompleteHabit,
@@ -27,6 +29,13 @@ export function PlanItem({
   const isTask = item.type === "task" && !isEmailDeadline;
   const isHabit = item.type === "habit";
   const canOpenSource = Boolean(item.sourceUrl) && !isHabit;
+  const sourceStyles = isEvent
+    ? "border-blue-200 bg-blue-50/40"
+    : isEmailDeadline
+      ? "border-amber-200 bg-amber-50/50"
+      : isTask
+        ? "border-emerald-200 bg-emerald-50/30"
+        : "border-violet-200 bg-violet-50/30";
 
   return (
     <div
@@ -46,7 +55,7 @@ export function PlanItem({
         event.preventDefault();
         onDrop(item.id);
       }}
-      className="group flex items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 transition hover:bg-slate-50"
+      className={`group flex items-center gap-3 rounded-lg border px-3 py-2.5 transition hover:bg-white ${sourceStyles}`}
       aria-label={`${isEvent ? "Calendar event" : isEmailDeadline ? "Email deadline" : isTask ? "Task" : "Habit"} ${item.title}`}
     >
       <span
@@ -71,7 +80,7 @@ export function PlanItem({
 
       <div className="min-w-0 flex-1">
         <p className={PLAN_ITEM_TITLE_CLASS}>{item.title}</p>
-        <p className="text-xs text-slate-500">{item.timeLabel}</p>
+        {!hideTimeLabel ? <p className="text-xs text-slate-500">{item.timeLabel}</p> : null}
       </div>
 
       <div className="flex items-center gap-1.5">

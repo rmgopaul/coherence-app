@@ -1768,6 +1768,10 @@ export default function Dashboard() {
               <FileText className="h-4 w-4 mr-2" />
               Notebook
             </Button>
+            <Button variant="outline" onClick={() => setLocation("/solar-rec-dashboard")}>
+              <BarChart3 className="h-4 w-4 mr-2" />
+              Solar REC
+            </Button>
             <Button variant="outline" onClick={() => setLocation("/settings")}>
               <SettingsIcon className="h-4 w-4 mr-2" />
               Settings
