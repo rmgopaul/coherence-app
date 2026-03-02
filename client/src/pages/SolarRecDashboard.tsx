@@ -61,6 +61,40 @@ type ContractDeliveryAggregate = {
 
 type TransitionStatus = ChangeOwnershipStatus | "No COO Status";
 
+type AnnualVintageAggregate = {
+  deliveryStartDate: Date | null;
+  deliveryStartRaw: string;
+  label: string;
+  projectCount: number;
+  reportingProjectCount: number;
+  reportingProjectPercent: number | null;
+  required: number;
+  delivered: number;
+  gap: number;
+  deliveredPercent: number | null;
+  requiredValue: number;
+  deliveredValue: number;
+  valueGap: number;
+  valueDeliveredPercent: number | null;
+};
+
+type AnnualContractVintageAggregate = {
+  contractId: string;
+  deliveryStartDate: Date | null;
+  deliveryStartRaw: string;
+  required: number;
+  delivered: number;
+  gap: number;
+  deliveredPercent: number | null;
+  requiredValue: number;
+  deliveredValue: number;
+  valueGap: number;
+  valueDeliveredPercent: number | null;
+  projectCount: number;
+  reportingProjectCount: number;
+  reportingProjectPercent: number | null;
+};
+
 type DashboardLogEntry = {
   id: string;
   createdAt: Date;
@@ -1234,6 +1268,265 @@ export default function SolarRecDashboard() {
     return ids;
   }, [systems]);
 
+  const systemsByTrackingId = useMemo(() => {
+    const mapping = new Map<string, SystemRecord>();
+    systems.forEach((system) => {
+      if (!system.trackingSystemRefId) return;
+      mapping.set(system.trackingSystemRefId, system);
+    });
+    return mapping;
+  }, [systems]);
+
+  const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(() => {
+    const groups = new Map<
+      string,
+      {
+        contractId: string;
+        deliveryStartDate: Date | null;
+        deliveryStartRaw: string;
+        required: number;
+        delivered: number;
+        requiredValue: number;
+        deliveredValue: number;
+        trackingIds: Set<string>;
+        reportingTrackingIds: Set<string>;
+      }
+    >();
+
+    (datasets.recDeliverySchedules?.rows ?? []).forEach((row) => {
+      const trackingId = clean(row.tracking_system_ref_id);
+      if (!trackingId || !eligibleTrackingIds.has(trackingId)) return;
+
+      const contractId = clean(row.utility_contract_number) || "Unassigned";
+      const deliveryStartRaw = clean(row.year1_start_date);
+      if (!deliveryStartRaw) return;
+
+      const deliveryStartDate = parseDate(deliveryStartRaw);
+      const required = parseNumber(row.year1_quantity_required) ?? 0;
+      const delivered = parseNumber(row.year1_quantity_delivered) ?? 0;
+      const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
+
+      const dateKey = deliveryStartDate
+        ? `${deliveryStartDate.getFullYear()}-${String(deliveryStartDate.getMonth() + 1).padStart(2, "0")}-${String(deliveryStartDate.getDate()).padStart(2, "0")}`
+        : deliveryStartRaw;
+      const key = `${contractId}__${dateKey}`;
+
+      let current = groups.get(key);
+      if (!current) {
+        current = {
+          contractId,
+          deliveryStartDate,
+          deliveryStartRaw,
+          required: 0,
+          delivered: 0,
+          requiredValue: 0,
+          deliveredValue: 0,
+          trackingIds: new Set<string>(),
+          reportingTrackingIds: new Set<string>(),
+        };
+        groups.set(key, current);
+      }
+
+      current.required += required;
+      current.delivered += delivered;
+      current.trackingIds.add(trackingId);
+      if (recPrice !== null) {
+        current.requiredValue += required * recPrice;
+        current.deliveredValue += delivered * recPrice;
+      }
+      if (systemsByTrackingId.get(trackingId)?.isReporting) {
+        current.reportingTrackingIds.add(trackingId);
+      }
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        contractId: group.contractId,
+        deliveryStartDate: group.deliveryStartDate,
+        deliveryStartRaw: group.deliveryStartRaw,
+        required: group.required,
+        delivered: group.delivered,
+        gap: group.required - group.delivered,
+        deliveredPercent: toPercentValue(group.delivered, group.required),
+        requiredValue: group.requiredValue,
+        deliveredValue: group.deliveredValue,
+        valueGap: group.requiredValue - group.deliveredValue,
+        valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
+        projectCount: group.trackingIds.size,
+        reportingProjectCount: group.reportingTrackingIds.size,
+        reportingProjectPercent: toPercentValue(group.reportingTrackingIds.size, group.trackingIds.size),
+      }))
+      .sort((a, b) => {
+        const aTime = a.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        if (aTime !== bTime) return aTime - bTime;
+        return a.contractId.localeCompare(b.contractId);
+      });
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, recPriceByTrackingId, systemsByTrackingId]);
+
+  const annualVintageRows = useMemo<AnnualVintageAggregate[]>(() => {
+    const groups = new Map<
+      string,
+      {
+        deliveryStartDate: Date | null;
+        deliveryStartRaw: string;
+        required: number;
+        delivered: number;
+        requiredValue: number;
+        deliveredValue: number;
+        projectCount: number;
+        reportingProjectCount: number;
+      }
+    >();
+
+    annualContractVintageRows.forEach((row) => {
+      const dateKey = row.deliveryStartDate
+        ? `${row.deliveryStartDate.getFullYear()}-${String(row.deliveryStartDate.getMonth() + 1).padStart(2, "0")}-${String(row.deliveryStartDate.getDate()).padStart(2, "0")}`
+        : row.deliveryStartRaw;
+      let current = groups.get(dateKey);
+      if (!current) {
+        current = {
+          deliveryStartDate: row.deliveryStartDate,
+          deliveryStartRaw: row.deliveryStartRaw,
+          required: 0,
+          delivered: 0,
+          requiredValue: 0,
+          deliveredValue: 0,
+          projectCount: 0,
+          reportingProjectCount: 0,
+        };
+        groups.set(dateKey, current);
+      }
+
+      current.required += row.required;
+      current.delivered += row.delivered;
+      current.requiredValue += row.requiredValue;
+      current.deliveredValue += row.deliveredValue;
+      current.projectCount += row.projectCount;
+      current.reportingProjectCount += row.reportingProjectCount;
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        deliveryStartDate: group.deliveryStartDate,
+        deliveryStartRaw: group.deliveryStartRaw,
+        label: group.deliveryStartDate ? formatDate(group.deliveryStartDate) : group.deliveryStartRaw,
+        projectCount: group.projectCount,
+        reportingProjectCount: group.reportingProjectCount,
+        reportingProjectPercent: toPercentValue(group.reportingProjectCount, group.projectCount),
+        required: group.required,
+        delivered: group.delivered,
+        gap: group.required - group.delivered,
+        deliveredPercent: toPercentValue(group.delivered, group.required),
+        requiredValue: group.requiredValue,
+        deliveredValue: group.deliveredValue,
+        valueGap: group.requiredValue - group.deliveredValue,
+        valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
+      }))
+      .sort((a, b) => {
+        const aTime = a.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        return aTime - bTime;
+      });
+  }, [annualContractVintageRows]);
+
+  const annualContractSummaryRows = useMemo(() => {
+    const groups = new Map<
+      string,
+      {
+        contractId: string;
+        required: number;
+        delivered: number;
+        requiredValue: number;
+        deliveredValue: number;
+        projectCount: number;
+        reportingProjectCount: number;
+        startDates: Set<string>;
+      }
+    >();
+
+    annualContractVintageRows.forEach((row) => {
+      let current = groups.get(row.contractId);
+      if (!current) {
+        current = {
+          contractId: row.contractId,
+          required: 0,
+          delivered: 0,
+          requiredValue: 0,
+          deliveredValue: 0,
+          projectCount: 0,
+          reportingProjectCount: 0,
+          startDates: new Set<string>(),
+        };
+        groups.set(row.contractId, current);
+      }
+
+      current.required += row.required;
+      current.delivered += row.delivered;
+      current.requiredValue += row.requiredValue;
+      current.deliveredValue += row.deliveredValue;
+      current.projectCount += row.projectCount;
+      current.reportingProjectCount += row.reportingProjectCount;
+      current.startDates.add(row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw);
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        contractId: group.contractId,
+        projectCount: group.projectCount,
+        reportingProjectCount: group.reportingProjectCount,
+        reportingProjectPercent: toPercentValue(group.reportingProjectCount, group.projectCount),
+        startDateCount: group.startDates.size,
+        required: group.required,
+        delivered: group.delivered,
+        gap: group.required - group.delivered,
+        deliveredPercent: toPercentValue(group.delivered, group.required),
+        requiredValue: group.requiredValue,
+        deliveredValue: group.deliveredValue,
+        valueGap: group.requiredValue - group.deliveredValue,
+        valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
+      }))
+      .sort((a, b) => a.contractId.localeCompare(b.contractId));
+  }, [annualContractVintageRows]);
+
+  const annualPortfolioSummary = useMemo(() => {
+    const totalRequired = annualVintageRows.reduce((sum, row) => sum + row.required, 0);
+    const totalDelivered = annualVintageRows.reduce((sum, row) => sum + row.delivered, 0);
+    const totalRequiredValue = annualVintageRows.reduce((sum, row) => sum + row.requiredValue, 0);
+    const totalDeliveredValue = annualVintageRows.reduce((sum, row) => sum + row.deliveredValue, 0);
+    const totalProjects = annualVintageRows.reduce((sum, row) => sum + row.projectCount, 0);
+    const totalReportingProjects = annualVintageRows.reduce((sum, row) => sum + row.reportingProjectCount, 0);
+
+    const latestVintage = annualVintageRows.length > 0 ? annualVintageRows[annualVintageRows.length - 1] : null;
+    const rollingThreeRows = annualVintageRows.slice(-3);
+    const rollingThreeRequired = rollingThreeRows.reduce((sum, row) => sum + row.required, 0);
+    const rollingThreeDelivered = rollingThreeRows.reduce((sum, row) => sum + row.delivered, 0);
+    const rollingThreeRequiredValue = rollingThreeRows.reduce((sum, row) => sum + row.requiredValue, 0);
+    const rollingThreeDeliveredValue = rollingThreeRows.reduce((sum, row) => sum + row.deliveredValue, 0);
+
+    return {
+      totalRequired,
+      totalDelivered,
+      totalGap: totalRequired - totalDelivered,
+      totalDeliveredPercent: toPercentValue(totalDelivered, totalRequired),
+      totalRequiredValue,
+      totalDeliveredValue,
+      totalValueGap: totalRequiredValue - totalDeliveredValue,
+      totalValueDeliveredPercent: toPercentValue(totalDeliveredValue, totalRequiredValue),
+      totalProjects,
+      totalReportingProjects,
+      totalReportingProjectPercent: toPercentValue(totalReportingProjects, totalProjects),
+      vintageCount: annualVintageRows.length,
+      latestVintage,
+      rollingThreeRequired,
+      rollingThreeDelivered,
+      rollingThreeDeliveredPercent: toPercentValue(rollingThreeDelivered, rollingThreeRequired),
+      rollingThreeRequiredValue,
+      rollingThreeDeliveredValue,
+      rollingThreeValueDeliveredPercent: toPercentValue(rollingThreeDeliveredValue, rollingThreeRequiredValue),
+    };
+  }, [annualVintageRows]);
+
   const contractDeliveryRows = useMemo<ContractDeliveryAggregate[]>(() => {
     const groups = new Map<
       string,
@@ -1775,11 +2068,12 @@ export default function SolarRecDashboard() {
         ) : null}
 
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-7 h-auto">
+          <TabsList className="grid w-full grid-cols-8 h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="size">Size + Reporting</TabsTrigger>
             <TabsTrigger value="value">REC Value</TabsTrigger>
             <TabsTrigger value="contracts">Utility Contracts</TabsTrigger>
+            <TabsTrigger value="annual-review">Annual REC Review</TabsTrigger>
             <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
             <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
             <TabsTrigger value="snapshot-log">Snapshot Log</TabsTrigger>
@@ -2092,6 +2386,248 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
                         <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>
                           {formatNumber(row.gap)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="annual-review" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Annual REC Delivery Obligation Review</CardTitle>
+                <CardDescription>
+                  Excel-aligned annual view based on Project Delivery Start Date (<code>year1_start_date</code>) and
+                  Utility Contract ID.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
+            <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+              <Card>
+                <CardHeader>
+                  <CardDescription>Annual Required RECs</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(annualPortfolioSummary.totalRequired)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Annual Delivered RECs</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(annualPortfolioSummary.totalDelivered)}</CardTitle>
+                  <CardDescription>{formatPercent(annualPortfolioSummary.totalDeliveredPercent)}</CardDescription>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>REC Gap</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(annualPortfolioSummary.totalGap)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Required Value</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(annualPortfolioSummary.totalRequiredValue)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Delivered Value</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(annualPortfolioSummary.totalDeliveredValue)}</CardTitle>
+                  <CardDescription>{formatPercent(annualPortfolioSummary.totalValueDeliveredPercent)}</CardDescription>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Value Gap</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(annualPortfolioSummary.totalValueGap)}</CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <Card>
+                <CardHeader>
+                  <CardDescription>Delivery Vintages</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(annualPortfolioSummary.vintageCount)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Reporting Projects</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(annualPortfolioSummary.totalReportingProjects)}</CardTitle>
+                  <CardDescription>{formatPercent(annualPortfolioSummary.totalReportingProjectPercent)}</CardDescription>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>3-Year Rolling Delivery %</CardDescription>
+                  <CardTitle className="text-2xl">{formatPercent(annualPortfolioSummary.rollingThreeDeliveredPercent)}</CardTitle>
+                  <CardDescription>
+                    {formatNumber(annualPortfolioSummary.rollingThreeDelivered)} /{" "}
+                    {formatNumber(annualPortfolioSummary.rollingThreeRequired)} RECs
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>3-Year Rolling Value %</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {formatPercent(annualPortfolioSummary.rollingThreeValueDeliveredPercent)}
+                  </CardTitle>
+                  <CardDescription>
+                    {formatCurrency(annualPortfolioSummary.rollingThreeDeliveredValue)} /{" "}
+                    {formatCurrency(annualPortfolioSummary.rollingThreeRequiredValue)}
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Annual Vintage Summary</CardTitle>
+                <CardDescription>
+                  Aggregated across all contracts by Project Delivery Start Date (June 1 vintages).
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Project Delivery Start Date</TableHead>
+                      <TableHead>Projects</TableHead>
+                      <TableHead>Reporting Projects</TableHead>
+                      <TableHead>Reporting %</TableHead>
+                      <TableHead>Required</TableHead>
+                      <TableHead>Delivered</TableHead>
+                      <TableHead>Delivered %</TableHead>
+                      <TableHead>Required Value</TableHead>
+                      <TableHead>Delivered Value</TableHead>
+                      <TableHead>Value Delivered %</TableHead>
+                      <TableHead>REC Gap</TableHead>
+                      <TableHead>Value Gap</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {annualVintageRows.map((row) => (
+                      <TableRow key={row.deliveryStartDate ? row.deliveryStartDate.toISOString() : row.deliveryStartRaw}>
+                        <TableCell className="font-medium">{row.label}</TableCell>
+                        <TableCell>{formatNumber(row.projectCount)}</TableCell>
+                        <TableCell>{formatNumber(row.reportingProjectCount)}</TableCell>
+                        <TableCell>{formatPercent(row.reportingProjectPercent)}</TableCell>
+                        <TableCell>{formatNumber(row.required)}</TableCell>
+                        <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell>{formatPercent(row.deliveredPercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.requiredValue)}</TableCell>
+                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
+                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
+                        <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>{formatNumber(row.gap)}</TableCell>
+                        <TableCell className={row.valueGap > 0 ? "text-amber-700" : ""}>
+                          {formatCurrency(row.valueGap)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Contract + Vintage Annual Detail</CardTitle>
+                <CardDescription>
+                  Combined by Utility Contract ID and Project Delivery Start Date.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Utility Contract ID</TableHead>
+                      <TableHead>Project Delivery Start Date</TableHead>
+                      <TableHead>Projects</TableHead>
+                      <TableHead>Reporting Projects</TableHead>
+                      <TableHead>Reporting %</TableHead>
+                      <TableHead>Required</TableHead>
+                      <TableHead>Delivered</TableHead>
+                      <TableHead>Delivered %</TableHead>
+                      <TableHead>Required Value</TableHead>
+                      <TableHead>Delivered Value</TableHead>
+                      <TableHead>Value Delivered %</TableHead>
+                      <TableHead>REC Gap</TableHead>
+                      <TableHead>Value Gap</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {annualContractVintageRows.map((row) => (
+                      <TableRow key={`${row.contractId}-${row.deliveryStartRaw}`}>
+                        <TableCell className="font-medium">{row.contractId}</TableCell>
+                        <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
+                        <TableCell>{formatNumber(row.projectCount)}</TableCell>
+                        <TableCell>{formatNumber(row.reportingProjectCount)}</TableCell>
+                        <TableCell>{formatPercent(row.reportingProjectPercent)}</TableCell>
+                        <TableCell>{formatNumber(row.required)}</TableCell>
+                        <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell>{formatPercent(row.deliveredPercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.requiredValue)}</TableCell>
+                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
+                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
+                        <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>{formatNumber(row.gap)}</TableCell>
+                        <TableCell className={row.valueGap > 0 ? "text-amber-700" : ""}>
+                          {formatCurrency(row.valueGap)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Annual Contract Totals</CardTitle>
+                <CardDescription>
+                  Contract-level annual totals across all start dates.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Utility Contract ID</TableHead>
+                      <TableHead>Start Dates</TableHead>
+                      <TableHead>Projects</TableHead>
+                      <TableHead>Reporting Projects</TableHead>
+                      <TableHead>Reporting %</TableHead>
+                      <TableHead>Required</TableHead>
+                      <TableHead>Delivered</TableHead>
+                      <TableHead>Delivered %</TableHead>
+                      <TableHead>Required Value</TableHead>
+                      <TableHead>Delivered Value</TableHead>
+                      <TableHead>Value Delivered %</TableHead>
+                      <TableHead>REC Gap</TableHead>
+                      <TableHead>Value Gap</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {annualContractSummaryRows.map((row) => (
+                      <TableRow key={row.contractId}>
+                        <TableCell className="font-medium">{row.contractId}</TableCell>
+                        <TableCell>{formatNumber(row.startDateCount)}</TableCell>
+                        <TableCell>{formatNumber(row.projectCount)}</TableCell>
+                        <TableCell>{formatNumber(row.reportingProjectCount)}</TableCell>
+                        <TableCell>{formatPercent(row.reportingProjectPercent)}</TableCell>
+                        <TableCell>{formatNumber(row.required)}</TableCell>
+                        <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell>{formatPercent(row.deliveredPercent)}</TableCell>
+                        <TableCell>{formatCurrency(row.requiredValue)}</TableCell>
+                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
+                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
+                        <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>{formatNumber(row.gap)}</TableCell>
+                        <TableCell className={row.valueGap > 0 ? "text-amber-700" : ""}>
+                          {formatCurrency(row.valueGap)}
                         </TableCell>
                       </TableRow>
                     ))}
