@@ -43,6 +43,16 @@ type CsvDataset = {
   rows: CsvRow[];
 };
 
+type ContractDeliveryAggregate = {
+  contractId: string;
+  deliveryStartDate: Date | null;
+  deliveryStartRaw: string;
+  required: number;
+  delivered: number;
+  gap: number;
+  projectCount: number;
+};
+
 type DashboardLogEntry = {
   id: string;
   createdAt: Date;
@@ -181,8 +191,12 @@ const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
   "Change of Ownership - Not Transferred and Not Reporting",
 ];
 
-const DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
+const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
 const LOGS_STORAGE_KEY = "solarRecDashboardLogsV1";
+const DASHBOARD_DB_NAME = "solarRecDashboardDb";
+const DASHBOARD_DB_VERSION = 1;
+const DASHBOARD_DATASETS_STORE = "datasets";
+const DASHBOARD_DATASETS_RECORD_KEY = "activeDatasets";
 
 const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -363,32 +377,154 @@ function createLogId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function loadPersistedDatasets(): Partial<Record<DatasetKey, CsvDataset>> {
+function deserializeDatasets(
+  parsed: Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined>
+): Partial<Record<DatasetKey, CsvDataset>> {
+  const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
+  (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+    const dataset = parsed[key];
+    if (!dataset) return;
+    const uploadedAt = new Date(dataset.uploadedAt);
+    if (Number.isNaN(uploadedAt.getTime())) return;
+    loaded[key] = {
+      fileName: dataset.fileName,
+      uploadedAt,
+      headers: Array.isArray(dataset.headers) ? dataset.headers : [],
+      rows: Array.isArray(dataset.rows) ? dataset.rows : [],
+    };
+  });
+  return loaded;
+}
+
+function serializeDatasets(
+  datasets: Partial<Record<DatasetKey, CsvDataset>>
+): Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined> {
+  const serialized: Record<
+    string,
+    { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined
+  > = {};
+  (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+    const dataset = datasets[key];
+    if (!dataset) return;
+    serialized[key] = {
+      fileName: dataset.fileName,
+      uploadedAt: dataset.uploadedAt.toISOString(),
+      headers: dataset.headers,
+      rows: dataset.rows,
+    };
+  });
+  return serialized;
+}
+
+function loadLegacyDatasetsFromLocalStorage(): Partial<Record<DatasetKey, CsvDataset>> {
   if (typeof window === "undefined") return {};
   try {
-    const raw = window.localStorage.getItem(DATASETS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(LEGACY_DATASETS_STORAGE_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw) as Record<
       string,
       { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined
     >;
-    const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
-    (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-      const dataset = parsed[key];
-      if (!dataset) return;
-      const uploadedAt = new Date(dataset.uploadedAt);
-      if (Number.isNaN(uploadedAt.getTime())) return;
-      loaded[key] = {
-        fileName: dataset.fileName,
-        uploadedAt,
-        headers: Array.isArray(dataset.headers) ? dataset.headers : [],
-        rows: Array.isArray(dataset.rows) ? dataset.rows : [],
-      };
-    });
-    return loaded;
+    return deserializeDatasets(parsed);
   } catch {
     return {};
   }
+}
+
+async function openDashboardDatabase(): Promise<IDBDatabase> {
+  return await new Promise((resolve, reject) => {
+    if (typeof window === "undefined" || !("indexedDB" in window)) {
+      reject(new Error("IndexedDB is not available in this browser."));
+      return;
+    }
+
+    const request = window.indexedDB.open(DASHBOARD_DB_NAME, DASHBOARD_DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DASHBOARD_DATASETS_STORE)) {
+        db.createObjectStore(DASHBOARD_DATASETS_STORE);
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Failed to open IndexedDB."));
+  });
+}
+
+async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, CsvDataset>>> {
+  if (typeof window === "undefined") return {};
+
+  if (!("indexedDB" in window)) {
+    return loadLegacyDatasetsFromLocalStorage();
+  }
+
+  try {
+    const db = await openDashboardDatabase();
+    const stored = await new Promise<
+      Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined> | undefined
+    >((resolve, reject) => {
+      const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readonly");
+      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+      const request = store.get(DASHBOARD_DATASETS_RECORD_KEY);
+
+      request.onsuccess = () => {
+        const result = request.result as
+          | Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined>
+          | undefined;
+        resolve(result);
+      };
+      request.onerror = () => reject(request.error ?? new Error("Failed reading datasets from IndexedDB."));
+      transaction.oncomplete = () => db.close();
+      transaction.onabort = () => db.close();
+      transaction.onerror = () => db.close();
+    });
+
+    if (stored) return deserializeDatasets(stored);
+
+    const legacy = loadLegacyDatasetsFromLocalStorage();
+    if (Object.keys(legacy).length > 0) {
+      await saveDatasetsToStorage(legacy);
+      globalThis.localStorage.removeItem(LEGACY_DATASETS_STORAGE_KEY);
+      return legacy;
+    }
+
+    return {};
+  } catch {
+    return loadLegacyDatasetsFromLocalStorage();
+  }
+}
+
+async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDataset>>): Promise<void> {
+  if (typeof window === "undefined") return;
+
+  if (!("indexedDB" in window)) {
+    const legacySerialized = serializeDatasets(datasets);
+    globalThis.localStorage.setItem(LEGACY_DATASETS_STORAGE_KEY, JSON.stringify(legacySerialized));
+    return;
+  }
+
+  const db = await openDashboardDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
+    const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+    const payload = serializeDatasets(datasets);
+    const request = store.put(payload, DASHBOARD_DATASETS_RECORD_KEY);
+
+    request.onerror = () => reject(request.error ?? new Error("Failed saving datasets to IndexedDB."));
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
+    };
+  });
 }
 
 function loadPersistedLogs(): DashboardLogEntry[] {
@@ -434,9 +570,8 @@ function loadPersistedLogs(): DashboardLogEntry[] {
 
 export default function SolarRecDashboard() {
   const [, setLocation] = useLocation();
-  const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>(() =>
-    loadPersistedDatasets()
-  );
+  const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
+  const [datasetsHydrated, setDatasetsHydrated] = useState(false);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
@@ -488,6 +623,33 @@ export default function SolarRecDashboard() {
     setDatasets({});
     setUploadErrors({});
   };
+
+  const abpEligibleTotalSystems = useMemo(() => {
+    const abpReportRows = datasets.abpReport?.rows ?? [];
+    const uniqueEligibleKeys = new Set<string>();
+
+    abpReportRows.forEach((row, index) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      if (!parseDate(part2VerifiedDateRaw)) return;
+
+      const systemId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const name = clean(row.Project_Name) || clean(row.system_name);
+
+      const key = systemId
+        ? `id:${systemId}`
+        : trackingId
+          ? `tracking:${trackingId}`
+          : name
+            ? `name:${name.toLowerCase()}`
+            : `row:${index}`;
+      uniqueEligibleKeys.add(key);
+    });
+
+    return uniqueEligibleKeys.size;
+  }, [datasets.abpReport]);
 
   const systems = useMemo<SystemRecord[]>(() => {
     const abpReportRows = datasets.abpReport?.rows ?? [];
@@ -818,7 +980,7 @@ export default function SolarRecDashboard() {
   }, [datasets]);
 
   const summary = useMemo(() => {
-    const totalSystems = systems.length;
+    const totalSystems = abpEligibleTotalSystems;
     const reportingSystems = systems.filter((system) => system.isReporting).length;
     const smallSystems = systems.filter((system) => system.sizeBucket === "<=10 kW AC").length;
     const largeSystems = systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
@@ -847,7 +1009,7 @@ export default function SolarRecDashboard() {
       totalDeliveredValue,
       totalGap: totalContractedValue - totalDeliveredValue,
     };
-  }, [systems]);
+  }, [abpEligibleTotalSystems, systems]);
 
   const sizeBreakdownRows = useMemo(() => {
     const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
@@ -925,29 +1087,151 @@ export default function SolarRecDashboard() {
     });
   }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const serialized: Record<
-        string,
-        { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined
-      > = {};
-      (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-        const dataset = datasets[key];
-        if (!dataset) return;
-        serialized[key] = {
-          fileName: dataset.fileName,
-          uploadedAt: dataset.uploadedAt.toISOString(),
-          headers: dataset.headers,
-          rows: dataset.rows,
-        };
+  const contractDeliveryRows = useMemo<ContractDeliveryAggregate[]>(() => {
+    const groups = new Map<
+      string,
+      {
+        contractId: string;
+        deliveryStartDate: Date | null;
+        deliveryStartRaw: string;
+        required: number;
+        delivered: number;
+        trackingIds: Set<string>;
+      }
+    >();
+
+    (datasets.recDeliverySchedules?.rows ?? []).forEach((row) => {
+      const contractId = clean(row.utility_contract_number) || "Unassigned";
+      const trackingId = clean(row.tracking_system_ref_id);
+
+      for (let year = 1; year <= 15; year += 1) {
+        const startHeader = `year${year}_start_date`;
+        const requiredHeader = `year${year}_quantity_required`;
+        const deliveredHeader = `year${year}_quantity_delivered`;
+
+        const deliveryStartRaw = clean(row[startHeader]);
+        if (!deliveryStartRaw) continue;
+
+        const deliveryStartDate = parseDate(deliveryStartRaw);
+        const required = parseNumber(row[requiredHeader]) ?? 0;
+        const delivered = parseNumber(row[deliveredHeader]) ?? 0;
+
+        const dateKey = deliveryStartDate
+          ? `${deliveryStartDate.getFullYear()}-${String(deliveryStartDate.getMonth() + 1).padStart(2, "0")}-${String(deliveryStartDate.getDate()).padStart(2, "0")}`
+          : deliveryStartRaw;
+        const key = `${contractId}__${dateKey}`;
+
+        let current = groups.get(key);
+        if (!current) {
+          current = {
+            contractId,
+            deliveryStartDate,
+            deliveryStartRaw,
+            required: 0,
+            delivered: 0,
+            trackingIds: new Set<string>(),
+          };
+          groups.set(key, current);
+        }
+
+        current.required += required;
+        current.delivered += delivered;
+        if (trackingId) current.trackingIds.add(trackingId);
+      }
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        contractId: group.contractId,
+        deliveryStartDate: group.deliveryStartDate,
+        deliveryStartRaw: group.deliveryStartRaw,
+        required: group.required,
+        delivered: group.delivered,
+        gap: group.required - group.delivered,
+        projectCount: group.trackingIds.size,
+      }))
+      .sort((a, b) => {
+        const contractCompare = a.contractId.localeCompare(b.contractId);
+        if (contractCompare !== 0) return contractCompare;
+        const aTime = a.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
+        return aTime - bTime;
       });
-      window.localStorage.setItem(DATASETS_STORAGE_KEY, JSON.stringify(serialized));
-      setStorageNotice(null);
-    } catch {
-      setStorageNotice("Could not save uploaded file data in browser storage (storage may be full).");
-    }
-  }, [datasets]);
+  }, [datasets.recDeliverySchedules]);
+
+  const contractSummaryRows = useMemo(() => {
+    const groups = new Map<
+      string,
+      { contractId: string; required: number; delivered: number; startDates: Set<string>; projectCount: number }
+    >();
+
+    contractDeliveryRows.forEach((row) => {
+      let current = groups.get(row.contractId);
+      if (!current) {
+        current = {
+          contractId: row.contractId,
+          required: 0,
+          delivered: 0,
+          startDates: new Set<string>(),
+          projectCount: 0,
+        };
+        groups.set(row.contractId, current);
+      }
+      current.required += row.required;
+      current.delivered += row.delivered;
+      current.startDates.add(row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw);
+      current.projectCount += row.projectCount;
+    });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        contractId: group.contractId,
+        required: group.required,
+        delivered: group.delivered,
+        gap: group.required - group.delivered,
+        startDateCount: group.startDates.size,
+        projectCount: group.projectCount,
+      }))
+      .sort((a, b) => a.contractId.localeCompare(b.contractId));
+  }, [contractDeliveryRows]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const loaded = await loadDatasetsFromStorage();
+        if (cancelled) return;
+        setDatasets((current) => (Object.keys(current).length > 0 ? current : loaded));
+        setStorageNotice(null);
+      } catch {
+        if (cancelled) return;
+        setStorageNotice("Could not load saved file data.");
+      } finally {
+        if (!cancelled) setDatasetsHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!datasetsHydrated) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await saveDatasetsToStorage(datasets);
+        if (cancelled) return;
+        setStorageNotice(null);
+      } catch {
+        if (cancelled) return;
+        setStorageNotice("Could not save uploaded file data in browser storage.");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [datasets, datasetsHydrated]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1008,13 +1292,15 @@ export default function SolarRecDashboard() {
     setLogEntries([]);
   };
 
-  const missingCoreDatasets = ([
-    "solarApplications",
-    "abpReport",
-    "recDeliverySchedules",
-    "generationEntry",
-    "accountSolarGeneration",
-  ] as DatasetKey[]).filter((key) => !datasets[key]);
+  const missingCoreDatasets = datasetsHydrated
+    ? ([
+        "solarApplications",
+        "abpReport",
+        "recDeliverySchedules",
+        "generationEntry",
+        "accountSolarGeneration",
+      ] as DatasetKey[]).filter((key) => !datasets[key])
+    : [];
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
@@ -1185,10 +1471,11 @@ export default function SolarRecDashboard() {
         </Card>
 
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-5 h-auto">
+          <TabsList className="grid w-full grid-cols-6 h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="size">Size + Reporting</TabsTrigger>
             <TabsTrigger value="value">REC Value</TabsTrigger>
+            <TabsTrigger value="contracts">Utility Contracts</TabsTrigger>
             <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
             <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
           </TabsList>
@@ -1364,6 +1651,89 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatCurrency(system.deliveredValue)}</TableCell>
                         <TableCell className={system.valueGap !== null && system.valueGap > 0 ? "text-amber-700" : ""}>
                           {formatCurrency(system.valueGap)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="contracts" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Utility Contract ID Tracking</CardTitle>
+                <CardDescription>
+                  Aggregated by Utility Contract ID and Project Delivery Start Date (same-date rows are combined).
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Contract Summary</CardTitle>
+                <CardDescription>Total required vs delivered by Utility Contract ID.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Utility Contract ID</TableHead>
+                      <TableHead>Start Dates</TableHead>
+                      <TableHead>Projects</TableHead>
+                      <TableHead>Total Required</TableHead>
+                      <TableHead>Total Delivered</TableHead>
+                      <TableHead>Gap</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {contractSummaryRows.map((row) => (
+                      <TableRow key={row.contractId}>
+                        <TableCell className="font-medium">{row.contractId}</TableCell>
+                        <TableCell>{formatNumber(row.startDateCount)}</TableCell>
+                        <TableCell>{formatNumber(row.projectCount)}</TableCell>
+                        <TableCell>{formatNumber(row.required)}</TableCell>
+                        <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>
+                          {formatNumber(row.gap)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Contract + Delivery Start Date Detail</CardTitle>
+                <CardDescription>
+                  For matching contract ID and start date, required and delivered values are aggregated.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Utility Contract ID</TableHead>
+                      <TableHead>Project Delivery Start Date</TableHead>
+                      <TableHead>Projects</TableHead>
+                      <TableHead>Required</TableHead>
+                      <TableHead>Delivered</TableHead>
+                      <TableHead>Gap</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {contractDeliveryRows.map((row) => (
+                      <TableRow key={`${row.contractId}-${row.deliveryStartRaw}`}>
+                        <TableCell className="font-medium">{row.contractId}</TableCell>
+                        <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
+                        <TableCell>{formatNumber(row.projectCount)}</TableCell>
+                        <TableCell>{formatNumber(row.required)}</TableCell>
+                        <TableCell>{formatNumber(row.delivered)}</TableCell>
+                        <TableCell className={row.gap > 0 ? "text-amber-700" : ""}>
+                          {formatNumber(row.gap)}
                         </TableCell>
                       </TableRow>
                     ))}
