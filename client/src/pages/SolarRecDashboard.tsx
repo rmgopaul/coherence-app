@@ -129,6 +129,20 @@ type DashboardLogEntry = {
   }>;
 };
 
+type SnapshotMetricRow =
+  | {
+      kind: "section";
+      label: string;
+      sectionTone: "slate" | "blue" | "emerald";
+    }
+  | {
+      kind: "metric";
+      label: string;
+      value: (entry: DashboardLogEntry) => string;
+      level?: 0 | 1;
+      metricTone?: "default" | "neutral" | "warn";
+    };
+
 type SystemBuilder = {
   key: string;
   systemId: string | null;
@@ -1864,82 +1878,109 @@ export default function SolarRecDashboard() {
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
 
-  const snapshotMetricRows = useMemo(
+  const snapshotMetricRows = useMemo<SnapshotMetricRow[]>(
     () => [
-      { label: "Part II Verified ABP Customers", value: (entry: DashboardLogEntry) => formatNumber(entry.totalSystems) },
+      { kind: "section", label: "Portfolio Coverage", sectionTone: "slate" },
       {
+        kind: "metric",
+        label: "Part II Verified ABP Customers",
+        value: (entry: DashboardLogEntry) => formatNumber(entry.totalSystems),
+      },
+      {
+        kind: "metric",
         label: "Quantity Reporting to GATS",
         value: (entry: DashboardLogEntry) => formatNumber(entry.reportingSystems),
       },
       {
+        kind: "metric",
         label: "Percentage Reporting to GATS",
         value: (entry: DashboardLogEntry) => formatPercent(entry.reportingPercent),
+        metricTone: "neutral",
       },
+
+      { kind: "section", label: "Change of Ownership", sectionTone: "blue" },
       {
+        kind: "metric",
         label: "Quantity Change of Ownership",
         value: (entry: DashboardLogEntry) => formatNumber(entry.changeOwnershipSystems),
       },
       {
+        kind: "metric",
         label: "Percentage Change of Ownership",
         value: (entry: DashboardLogEntry) => formatPercent(entry.changeOwnershipPercent),
+        metricTone: "neutral",
       },
       {
-        label: "IL ABP - Terminated",
-        value: (entry: DashboardLogEntry) =>
-          formatNumber(entry.terminatedReporting + entry.terminatedNotReporting),
-      },
-      {
+        kind: "metric",
         label: "IL ABP - Transferred",
         value: (entry: DashboardLogEntry) =>
           formatNumber(entry.transferredReporting + entry.transferredNotReporting),
       },
       {
+        kind: "metric",
         label: "Transferred and Reporting",
+        level: 1,
         value: (entry: DashboardLogEntry) => formatNumber(entry.transferredReporting),
       },
       {
+        kind: "metric",
         label: "Transferred and Not Reporting",
+        level: 1,
         value: (entry: DashboardLogEntry) => formatNumber(entry.transferredNotReporting),
       },
       {
-        label: "Terminated and Reporting",
-        value: (entry: DashboardLogEntry) => formatNumber(entry.terminatedReporting),
+        kind: "metric",
+        label: "IL ABP - Terminated",
+        value: (entry: DashboardLogEntry) =>
+          formatNumber(entry.terminatedReporting + entry.terminatedNotReporting),
       },
       {
-        label: "Terminated and Not Reporting",
-        value: (entry: DashboardLogEntry) => formatNumber(entry.terminatedNotReporting),
-      },
-      {
+        kind: "metric",
         label: "COO - Not Transferred and Reporting",
         value: (entry: DashboardLogEntry) => formatNumber(entry.changedNotTransferredReporting),
       },
       {
+        kind: "metric",
         label: "COO - Not Transferred and Not Reporting",
         value: (entry: DashboardLogEntry) => formatNumber(entry.changedNotTransferredNotReporting),
+        metricTone: "warn",
       },
+
+      { kind: "section", label: "Contract Value", sectionTone: "emerald" },
       {
+        kind: "metric",
         label: "Total Contract Value",
         value: (entry: DashboardLogEntry) => formatCurrency(entry.totalContractedValue),
       },
       {
+        kind: "metric",
         label: "Total Contract Value Reporting",
+        level: 1,
         value: (entry: DashboardLogEntry) => formatCurrency(entry.contractedValueReporting),
       },
       {
+        kind: "metric",
         label: "Total Contract Value Not Reporting",
+        level: 1,
         value: (entry: DashboardLogEntry) => formatCurrency(entry.contractedValueNotReporting),
       },
       {
+        kind: "metric",
         label: "Percent Contract Value Reporting",
+        level: 1,
         value: (entry: DashboardLogEntry) => formatPercent(entry.contractedValueReportingPercent),
+        metricTone: "neutral",
       },
       {
+        kind: "metric",
         label: "Total Delivered Value",
         value: (entry: DashboardLogEntry) => formatCurrency(entry.totalDeliveredValue),
       },
       {
+        kind: "metric",
         label: "Total Value Gap",
         value: (entry: DashboardLogEntry) => formatCurrency(entry.totalGap),
+        metricTone: "warn",
       },
     ],
     []
@@ -2966,14 +3007,48 @@ export default function SolarRecDashboard() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {snapshotMetricRows.map((metric) => (
-                        <TableRow key={metric.label}>
-                          <TableCell className="font-medium">{metric.label}</TableCell>
-                          {snapshotLogColumns.map((entry) => (
-                            <TableCell key={`${entry.id}-${metric.label}`}>{metric.value(entry)}</TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
+                      {snapshotMetricRows.map((metric) => {
+                        if (metric.kind === "section") {
+                          const sectionClass =
+                            metric.sectionTone === "blue"
+                              ? "bg-blue-50 text-blue-900"
+                              : metric.sectionTone === "emerald"
+                                ? "bg-emerald-50 text-emerald-900"
+                                : "bg-slate-100 text-slate-900";
+                          return (
+                            <TableRow key={metric.label} className={sectionClass}>
+                              <TableCell
+                                colSpan={snapshotLogColumns.length + 1}
+                                className="font-semibold uppercase tracking-wide text-xs"
+                              >
+                                {metric.label}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        }
+
+                        const labelClass = metric.level === 1 ? "pl-7 text-slate-700" : "text-slate-900";
+                        const valueClass =
+                          metric.metricTone === "warn"
+                            ? "text-amber-700 font-semibold"
+                            : metric.metricTone === "neutral"
+                              ? "text-slate-700"
+                              : "text-slate-900";
+
+                        return (
+                          <TableRow key={metric.label}>
+                            <TableCell className={`font-medium ${labelClass}`}>
+                              {metric.level === 1 ? <span className="mr-2 text-slate-400">↳</span> : null}
+                              {metric.label}
+                            </TableCell>
+                            {snapshotLogColumns.map((entry) => (
+                              <TableCell key={`${entry.id}-${metric.label}`} className={valueClass}>
+                                {metric.value(entry)}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}
