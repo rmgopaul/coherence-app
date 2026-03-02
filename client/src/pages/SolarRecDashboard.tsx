@@ -59,6 +59,8 @@ type ContractDeliveryAggregate = {
   pricedProjectCount: number;
 };
 
+type TransitionStatus = ChangeOwnershipStatus | "No COO Status";
+
 type DashboardLogEntry = {
   id: string;
   createdAt: Date;
@@ -85,6 +87,11 @@ type DashboardLogEntry = {
     fileName: string;
     rows: number;
     updatedAt: Date;
+  }>;
+  cooStatuses: Array<{
+    key: string;
+    systemName: string;
+    status: ChangeOwnershipStatus;
   }>;
 };
 
@@ -202,6 +209,9 @@ const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
   "Change of Ownership - Not Transferred and Not Reporting",
 ];
 
+const COO_TARGET_STATUS: ChangeOwnershipStatus = "Change of Ownership - Not Transferred and Not Reporting";
+const NO_COO_STATUS = "No COO Status";
+
 const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
 const LOGS_STORAGE_KEY = "solarRecDashboardLogsV1";
 const DASHBOARD_DB_NAME = "solarRecDashboardDb";
@@ -300,6 +310,21 @@ function toPercentValue(numerator: number, denominator: number): number | null {
 function formatPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "N/A";
   return `${value.toFixed(1)}%`;
+}
+
+function buildSystemSnapshotKey(system: SystemRecord): string {
+  if (system.systemId) return `id:${system.systemId}`;
+  if (system.trackingSystemRefId) return `tracking:${system.trackingSystemRefId}`;
+  return `name:${system.systemName.toLowerCase()}`;
+}
+
+function formatTransitionBreakdown(breakdown: Map<TransitionStatus, number>): string {
+  const orderedStatuses: TransitionStatus[] = [...CHANGE_OWNERSHIP_ORDER, NO_COO_STATUS];
+  const parts = orderedStatuses
+    .map((status) => ({ status, count: breakdown.get(status) ?? 0 }))
+    .filter((item) => item.count > 0)
+    .map((item) => `${item.status}: ${NUMBER_FORMATTER.format(item.count)}`);
+  return parts.length > 0 ? parts.join(" | ") : "None";
 }
 
 function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
@@ -574,6 +599,7 @@ function loadPersistedLogs(): DashboardLogEntry[] {
       contractedValueNotReporting?: number;
       contractedValueReportingPercent?: number | null;
       datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
+      cooStatuses?: Array<{ key: string; systemName: string; status: ChangeOwnershipStatus }>;
     }>;
     return parsed
       .map((entry) => {
@@ -586,6 +612,16 @@ function loadPersistedLogs(): DashboardLogEntry[] {
             return { ...dataset, updatedAt };
           })
           .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null);
+        const cooStatuses = (entry.cooStatuses ?? []).filter((item): item is {
+          key: string;
+          systemName: string;
+          status: ChangeOwnershipStatus;
+        } => {
+          if (!item || typeof item.key !== "string") return false;
+          if (typeof item.systemName !== "string") return false;
+          if (typeof item.status !== "string") return false;
+          return CHANGE_OWNERSHIP_ORDER.includes(item.status as ChangeOwnershipStatus);
+        });
         return {
           ...entry,
           createdAt,
@@ -598,6 +634,7 @@ function loadPersistedLogs(): DashboardLogEntry[] {
             entry.contractedValueReportingPercent ??
             toPercentValue(entry.contractedValueReporting ?? 0, entry.totalContractedValue),
           datasets,
+          cooStatuses,
         };
       })
       .filter((entry): entry is DashboardLogEntry => entry !== null);
@@ -1149,6 +1186,14 @@ export default function SolarRecDashboard() {
     };
   }, [changeOwnershipRows]);
 
+  const cooNotTransferredNotReportingCurrentCount = useMemo(
+    () =>
+      changeOwnershipRows.filter(
+        (system) => system.changeOwnershipStatus === COO_TARGET_STATUS
+      ).length,
+    [changeOwnershipRows]
+  );
+
   const filteredChangeOwnershipRows = useMemo(() => {
     const normalizedSearch = changeOwnershipSearch.trim().toLowerCase();
     return changeOwnershipRows.filter((system) => {
@@ -1390,6 +1435,16 @@ export default function SolarRecDashboard() {
   const createLogEntry = () => {
     const statusCount = (status: ChangeOwnershipStatus) =>
       changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length;
+    const snapshotCooStatuses = changeOwnershipRows
+      .map((system) => {
+        if (!system.changeOwnershipStatus) return null;
+        return {
+          key: buildSystemSnapshotKey(system),
+          systemName: system.systemName,
+          status: system.changeOwnershipStatus,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
 
     const entry: DashboardLogEntry = {
       id: createLogId(),
@@ -1424,6 +1479,7 @@ export default function SolarRecDashboard() {
           };
         })
         .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null),
+      cooStatuses: snapshotCooStatuses,
     };
 
     setLogEntries((previous) => [entry, ...previous].slice(0, 500));
@@ -1432,6 +1488,86 @@ export default function SolarRecDashboard() {
   const clearLogs = () => {
     setLogEntries([]);
   };
+
+  const monthlySnapshotTransitions = useMemo(() => {
+    const monthLatest = new Map<string, DashboardLogEntry>();
+
+    logEntries.forEach((entry) => {
+      const key = `${entry.createdAt.getFullYear()}-${String(entry.createdAt.getMonth() + 1).padStart(2, "0")}`;
+      const existing = monthLatest.get(key);
+      if (!existing || entry.createdAt > existing.createdAt) {
+        monthLatest.set(key, entry);
+      }
+    });
+
+    const monthlySeries = Array.from(monthLatest.entries())
+      .map(([key, entry]) => ({ monthKey: key, entry }))
+      .sort((a, b) => a.entry.createdAt.getTime() - b.entry.createdAt.getTime());
+
+    const transitions: Array<{
+      monthKey: string;
+      monthLabel: string;
+      movedIn: number;
+      movedOut: number;
+      net: number;
+      endingCount: number;
+      movedInBreakdown: string;
+      movedOutBreakdown: string;
+    }> = [];
+
+    for (let i = 1; i < monthlySeries.length; i += 1) {
+      const previous = monthlySeries[i - 1];
+      const current = monthlySeries[i];
+
+      const previousMap = new Map<string, TransitionStatus>();
+      const currentMap = new Map<string, TransitionStatus>();
+
+      previous.entry.cooStatuses.forEach((item) => {
+        previousMap.set(item.key, item.status);
+      });
+      current.entry.cooStatuses.forEach((item) => {
+        currentMap.set(item.key, item.status);
+      });
+
+      const allKeys = new Set<string>([
+        ...Array.from(previousMap.keys()),
+        ...Array.from(currentMap.keys()),
+      ]);
+      const movedInBreakdown = new Map<TransitionStatus, number>();
+      const movedOutBreakdown = new Map<TransitionStatus, number>();
+      let movedIn = 0;
+      let movedOut = 0;
+      let endingCount = 0;
+
+      allKeys.forEach((key) => {
+        const prevStatus = previousMap.get(key) ?? NO_COO_STATUS;
+        const currStatus = currentMap.get(key) ?? NO_COO_STATUS;
+
+        if (currStatus === COO_TARGET_STATUS) endingCount += 1;
+        if (prevStatus !== COO_TARGET_STATUS && currStatus === COO_TARGET_STATUS) {
+          movedIn += 1;
+          movedInBreakdown.set(prevStatus, (movedInBreakdown.get(prevStatus) ?? 0) + 1);
+        }
+        if (prevStatus === COO_TARGET_STATUS && currStatus !== COO_TARGET_STATUS) {
+          movedOut += 1;
+          movedOutBreakdown.set(currStatus, (movedOutBreakdown.get(currStatus) ?? 0) + 1);
+        }
+      });
+
+      transitions.push({
+        monthKey: current.monthKey,
+        monthLabel: current.entry.createdAt.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+        movedIn,
+        movedOut,
+        net: movedIn - movedOut,
+        endingCount,
+        movedInBreakdown: formatTransitionBreakdown(movedInBreakdown),
+        movedOutBreakdown: formatTransitionBreakdown(movedOutBreakdown),
+      });
+    }
+
+    return transitions.reverse();
+  }, [logEntries]);
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
 
@@ -2193,6 +2329,74 @@ export default function SolarRecDashboard() {
           </TabsContent>
 
           <TabsContent value="snapshot-log" className="space-y-4 mt-4">
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card>
+                <CardHeader>
+                  <CardDescription>{COO_TARGET_STATUS}</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {formatNumber(cooNotTransferredNotReportingCurrentCount)}
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Months with Transition Data</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(monthlySnapshotTransitions.length)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Snapshots Available</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(logEntries.length)}</CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Monthly Movement Tracker</CardTitle>
+                <CardDescription>
+                  Tracks monthly movement into and out of <span className="font-medium">{COO_TARGET_STATUS}</span>.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {monthlySnapshotTransitions.length === 0 ? (
+                  <p className="text-sm text-slate-600">
+                    Need snapshots across at least 2 different months to calculate transitions.
+                  </p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Month</TableHead>
+                        <TableHead>Moved Into Status</TableHead>
+                        <TableHead>Moved In From</TableHead>
+                        <TableHead>Moved Out of Status</TableHead>
+                        <TableHead>Moved Out To</TableHead>
+                        <TableHead>Net Change</TableHead>
+                        <TableHead>Ending Count</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {monthlySnapshotTransitions.map((item) => (
+                        <TableRow key={item.monthKey}>
+                          <TableCell className="font-medium">{item.monthLabel}</TableCell>
+                          <TableCell>{formatNumber(item.movedIn)}</TableCell>
+                          <TableCell className="max-w-[320px] whitespace-normal">{item.movedInBreakdown}</TableCell>
+                          <TableCell>{formatNumber(item.movedOut)}</TableCell>
+                          <TableCell className="max-w-[320px] whitespace-normal">{item.movedOutBreakdown}</TableCell>
+                          <TableCell className={item.net < 0 ? "text-rose-700" : item.net > 0 ? "text-emerald-700" : ""}>
+                            {formatNumber(item.net)}
+                          </TableCell>
+                          <TableCell>{formatNumber(item.endingCount)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between gap-2">
