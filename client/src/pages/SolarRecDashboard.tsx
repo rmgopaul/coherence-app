@@ -1016,6 +1016,19 @@ export default function SolarRecDashboard() {
     return uniqueEligibleKeys.size;
   }, [datasets.abpReport]);
 
+  const abpEligibleTrackingIdsStrict = useMemo(() => {
+    const ids = new Set<string>();
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      if (!parseDate(part2VerifiedDateRaw)) return;
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      if (trackingId) ids.add(trackingId);
+    });
+    return ids;
+  }, [datasets.abpReport]);
+
   const systems = useMemo<SystemRecord[]>(() => {
     const abpReportRows = datasets.abpReport?.rows ?? [];
     const eligibleAbpSystemIds = new Set<string>();
@@ -1535,30 +1548,43 @@ export default function SolarRecDashboard() {
     });
   }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
 
-  const offlineSystems = useMemo(() => systems.filter((system) => !system.isReporting), [systems]);
+  const offlineBaseSystems = useMemo(
+    () =>
+      systems.filter(
+        (system) =>
+          !!system.trackingSystemRefId &&
+          abpEligibleTrackingIdsStrict.has(system.trackingSystemRefId)
+      ),
+    [abpEligibleTrackingIdsStrict, systems]
+  );
+
+  const offlineSystems = useMemo(
+    () => offlineBaseSystems.filter((system) => !system.isReporting),
+    [offlineBaseSystems]
+  );
 
   const offlineMonitoringOptions = useMemo(
     () =>
-      Array.from(new Set(systems.map((system) => system.monitoringType || "Unknown"))).sort((a, b) =>
+      Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringType || "Unknown"))).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
       ),
-    [systems]
+    [offlineBaseSystems]
   );
 
   const offlinePlatformOptions = useMemo(
     () =>
-      Array.from(new Set(systems.map((system) => system.monitoringPlatform || "Unknown"))).sort((a, b) =>
+      Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringPlatform || "Unknown"))).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
       ),
-    [systems]
+    [offlineBaseSystems]
   );
 
   const offlineInstallerOptions = useMemo(
     () =>
-      Array.from(new Set(systems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
+      Array.from(new Set(offlineBaseSystems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
       ),
-    [systems]
+    [offlineBaseSystems]
   );
 
   const offlineMonitoringBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
@@ -1567,7 +1593,7 @@ export default function SolarRecDashboard() {
       { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
     >();
 
-    systems.forEach((system) => {
+    offlineBaseSystems.forEach((system) => {
       const label = system.monitoringType || "Unknown";
       let current = groups.get(label);
       if (!current) {
@@ -1604,7 +1630,7 @@ export default function SolarRecDashboard() {
       return ((aValue as number) - (bValue as number)) * direction;
     });
     return rows;
-  }, [offlineMonitoringSortBy, offlineMonitoringSortDir, systems]);
+  }, [offlineMonitoringSortBy, offlineMonitoringSortDir, offlineBaseSystems]);
 
   const offlineInstallerBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
     const groups = new Map<
@@ -1612,7 +1638,7 @@ export default function SolarRecDashboard() {
       { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
     >();
 
-    systems.forEach((system) => {
+    offlineBaseSystems.forEach((system) => {
       const label = system.installerName || "Unknown";
       let current = groups.get(label);
       if (!current) {
@@ -1649,7 +1675,7 @@ export default function SolarRecDashboard() {
       return ((aValue as number) - (bValue as number)) * direction;
     });
     return rows;
-  }, [offlineInstallerSortBy, offlineInstallerSortDir, systems]);
+  }, [offlineInstallerSortBy, offlineInstallerSortDir, offlineBaseSystems]);
 
   const offlinePlatformBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
     const groups = new Map<
@@ -1657,7 +1683,7 @@ export default function SolarRecDashboard() {
       { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
     >();
 
-    systems.forEach((system) => {
+    offlineBaseSystems.forEach((system) => {
       const label = system.monitoringPlatform || "Unknown";
       let current = groups.get(label);
       if (!current) {
@@ -1694,7 +1720,7 @@ export default function SolarRecDashboard() {
       return ((aValue as number) - (bValue as number)) * direction;
     });
     return rows;
-  }, [offlinePlatformSortBy, offlinePlatformSortDir, systems]);
+  }, [offlinePlatformSortBy, offlinePlatformSortDir, offlineBaseSystems]);
 
   const filteredOfflineSystems = useMemo(() => {
     const normalizedSearch = offlineSearch.trim().toLowerCase();
@@ -1778,10 +1804,13 @@ export default function SolarRecDashboard() {
 
   const offlineSummary = useMemo(() => {
     const totalOfflineContractValue = offlineSystems.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
-    const totalPortfolioContractValue = systems.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    const totalPortfolioContractValue = offlineBaseSystems.reduce(
+      (sum, system) => sum + (system.contractedValue ?? 0),
+      0
+    );
     return {
       offlineSystemCount: offlineSystems.length,
-      offlineSystemPercent: toPercentValue(offlineSystems.length, systems.length),
+      offlineSystemPercent: toPercentValue(offlineSystems.length, offlineBaseSystems.length),
       filteredOfflineCount: filteredOfflineSystems.length,
       monitoringTypeCount: offlineMonitoringBreakdownRows.length,
       monitoringPlatformCount: offlinePlatformBreakdownRows.length,
@@ -1795,8 +1824,8 @@ export default function SolarRecDashboard() {
     offlineInstallerBreakdownRows.length,
     offlineMonitoringBreakdownRows.length,
     offlinePlatformBreakdownRows.length,
+    offlineBaseSystems,
     offlineSystems,
-    systems,
   ]);
 
   const abpApplicationIdBySystemKey = useMemo(() => {
@@ -1913,7 +1942,7 @@ export default function SolarRecDashboard() {
       { installerName: string; monitoringPlatform: string; totalSystems: number; reportingSystems: number }
     >();
 
-    systems.forEach((system) => {
+    offlineBaseSystems.forEach((system) => {
       const installerName = system.installerName || "Unknown";
       const monitoringPlatform = system.monitoringPlatform || "Unknown";
       const key = `${installerName}__${monitoringPlatform}`;
@@ -1933,7 +1962,7 @@ export default function SolarRecDashboard() {
         reportingPercent: toPercentValue(group.reportingSystems, group.totalSystems),
       }))
       .sort((a, b) => b.totalSystems - a.totalSystems);
-  }, [systems]);
+  }, [offlineBaseSystems]);
 
   const downloadOfflineSystemsCsv = () => {
     const headers = [
