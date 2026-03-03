@@ -633,6 +633,23 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   return { headers, rows };
 }
 
+function csvEscape(value: string | number | null | undefined): string {
+  const normalized = value === null || value === undefined ? "" : String(value);
+  if (/["\n,]/.test(normalized)) {
+    return `"${normalized.replaceAll("\"", "\"\"")}"`;
+  }
+  return normalized;
+}
+
+function buildCsv(
+  headers: string[],
+  rows: Array<Record<string, string | number | null | undefined>>
+): string {
+  const headerLine = headers.map((header) => csvEscape(header)).join(",");
+  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
+  return [headerLine, ...bodyLines].join("\n");
+}
+
 function matchesExpectedHeaders(headers: string[], expected: string[]): boolean {
   const available = new Set(headers.map((header) => clean(header).toLowerCase()));
   return expected.every((header) => available.has(header.toLowerCase()));
@@ -1344,7 +1361,10 @@ export default function SolarRecDashboard() {
           ? eligibleAbpTrackingIds.has(system.trackingSystemRefId)
           : false;
         const byName = eligibleAbpNames.has(system.systemName.toLowerCase());
-        return bySystemId || byTrackingId || byName;
+        if (system.systemId || system.trackingSystemRefId) {
+          return bySystemId || byTrackingId;
+        }
+        return byName;
       })
       .sort((a, b) => a.systemName.localeCompare(b.systemName));
   }, [datasets]);
@@ -1778,6 +1798,229 @@ export default function SolarRecDashboard() {
     offlineSystems,
     systems,
   ]);
+
+  const abpApplicationIdBySystemKey = useMemo(() => {
+    const mapping = new Map<string, string>();
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      if (!parseDate(part2VerifiedDateRaw)) return;
+
+      const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+
+      if (abpApplicationId) mapping.set(`id:${abpApplicationId}`, abpApplicationId);
+      if (trackingId && abpApplicationId) mapping.set(`tracking:${trackingId}`, abpApplicationId);
+      if (projectName && abpApplicationId) mapping.set(`name:${projectName.toLowerCase()}`, abpApplicationId);
+    });
+    return mapping;
+  }, [datasets.abpReport]);
+
+  const monitoringDetailsBySystemKey = useMemo(() => {
+    const mapping = new Map<
+      string,
+      {
+        online_monitoring_access_type: string;
+        online_monitoring: string;
+        online_monitoring_granted_username: string;
+        online_monitoring_username: string;
+        online_monitoring_system_name: string;
+        online_monitoring_system_id: string;
+        online_monitoring_password: string;
+        online_monitoring_website_api_link: string;
+        online_monitoring_entry_method: string;
+        online_monitoring_notes: string;
+        online_monitoring_self_report: string;
+        online_monitoring_rgm_info: string;
+        online_monitoring_no_submit_generation: string;
+        system_online: string;
+        last_reported_online_date: string;
+      }
+    >();
+
+    const mergeDetails = (
+      key: string,
+      detail: {
+        online_monitoring_access_type: string;
+        online_monitoring: string;
+        online_monitoring_granted_username: string;
+        online_monitoring_username: string;
+        online_monitoring_system_name: string;
+        online_monitoring_system_id: string;
+        online_monitoring_password: string;
+        online_monitoring_website_api_link: string;
+        online_monitoring_entry_method: string;
+        online_monitoring_notes: string;
+        online_monitoring_self_report: string;
+        online_monitoring_rgm_info: string;
+        online_monitoring_no_submit_generation: string;
+        system_online: string;
+        last_reported_online_date: string;
+      }
+    ) => {
+      const current = mapping.get(key);
+      if (!current) {
+        mapping.set(key, detail);
+        return;
+      }
+      const merged = { ...current };
+      (Object.keys(detail) as Array<keyof typeof detail>).forEach((field) => {
+        if (!merged[field] && detail[field]) merged[field] = detail[field];
+      });
+      mapping.set(key, merged);
+    };
+
+    (datasets.solarApplications?.rows ?? []).forEach((row) => {
+      const systemId = clean(row.system_id) || clean(row.Application_ID);
+      const trackingId =
+        clean(row.tracking_system_ref_id) ||
+        clean(row.reporting_entity_ref_id) ||
+        clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2);
+      const systemName = clean(row.system_name) || clean(row.Project_Name);
+      if (!systemId && !trackingId && !systemName) return;
+
+      const detail = {
+        online_monitoring_access_type: clean(row.online_monitoring_access_type),
+        online_monitoring: clean(row.online_monitoring),
+        online_monitoring_granted_username: clean(row.online_monitoring_granted_username),
+        online_monitoring_username: clean(row.online_monitoring_username),
+        online_monitoring_system_name: clean(row.online_monitoring_system_name),
+        online_monitoring_system_id: clean(row.online_monitoring_system_id),
+        online_monitoring_password: clean(row.online_monitoring_password),
+        online_monitoring_website_api_link: clean(row.online_monitoring_website_api_link),
+        online_monitoring_entry_method: clean(row.online_monitoring_entry_method),
+        online_monitoring_notes: clean(row.online_monitoring_notes),
+        online_monitoring_self_report: clean(row.online_monitoring_self_report),
+        online_monitoring_rgm_info: clean(row.online_monitoring_rgm_info),
+        online_monitoring_no_submit_generation: clean(row.online_monitoring_no_submit_generation),
+        system_online: clean(row.system_online),
+        last_reported_online_date: clean(row.last_reported_online_date),
+      };
+
+      if (systemId) mergeDetails(`id:${systemId}`, detail);
+      if (trackingId) mergeDetails(`tracking:${trackingId}`, detail);
+      if (systemName) mergeDetails(`name:${systemName.toLowerCase()}`, detail);
+    });
+
+    return mapping;
+  }, [datasets.solarApplications]);
+
+  const zeroReportingInstallerPlatformRows = useMemo(() => {
+    const groups = new Map<
+      string,
+      { installerName: string; monitoringPlatform: string; totalSystems: number; reportingSystems: number }
+    >();
+
+    systems.forEach((system) => {
+      const installerName = system.installerName || "Unknown";
+      const monitoringPlatform = system.monitoringPlatform || "Unknown";
+      const key = `${installerName}__${monitoringPlatform}`;
+      let current = groups.get(key);
+      if (!current) {
+        current = { installerName, monitoringPlatform, totalSystems: 0, reportingSystems: 0 };
+        groups.set(key, current);
+      }
+      current.totalSystems += 1;
+      if (system.isReporting) current.reportingSystems += 1;
+    });
+
+    return Array.from(groups.values())
+      .filter((group) => group.totalSystems > 10 && group.reportingSystems === 0)
+      .map((group) => ({
+        ...group,
+        reportingPercent: toPercentValue(group.reportingSystems, group.totalSystems),
+      }))
+      .sort((a, b) => b.totalSystems - a.totalSystems);
+  }, [systems]);
+
+  const downloadOfflineSystemsCsv = () => {
+    const headers = [
+      "nonid",
+      "csg_portal_id",
+      "abp_report_id",
+      "system_name",
+      "installer_name",
+      "monitoring_method",
+      "monitoring_platform",
+      "online_monitoring_access_type",
+      "online_monitoring",
+      "online_monitoring_granted_username",
+      "online_monitoring_username",
+      "online_monitoring_system_name",
+      "online_monitoring_system_id",
+      "online_monitoring_password",
+      "online_monitoring_website_api_link",
+      "online_monitoring_entry_method",
+      "online_monitoring_notes",
+      "online_monitoring_self_report",
+      "online_monitoring_rgm_info",
+      "online_monitoring_no_submit_generation",
+      "system_online",
+      "last_reported_online_date",
+      "last_gats_reporting_date",
+      "contract_value",
+    ];
+
+    const rows = offlineSystems
+      .slice()
+      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }))
+      .map((system) => {
+        const keyById = system.systemId ? `id:${system.systemId}` : "";
+        const keyByTracking = system.trackingSystemRefId ? `tracking:${system.trackingSystemRefId}` : "";
+        const keyByName = `name:${system.systemName.toLowerCase()}`;
+
+        const abpReportId =
+          (keyById ? abpApplicationIdBySystemKey.get(keyById) : undefined) ??
+          (keyByTracking ? abpApplicationIdBySystemKey.get(keyByTracking) : undefined) ??
+          abpApplicationIdBySystemKey.get(keyByName) ??
+          "";
+        const monitoringDetails =
+          (keyById ? monitoringDetailsBySystemKey.get(keyById) : undefined) ??
+          (keyByTracking ? monitoringDetailsBySystemKey.get(keyByTracking) : undefined) ??
+          monitoringDetailsBySystemKey.get(keyByName);
+
+        return {
+          nonid: system.trackingSystemRefId ?? "",
+          csg_portal_id: system.systemId ?? "",
+          abp_report_id: abpReportId,
+          system_name: system.systemName,
+          installer_name: system.installerName,
+          monitoring_method: system.monitoringType,
+          monitoring_platform: system.monitoringPlatform,
+          online_monitoring_access_type: monitoringDetails?.online_monitoring_access_type ?? "",
+          online_monitoring: monitoringDetails?.online_monitoring ?? "",
+          online_monitoring_granted_username: monitoringDetails?.online_monitoring_granted_username ?? "",
+          online_monitoring_username: monitoringDetails?.online_monitoring_username ?? "",
+          online_monitoring_system_name: monitoringDetails?.online_monitoring_system_name ?? "",
+          online_monitoring_system_id: monitoringDetails?.online_monitoring_system_id ?? "",
+          online_monitoring_password: monitoringDetails?.online_monitoring_password ?? "",
+          online_monitoring_website_api_link: monitoringDetails?.online_monitoring_website_api_link ?? "",
+          online_monitoring_entry_method: monitoringDetails?.online_monitoring_entry_method ?? "",
+          online_monitoring_notes: monitoringDetails?.online_monitoring_notes ?? "",
+          online_monitoring_self_report: monitoringDetails?.online_monitoring_self_report ?? "",
+          online_monitoring_rgm_info: monitoringDetails?.online_monitoring_rgm_info ?? "",
+          online_monitoring_no_submit_generation: monitoringDetails?.online_monitoring_no_submit_generation ?? "",
+          system_online: monitoringDetails?.system_online ?? "",
+          last_reported_online_date: monitoringDetails?.last_reported_online_date ?? "",
+          last_gats_reporting_date: formatDate(system.latestReportingDate),
+          contract_value: system.contractedValue ?? "",
+        };
+      });
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `offline-systems-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const recPriceByTrackingId = useMemo(() => {
     const mapping = new Map<string, number>();
@@ -3847,10 +4090,17 @@ export default function SolarRecDashboard() {
           <TabsContent value="offline-monitoring" className="space-y-4 mt-4">
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Non-Reporting Systems by Monitoring Method, Platform, and Installer</CardTitle>
-                <CardDescription>
-                  Offline status means not reporting to GATS within the last 3 months.
-                </CardDescription>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <CardTitle className="text-base">Non-Reporting Systems by Monitoring Method, Platform, and Installer</CardTitle>
+                    <CardDescription>
+                      Offline status means not reporting to GATS within the last 3 months.
+                    </CardDescription>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={downloadOfflineSystemsCsv}>
+                    Download Offline Systems CSV
+                  </Button>
+                </div>
               </CardHeader>
             </Card>
 
@@ -4101,6 +4351,43 @@ export default function SolarRecDashboard() {
                     ))}
                   </TableBody>
                 </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Installer + Monitoring Platform with 0% Reporting (&gt;10 Systems)</CardTitle>
+                <CardDescription>
+                  Combinations where no systems are reporting and total systems exceed 10.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {zeroReportingInstallerPlatformRows.length === 0 ? (
+                  <p className="text-sm text-slate-600">No combinations currently match this criteria.</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Installer</TableHead>
+                        <TableHead>Monitoring Platform</TableHead>
+                        <TableHead>Total Systems</TableHead>
+                        <TableHead>Reporting %</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {zeroReportingInstallerPlatformRows.map((row) => (
+                        <TableRow key={`${row.installerName}-${row.monitoringPlatform}`}>
+                          <TableCell className="font-medium">{row.installerName}</TableCell>
+                          <TableCell>{row.monitoringPlatform}</TableCell>
+                          <TableCell>{formatNumber(row.totalSystems)}</TableCell>
+                          <TableCell className="text-rose-700 font-semibold">
+                            {formatPercent(row.reportingPercent)}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
               </CardContent>
             </Card>
 
