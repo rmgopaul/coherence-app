@@ -7,6 +7,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import {
+  buildMeterReadDownloadFileName,
+  convertMeterReadWorkbook,
+  type MeterReadsConversionResult,
+} from "@/lib/meterReads";
 
 type DatasetKey =
   | "solarApplications"
@@ -205,6 +210,7 @@ type SystemBuilder = {
   names: Set<string>;
   installedKwAc: number | null;
   recPrice: number | null;
+  totalContractAmount: number | null;
   annualRecs: number | null;
   recsOnContract: number | null;
   recsDeliveredQty: number | null;
@@ -231,6 +237,7 @@ type SystemRecord = {
   installedKwAc: number | null;
   sizeBucket: SizeBucket;
   recPrice: number | null;
+  totalContractAmount: number | null;
   contractedRecs: number | null;
   deliveredRecs: number | null;
   contractedValue: number | null;
@@ -399,6 +406,10 @@ function firstNonEmptyString(...values: string[]): string | null {
     if (clean(value)) return clean(value);
   }
   return null;
+}
+
+function resolveContractValueAmount(system: SystemRecord): number {
+  return firstNonNull(system.totalContractAmount, system.contractedValue) ?? 0;
 }
 
 function normalizeMonitoringMethod(accessTypeRaw: string, entryMethodRaw: string, selfReportRaw: string): string {
@@ -944,6 +955,9 @@ export default function SolarRecDashboard() {
   const [performanceDeliveryYearKey, setPerformanceDeliveryYearKey] = useState("");
   const [performancePreviousSurplusInput, setPerformancePreviousSurplusInput] = useState("0");
   const [performancePreviousDrawdownInput, setPerformancePreviousDrawdownInput] = useState("0");
+  const [meterReadsResult, setMeterReadsResult] = useState<MeterReadsConversionResult | null>(null);
+  const [meterReadsError, setMeterReadsError] = useState<string | null>(null);
+  const [meterReadsBusy, setMeterReadsBusy] = useState(false);
 
   const handleUpload = async (key: DatasetKey, file: File | null) => {
     if (!file) return;
@@ -987,6 +1001,41 @@ export default function SolarRecDashboard() {
   const clearAll = () => {
     setDatasets({});
     setUploadErrors({});
+    setMeterReadsResult(null);
+    setMeterReadsError(null);
+    setMeterReadsBusy(false);
+  };
+
+  const handleMeterReadsUpload = async (file: File | null) => {
+    if (!file) return;
+
+    setMeterReadsBusy(true);
+    setMeterReadsError(null);
+
+    try {
+      const result = await convertMeterReadWorkbook(file);
+      setMeterReadsResult(result);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Unknown error while converting meter read workbook.";
+      setMeterReadsError(message);
+    } finally {
+      setMeterReadsBusy(false);
+    }
+  };
+
+  const downloadMeterReadsCsv = () => {
+    if (!meterReadsResult) return;
+
+    const blob = new Blob([meterReadsResult.csvText], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = buildMeterReadDownloadFileName(meterReadsResult.readDate);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const abpEligibleTotalSystems = useMemo(() => {
@@ -1085,6 +1134,7 @@ export default function SolarRecDashboard() {
         names: new Set<string>(),
         installedKwAc: null,
         recPrice: null,
+        totalContractAmount: null,
         annualRecs: null,
         recsOnContract: null,
         recsDeliveredQty: null,
@@ -1138,6 +1188,9 @@ export default function SolarRecDashboard() {
 
       const recPrice = parseNumber(row.rec_price);
       if (recPrice !== null) builder.recPrice = recPrice;
+
+      const totalContractAmount = parseNumber(row.total_contract_amount);
+      if (totalContractAmount !== null) builder.totalContractAmount = totalContractAmount;
 
       const annualRecs = parseNumber(row.annual_recs);
       if (annualRecs !== null) builder.annualRecs = annualRecs;
@@ -1346,6 +1399,7 @@ export default function SolarRecDashboard() {
           installedKwAc: builder.installedKwAc,
           sizeBucket,
           recPrice: builder.recPrice,
+          totalContractAmount: builder.totalContractAmount,
           contractedRecs,
           deliveredRecs,
           contractedValue,
@@ -1601,10 +1655,10 @@ export default function SolarRecDashboard() {
         groups.set(label, current);
       }
       current.totalSystems += 1;
-      current.totalContractValue += system.contractedValue ?? 0;
+      current.totalContractValue += resolveContractValueAmount(system);
       if (!system.isReporting) {
         current.offlineSystems += 1;
-        current.offlineContractValue += system.contractedValue ?? 0;
+        current.offlineContractValue += resolveContractValueAmount(system);
       }
     });
 
@@ -1646,10 +1700,10 @@ export default function SolarRecDashboard() {
         groups.set(label, current);
       }
       current.totalSystems += 1;
-      current.totalContractValue += system.contractedValue ?? 0;
+      current.totalContractValue += resolveContractValueAmount(system);
       if (!system.isReporting) {
         current.offlineSystems += 1;
-        current.offlineContractValue += system.contractedValue ?? 0;
+        current.offlineContractValue += resolveContractValueAmount(system);
       }
     });
 
@@ -1691,10 +1745,10 @@ export default function SolarRecDashboard() {
         groups.set(label, current);
       }
       current.totalSystems += 1;
-      current.totalContractValue += system.contractedValue ?? 0;
+      current.totalContractValue += resolveContractValueAmount(system);
       if (!system.isReporting) {
         current.offlineSystems += 1;
-        current.offlineContractValue += system.contractedValue ?? 0;
+        current.offlineContractValue += resolveContractValueAmount(system);
       }
     });
 
@@ -1782,8 +1836,8 @@ export default function SolarRecDashboard() {
         }
         return (aTime - bTime) * direction;
       }
-      const aValue = a.contractedValue ?? -Infinity;
-      const bValue = b.contractedValue ?? -Infinity;
+      const aValue = resolveContractValueAmount(a);
+      const bValue = resolveContractValueAmount(b);
       if (aValue === bValue) {
         return (
           a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
@@ -1803,9 +1857,12 @@ export default function SolarRecDashboard() {
   ]);
 
   const offlineSummary = useMemo(() => {
-    const totalOfflineContractValue = offlineSystems.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    const totalOfflineContractValue = offlineSystems.reduce(
+      (sum, system) => sum + resolveContractValueAmount(system),
+      0
+    );
     const totalPortfolioContractValue = offlineBaseSystems.reduce(
-      (sum, system) => sum + (system.contractedValue ?? 0),
+      (sum, system) => sum + resolveContractValueAmount(system),
       0
     );
     return {
@@ -2034,7 +2091,7 @@ export default function SolarRecDashboard() {
           system_online: monitoringDetails?.system_online ?? "",
           last_reported_online_date: monitoringDetails?.last_reported_online_date ?? "",
           last_gats_reporting_date: formatDate(system.latestReportingDate),
-          contract_value: system.contractedValue ?? "",
+          contract_value: resolveContractValueAmount(system),
         };
       });
 
@@ -3102,7 +3159,7 @@ export default function SolarRecDashboard() {
         ) : null}
 
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-10 h-auto">
+          <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 xl:grid-cols-11 h-auto">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="size">Size + Reporting</TabsTrigger>
             <TabsTrigger value="value">REC Value</TabsTrigger>
@@ -3112,6 +3169,7 @@ export default function SolarRecDashboard() {
             <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
             <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
             <TabsTrigger value="offline-monitoring">Offline by Monitoring</TabsTrigger>
+            <TabsTrigger value="meter-reads">Meter Reads</TabsTrigger>
             <TabsTrigger value="snapshot-log">Snapshot Log</TabsTrigger>
           </TabsList>
 
@@ -3311,7 +3369,7 @@ export default function SolarRecDashboard() {
                             toPercentValue(system.deliveredRecs ?? 0, system.contractedRecs ?? 0)
                           )}
                         </TableCell>
-                        <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
+                        <TableCell>{formatCurrency(resolveContractValueAmount(system))}</TableCell>
                         <TableCell>{formatCurrency(system.deliveredValue)}</TableCell>
                         <TableCell>
                           {formatPercent(
@@ -4548,6 +4606,110 @@ export default function SolarRecDashboard() {
                 </Table>
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="meter-reads" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Meter Read Workbook Converter</CardTitle>
+                <CardDescription>
+                  Upload the monthly meter read Excel workbook and generate the full portal-ready CSV output in one step.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                    <Upload className="h-4 w-4" />
+                    Choose Excel Workbook
+                    <input
+                      type="file"
+                      accept=".xlsx,.xlsm,.xlsb,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0] ?? null;
+                        void handleMeterReadsUpload(file);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+
+                  <Button variant="outline" onClick={downloadMeterReadsCsv} disabled={!meterReadsResult || meterReadsBusy}>
+                    Download Converted CSV
+                  </Button>
+
+                  {meterReadsBusy ? (
+                    <Badge className="bg-blue-100 text-blue-800 border-blue-200">Processing workbook...</Badge>
+                  ) : null}
+                </div>
+
+                {meterReadsError ? <p className="text-sm text-rose-700">{meterReadsError}</p> : null}
+
+                {meterReadsResult ? (
+                  <div className="grid gap-3 md:grid-cols-4">
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs text-slate-500">Source Workbook</p>
+                      <p className="text-sm font-medium text-slate-900 break-all">{meterReadsResult.sourceWorkbookName}</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs text-slate-500">Read Date</p>
+                      <p className="text-sm font-medium text-slate-900">{meterReadsResult.readDate}</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs text-slate-500">Output Rows</p>
+                      <p className="text-sm font-medium text-slate-900">{formatNumber(meterReadsResult.totalRows)}</p>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs text-slate-500">Monitoring Platforms</p>
+                      <p className="text-sm font-medium text-slate-900">{formatNumber(meterReadsResult.byMonitoring.length)}</p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-600">
+                    No workbook converted yet. Choose an Excel file to generate the output CSV.
+                  </p>
+                )}
+
+                {meterReadsResult && meterReadsResult.notes.length > 0 ? (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3">
+                    <p className="text-xs font-medium text-amber-900 mb-2">Conversion Notes</p>
+                    <ul className="list-disc pl-5 space-y-1 text-xs text-amber-800">
+                      {meterReadsResult.notes.map((note) => (
+                        <li key={note}>{note}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </CardContent>
+            </Card>
+
+            {meterReadsResult ? (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Rows by Monitoring Platform</CardTitle>
+                  <CardDescription>
+                    Confirms how many rows were generated per platform before you download/upload.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Monitoring</TableHead>
+                        <TableHead>Rows</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {meterReadsResult.byMonitoring.map((item) => (
+                        <TableRow key={item.monitoring}>
+                          <TableCell className="font-medium">{item.monitoring}</TableCell>
+                          <TableCell>{formatNumber(item.rows)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            ) : null}
           </TabsContent>
 
           <TabsContent value="snapshot-log" className="space-y-4 mt-4">
