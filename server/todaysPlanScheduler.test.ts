@@ -28,6 +28,39 @@ describe("Todoist duration parsing", () => {
 });
 
 describe("Today plan scheduling", () => {
+  it("switches to Tomorrow's Plan when only habits remain today", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T19:00:00-06:00"),
+      calendarEvents: [],
+      todoistTasks: [],
+      emails: [],
+      habits: [{ id: "habit-1", name: "Read 20 min", completed: false }],
+    });
+
+    expect(seed.dayLabel).toBe("Tomorrow's Plan");
+    expect(seed.dateKey).toBe("2026-03-02");
+  });
+
+  it("switches to Tomorrow's Plan when today's events are already past", () => {
+    const seed = buildDayPlanSeed({
+      now: new Date("2026-03-01T17:00:00-06:00"),
+      calendarEvents: [
+        {
+          id: "event-past",
+          summary: "Morning check-in",
+          start: { dateTime: "2026-03-01T09:00:00-06:00" },
+          end: { dateTime: "2026-03-01T09:30:00-06:00" },
+        },
+      ],
+      todoistTasks: [],
+      emails: [],
+      habits: [],
+    });
+
+    expect(seed.dayLabel).toBe("Tomorrow's Plan");
+    expect(seed.dateKey).toBe("2026-03-02");
+  });
+
   it("removes timed calendar events that have already ended today", () => {
     const seed = buildDayPlanSeed({
       now: new Date("2026-03-01T14:00:00-06:00"),
@@ -175,7 +208,14 @@ describe("Today plan scheduling", () => {
     const seed = buildDayPlanSeed({
       now: new Date("2026-03-01T08:00:00-06:00"),
       calendarEvents: [],
-      todoistTasks: [],
+      todoistTasks: [
+        {
+          id: "task-anchor",
+          content: "Anchor today's plan",
+          due: { date: "2026-03-01" },
+          labels: ["10m"],
+        },
+      ],
       emails: [],
       habits: [
         { id: "habit-floss", name: "Floss", completed: false },

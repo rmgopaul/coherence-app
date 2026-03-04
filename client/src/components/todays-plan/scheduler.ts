@@ -505,6 +505,13 @@ export function buildDayPlanSeed(params: {
   const todayTasks = (params.todoistTasks || []).filter((task) => getTaskDateKey(task) === todayKey);
   const tomorrowTasks = (params.todoistTasks || []).filter((task) => getTaskDateKey(task) === tomorrowKey);
   const todayHabits = (params.habits || []).filter((habit) => !habit?.completed);
+  const actionableTodayEvents = todayEvents.filter((event) => {
+    const timing = getEventStartEnd(event);
+    if (!timing) return false;
+    if (timing.allDay) return true;
+    return timing.endMs > nowMs;
+  });
+  const actionableTodayTasks = todayTasks.filter((task) => !isTaskCompleted(task));
 
   const getDeadlineEmailsForDate = (targetDateKey: string) =>
     (params.emails || [])
@@ -525,16 +532,18 @@ export function buildDayPlanSeed(params: {
   const todayDeadlineEmails = getDeadlineEmailsForDate(todayKey);
   const tomorrowDeadlineEmails = getDeadlineEmailsForDate(tomorrowKey);
 
+  // Habits alone should not pin the plan to "today". If there are no
+  // actionable calendar/tasks/emails left today, switch to tomorrow's plan.
   const hasTodayCoreItems =
-    todayEvents.length + todayTasks.length + todayDeadlineEmails.length + todayHabits.length > 0;
+    actionableTodayEvents.length + actionableTodayTasks.length + todayDeadlineEmails.length > 0;
   const dateKey = hasTodayCoreItems ? todayKey : tomorrowKey;
   const isTodayPlan = dateKey === todayKey;
   const { dayStartMs, dayEndMs } = buildDayBounds(dateKey);
   const nowRoundedMs = roundUpToMinutes(nowMs, SCHEDULER_ROUNDING_MINUTES);
   const effectivePlanStartMs = isTodayPlan ? Math.min(dayEndMs, Math.max(dayStartMs, nowRoundedMs)) : dayStartMs;
   const dayLabel: DayPlanSeed["dayLabel"] = hasTodayCoreItems ? "Today's Plan" : "Tomorrow's Plan";
-  const events = hasTodayCoreItems ? todayEvents : tomorrowEvents;
-  const tasksForDay = (hasTodayCoreItems ? todayTasks : tomorrowTasks).filter((task) => !isTaskCompleted(task));
+  const events = hasTodayCoreItems ? actionableTodayEvents : tomorrowEvents;
+  const tasksForDay = (hasTodayCoreItems ? actionableTodayTasks : tomorrowTasks).filter((task) => !isTaskCompleted(task));
   const habits = hasTodayCoreItems ? todayHabits : [];
   const deadlineEmails = hasTodayCoreItems ? todayDeadlineEmails : tomorrowDeadlineEmails;
 

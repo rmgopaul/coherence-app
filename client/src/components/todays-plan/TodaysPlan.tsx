@@ -23,7 +23,7 @@ type TodaysPlanProps = {
   emails: any[];
   habits: any[];
   onCompleteHabit?: (habitId: string) => void;
-  onRegenerate?: () => void;
+  onRegenerate?: () => Promise<void> | void;
 };
 
 type SuggestedPlanAction = {
@@ -140,6 +140,7 @@ export function TodaysPlan({
   });
   const [planItems, setPlanItems] = useState<PlanItemData[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -238,10 +239,15 @@ export function TodaysPlan({
     onCompleteHabit(habitId);
   };
 
-  const handleRegenerate = () => {
+  const handleRegenerate = async () => {
+    setIsRegenerating(true);
     setPlanNowMs(Date.now());
-    onRegenerate?.();
-    toast.success("Today's plan regenerated");
+    try {
+      await onRegenerate?.();
+      toast.success("Today's plan regenerated");
+    } finally {
+      setIsRegenerating(false);
+    }
   };
 
   const groupedRows = useMemo<GroupedRow[]>(() => {
@@ -277,11 +283,12 @@ export function TodaysPlan({
               <button
                 type="button"
                 onClick={handleRegenerate}
+                disabled={isRegenerating}
                 className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
                 aria-label="Regenerate today's plan"
               >
-                <RefreshCw className="h-3.5 w-3.5" />
-                Regenerate
+                <RefreshCw className={`h-3.5 w-3.5 ${isRegenerating ? "animate-spin" : ""}`} />
+                {isRegenerating ? "Regenerating..." : "Regenerate"}
               </button>
               <span className="inline-flex items-center gap-1 text-xs text-slate-500">
                 <RefreshCw className="h-3.5 w-3.5" />

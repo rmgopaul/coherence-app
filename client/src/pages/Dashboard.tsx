@@ -1275,13 +1275,15 @@ export default function Dashboard() {
     handleToggleHabit(habitId, true);
   };
 
-  const handleRegenerateTodaysPlan = () => {
-    refetchCalendar();
-    refetchDueTodayTasks();
-    refetchTasks();
-    refetchAllTodoistTasks();
-    refetchEmails();
-    refetchHabitsForToday();
+  const handleRegenerateTodaysPlan = async () => {
+    await Promise.all([
+      refetchCalendar(),
+      refetchDueTodayTasks(),
+      refetchTasks(),
+      refetchAllTodoistTasks(),
+      refetchEmails(),
+      refetchHabitsForToday(),
+    ]);
   };
   
   const searchDriveMutation = trpc.google.searchDrive.useQuery(
