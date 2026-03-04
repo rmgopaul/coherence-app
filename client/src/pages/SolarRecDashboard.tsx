@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { trpc } from "@/lib/trpc";
 import {
   buildMeterReadDownloadFileName,
   convertMeterReadWorkbook,
@@ -439,6 +440,7 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
+const PERFORMANCE_RATIO_PAGE_SIZE = 250;
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
@@ -1087,11 +1089,8 @@ async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDat
   });
 }
 
-function loadPersistedLogs(): DashboardLogEntry[] {
-  if (typeof window === "undefined") return [];
+function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
   try {
-    const raw = window.localStorage.getItem(LOGS_STORAGE_KEY);
-    if (!raw) return [];
     const parsed = JSON.parse(raw) as Array<{
       id: string;
       createdAt: string;
@@ -1157,6 +1156,13 @@ function loadPersistedLogs(): DashboardLogEntry[] {
   }
 }
 
+function loadPersistedLogs(): DashboardLogEntry[] {
+  if (typeof window === "undefined") return [];
+  const raw = window.localStorage.getItem(LOGS_STORAGE_KEY);
+  if (!raw) return [];
+  return deserializeDashboardLogs(raw);
+}
+
 export default function SolarRecDashboard() {
   const [, setLocation] = useLocation();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
@@ -1164,6 +1170,12 @@ export default function SolarRecDashboard() {
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
+  const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
+  const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
+    retry: 1,
+    refetchOnWindowFocus: false,
+  });
+  const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
@@ -1202,6 +1214,7 @@ export default function SolarRecDashboard() {
     "performanceRatioPercent" | "productionDeltaWh" | "expectedProductionWh" | "systemName" | "readDate"
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
+  const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
 
   const jumpToSection = (sectionId: string) => {
     if (typeof document === "undefined") return;
@@ -2666,6 +2679,33 @@ export default function SolarRecDashboard() {
     performanceRatioSortDir,
   ]);
 
+  const performanceRatioTotalPages = Math.max(
+    1,
+    Math.ceil(filteredPerformanceRatioRows.length / PERFORMANCE_RATIO_PAGE_SIZE)
+  );
+  const performanceRatioCurrentPage = Math.min(performanceRatioPage, performanceRatioTotalPages);
+  const performanceRatioPageStartIndex = (performanceRatioCurrentPage - 1) * PERFORMANCE_RATIO_PAGE_SIZE;
+  const performanceRatioPageEndIndex = performanceRatioPageStartIndex + PERFORMANCE_RATIO_PAGE_SIZE;
+  const visiblePerformanceRatioRows = useMemo(
+    () => filteredPerformanceRatioRows.slice(performanceRatioPageStartIndex, performanceRatioPageEndIndex),
+    [filteredPerformanceRatioRows, performanceRatioPageEndIndex, performanceRatioPageStartIndex]
+  );
+
+  useEffect(() => {
+    setPerformanceRatioPage(1);
+  }, [
+    performanceRatioMonitoringFilter,
+    performanceRatioMatchFilter,
+    performanceRatioSortBy,
+    performanceRatioSortDir,
+    performanceRatioSearch,
+  ]);
+
+  useEffect(() => {
+    if (performanceRatioPage <= performanceRatioTotalPages) return;
+    setPerformanceRatioPage(performanceRatioTotalPages);
+  }, [performanceRatioPage, performanceRatioTotalPages]);
+
   const performanceRatioSummary = useMemo(() => {
     const rows = performanceRatioResult.rows;
     const withBaseline = rows.filter((row) => row.baselineReadWh !== null).length;
@@ -3484,6 +3524,28 @@ export default function SolarRecDashboard() {
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
   }, [contractDeliveryRows]);
 
+  const serializedLogEntries = useMemo(
+    () =>
+      logEntries.map((entry) => ({
+        ...entry,
+        createdAt: entry.createdAt.toISOString(),
+        datasets: entry.datasets.map((dataset) => ({
+          ...dataset,
+          updatedAt: dataset.updatedAt.toISOString(),
+        })),
+      })),
+    [logEntries]
+  );
+
+  const serializedDashboardState = useMemo(
+    () =>
+      JSON.stringify({
+        datasets: serializeDatasets(datasets),
+        logs: serializedLogEntries,
+      }),
+    [datasets, serializedLogEntries]
+  );
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -3505,40 +3567,89 @@ export default function SolarRecDashboard() {
   }, []);
 
   useEffect(() => {
-    if (!datasetsHydrated) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        await saveDatasetsToStorage(datasets);
-        if (cancelled) return;
-        setStorageNotice(null);
-      } catch {
-        if (cancelled) return;
-        setStorageNotice("Could not save uploaded file data in browser storage.");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [datasets, datasetsHydrated]);
+    if (remoteDashboardStateQuery.status === "pending") return;
+    if (remoteDashboardStateQuery.status === "error") {
+      setRemoteStateHydrated(true);
+      return;
+    }
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
+    const payload = remoteDashboardStateQuery.data?.payload;
+    if (!payload) {
+      setRemoteStateHydrated(true);
+      return;
+    }
+
     try {
-      const serialized = logEntries.map((entry) => ({
-        ...entry,
-        createdAt: entry.createdAt.toISOString(),
-        datasets: entry.datasets.map((dataset) => ({
-          ...dataset,
-          updatedAt: dataset.updatedAt.toISOString(),
-        })),
-      }));
-      window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serialized));
+      const parsed = JSON.parse(payload) as {
+        datasets?: Record<string, SerializedCsvDataset | undefined>;
+        logs?: unknown;
+      };
+      if (parsed.datasets) {
+        setDatasets(deserializeDatasets(parsed.datasets));
+      }
+      if (Array.isArray(parsed.logs)) {
+        setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
+      }
       setStorageNotice(null);
     } catch {
-      setStorageNotice("Could not save dashboard log history in browser storage (storage may be full).");
+      setStorageNotice("Could not parse synced dashboard data.");
+    } finally {
+      setRemoteStateHydrated(true);
+      setDatasetsHydrated(true);
     }
-  }, [logEntries]);
+  }, [remoteDashboardStateQuery.data, remoteDashboardStateQuery.status]);
+
+  useEffect(() => {
+    if (!datasetsHydrated || !remoteStateHydrated) return;
+
+    if (remoteDashboardStateQuery.status === "error") {
+      let cancelled = false;
+      void (async () => {
+        try {
+          await saveDatasetsToStorage(datasets);
+          if (cancelled) return;
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serializedLogEntries));
+          }
+          setStorageNotice(null);
+        } catch {
+          if (cancelled) return;
+          setStorageNotice("Could not save dashboard data in local browser storage.");
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (remoteDashboardStateQuery.status !== "success") return;
+    const timeout = window.setTimeout(() => {
+      try {
+        saveRemoteDashboardState.mutate(
+          { payload: serializedDashboardState },
+          {
+            onSuccess: () => setStorageNotice(null),
+            onError: () => setStorageNotice("Could not sync dashboard data to cloud storage."),
+          }
+        );
+      } catch {
+        setStorageNotice("Could not sync dashboard data to cloud storage.");
+      }
+    }, 800);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    datasets,
+    datasetsHydrated,
+    logEntries,
+    remoteDashboardStateQuery.status,
+    remoteStateHydrated,
+    saveRemoteDashboardState,
+    serializedDashboardState,
+    serializedLogEntries,
+  ]);
 
   const createLogEntry = () => {
     const statusCount = (status: ChangeOwnershipStatus) =>
@@ -5694,13 +5805,45 @@ export default function SolarRecDashboard() {
                       <div>
                         <CardTitle className="text-base">Performance Ratio Allocation Detail</CardTitle>
                         <CardDescription>
-                          Each row is one converted read allocated to one matching portal project. Showing{" "}
-                          {formatNumber(filteredPerformanceRatioRows.length)} rows.
+                          Each row is one converted read allocated to one matching portal project. Showing rows{" "}
+                          {filteredPerformanceRatioRows.length === 0
+                            ? "0"
+                            : formatNumber(performanceRatioPageStartIndex + 1)}
+                          -
+                          {formatNumber(
+                            Math.min(performanceRatioPageEndIndex, filteredPerformanceRatioRows.length)
+                          )}{" "}
+                          of {formatNumber(filteredPerformanceRatioRows.length)}.
                         </CardDescription>
                       </div>
-                      <Button variant="outline" size="sm" onClick={downloadPerformanceRatioCsv}>
-                        Download Performance Ratio CSV
-                      </Button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPerformanceRatioPage((page) => Math.max(1, page - 1))}
+                          disabled={performanceRatioCurrentPage <= 1}
+                        >
+                          Previous
+                        </Button>
+                        <p className="text-xs text-slate-600">
+                          Page {formatNumber(performanceRatioCurrentPage)} of {formatNumber(performanceRatioTotalPages)}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setPerformanceRatioPage((page) =>
+                              Math.min(performanceRatioTotalPages, page + 1)
+                            )
+                          }
+                          disabled={performanceRatioCurrentPage >= performanceRatioTotalPages}
+                        >
+                          Next
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={downloadPerformanceRatioCsv}>
+                          Download Performance Ratio CSV
+                        </Button>
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -5723,7 +5866,7 @@ export default function SolarRecDashboard() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {filteredPerformanceRatioRows.map((row) => (
+                        {visiblePerformanceRatioRows.map((row) => (
                           <TableRow key={row.key}>
                             <TableCell className="font-medium">{row.systemName}</TableCell>
                             <TableCell>{row.trackingSystemRefId}</TableCell>

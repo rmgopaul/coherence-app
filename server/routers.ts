@@ -128,6 +128,35 @@ export const appRouter = router({
       }),
   }),
 
+  solarRecDashboard: router({
+    getState: protectedProcedure.query(async ({ ctx }) => {
+      try {
+        const { storageGet } = await import("./storage");
+        const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
+        const { url } = await storageGet(key);
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const payload = await response.text();
+        if (!payload) return null;
+        return { key, payload };
+      } catch {
+        return null;
+      }
+    }),
+    saveState: protectedProcedure
+      .input(
+        z.object({
+          payload: z.string(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { storagePut } = await import("./storage");
+        const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
+        await storagePut(key, input.payload, "application/json");
+        return { success: true, key };
+      }),
+  }),
+
   // Service-specific routers
   todoist: router({
     connect: protectedProcedure
