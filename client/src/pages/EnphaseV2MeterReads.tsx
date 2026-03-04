@@ -294,6 +294,16 @@ export default function EnphaseV2MeterReads() {
               </div>
 
               <div className="space-y-2">
+                <Label htmlFor="manual-system-id">Manual System ID (optional)</Label>
+                <Input
+                  id="manual-system-id"
+                  value={selectedSystemId}
+                  onChange={(e) => setSelectedSystemId(e.target.value.trim())}
+                  placeholder="Paste system/site ID to bypass list loading"
+                />
+              </div>
+
+              <div className="space-y-2">
                 <Label htmlFor="start-date">Start Date</Label>
                 <Input
                   id="start-date"
@@ -302,7 +312,9 @@ export default function EnphaseV2MeterReads() {
                   onChange={(e) => setStartDate(e.target.value)}
                 />
               </div>
+            </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="end-date">End Date</Label>
                 <Input
