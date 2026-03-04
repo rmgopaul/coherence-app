@@ -130,9 +130,19 @@ export const appRouter = router({
 
   solarRecDashboard: router({
     getState: protectedProcedure.query(async ({ ctx }) => {
+      const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
+      const dbStorageKey = "state";
+
+      try {
+        const { getSolarRecDashboardPayload } = await import("./db");
+        const payload = await getSolarRecDashboardPayload(ctx.user.id, dbStorageKey);
+        if (payload) return { key, payload };
+      } catch {
+        // Fall back to storage proxy.
+      }
+
       try {
         const { storageGet } = await import("./storage");
-        const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
         const { url } = await storageGet(key);
         const response = await fetch(url);
         if (!response.ok) return null;
@@ -150,10 +160,27 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { storagePut } = await import("./storage");
         const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
-        await storagePut(key, input.payload, "application/json");
-        return { success: true, key };
+        const dbStorageKey = "state";
+        let persistedToDatabase = false;
+
+        try {
+          const { saveSolarRecDashboardPayload } = await import("./db");
+          persistedToDatabase = await saveSolarRecDashboardPayload(ctx.user.id, dbStorageKey, input.payload);
+        } catch {
+          persistedToDatabase = false;
+        }
+
+        try {
+          const { storagePut } = await import("./storage");
+          await storagePut(key, input.payload, "application/json");
+          return { success: true, key, persistedToDatabase, storageSynced: true };
+        } catch (storageError) {
+          if (persistedToDatabase) {
+            return { success: true, key, persistedToDatabase, storageSynced: false };
+          }
+          throw storageError;
+        }
       }),
     getDataset: protectedProcedure
       .input(
@@ -162,9 +189,19 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
+        const dbStorageKey = `dataset:${input.key}`;
+
+        try {
+          const { getSolarRecDashboardPayload } = await import("./db");
+          const payload = await getSolarRecDashboardPayload(ctx.user.id, dbStorageKey);
+          if (payload) return { key, payload };
+        } catch {
+          // Fall back to storage proxy.
+        }
+
         try {
           const { storageGet } = await import("./storage");
-          const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
           const { url } = await storageGet(key);
           const response = await fetch(url);
           if (!response.ok) return null;
@@ -183,10 +220,27 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { storagePut } = await import("./storage");
         const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
-        await storagePut(key, input.payload, "application/json");
-        return { success: true, key };
+        const dbStorageKey = `dataset:${input.key}`;
+        let persistedToDatabase = false;
+
+        try {
+          const { saveSolarRecDashboardPayload } = await import("./db");
+          persistedToDatabase = await saveSolarRecDashboardPayload(ctx.user.id, dbStorageKey, input.payload);
+        } catch {
+          persistedToDatabase = false;
+        }
+
+        try {
+          const { storagePut } = await import("./storage");
+          await storagePut(key, input.payload, "application/json");
+          return { success: true, key, persistedToDatabase, storageSynced: true };
+        } catch (storageError) {
+          if (persistedToDatabase) {
+            return { success: true, key, persistedToDatabase, storageSynced: false };
+          }
+          throw storageError;
+        }
       }),
   }),
 

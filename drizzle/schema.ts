@@ -341,3 +341,28 @@ export const samsungSyncPayloads = mysqlTable(
 
 export type SamsungSyncPayload = typeof samsungSyncPayloads.$inferSelect;
 export type InsertSamsungSyncPayload = typeof samsungSyncPayloads.$inferInsert;
+
+// Chunked storage for large per-user dashboard payloads.
+export const solarRecDashboardStorage = mysqlTable(
+  "solarRecDashboardStorage",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    storageKey: varchar("storageKey", { length: 191 }).notNull(),
+    chunkIndex: int("chunkIndex").notNull(),
+    payload: text("payload").notNull(),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userKeyChunkIdx: uniqueIndex("solar_rec_dashboard_storage_user_key_chunk_idx").on(
+      table.userId,
+      table.storageKey,
+      table.chunkIndex
+    ),
+    userKeyIdx: index("solar_rec_dashboard_storage_user_key_idx").on(table.userId, table.storageKey),
+  })
+);
+
+export type SolarRecDashboardStorage = typeof solarRecDashboardStorage.$inferSelect;
+export type InsertSolarRecDashboardStorage = typeof solarRecDashboardStorage.$inferInsert;

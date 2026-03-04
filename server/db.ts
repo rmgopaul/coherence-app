@@ -1,4 +1,4 @@
-import { eq, and, desc, asc } from "drizzle-orm";
+import { eq, and, desc, asc, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { createPool, type PoolOptions } from "mysql2";
 import { 
@@ -18,6 +18,7 @@ import {
   noteLinks,
   dailySnapshots,
   samsungSyncPayloads,
+  solarRecDashboardStorage,
   InsertIntegration,
   InsertUserPreference,
   InsertOAuthCredential,
@@ -36,6 +37,8 @@ import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _solarRecDashboardTableEnsured = false;
+const SOLAR_REC_DB_CHUNK_CHARS = 60_000;
 
 const RETRYABLE_DB_ERROR_CODES = new Set([
   "ETIMEDOUT",
@@ -153,6 +156,41 @@ function buildPoolOptions(connectionString: string): PoolOptions {
         }
       : {}),
   };
+}
+
+function splitIntoChunks(value: string, chunkSize: number): string[] {
+  if (value.length <= chunkSize) return [value];
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += chunkSize) {
+    chunks.push(value.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+async function ensureSolarRecDashboardStorageTable() {
+  const db = await getDb();
+  if (!db) return false;
+  if (_solarRecDashboardTableEnsured) return true;
+
+  await withDbRetry("ensure solar rec dashboard storage table", async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS solarRecDashboardStorage (
+        id varchar(64) NOT NULL,
+        userId int NOT NULL,
+        storageKey varchar(191) NOT NULL,
+        chunkIndex int NOT NULL,
+        payload text NOT NULL,
+        createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY solar_rec_dashboard_storage_user_key_chunk_idx (userId, storageKey, chunkIndex),
+        KEY solar_rec_dashboard_storage_user_key_idx (userId, storageKey)
+      )
+    `);
+  });
+
+  _solarRecDashboardTableEnsured = true;
+  return true;
 }
 
 // Lazily create the drizzle instance so local tooling can run without a DB.
@@ -389,6 +427,67 @@ export async function upsertUserPreferences(prefs: InsertUserPreference) {
       updatedAt: now,
     });
   });
+}
+
+export async function getSolarRecDashboardPayload(userId: number, storageKey: string): Promise<string | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const ensured = await ensureSolarRecDashboardStorageTable();
+  if (!ensured) return null;
+
+  const rows = await withDbRetry("load solar rec dashboard payload", async () =>
+    db
+      .select({
+        payload: solarRecDashboardStorage.payload,
+        chunkIndex: solarRecDashboardStorage.chunkIndex,
+      })
+      .from(solarRecDashboardStorage)
+      .where(
+        and(
+          eq(solarRecDashboardStorage.userId, userId),
+          eq(solarRecDashboardStorage.storageKey, storageKey)
+        )
+      )
+      .orderBy(asc(solarRecDashboardStorage.chunkIndex))
+  );
+
+  if (rows.length === 0) return null;
+  return rows.map((row) => row.payload ?? "").join("");
+}
+
+export async function saveSolarRecDashboardPayload(userId: number, storageKey: string, payload: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const ensured = await ensureSolarRecDashboardStorageTable();
+  if (!ensured) return false;
+
+  const chunks = splitIntoChunks(payload, SOLAR_REC_DB_CHUNK_CHARS);
+  const now = new Date();
+
+  await withDbRetry("save solar rec dashboard payload", async () => {
+    await db
+      .delete(solarRecDashboardStorage)
+      .where(
+        and(
+          eq(solarRecDashboardStorage.userId, userId),
+          eq(solarRecDashboardStorage.storageKey, storageKey)
+        )
+      );
+
+    await db.insert(solarRecDashboardStorage).values(
+      chunks.map((chunk, index) => ({
+        id: nanoid(),
+        userId,
+        storageKey,
+        chunkIndex: index,
+        payload: chunk,
+        createdAt: now,
+        updatedAt: now,
+      }))
+    );
+  });
+
+  return true;
 }
 
 // OAuth credentials functions
