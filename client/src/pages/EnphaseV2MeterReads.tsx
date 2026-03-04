@@ -146,6 +146,8 @@ export default function EnphaseV2MeterReads() {
 
   const systems = systemsQuery.data?.systems ?? [];
   const isConnected = Boolean(statusQuery.data?.connected);
+  const statusError = statusQuery.error ? toErrorMessage(statusQuery.error) : null;
+  const systemsError = systemsQuery.error ? toErrorMessage(systemsQuery.error) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
@@ -215,6 +217,12 @@ export default function EnphaseV2MeterReads() {
               </a>
             </p>
 
+            {statusError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                Status error: {statusError}
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center gap-2">
               <Button onClick={handleSaveCredentials} disabled={connectMutation.isPending}>
                 {connectMutation.isPending ? (
@@ -250,6 +258,13 @@ export default function EnphaseV2MeterReads() {
                 Status: {isConnected ? "Connected" : "Not connected"}
               </span>
             </div>
+
+            {isConnected && (
+              <p className="text-xs text-slate-500">
+                Connected with user ID <strong>{statusQuery.data?.userId}</strong> at{" "}
+                <code>{statusQuery.data?.baseUrl || "https://api.enphaseenergy.com/api/v2"}</code>
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -298,6 +313,22 @@ export default function EnphaseV2MeterReads() {
                 />
               </div>
             </div>
+
+            {systemsQuery.isLoading && (
+              <div className="text-sm text-slate-600">Loading systems...</div>
+            )}
+
+            {systemsError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                Systems load error: {systemsError}
+              </div>
+            )}
+
+            {!systemsQuery.isLoading && !systemsError && isConnected && systems.length === 0 && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
+                No systems were returned for this key/user ID pair.
+              </div>
+            )}
 
             <div className="flex flex-wrap gap-2">
               <Button

@@ -68,7 +68,19 @@ function buildUrl(
 ): string {
   const baseUrl = normalizeBaseUrl(credentials.baseUrl);
   const safePath = path.startsWith("/") ? path : `/${path}`;
-  const url = new URL(`${baseUrl}${safePath}`);
+  const baseEndsWithSystems = /\/systems$/i.test(baseUrl);
+  let normalizedPath = safePath;
+
+  // Allow either base style:
+  // - https://api.enphaseenergy.com/api/v2
+  // - https://api.enphaseenergy.com/api/v2/systems
+  if (baseEndsWithSystems && normalizedPath === "/systems") {
+    normalizedPath = "";
+  } else if (baseEndsWithSystems && normalizedPath.startsWith("/systems/")) {
+    normalizedPath = normalizedPath.slice("/systems".length);
+  }
+
+  const url = new URL(`${baseUrl}${normalizedPath}`);
 
   url.searchParams.set("key", credentials.apiKey);
   url.searchParams.set("user_id", credentials.userId);

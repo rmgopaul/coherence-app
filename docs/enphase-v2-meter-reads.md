@@ -28,6 +28,10 @@ Base URL for this page is set to:
 
 `https://api.enphaseenergy.com/api/v2`
 
+The app also accepts:
+
+`https://api.enphaseenergy.com/api/v2/systems`
+
 ## 3) Run the app locally
 
 From the `productivity-hub` folder:
@@ -61,3 +65,4 @@ Then open the app URL shown in your terminal (usually `http://localhost:3000`).
 - `energy_lifetime` uses `start_date` and `end_date`.
 - `rgm_stats` and `production_meter_readings` are sent with epoch timestamps under the hood, based on your selected date range.
 - If Enphase returns an API error, the page will show it as a toast message.
+- If no systems appear, check the red error panel shown in the Enphase page for the exact API response.
