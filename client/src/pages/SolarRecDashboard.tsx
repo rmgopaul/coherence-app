@@ -443,6 +443,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const PERFORMANCE_RATIO_PAGE_SIZE = 250;
 const MAX_REMOTE_STATE_LOG_BYTES = 1_500_000;
 const REMOTE_LOG_ENTRY_LIMIT = 120;
+const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 500_000;
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
@@ -886,6 +887,41 @@ function accountSolarGenerationRowKey(row: CsvRow): string {
     clean(row["Last Meter Read (kWh/Btu)"]),
     clean(row["Facility Name"]),
   ].join("|");
+}
+
+function splitTextIntoChunks(value: string, chunkSize: number): string[] {
+  if (value.length <= chunkSize) return [value];
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += chunkSize) {
+    chunks.push(value.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+function buildRemoteDatasetChunkKey(datasetKey: DatasetKey, chunkIndex: number): string {
+  return `${datasetKey}_chunk_${String(chunkIndex).padStart(4, "0")}`;
+}
+
+function buildChunkPointerPayload(chunkKeys: string[]): string {
+  return JSON.stringify({
+    _chunkedDataset: true,
+    chunkKeys,
+  });
+}
+
+function parseChunkPointerPayload(payload: string): string[] | null {
+  try {
+    const parsed = JSON.parse(payload) as { _chunkedDataset?: unknown; chunkKeys?: unknown };
+    if (parsed._chunkedDataset !== true) return null;
+    if (!Array.isArray(parsed.chunkKeys) || parsed.chunkKeys.length === 0) return null;
+    const chunkKeyPattern = /^[a-zA-Z0-9_-]{1,64}$/;
+    const chunkKeys = parsed.chunkKeys.filter(
+      (key): key is string => typeof key === "string" && chunkKeyPattern.test(key)
+    );
+    return chunkKeys.length === parsed.chunkKeys.length ? chunkKeys : null;
+  } catch {
+    return null;
+  }
 }
 
 function serializeDatasetForRemote(dataset: CsvDataset): string {
@@ -3786,7 +3822,23 @@ export default function SolarRecDashboard() {
           try {
             const response = await getRemoteDataset.mutateAsync({ key: rawKey });
             if (!response?.payload) continue;
-            const deserializedDataset = deserializeRemoteDatasetPayload(response.payload);
+            let datasetPayload = response.payload;
+            const chunkKeys = parseChunkPointerPayload(response.payload);
+
+            if (chunkKeys) {
+              const chunkResponses = await Promise.all(
+                chunkKeys.map((chunkKey) =>
+                  getRemoteDataset
+                    .mutateAsync({ key: chunkKey })
+                    .then((chunkResponse) => chunkResponse?.payload ?? null)
+                    .catch(() => null)
+                )
+              );
+              if (chunkResponses.some((chunkPayload) => chunkPayload === null)) continue;
+              datasetPayload = chunkResponses.join("");
+            }
+
+            const deserializedDataset = deserializeRemoteDatasetPayload(datasetPayload);
             if (!deserializedDataset) continue;
             loadedDatasets[rawKey] = deserializedDataset;
             loadedSignatures[rawKey] = `${deserializedDataset.fileName}|${deserializedDataset.uploadedAt.toISOString()}|${deserializedDataset.rows.length}|${deserializedDataset.sources?.length ?? 0}`;
@@ -3904,7 +3956,24 @@ export default function SolarRecDashboard() {
 
           try {
             const payload = serializeDatasetForRemote(dataset);
-            await saveRemoteDataset.mutateAsync({ key, payload });
+            const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+
+            if (chunks.length === 1) {
+              await saveRemoteDataset.mutateAsync({ key, payload });
+            } else {
+              const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
+              for (let index = 0; index < chunks.length; index += 1) {
+                await saveRemoteDataset.mutateAsync({
+                  key: chunkKeys[index],
+                  payload: chunks[index],
+                });
+              }
+              await saveRemoteDataset.mutateAsync({
+                key,
+                payload: buildChunkPointerPayload(chunkKeys),
+              });
+            }
+
             remoteDatasetSignatureRef.current[key] = signature;
           } catch {
             setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} dataset to cloud storage.`);
