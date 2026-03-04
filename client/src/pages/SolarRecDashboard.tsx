@@ -19,7 +19,9 @@ type DatasetKey =
   | "recDeliverySchedules"
   | "generationEntry"
   | "accountSolarGeneration"
-  | "contractedDate";
+  | "contractedDate"
+  | "convertedReads"
+  | "annualProductionEstimates";
 
 type OwnershipStatus =
   | "Transferred and Reporting"
@@ -260,6 +262,86 @@ type SystemRecord = {
   installerName: string;
 };
 
+type MonitoringDetailsRecord = {
+  online_monitoring_access_type: string;
+  online_monitoring: string;
+  online_monitoring_granted_username: string;
+  online_monitoring_username: string;
+  online_monitoring_system_name: string;
+  online_monitoring_system_id: string;
+  online_monitoring_password: string;
+  online_monitoring_website_api_link: string;
+  online_monitoring_entry_method: string;
+  online_monitoring_notes: string;
+  online_monitoring_self_report: string;
+  online_monitoring_rgm_info: string;
+  online_monitoring_no_submit_generation: string;
+  system_online: string;
+  last_reported_online_date: string;
+};
+
+type PerformanceRatioMatchType =
+  | "Monitoring + System ID + System Name"
+  | "Monitoring + System ID"
+  | "Monitoring + System Name";
+
+type PortalMonitoringCandidate = {
+  key: string;
+  system: SystemRecord;
+  monitoringTokens: string[];
+  idTokens: string[];
+  nameTokens: string[];
+};
+
+type ConvertedReadInputRow = {
+  key: string;
+  monitoring: string;
+  monitoringNormalized: string;
+  monitoringSystemId: string;
+  monitoringSystemIdNormalized: string;
+  monitoringSystemName: string;
+  monitoringSystemNameNormalized: string;
+  lifetimeReadWh: number | null;
+  readDate: Date | null;
+  readDateRaw: string;
+};
+
+type GenerationBaseline = {
+  valueWh: number | null;
+  date: Date | null;
+  source: "Generation Entry" | "Account Solar Generation";
+};
+
+type AnnualProductionProfile = {
+  trackingSystemRefId: string;
+  facilityName: string;
+  monthlyKwh: number[];
+};
+
+type PerformanceRatioRow = {
+  key: string;
+  convertedReadKey: string;
+  matchType: PerformanceRatioMatchType;
+  monitoring: string;
+  monitoringSystemId: string;
+  monitoringSystemName: string;
+  readDate: Date | null;
+  readDateRaw: string;
+  lifetimeReadWh: number | null;
+  trackingSystemRefId: string;
+  systemId: string | null;
+  systemName: string;
+  installerName: string;
+  monitoringPlatform: string;
+  baselineReadWh: number | null;
+  baselineDate: Date | null;
+  baselineSource: string | null;
+  productionDeltaWh: number | null;
+  expectedProductionWh: number | null;
+  performanceRatioPercent: number | null;
+  contractValue: number;
+};
+
 const DATASET_DEFINITIONS: Record<
   DatasetKey,
   {
@@ -304,6 +386,16 @@ const DATASET_DEFINITIONS: Record<
     description: "Optional mapping from `system_id` to contracted date.",
     requiredHeaderSets: [["id", "contracted"]],
   },
+  convertedReads: {
+    label: "Converted Reads",
+    description: "Portal-ready meter read CSV output used to calculate performance ratio.",
+    requiredHeaderSets: [["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "read_date"]],
+  },
+  annualProductionEstimates: {
+    label: "Annual Production Estimates",
+    description: "Monthly expected production profile (Jan-Dec) used for performance ratio expected values.",
+    requiredHeaderSets: [["Unit ID", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]],
+  },
 };
 
 const OWNERSHIP_ORDER: OwnershipStatus[] = [
@@ -341,6 +433,21 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 });
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+
+const GENERATION_BASELINE_VALUE_HEADERS = [
+  "Last Meter Read (kWh/Btu)",
+  "Last Meter Read (kWh)",
+  "Last Meter Read (kW)",
+  "Last Meter Read",
+  "Most Recent Production (kWh)",
+  "Most Recent Production",
+  "Generation (kWh)",
+  "Production (kWh)",
+];
+
+const GENERATION_BASELINE_DATE_HEADERS = ["Last Meter Read Date", "Last Month of Gen", "Effective Date", "Month of Generation"];
 
 function clean(value: string | null | undefined): string {
   return (value ?? "").trim();
@@ -386,6 +493,83 @@ function parseDate(value: string | undefined): Date | null {
 
   const fallback = new Date(raw);
   return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
+  const parsed = parseNumber(value);
+  if (parsed === null) return null;
+  const header = clean(headerLabel).toLowerCase();
+  if (header.includes("mwh")) return Math.round(parsed * 1_000_000);
+  if (header.includes("kwh")) return Math.round(parsed * 1_000);
+  if (header.includes("wh")) return Math.round(parsed);
+  if (defaultUnit === "kwh") return Math.round(parsed * 1_000);
+  return Math.round(parsed);
+}
+
+function toStartOfDay(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+}
+
+function calculateExpectedWhForRange(monthlyKwh: number[], startDate: Date, endDate: Date): number | null {
+  if (monthlyKwh.length !== 12) return null;
+  const start = toStartOfDay(startDate);
+  const end = toStartOfDay(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  if (end <= start) return 0;
+
+  let cursor = start;
+  let expectedWh = 0;
+
+  while (cursor < end) {
+    const monthStart = new Date(cursor.getFullYear(), cursor.getMonth(), 1);
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1);
+    const segmentEnd = monthEnd < end ? monthEnd : end;
+    const dayCount = (segmentEnd.getTime() - cursor.getTime()) / DAY_MS;
+    const daysInMonth = (monthEnd.getTime() - monthStart.getTime()) / DAY_MS;
+    const monthlyValueKwh = monthlyKwh[cursor.getMonth()] ?? 0;
+    expectedWh += (monthlyValueKwh * 1_000 * dayCount) / daysInMonth;
+    cursor = segmentEnd;
+  }
+
+  return Number.isFinite(expectedWh) ? expectedWh : null;
+}
+
+function normalizeMonitoringMatch(value: string | null | undefined): string {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function normalizeSystemIdMatch(value: string | null | undefined): string {
+  const compact = clean(value).replaceAll(",", "").replace(/\s+/g, "");
+  if (!compact) return "";
+  if (/^-?\d+(?:\.\d+)?$/.test(compact)) {
+    const parsed = Number(compact);
+    if (Number.isFinite(parsed)) return String(Math.trunc(parsed));
+  }
+  return compact.toUpperCase();
+}
+
+function normalizeSystemNameMatch(value: string | null | undefined): string {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function splitRawCandidates(value: string): string[] {
+  return clean(value)
+    .split(/[|;,/\n\r]+/)
+    .map((part) => clean(part))
+    .filter(Boolean);
+}
+
+function uniqueNonEmpty(values: string[]): string[] {
+  const seen = new Set<string>();
+  const output: string[] = [];
+  values.forEach((value) => {
+    const normalized = clean(value);
+    if (!normalized) return;
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    output.push(normalized);
+  });
+  return output;
 }
 
 function maxDate(current: Date | null, candidate: Date | null): Date | null {
@@ -576,6 +760,21 @@ function buildSystemSnapshotKey(system: SystemRecord): string {
   if (system.systemId) return `id:${system.systemId}`;
   if (system.trackingSystemRefId) return `tracking:${system.trackingSystemRefId}`;
   return `name:${system.systemName.toLowerCase()}`;
+}
+
+function getMonitoringDetailsForSystem(
+  system: SystemRecord,
+  monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>
+): MonitoringDetailsRecord | undefined {
+  const keyById = system.systemId ? `id:${system.systemId}` : "";
+  const keyByTracking = system.trackingSystemRefId ? `tracking:${system.trackingSystemRefId}` : "";
+  const keyByName = `name:${system.systemName.toLowerCase()}`;
+
+  return (
+    (keyById ? monitoringDetailsBySystemKey.get(keyById) : undefined) ??
+    (keyByTracking ? monitoringDetailsBySystemKey.get(keyByTracking) : undefined) ??
+    monitoringDetailsBySystemKey.get(keyByName)
+  );
 }
 
 function formatTransitionBreakdown(breakdown: Map<TransitionStatus, number>): string {
@@ -958,6 +1157,13 @@ export default function SolarRecDashboard() {
   const [meterReadsResult, setMeterReadsResult] = useState<MeterReadsConversionResult | null>(null);
   const [meterReadsError, setMeterReadsError] = useState<string | null>(null);
   const [meterReadsBusy, setMeterReadsBusy] = useState(false);
+  const [performanceRatioMonitoringFilter, setPerformanceRatioMonitoringFilter] = useState("All");
+  const [performanceRatioMatchFilter, setPerformanceRatioMatchFilter] = useState<PerformanceRatioMatchType | "All">("All");
+  const [performanceRatioSearch, setPerformanceRatioSearch] = useState("");
+  const [performanceRatioSortBy, setPerformanceRatioSortBy] = useState<
+    "performanceRatioPercent" | "productionDeltaWh" | "expectedProductionWh" | "systemName" | "readDate"
+  >("performanceRatioPercent");
+  const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
 
   const handleUpload = async (key: DatasetKey, file: File | null) => {
     if (!file) return;
@@ -1905,46 +2111,11 @@ export default function SolarRecDashboard() {
   }, [datasets.abpReport]);
 
   const monitoringDetailsBySystemKey = useMemo(() => {
-    const mapping = new Map<
-      string,
-      {
-        online_monitoring_access_type: string;
-        online_monitoring: string;
-        online_monitoring_granted_username: string;
-        online_monitoring_username: string;
-        online_monitoring_system_name: string;
-        online_monitoring_system_id: string;
-        online_monitoring_password: string;
-        online_monitoring_website_api_link: string;
-        online_monitoring_entry_method: string;
-        online_monitoring_notes: string;
-        online_monitoring_self_report: string;
-        online_monitoring_rgm_info: string;
-        online_monitoring_no_submit_generation: string;
-        system_online: string;
-        last_reported_online_date: string;
-      }
-    >();
+    const mapping = new Map<string, MonitoringDetailsRecord>();
 
     const mergeDetails = (
       key: string,
-      detail: {
-        online_monitoring_access_type: string;
-        online_monitoring: string;
-        online_monitoring_granted_username: string;
-        online_monitoring_username: string;
-        online_monitoring_system_name: string;
-        online_monitoring_system_id: string;
-        online_monitoring_password: string;
-        online_monitoring_website_api_link: string;
-        online_monitoring_entry_method: string;
-        online_monitoring_notes: string;
-        online_monitoring_self_report: string;
-        online_monitoring_rgm_info: string;
-        online_monitoring_no_submit_generation: string;
-        system_online: string;
-        last_reported_online_date: string;
-      }
+      detail: MonitoringDetailsRecord
     ) => {
       const current = mapping.get(key);
       if (!current) {
@@ -1992,6 +2163,425 @@ export default function SolarRecDashboard() {
 
     return mapping;
   }, [datasets.solarApplications]);
+
+  const annualProductionByTrackingId = useMemo(() => {
+    const mapping = new Map<string, AnnualProductionProfile>();
+
+    (datasets.annualProductionEstimates?.rows ?? []).forEach((row) => {
+      const trackingSystemRefId = clean(row["Unit ID"]) || clean(row.unit_id);
+      if (!trackingSystemRefId) return;
+
+      const monthlyKwh = MONTH_HEADERS.map((month) => parseNumber(row[month] ?? row[month.toLowerCase()]) ?? 0);
+      const current = mapping.get(trackingSystemRefId);
+      if (!current) {
+        mapping.set(trackingSystemRefId, {
+          trackingSystemRefId,
+          facilityName: clean(row.Facility) || clean(row["Facility Name"]),
+          monthlyKwh,
+        });
+        return;
+      }
+
+      const mergedMonthly = current.monthlyKwh.map((value, index) => {
+        const candidate = monthlyKwh[index] ?? 0;
+        return candidate > 0 ? candidate : value;
+      });
+      mapping.set(trackingSystemRefId, {
+        trackingSystemRefId,
+        facilityName: current.facilityName || clean(row.Facility) || clean(row["Facility Name"]),
+        monthlyKwh: mergedMonthly,
+      });
+    });
+
+    return mapping;
+  }, [datasets.annualProductionEstimates]);
+
+  const generationBaselineByTrackingId = useMemo(() => {
+    const mapping = new Map<string, GenerationBaseline>();
+
+    const updateBaseline = (
+      trackingSystemRefId: string,
+      candidate: GenerationBaseline
+    ) => {
+      const existing = mapping.get(trackingSystemRefId);
+      if (!existing) {
+        mapping.set(trackingSystemRefId, candidate);
+        return;
+      }
+
+      const existingTime = existing.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const candidateTime = candidate.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (candidateTime > existingTime) {
+        mapping.set(trackingSystemRefId, candidate);
+        return;
+      }
+      if (candidateTime === existingTime) {
+        const existingRank = existing.source === "Generation Entry" ? 2 : 1;
+        const candidateRank = candidate.source === "Generation Entry" ? 2 : 1;
+        if (candidateRank > existingRank) {
+          mapping.set(trackingSystemRefId, candidate);
+        }
+      }
+    };
+
+    (datasets.generationEntry?.rows ?? []).forEach((row) => {
+      const trackingSystemRefId = clean(row["Unit ID"]);
+      if (!trackingSystemRefId) return;
+
+      let valueWh: number | null = null;
+      for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
+        valueWh = parseEnergyToWh(row[header], header, "kwh");
+        if (valueWh !== null) break;
+      }
+      if (valueWh === null) return;
+
+      let date: Date | null = null;
+      for (const header of GENERATION_BASELINE_DATE_HEADERS) {
+        date = parseDate(row[header]);
+        if (date) break;
+      }
+
+      updateBaseline(trackingSystemRefId, {
+        valueWh,
+        date,
+        source: "Generation Entry",
+      });
+    });
+
+    (datasets.accountSolarGeneration?.rows ?? []).forEach((row) => {
+      const trackingSystemRefId = clean(row["GATS Gen ID"]);
+      if (!trackingSystemRefId) return;
+
+      const valueWh = parseEnergyToWh(
+        row["Last Meter Read (kWh/Btu)"] ?? row["Last Meter Read"],
+        "Last Meter Read (kWh/Btu)",
+        "kwh"
+      );
+      if (valueWh === null) return;
+
+      const date = parseDate(row["Last Meter Read Date"]) ?? parseDate(row["Month of Generation"]);
+      updateBaseline(trackingSystemRefId, {
+        valueWh,
+        date,
+        source: "Account Solar Generation",
+      });
+    });
+
+    return mapping;
+  }, [datasets.accountSolarGeneration, datasets.generationEntry]);
+
+  const portalMonitoringCandidates = useMemo<PortalMonitoringCandidate[]>(() => {
+    return systems
+      .filter((system) => !!system.trackingSystemRefId)
+      .map((system) => {
+        const details = getMonitoringDetailsForSystem(system, monitoringDetailsBySystemKey);
+        const normalizedPlatform = normalizeMonitoringPlatform(
+          details?.online_monitoring ?? system.monitoringPlatform,
+          details?.online_monitoring_website_api_link ?? "",
+          details?.online_monitoring_notes ?? ""
+        );
+
+        const monitoringTokens = uniqueNonEmpty([
+          normalizeMonitoringMatch(system.monitoringPlatform),
+          normalizeMonitoringMatch(details?.online_monitoring),
+          normalizeMonitoringMatch(normalizedPlatform),
+        ]);
+
+        const idTokens = uniqueNonEmpty([
+          ...splitRawCandidates(details?.online_monitoring_system_id ?? "").map((value) => normalizeSystemIdMatch(value)),
+          normalizeSystemIdMatch(system.systemId),
+        ]);
+
+        const nameTokens = uniqueNonEmpty([
+          ...splitRawCandidates(details?.online_monitoring_system_name ?? "").map((value) =>
+            normalizeSystemNameMatch(value)
+          ),
+          normalizeSystemNameMatch(system.systemName),
+        ]);
+
+        return {
+          key: system.key,
+          system,
+          monitoringTokens,
+          idTokens,
+          nameTokens,
+        } satisfies PortalMonitoringCandidate;
+      });
+  }, [monitoringDetailsBySystemKey, systems]);
+
+  const performanceRatioMatchIndexes = useMemo(() => {
+    const byMonitoringAndId = new Map<string, Set<string>>();
+    const byMonitoringAndName = new Map<string, Set<string>>();
+    const byMonitoringAndIdAndName = new Map<string, Set<string>>();
+    const candidateByKey = new Map<string, PortalMonitoringCandidate>();
+
+    const add = (map: Map<string, Set<string>>, key: string, candidateKey: string) => {
+      if (!key) return;
+      const current = map.get(key);
+      if (current) {
+        current.add(candidateKey);
+        return;
+      }
+      map.set(key, new Set([candidateKey]));
+    };
+
+    portalMonitoringCandidates.forEach((candidate) => {
+      candidateByKey.set(candidate.key, candidate);
+
+      candidate.monitoringTokens.forEach((monitoringToken) => {
+        candidate.idTokens.forEach((idToken) => {
+          add(byMonitoringAndId, `${monitoringToken}__${idToken}`, candidate.key);
+        });
+        candidate.nameTokens.forEach((nameToken) => {
+          add(byMonitoringAndName, `${monitoringToken}__${nameToken}`, candidate.key);
+        });
+        candidate.idTokens.forEach((idToken) => {
+          candidate.nameTokens.forEach((nameToken) => {
+            add(byMonitoringAndIdAndName, `${monitoringToken}__${idToken}__${nameToken}`, candidate.key);
+          });
+        });
+      });
+    });
+
+    return { byMonitoringAndId, byMonitoringAndName, byMonitoringAndIdAndName, candidateByKey };
+  }, [portalMonitoringCandidates]);
+
+  const convertedReadRows = useMemo<ConvertedReadInputRow[]>(() => {
+    return (datasets.convertedReads?.rows ?? []).map((row, index) => {
+      const monitoring = clean(row.monitoring);
+      const monitoringSystemId = clean(row.monitoring_system_id);
+      const monitoringSystemName = clean(row.monitoring_system_name);
+      const readDateRaw = clean(row.read_date);
+      return {
+        key: `converted-${index}`,
+        monitoring,
+        monitoringNormalized: normalizeMonitoringMatch(monitoring),
+        monitoringSystemId,
+        monitoringSystemIdNormalized: normalizeSystemIdMatch(monitoringSystemId),
+        monitoringSystemName,
+        monitoringSystemNameNormalized: normalizeSystemNameMatch(monitoringSystemName),
+        lifetimeReadWh: parseEnergyToWh(row.lifetime_meter_read_wh, "lifetime_meter_read_wh", "wh"),
+        readDate: parseDate(readDateRaw),
+        readDateRaw,
+      };
+    });
+  }, [datasets.convertedReads]);
+
+  const performanceRatioResult = useMemo(() => {
+    const rows: PerformanceRatioRow[] = [];
+    let matchedConvertedReads = 0;
+    let unmatchedConvertedReads = 0;
+    let invalidConvertedReads = 0;
+
+    convertedReadRows.forEach((readRow) => {
+      if (
+        !readRow.monitoringNormalized ||
+        readRow.lifetimeReadWh === null ||
+        (!readRow.monitoringSystemIdNormalized && !readRow.monitoringSystemNameNormalized)
+      ) {
+        invalidConvertedReads += 1;
+        return;
+      }
+
+      const bothMatches =
+        readRow.monitoringSystemIdNormalized && readRow.monitoringSystemNameNormalized
+          ? performanceRatioMatchIndexes.byMonitoringAndIdAndName.get(
+              `${readRow.monitoringNormalized}__${readRow.monitoringSystemIdNormalized}__${readRow.monitoringSystemNameNormalized}`
+            ) ?? new Set<string>()
+          : new Set<string>();
+
+      const idMatches = readRow.monitoringSystemIdNormalized
+        ? performanceRatioMatchIndexes.byMonitoringAndId.get(
+            `${readRow.monitoringNormalized}__${readRow.monitoringSystemIdNormalized}`
+          ) ?? new Set<string>()
+        : new Set<string>();
+
+      const nameMatches = readRow.monitoringSystemNameNormalized
+        ? performanceRatioMatchIndexes.byMonitoringAndName.get(
+            `${readRow.monitoringNormalized}__${readRow.monitoringSystemNameNormalized}`
+          ) ?? new Set<string>()
+        : new Set<string>();
+
+      const matchedCandidateKeys = new Set<string>([
+        ...Array.from(bothMatches.values()),
+        ...Array.from(idMatches.values()),
+        ...Array.from(nameMatches.values()),
+      ]);
+
+      if (matchedCandidateKeys.size === 0) {
+        unmatchedConvertedReads += 1;
+        return;
+      }
+      matchedConvertedReads += 1;
+
+      matchedCandidateKeys.forEach((candidateKey) => {
+        const candidate = performanceRatioMatchIndexes.candidateByKey.get(candidateKey);
+        if (!candidate || !candidate.system.trackingSystemRefId) return;
+
+        const baseline = generationBaselineByTrackingId.get(candidate.system.trackingSystemRefId);
+        const baselineValueWh = baseline?.valueWh ?? null;
+        const baselineDate = baseline?.date ?? null;
+        const annualProfile = annualProductionByTrackingId.get(candidate.system.trackingSystemRefId);
+        const productionDeltaWh =
+          readRow.lifetimeReadWh !== null && baselineValueWh !== null
+            ? readRow.lifetimeReadWh - baselineValueWh
+            : null;
+        const expectedProductionWh =
+          baselineDate && readRow.readDate && annualProfile
+            ? calculateExpectedWhForRange(annualProfile.monthlyKwh, baselineDate, readRow.readDate)
+            : null;
+        const performanceRatioPercent =
+          productionDeltaWh !== null && expectedProductionWh !== null && expectedProductionWh > 0
+            ? (productionDeltaWh / expectedProductionWh) * 100
+            : null;
+
+        const matchType: PerformanceRatioMatchType = bothMatches.has(candidateKey)
+          ? "Monitoring + System ID + System Name"
+          : idMatches.has(candidateKey)
+            ? "Monitoring + System ID"
+            : "Monitoring + System Name";
+
+        rows.push({
+          key: `${readRow.key}-${candidateKey}-${rows.length + 1}`,
+          convertedReadKey: readRow.key,
+          matchType,
+          monitoring: readRow.monitoring,
+          monitoringSystemId: readRow.monitoringSystemId,
+          monitoringSystemName: readRow.monitoringSystemName,
+          readDate: readRow.readDate,
+          readDateRaw: readRow.readDateRaw,
+          lifetimeReadWh: readRow.lifetimeReadWh,
+          trackingSystemRefId: candidate.system.trackingSystemRefId,
+          systemId: candidate.system.systemId,
+          systemName: candidate.system.systemName,
+          installerName: candidate.system.installerName,
+          monitoringPlatform: candidate.system.monitoringPlatform,
+          baselineReadWh: baselineValueWh,
+          baselineDate,
+          baselineSource: baseline?.source ?? null,
+          productionDeltaWh,
+          expectedProductionWh,
+          performanceRatioPercent,
+          contractValue: resolveContractValueAmount(candidate.system),
+        });
+      });
+    });
+
+    rows.sort((a, b) => {
+      const aTime = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const bTime = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (aTime !== bTime) return bTime - aTime;
+      const aRatio = a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+      const bRatio = b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+      if (aRatio !== bRatio) return bRatio - aRatio;
+      return a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true });
+    });
+
+    return {
+      rows,
+      convertedReadCount: convertedReadRows.length,
+      matchedConvertedReads,
+      unmatchedConvertedReads,
+      invalidConvertedReads,
+    };
+  }, [
+    annualProductionByTrackingId,
+    convertedReadRows,
+    generationBaselineByTrackingId,
+    performanceRatioMatchIndexes,
+  ]);
+
+  const performanceRatioMonitoringOptions = useMemo(
+    () =>
+      Array.from(new Set(performanceRatioResult.rows.map((row) => row.monitoring)))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })),
+    [performanceRatioResult.rows]
+  );
+
+  const filteredPerformanceRatioRows = useMemo(() => {
+    const search = performanceRatioSearch.trim().toLowerCase();
+
+    const rows = performanceRatioResult.rows.filter((row) => {
+      if (performanceRatioMonitoringFilter !== "All" && row.monitoring !== performanceRatioMonitoringFilter) return false;
+      if (performanceRatioMatchFilter !== "All" && row.matchType !== performanceRatioMatchFilter) return false;
+      if (!search) return true;
+      const haystack = [
+        row.systemName,
+        row.systemId ?? "",
+        row.trackingSystemRefId,
+        row.monitoring,
+        row.monitoringSystemId,
+        row.monitoringSystemName,
+        row.installerName,
+      ]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(search);
+    });
+
+    rows.sort((a, b) => {
+      const direction = performanceRatioSortDir === "asc" ? 1 : -1;
+      if (performanceRatioSortBy === "systemName") {
+        return (
+          a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
+        );
+      }
+      if (performanceRatioSortBy === "readDate") {
+        const aValue = a.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        const bValue = b.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        if (aValue === bValue) {
+          return (
+            a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
+          );
+        }
+        return (aValue - bValue) * direction;
+      }
+
+      const aValue = a[performanceRatioSortBy] ?? Number.NEGATIVE_INFINITY;
+      const bValue = b[performanceRatioSortBy] ?? Number.NEGATIVE_INFINITY;
+      if (aValue === bValue) {
+        return (
+          a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
+        );
+      }
+      return ((aValue as number) - (bValue as number)) * direction;
+    });
+
+    return rows;
+  }, [
+    performanceRatioSearch,
+    performanceRatioResult.rows,
+    performanceRatioMonitoringFilter,
+    performanceRatioMatchFilter,
+    performanceRatioSortBy,
+    performanceRatioSortDir,
+  ]);
+
+  const performanceRatioSummary = useMemo(() => {
+    const rows = performanceRatioResult.rows;
+    const withBaseline = rows.filter((row) => row.baselineReadWh !== null).length;
+    const withExpected = rows.filter((row) => row.expectedProductionWh !== null && row.expectedProductionWh > 0).length;
+    const withRatio = rows.filter((row) => row.performanceRatioPercent !== null).length;
+    const totalDeltaWh = rows.reduce((sum, row) => sum + (row.productionDeltaWh ?? 0), 0);
+    const totalExpectedWh = rows.reduce((sum, row) => sum + (row.expectedProductionWh ?? 0), 0);
+    const totalContractValue = rows.reduce((sum, row) => sum + row.contractValue, 0);
+
+    return {
+      convertedReadCount: performanceRatioResult.convertedReadCount,
+      matchedConvertedReads: performanceRatioResult.matchedConvertedReads,
+      unmatchedConvertedReads: performanceRatioResult.unmatchedConvertedReads,
+      invalidConvertedReads: performanceRatioResult.invalidConvertedReads,
+      allocationCount: rows.length,
+      withBaseline,
+      withExpected,
+      withRatio,
+      totalDeltaWh,
+      totalExpectedWh,
+      portfolioRatioPercent: toPercentValue(totalDeltaWh, totalExpectedWh),
+      totalContractValue,
+    };
+  }, [performanceRatioResult]);
 
   const zeroReportingInstallerPlatformRows = useMemo(() => {
     const groups = new Map<
@@ -2062,10 +2652,7 @@ export default function SolarRecDashboard() {
           (keyByTracking ? abpApplicationIdBySystemKey.get(keyByTracking) : undefined) ??
           abpApplicationIdBySystemKey.get(keyByName) ??
           "";
-        const monitoringDetails =
-          (keyById ? monitoringDetailsBySystemKey.get(keyById) : undefined) ??
-          (keyByTracking ? monitoringDetailsBySystemKey.get(keyByTracking) : undefined) ??
-          monitoringDetailsBySystemKey.get(keyByName);
+        const monitoringDetails = getMonitoringDetailsForSystem(system, monitoringDetailsBySystemKey);
 
         return {
           nonid: system.trackingSystemRefId ?? "",
@@ -3170,6 +3757,7 @@ export default function SolarRecDashboard() {
             <TabsTrigger className="shrink-0" value="ownership">Ownership Status</TabsTrigger>
             <TabsTrigger className="shrink-0" value="offline-monitoring">Offline by Monitoring</TabsTrigger>
             <TabsTrigger className="shrink-0" value="meter-reads">Meter Reads</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="performance-ratio">Performance Ratio</TabsTrigger>
             <TabsTrigger className="shrink-0" value="snapshot-log">Snapshot Log</TabsTrigger>
           </TabsList>
 
@@ -4710,6 +5298,233 @@ export default function SolarRecDashboard() {
                 </CardContent>
               </Card>
             ) : null}
+          </TabsContent>
+
+          <TabsContent value="performance-ratio" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Converted Reads Performance Ratio</CardTitle>
+                <CardDescription>
+                  Matches converted reads to ABP Part II verified portal systems using monitoring + system ID, monitoring
+                  + system name, or monitoring + both. Performance Ratio = production delta from baseline / expected
+                  production over the same period.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
+            {!datasets.convertedReads || !datasets.annualProductionEstimates ? (
+              <Card className="border-amber-200 bg-amber-50/60">
+                <CardHeader>
+                  <CardTitle className="text-base text-amber-900">Missing Files for Performance Ratio</CardTitle>
+                  <CardDescription className="text-amber-800">
+                    Upload these files in Step 1:{" "}
+                    {[
+                      !datasets.convertedReads ? DATASET_DEFINITIONS.convertedReads.label : null,
+                      !datasets.annualProductionEstimates ? DATASET_DEFINITIONS.annualProductionEstimates.label : null,
+                    ]
+                      .filter((value): value is string => value !== null)
+                      .join(", ")}
+                    .
+                  </CardDescription>
+                </CardHeader>
+              </Card>
+            ) : (
+              <>
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Converted Read Rows</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(performanceRatioSummary.convertedReadCount)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Matched Read Rows</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(performanceRatioSummary.matchedConvertedReads)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Unmatched Read Rows</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(performanceRatioSummary.unmatchedConvertedReads)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Allocations (Read-to-System)</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(performanceRatioSummary.allocationCount)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Portfolio Performance Ratio</CardDescription>
+                      <CardTitle className="text-2xl">{formatPercent(performanceRatioSummary.portfolioRatioPercent)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Total Delta Production (kWh)</CardDescription>
+                      <CardTitle className="text-2xl">{formatNumber(performanceRatioSummary.totalDeltaWh / 1_000)}</CardTitle>
+                    </CardHeader>
+                  </Card>
+                  <Card>
+                    <CardHeader>
+                      <CardDescription>Total Expected Production (kWh)</CardDescription>
+                      <CardTitle className="text-2xl">
+                        {formatNumber(performanceRatioSummary.totalExpectedWh / 1_000)}
+                      </CardTitle>
+                    </CardHeader>
+                  </Card>
+                </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Performance Ratio Filters</CardTitle>
+                    <CardDescription>
+                      Expected production uses Annual Production Estimates monthly values, prorated by days when the read
+                      window starts/ends mid-month.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">Monitoring</label>
+                      <select
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                        value={performanceRatioMonitoringFilter}
+                        onChange={(event) => setPerformanceRatioMonitoringFilter(event.target.value)}
+                      >
+                        <option value="All">All Monitoring</option>
+                        {performanceRatioMonitoringOptions.map((value) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">Match Type</label>
+                      <select
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                        value={performanceRatioMatchFilter}
+                        onChange={(event) => setPerformanceRatioMatchFilter(event.target.value as PerformanceRatioMatchType | "All")}
+                      >
+                        <option value="All">All Match Types</option>
+                        <option value="Monitoring + System ID + System Name">Monitoring + System ID + System Name</option>
+                        <option value="Monitoring + System ID">Monitoring + System ID</option>
+                        <option value="Monitoring + System Name">Monitoring + System Name</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">Sort by</label>
+                      <select
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                        value={performanceRatioSortBy}
+                        onChange={(event) =>
+                          setPerformanceRatioSortBy(
+                            event.target.value as
+                              | "performanceRatioPercent"
+                              | "productionDeltaWh"
+                              | "expectedProductionWh"
+                              | "systemName"
+                              | "readDate"
+                          )
+                        }
+                      >
+                        <option value="performanceRatioPercent">Performance Ratio</option>
+                        <option value="productionDeltaWh">Production Delta</option>
+                        <option value="expectedProductionWh">Expected Production</option>
+                        <option value="readDate">Read Date</option>
+                        <option value="systemName">System Name</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-sm font-medium text-slate-700">Direction</label>
+                      <select
+                        className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                        value={performanceRatioSortDir}
+                        onChange={(event) => setPerformanceRatioSortDir(event.target.value as "asc" | "desc")}
+                      >
+                        <option value="desc">Descending</option>
+                        <option value="asc">Ascending</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1 xl:col-span-2">
+                      <label className="text-sm font-medium text-slate-700">Search</label>
+                      <Input
+                        placeholder="System name, NONID, monitoring system id/name, installer..."
+                        value={performanceRatioSearch}
+                        onChange={(event) => setPerformanceRatioSearch(event.target.value)}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Performance Ratio Allocation Detail</CardTitle>
+                    <CardDescription>
+                      Each row is one converted read allocated to one matching portal project.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>System</TableHead>
+                          <TableHead>NONID</TableHead>
+                          <TableHead>Portal ID</TableHead>
+                          <TableHead>Monitoring</TableHead>
+                          <TableHead>Match Type</TableHead>
+                          <TableHead>Read Date</TableHead>
+                          <TableHead>Baseline Date</TableHead>
+                          <TableHead>Baseline Source</TableHead>
+                          <TableHead>Read (kWh)</TableHead>
+                          <TableHead>Delta (kWh)</TableHead>
+                          <TableHead>Expected (kWh)</TableHead>
+                          <TableHead>Performance Ratio</TableHead>
+                          <TableHead>Contract Value</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {filteredPerformanceRatioRows.slice(0, 1500).map((row) => (
+                          <TableRow key={row.key}>
+                            <TableCell className="font-medium">{row.systemName}</TableCell>
+                            <TableCell>{row.trackingSystemRefId}</TableCell>
+                            <TableCell>{row.systemId ?? "N/A"}</TableCell>
+                            <TableCell>{row.monitoring}</TableCell>
+                            <TableCell>{row.matchType}</TableCell>
+                            <TableCell>{row.readDate ? formatDate(row.readDate) : row.readDateRaw || "N/A"}</TableCell>
+                            <TableCell>{formatDate(row.baselineDate)}</TableCell>
+                            <TableCell>{row.baselineSource ?? "N/A"}</TableCell>
+                            <TableCell>{formatNumber(row.lifetimeReadWh !== null ? row.lifetimeReadWh / 1_000 : null)}</TableCell>
+                            <TableCell>
+                              {row.productionDeltaWh === null
+                                ? "N/A"
+                                : formatSignedNumber(row.productionDeltaWh / 1_000)}
+                            </TableCell>
+                            <TableCell>{formatNumber(row.expectedProductionWh !== null ? row.expectedProductionWh / 1_000 : null)}</TableCell>
+                            <TableCell
+                              className={
+                                row.performanceRatioPercent !== null && row.performanceRatioPercent < 100
+                                  ? "text-amber-700 font-medium"
+                                  : ""
+                              }
+                            >
+                              {formatPercent(row.performanceRatioPercent)}
+                            </TableCell>
+                            <TableCell>{formatCurrency(row.contractValue)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+              </>
+            )}
           </TabsContent>
 
           <TabsContent value="snapshot-log" className="space-y-4 mt-4">
