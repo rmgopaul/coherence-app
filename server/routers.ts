@@ -40,6 +40,44 @@ function getTodayDateKey(): string {
   return `${year}-${month}-${day}`;
 }
 
+const ENPHASE_V2_PROVIDER = "enphase-v2";
+
+function toNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseEnphaseV2Metadata(metadata: string | null | undefined): {
+  userId: string | null;
+  baseUrl: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    userId: toNonEmptyString(parsed.userId),
+    baseUrl: toNonEmptyString(parsed.baseUrl),
+  };
+}
+
+async function getEnphaseV2Credentials(userId: number): Promise<{
+  apiKey: string;
+  userId: string;
+  baseUrl: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, ENPHASE_V2_PROVIDER);
+  const apiKey = toNonEmptyString(integration?.accessToken);
+  const metadata = parseEnphaseV2Metadata(integration?.metadata);
+
+  if (!apiKey || !metadata.userId) {
+    throw new Error("Enphase v2 is not connected. Save API key and user ID first.");
+  }
+
+  return {
+    apiKey,
+    userId: metadata.userId,
+    baseUrl: metadata.baseUrl,
+  };
+}
+
 export const appRouter = router({
   system: systemRouter,
 
@@ -245,6 +283,123 @@ export const appRouter = router({
   }),
 
   // Service-specific routers
+  enphaseV2: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ENPHASE_V2_PROVIDER);
+      const metadata = parseEnphaseV2Metadata(integration?.metadata);
+
+      return {
+        connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.userId),
+        userId: metadata.userId,
+        baseUrl: metadata.baseUrl,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          apiKey: z.string().min(1),
+          userId: z.string().min(1),
+          baseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+
+        const metadata = JSON.stringify({
+          userId: input.userId.trim(),
+          baseUrl: toNonEmptyString(input.baseUrl),
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: ENPHASE_V2_PROVIDER,
+          accessToken: input.apiKey.trim(),
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ENPHASE_V2_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    listSystems: protectedProcedure.query(async ({ ctx }) => {
+      const credentials = await getEnphaseV2Credentials(ctx.user.id);
+      const { listSystems } = await import("./services/enphaseV2");
+      return listSystems(credentials);
+    }),
+    getSummary: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const credentials = await getEnphaseV2Credentials(ctx.user.id);
+        const { getSystemSummary } = await import("./services/enphaseV2");
+        return getSystemSummary(credentials, input.systemId.trim());
+      }),
+    getEnergyLifetime: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const credentials = await getEnphaseV2Credentials(ctx.user.id);
+        const { getSystemEnergyLifetime } = await import("./services/enphaseV2");
+        return getSystemEnergyLifetime(
+          credentials,
+          input.systemId.trim(),
+          input.startDate,
+          input.endDate
+        );
+      }),
+    getRgmStats: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const credentials = await getEnphaseV2Credentials(ctx.user.id);
+        const { getSystemRgmStats } = await import("./services/enphaseV2");
+        return getSystemRgmStats(credentials, input.systemId.trim(), input.startDate, input.endDate);
+      }),
+    getProductionMeterReadings: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const credentials = await getEnphaseV2Credentials(ctx.user.id);
+        const { getSystemProductionMeterReadings } = await import("./services/enphaseV2");
+        return getSystemProductionMeterReadings(
+          credentials,
+          input.systemId.trim(),
+          input.startDate,
+          input.endDate
+        );
+      }),
+  }),
+
   todoist: router({
     connect: protectedProcedure
       .input(z.object({ apiToken: z.string() }))

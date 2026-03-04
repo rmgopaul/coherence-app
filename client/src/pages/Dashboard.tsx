@@ -31,6 +31,7 @@ import {
   Pill,
   Target,
   BarChart3,
+  Database,
   Clock3,
   CloudSun,
 } from "lucide-react";
@@ -1773,6 +1774,10 @@ export default function Dashboard() {
             <Button variant="outline" onClick={() => setLocation("/solar-rec-dashboard")}>
               <BarChart3 className="h-4 w-4 mr-2" />
               Solar REC
+            </Button>
+            <Button variant="outline" onClick={() => setLocation("/enphase-v2-meter-reads")}>
+              <Database className="h-4 w-4 mr-2" />
+              Enphase v2
             </Button>
             <Button variant="outline" onClick={() => setLocation("/settings")}>
               <SettingsIcon className="h-4 w-4 mr-2" />
