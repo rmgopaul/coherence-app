@@ -48,6 +48,11 @@ type CsvDataset = {
   uploadedAt: Date;
   headers: string[];
   rows: CsvRow[];
+  sources?: Array<{
+    fileName: string;
+    uploadedAt: Date;
+    rowCount: number;
+  }>;
 };
 
 type ContractDeliveryAggregate = {
@@ -378,7 +383,7 @@ const DATASET_DEFINITIONS: Record<
   },
   accountSolarGeneration: {
     label: "Account Solar Generation",
-    description: "Monthly generation ledger used for reporting recency.",
+    description: "Monthly generation ledger used for reporting recency and meter-read baseline. Supports multi-file append.",
     requiredHeaderSets: [["Month of Generation", "GATS Gen ID", "Facility Name"]],
   },
   contractedDate: {
@@ -865,6 +870,16 @@ function matchesExpectedHeaders(headers: string[], expected: string[]): boolean 
   return expected.every((header) => available.has(header.toLowerCase()));
 }
 
+function accountSolarGenerationRowKey(row: CsvRow): string {
+  return [
+    clean(row["GATS Gen ID"]),
+    clean(row["Month of Generation"]),
+    clean(row["Last Meter Read Date"]),
+    clean(row["Last Meter Read (kWh/Btu)"]),
+    clean(row["Facility Name"]),
+  ].join("|");
+}
+
 function sumSchedule(row: CsvRow, suffix: "_quantity_required" | "_quantity_delivered"): number | null {
   let total = 0;
   let hasData = false;
@@ -899,8 +914,20 @@ function createLogId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+type SerializedCsvDataset = {
+  fileName: string;
+  uploadedAt: string;
+  headers: string[];
+  rows: CsvRow[];
+  sources?: Array<{
+    fileName: string;
+    uploadedAt: string;
+    rowCount: number;
+  }>;
+};
+
 function deserializeDatasets(
-  parsed: Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined>
+  parsed: Record<string, SerializedCsvDataset | undefined>
 ): Partial<Record<DatasetKey, CsvDataset>> {
   const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
   (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
@@ -908,11 +935,25 @@ function deserializeDatasets(
     if (!dataset) return;
     const uploadedAt = new Date(dataset.uploadedAt);
     if (Number.isNaN(uploadedAt.getTime())) return;
+    const sources = Array.isArray(dataset.sources)
+      ? dataset.sources
+          .map((source) => {
+            const sourceUploadedAt = new Date(source.uploadedAt);
+            if (Number.isNaN(sourceUploadedAt.getTime())) return null;
+            return {
+              fileName: source.fileName,
+              uploadedAt: sourceUploadedAt,
+              rowCount: source.rowCount,
+            };
+          })
+          .filter((source): source is NonNullable<typeof source> => source !== null)
+      : undefined;
     loaded[key] = {
       fileName: dataset.fileName,
       uploadedAt,
       headers: Array.isArray(dataset.headers) ? dataset.headers : [],
       rows: Array.isArray(dataset.rows) ? dataset.rows : [],
+      sources,
     };
   });
   return loaded;
@@ -920,11 +961,8 @@ function deserializeDatasets(
 
 function serializeDatasets(
   datasets: Partial<Record<DatasetKey, CsvDataset>>
-): Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined> {
-  const serialized: Record<
-    string,
-    { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined
-  > = {};
+): Record<string, SerializedCsvDataset | undefined> {
+  const serialized: Record<string, SerializedCsvDataset | undefined> = {};
   (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
     const dataset = datasets[key];
     if (!dataset) return;
@@ -933,6 +971,11 @@ function serializeDatasets(
       uploadedAt: dataset.uploadedAt.toISOString(),
       headers: dataset.headers,
       rows: dataset.rows,
+      sources: dataset.sources?.map((source) => ({
+        fileName: source.fileName,
+        uploadedAt: source.uploadedAt.toISOString(),
+        rowCount: source.rowCount,
+      })),
     };
   });
   return serialized;
@@ -943,10 +986,7 @@ function loadLegacyDatasetsFromLocalStorage(): Partial<Record<DatasetKey, CsvDat
   try {
     const raw = window.localStorage.getItem(LEGACY_DATASETS_STORAGE_KEY);
     if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<
-      string,
-      { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined
-    >;
+    const parsed = JSON.parse(raw) as Record<string, SerializedCsvDataset | undefined>;
     return deserializeDatasets(parsed);
   } catch {
     return {};
@@ -984,16 +1024,14 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
   try {
     const db = await openDashboardDatabase();
     const stored = await new Promise<
-      Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined> | undefined
+      Record<string, SerializedCsvDataset | undefined> | undefined
     >((resolve, reject) => {
       const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readonly");
       const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
       const request = store.get(DASHBOARD_DATASETS_RECORD_KEY);
 
       request.onsuccess = () => {
-        const result = request.result as
-          | Record<string, { fileName: string; uploadedAt: string; headers: string[]; rows: CsvRow[] } | undefined>
-          | undefined;
+        const result = request.result as Record<string, SerializedCsvDataset | undefined> | undefined;
         resolve(result);
       };
       request.onerror = () => reject(request.error ?? new Error("Failed reading datasets from IndexedDB."));
@@ -1172,7 +1210,7 @@ export default function SolarRecDashboard() {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const handleUpload = async (key: DatasetKey, file: File | null) => {
+  const handleUpload = async (key: DatasetKey, file: File | null, mode: "replace" | "append" = "replace") => {
     if (!file) return;
 
     const config = DATASET_DEFINITIONS[key];
@@ -1193,16 +1231,79 @@ export default function SolarRecDashboard() {
       setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
       setDatasets((previous) => ({
         ...previous,
-        [key]: {
-          fileName: file.name,
-          uploadedAt: new Date(),
-          headers: parsed.headers,
-          rows: parsed.rows,
-        },
+        [key]: (() => {
+          const uploadedAt = new Date();
+          const shouldAppend = key === "accountSolarGeneration" && mode === "append";
+          const existing = previous[key];
+
+          if (shouldAppend && existing) {
+            const combinedHeaders = Array.from(new Set([...existing.headers, ...parsed.headers]));
+            const existingRows = existing.rows;
+            const dedupeKeys = new Set(existingRows.map((row) => accountSolarGenerationRowKey(row)));
+            const appendedRows = parsed.rows.filter((row) => {
+              const dedupeKey = accountSolarGenerationRowKey(row);
+              if (!dedupeKey) return true;
+              if (dedupeKeys.has(dedupeKey)) return false;
+              dedupeKeys.add(dedupeKey);
+              return true;
+            });
+
+            const existingSources =
+              existing.sources && existing.sources.length > 0
+                ? existing.sources
+                : [
+                    {
+                      fileName: existing.fileName,
+                      uploadedAt: existing.uploadedAt,
+                      rowCount: existing.rows.length,
+                    },
+                  ];
+            const sources = [
+              ...existingSources,
+              {
+                fileName: file.name,
+                uploadedAt,
+                rowCount: parsed.rows.length,
+              },
+            ];
+
+            return {
+              fileName: `${sources.length} files loaded`,
+              uploadedAt,
+              headers: combinedHeaders,
+              rows: [...existingRows, ...appendedRows],
+              sources,
+            } satisfies CsvDataset;
+          }
+
+          return {
+            fileName: file.name,
+            uploadedAt,
+            headers: parsed.headers,
+            rows: parsed.rows,
+            sources:
+              key === "accountSolarGeneration"
+                ? [
+                    {
+                      fileName: file.name,
+                      uploadedAt,
+                      rowCount: parsed.rows.length,
+                    },
+                  ]
+                : undefined,
+          } satisfies CsvDataset;
+        })(),
       }));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error while reading CSV.";
       setUploadErrors((previous) => ({ ...previous, [key]: message }));
+    }
+  };
+
+  const handleAccountSolarGenerationUploads = async (files: File[]) => {
+    if (files.length === 0) return;
+    for (const file of files) {
+      await handleUpload("accountSolarGeneration", file, "append");
     }
   };
 
@@ -3732,7 +3833,8 @@ export default function SolarRecDashboard() {
           <CardHeader>
             <CardTitle className="text-base">Step 1: Import Your CSV Files</CardTitle>
             <CardDescription>
-              Upload each export into its matching slot. Files can be replaced later with newer exports.
+              Upload each export into its matching slot. Files can be replaced later with newer exports. Account Solar
+              Generation supports multi-file append for building a longer baseline history.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -3740,6 +3842,7 @@ export default function SolarRecDashboard() {
               const config = DATASET_DEFINITIONS[key];
               const dataset = datasets[key];
               const error = uploadErrors[key];
+              const isAccountSolarGeneration = key === "accountSolarGeneration";
 
               return (
                 <div key={key} className="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
@@ -3754,7 +3857,25 @@ export default function SolarRecDashboard() {
                         {dataset.rows.length} rows loaded
                       </Badge>
                       <p className="text-xs text-slate-600 truncate">{dataset.fileName}</p>
+                      {isAccountSolarGeneration && dataset.sources && dataset.sources.length > 0 ? (
+                        <p className="text-xs text-slate-500">
+                          {formatNumber(dataset.sources.length)} files appended
+                        </p>
+                      ) : null}
                       <p className="text-xs text-slate-500">Last updated {dataset.uploadedAt.toLocaleString()}</p>
+                      {isAccountSolarGeneration && dataset.sources && dataset.sources.length > 0 ? (
+                        <div className="max-h-24 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+                          {dataset.sources
+                            .slice()
+                            .reverse()
+                            .slice(0, 8)
+                            .map((source) => (
+                              <p key={`${source.fileName}-${source.uploadedAt.toISOString()}`} className="text-[11px] text-slate-600">
+                                {source.fileName} ({formatNumber(source.rowCount)} rows)
+                              </p>
+                            ))}
+                        </div>
+                      ) : null}
                     </div>
                   ) : (
                     <Badge variant="outline" className="text-slate-600">
@@ -3767,14 +3888,22 @@ export default function SolarRecDashboard() {
                   <div className="flex items-center gap-2">
                     <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                       <Upload className="h-4 w-4" />
-                      Choose CSV
+                      {isAccountSolarGeneration ? "Add CSV(s)" : "Choose CSV"}
                       <input
                         type="file"
                         accept=".csv,text/csv"
                         className="hidden"
+                        multiple={isAccountSolarGeneration}
                         onChange={(event) => {
+                          if (isAccountSolarGeneration) {
+                            const files = Array.from(event.target.files ?? []);
+                            void handleAccountSolarGenerationUploads(files);
+                            event.currentTarget.value = "";
+                            return;
+                          }
+
                           const file = event.target.files?.[0] ?? null;
-                          void handleUpload(key, file);
+                          void handleUpload(key, file, "replace");
                           event.currentTarget.value = "";
                         }}
                       />
