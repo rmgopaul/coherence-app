@@ -441,8 +441,9 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PERFORMANCE_RATIO_PAGE_SIZE = 250;
-const MAX_REMOTE_STATE_LOG_BYTES = 1_500_000;
-const REMOTE_LOG_ENTRY_LIMIT = 120;
+const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
+const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
+const REMOTE_LOG_ENTRY_LIMIT = 40;
 const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 500_000;
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
@@ -3749,12 +3750,22 @@ export default function SolarRecDashboard() {
   }, [remoteDatasetManifest]);
 
   const remoteStatePayload = useMemo(() => {
-    const payload = safeJsonStringify({
+    let logs = compactRemoteLogs;
+    let payload = safeJsonStringify({
       datasetManifest: remoteDatasetManifest,
-      logs: compactRemoteLogs,
+      logs,
     });
 
-    if (payload) {
+    while (logs.length > 0 && (!payload || payload.length > MAX_REMOTE_STATE_PAYLOAD_CHARS)) {
+      const dropCount = Math.max(1, Math.ceil(logs.length / 3));
+      logs = logs.slice(dropCount);
+      payload = safeJsonStringify({
+        datasetManifest: remoteDatasetManifest,
+        logs,
+      });
+    }
+
+    if (payload && payload.length <= MAX_REMOTE_STATE_PAYLOAD_CHARS) {
       return {
         payload,
         usedManifestOnly: false,
@@ -3796,29 +3807,12 @@ export default function SolarRecDashboard() {
         return;
       }
 
-      const payload = remoteDashboardStateQuery.data?.payload;
-      if (!payload) {
-        if (!cancelled) setRemoteStateHydrated(true);
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(payload) as {
-          datasetManifest?: Record<string, RemoteDatasetManifestEntry>;
-          logs?: unknown;
-        };
-
-        if (Array.isArray(parsed.logs) && !cancelled) {
-          setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
-        }
-
-        const manifest = parsed.datasetManifest ?? {};
+      const loadRemoteDatasets = async (keys: DatasetKey[]) => {
         const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
         const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
 
-        for (const rawKey of Object.keys(manifest)) {
+        for (const rawKey of keys) {
           if (cancelled) break;
-          if (!isDatasetKey(rawKey)) continue;
           try {
             const response = await getRemoteDataset.mutateAsync({ key: rawKey });
             if (!response?.payload) continue;
@@ -3846,6 +3840,38 @@ export default function SolarRecDashboard() {
             // Keep going; partial data is better than none.
           }
         }
+
+        return { loadedDatasets, loadedSignatures };
+      };
+
+      try {
+        const payload = remoteDashboardStateQuery.data?.payload;
+        let manifest: Record<string, RemoteDatasetManifestEntry> = {};
+
+        if (payload) {
+          const parsed = JSON.parse(payload) as {
+            datasetManifest?: Record<string, RemoteDatasetManifestEntry>;
+            logs?: unknown;
+          };
+
+          if (Array.isArray(parsed.logs) && !cancelled) {
+            setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
+          }
+
+          manifest = parsed.datasetManifest ?? {};
+        }
+
+        const keysToLoad = new Set<DatasetKey>();
+        Object.keys(manifest).forEach((rawKey) => {
+          if (!isDatasetKey(rawKey)) return;
+          keysToLoad.add(rawKey);
+        });
+
+        if (keysToLoad.size === 0) {
+          (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => keysToLoad.add(key));
+        }
+
+        const { loadedDatasets, loadedSignatures } = await loadRemoteDatasets(Array.from(keysToLoad));
 
         if (!cancelled) {
           if (Object.keys(loadedDatasets).length > 0) {
@@ -3982,7 +4008,6 @@ export default function SolarRecDashboard() {
         }
 
         remoteDatasetSignatureRef.current = nextSignatures;
-        setStorageNotice(null);
       })();
     }, 1200);
 
