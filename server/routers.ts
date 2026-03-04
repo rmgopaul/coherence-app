@@ -155,6 +155,39 @@ export const appRouter = router({
         await storagePut(key, input.payload, "application/json");
         return { success: true, key };
       }),
+    getDataset: protectedProcedure
+      .input(
+        z.object({
+          key: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        try {
+          const { storageGet } = await import("./storage");
+          const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
+          const { url } = await storageGet(key);
+          const response = await fetch(url);
+          if (!response.ok) return null;
+          const payload = await response.text();
+          if (!payload) return null;
+          return { key, payload };
+        } catch {
+          return null;
+        }
+      }),
+    saveDataset: protectedProcedure
+      .input(
+        z.object({
+          key: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+          payload: z.string(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { storagePut } = await import("./storage");
+        const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
+        await storagePut(key, input.payload, "application/json");
+        return { success: true, key };
+      }),
   }),
 
   // Service-specific routers

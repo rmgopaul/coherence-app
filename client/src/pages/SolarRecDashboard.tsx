@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, Database, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -872,6 +872,10 @@ function matchesExpectedHeaders(headers: string[], expected: string[]): boolean 
   return expected.every((header) => available.has(header.toLowerCase()));
 }
 
+function isDatasetKey(value: string): value is DatasetKey {
+  return Object.prototype.hasOwnProperty.call(DATASET_DEFINITIONS, value);
+}
+
 function accountSolarGenerationRowKey(row: CsvRow): string {
   return [
     clean(row["GATS Gen ID"]),
@@ -880,6 +884,56 @@ function accountSolarGenerationRowKey(row: CsvRow): string {
     clean(row["Last Meter Read (kWh/Btu)"]),
     clean(row["Facility Name"]),
   ].join("|");
+}
+
+function serializeDatasetForRemote(dataset: CsvDataset): string {
+  const payload: RemoteDatasetPayload = {
+    fileName: dataset.fileName,
+    uploadedAt: dataset.uploadedAt.toISOString(),
+    headers: dataset.headers,
+    csvText: buildCsv(dataset.headers, dataset.rows),
+    sources: dataset.sources?.map((source) => ({
+      fileName: source.fileName,
+      uploadedAt: source.uploadedAt.toISOString(),
+      rowCount: source.rowCount,
+    })),
+  };
+  return JSON.stringify(payload);
+}
+
+function deserializeRemoteDatasetPayload(payload: string): CsvDataset | null {
+  try {
+    const parsed = JSON.parse(payload) as RemoteDatasetPayload;
+    const uploadedAt = new Date(parsed.uploadedAt);
+    if (Number.isNaN(uploadedAt.getTime())) return null;
+    const parsedCsv = parseCsv(parsed.csvText ?? "");
+    const headers =
+      parsedCsv.headers.length > 0 ? parsedCsv.headers : Array.isArray(parsed.headers) ? parsed.headers : [];
+    const rows = parsedCsv.rows;
+    const sources = Array.isArray(parsed.sources)
+      ? parsed.sources
+          .map((source) => {
+            const sourceUploadedAt = new Date(source.uploadedAt);
+            if (Number.isNaN(sourceUploadedAt.getTime())) return null;
+            return {
+              fileName: source.fileName,
+              uploadedAt: sourceUploadedAt,
+              rowCount: source.rowCount,
+            };
+          })
+          .filter((source): source is NonNullable<typeof source> => source !== null)
+      : undefined;
+
+    return {
+      fileName: parsed.fileName,
+      uploadedAt,
+      headers,
+      rows,
+      sources,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function sumSchedule(row: CsvRow, suffix: "_quantity_required" | "_quantity_delivered"): number | null {
@@ -921,6 +975,30 @@ type SerializedCsvDataset = {
   uploadedAt: string;
   headers: string[];
   rows: CsvRow[];
+  sources?: Array<{
+    fileName: string;
+    uploadedAt: string;
+    rowCount: number;
+  }>;
+};
+
+type RemoteDatasetPayload = {
+  fileName: string;
+  uploadedAt: string;
+  headers: string[];
+  csvText: string;
+  sources?: Array<{
+    fileName: string;
+    uploadedAt: string;
+    rowCount: number;
+  }>;
+};
+
+type RemoteDatasetManifestEntry = {
+  fileName: string;
+  uploadedAt: string;
+  headers: string[];
+  rowCount: number;
   sources?: Array<{
     fileName: string;
     uploadedAt: string;
@@ -1176,6 +1254,9 @@ export default function SolarRecDashboard() {
     refetchOnWindowFocus: false,
   });
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const remoteDatasetSignatureRef = useRef<Partial<Record<DatasetKey, string>>>({});
   const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
@@ -3537,13 +3618,36 @@ export default function SolarRecDashboard() {
     [logEntries]
   );
 
-  const serializedDashboardState = useMemo(
+  const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
+    () => {
+      const manifest: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
+      (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+        const dataset = datasets[key];
+        if (!dataset) return;
+        manifest[key] = {
+          fileName: dataset.fileName,
+          uploadedAt: dataset.uploadedAt.toISOString(),
+          headers: dataset.headers,
+          rowCount: dataset.rows.length,
+          sources: dataset.sources?.map((source) => ({
+            fileName: source.fileName,
+            uploadedAt: source.uploadedAt.toISOString(),
+            rowCount: source.rowCount,
+          })),
+        };
+      });
+      return manifest;
+    },
+    [datasets]
+  );
+
+  const serializedRemoteStatePayload = useMemo(
     () =>
       JSON.stringify({
-        datasets: serializeDatasets(datasets),
+        datasetManifest: remoteDatasetManifest,
         logs: serializedLogEntries,
       }),
-    [datasets, serializedLogEntries]
+    [remoteDatasetManifest, serializedLogEntries]
   );
 
   useEffect(() => {
@@ -3567,39 +3671,77 @@ export default function SolarRecDashboard() {
   }, []);
 
   useEffect(() => {
-    if (remoteDashboardStateQuery.status === "pending") return;
-    if (remoteDashboardStateQuery.status === "error") {
-      setRemoteStateHydrated(true);
-      return;
-    }
-
-    const payload = remoteDashboardStateQuery.data?.payload;
-    if (!payload) {
-      setRemoteStateHydrated(true);
-      return;
-    }
-
-    try {
-      const parsed = JSON.parse(payload) as {
-        datasets?: Record<string, SerializedCsvDataset | undefined>;
-        logs?: unknown;
-      };
-      if (parsed.datasets) {
-        setDatasets(deserializeDatasets(parsed.datasets));
+    let cancelled = false;
+    void (async () => {
+      if (remoteDashboardStateQuery.status === "pending") return;
+      if (remoteDashboardStateQuery.status === "error") {
+        if (!cancelled) setRemoteStateHydrated(true);
+        return;
       }
-      if (Array.isArray(parsed.logs)) {
-        setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
+
+      const payload = remoteDashboardStateQuery.data?.payload;
+      if (!payload) {
+        if (!cancelled) setRemoteStateHydrated(true);
+        return;
       }
-      setStorageNotice(null);
-    } catch {
-      setStorageNotice("Could not parse synced dashboard data.");
-    } finally {
-      setRemoteStateHydrated(true);
-      setDatasetsHydrated(true);
-    }
-  }, [remoteDashboardStateQuery.data, remoteDashboardStateQuery.status]);
+
+      try {
+        const parsed = JSON.parse(payload) as {
+          datasetManifest?: Record<string, RemoteDatasetManifestEntry>;
+          logs?: unknown;
+        };
+
+        if (Array.isArray(parsed.logs) && !cancelled) {
+          setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
+        }
+
+        const manifest = parsed.datasetManifest ?? {};
+        const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
+        const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
+
+        for (const rawKey of Object.keys(manifest)) {
+          if (cancelled) break;
+          if (!isDatasetKey(rawKey)) continue;
+          try {
+            const response = await getRemoteDataset.mutateAsync({ key: rawKey });
+            if (!response?.payload) continue;
+            const deserializedDataset = deserializeRemoteDatasetPayload(response.payload);
+            if (!deserializedDataset) continue;
+            loadedDatasets[rawKey] = deserializedDataset;
+            loadedSignatures[rawKey] = `${deserializedDataset.fileName}|${deserializedDataset.uploadedAt.toISOString()}|${deserializedDataset.rows.length}|${deserializedDataset.sources?.length ?? 0}`;
+          } catch {
+            // Keep going; partial data is better than none.
+          }
+        }
+
+        if (!cancelled) {
+          if (Object.keys(loadedDatasets).length > 0) {
+            setDatasets(loadedDatasets);
+          }
+          remoteDatasetSignatureRef.current = loadedSignatures;
+          setStorageNotice(null);
+        }
+      } catch {
+        if (!cancelled) setStorageNotice("Could not parse synced dashboard data.");
+      } finally {
+        if (!cancelled) {
+          setRemoteStateHydrated(true);
+          setDatasetsHydrated(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    getRemoteDataset,
+    remoteDashboardStateQuery.data,
+    remoteDashboardStateQuery.status,
+  ]);
 
   useEffect(() => {
+    if (remoteDashboardStateQuery.status === "pending") return;
     if (!datasetsHydrated || !remoteStateHydrated) return;
 
     if (remoteDashboardStateQuery.status === "error") {
@@ -3624,18 +3766,14 @@ export default function SolarRecDashboard() {
 
     if (remoteDashboardStateQuery.status !== "success") return;
     const timeout = window.setTimeout(() => {
-      try {
-        saveRemoteDashboardState.mutate(
-          { payload: serializedDashboardState },
-          {
-            onSuccess: () => setStorageNotice(null),
-            onError: () => setStorageNotice("Could not sync dashboard data to cloud storage."),
-          }
-        );
-      } catch {
-        setStorageNotice("Could not sync dashboard data to cloud storage.");
-      }
-    }, 800);
+      saveRemoteDashboardState.mutate(
+        { payload: serializedRemoteStatePayload },
+        {
+          onSuccess: () => setStorageNotice(null),
+          onError: () => setStorageNotice("Could not sync dashboard state metadata to cloud storage."),
+        }
+      );
+    }, 900);
 
     return () => {
       window.clearTimeout(timeout);
@@ -3643,12 +3781,53 @@ export default function SolarRecDashboard() {
   }, [
     datasets,
     datasetsHydrated,
-    logEntries,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
     saveRemoteDashboardState,
-    serializedDashboardState,
     serializedLogEntries,
+    serializedRemoteStatePayload,
+  ]);
+
+  useEffect(() => {
+    if (!datasetsHydrated || !remoteStateHydrated) return;
+    if (remoteDashboardStateQuery.status !== "success") return;
+
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        const nextSignatures: Partial<Record<DatasetKey, string>> = {};
+
+        for (const key of Object.keys(DATASET_DEFINITIONS) as DatasetKey[]) {
+          const dataset = datasets[key];
+          if (!dataset) continue;
+          const signature = `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
+          nextSignatures[key] = signature;
+
+          if (remoteDatasetSignatureRef.current[key] === signature) continue;
+
+          try {
+            const payload = serializeDatasetForRemote(dataset);
+            await saveRemoteDataset.mutateAsync({ key, payload });
+            remoteDatasetSignatureRef.current[key] = signature;
+          } catch {
+            setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} dataset to cloud storage.`);
+            return;
+          }
+        }
+
+        remoteDatasetSignatureRef.current = nextSignatures;
+        setStorageNotice(null);
+      })();
+    }, 1200);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    datasets,
+    datasetsHydrated,
+    remoteDashboardStateQuery.status,
+    remoteStateHydrated,
+    saveRemoteDataset,
   ]);
 
   const createLogEntry = () => {
