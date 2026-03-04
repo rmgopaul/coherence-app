@@ -1775,9 +1775,9 @@ export default function Dashboard() {
               <BarChart3 className="h-4 w-4 mr-2" />
               Solar REC
             </Button>
-            <Button variant="outline" onClick={() => setLocation("/enphase-v2-meter-reads")}>
+            <Button variant="outline" onClick={() => setLocation("/enphase-v4-meter-reads")}>
               <Database className="h-4 w-4 mr-2" />
-              Enphase v2
+              Enphase v4
             </Button>
             <Button variant="outline" onClick={() => setLocation("/settings")}>
               <SettingsIcon className="h-4 w-4 mr-2" />

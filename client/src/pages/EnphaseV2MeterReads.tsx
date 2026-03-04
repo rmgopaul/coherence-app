@@ -5,10 +5,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+
+const DEFAULT_BASE_URL = "https://api.enphaseenergy.com/api/v4";
+const DEFAULT_REDIRECT_URI = "https://api.enphaseenergy.com/oauth/redirect_uri";
 
 function formatDateInput(date: Date): string {
   const year = date.getFullYear();
@@ -22,7 +25,7 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error.";
 }
 
-export default function EnphaseV2MeterReads() {
+export default function EnphaseV4MeterReads() {
   const { user, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const trpcUtils = trpc.useUtils();
@@ -35,8 +38,11 @@ export default function EnphaseV2MeterReads() {
   }, []);
 
   const [apiKeyInput, setApiKeyInput] = useState("");
-  const [userIdInput, setUserIdInput] = useState("");
-  const [baseUrlInput, setBaseUrlInput] = useState("https://api.enphaseenergy.com/api/v2");
+  const [clientIdInput, setClientIdInput] = useState("");
+  const [clientSecretInput, setClientSecretInput] = useState("");
+  const [authorizationCodeInput, setAuthorizationCodeInput] = useState("");
+  const [baseUrlInput, setBaseUrlInput] = useState(DEFAULT_BASE_URL);
+  const [redirectUriInput, setRedirectUriInput] = useState(DEFAULT_REDIRECT_URI);
   const [selectedSystemId, setSelectedSystemId] = useState("");
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(today);
@@ -44,22 +50,22 @@ export default function EnphaseV2MeterReads() {
   const [resultText, setResultText] = useState("{}");
   const [isRunningAction, setIsRunningAction] = useState(false);
 
-  const statusQuery = trpc.enphaseV2.getStatus.useQuery(undefined, {
+  const statusQuery = trpc.enphaseV4.getStatus.useQuery(undefined, {
     enabled: !!user,
     retry: false,
   });
 
-  const systemsQuery = trpc.enphaseV2.listSystems.useQuery(undefined, {
+  const systemsQuery = trpc.enphaseV4.listSystems.useQuery(undefined, {
     enabled: !!user && !!statusQuery.data?.connected,
     retry: false,
   });
 
-  const connectMutation = trpc.enphaseV2.connect.useMutation();
-  const disconnectMutation = trpc.enphaseV2.disconnect.useMutation();
-  const summaryMutation = trpc.enphaseV2.getSummary.useMutation();
-  const energyLifetimeMutation = trpc.enphaseV2.getEnergyLifetime.useMutation();
-  const rgmStatsMutation = trpc.enphaseV2.getRgmStats.useMutation();
-  const productionReadsMutation = trpc.enphaseV2.getProductionMeterReadings.useMutation();
+  const connectMutation = trpc.enphaseV4.connect.useMutation();
+  const disconnectMutation = trpc.enphaseV4.disconnect.useMutation();
+  const summaryMutation = trpc.enphaseV4.getSummary.useMutation();
+  const energyLifetimeMutation = trpc.enphaseV4.getEnergyLifetime.useMutation();
+  const rgmStatsMutation = trpc.enphaseV4.getRgmStats.useMutation();
+  const productionReadsMutation = trpc.enphaseV4.getProductionMeterReadings.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -69,8 +75,9 @@ export default function EnphaseV2MeterReads() {
 
   useEffect(() => {
     if (!statusQuery.data) return;
-    if (statusQuery.data.userId) setUserIdInput(statusQuery.data.userId);
+    if (statusQuery.data.clientId) setClientIdInput(statusQuery.data.clientId);
     if (statusQuery.data.baseUrl) setBaseUrlInput(statusQuery.data.baseUrl);
+    if (statusQuery.data.redirectUri) setRedirectUriInput(statusQuery.data.redirectUri);
   }, [statusQuery.data]);
 
   useEffect(() => {
@@ -81,40 +88,65 @@ export default function EnphaseV2MeterReads() {
     }
   }, [systemsQuery.data, selectedSystemId]);
 
-  const handleSaveCredentials = async () => {
+  const authUrl = useMemo(() => {
+    const clientId = clientIdInput.trim();
+    const redirectUri = redirectUriInput.trim() || DEFAULT_REDIRECT_URI;
+    if (!clientId) return "";
+    const url = new URL("https://api.enphaseenergy.com/oauth/authorize");
+    url.searchParams.set("response_type", "code");
+    url.searchParams.set("client_id", clientId);
+    url.searchParams.set("redirect_uri", redirectUri);
+    return url.toString();
+  }, [clientIdInput, redirectUriInput]);
+
+  const handleConnect = async () => {
     const apiKey = apiKeyInput.trim();
-    const userId = userIdInput.trim();
+    const clientId = clientIdInput.trim();
+    const clientSecret = clientSecretInput.trim();
+    const authorizationCode = authorizationCodeInput.trim();
+
     if (!apiKey) {
       toast.error("Enter your Enphase API key.");
       return;
     }
-    if (!userId) {
-      toast.error("Enter your Enphase user ID.");
+    if (!clientId) {
+      toast.error("Enter your Enphase client ID.");
+      return;
+    }
+    if (!clientSecret) {
+      toast.error("Enter your Enphase client secret.");
+      return;
+    }
+    if (!authorizationCode) {
+      toast.error("Enter your Enphase authorization code.");
       return;
     }
 
     try {
       await connectMutation.mutateAsync({
         apiKey,
-        userId,
+        clientId,
+        clientSecret,
+        authorizationCode,
+        redirectUri: redirectUriInput.trim(),
         baseUrl: baseUrlInput.trim(),
       });
-      await trpcUtils.enphaseV2.getStatus.invalidate();
-      await trpcUtils.enphaseV2.listSystems.invalidate();
-      toast.success("Enphase v2 credentials saved.");
-      setApiKeyInput("");
+      await trpcUtils.enphaseV4.getStatus.invalidate();
+      await trpcUtils.enphaseV4.listSystems.invalidate();
+      toast.success("Enphase v4 connected.");
+      setAuthorizationCodeInput("");
     } catch (error) {
-      toast.error(`Failed to save credentials: ${toErrorMessage(error)}`);
+      toast.error(`Failed to connect: ${toErrorMessage(error)}`);
     }
   };
 
   const handleDisconnect = async () => {
     try {
       await disconnectMutation.mutateAsync();
-      await trpcUtils.enphaseV2.getStatus.invalidate();
-      await trpcUtils.enphaseV2.listSystems.invalidate();
+      await trpcUtils.enphaseV4.getStatus.invalidate();
+      await trpcUtils.enphaseV4.listSystems.invalidate();
       setSelectedSystemId("");
-      toast.success("Enphase v2 disconnected.");
+      toast.success("Enphase v4 disconnected.");
     } catch (error) {
       toast.error(`Failed to disconnect: ${toErrorMessage(error)}`);
     }
@@ -157,9 +189,9 @@ export default function EnphaseV2MeterReads() {
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Dashboard
           </Button>
-          <h1 className="text-2xl font-bold text-slate-900">Enphase v2 Meter Reads</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Enphase v4 Meter Reads</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Connect once with API key + user ID, then run meter-reading endpoints.
+            OAuth-based v4 connection: API key + client credentials + authorization code.
           </p>
         </div>
       </header>
@@ -167,9 +199,9 @@ export default function EnphaseV2MeterReads() {
       <main className="container mx-auto px-4 py-8 space-y-6">
         <Card>
           <CardHeader>
-            <CardTitle>1) Connect Enphase v2</CardTitle>
+            <CardTitle>1) Connect Enphase v4</CardTitle>
             <CardDescription>
-              Enter credentials for `https://api.enphaseenergy.com/api/v2`.
+              Exchange an authorization code for access/refresh tokens and save the connection.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -181,41 +213,76 @@ export default function EnphaseV2MeterReads() {
                   type="password"
                   value={apiKeyInput}
                   onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="Paste your Enphase v2 API key"
+                  placeholder="App API key from Enphase developer portal"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="enphase-user-id">User ID</Label>
+                <Label htmlFor="enphase-client-id">Client ID</Label>
                 <Input
-                  id="enphase-user-id"
-                  value={userIdInput}
-                  onChange={(e) => setUserIdInput(e.target.value)}
-                  placeholder="Example: 4-digit or 5-digit user id"
+                  id="enphase-client-id"
+                  value={clientIdInput}
+                  onChange={(e) => setClientIdInput(e.target.value)}
+                  placeholder="Client ID from Enphase app"
                 />
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="enphase-base-url">Base URL (advanced)</Label>
-              <Input
-                id="enphase-base-url"
-                value={baseUrlInput}
-                onChange={(e) => setBaseUrlInput(e.target.value)}
-                placeholder="https://api.enphaseenergy.com/api/v2"
-              />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="enphase-client-secret">Client Secret</Label>
+                <Input
+                  id="enphase-client-secret"
+                  type="password"
+                  value={clientSecretInput}
+                  onChange={(e) => setClientSecretInput(e.target.value)}
+                  placeholder="Client secret from Enphase app"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="enphase-auth-code">Authorization Code</Label>
+                <Input
+                  id="enphase-auth-code"
+                  value={authorizationCodeInput}
+                  onChange={(e) => setAuthorizationCodeInput(e.target.value)}
+                  placeholder="Paste ?code=... from Enphase OAuth redirect"
+                />
+              </div>
             </div>
 
-            <p className="text-xs text-slate-500">
-              User ID is commonly shown on Enlighten Support:{" "}
-              <a
-                className="underline"
-                href="https://enlighten.enphaseenergy.com/support"
-                target="_blank"
-                rel="noreferrer"
-              >
-                enlighten.enphaseenergy.com/support
-              </a>
-            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="enphase-redirect-uri">Redirect URI</Label>
+                <Input
+                  id="enphase-redirect-uri"
+                  value={redirectUriInput}
+                  onChange={(e) => setRedirectUriInput(e.target.value)}
+                  placeholder={DEFAULT_REDIRECT_URI}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="enphase-base-url">Base API URL (advanced)</Label>
+                <Input
+                  id="enphase-base-url"
+                  value={baseUrlInput}
+                  onChange={(e) => setBaseUrlInput(e.target.value)}
+                  placeholder={DEFAULT_BASE_URL}
+                />
+              </div>
+            </div>
+
+            {authUrl && (
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                Get authorization code by opening:{" "}
+                <a
+                  href={authUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline break-all"
+                >
+                  {authUrl}
+                </a>
+              </div>
+            )}
 
             {statusError && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -224,13 +291,13 @@ export default function EnphaseV2MeterReads() {
             )}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={handleSaveCredentials} disabled={connectMutation.isPending}>
+              <Button onClick={handleConnect} disabled={connectMutation.isPending}>
                 {connectMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <PlugZap className="h-4 w-4 mr-2" />
                 )}
-                Save Credentials
+                Exchange Code + Connect
               </Button>
               <Button
                 variant="outline"
@@ -254,6 +321,14 @@ export default function EnphaseV2MeterReads() {
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Refresh
               </Button>
+              {authUrl && (
+                <Button variant="ghost" asChild>
+                  <a href={authUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink className="h-4 w-4 mr-2" />
+                    Open Auth URL
+                  </a>
+                </Button>
+              )}
               <span className="text-sm text-slate-600">
                 Status: {isConnected ? "Connected" : "Not connected"}
               </span>
@@ -261,8 +336,8 @@ export default function EnphaseV2MeterReads() {
 
             {isConnected && (
               <p className="text-xs text-slate-500">
-                Connected with user ID <strong>{statusQuery.data?.userId}</strong> at{" "}
-                <code>{statusQuery.data?.baseUrl || "https://api.enphaseenergy.com/api/v2"}</code>
+                Connected client ID <strong>{statusQuery.data?.clientId}</strong> at{" "}
+                <code>{statusQuery.data?.baseUrl || DEFAULT_BASE_URL}</code>
               </p>
             )}
           </CardContent>
@@ -272,7 +347,7 @@ export default function EnphaseV2MeterReads() {
           <CardHeader>
             <CardTitle>2) Select System + Date Range</CardTitle>
             <CardDescription>
-              Choose a system from `/systems`, then call summary or meter-read endpoints.
+              Choose a system from `/api/v4/systems`, or paste one manually, then fetch data.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -326,9 +401,7 @@ export default function EnphaseV2MeterReads() {
               </div>
             </div>
 
-            {systemsQuery.isLoading && (
-              <div className="text-sm text-slate-600">Loading systems...</div>
-            )}
+            {systemsQuery.isLoading && <div className="text-sm text-slate-600">Loading systems...</div>}
 
             {systemsError && (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -338,7 +411,7 @@ export default function EnphaseV2MeterReads() {
 
             {!systemsQuery.isLoading && !systemsError && isConnected && systems.length === 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-                No systems were returned for this key/user ID pair.
+                No systems were returned for this key/token combination.
               </div>
             )}
 
@@ -389,7 +462,7 @@ export default function EnphaseV2MeterReads() {
               <Button
                 disabled={!selectedSystemId || isRunningAction}
                 onClick={() =>
-                  runAction("Production Meter Readings", () =>
+                  runAction("Production Meter Telemetry", () =>
                     productionReadsMutation.mutateAsync({
                       systemId: selectedSystemId,
                       startDate,
@@ -398,7 +471,7 @@ export default function EnphaseV2MeterReads() {
                   )
                 }
               >
-                Fetch Production Meter Readings
+                Fetch Production Meter Telemetry
               </Button>
             </div>
           </CardContent>

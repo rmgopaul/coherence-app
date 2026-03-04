@@ -41,6 +41,7 @@ function getTodayDateKey(): string {
 }
 
 const ENPHASE_V2_PROVIDER = "enphase-v2";
+const ENPHASE_V4_PROVIDER = "enphase-v4";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -54,6 +55,23 @@ function parseEnphaseV2Metadata(metadata: string | null | undefined): {
   return {
     userId: toNonEmptyString(parsed.userId),
     baseUrl: toNonEmptyString(parsed.baseUrl),
+  };
+}
+
+function parseEnphaseV4Metadata(metadata: string | null | undefined): {
+  apiKey: string | null;
+  clientId: string | null;
+  clientSecret: string | null;
+  baseUrl: string | null;
+  redirectUri: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    apiKey: toNonEmptyString(parsed.apiKey),
+    clientId: toNonEmptyString(parsed.clientId),
+    clientSecret: toNonEmptyString(parsed.clientSecret),
+    baseUrl: toNonEmptyString(parsed.baseUrl),
+    redirectUri: toNonEmptyString(parsed.redirectUri),
   };
 }
 
@@ -74,6 +92,56 @@ async function getEnphaseV2Credentials(userId: number): Promise<{
   return {
     apiKey,
     userId: metadata.userId,
+    baseUrl: metadata.baseUrl,
+  };
+}
+
+async function getEnphaseV4Context(userId: number): Promise<{
+  accessToken: string;
+  apiKey: string;
+  baseUrl: string | null;
+}> {
+  const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, ENPHASE_V4_PROVIDER);
+  if (!integration?.accessToken) {
+    throw new Error("Enphase v4 is not connected. Exchange an authorization code first.");
+  }
+
+  const metadata = parseEnphaseV4Metadata(integration.metadata);
+  if (!metadata.apiKey || !metadata.clientId || !metadata.clientSecret) {
+    throw new Error("Enphase v4 connection is incomplete. Reconnect with API key + client credentials.");
+  }
+
+  const now = Date.now();
+  const expiresAt = integration.expiresAt ? new Date(integration.expiresAt).getTime() : null;
+  const needsRefresh = !expiresAt || expiresAt - now < 5 * 60 * 1000;
+
+  let accessToken = integration.accessToken;
+  if (needsRefresh) {
+    if (!integration.refreshToken) {
+      throw new Error("Enphase token expired and no refresh token is available. Reconnect first.");
+    }
+    const { refreshEnphaseV4AccessToken } = await import("./services/enphaseV4");
+    const refreshed = await refreshEnphaseV4AccessToken({
+      clientId: metadata.clientId,
+      clientSecret: metadata.clientSecret,
+      refreshToken: integration.refreshToken,
+    });
+
+    accessToken = refreshed.access_token;
+    const newExpiresAt = new Date(Date.now() + refreshed.expires_in * 1000);
+    await upsertIntegration({
+      ...integration,
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token || integration.refreshToken,
+      expiresAt: newExpiresAt,
+      scope: refreshed.scope || integration.scope,
+    });
+  }
+
+  return {
+    accessToken,
+    apiKey: metadata.apiKey,
     baseUrl: metadata.baseUrl,
   };
 }
@@ -393,6 +461,138 @@ export const appRouter = router({
         const { getSystemProductionMeterReadings } = await import("./services/enphaseV2");
         return getSystemProductionMeterReadings(
           credentials,
+          input.systemId.trim(),
+          input.startDate,
+          input.endDate
+        );
+      }),
+  }),
+
+  enphaseV4: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ENPHASE_V4_PROVIDER);
+      const metadata = parseEnphaseV4Metadata(integration?.metadata);
+      return {
+        connected: Boolean(integration?.accessToken && metadata.apiKey && metadata.clientId),
+        hasRefreshToken: Boolean(integration?.refreshToken),
+        expiresAt: integration?.expiresAt ? new Date(integration.expiresAt).toISOString() : null,
+        clientId: metadata.clientId,
+        baseUrl: metadata.baseUrl,
+        redirectUri: metadata.redirectUri,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          apiKey: z.string().min(1),
+          clientId: z.string().min(1),
+          clientSecret: z.string().min(1),
+          authorizationCode: z.string().min(1),
+          redirectUri: z.string().optional(),
+          baseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { exchangeEnphaseV4AuthorizationCode } = await import("./services/enphaseV4");
+
+        const tokenData = await exchangeEnphaseV4AuthorizationCode({
+          clientId: input.clientId.trim(),
+          clientSecret: input.clientSecret.trim(),
+          authorizationCode: input.authorizationCode.trim(),
+          redirectUri: input.redirectUri,
+        });
+
+        const metadata = JSON.stringify({
+          apiKey: input.apiKey.trim(),
+          clientId: input.clientId.trim(),
+          clientSecret: input.clientSecret.trim(),
+          redirectUri: toNonEmptyString(input.redirectUri),
+          baseUrl: toNonEmptyString(input.baseUrl),
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: ENPHASE_V4_PROVIDER,
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token ?? null,
+          expiresAt: new Date(Date.now() + tokenData.expires_in * 1000),
+          scope: tokenData.scope ?? null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          hasRefreshToken: Boolean(tokenData.refresh_token),
+          expiresInSeconds: tokenData.expires_in,
+        };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ENPHASE_V4_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    listSystems: protectedProcedure.query(async ({ ctx }) => {
+      const context = await getEnphaseV4Context(ctx.user.id);
+      const { listSystems } = await import("./services/enphaseV4");
+      return listSystems(context);
+    }),
+    getSummary: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnphaseV4Context(ctx.user.id);
+        const { getSystemSummary } = await import("./services/enphaseV4");
+        return getSystemSummary(context, input.systemId.trim());
+      }),
+    getEnergyLifetime: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnphaseV4Context(ctx.user.id);
+        const { getSystemEnergyLifetime } = await import("./services/enphaseV4");
+        return getSystemEnergyLifetime(context, input.systemId.trim(), input.startDate, input.endDate);
+      }),
+    getRgmStats: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnphaseV4Context(ctx.user.id);
+        const { getSystemRgmStats } = await import("./services/enphaseV4");
+        return getSystemRgmStats(context, input.systemId.trim(), input.startDate, input.endDate);
+      }),
+    getProductionMeterReadings: protectedProcedure
+      .input(
+        z.object({
+          systemId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnphaseV4Context(ctx.user.id);
+        const { getSystemProductionMeterTelemetry } = await import("./services/enphaseV4");
+        return getSystemProductionMeterTelemetry(
+          context,
           input.systemId.trim(),
           input.startDate,
           input.endDate
