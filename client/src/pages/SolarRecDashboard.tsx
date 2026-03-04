@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { ArrowLeft, Database, Upload } from "lucide-react";
+import { ArrowLeft, Database, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1164,6 +1164,13 @@ export default function SolarRecDashboard() {
     "performanceRatioPercent" | "productionDeltaWh" | "expectedProductionWh" | "systemName" | "readDate"
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
+
+  const jumpToSection = (sectionId: string) => {
+    if (typeof document === "undefined") return;
+    const target = document.getElementById(sectionId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
 
   const handleUpload = async (key: DatasetKey, file: File | null) => {
     if (!file) return;
@@ -2583,6 +2590,62 @@ export default function SolarRecDashboard() {
     };
   }, [performanceRatioResult]);
 
+  const downloadPerformanceRatioCsv = () => {
+    const headers = [
+      "system_name",
+      "nonid",
+      "portal_id",
+      "installer_name",
+      "monitoring_platform",
+      "monitoring",
+      "monitoring_system_id",
+      "monitoring_system_name",
+      "match_type",
+      "read_date",
+      "baseline_date",
+      "baseline_source",
+      "lifetime_read_wh",
+      "baseline_read_wh",
+      "production_delta_wh",
+      "expected_production_wh",
+      "performance_ratio_percent",
+      "contract_value",
+    ];
+
+    const rows = filteredPerformanceRatioRows.map((row) => ({
+      system_name: row.systemName,
+      nonid: row.trackingSystemRefId,
+      portal_id: row.systemId ?? "",
+      installer_name: row.installerName,
+      monitoring_platform: row.monitoringPlatform,
+      monitoring: row.monitoring,
+      monitoring_system_id: row.monitoringSystemId,
+      monitoring_system_name: row.monitoringSystemName,
+      match_type: row.matchType,
+      read_date: row.readDate ? row.readDate.toISOString().slice(0, 10) : row.readDateRaw,
+      baseline_date: row.baselineDate ? row.baselineDate.toISOString().slice(0, 10) : "",
+      baseline_source: row.baselineSource ?? "",
+      lifetime_read_wh: row.lifetimeReadWh ?? "",
+      baseline_read_wh: row.baselineReadWh ?? "",
+      production_delta_wh: row.productionDeltaWh ?? "",
+      expected_production_wh: row.expectedProductionWh ?? "",
+      performance_ratio_percent: row.performanceRatioPercent ?? "",
+      contract_value: row.contractValue,
+    }));
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `performance-ratio-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const zeroReportingInstallerPlatformRows = useMemo(() => {
     const groups = new Map<
       string,
@@ -3431,6 +3494,10 @@ export default function SolarRecDashboard() {
 
   const clearLogs = () => {
     setLogEntries([]);
+  };
+
+  const deleteLogEntry = (id: string) => {
+    setLogEntries((previous) => previous.filter((entry) => entry.id !== id));
   };
 
   const monthlySnapshotTransitions = useMemo(() => {
@@ -4763,7 +4830,7 @@ export default function SolarRecDashboard() {
           </TabsContent>
 
           <TabsContent value="offline-monitoring" className="space-y-4 mt-4">
-            <Card>
+            <Card id="offline-overview" className="scroll-mt-24">
               <CardHeader>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                   <div>
@@ -4779,7 +4846,36 @@ export default function SolarRecDashboard() {
               </CardHeader>
             </Card>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+            <Card className="border-slate-200/80 bg-slate-50/70">
+              <CardContent className="pt-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Jump to</span>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-overview")}>
+                    Overview
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-summary")}>
+                    Summary
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-by-method")}>
+                    By Method
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-by-platform")}>
+                    By Platform
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-by-installer")}>
+                    By Installer
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-zero-reporting")}>
+                    0% Reporting
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-detail")}>
+                    Offline Detail
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div id="offline-summary" className="grid gap-4 md:grid-cols-2 xl:grid-cols-6 scroll-mt-24">
               <Card>
                 <CardHeader>
                   <CardDescription>Total Offline Systems</CardDescription>
@@ -4821,7 +4917,7 @@ export default function SolarRecDashboard() {
             </div>
 
             <div className="grid gap-4 xl:grid-cols-2">
-              <Card>
+              <Card id="offline-by-method" className="scroll-mt-24">
                 <CardHeader>
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                     <div>
@@ -4890,7 +4986,7 @@ export default function SolarRecDashboard() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card id="offline-by-platform" className="scroll-mt-24">
                 <CardHeader>
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                     <div>
@@ -4960,7 +5056,7 @@ export default function SolarRecDashboard() {
               </Card>
             </div>
 
-            <Card>
+            <Card id="offline-by-installer" className="scroll-mt-24">
               <CardHeader>
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                   <div>
@@ -5029,7 +5125,7 @@ export default function SolarRecDashboard() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card id="offline-zero-reporting" className="scroll-mt-24">
               <CardHeader>
                 <CardTitle className="text-base">Installer + Monitoring Platform with 0% Reporting (&gt;10 Systems)</CardTitle>
                 <CardDescription>
@@ -5066,7 +5162,7 @@ export default function SolarRecDashboard() {
               </CardContent>
             </Card>
 
-            <Card>
+            <Card id="offline-detail" className="scroll-mt-24">
               <CardHeader>
                 <CardTitle className="text-base">Offline Systems Detail</CardTitle>
                 <CardDescription>Filterable and sortable list of non-reporting systems.</CardDescription>
@@ -5465,10 +5561,18 @@ export default function SolarRecDashboard() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Performance Ratio Allocation Detail</CardTitle>
-                    <CardDescription>
-                      Each row is one converted read allocated to one matching portal project.
-                    </CardDescription>
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-base">Performance Ratio Allocation Detail</CardTitle>
+                        <CardDescription>
+                          Each row is one converted read allocated to one matching portal project. Showing{" "}
+                          {formatNumber(filteredPerformanceRatioRows.length)} rows.
+                        </CardDescription>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={downloadPerformanceRatioCsv}>
+                        Download Performance Ratio CSV
+                      </Button>
+                    </div>
                   </CardHeader>
                   <CardContent>
                     <Table>
@@ -5490,7 +5594,7 @@ export default function SolarRecDashboard() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {filteredPerformanceRatioRows.slice(0, 1500).map((row) => (
+                        {filteredPerformanceRatioRows.map((row) => (
                           <TableRow key={row.key}>
                             <TableCell className="font-medium">{row.systemName}</TableCell>
                             <TableCell>{row.trackingSystemRefId}</TableCell>
@@ -5624,7 +5728,22 @@ export default function SolarRecDashboard() {
                       <TableRow>
                         <TableHead>Metric</TableHead>
                         {snapshotLogColumns.map((entry) => (
-                          <TableHead key={entry.id}>{entry.createdAt.toLocaleDateString()} {entry.createdAt.toLocaleTimeString()}</TableHead>
+                          <TableHead key={entry.id}>
+                            <div className="flex min-w-[130px] flex-col gap-1">
+                              <span>
+                                {entry.createdAt.toLocaleDateString()} {entry.createdAt.toLocaleTimeString()}
+                              </span>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 w-fit px-2 text-rose-700 hover:text-rose-800"
+                                onClick={() => deleteLogEntry(entry.id)}
+                              >
+                                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                                Delete
+                              </Button>
+                            </div>
+                          </TableHead>
                         ))}
                       </TableRow>
                     </TableHeader>
