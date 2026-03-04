@@ -441,6 +441,8 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PERFORMANCE_RATIO_PAGE_SIZE = 250;
+const MAX_REMOTE_STATE_LOG_BYTES = 1_500_000;
+const REMOTE_LOG_ENTRY_LIMIT = 120;
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
@@ -1006,6 +1008,22 @@ type RemoteDatasetManifestEntry = {
   }>;
 };
 
+type SerializedDashboardLogEntry = Omit<DashboardLogEntry, "createdAt" | "datasets" | "cooStatuses"> & {
+  createdAt: string;
+  datasets: Array<{
+    key: DatasetKey;
+    label: string;
+    fileName: string;
+    rows: number;
+    updatedAt: string;
+  }>;
+  cooStatuses: Array<{
+    key: string;
+    status: ChangeOwnershipStatus;
+    systemName?: string;
+  }>;
+};
+
 function deserializeDatasets(
   parsed: Record<string, SerializedCsvDataset | undefined>
 ): Partial<Record<DatasetKey, CsvDataset>> {
@@ -1167,6 +1185,58 @@ async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDat
   });
 }
 
+function serializeDashboardLogs(
+  logEntries: DashboardLogEntry[],
+  options?: { includeSystemName?: boolean }
+): SerializedDashboardLogEntry[] {
+  const includeSystemName = options?.includeSystemName ?? true;
+  return logEntries.map((entry) => ({
+    ...entry,
+    createdAt: entry.createdAt.toISOString(),
+    datasets: entry.datasets.map((dataset) => ({
+      ...dataset,
+      updatedAt: dataset.updatedAt.toISOString(),
+    })),
+    cooStatuses: entry.cooStatuses.map((status) =>
+      includeSystemName
+        ? {
+            key: status.key,
+            status: status.status,
+            systemName: status.systemName,
+          }
+        : {
+            key: status.key,
+            status: status.status,
+          }
+    ),
+  }));
+}
+
+function safeJsonStringify(value: unknown): string | null {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return null;
+  }
+}
+
+function compactLogsForRemoteSync(
+  logEntries: DashboardLogEntry[]
+): SerializedDashboardLogEntry[] {
+  let serialized = serializeDashboardLogs(logEntries.slice(-REMOTE_LOG_ENTRY_LIMIT), {
+    includeSystemName: false,
+  });
+
+  while (serialized.length > 0) {
+    const text = safeJsonStringify(serialized);
+    if (text && text.length <= MAX_REMOTE_STATE_LOG_BYTES) break;
+    const dropCount = Math.max(1, Math.ceil(serialized.length / 3));
+    serialized = serialized.slice(dropCount);
+  }
+
+  return serialized;
+}
+
 function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
   try {
     const parsed = JSON.parse(raw) as Array<{
@@ -1190,7 +1260,7 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
       contractedValueNotReporting?: number;
       contractedValueReportingPercent?: number | null;
       datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
-      cooStatuses?: Array<{ key: string; systemName: string; status: ChangeOwnershipStatus }>;
+      cooStatuses?: Array<{ key: string; systemName?: string; status: ChangeOwnershipStatus }>;
     }>;
     return parsed
       .map((entry) => {
@@ -1203,16 +1273,18 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
             return { ...dataset, updatedAt };
           })
           .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null);
-        const cooStatuses = (entry.cooStatuses ?? []).filter((item): item is {
-          key: string;
-          systemName: string;
-          status: ChangeOwnershipStatus;
-        } => {
-          if (!item || typeof item.key !== "string") return false;
-          if (typeof item.systemName !== "string") return false;
-          if (typeof item.status !== "string") return false;
-          return CHANGE_OWNERSHIP_ORDER.includes(item.status as ChangeOwnershipStatus);
-        });
+        const cooStatuses = (entry.cooStatuses ?? [])
+          .map((item) => {
+            if (!item || typeof item.key !== "string") return null;
+            if (typeof item.status !== "string") return null;
+            if (!CHANGE_OWNERSHIP_ORDER.includes(item.status as ChangeOwnershipStatus)) return null;
+            return {
+              key: item.key,
+              systemName: typeof item.systemName === "string" ? item.systemName : item.key,
+              status: item.status as ChangeOwnershipStatus,
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
         return {
           ...entry,
           createdAt,
@@ -3605,18 +3677,8 @@ export default function SolarRecDashboard() {
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
   }, [contractDeliveryRows]);
 
-  const serializedLogEntries = useMemo(
-    () =>
-      logEntries.map((entry) => ({
-        ...entry,
-        createdAt: entry.createdAt.toISOString(),
-        datasets: entry.datasets.map((dataset) => ({
-          ...dataset,
-          updatedAt: dataset.updatedAt.toISOString(),
-        })),
-      })),
-    [logEntries]
-  );
+  const serializedLogEntries = useMemo(() => serializeDashboardLogs(logEntries), [logEntries]);
+  const compactRemoteLogs = useMemo(() => compactLogsForRemoteSync(logEntries), [logEntries]);
 
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
@@ -3641,14 +3703,33 @@ export default function SolarRecDashboard() {
     [datasets]
   );
 
-  const serializedRemoteStatePayload = useMemo(
-    () =>
-      JSON.stringify({
+  const manifestOnlyRemoteStatePayload = useMemo(() => {
+    return (
+      safeJsonStringify({
         datasetManifest: remoteDatasetManifest,
-        logs: serializedLogEntries,
-      }),
-    [remoteDatasetManifest, serializedLogEntries]
-  );
+        logs: [],
+      }) ?? "{\"datasetManifest\":{},\"logs\":[]}"
+    );
+  }, [remoteDatasetManifest]);
+
+  const remoteStatePayload = useMemo(() => {
+    const payload = safeJsonStringify({
+      datasetManifest: remoteDatasetManifest,
+      logs: compactRemoteLogs,
+    });
+
+    if (payload) {
+      return {
+        payload,
+        usedManifestOnly: false,
+      };
+    }
+
+    return {
+      payload: manifestOnlyRemoteStatePayload,
+      usedManifestOnly: true,
+    };
+  }, [compactRemoteLogs, manifestOnlyRemoteStatePayload, remoteDatasetManifest]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3765,27 +3846,44 @@ export default function SolarRecDashboard() {
     }
 
     if (remoteDashboardStateQuery.status !== "success") return;
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
-      saveRemoteDashboardState.mutate(
-        { payload: serializedRemoteStatePayload },
-        {
-          onSuccess: () => setStorageNotice(null),
-          onError: () => setStorageNotice("Could not sync dashboard state metadata to cloud storage."),
+      void (async () => {
+        try {
+          await saveRemoteDashboardState.mutateAsync({ payload: remoteStatePayload.payload });
+          if (cancelled) return;
+          if (remoteStatePayload.usedManifestOnly) {
+            setStorageNotice("Cloud sync saved dataset metadata only; snapshot history was too large to sync.");
+            return;
+          }
+          setStorageNotice(null);
+        } catch {
+          try {
+            await saveRemoteDashboardState.mutateAsync({ payload: manifestOnlyRemoteStatePayload });
+            if (cancelled) return;
+            setStorageNotice("Cloud sync saved dataset metadata only; snapshot history was too large to sync.");
+          } catch {
+            if (cancelled) return;
+            setStorageNotice("Could not sync dashboard state metadata to cloud storage.");
+          }
         }
-      );
+      })();
     }, 900);
 
     return () => {
+      cancelled = true;
       window.clearTimeout(timeout);
     };
   }, [
     datasets,
     datasetsHydrated,
+    manifestOnlyRemoteStatePayload,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
+    remoteStatePayload.payload,
+    remoteStatePayload.usedManifestOnly,
     saveRemoteDashboardState,
     serializedLogEntries,
-    serializedRemoteStatePayload,
   ]);
 
   useEffect(() => {
