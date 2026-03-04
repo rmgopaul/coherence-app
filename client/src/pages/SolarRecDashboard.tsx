@@ -3159,18 +3159,18 @@ export default function SolarRecDashboard() {
         ) : null}
 
         <Tabs defaultValue="overview">
-          <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 xl:grid-cols-11 h-auto">
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="size">Size + Reporting</TabsTrigger>
-            <TabsTrigger value="value">REC Value</TabsTrigger>
-            <TabsTrigger value="contracts">Utility Contracts</TabsTrigger>
-            <TabsTrigger value="annual-review">Annual REC Review</TabsTrigger>
-            <TabsTrigger value="performance-eval">REC Performance Eval</TabsTrigger>
-            <TabsTrigger value="change-ownership">Change of Ownership</TabsTrigger>
-            <TabsTrigger value="ownership">Ownership Status</TabsTrigger>
-            <TabsTrigger value="offline-monitoring">Offline by Monitoring</TabsTrigger>
-            <TabsTrigger value="meter-reads">Meter Reads</TabsTrigger>
-            <TabsTrigger value="snapshot-log">Snapshot Log</TabsTrigger>
+          <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto whitespace-nowrap">
+            <TabsTrigger className="shrink-0" value="overview">Overview</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="size">Size + Reporting</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="value">REC Value</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="contracts">Utility Contracts</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="annual-review">Annual REC Review</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="performance-eval">REC Performance Eval</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="change-ownership">Change of Ownership</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="ownership">Ownership Status</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="offline-monitoring">Offline by Monitoring</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="meter-reads">Meter Reads</TabsTrigger>
+            <TabsTrigger className="shrink-0" value="snapshot-log">Snapshot Log</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
