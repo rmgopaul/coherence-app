@@ -3847,12 +3847,14 @@ export default function SolarRecDashboard() {
       try {
         const payload = remoteDashboardStateQuery.data?.payload;
         let manifest: Record<string, RemoteDatasetManifestEntry> = {};
+        let hasManifestField = false;
 
         if (payload) {
           const parsed = JSON.parse(payload) as {
             datasetManifest?: Record<string, RemoteDatasetManifestEntry>;
             logs?: unknown;
           };
+          hasManifestField = Object.prototype.hasOwnProperty.call(parsed, "datasetManifest");
 
           if (Array.isArray(parsed.logs) && !cancelled) {
             setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
@@ -3867,7 +3869,7 @@ export default function SolarRecDashboard() {
           keysToLoad.add(rawKey);
         });
 
-        if (keysToLoad.size === 0) {
+        if (keysToLoad.size === 0 && (!payload || !hasManifestField)) {
           (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => keysToLoad.add(key));
         }
 
@@ -3974,7 +3976,17 @@ export default function SolarRecDashboard() {
 
         for (const key of Object.keys(DATASET_DEFINITIONS) as DatasetKey[]) {
           const dataset = datasets[key];
-          if (!dataset) continue;
+          if (!dataset) {
+            if (!remoteDatasetSignatureRef.current[key]) continue;
+            try {
+              await saveRemoteDataset.mutateAsync({ key, payload: "" });
+              delete remoteDatasetSignatureRef.current[key];
+            } catch {
+              setStorageNotice(`Could not clear ${DATASET_DEFINITIONS[key].label} dataset from cloud storage.`);
+              return;
+            }
+            continue;
+          }
           const signature = `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
           nextSignatures[key] = signature;
 
