@@ -465,26 +465,28 @@ export async function saveSolarRecDashboardPayload(userId: number, storageKey: s
   const now = new Date();
 
   await withDbRetry("save solar rec dashboard payload", async () => {
-    await db
-      .delete(solarRecDashboardStorage)
-      .where(
-        and(
-          eq(solarRecDashboardStorage.userId, userId),
-          eq(solarRecDashboardStorage.storageKey, storageKey)
-        )
-      );
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(solarRecDashboardStorage)
+        .where(
+          and(
+            eq(solarRecDashboardStorage.userId, userId),
+            eq(solarRecDashboardStorage.storageKey, storageKey)
+          )
+        );
 
-    await db.insert(solarRecDashboardStorage).values(
-      chunks.map((chunk, index) => ({
-        id: nanoid(),
-        userId,
-        storageKey,
-        chunkIndex: index,
-        payload: chunk,
-        createdAt: now,
-        updatedAt: now,
-      }))
-    );
+      await tx.insert(solarRecDashboardStorage).values(
+        chunks.map((chunk, index) => ({
+          id: nanoid(),
+          userId,
+          storageKey,
+          chunkIndex: index,
+          payload: chunk,
+          createdAt: now,
+          updatedAt: now,
+        }))
+      );
+    });
   });
 
   return true;

@@ -3871,7 +3871,16 @@ export default function SolarRecDashboard() {
 
         if (!cancelled) {
           if (Object.keys(loadedDatasets).length > 0) {
-            setDatasets(loadedDatasets);
+            setDatasets((current) => {
+              if (Object.keys(current).length === 0) return loadedDatasets;
+              const merged = { ...current };
+              for (const [key, value] of Object.entries(loadedDatasets)) {
+                if (!merged[key as DatasetKey] && value) {
+                  merged[key as DatasetKey] = value;
+                }
+              }
+              return merged;
+            });
           }
           remoteDatasetSignatureRef.current = loadedSignatures;
           setStorageNotice(null);
@@ -3899,24 +3908,21 @@ export default function SolarRecDashboard() {
     if (remoteDashboardStateQuery.status === "pending") return;
     if (!datasetsHydrated || !remoteStateHydrated) return;
 
-    if (remoteDashboardStateQuery.status === "error") {
-      let cancelled = false;
-      void (async () => {
-        try {
-          await saveDatasetsToStorage(datasets);
-          if (cancelled) return;
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serializedLogEntries));
-          }
-          setStorageNotice(null);
-        } catch {
-          if (cancelled) return;
-          setStorageNotice("Could not save dashboard data in local browser storage.");
+    // Always persist datasets and logs locally so deletions and new entries survive reload
+    void (async () => {
+      try {
+        await saveDatasetsToStorage(datasets);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serializedLogEntries));
         }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      } catch {
+        // Local save failure is non-critical when remote sync is also active
+      }
+    })();
+
+    if (remoteDashboardStateQuery.status === "error") {
+      setStorageNotice(null);
+      return;
     }
 
     if (remoteDashboardStateQuery.status !== "success") return;
