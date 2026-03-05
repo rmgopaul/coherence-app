@@ -3847,14 +3847,12 @@ export default function SolarRecDashboard() {
       try {
         const payload = remoteDashboardStateQuery.data?.payload;
         let manifest: Record<string, RemoteDatasetManifestEntry> = {};
-        let hasManifestField = false;
 
         if (payload) {
           const parsed = JSON.parse(payload) as {
             datasetManifest?: Record<string, RemoteDatasetManifestEntry>;
             logs?: unknown;
           };
-          hasManifestField = Object.prototype.hasOwnProperty.call(parsed, "datasetManifest");
 
           if (Array.isArray(parsed.logs) && !cancelled) {
             setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
@@ -3868,10 +3866,6 @@ export default function SolarRecDashboard() {
           if (!isDatasetKey(rawKey)) return;
           keysToLoad.add(rawKey);
         });
-
-        if (keysToLoad.size === 0 && (!payload || !hasManifestField)) {
-          (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => keysToLoad.add(key));
-        }
 
         const { loadedDatasets, loadedSignatures } = await loadRemoteDatasets(Array.from(keysToLoad));
 
