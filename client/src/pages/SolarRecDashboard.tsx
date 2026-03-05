@@ -1405,6 +1405,7 @@ export default function SolarRecDashboard() {
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
+  const [activeTab, setActiveTab] = useState("overview");
 
   const jumpToSection = (sectionId: string) => {
     if (typeof document === "undefined") return;
@@ -4096,6 +4097,8 @@ export default function SolarRecDashboard() {
   };
 
   const monthlySnapshotTransitions = useMemo(() => {
+    if (activeTab !== "snapshot-log") return [];
+
     const monthLatest = new Map<string, DashboardLogEntry>();
 
     logEntries.forEach((entry) => {
@@ -4127,17 +4130,21 @@ export default function SolarRecDashboard() {
 
       const previousMap = new Map<string, TransitionStatus>();
       const currentMap = new Map<string, TransitionStatus>();
+      const previousTargetKeys = new Set<string>();
+      const currentTargetKeys = new Set<string>();
 
       previous.entry.cooStatuses.forEach((item) => {
         previousMap.set(item.key, item.status);
+        if (item.status === COO_TARGET_STATUS) previousTargetKeys.add(item.key);
       });
       current.entry.cooStatuses.forEach((item) => {
         currentMap.set(item.key, item.status);
+        if (item.status === COO_TARGET_STATUS) currentTargetKeys.add(item.key);
       });
 
       const allKeys = new Set<string>([
-        ...Array.from(previousMap.keys()),
-        ...Array.from(currentMap.keys()),
+        ...Array.from(previousTargetKeys),
+        ...Array.from(currentTargetKeys),
       ]);
       const movedInBreakdown = new Map<TransitionStatus, number>();
       const movedOutBreakdown = new Map<TransitionStatus, number>();
@@ -4173,7 +4180,7 @@ export default function SolarRecDashboard() {
     }
 
     return transitions.reverse();
-  }, [logEntries]);
+  }, [activeTab, logEntries]);
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
 
@@ -4435,7 +4442,7 @@ export default function SolarRecDashboard() {
           </Card>
         ) : null}
 
-        <Tabs defaultValue="overview">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto whitespace-nowrap">
             <TabsTrigger className="shrink-0" value="overview">Overview</TabsTrigger>
             <TabsTrigger className="shrink-0" value="size">Size + Reporting</TabsTrigger>
