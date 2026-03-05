@@ -1412,6 +1412,18 @@ export default function SolarRecDashboard() {
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
+  const [monthlySnapshotTransitions, setMonthlySnapshotTransitions] = useState<
+    Array<{
+      monthKey: string;
+      monthLabel: string;
+      movedIn: number;
+      movedOut: number;
+      net: number;
+      endingCount: number;
+      movedInBreakdown: string;
+      movedOutBreakdown: string;
+    }>
+  >([]);
   const [activeTab, setActiveTab] = useState("overview");
 
   const jumpToSection = (sectionId: string) => {
@@ -4113,90 +4125,96 @@ export default function SolarRecDashboard() {
     setLogEntries((previous) => previous.filter((entry) => entry.id !== id));
   };
 
-  const monthlySnapshotTransitions = useMemo(() => {
-    if (activeTab !== "snapshot-log") return [];
+  useEffect(() => {
+    if (activeTab !== "snapshot-log") return;
 
-    const monthLatest = new Map<string, DashboardLogEntry>();
+    const timeout = window.setTimeout(() => {
+      const monthLatest = new Map<string, DashboardLogEntry>();
 
-    logEntries.forEach((entry) => {
-      const key = `${entry.createdAt.getFullYear()}-${String(entry.createdAt.getMonth() + 1).padStart(2, "0")}`;
-      const existing = monthLatest.get(key);
-      if (!existing || entry.createdAt > existing.createdAt) {
-        monthLatest.set(key, entry);
+      logEntries.forEach((entry) => {
+        const key = `${entry.createdAt.getFullYear()}-${String(entry.createdAt.getMonth() + 1).padStart(2, "0")}`;
+        const existing = monthLatest.get(key);
+        if (!existing || entry.createdAt > existing.createdAt) {
+          monthLatest.set(key, entry);
+        }
+      });
+
+      const monthlySeries = Array.from(monthLatest.entries())
+        .map(([key, entry]) => ({ monthKey: key, entry }))
+        .sort((a, b) => a.entry.createdAt.getTime() - b.entry.createdAt.getTime());
+
+      const transitions: Array<{
+        monthKey: string;
+        monthLabel: string;
+        movedIn: number;
+        movedOut: number;
+        net: number;
+        endingCount: number;
+        movedInBreakdown: string;
+        movedOutBreakdown: string;
+      }> = [];
+
+      for (let i = 1; i < monthlySeries.length; i += 1) {
+        const previous = monthlySeries[i - 1];
+        const current = monthlySeries[i];
+
+        const previousMap = new Map<string, TransitionStatus>();
+        const currentMap = new Map<string, TransitionStatus>();
+        const previousTargetKeys = new Set<string>();
+        const currentTargetKeys = new Set<string>();
+
+        previous.entry.cooStatuses.forEach((item) => {
+          previousMap.set(item.key, item.status);
+          if (item.status === COO_TARGET_STATUS) previousTargetKeys.add(item.key);
+        });
+        current.entry.cooStatuses.forEach((item) => {
+          currentMap.set(item.key, item.status);
+          if (item.status === COO_TARGET_STATUS) currentTargetKeys.add(item.key);
+        });
+
+        const allKeys = new Set<string>([
+          ...Array.from(previousTargetKeys),
+          ...Array.from(currentTargetKeys),
+        ]);
+        const movedInBreakdown = new Map<TransitionStatus, number>();
+        const movedOutBreakdown = new Map<TransitionStatus, number>();
+        let movedIn = 0;
+        let movedOut = 0;
+        let endingCount = 0;
+
+        allKeys.forEach((key) => {
+          const prevStatus = previousMap.get(key) ?? NO_COO_STATUS;
+          const currStatus = currentMap.get(key) ?? NO_COO_STATUS;
+
+          if (currStatus === COO_TARGET_STATUS) endingCount += 1;
+          if (prevStatus !== COO_TARGET_STATUS && currStatus === COO_TARGET_STATUS) {
+            movedIn += 1;
+            movedInBreakdown.set(prevStatus, (movedInBreakdown.get(prevStatus) ?? 0) + 1);
+          }
+          if (prevStatus === COO_TARGET_STATUS && currStatus !== COO_TARGET_STATUS) {
+            movedOut += 1;
+            movedOutBreakdown.set(currStatus, (movedOutBreakdown.get(currStatus) ?? 0) + 1);
+          }
+        });
+
+        transitions.push({
+          monthKey: current.monthKey,
+          monthLabel: current.entry.createdAt.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
+          movedIn,
+          movedOut,
+          net: movedIn - movedOut,
+          endingCount,
+          movedInBreakdown: formatTransitionBreakdown(movedInBreakdown),
+          movedOutBreakdown: formatTransitionBreakdown(movedOutBreakdown),
+        });
       }
-    });
 
-    const monthlySeries = Array.from(monthLatest.entries())
-      .map(([key, entry]) => ({ monthKey: key, entry }))
-      .sort((a, b) => a.entry.createdAt.getTime() - b.entry.createdAt.getTime());
+      setMonthlySnapshotTransitions(transitions.reverse());
+    }, 0);
 
-    const transitions: Array<{
-      monthKey: string;
-      monthLabel: string;
-      movedIn: number;
-      movedOut: number;
-      net: number;
-      endingCount: number;
-      movedInBreakdown: string;
-      movedOutBreakdown: string;
-    }> = [];
-
-    for (let i = 1; i < monthlySeries.length; i += 1) {
-      const previous = monthlySeries[i - 1];
-      const current = monthlySeries[i];
-
-      const previousMap = new Map<string, TransitionStatus>();
-      const currentMap = new Map<string, TransitionStatus>();
-      const previousTargetKeys = new Set<string>();
-      const currentTargetKeys = new Set<string>();
-
-      previous.entry.cooStatuses.forEach((item) => {
-        previousMap.set(item.key, item.status);
-        if (item.status === COO_TARGET_STATUS) previousTargetKeys.add(item.key);
-      });
-      current.entry.cooStatuses.forEach((item) => {
-        currentMap.set(item.key, item.status);
-        if (item.status === COO_TARGET_STATUS) currentTargetKeys.add(item.key);
-      });
-
-      const allKeys = new Set<string>([
-        ...Array.from(previousTargetKeys),
-        ...Array.from(currentTargetKeys),
-      ]);
-      const movedInBreakdown = new Map<TransitionStatus, number>();
-      const movedOutBreakdown = new Map<TransitionStatus, number>();
-      let movedIn = 0;
-      let movedOut = 0;
-      let endingCount = 0;
-
-      allKeys.forEach((key) => {
-        const prevStatus = previousMap.get(key) ?? NO_COO_STATUS;
-        const currStatus = currentMap.get(key) ?? NO_COO_STATUS;
-
-        if (currStatus === COO_TARGET_STATUS) endingCount += 1;
-        if (prevStatus !== COO_TARGET_STATUS && currStatus === COO_TARGET_STATUS) {
-          movedIn += 1;
-          movedInBreakdown.set(prevStatus, (movedInBreakdown.get(prevStatus) ?? 0) + 1);
-        }
-        if (prevStatus === COO_TARGET_STATUS && currStatus !== COO_TARGET_STATUS) {
-          movedOut += 1;
-          movedOutBreakdown.set(currStatus, (movedOutBreakdown.get(currStatus) ?? 0) + 1);
-        }
-      });
-
-      transitions.push({
-        monthKey: current.monthKey,
-        monthLabel: current.entry.createdAt.toLocaleDateString("en-US", { month: "short", year: "numeric" }),
-        movedIn,
-        movedOut,
-        net: movedIn - movedOut,
-        endingCount,
-        movedInBreakdown: formatTransitionBreakdown(movedInBreakdown),
-        movedOutBreakdown: formatTransitionBreakdown(movedOutBreakdown),
-      });
-    }
-
-    return transitions.reverse();
+    return () => {
+      window.clearTimeout(timeout);
+    };
   }, [activeTab, logEntries]);
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
