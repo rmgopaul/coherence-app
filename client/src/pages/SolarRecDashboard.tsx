@@ -448,6 +448,7 @@ const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
 const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 500_000;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
+const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
@@ -925,6 +926,23 @@ function parseChunkPointerPayload(payload: string): string[] | null {
     return chunkKeys.length === parsed.chunkKeys.length ? chunkKeys : null;
   } catch {
     return null;
+  }
+}
+
+function buildDatasetKeyManifestPayload(keys: DatasetKey[]): string {
+  return JSON.stringify({
+    keys,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function parseDatasetKeyManifestPayload(payload: string): DatasetKey[] {
+  try {
+    const parsed = JSON.parse(payload) as { keys?: unknown };
+    if (!Array.isArray(parsed.keys)) return [];
+    return parsed.keys.filter((key): key is DatasetKey => typeof key === "string" && isDatasetKey(key));
+  } catch {
+    return [];
   }
 }
 
@@ -3893,6 +3911,17 @@ export default function SolarRecDashboard() {
           keysToLoad.add(rawKey);
         });
 
+        if (keysToLoad.size === 0) {
+          try {
+            const manifestResponse = await getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_DATASET_KEY_MANIFEST });
+            if (manifestResponse?.payload) {
+              parseDatasetKeyManifestPayload(manifestResponse.payload).forEach((key) => keysToLoad.add(key));
+            }
+          } catch {
+            // Optional fallback key; ignore errors.
+          }
+        }
+
         const { loadedDatasets, loadedSignatures } = await loadRemoteDatasets(Array.from(keysToLoad));
 
         if (!cancelled) {
@@ -4051,6 +4080,17 @@ export default function SolarRecDashboard() {
             setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} dataset to cloud storage.`);
             return;
           }
+        }
+
+        const activeKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
+        try {
+          await saveRemoteDatasetRef.current.mutateAsync({
+            key: REMOTE_DATASET_KEY_MANIFEST,
+            payload: buildDatasetKeyManifestPayload(activeKeys),
+          });
+        } catch {
+          setStorageNotice("Could not sync dataset manifest to cloud storage.");
+          return;
         }
 
         remoteDatasetSignatureRef.current = nextSignatures;
