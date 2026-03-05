@@ -441,6 +441,8 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PERFORMANCE_RATIO_PAGE_SIZE = 250;
+const GENERIC_TABLE_RENDER_LIMIT = 400;
+const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
@@ -4537,6 +4539,11 @@ export default function SolarRecDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
+                {contractSummaryRows.length > GENERIC_TABLE_RENDER_LIMIT ? (
+                  <p className="mb-2 text-xs text-slate-500">
+                    Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(contractSummaryRows.length)} rows.
+                  </p>
+                ) : null}
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -4715,7 +4722,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {contractSummaryRows.map((row) => (
+                    {contractSummaryRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
                       <TableRow key={row.contractId}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{formatNumber(row.startDateCount)}</TableCell>
@@ -4744,6 +4751,11 @@ export default function SolarRecDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
+                {contractDeliveryRows.length > GENERIC_TABLE_RENDER_LIMIT ? (
+                  <p className="mb-2 text-xs text-slate-500">
+                    Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(contractDeliveryRows.length)} rows.
+                  </p>
+                ) : null}
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -4761,7 +4773,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {contractDeliveryRows.map((row) => (
+                    {contractDeliveryRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
                       <TableRow key={`${row.contractId}-${row.deliveryStartRaw}`}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
@@ -4950,7 +4962,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {annualContractVintageRows.map((row) => (
+                    {annualContractVintageRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
                       <TableRow key={`${row.contractId}-${row.deliveryStartRaw}`}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
@@ -4982,6 +4994,11 @@ export default function SolarRecDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
+                {annualContractSummaryRows.length > GENERIC_TABLE_RENDER_LIMIT ? (
+                  <p className="mb-2 text-xs text-slate-500">
+                    Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(annualContractSummaryRows.length)} rows.
+                  </p>
+                ) : null}
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -5001,7 +5018,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {annualContractSummaryRows.map((row) => (
+                    {annualContractSummaryRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
                       <TableRow key={row.contractId}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{formatNumber(row.startDateCount)}</TableCell>
@@ -5184,6 +5201,11 @@ export default function SolarRecDashboard() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
+                    {recPerformanceEvaluation.rows.length > GENERIC_TABLE_RENDER_LIMIT ? (
+                      <p className="mb-2 text-xs text-slate-500">
+                        Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(recPerformanceEvaluation.rows.length)} rows.
+                      </p>
+                    ) : null}
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -5206,7 +5228,7 @@ export default function SolarRecDashboard() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {recPerformanceEvaluation.rows.map((row) => (
+                        {recPerformanceEvaluation.rows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
                           <TableRow key={row.key}>
                             <TableCell>{row.applicationId}</TableCell>
                             <TableCell>{row.unitId}</TableCell>
@@ -5347,6 +5369,12 @@ export default function SolarRecDashboard() {
                     />
                   </div>
                 </div>
+
+                {filteredOfflineSystems.length > OFFLINE_DETAIL_RENDER_LIMIT ? (
+                  <p className="text-xs text-slate-500">
+                    Showing first {formatNumber(OFFLINE_DETAIL_RENDER_LIMIT)} of {formatNumber(filteredOfflineSystems.length)} systems.
+                  </p>
+                ) : null}
 
                 <Table>
                   <TableHeader>
@@ -5914,7 +5942,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredOfflineSystems.slice(0, 1000).map((system) => (
+                    {filteredOfflineSystems.slice(0, OFFLINE_DETAIL_RENDER_LIMIT).map((system) => (
                       <TableRow key={system.key}>
                         <TableCell className="font-medium">{system.systemName}</TableCell>
                         <TableCell>{system.systemId ?? "N/A"}</TableCell>
