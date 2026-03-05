@@ -3717,8 +3717,8 @@ export default function SolarRecDashboard() {
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
   }, [contractDeliveryRows]);
 
-  const serializedLogEntries = useMemo(() => serializeDashboardLogs(logEntries), [logEntries]);
   const compactRemoteLogs = useMemo(() => compactLogsForRemoteSync(logEntries), [logEntries]);
+  const serializedLocalLogEntries = useMemo(() => safeJsonStringify(compactRemoteLogs) ?? "[]", [compactRemoteLogs]);
 
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
@@ -3917,7 +3917,7 @@ export default function SolarRecDashboard() {
         try {
           await saveDatasetsToStorage(datasets);
           if (typeof window !== "undefined") {
-            window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serializedLogEntries));
+            window.localStorage.setItem(LOGS_STORAGE_KEY, serializedLocalLogEntries);
           }
         } catch {
           // Local save failure is non-critical when remote sync is also active
@@ -3976,7 +3976,7 @@ export default function SolarRecDashboard() {
     remoteStatePayload.payload,
     remoteStatePayload.usedManifestOnly,
     saveRemoteDashboardState,
-    serializedLogEntries,
+    serializedLocalLogEntries,
   ]);
 
   useEffect(() => {
