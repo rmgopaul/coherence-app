@@ -1372,6 +1372,12 @@ export default function SolarRecDashboard() {
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
+  saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
+  const getRemoteDatasetRef = useRef(getRemoteDataset);
+  getRemoteDatasetRef.current = getRemoteDataset;
+  const saveRemoteDatasetRef = useRef(saveRemoteDataset);
+  saveRemoteDatasetRef.current = saveRemoteDataset;
   const remoteDatasetSignatureRef = useRef<Partial<Record<DatasetKey, string>>>({});
   const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
   const [searchTerm, setSearchTerm] = useState("");
@@ -3834,7 +3840,7 @@ export default function SolarRecDashboard() {
         for (const rawKey of keys) {
           if (cancelled) break;
           try {
-            const response = await getRemoteDataset.mutateAsync({ key: rawKey });
+            const response = await getRemoteDatasetRef.current.mutateAsync({ key: rawKey });
             if (!response?.payload) continue;
             let datasetPayload = response.payload;
             const chunkKeys = parseChunkPointerPayload(response.payload);
@@ -3842,7 +3848,7 @@ export default function SolarRecDashboard() {
             if (chunkKeys) {
               const chunkResponses = await Promise.all(
                 chunkKeys.map((chunkKey) =>
-                  getRemoteDataset
+                  getRemoteDatasetRef.current
                     .mutateAsync({ key: chunkKey })
                     .then((chunkResponse) => chunkResponse?.payload ?? null)
                     .catch(() => null)
@@ -3919,7 +3925,6 @@ export default function SolarRecDashboard() {
       cancelled = true;
     };
   }, [
-    getRemoteDataset,
     remoteDashboardStateQuery.data,
     remoteDashboardStateQuery.status,
   ]);
@@ -3959,7 +3964,7 @@ export default function SolarRecDashboard() {
     const timeout = window.setTimeout(() => {
       void (async () => {
         try {
-          await saveRemoteDashboardState.mutateAsync({ payload: remoteStatePayload.payload });
+          await saveRemoteDashboardStateRef.current.mutateAsync({ payload: remoteStatePayload.payload });
           if (cancelled) return;
           if (remoteStatePayload.usedManifestOnly) {
             setStorageNotice("Cloud sync saved dataset metadata only; snapshot history was too large to sync.");
@@ -3968,7 +3973,7 @@ export default function SolarRecDashboard() {
           setStorageNotice(null);
         } catch {
           try {
-            await saveRemoteDashboardState.mutateAsync({ payload: manifestOnlyRemoteStatePayload });
+            await saveRemoteDashboardStateRef.current.mutateAsync({ payload: manifestOnlyRemoteStatePayload });
             if (cancelled) return;
             setStorageNotice("Cloud sync saved dataset metadata only; snapshot history was too large to sync.");
           } catch {
@@ -3992,7 +3997,6 @@ export default function SolarRecDashboard() {
     remoteStateHydrated,
     remoteStatePayload.payload,
     remoteStatePayload.usedManifestOnly,
-    saveRemoteDashboardState,
     serializedLocalLogEntries,
   ]);
 
@@ -4009,7 +4013,7 @@ export default function SolarRecDashboard() {
           if (!dataset) {
             if (!remoteDatasetSignatureRef.current[key]) continue;
             try {
-              await saveRemoteDataset.mutateAsync({ key, payload: "" });
+              await saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" });
               delete remoteDatasetSignatureRef.current[key];
             } catch {
               setStorageNotice(`Could not clear ${DATASET_DEFINITIONS[key].label} dataset from cloud storage.`);
@@ -4027,16 +4031,16 @@ export default function SolarRecDashboard() {
             const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
 
             if (chunks.length === 1) {
-              await saveRemoteDataset.mutateAsync({ key, payload });
+              await saveRemoteDatasetRef.current.mutateAsync({ key, payload });
             } else {
               const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
               for (let index = 0; index < chunks.length; index += 1) {
-                await saveRemoteDataset.mutateAsync({
+                await saveRemoteDatasetRef.current.mutateAsync({
                   key: chunkKeys[index],
                   payload: chunks[index],
                 });
               }
-              await saveRemoteDataset.mutateAsync({
+              await saveRemoteDatasetRef.current.mutateAsync({
                 key,
                 payload: buildChunkPointerPayload(chunkKeys),
               });
@@ -4061,7 +4065,6 @@ export default function SolarRecDashboard() {
     datasetsHydrated,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
-    saveRemoteDataset,
   ]);
 
   const createLogEntry = () => {
