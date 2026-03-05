@@ -447,6 +447,7 @@ const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
 const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 500_000;
+const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
@@ -1349,6 +1350,10 @@ function loadPersistedLogs(): DashboardLogEntry[] {
   if (typeof window === "undefined") return [];
   const raw = window.localStorage.getItem(LOGS_STORAGE_KEY);
   if (!raw) return [];
+  if (raw.length > MAX_LOCAL_LOG_STORAGE_CHARS) {
+    window.localStorage.removeItem(LOGS_STORAGE_KEY);
+    return [];
+  }
   return deserializeDashboardLogs(raw);
 }
 
