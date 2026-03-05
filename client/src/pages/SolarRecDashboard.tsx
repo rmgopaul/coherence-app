@@ -3909,24 +3909,33 @@ export default function SolarRecDashboard() {
     if (remoteDashboardStateQuery.status === "pending") return;
     if (!datasetsHydrated || !remoteStateHydrated) return;
 
-    // Always persist datasets and logs locally so deletions and new entries survive reload
-    void (async () => {
-      try {
-        await saveDatasetsToStorage(datasets);
-        if (typeof window !== "undefined") {
-          window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serializedLogEntries));
+    // Debounced local persistence — defers heavy JSON.stringify off the render path
+    const localSaveTimeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await saveDatasetsToStorage(datasets);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(LOGS_STORAGE_KEY, JSON.stringify(serializedLogEntries));
+          }
+        } catch {
+          // Local save failure is non-critical when remote sync is also active
         }
-      } catch {
-        // Local save failure is non-critical when remote sync is also active
-      }
-    })();
+      })();
+    }, 500);
 
     if (remoteDashboardStateQuery.status === "error") {
       setStorageNotice(null);
-      return;
+      return () => {
+        window.clearTimeout(localSaveTimeout);
+      };
     }
 
-    if (remoteDashboardStateQuery.status !== "success") return;
+    if (remoteDashboardStateQuery.status !== "success") {
+      return () => {
+        window.clearTimeout(localSaveTimeout);
+      };
+    }
+
     let cancelled = false;
     const timeout = window.setTimeout(() => {
       void (async () => {
@@ -3953,6 +3962,7 @@ export default function SolarRecDashboard() {
 
     return () => {
       cancelled = true;
+      window.clearTimeout(localSaveTimeout);
       window.clearTimeout(timeout);
     };
   }, [
