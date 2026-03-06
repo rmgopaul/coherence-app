@@ -342,6 +342,7 @@ type PerformanceRatioRow = {
   monitoringPlatform: string;
   portalAcSizeKw: number | null;
   abpAcSizeKw: number | null;
+  part2VerificationDate: Date | null;
   baselineReadWh: number | null;
   baselineDate: Date | null;
   baselineSource: string | null;
@@ -2553,6 +2554,36 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.abpReport]);
 
+  const abpPart2VerificationDateBySystemKey = useMemo(() => {
+    const mapping = new Map<string, Date>();
+
+    const setEarliest = (key: string, value: Date | null) => {
+      if (!key || !value) return;
+      const existing = mapping.get(key);
+      if (!existing || value < existing) {
+        mapping.set(key, value);
+      }
+    };
+
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      const part2VerifiedDate = parseDate(part2VerifiedDateRaw);
+      if (!part2VerifiedDate) return;
+
+      const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+
+      setEarliest(abpApplicationId ? `id:${abpApplicationId}` : "", part2VerifiedDate);
+      setEarliest(trackingId ? `tracking:${trackingId}` : "", part2VerifiedDate);
+      setEarliest(projectName ? `name:${projectName.toLowerCase()}` : "", part2VerifiedDate);
+    });
+
+    return mapping;
+  }, [datasets.abpReport]);
+
   const monitoringDetailsBySystemKey = useMemo(() => {
     const mapping = new Map<string, MonitoringDetailsRecord>();
 
@@ -2932,6 +2963,11 @@ export default function SolarRecDashboard() {
             (keyByTracking ? abpAcSizeKwBySystemKey.get(keyByTracking) : undefined) ??
             abpAcSizeKwBySystemKey.get(keyByName) ??
             null,
+          part2VerificationDate:
+            (keyById ? abpPart2VerificationDateBySystemKey.get(keyById) : undefined) ??
+            (keyByTracking ? abpPart2VerificationDateBySystemKey.get(keyByTracking) : undefined) ??
+            abpPart2VerificationDateBySystemKey.get(keyByName) ??
+            null,
           baselineReadWh: baselineValueWh,
           baselineDate,
           baselineSource,
@@ -2962,6 +2998,7 @@ export default function SolarRecDashboard() {
     };
   }, [
     abpAcSizeKwBySystemKey,
+    abpPart2VerificationDateBySystemKey,
     annualProductionByTrackingId,
     convertedReadRows,
     generatorDateOnlineByTrackingId,
@@ -3095,6 +3132,7 @@ export default function SolarRecDashboard() {
       "portal_id",
       "csg_portal_ac_size_kw",
       "abp_report_ac_size_kw",
+      "abp_part_2_verification_date",
       "installer_name",
       "monitoring_platform",
       "monitoring",
@@ -3118,6 +3156,9 @@ export default function SolarRecDashboard() {
       portal_id: row.systemId ?? "",
       csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
       abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
+      abp_part_2_verification_date: row.part2VerificationDate
+        ? row.part2VerificationDate.toISOString().slice(0, 10)
+        : "",
       installer_name: row.installerName,
       monitoring_platform: row.monitoringPlatform,
       monitoring: row.monitoring,
