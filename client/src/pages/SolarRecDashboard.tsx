@@ -602,7 +602,7 @@ function resolveStateApplicationRefId(row: CsvRow): string | null {
 function isValidCompliantSourceText(value: string): boolean {
   if (!value || value.length > MAX_COMPLIANT_SOURCE_CHARS) return false;
   if (!/[A-Za-z0-9]/.test(value)) return false;
-  return /^[A-Za-z0-9 ]+$/.test(value);
+  return /^[A-Za-z0-9 _]+$/.test(value);
 }
 
 function getCsvValueByHeader(row: CsvRow, headerName: string): string {
@@ -1609,7 +1609,7 @@ export default function SolarRecDashboard() {
     }
     if (!isValidCompliantSourceText(compliantSource)) {
       setCompliantSourceUploadError(
-        `Compliant Source must be alphanumeric (letters, numbers, spaces) and ${MAX_COMPLIANT_SOURCE_CHARS} characters or fewer.`
+        `Compliant Source must contain only letters, numbers, spaces, or underscores, and be ${MAX_COMPLIANT_SOURCE_CHARS} characters or fewer.`
       );
       return;
     }
@@ -6958,7 +6958,7 @@ export default function SolarRecDashboard() {
                   <CardHeader>
                     <CardTitle className="text-base">Compliant Source Upload</CardTitle>
                     <CardDescription>
-                      Tie a compliant-source string (max 100 alphanumeric characters) and optional image/PDF evidence to
+                      Tie a compliant-source string (max 100 chars: letters, numbers, spaces, underscores) and optional image/PDF evidence to
                       a portal ID.
                     </CardDescription>
                   </CardHeader>
@@ -7000,7 +7000,7 @@ export default function SolarRecDashboard() {
                         <Input
                           value={compliantSourceTextInput}
                           onChange={(event) => setCompliantSourceTextInput(event.target.value.slice(0, MAX_COMPLIANT_SOURCE_CHARS))}
-                          placeholder="Alphanumeric text only"
+                          placeholder="Letters, numbers, spaces, underscores"
                         />
                       </div>
                     </div>
