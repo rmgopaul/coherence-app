@@ -617,33 +617,8 @@ function resolveLastMeterReadRawValue(row: CsvRow): string {
 }
 
 function resolveStateApplicationRefId(row: CsvRow): string | null {
-  const direct = firstNonEmptyString(
-    clean(row.state_application_ref_id),
-    clean(row.state_application_ref_ID),
-    clean(row.State_Application_Ref_ID),
-    clean(row["stateApplication.refId"]),
-    clean(row.stateApplicationRefId),
-    clean(row["state application ref id"])
-  );
-  if (direct) return direct;
-
-  for (const [key, value] of Object.entries(row)) {
-    const normalized = clean(key).toLowerCase();
-    const tokenized = normalized.replace(/[^a-z0-9]+/g, " ");
-    const compact = normalized.replace(/[^a-z0-9]/g, "");
-    const looksLikeStateAppRefId =
-      (tokenized.includes("state") &&
-        tokenized.includes("application") &&
-        tokenized.includes("ref") &&
-        tokenized.includes("id")) ||
-      compact.includes("stateapplicationrefid");
-    if (!looksLikeStateAppRefId) continue;
-
-    const candidate = clean(value);
-    if (candidate) return candidate;
-  }
-
-  return null;
+  const exact = clean(row.state_certification_number);
+  return exact || null;
 }
 
 function isValidCompliantSourceText(value: string): boolean {
@@ -3402,7 +3377,7 @@ export default function SolarRecDashboard() {
       "system_name",
       "nonid",
       "portal_id",
-      "state_application_ref_id",
+      "state_certification_number",
       "csg_portal_ac_size_kw",
       "abp_report_ac_size_kw",
       "abp_part_2_verification_date",
@@ -3427,7 +3402,7 @@ export default function SolarRecDashboard() {
       system_name: row.systemName,
       nonid: row.trackingSystemRefId,
       portal_id: row.systemId ?? "",
-      state_application_ref_id: row.stateApplicationRefId ?? "",
+      state_certification_number: row.stateApplicationRefId ?? "",
       csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
       abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
       abp_part_2_verification_date: row.part2VerificationDate
@@ -3468,7 +3443,7 @@ export default function SolarRecDashboard() {
       "system_name",
       "nonid",
       "portal_id",
-      "state_application_ref_id",
+      "state_certification_number",
       "csg_portal_ac_size_kw",
       "abp_report_ac_size_kw",
       "abp_part_2_verification_date",
@@ -3495,7 +3470,7 @@ export default function SolarRecDashboard() {
       system_name: row.systemName,
       nonid: row.trackingSystemRefId,
       portal_id: row.systemId ?? "",
-      state_application_ref_id: row.stateApplicationRefId ?? "",
+      state_certification_number: row.stateApplicationRefId ?? "",
       csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
       abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
       abp_part_2_verification_date: row.part2VerificationDate ? row.part2VerificationDate.toISOString().slice(0, 10) : "",
