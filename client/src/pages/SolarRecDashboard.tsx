@@ -462,7 +462,6 @@ const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
-  "Last Meter Read (kWh/Btu)",
   "Last Meter Read (kWh)",
   "Last Meter Read (kW)",
   "Last Meter Read",
@@ -570,6 +569,24 @@ function parseAbpAcSizeKw(row: CsvRow): number | null {
   }
 
   return null;
+}
+
+function resolveLastMeterReadRawValue(row: CsvRow): string {
+  const direct =
+    clean(row["Last Meter Read (kWh)"]) ||
+    clean(row["Last Meter Read (kW)"]) ||
+    clean(row["Last Meter Read"]);
+  if (direct) return direct;
+
+  for (const [key, value] of Object.entries(row)) {
+    const normalizedKey = clean(key).toLowerCase();
+    if (normalizedKey.includes("last meter read") && !normalizedKey.includes("date")) {
+      const candidate = clean(value);
+      if (candidate) return candidate;
+    }
+  }
+
+  return "";
 }
 
 function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
@@ -951,7 +968,7 @@ function accountSolarGenerationRowKey(row: CsvRow): string {
     clean(row["GATS Gen ID"]),
     clean(row["Month of Generation"]),
     clean(row["Last Meter Read Date"]),
-    clean(row["Last Meter Read (kWh/Btu)"]),
+    resolveLastMeterReadRawValue(row),
     clean(row["Facility Name"]),
   ].join("|");
 }
@@ -2554,16 +2571,8 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.abpReport]);
 
-  const abpPart2VerificationDateBySystemKey = useMemo(() => {
+  const abpPart2VerificationDateByTrackingId = useMemo(() => {
     const mapping = new Map<string, Date>();
-
-    const setEarliest = (key: string, value: Date | null) => {
-      if (!key || !value) return;
-      const existing = mapping.get(key);
-      if (!existing || value < existing) {
-        mapping.set(key, value);
-      }
-    };
 
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
@@ -2572,13 +2581,13 @@ export default function SolarRecDashboard() {
       const part2VerifiedDate = parseDate(part2VerifiedDateRaw);
       if (!part2VerifiedDate) return;
 
-      const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
+      if (!trackingId) return;
 
-      setEarliest(abpApplicationId ? `id:${abpApplicationId}` : "", part2VerifiedDate);
-      setEarliest(trackingId ? `tracking:${trackingId}` : "", part2VerifiedDate);
-      setEarliest(projectName ? `name:${projectName.toLowerCase()}` : "", part2VerifiedDate);
+      const existing = mapping.get(trackingId);
+      if (!existing || part2VerifiedDate < existing) {
+        mapping.set(trackingId, part2VerifiedDate);
+      }
     });
 
     return mapping;
@@ -2746,8 +2755,8 @@ export default function SolarRecDashboard() {
       if (!trackingSystemRefId) return;
 
       const valueWh = parseEnergyToWh(
-        row["Last Meter Read (kWh/Btu)"] ?? row["Last Meter Read"],
-        "Last Meter Read (kWh/Btu)",
+        resolveLastMeterReadRawValue(row),
+        "Last Meter Read (kWh)",
         "kwh"
       );
       if (valueWh === null) return;
@@ -2963,11 +2972,9 @@ export default function SolarRecDashboard() {
             (keyByTracking ? abpAcSizeKwBySystemKey.get(keyByTracking) : undefined) ??
             abpAcSizeKwBySystemKey.get(keyByName) ??
             null,
-          part2VerificationDate:
-            (keyById ? abpPart2VerificationDateBySystemKey.get(keyById) : undefined) ??
-            (keyByTracking ? abpPart2VerificationDateBySystemKey.get(keyByTracking) : undefined) ??
-            abpPart2VerificationDateBySystemKey.get(keyByName) ??
-            null,
+          // Do not backfill Part II verification dates via name/ID heuristics.
+          // Only exact NONID (tracking ID) matches should populate this value.
+          part2VerificationDate: abpPart2VerificationDateByTrackingId.get(candidate.system.trackingSystemRefId) ?? null,
           baselineReadWh: baselineValueWh,
           baselineDate,
           baselineSource,
@@ -2998,7 +3005,7 @@ export default function SolarRecDashboard() {
     };
   }, [
     abpAcSizeKwBySystemKey,
-    abpPart2VerificationDateBySystemKey,
+    abpPart2VerificationDateByTrackingId,
     annualProductionByTrackingId,
     convertedReadRows,
     generatorDateOnlineByTrackingId,
