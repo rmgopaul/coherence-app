@@ -22,7 +22,8 @@ type DatasetKey =
   | "accountSolarGeneration"
   | "contractedDate"
   | "convertedReads"
-  | "annualProductionEstimates";
+  | "annualProductionEstimates"
+  | "generatorDetails";
 
 type OwnershipStatus =
   | "Transferred and Reporting"
@@ -402,6 +403,12 @@ const DATASET_DEFINITIONS: Record<
     description: "Monthly expected production profile (Jan-Dec) used for performance ratio expected values.",
     requiredHeaderSets: [["Unit ID", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]],
   },
+  generatorDetails: {
+    label: "Generator Details",
+    description:
+      "Optional fallback for performance ratio baseline when no GATS baseline exists (uses Date Online at day 15, meter starts at 0).",
+    requiredHeaderSets: [["GATS Unit ID", "Date Online"], ["gats_unit_id", "date_online"]],
+  },
 };
 
 const OWNERSHIP_ORDER: OwnershipStatus[] = [
@@ -508,6 +515,31 @@ function parseDate(value: string | undefined): Date | null {
 
   const fallback = new Date(raw);
   return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
+  const raw = clean(value);
+  if (!raw) return null;
+
+  const slashMonthYear = raw.match(/^(\d{1,2})[\/-](\d{4})$/);
+  if (slashMonthYear) {
+    const month = Number(slashMonthYear[1]) - 1;
+    const year = Number(slashMonthYear[2]);
+    const date = new Date(year, month, 15);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const isoMonthYear = raw.match(/^(\d{4})[\/-](\d{1,2})$/);
+  if (isoMonthYear) {
+    const year = Number(isoMonthYear[1]);
+    const month = Number(isoMonthYear[2]) - 1;
+    const date = new Date(year, month, 15);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = parseDate(raw);
+  if (!parsed) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), 15);
 }
 
 function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
@@ -2551,6 +2583,25 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.annualProductionEstimates]);
 
+  const generatorDateOnlineByTrackingId = useMemo(() => {
+    const mapping = new Map<string, Date>();
+
+    (datasets.generatorDetails?.rows ?? []).forEach((row) => {
+      const trackingSystemRefId = clean(row["GATS Unit ID"]) || clean(row.gats_unit_id) || clean(row["Unit ID"]);
+      if (!trackingSystemRefId) return;
+      const dateOnline =
+        parseDateOnlineAsMidMonth(row["Date Online"] ?? row["Date online"] ?? row.date_online ?? row.date_online_month_year);
+      if (!dateOnline) return;
+
+      const existing = mapping.get(trackingSystemRefId);
+      if (!existing || dateOnline < existing) {
+        mapping.set(trackingSystemRefId, dateOnline);
+      }
+    });
+
+    return mapping;
+  }, [datasets.generatorDetails]);
+
   const generationBaselineByTrackingId = useMemo(() => {
     const mapping = new Map<string, GenerationBaseline>();
 
@@ -2774,8 +2825,11 @@ export default function SolarRecDashboard() {
         if (!candidate || !candidate.system.trackingSystemRefId) return;
 
         const baseline = generationBaselineByTrackingId.get(candidate.system.trackingSystemRefId);
-        const baselineValueWh = baseline?.valueWh ?? null;
-        const baselineDate = baseline?.date ?? null;
+        const generatorDateOnline = generatorDateOnlineByTrackingId.get(candidate.system.trackingSystemRefId) ?? null;
+        const baselineValueWh = baseline?.valueWh ?? (generatorDateOnline ? 0 : null);
+        const baselineDate = baseline?.date ?? generatorDateOnline;
+        const baselineSource =
+          baseline?.source ?? (generatorDateOnline ? "Generator Details (Date Online @ day 15, baseline 0)" : null);
         const annualProfile = annualProductionByTrackingId.get(candidate.system.trackingSystemRefId);
         const productionDeltaWh =
           readRow.lifetimeReadWh !== null && baselineValueWh !== null
@@ -2813,7 +2867,7 @@ export default function SolarRecDashboard() {
           monitoringPlatform: candidate.system.monitoringPlatform,
           baselineReadWh: baselineValueWh,
           baselineDate,
-          baselineSource: baseline?.source ?? null,
+          baselineSource,
           productionDeltaWh,
           expectedProductionWh,
           performanceRatioPercent,
@@ -2842,6 +2896,7 @@ export default function SolarRecDashboard() {
   }, [
     annualProductionByTrackingId,
     convertedReadRows,
+    generatorDateOnlineByTrackingId,
     generationBaselineByTrackingId,
     performanceRatioMatchIndexes,
   ]);
@@ -6137,7 +6192,8 @@ export default function SolarRecDashboard() {
                 <CardDescription>
                   Matches converted reads to ABP Part II verified portal systems using monitoring + system ID, monitoring
                   + system name, or monitoring + both. Performance Ratio = production delta from baseline / expected
-                  production over the same period.
+                  production over the same period. If no GATS baseline exists, optional Generator Details upload is used
+                  as fallback (Date Online month/year assumed day 15, baseline meter read = 0).
                 </CardDescription>
               </CardHeader>
             </Card>
