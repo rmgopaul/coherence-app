@@ -340,6 +340,8 @@ type PerformanceRatioRow = {
   systemName: string;
   installerName: string;
   monitoringPlatform: string;
+  portalAcSizeKw: number | null;
+  abpAcSizeKw: number | null;
   baselineReadWh: number | null;
   baselineDate: Date | null;
   baselineSource: string | null;
@@ -540,6 +542,33 @@ function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
   const parsed = parseDate(raw);
   if (!parsed) return null;
   return new Date(parsed.getFullYear(), parsed.getMonth(), 15);
+}
+
+function parseAbpAcSizeKw(row: CsvRow): number | null {
+  const direct = firstNonNull(
+    parseNumber(row.AC_Size_kW),
+    parseNumber(row.ac_size_kw),
+    parseNumber(row.system_size_kw_ac),
+    parseNumber(row.System_Size_kW_AC),
+    parseNumber(row.Inverter_Size_kW_AC_Part_2),
+    parseNumber(row.Inverter_Size_kW_AC),
+    parseNumber(row.Nameplate_Capacity_kW_AC),
+    parseNumber(row.nameplate_capacity_kw_ac)
+  );
+  if (direct !== null) return direct;
+
+  for (const [key, value] of Object.entries(row)) {
+    const normalizedKey = clean(key).toLowerCase();
+    const looksLikeAcKwField =
+      normalizedKey.includes("ac") &&
+      normalizedKey.includes("kw") &&
+      (normalizedKey.includes("size") || normalizedKey.includes("inverter") || normalizedKey.includes("nameplate"));
+    if (!looksLikeAcKwField) continue;
+    const parsed = parseNumber(value);
+    if (parsed !== null) return parsed;
+  }
+
+  return null;
 }
 
 function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
@@ -2497,6 +2526,33 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.abpReport]);
 
+  const abpAcSizeKwBySystemKey = useMemo(() => {
+    const mapping = new Map<string, number>();
+
+    const setIfMissing = (key: string, value: number | null) => {
+      if (!key || value === null) return;
+      if (!mapping.has(key)) mapping.set(key, value);
+    };
+
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      if (!parseDate(part2VerifiedDateRaw)) return;
+
+      const acSizeKw = parseAbpAcSizeKw(row);
+      const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+
+      setIfMissing(abpApplicationId ? `id:${abpApplicationId}` : "", acSizeKw);
+      setIfMissing(trackingId ? `tracking:${trackingId}` : "", acSizeKw);
+      setIfMissing(projectName ? `name:${projectName.toLowerCase()}` : "", acSizeKw);
+    });
+
+    return mapping;
+  }, [datasets.abpReport]);
+
   const monitoringDetailsBySystemKey = useMemo(() => {
     const mapping = new Map<string, MonitoringDetailsRecord>();
 
@@ -2823,6 +2879,11 @@ export default function SolarRecDashboard() {
       matchedCandidateKeys.forEach((candidateKey) => {
         const candidate = performanceRatioMatchIndexes.candidateByKey.get(candidateKey);
         if (!candidate || !candidate.system.trackingSystemRefId) return;
+        const keyById = candidate.system.systemId ? `id:${candidate.system.systemId}` : "";
+        const keyByTracking = candidate.system.trackingSystemRefId
+          ? `tracking:${candidate.system.trackingSystemRefId}`
+          : "";
+        const keyByName = `name:${candidate.system.systemName.toLowerCase()}`;
 
         const baseline = generationBaselineByTrackingId.get(candidate.system.trackingSystemRefId);
         const generatorDateOnline = generatorDateOnlineByTrackingId.get(candidate.system.trackingSystemRefId) ?? null;
@@ -2865,6 +2926,12 @@ export default function SolarRecDashboard() {
           systemName: candidate.system.systemName,
           installerName: candidate.system.installerName,
           monitoringPlatform: candidate.system.monitoringPlatform,
+          portalAcSizeKw: candidate.system.installedKwAc,
+          abpAcSizeKw:
+            (keyById ? abpAcSizeKwBySystemKey.get(keyById) : undefined) ??
+            (keyByTracking ? abpAcSizeKwBySystemKey.get(keyByTracking) : undefined) ??
+            abpAcSizeKwBySystemKey.get(keyByName) ??
+            null,
           baselineReadWh: baselineValueWh,
           baselineDate,
           baselineSource,
@@ -2894,6 +2961,7 @@ export default function SolarRecDashboard() {
       invalidConvertedReads,
     };
   }, [
+    abpAcSizeKwBySystemKey,
     annualProductionByTrackingId,
     convertedReadRows,
     generatorDateOnlineByTrackingId,
@@ -3025,6 +3093,8 @@ export default function SolarRecDashboard() {
       "system_name",
       "nonid",
       "portal_id",
+      "csg_portal_ac_size_kw",
+      "abp_report_ac_size_kw",
       "installer_name",
       "monitoring_platform",
       "monitoring",
@@ -3046,6 +3116,8 @@ export default function SolarRecDashboard() {
       system_name: row.systemName,
       nonid: row.trackingSystemRefId,
       portal_id: row.systemId ?? "",
+      csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
+      abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
       installer_name: row.installerName,
       monitoring_platform: row.monitoringPlatform,
       monitoring: row.monitoring,
