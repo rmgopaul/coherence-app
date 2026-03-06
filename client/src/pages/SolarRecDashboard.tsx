@@ -474,7 +474,9 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
-const PERFORMANCE_RATIO_PAGE_SIZE = 250;
+const PERFORMANCE_RATIO_PAGE_SIZE = 10;
+const COMPLIANT_SOURCE_PAGE_SIZE = 10;
+const COMPLIANT_REPORT_PAGE_SIZE = 10;
 const GENERIC_TABLE_RENDER_LIMIT = 400;
 const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
@@ -1569,6 +1571,8 @@ export default function SolarRecDashboard() {
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
+  const [compliantSourcePage, setCompliantSourcePage] = useState(1);
+  const [compliantReportPage, setCompliantReportPage] = useState(1);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
     () => loadPersistedCompliantSources()
   );
@@ -3360,12 +3364,38 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [compliantSourceEntries]);
 
+  const autoCompliantSourceByPortalId = useMemo(() => {
+    const mapping = new Map<string, string>();
+    performanceRatioResult.rows.forEach((row) => {
+      if (!row.systemId) return;
+      const csgAcSizeKw = row.portalAcSizeKw;
+      const abpAcSizeKw = row.abpAcSizeKw;
+      if (csgAcSizeKw === null || abpAcSizeKw === null) return;
+      if (csgAcSizeKw <= 10 && abpAcSizeKw <= 10) {
+        mapping.set(row.systemId, "10kW AC or Less");
+      }
+    });
+    return mapping;
+  }, [performanceRatioResult.rows]);
+
   const compliantSourceEntriesSorted = useMemo(
     () =>
       compliantSourceEntries
         .slice()
         .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.portalId.localeCompare(b.portalId)),
     [compliantSourceEntries]
+  );
+
+  const compliantSourceTotalPages = Math.max(
+    1,
+    Math.ceil(compliantSourceEntriesSorted.length / COMPLIANT_SOURCE_PAGE_SIZE)
+  );
+  const compliantSourceCurrentPage = Math.min(compliantSourcePage, compliantSourceTotalPages);
+  const compliantSourcePageStartIndex = (compliantSourceCurrentPage - 1) * COMPLIANT_SOURCE_PAGE_SIZE;
+  const compliantSourcePageEndIndex = compliantSourcePageStartIndex + COMPLIANT_SOURCE_PAGE_SIZE;
+  const visibleCompliantSourceEntries = useMemo(
+    () => compliantSourceEntriesSorted.slice(compliantSourcePageStartIndex, compliantSourcePageEndIndex),
+    [compliantSourceEntriesSorted, compliantSourcePageEndIndex, compliantSourcePageStartIndex]
   );
 
   const compliantPerformanceRatioRows = useMemo<CompliantPerformanceRatioRow[]>(() => {
@@ -3384,9 +3414,10 @@ export default function SolarRecDashboard() {
         row.trackingSystemRefId ||
         row.systemName.toLowerCase();
       const compliantEntry = row.systemId ? compliantSourceByPortalId.get(row.systemId) : undefined;
+      const autoCompliantSource = row.systemId ? autoCompliantSourceByPortalId.get(row.systemId) : undefined;
       const candidate: CompliantPerformanceRatioRow = {
         ...row,
-        compliantSource: compliantEntry?.compliantSource ?? null,
+        compliantSource: compliantEntry?.compliantSource ?? autoCompliantSource ?? null,
         evidenceCount: compliantEntry?.evidence.length ?? 0,
       };
 
@@ -3415,7 +3446,7 @@ export default function SolarRecDashboard() {
       if (ratioDiff !== 0) return ratioDiff;
       return a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true });
     });
-  }, [compliantSourceByPortalId, performanceRatioResult.rows]);
+  }, [autoCompliantSourceByPortalId, compliantSourceByPortalId, performanceRatioResult.rows]);
 
   const compliantPerformanceRatioSummary = useMemo(() => {
     const rows = compliantPerformanceRatioRows;
@@ -3427,6 +3458,28 @@ export default function SolarRecDashboard() {
       withEvidence,
     };
   }, [compliantPerformanceRatioRows]);
+
+  const compliantReportTotalPages = Math.max(
+    1,
+    Math.ceil(compliantPerformanceRatioRows.length / COMPLIANT_REPORT_PAGE_SIZE)
+  );
+  const compliantReportCurrentPage = Math.min(compliantReportPage, compliantReportTotalPages);
+  const compliantReportPageStartIndex = (compliantReportCurrentPage - 1) * COMPLIANT_REPORT_PAGE_SIZE;
+  const compliantReportPageEndIndex = compliantReportPageStartIndex + COMPLIANT_REPORT_PAGE_SIZE;
+  const visibleCompliantPerformanceRows = useMemo(
+    () => compliantPerformanceRatioRows.slice(compliantReportPageStartIndex, compliantReportPageEndIndex),
+    [compliantPerformanceRatioRows, compliantReportPageEndIndex, compliantReportPageStartIndex]
+  );
+
+  useEffect(() => {
+    if (compliantSourcePage <= compliantSourceTotalPages) return;
+    setCompliantSourcePage(compliantSourceTotalPages);
+  }, [compliantSourcePage, compliantSourceTotalPages]);
+
+  useEffect(() => {
+    if (compliantReportPage <= compliantReportTotalPages) return;
+    setCompliantReportPage(compliantReportTotalPages);
+  }, [compliantReportPage, compliantReportTotalPages]);
 
   const downloadPerformanceRatioCsv = () => {
     const headers = [
@@ -7034,6 +7087,40 @@ export default function SolarRecDashboard() {
                       <p className="text-sm text-rose-700">{compliantSourceUploadError}</p>
                     ) : null}
 
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-600">
+                        Showing rows{" "}
+                        {compliantSourceEntriesSorted.length === 0
+                          ? "0"
+                          : formatNumber(compliantSourcePageStartIndex + 1)}
+                        -{formatNumber(Math.min(compliantSourcePageEndIndex, compliantSourceEntriesSorted.length))} of{" "}
+                        {formatNumber(compliantSourceEntriesSorted.length)}.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCompliantSourcePage((page) => Math.max(1, page - 1))}
+                          disabled={compliantSourceCurrentPage <= 1}
+                        >
+                          Previous
+                        </Button>
+                        <p className="text-xs text-slate-600">
+                          Page {formatNumber(compliantSourceCurrentPage)} of {formatNumber(compliantSourceTotalPages)}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setCompliantSourcePage((page) => Math.min(compliantSourceTotalPages, page + 1))
+                          }
+                          disabled={compliantSourceCurrentPage >= compliantSourceTotalPages}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+
                     <div className="rounded-lg border border-slate-200">
                       <Table>
                         <TableHeader>
@@ -7053,7 +7140,7 @@ export default function SolarRecDashboard() {
                               </TableCell>
                             </TableRow>
                           ) : (
-                            compliantSourceEntriesSorted.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((entry) => (
+                            visibleCompliantSourceEntries.map((entry) => (
                               <TableRow key={entry.portalId}>
                                 <TableCell className="font-medium">{entry.portalId}</TableCell>
                                 <TableCell>{entry.compliantSource}</TableCell>
@@ -7128,6 +7215,40 @@ export default function SolarRecDashboard() {
                       </div>
                     </div>
 
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-600">
+                        Showing rows{" "}
+                        {compliantPerformanceRatioRows.length === 0
+                          ? "0"
+                          : formatNumber(compliantReportPageStartIndex + 1)}
+                        -{formatNumber(Math.min(compliantReportPageEndIndex, compliantPerformanceRatioRows.length))} of{" "}
+                        {formatNumber(compliantPerformanceRatioRows.length)}.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCompliantReportPage((page) => Math.max(1, page - 1))}
+                          disabled={compliantReportCurrentPage <= 1}
+                        >
+                          Previous
+                        </Button>
+                        <p className="text-xs text-slate-600">
+                          Page {formatNumber(compliantReportCurrentPage)} of {formatNumber(compliantReportTotalPages)}
+                        </p>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setCompliantReportPage((page) => Math.min(compliantReportTotalPages, page + 1))
+                          }
+                          disabled={compliantReportCurrentPage >= compliantReportTotalPages}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -7149,7 +7270,7 @@ export default function SolarRecDashboard() {
                             </TableCell>
                           </TableRow>
                         ) : (
-                          compliantPerformanceRatioRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                          visibleCompliantPerformanceRows.map((row) => (
                             <TableRow key={`compliant-${row.key}`}>
                               <TableCell className="font-medium">{row.systemName}</TableCell>
                               <TableCell>{row.trackingSystemRefId}</TableCell>
