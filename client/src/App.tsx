@@ -9,6 +9,7 @@ import Home from "./pages/Home";
 import Dashboard from "./pages/Dashboard";
 import SolarRecDashboard from "./pages/SolarRecDashboard";
 import EnphaseV2MeterReads from "./pages/EnphaseV2MeterReads";
+import DeepUpdateSynthesizer from "./pages/DeepUpdateSynthesizer";
 import Notebook from "./pages/Notebook";
 import Settings from "./pages/Settings";
 import TodoistWidget from "./pages/TodoistWidget";
@@ -23,6 +24,7 @@ function Router() {
       <Route path={"/"} component={Home} />
       <Route path={"/dashboard"} component={Dashboard} />
       <Route path={"/solar-rec-dashboard"} component={SolarRecDashboard} />
+      <Route path={"/deep-update-synthesizer"} component={DeepUpdateSynthesizer} />
       <Route path={"/enphase-v4-meter-reads"} component={EnphaseV2MeterReads} />
       <Route path={"/enphase-v2-meter-reads"} component={EnphaseV2MeterReads} />
       <Route path={"/notes"} component={Notebook} />

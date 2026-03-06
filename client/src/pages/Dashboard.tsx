@@ -34,6 +34,7 @@ import {
   Database,
   Clock3,
   CloudSun,
+  FileSpreadsheet,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -1774,6 +1775,10 @@ export default function Dashboard() {
             <Button variant="outline" onClick={() => setLocation("/solar-rec-dashboard")}>
               <BarChart3 className="h-4 w-4 mr-2" />
               Solar REC
+            </Button>
+            <Button variant="outline" onClick={() => setLocation("/deep-update-synthesizer")}>
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              Deep Update
             </Button>
             <Button variant="outline" onClick={() => setLocation("/enphase-v4-meter-reads")}>
               <Database className="h-4 w-4 mr-2" />
