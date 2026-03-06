@@ -214,6 +214,7 @@ type OfflineBreakdownRow = {
 type SystemBuilder = {
   key: string;
   systemId: string | null;
+  stateApplicationRefId: string | null;
   trackingSystemRefId: string | null;
   primaryName: string | null;
   names: Set<string>;
@@ -241,6 +242,7 @@ type SystemBuilder = {
 type SystemRecord = {
   key: string;
   systemId: string | null;
+  stateApplicationRefId: string | null;
   trackingSystemRefId: string | null;
   systemName: string;
   installedKwAc: number | null;
@@ -337,6 +339,7 @@ type PerformanceRatioRow = {
   lifetimeReadWh: number | null;
   trackingSystemRefId: string;
   systemId: string | null;
+  stateApplicationRefId: string | null;
   systemName: string;
   installerName: string;
   monitoringPlatform: string;
@@ -1769,6 +1772,7 @@ export default function SolarRecDashboard() {
       const created: SystemBuilder = {
         key,
         systemId: systemId || null,
+        stateApplicationRefId: null,
         trackingSystemRefId: trackingSystemRefId || null,
         primaryName: null,
         names: new Set<string>(),
@@ -1801,6 +1805,12 @@ export default function SolarRecDashboard() {
 
     (datasets.solarApplications?.rows ?? []).forEach((row) => {
       const systemId = clean(row.system_id) || clean(row.Application_ID) || null;
+      const stateApplicationRefId =
+        clean(row.state_application_ref_id) ||
+        clean(row.state_application_ref_ID) ||
+        clean(row.State_Application_Ref_ID) ||
+        clean(row["stateApplication.refId"]) ||
+        null;
       const trackingSystemRefId =
         clean(row.tracking_system_ref_id) ||
         clean(row.reporting_entity_ref_id) ||
@@ -1809,6 +1819,7 @@ export default function SolarRecDashboard() {
       const builder = ensureBuilder(trackingSystemRefId, systemId);
 
       if (systemId) builder.systemId = systemId;
+      if (stateApplicationRefId) builder.stateApplicationRefId = stateApplicationRefId;
       if (trackingSystemRefId) builder.trackingSystemRefId = trackingSystemRefId;
 
       const systemName = clean(row.system_name) || clean(row.Project_Name);
@@ -2034,6 +2045,7 @@ export default function SolarRecDashboard() {
         return {
           key: builder.key,
           systemId: builder.systemId,
+          stateApplicationRefId: builder.stateApplicationRefId,
           trackingSystemRefId: builder.trackingSystemRefId,
           systemName,
           installedKwAc: builder.installedKwAc,
@@ -2571,7 +2583,7 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.abpReport]);
 
-  const abpPart2VerificationDateByTrackingId = useMemo(() => {
+  const abpPart2VerificationDateByApplicationId = useMemo(() => {
     const mapping = new Map<string, Date>();
 
     (datasets.abpReport?.rows ?? []).forEach((row) => {
@@ -2581,12 +2593,12 @@ export default function SolarRecDashboard() {
       const part2VerifiedDate = parseDate(part2VerifiedDateRaw);
       if (!part2VerifiedDate) return;
 
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (!trackingId) return;
+      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      if (!applicationId) return;
 
-      const existing = mapping.get(trackingId);
+      const existing = mapping.get(applicationId);
       if (!existing || part2VerifiedDate < existing) {
-        mapping.set(trackingId, part2VerifiedDate);
+        mapping.set(applicationId, part2VerifiedDate);
       }
     });
 
@@ -2963,6 +2975,7 @@ export default function SolarRecDashboard() {
           lifetimeReadWh: readRow.lifetimeReadWh,
           trackingSystemRefId: candidate.system.trackingSystemRefId,
           systemId: candidate.system.systemId,
+          stateApplicationRefId: candidate.system.stateApplicationRefId,
           systemName: candidate.system.systemName,
           installerName: candidate.system.installerName,
           monitoringPlatform: candidate.system.monitoringPlatform,
@@ -2972,9 +2985,10 @@ export default function SolarRecDashboard() {
             (keyByTracking ? abpAcSizeKwBySystemKey.get(keyByTracking) : undefined) ??
             abpAcSizeKwBySystemKey.get(keyByName) ??
             null,
-          // Do not backfill Part II verification dates via name/ID heuristics.
-          // Only exact NONID (tracking ID) matches should populate this value.
-          part2VerificationDate: abpPart2VerificationDateByTrackingId.get(candidate.system.trackingSystemRefId) ?? null,
+          part2VerificationDate:
+            candidate.system.stateApplicationRefId
+              ? abpPart2VerificationDateByApplicationId.get(candidate.system.stateApplicationRefId) ?? null
+              : null,
           baselineReadWh: baselineValueWh,
           baselineDate,
           baselineSource,
@@ -3005,7 +3019,7 @@ export default function SolarRecDashboard() {
     };
   }, [
     abpAcSizeKwBySystemKey,
-    abpPart2VerificationDateByTrackingId,
+    abpPart2VerificationDateByApplicationId,
     annualProductionByTrackingId,
     convertedReadRows,
     generatorDateOnlineByTrackingId,
@@ -3137,6 +3151,7 @@ export default function SolarRecDashboard() {
       "system_name",
       "nonid",
       "portal_id",
+      "state_application_ref_id",
       "csg_portal_ac_size_kw",
       "abp_report_ac_size_kw",
       "abp_part_2_verification_date",
@@ -3161,6 +3176,7 @@ export default function SolarRecDashboard() {
       system_name: row.systemName,
       nonid: row.trackingSystemRefId,
       portal_id: row.systemId ?? "",
+      state_application_ref_id: row.stateApplicationRefId ?? "",
       csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
       abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
       abp_part_2_verification_date: row.part2VerificationDate
