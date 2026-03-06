@@ -592,6 +592,36 @@ function resolveLastMeterReadRawValue(row: CsvRow): string {
   return "";
 }
 
+function resolveStateApplicationRefId(row: CsvRow): string | null {
+  const direct = firstNonEmptyString(
+    clean(row.state_application_ref_id),
+    clean(row.state_application_ref_ID),
+    clean(row.State_Application_Ref_ID),
+    clean(row["stateApplication.refId"]),
+    clean(row.stateApplicationRefId),
+    clean(row["state application ref id"])
+  );
+  if (direct) return direct;
+
+  for (const [key, value] of Object.entries(row)) {
+    const normalized = clean(key).toLowerCase();
+    const tokenized = normalized.replace(/[^a-z0-9]+/g, " ");
+    const compact = normalized.replace(/[^a-z0-9]/g, "");
+    const looksLikeStateAppRefId =
+      (tokenized.includes("state") &&
+        tokenized.includes("application") &&
+        tokenized.includes("ref") &&
+        tokenized.includes("id")) ||
+      compact.includes("stateapplicationrefid");
+    if (!looksLikeStateAppRefId) continue;
+
+    const candidate = clean(value);
+    if (candidate) return candidate;
+  }
+
+  return null;
+}
+
 function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
   const parsed = parseNumber(value);
   if (parsed === null) return null;
@@ -1805,12 +1835,7 @@ export default function SolarRecDashboard() {
 
     (datasets.solarApplications?.rows ?? []).forEach((row) => {
       const systemId = clean(row.system_id) || clean(row.Application_ID) || null;
-      const stateApplicationRefId =
-        clean(row.state_application_ref_id) ||
-        clean(row.state_application_ref_ID) ||
-        clean(row.State_Application_Ref_ID) ||
-        clean(row["stateApplication.refId"]) ||
-        null;
+      const stateApplicationRefId = resolveStateApplicationRefId(row);
       const trackingSystemRefId =
         clean(row.tracking_system_ref_id) ||
         clean(row.reporting_entity_ref_id) ||
