@@ -355,6 +355,27 @@ type PerformanceRatioRow = {
   contractValue: number;
 };
 
+type CompliantSourceEvidence = {
+  id: string;
+  fileName: string;
+  fileType: string;
+  fileSizeBytes: number;
+  objectUrl: string;
+  uploadedAt: Date;
+};
+
+type CompliantSourceEntry = {
+  portalId: string;
+  compliantSource: string;
+  updatedAt: Date;
+  evidence: CompliantSourceEvidence[];
+};
+
+type CompliantPerformanceRatioRow = PerformanceRatioRow & {
+  compliantSource: string | null;
+  evidenceCount: number;
+};
+
 const DATASET_DEFINITIONS: Record<
   DatasetKey,
   {
@@ -463,6 +484,9 @@ const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 500_000;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+const COMPLIANT_SOURCE_STORAGE_KEY = "solarRecDashboardCompliantSourcesV1";
+const MAX_COMPLIANT_SOURCE_CHARS = 100;
+const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
   "Last Meter Read (kWh)",
@@ -620,6 +644,12 @@ function resolveStateApplicationRefId(row: CsvRow): string | null {
   }
 
   return null;
+}
+
+function isValidCompliantSourceText(value: string): boolean {
+  if (!value || value.length > MAX_COMPLIANT_SOURCE_CHARS) return false;
+  if (!/[A-Za-z0-9]/.test(value)) return false;
+  return /^[A-Za-z0-9 ]+$/.test(value);
 }
 
 function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
@@ -1487,6 +1517,36 @@ function loadPersistedLogs(): DashboardLogEntry[] {
   return deserializeDashboardLogs(raw);
 }
 
+function loadPersistedCompliantSources(): CompliantSourceEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(COMPLIANT_SOURCE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Array<{
+      portalId: string;
+      compliantSource: string;
+      updatedAt: string;
+    }>;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => {
+        const portalId = clean(item.portalId);
+        const compliantSource = clean(item.compliantSource);
+        const updatedAt = new Date(item.updatedAt);
+        if (!portalId || !compliantSource || Number.isNaN(updatedAt.getTime())) return null;
+        return {
+          portalId,
+          compliantSource,
+          updatedAt,
+          evidence: [],
+        } satisfies CompliantSourceEntry;
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  } catch {
+    return [];
+  }
+}
+
 export default function SolarRecDashboard() {
   const [, setLocation] = useLocation();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
@@ -1548,6 +1608,15 @@ export default function SolarRecDashboard() {
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
+  const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
+    () => loadPersistedCompliantSources()
+  );
+  const [compliantSourcePortalIdInput, setCompliantSourcePortalIdInput] = useState("");
+  const [compliantSourceTextInput, setCompliantSourceTextInput] = useState("");
+  const [compliantSourceEvidenceFiles, setCompliantSourceEvidenceFiles] = useState<File[]>([]);
+  const [compliantSourceUploadError, setCompliantSourceUploadError] = useState<string | null>(null);
+  const compliantSourceEntriesRef = useRef<CompliantSourceEntry[]>(compliantSourceEntries);
+  compliantSourceEntriesRef.current = compliantSourceEntries;
   const [monthlySnapshotTransitions, setMonthlySnapshotTransitions] = useState<
     Array<{
       monthKey: string;
@@ -1567,6 +1636,86 @@ export default function SolarRecDashboard() {
     const target = document.getElementById(sectionId);
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const saveCompliantSourceEntry = () => {
+    const portalId = clean(compliantSourcePortalIdInput);
+    const compliantSource = clean(compliantSourceTextInput);
+    if (!portalId) {
+      setCompliantSourceUploadError("Portal ID is required.");
+      return;
+    }
+    if (!isValidCompliantSourceText(compliantSource)) {
+      setCompliantSourceUploadError(
+        `Compliant Source must be alphanumeric (letters, numbers, spaces) and ${MAX_COMPLIANT_SOURCE_CHARS} characters or fewer.`
+      );
+      return;
+    }
+
+    const invalidFile = compliantSourceEvidenceFiles.find((file) => {
+      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+      const isImage = file.type.startsWith("image/");
+      return !isPdf && !isImage;
+    });
+    if (invalidFile) {
+      setCompliantSourceUploadError("Evidence uploads support only images and PDFs.");
+      return;
+    }
+
+    const oversizedFile = compliantSourceEvidenceFiles.find((file) => file.size > MAX_COMPLIANT_FILE_BYTES);
+    if (oversizedFile) {
+      setCompliantSourceUploadError(
+        `${oversizedFile.name} is too large. Max file size is ${formatNumber(MAX_COMPLIANT_FILE_BYTES / 1024 / 1024)} MB.`
+      );
+      return;
+    }
+
+    const now = new Date();
+    const newEvidence: CompliantSourceEvidence[] = compliantSourceEvidenceFiles.map((file) => ({
+      id: createLogId(),
+      fileName: file.name,
+      fileType: file.type || "application/octet-stream",
+      fileSizeBytes: file.size,
+      objectUrl: URL.createObjectURL(file),
+      uploadedAt: now,
+    }));
+
+    setCompliantSourceEntries((previous) => {
+      const existing = previous.find((entry) => entry.portalId === portalId);
+      if (!existing) {
+        return [
+          ...previous,
+          {
+            portalId,
+            compliantSource,
+            updatedAt: now,
+            evidence: newEvidence,
+          },
+        ];
+      }
+      return previous.map((entry) =>
+        entry.portalId === portalId
+          ? {
+              ...entry,
+              compliantSource,
+              updatedAt: now,
+              evidence: [...entry.evidence, ...newEvidence],
+            }
+          : entry
+      );
+    });
+
+    setCompliantSourceUploadError(null);
+    setCompliantSourceTextInput("");
+    setCompliantSourceEvidenceFiles([]);
+  };
+
+  const removeCompliantSourceEntry = (portalId: string) => {
+    setCompliantSourceEntries((previous) => {
+      const target = previous.find((entry) => entry.portalId === portalId);
+      target?.evidence.forEach((item) => URL.revokeObjectURL(item.objectUrl));
+      return previous.filter((entry) => entry.portalId !== portalId);
+    });
   };
 
   const handleUpload = async (key: DatasetKey, file: File | null, mode: "replace" | "append" = "replace") => {
@@ -3171,6 +3320,83 @@ export default function SolarRecDashboard() {
     };
   }, [performanceRatioResult]);
 
+  const compliantSourceByPortalId = useMemo(() => {
+    const mapping = new Map<string, CompliantSourceEntry>();
+    compliantSourceEntries.forEach((entry) => {
+      if (!entry.portalId) return;
+      mapping.set(entry.portalId, entry);
+    });
+    return mapping;
+  }, [compliantSourceEntries]);
+
+  const compliantSourceEntriesSorted = useMemo(
+    () =>
+      compliantSourceEntries
+        .slice()
+        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.portalId.localeCompare(b.portalId)),
+    [compliantSourceEntries]
+  );
+
+  const compliantPerformanceRatioRows = useMemo<CompliantPerformanceRatioRow[]>(() => {
+    const eligibleRows = performanceRatioResult.rows.filter((row) => {
+      if (!row.part2VerificationDate) return false;
+      if (row.performanceRatioPercent === null) return false;
+      return row.performanceRatioPercent >= 30 && row.performanceRatioPercent <= 150;
+    });
+
+    const bestBySystem = new Map<string, CompliantPerformanceRatioRow>();
+
+    eligibleRows.forEach((row) => {
+      const systemKey =
+        row.stateApplicationRefId ||
+        row.systemId ||
+        row.trackingSystemRefId ||
+        row.systemName.toLowerCase();
+      const compliantEntry = row.systemId ? compliantSourceByPortalId.get(row.systemId) : undefined;
+      const candidate: CompliantPerformanceRatioRow = {
+        ...row,
+        compliantSource: compliantEntry?.compliantSource ?? null,
+        evidenceCount: compliantEntry?.evidence.length ?? 0,
+      };
+
+      const existing = bestBySystem.get(systemKey);
+      if (!existing) {
+        bestBySystem.set(systemKey, candidate);
+        return;
+      }
+      const candidateRatio = candidate.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+      const existingRatio = existing.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+      if (candidateRatio > existingRatio) {
+        bestBySystem.set(systemKey, candidate);
+        return;
+      }
+      if (candidateRatio === existingRatio) {
+        const candidateReadTime = candidate.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        const existingReadTime = existing.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        if (candidateReadTime > existingReadTime) {
+          bestBySystem.set(systemKey, candidate);
+        }
+      }
+    });
+
+    return Array.from(bestBySystem.values()).sort((a, b) => {
+      const ratioDiff = (b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY) - (a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY);
+      if (ratioDiff !== 0) return ratioDiff;
+      return a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true });
+    });
+  }, [compliantSourceByPortalId, performanceRatioResult.rows]);
+
+  const compliantPerformanceRatioSummary = useMemo(() => {
+    const rows = compliantPerformanceRatioRows;
+    const withCompliantSource = rows.filter((row) => !!row.compliantSource).length;
+    const withEvidence = rows.filter((row) => row.evidenceCount > 0).length;
+    return {
+      count: rows.length,
+      withCompliantSource,
+      withEvidence,
+    };
+  }, [compliantPerformanceRatioRows]);
+
   const downloadPerformanceRatioCsv = () => {
     const headers = [
       "system_name",
@@ -3226,6 +3452,74 @@ export default function SolarRecDashboard() {
 
     const csv = buildCsv(headers, rows);
     const fileName = `performance-ratio-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadCompliantPerformanceRatioCsv = () => {
+    const headers = [
+      "system_name",
+      "nonid",
+      "portal_id",
+      "state_application_ref_id",
+      "csg_portal_ac_size_kw",
+      "abp_report_ac_size_kw",
+      "abp_part_2_verification_date",
+      "installer_name",
+      "monitoring_platform",
+      "monitoring",
+      "monitoring_system_id",
+      "monitoring_system_name",
+      "match_type",
+      "read_date",
+      "baseline_date",
+      "baseline_source",
+      "lifetime_read_wh",
+      "baseline_read_wh",
+      "production_delta_wh",
+      "expected_production_wh",
+      "performance_ratio_percent",
+      "contract_value",
+      "compliant_source",
+      "compliant_evidence_count",
+    ];
+
+    const rows = compliantPerformanceRatioRows.map((row) => ({
+      system_name: row.systemName,
+      nonid: row.trackingSystemRefId,
+      portal_id: row.systemId ?? "",
+      state_application_ref_id: row.stateApplicationRefId ?? "",
+      csg_portal_ac_size_kw: row.portalAcSizeKw ?? "",
+      abp_report_ac_size_kw: row.abpAcSizeKw ?? "",
+      abp_part_2_verification_date: row.part2VerificationDate ? row.part2VerificationDate.toISOString().slice(0, 10) : "",
+      installer_name: row.installerName,
+      monitoring_platform: row.monitoringPlatform,
+      monitoring: row.monitoring,
+      monitoring_system_id: row.monitoringSystemId,
+      monitoring_system_name: row.monitoringSystemName,
+      match_type: row.matchType,
+      read_date: row.readDate ? row.readDate.toISOString().slice(0, 10) : row.readDateRaw,
+      baseline_date: row.baselineDate ? row.baselineDate.toISOString().slice(0, 10) : "",
+      baseline_source: row.baselineSource ?? "",
+      lifetime_read_wh: row.lifetimeReadWh ?? "",
+      baseline_read_wh: row.baselineReadWh ?? "",
+      production_delta_wh: row.productionDeltaWh ?? "",
+      expected_production_wh: row.expectedProductionWh ?? "",
+      performance_ratio_percent: row.performanceRatioPercent ?? "",
+      contract_value: row.contractValue,
+      compliant_source: row.compliantSource ?? "",
+      compliant_evidence_count: row.evidenceCount,
+    }));
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `performance-ratio-compliant-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -4322,6 +4616,24 @@ export default function SolarRecDashboard() {
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
   ]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const payload = compliantSourceEntries.map((entry) => ({
+      portalId: entry.portalId,
+      compliantSource: entry.compliantSource,
+      updatedAt: entry.updatedAt.toISOString(),
+    }));
+    window.localStorage.setItem(COMPLIANT_SOURCE_STORAGE_KEY, JSON.stringify(payload));
+  }, [compliantSourceEntries]);
+
+  useEffect(() => {
+    return () => {
+      compliantSourceEntriesRef.current.forEach((entry) => {
+        entry.evidence.forEach((item) => URL.revokeObjectURL(item.objectUrl));
+      });
+    };
+  }, []);
 
   const createLogEntry = () => {
     const statusCount = (status: ChangeOwnershipStatus) =>
@@ -6606,6 +6918,196 @@ export default function SolarRecDashboard() {
                             <TableCell>{formatCurrency(row.contractValue)}</TableCell>
                           </TableRow>
                         ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Compliant Source Upload</CardTitle>
+                    <CardDescription>
+                      Tie a compliant-source string (max 100 alphanumeric characters) and optional image/PDF evidence to
+                      a portal ID.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="space-y-1">
+                        <label className="text-sm font-medium text-slate-700">Portal ID</label>
+                        <Input
+                          value={compliantSourcePortalIdInput}
+                          onChange={(event) => setCompliantSourcePortalIdInput(event.target.value)}
+                          placeholder="e.g. 107313"
+                        />
+                      </div>
+                      <div className="space-y-1 md:col-span-2">
+                        <label className="text-sm font-medium text-slate-700">Compliant Source</label>
+                        <Input
+                          value={compliantSourceTextInput}
+                          onChange={(event) => setCompliantSourceTextInput(event.target.value.slice(0, MAX_COMPLIANT_SOURCE_CHARS))}
+                          placeholder="Alphanumeric text only"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                        <Upload className="h-4 w-4" />
+                        Upload Evidence (Image/PDF)
+                        <input
+                          type="file"
+                          accept="image/*,application/pdf"
+                          multiple
+                          className="hidden"
+                          onChange={(event) => {
+                            const files = Array.from(event.target.files ?? []);
+                            setCompliantSourceEvidenceFiles(files);
+                          }}
+                        />
+                      </label>
+                      <p className="text-xs text-slate-500">
+                        {compliantSourceEvidenceFiles.length > 0
+                          ? `${formatNumber(compliantSourceEvidenceFiles.length)} file(s) selected`
+                          : "No evidence files selected"}
+                      </p>
+                      <Button variant="outline" size="sm" onClick={saveCompliantSourceEntry}>
+                        Save Compliant Source
+                      </Button>
+                    </div>
+
+                    {compliantSourceUploadError ? (
+                      <p className="text-sm text-rose-700">{compliantSourceUploadError}</p>
+                    ) : null}
+
+                    <div className="rounded-lg border border-slate-200">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Portal ID</TableHead>
+                            <TableHead>Compliant Source</TableHead>
+                            <TableHead>Evidence</TableHead>
+                            <TableHead>Updated</TableHead>
+                            <TableHead>Action</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {compliantSourceEntriesSorted.length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={5} className="text-center text-slate-500">
+                                No compliant source entries saved yet.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            compliantSourceEntriesSorted.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((entry) => (
+                              <TableRow key={entry.portalId}>
+                                <TableCell className="font-medium">{entry.portalId}</TableCell>
+                                <TableCell>{entry.compliantSource}</TableCell>
+                                <TableCell>
+                                  {entry.evidence.length === 0 ? (
+                                    <span className="text-slate-500">No files</span>
+                                  ) : (
+                                    <div className="flex flex-wrap gap-2">
+                                      {entry.evidence.map((item) => (
+                                        <a
+                                          key={item.id}
+                                          href={item.objectUrl}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-xs text-blue-700 underline"
+                                        >
+                                          {item.fileName}
+                                        </a>
+                                      ))}
+                                    </div>
+                                  )}
+                                </TableCell>
+                                <TableCell>{formatDate(entry.updatedAt)}</TableCell>
+                                <TableCell>
+                                  <Button variant="ghost" size="sm" onClick={() => removeCompliantSourceEntry(entry.portalId)}>
+                                    Remove
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-base">Compliant Performance Ratio Report</CardTitle>
+                        <CardDescription>
+                          Same report logic, but only systems with Part II verification dates and performance ratio between
+                          30% and 150% (inclusive). If multiple reads qualify, only the highest ratio per system is kept.
+                        </CardDescription>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={downloadCompliantPerformanceRatioCsv}>
+                        Download Compliant Report CSV
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid gap-3 md:grid-cols-3">
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">Systems in Compliant Report</p>
+                        <p className="text-xl font-semibold text-slate-900">
+                          {formatNumber(compliantPerformanceRatioSummary.count)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">With Compliant Source Text</p>
+                        <p className="text-xl font-semibold text-slate-900">
+                          {formatNumber(compliantPerformanceRatioSummary.withCompliantSource)}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs text-slate-500">With Evidence Files</p>
+                        <p className="text-xl font-semibold text-slate-900">
+                          {formatNumber(compliantPerformanceRatioSummary.withEvidence)}
+                        </p>
+                      </div>
+                    </div>
+
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>System</TableHead>
+                          <TableHead>NONID</TableHead>
+                          <TableHead>Portal ID</TableHead>
+                          <TableHead>Part II Verified</TableHead>
+                          <TableHead>Read Date</TableHead>
+                          <TableHead>Performance Ratio</TableHead>
+                          <TableHead>Compliant Source</TableHead>
+                          <TableHead>Evidence Files</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {compliantPerformanceRatioRows.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={8} className="text-center text-slate-500">
+                              No systems currently meet the compliant report criteria.
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          compliantPerformanceRatioRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                            <TableRow key={`compliant-${row.key}`}>
+                              <TableCell className="font-medium">{row.systemName}</TableCell>
+                              <TableCell>{row.trackingSystemRefId}</TableCell>
+                              <TableCell>{row.systemId ?? "N/A"}</TableCell>
+                              <TableCell>{formatDate(row.part2VerificationDate)}</TableCell>
+                              <TableCell>{row.readDate ? formatDate(row.readDate) : row.readDateRaw || "N/A"}</TableCell>
+                              <TableCell>{formatPercent(row.performanceRatioPercent)}</TableCell>
+                              <TableCell>{row.compliantSource ?? "N/A"}</TableCell>
+                              <TableCell>{formatNumber(row.evidenceCount)}</TableCell>
+                            </TableRow>
+                          ))
+                        )}
                       </TableBody>
                     </Table>
                   </CardContent>
