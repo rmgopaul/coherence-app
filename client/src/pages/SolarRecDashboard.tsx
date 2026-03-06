@@ -1819,7 +1819,12 @@ export default function SolarRecDashboard() {
       const builder = ensureBuilder(trackingSystemRefId, systemId);
 
       if (systemId) builder.systemId = systemId;
-      if (stateApplicationRefId) builder.stateApplicationRefId = stateApplicationRefId;
+      if (stateApplicationRefId) {
+        builder.stateApplicationRefId = stateApplicationRefId;
+      } else if (!builder.stateApplicationRefId && systemId) {
+        // Fallback: use portal ID when state_application_ref_id is missing.
+        builder.stateApplicationRefId = systemId;
+      }
       if (trackingSystemRefId) builder.trackingSystemRefId = trackingSystemRefId;
 
       const systemName = clean(row.system_name) || clean(row.Project_Name);
@@ -2045,7 +2050,7 @@ export default function SolarRecDashboard() {
         return {
           key: builder.key,
           systemId: builder.systemId,
-          stateApplicationRefId: builder.stateApplicationRefId,
+          stateApplicationRefId: builder.stateApplicationRefId ?? builder.systemId,
           trackingSystemRefId: builder.trackingSystemRefId,
           systemName,
           installedKwAc: builder.installedKwAc,
