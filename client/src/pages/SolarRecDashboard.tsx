@@ -572,30 +572,8 @@ function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
 }
 
 function parseAbpAcSizeKw(row: CsvRow): number | null {
-  const direct = firstNonNull(
-    parseNumber(row.AC_Size_kW),
-    parseNumber(row.ac_size_kw),
-    parseNumber(row.system_size_kw_ac),
-    parseNumber(row.System_Size_kW_AC),
-    parseNumber(row.Inverter_Size_kW_AC_Part_2),
-    parseNumber(row.Inverter_Size_kW_AC),
-    parseNumber(row.Nameplate_Capacity_kW_AC),
-    parseNumber(row.nameplate_capacity_kw_ac)
-  );
-  if (direct !== null) return direct;
-
-  for (const [key, value] of Object.entries(row)) {
-    const normalizedKey = clean(key).toLowerCase();
-    const looksLikeAcKwField =
-      normalizedKey.includes("ac") &&
-      normalizedKey.includes("kw") &&
-      (normalizedKey.includes("size") || normalizedKey.includes("inverter") || normalizedKey.includes("nameplate"));
-    if (!looksLikeAcKwField) continue;
-    const parsed = parseNumber(value);
-    if (parsed !== null) return parsed;
-  }
-
-  return null;
+  // Strict rule: ABP AC size may only come from Inverter_Size_kW_AC_Part_2.
+  return parseNumber(row.Inverter_Size_kW_AC_Part_2);
 }
 
 function resolveLastMeterReadRawValue(row: CsvRow): string {
