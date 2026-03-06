@@ -605,6 +605,14 @@ function isValidCompliantSourceText(value: string): boolean {
   return /^[A-Za-z0-9 ]+$/.test(value);
 }
 
+function getCsvValueByHeader(row: CsvRow, headerName: string): string {
+  const target = clean(headerName).toLowerCase();
+  for (const [header, value] of Object.entries(row)) {
+    if (clean(header).toLowerCase() === target) return clean(value);
+  }
+  return "";
+}
+
 function parseEnergyToWh(value: string | undefined, headerLabel: string, defaultUnit: "kwh" | "wh" = "kwh"): number | null {
   const parsed = parseNumber(value);
   if (parsed === null) return null;
@@ -1568,6 +1576,7 @@ export default function SolarRecDashboard() {
   const [compliantSourceTextInput, setCompliantSourceTextInput] = useState("");
   const [compliantSourceEvidenceFiles, setCompliantSourceEvidenceFiles] = useState<File[]>([]);
   const [compliantSourceUploadError, setCompliantSourceUploadError] = useState<string | null>(null);
+  const [compliantSourceCsvMessage, setCompliantSourceCsvMessage] = useState<string | null>(null);
   const compliantSourceEntriesRef = useRef<CompliantSourceEntry[]>(compliantSourceEntries);
   compliantSourceEntriesRef.current = compliantSourceEntries;
   const [monthlySnapshotTransitions, setMonthlySnapshotTransitions] = useState<
@@ -1669,6 +1678,75 @@ export default function SolarRecDashboard() {
       target?.evidence.forEach((item) => URL.revokeObjectURL(item.objectUrl));
       return previous.filter((entry) => entry.portalId !== portalId);
     });
+  };
+
+  const importCompliantSourceCsv = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const raw = await file.text();
+      const parsed = parseCsv(raw);
+      if (!matchesExpectedHeaders(parsed.headers, ["portal_id", "source"])) {
+        setCompliantSourceUploadError("CSV must include headers: portal_id, source");
+        setCompliantSourceCsvMessage(null);
+        return;
+      }
+
+      const importedAt = new Date();
+      const validRows: Array<{ portalId: string; source: string }> = [];
+      let skippedMissing = 0;
+      let skippedInvalid = 0;
+
+      parsed.rows.forEach((row) => {
+        const portalId = getCsvValueByHeader(row, "portal_id");
+        const source = getCsvValueByHeader(row, "source");
+        if (!portalId || !source) {
+          skippedMissing += 1;
+          return;
+        }
+        if (!isValidCompliantSourceText(source)) {
+          skippedInvalid += 1;
+          return;
+        }
+        validRows.push({ portalId, source });
+      });
+
+      if (validRows.length === 0) {
+        setCompliantSourceUploadError("No valid compliant source rows found in CSV.");
+        setCompliantSourceCsvMessage(null);
+        return;
+      }
+
+      setCompliantSourceEntries((previous) => {
+        const byPortal = new Map(previous.map((entry) => [entry.portalId, entry]));
+        validRows.forEach(({ portalId, source }) => {
+          const existing = byPortal.get(portalId);
+          if (existing) {
+            byPortal.set(portalId, {
+              ...existing,
+              compliantSource: source,
+              updatedAt: importedAt,
+            });
+          } else {
+            byPortal.set(portalId, {
+              portalId,
+              compliantSource: source,
+              updatedAt: importedAt,
+              evidence: [],
+            });
+          }
+        });
+        return Array.from(byPortal.values());
+      });
+
+      setCompliantSourceUploadError(null);
+      setCompliantSourceCsvMessage(
+        `Imported ${formatNumber(validRows.length)} row(s). Skipped ${formatNumber(skippedMissing)} missing and ${formatNumber(skippedInvalid)} invalid source row(s).`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not import compliant source CSV.";
+      setCompliantSourceUploadError(message);
+      setCompliantSourceCsvMessage(null);
+    }
   };
 
   const handleUpload = async (key: DatasetKey, file: File | null, mode: "replace" | "append" = "replace") => {
@@ -6885,6 +6963,29 @@ export default function SolarRecDashboard() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-white">
+                          <Upload className="h-4 w-4" />
+                          Upload Compliant Source CSV
+                          <input
+                            type="file"
+                            accept=".csv,text/csv"
+                            className="hidden"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0] ?? null;
+                              void importCompliantSourceCsv(file);
+                              event.currentTarget.value = "";
+                            }}
+                          />
+                        </label>
+                        <p className="text-xs text-slate-600">Required headers: `portal_id`, `source`</p>
+                      </div>
+                      {compliantSourceCsvMessage ? (
+                        <p className="mt-2 text-xs text-emerald-700">{compliantSourceCsvMessage}</p>
+                      ) : null}
+                    </div>
+
                     <div className="grid gap-3 md:grid-cols-3">
                       <div className="space-y-1">
                         <label className="text-sm font-medium text-slate-700">Portal ID</label>
