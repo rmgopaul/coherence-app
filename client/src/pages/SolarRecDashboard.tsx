@@ -1655,6 +1655,12 @@ export default function SolarRecDashboard() {
     }>
   >([]);
   const [activeTab, setActiveTab] = useState("overview");
+  const datasetsRef = useRef(datasets);
+  datasetsRef.current = datasets;
+  const serializedLocalLogEntriesRef = useRef("[]");
+  const datasetsHydratedRef = useRef(false);
+  const remoteStateHydratedRef = useRef(false);
+  const remoteStatusRef = useRef(remoteDashboardStateQuery.status);
 
   const jumpToSection = (sectionId: string) => {
     if (typeof document === "undefined") return;
@@ -4640,6 +4646,22 @@ export default function SolarRecDashboard() {
   }, [compactRemoteLogs, manifestOnlyRemoteStatePayload, remoteDatasetManifest]);
 
   useEffect(() => {
+    serializedLocalLogEntriesRef.current = serializedLocalLogEntries;
+  }, [serializedLocalLogEntries]);
+
+  useEffect(() => {
+    datasetsHydratedRef.current = datasetsHydrated;
+  }, [datasetsHydrated]);
+
+  useEffect(() => {
+    remoteStateHydratedRef.current = remoteStateHydrated;
+  }, [remoteStateHydrated]);
+
+  useEffect(() => {
+    remoteStatusRef.current = remoteDashboardStateQuery.status;
+  }, [remoteDashboardStateQuery.status]);
+
+  useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -4776,6 +4798,40 @@ export default function SolarRecDashboard() {
   ]);
 
   useEffect(() => {
+    const flushLocalPersistence = () => {
+      if (remoteStatusRef.current === "pending") return;
+      if (!datasetsHydratedRef.current || !remoteStateHydratedRef.current) return;
+
+      void (async () => {
+        try {
+          await saveDatasetsToStorage(datasetsRef.current);
+          if (typeof window !== "undefined") {
+            window.localStorage.setItem(LOGS_STORAGE_KEY, serializedLocalLogEntriesRef.current);
+          }
+        } catch {
+          // Best-effort flush on navigation.
+        }
+      })();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushLocalPersistence();
+      }
+    };
+
+    window.addEventListener("pagehide", flushLocalPersistence);
+    window.addEventListener("beforeunload", flushLocalPersistence);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pagehide", flushLocalPersistence);
+      window.removeEventListener("beforeunload", flushLocalPersistence);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
     if (remoteDashboardStateQuery.status === "pending") return;
     if (!datasetsHydrated || !remoteStateHydrated) return;
 
@@ -4791,7 +4847,7 @@ export default function SolarRecDashboard() {
           // Local save failure is non-critical when remote sync is also active
         }
       })();
-    }, 500);
+    }, 250);
 
     if (remoteDashboardStateQuery.status === "error") {
       setStorageNotice(null);

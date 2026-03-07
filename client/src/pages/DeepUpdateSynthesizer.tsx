@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { trpc } from "@/lib/trpc";
 import {
   type DeepUpdateReportData,
   type DeepUpdateReportKey,
@@ -13,7 +14,7 @@ import {
   type DeepUpdateSynthesisResult,
 } from "@/lib/deepUpdateSynth";
 import { ArrowLeft, Download, Loader2, Upload } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -21,6 +22,15 @@ const DEEP_UPDATE_DB_NAME = "deepUpdateSynthDb";
 const DEEP_UPDATE_DB_VERSION = 1;
 const DEEP_UPDATE_STORE = "reports";
 const DEEP_UPDATE_RECORD_KEY = "activeReports";
+const DEEP_UPDATE_REMOTE_MANIFEST_KEY = "deep_update_manifest_v1";
+const DEEP_UPDATE_REMOTE_CHUNK_CHAR_LIMIT = 500_000;
+
+type DeepUpdateRemoteReportPayload = {
+  fileName: string;
+  sheetName: string;
+  headers: string[];
+  rows: Array<Record<string, unknown>>;
+};
 
 function isDeepUpdateReportKey(value: string): value is DeepUpdateReportKey {
   return [
@@ -32,6 +42,112 @@ function isDeepUpdateReportKey(value: string): value is DeepUpdateReportKey {
     "iccReport3",
     "portalPayments",
   ].includes(value);
+}
+
+function normalizeDeepUpdateReport(
+  key: DeepUpdateReportKey,
+  value:
+    | {
+        fileName?: unknown;
+        sheetName?: unknown;
+        headers?: unknown;
+        rows?: unknown;
+      }
+    | null
+    | undefined
+): DeepUpdateReportData | null {
+  if (!value || !Array.isArray(value.headers) || !Array.isArray(value.rows)) return null;
+  const rows = value.rows as Array<Record<string, unknown>>;
+  return {
+    key,
+    fileName: typeof value.fileName === "string" ? value.fileName : `${key}.csv`,
+    sheetName: typeof value.sheetName === "string" ? value.sheetName : "",
+    headers: value.headers.map((header) => String(header)),
+    rows: rows.map((row) => {
+      const normalized: Record<string, string> = {};
+      if (row && typeof row === "object") {
+        Object.entries(row as Record<string, unknown>).forEach(([header, cell]) => {
+          normalized[header] = cell === null || cell === undefined ? "" : String(cell);
+        });
+      }
+      return normalized;
+    }),
+  };
+}
+
+function reportStorageKey(key: DeepUpdateReportKey): string {
+  return `deep_update_report_${key}`;
+}
+
+function splitTextIntoChunks(value: string, chunkSize: number): string[] {
+  if (value.length <= chunkSize) return [value];
+  const chunks: string[] = [];
+  for (let index = 0; index < value.length; index += chunkSize) {
+    chunks.push(value.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+function buildRemoteChunkKey(reportKey: DeepUpdateReportKey, chunkIndex: number): string {
+  return `du_${reportKey}_chunk_${String(chunkIndex).padStart(4, "0")}`;
+}
+
+function buildChunkPointerPayload(chunkKeys: string[]): string {
+  return JSON.stringify({
+    _chunkedDeepUpdateReport: true,
+    chunkKeys,
+  });
+}
+
+function parseChunkPointerPayload(payload: string): string[] | null {
+  try {
+    const parsed = JSON.parse(payload) as { _chunkedDeepUpdateReport?: unknown; chunkKeys?: unknown };
+    if (parsed._chunkedDeepUpdateReport !== true) return null;
+    if (!Array.isArray(parsed.chunkKeys) || parsed.chunkKeys.length === 0) return null;
+    const chunkKeyPattern = /^[a-zA-Z0-9_-]{1,64}$/;
+    const chunkKeys = parsed.chunkKeys.filter(
+      (key): key is string => typeof key === "string" && chunkKeyPattern.test(key)
+    );
+    return chunkKeys.length === parsed.chunkKeys.length ? chunkKeys : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildManifestPayload(keys: DeepUpdateReportKey[]): string {
+  return JSON.stringify({
+    keys,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function parseManifestPayload(payload: string): DeepUpdateReportKey[] {
+  try {
+    const parsed = JSON.parse(payload) as { keys?: unknown };
+    if (!Array.isArray(parsed.keys)) return [];
+    return parsed.keys.filter((key): key is DeepUpdateReportKey => typeof key === "string" && isDeepUpdateReportKey(key));
+  } catch {
+    return [];
+  }
+}
+
+function serializeReportForRemote(report: DeepUpdateReportData): string {
+  const payload: DeepUpdateRemoteReportPayload = {
+    fileName: report.fileName,
+    sheetName: report.sheetName,
+    headers: report.headers,
+    rows: report.rows,
+  };
+  return JSON.stringify(payload);
+}
+
+function deserializeReportFromRemote(payload: string, key: DeepUpdateReportKey): DeepUpdateReportData | null {
+  try {
+    const parsed = JSON.parse(payload) as DeepUpdateRemoteReportPayload;
+    return normalizeDeepUpdateReport(key, parsed);
+  } catch {
+    return null;
+  }
 }
 
 async function openDeepUpdateDatabase(): Promise<IDBDatabase> {
@@ -75,23 +191,9 @@ async function loadDeepUpdateReportsFromStorage(): Promise<Partial<Record<DeepUp
 
     Object.entries(raw).forEach(([key, value]) => {
       if (!isDeepUpdateReportKey(key)) return;
-      if (!value || typeof value !== "object") return;
-      if (!Array.isArray(value.headers) || !Array.isArray(value.rows)) return;
-      restored[key] = {
-        key,
-        fileName: typeof value.fileName === "string" ? value.fileName : `${key}.csv`,
-        sheetName: typeof value.sheetName === "string" ? value.sheetName : "",
-        headers: value.headers.map((header) => String(header)),
-        rows: value.rows.map((row) => {
-          const normalized: Record<string, string> = {};
-          if (row && typeof row === "object") {
-            Object.entries(row as Record<string, unknown>).forEach(([header, cell]) => {
-              normalized[header] = cell === null || cell === undefined ? "" : String(cell);
-            });
-          }
-          return normalized;
-        }),
-      };
+      const normalized = normalizeDeepUpdateReport(key, value);
+      if (!normalized) return;
+      restored[key] = normalized;
     });
 
     return restored;
@@ -199,6 +301,19 @@ export default function DeepUpdateSynthesizer() {
   const [synthError, setSynthError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [reportsHydrated, setReportsHydrated] = useState(false);
+  const [remoteHydrated, setRemoteHydrated] = useState(false);
+  const [storageNotice, setStorageNotice] = useState<string | null>(null);
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const getRemoteDatasetRef = useRef(getRemoteDataset);
+  getRemoteDatasetRef.current = getRemoteDataset;
+  const saveRemoteDatasetRef = useRef(saveRemoteDataset);
+  saveRemoteDatasetRef.current = saveRemoteDataset;
+  const remoteReportSignaturesRef = useRef<Partial<Record<DeepUpdateReportKey, string>>>({});
+  const reportsRef = useRef(reports);
+  reportsRef.current = reports;
+  const reportsHydratedRef = useRef(reportsHydrated);
+  reportsHydratedRef.current = reportsHydrated;
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -226,7 +341,9 @@ export default function DeepUpdateSynthesizer() {
     if (!reportsHydrated) return;
     const timeout = window.setTimeout(() => {
       void saveDeepUpdateReportsToStorage(reports).catch(() => {
-        toast.error("Could not persist Deep Update uploads in browser storage.");
+        setStorageNotice(
+          "Browser storage is full for this device. Keeping uploads in cloud sync; local browser persistence is limited."
+        );
       });
     }, 400);
 
@@ -234,6 +351,159 @@ export default function DeepUpdateSynthesizer() {
       window.clearTimeout(timeout);
     };
   }, [reports, reportsHydrated]);
+
+  useEffect(() => {
+    if (authLoading || !user || !reportsHydrated) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const manifestResponse = await getRemoteDatasetRef.current.mutateAsync({ key: DEEP_UPDATE_REMOTE_MANIFEST_KEY });
+        const reportKeys = manifestResponse?.payload ? parseManifestPayload(manifestResponse.payload) : [];
+        const loaded: Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>> = {};
+        const signatures: Partial<Record<DeepUpdateReportKey, string>> = {};
+
+        for (const key of reportKeys) {
+          if (cancelled) break;
+          const storageKey = reportStorageKey(key);
+          const response = await getRemoteDatasetRef.current.mutateAsync({ key: storageKey });
+          if (!response?.payload) continue;
+
+          let reportPayload = response.payload;
+          const chunkKeys = parseChunkPointerPayload(response.payload);
+          if (chunkKeys) {
+            const chunkPayloads = await Promise.all(
+              chunkKeys.map((chunkKey) =>
+                getRemoteDatasetRef.current
+                  .mutateAsync({ key: chunkKey })
+                  .then((chunkResponse) => chunkResponse?.payload ?? null)
+                  .catch(() => null)
+              )
+            );
+            if (chunkPayloads.some((chunkPayload) => chunkPayload === null)) continue;
+            reportPayload = chunkPayloads.join("");
+          }
+
+          const report = deserializeReportFromRemote(reportPayload, key);
+          if (!report) continue;
+          loaded[key] = report;
+          signatures[key] = `${report.fileName}|${report.sheetName}|${report.rows.length}|${report.headers.length}`;
+        }
+
+        if (cancelled) return;
+        if (Object.keys(loaded).length > 0) {
+          setReports((current) => {
+            if (Object.keys(current).length === 0) return loaded;
+            const merged = { ...current };
+            for (const [key, value] of Object.entries(loaded)) {
+              if (!merged[key as DeepUpdateReportKey] && value) {
+                merged[key as DeepUpdateReportKey] = value;
+              }
+            }
+            return merged;
+          });
+        }
+        remoteReportSignaturesRef.current = signatures;
+        setStorageNotice(null);
+      } catch {
+        if (!cancelled) {
+          setStorageNotice("Could not load Deep Update uploads from cloud storage.");
+        }
+      } finally {
+        if (!cancelled) setRemoteHydrated(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, reportsHydrated, user]);
+
+  useEffect(() => {
+    if (authLoading || !user || !reportsHydrated || !remoteHydrated) return;
+
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        const nextSignatures: Partial<Record<DeepUpdateReportKey, string>> = {};
+
+        try {
+          for (const report of REPORTS) {
+            const key = report.key;
+            const reportData = reports[key];
+            const storageKey = reportStorageKey(key);
+
+            if (!reportData) {
+              if (!remoteReportSignaturesRef.current[key]) continue;
+              await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload: "" });
+              delete remoteReportSignaturesRef.current[key];
+              continue;
+            }
+
+            const signature = `${reportData.fileName}|${reportData.sheetName}|${reportData.rows.length}|${reportData.headers.length}`;
+            nextSignatures[key] = signature;
+            if (remoteReportSignaturesRef.current[key] === signature) continue;
+
+            const payload = serializeReportForRemote(reportData);
+            const chunks = splitTextIntoChunks(payload, DEEP_UPDATE_REMOTE_CHUNK_CHAR_LIMIT);
+
+            if (chunks.length === 1) {
+              await saveRemoteDatasetRef.current.mutateAsync({ key: storageKey, payload });
+            } else {
+              const chunkKeys = chunks.map((_, index) => buildRemoteChunkKey(key, index));
+              for (let index = 0; index < chunks.length; index += 1) {
+                await saveRemoteDatasetRef.current.mutateAsync({ key: chunkKeys[index], payload: chunks[index] });
+              }
+              await saveRemoteDatasetRef.current.mutateAsync({
+                key: storageKey,
+                payload: buildChunkPointerPayload(chunkKeys),
+              });
+            }
+            remoteReportSignaturesRef.current[key] = signature;
+          }
+
+          const activeKeys = REPORTS.map((report) => report.key).filter((key) => Boolean(reports[key]));
+          await saveRemoteDatasetRef.current.mutateAsync({
+            key: DEEP_UPDATE_REMOTE_MANIFEST_KEY,
+            payload: buildManifestPayload(activeKeys),
+          });
+          remoteReportSignaturesRef.current = nextSignatures;
+          setStorageNotice(null);
+        } catch {
+          setStorageNotice("Could not sync Deep Update uploads to cloud storage.");
+        }
+      })();
+    }, 1000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [authLoading, remoteHydrated, reports, reportsHydrated, user]);
+
+  useEffect(() => {
+    const flushReports = () => {
+      if (!reportsHydratedRef.current) return;
+      void saveDeepUpdateReportsToStorage(reportsRef.current).catch(() => {
+        // Best-effort flush on navigation.
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushReports();
+      }
+    };
+
+    window.addEventListener("pagehide", flushReports);
+    window.addEventListener("beforeunload", flushReports);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      flushReports();
+      window.removeEventListener("pagehide", flushReports);
+      window.removeEventListener("beforeunload", flushReports);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
 
   const missingRequired = useMemo(
     () => REPORTS.filter((report) => report.required && !reports[report.key]),
@@ -377,6 +647,15 @@ export default function DeepUpdateSynthesizer() {
             })}
           </CardContent>
         </Card>
+
+        {storageNotice ? (
+          <Card className="border-amber-200 bg-amber-50/70">
+            <CardHeader>
+              <CardTitle className="text-base text-amber-900">Storage Notice</CardTitle>
+              <CardDescription className="text-amber-800">{storageNotice}</CardDescription>
+            </CardHeader>
+          </Card>
+        ) : null}
 
         <Card>
           <CardHeader>
