@@ -25,6 +25,7 @@ type SynthesisContext = {
   part1Status: string;
   part2Status: string;
   batchStatus: string;
+  hasAbpApplicationIdMatch: boolean;
   internalStatus: string;
   atLeast20Paid: string;
   furthestStepComplete: number | null;
@@ -308,7 +309,14 @@ function computeCalcStepValue(context: SynthesisContext): CalcStepValue {
     return 2;
   }
 
-  if (sdStatus === "COMPLETED" && activeContract && part1Status === "VERIFIED" && part2Status === "VERIFIED" && approvedBatch) {
+  if (
+    context.hasAbpApplicationIdMatch &&
+    sdStatus === "COMPLETED" &&
+    activeContract &&
+    part1Status === "VERIFIED" &&
+    part2Status === "VERIFIED" &&
+    approvedBatch
+  ) {
     if (paidFlag === "PAID" && internalStatus === "STEP 4.3 - PAYMENTS ON HOLD") return 21;
     if (contractStatus === "TERMINATED") return 23;
     if (paidFlag === "PAID") return 22;
@@ -378,7 +386,7 @@ export async function parseDeepUpdateReportFile(file: File, key: DeepUpdateRepor
   const headers = (headersRow[0] ?? []).map((value) => clean(value)).filter((value) => !!value);
 
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    raw: false,
+    raw: true,
     defval: "",
     blankrows: false,
   }).map((row) => {
@@ -502,9 +510,8 @@ export function synthesizeDeepUpdate(
     );
 
     const abpMatchId = stateCertificationNumber || stateApplicationRefId;
-    const abpRow =
-      (abpMatchId ? abpByApplicationId.get(abpMatchId) : undefined) ??
-      (sdId ? abpByDisclosureFormId.get(sdId) : undefined);
+    const abpRowByApplicationId = abpMatchId ? abpByApplicationId.get(abpMatchId) : undefined;
+    const abpRow = abpRowByApplicationId ?? (sdId ? abpByDisclosureFormId.get(sdId) : undefined);
     if (!abpRow) rowsMissingAbpMatch += 1;
 
     const applicationId = abpRow
@@ -525,7 +532,8 @@ export function synthesizeDeepUpdate(
     const contractUtility = abpRow ? pickByHeaders(abpRow, ["Assigned_Contracting_Utility", "Counterparty Utility"]) : "";
     const utilityContractNumber = abpRow ? pickByHeaders(abpRow, ["Contract_ID", "contract_id"]) : "";
 
-    const sdStatus = normalizeStatus(part1Status) === "VERIFIED" ? "completed" : (portalSdStatus || sdStatusByFormId.get(sdId) || "");
+    // Do not infer SD completion from ABP Part 1 status; use explicit SD status sources only.
+    const sdStatus = portalSdStatus || sdStatusByFormId.get(sdId) || "";
 
     const icc2Row = applicationId ? icc2ByApplicationId.get(applicationId) : undefined;
     const icc3Row = applicationId ? icc3ByApplicationId.get(applicationId) : undefined;
@@ -548,6 +556,7 @@ export function synthesizeDeepUpdate(
       part1Status,
       part2Status,
       batchStatus,
+      hasAbpApplicationIdMatch: Boolean(abpRowByApplicationId),
       internalStatus,
       atLeast20Paid,
       furthestStepComplete,
@@ -557,10 +566,11 @@ export function synthesizeDeepUpdate(
     const internalStatusValue = toInternalStatusValue(internalStatus);
     const shouldBeUpdated = compareStepValues(calcStepValue, internalStatusValue);
 
+    const formattedPart2VerificationDate = formatDate(parseDate(part2VerificationDate));
     const deepUpdateRow: DeepUpdateRow = {
       id,
       est_payment_date: deriveEstimatedPaymentDate(part2VerificationDate),
-      state_approval_date2: part2VerificationDate || "NULL",
+      state_approval_date2: formattedPart2VerificationDate || "NULL",
       state_approval_date: tradeDate || "NULL",
       standing_order_utility: normalizeUtility(contractUtility) || "NULL",
       rec_price: recPrice || "NULL",

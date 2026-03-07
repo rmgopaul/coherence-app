@@ -596,7 +596,7 @@ function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
 
 function parseAbpAcSizeKw(row: CsvRow): number | null {
   // Strict rule: ABP AC size may only come from Inverter_Size_kW_AC_Part_2.
-  return parseNumber(row.Inverter_Size_kW_AC_Part_2);
+  return parseNumber(row.Inverter_Size_kW_AC_Part_2 || getCsvValueByHeader(row, "Inverter_Size_kW_AC_Part_2"));
 }
 
 function resolveLastMeterReadRawValue(row: CsvRow): string {
@@ -2946,6 +2946,23 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.abpReport]);
 
+  const abpAcSizeKwByApplicationId = useMemo(() => {
+    const mapping = new Map<string, number>();
+
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
+      const applicationId = clean(row.Application_ID) || clean(row.application_id);
+      if (!applicationId) return;
+      if (mapping.has(applicationId)) return;
+
+      const acSizeKw = parseAbpAcSizeKw(row);
+      if (acSizeKw === null) return;
+
+      mapping.set(applicationId, acSizeKw);
+    });
+
+    return mapping;
+  }, [datasets.abpReport]);
+
   const abpPart2VerificationDateByApplicationId = useMemo(() => {
     const mapping = new Map<string, Date>();
 
@@ -3294,11 +3311,6 @@ export default function SolarRecDashboard() {
       matchedCandidateKeys.forEach((candidateKey) => {
         const candidate = performanceRatioMatchIndexes.candidateByKey.get(candidateKey);
         if (!candidate || !candidate.system.trackingSystemRefId) return;
-        const keyById = candidate.system.systemId ? `id:${candidate.system.systemId}` : "";
-        const keyByTracking = candidate.system.trackingSystemRefId
-          ? `tracking:${candidate.system.trackingSystemRefId}`
-          : "";
-        const keyByName = `name:${candidate.system.systemName.toLowerCase()}`;
 
         const baseline = generationBaselineByTrackingId.get(candidate.system.trackingSystemRefId);
         const generatorDateOnline = generatorDateOnlineByTrackingId.get(candidate.system.trackingSystemRefId) ?? null;
@@ -3343,11 +3355,9 @@ export default function SolarRecDashboard() {
           installerName: candidate.system.installerName,
           monitoringPlatform: candidate.system.monitoringPlatform,
           portalAcSizeKw: candidate.system.installedKwAc,
-          abpAcSizeKw:
-            (keyById ? abpAcSizeKwBySystemKey.get(keyById) : undefined) ??
-            (keyByTracking ? abpAcSizeKwBySystemKey.get(keyByTracking) : undefined) ??
-            abpAcSizeKwBySystemKey.get(keyByName) ??
-            null,
+          abpAcSizeKw: candidate.system.stateApplicationRefId
+            ? abpAcSizeKwByApplicationId.get(candidate.system.stateApplicationRefId) ?? null
+            : null,
           part2VerificationDate:
             candidate.system.stateApplicationRefId
               ? abpPart2VerificationDateByApplicationId.get(candidate.system.stateApplicationRefId) ?? null
@@ -3381,7 +3391,7 @@ export default function SolarRecDashboard() {
       invalidConvertedReads,
     };
   }, [
-    abpAcSizeKwBySystemKey,
+    abpAcSizeKwByApplicationId,
     abpPart2VerificationDateByApplicationId,
     annualProductionByTrackingId,
     convertedReadRows,
