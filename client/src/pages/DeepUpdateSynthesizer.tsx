@@ -17,6 +17,115 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
+const DEEP_UPDATE_DB_NAME = "deepUpdateSynthDb";
+const DEEP_UPDATE_DB_VERSION = 1;
+const DEEP_UPDATE_STORE = "reports";
+const DEEP_UPDATE_RECORD_KEY = "activeReports";
+
+function isDeepUpdateReportKey(value: string): value is DeepUpdateReportKey {
+  return [
+    "portal",
+    "abpReport",
+    "sd",
+    "iccReport1",
+    "iccReport2",
+    "iccReport3",
+    "portalPayments",
+  ].includes(value);
+}
+
+async function openDeepUpdateDatabase(): Promise<IDBDatabase> {
+  return await new Promise((resolve, reject) => {
+    if (typeof window === "undefined" || !("indexedDB" in window)) {
+      reject(new Error("IndexedDB is not available."));
+      return;
+    }
+
+    const request = window.indexedDB.open(DEEP_UPDATE_DB_NAME, DEEP_UPDATE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DEEP_UPDATE_STORE)) {
+        db.createObjectStore(DEEP_UPDATE_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Failed to open storage."));
+  });
+}
+
+async function loadDeepUpdateReportsFromStorage(): Promise<Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>>> {
+  if (typeof window === "undefined" || !("indexedDB" in window)) return {};
+
+  try {
+    const db = await openDeepUpdateDatabase();
+    const payload = await new Promise<unknown>((resolve, reject) => {
+      const tx = db.transaction(DEEP_UPDATE_STORE, "readonly");
+      const store = tx.objectStore(DEEP_UPDATE_STORE);
+      const request = store.get(DEEP_UPDATE_RECORD_KEY);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Failed to read stored reports."));
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => db.close();
+      tx.onerror = () => db.close();
+    });
+
+    if (!payload || typeof payload !== "object") return {};
+    const raw = payload as Record<string, DeepUpdateReportData>;
+    const restored: Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>> = {};
+
+    Object.entries(raw).forEach(([key, value]) => {
+      if (!isDeepUpdateReportKey(key)) return;
+      if (!value || typeof value !== "object") return;
+      if (!Array.isArray(value.headers) || !Array.isArray(value.rows)) return;
+      restored[key] = {
+        key,
+        fileName: typeof value.fileName === "string" ? value.fileName : `${key}.csv`,
+        sheetName: typeof value.sheetName === "string" ? value.sheetName : "",
+        headers: value.headers.map((header) => String(header)),
+        rows: value.rows.map((row) => {
+          const normalized: Record<string, string> = {};
+          if (row && typeof row === "object") {
+            Object.entries(row as Record<string, unknown>).forEach(([header, cell]) => {
+              normalized[header] = cell === null || cell === undefined ? "" : String(cell);
+            });
+          }
+          return normalized;
+        }),
+      };
+    });
+
+    return restored;
+  } catch {
+    return {};
+  }
+}
+
+async function saveDeepUpdateReportsToStorage(
+  reports: Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>>
+): Promise<void> {
+  if (typeof window === "undefined" || !("indexedDB" in window)) return;
+
+  const db = await openDeepUpdateDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(DEEP_UPDATE_STORE, "readwrite");
+    const store = tx.objectStore(DEEP_UPDATE_STORE);
+    const request = store.put(reports, DEEP_UPDATE_RECORD_KEY);
+    request.onerror = () => reject(request.error ?? new Error("Failed to save reports."));
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onabort = () => {
+      db.close();
+      reject(tx.error ?? new Error("Failed to save reports."));
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error ?? new Error("Failed to save reports."));
+    };
+  });
+}
+
 const REPORTS: Array<{ key: DeepUpdateReportKey; label: string; required: boolean; description: string }> = [
   {
     key: "portal",
@@ -89,12 +198,42 @@ export default function DeepUpdateSynthesizer() {
   const [result, setResult] = useState<DeepUpdateSynthesisResult | null>(null);
   const [synthError, setSynthError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [reportsHydrated, setReportsHydrated] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !user) {
       setLocation("/");
     }
   }, [authLoading, user, setLocation]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const storedReports = await loadDeepUpdateReportsFromStorage();
+      if (cancelled) return;
+      if (Object.keys(storedReports).length > 0) {
+        setReports(storedReports);
+      }
+      setReportsHydrated(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!reportsHydrated) return;
+    const timeout = window.setTimeout(() => {
+      void saveDeepUpdateReportsToStorage(reports).catch(() => {
+        toast.error("Could not persist Deep Update uploads in browser storage.");
+      });
+    }, 400);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [reports, reportsHydrated]);
 
   const missingRequired = useMemo(
     () => REPORTS.filter((report) => report.required && !reports[report.key]),

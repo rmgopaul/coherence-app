@@ -1052,6 +1052,12 @@ function convertedReadsRowKey(row: CsvRow): string {
   ].join("|");
 }
 
+function datasetAppendRowKey(key: DatasetKey, row: CsvRow): string {
+  if (key === "accountSolarGeneration") return accountSolarGenerationRowKey(row);
+  if (key === "convertedReads") return convertedReadsRowKey(row);
+  return "";
+}
+
 function splitTextIntoChunks(value: string, chunkSize: number): string[] {
   if (value.length <= chunkSize) return [value];
   const chunks: string[] = [];
@@ -1831,18 +1837,13 @@ export default function SolarRecDashboard() {
           const uploadedAt = new Date();
           const shouldAppend = MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
           const existing = previous[key];
-          const rowKeyForAppend = (row: CsvRow): string => {
-            if (key === "accountSolarGeneration") return accountSolarGenerationRowKey(row);
-            if (key === "convertedReads") return convertedReadsRowKey(row);
-            return "";
-          };
 
           if (shouldAppend && existing) {
             const combinedHeaders = Array.from(new Set([...existing.headers, ...parsed.headers]));
             const existingRows = existing.rows;
-            const dedupeKeys = new Set(existingRows.map((row) => rowKeyForAppend(row)));
+            const dedupeKeys = new Set(existingRows.map((row) => datasetAppendRowKey(key, row)));
             const appendedRows = parsed.rows.filter((row) => {
-              const dedupeKey = rowKeyForAppend(row);
+              const dedupeKey = datasetAppendRowKey(key, row);
               if (!dedupeKey) return true;
               if (dedupeKeys.has(dedupeKey)) return false;
               dedupeKeys.add(dedupeKey);
@@ -1903,8 +1904,97 @@ export default function SolarRecDashboard() {
 
   const handleMultiCsvUploads = async (key: DatasetKey, files: File[]) => {
     if (files.length === 0) return;
-    for (const file of files) {
-      await handleUpload(key, file, "append");
+    if (!MULTI_APPEND_DATASET_KEYS.has(key)) {
+      await handleUpload(key, files[0] ?? null, "replace");
+      return;
+    }
+
+    const config = DATASET_DEFINITIONS[key];
+    const parsedFiles: Array<{ fileName: string; uploadedAt: Date; headers: string[]; rows: CsvRow[] }> = [];
+
+    try {
+      for (const file of files) {
+        const raw = await file.text();
+        const parsed = parseCsv(raw);
+        const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
+        if (!isValid) {
+          setUploadErrors((previous) => ({
+            ...previous,
+            [key]: `${file.name} does not match the expected ${config.label} format.`,
+          }));
+          return;
+        }
+
+        parsedFiles.push({
+          fileName: file.name,
+          uploadedAt: new Date(),
+          headers: parsed.headers,
+          rows: parsed.rows,
+        });
+
+        // Yield between files to keep the browser responsive during large multi-upload batches.
+        await new Promise<void>((resolve) => {
+          window.setTimeout(() => resolve(), 0);
+        });
+      }
+
+      setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
+      setDatasets((previous) => {
+        const existing = previous[key];
+        const combinedHeaders = existing ? [...existing.headers] : [];
+        parsedFiles.forEach((parsedFile) => {
+          parsedFile.headers.forEach((header) => {
+            if (!combinedHeaders.includes(header)) combinedHeaders.push(header);
+          });
+        });
+
+        const combinedRows = existing ? [...existing.rows] : [];
+        const dedupeKeys = new Set(combinedRows.map((row) => datasetAppendRowKey(key, row)));
+        parsedFiles.forEach((parsedFile) => {
+          parsedFile.rows.forEach((row) => {
+            const dedupeKey = datasetAppendRowKey(key, row);
+            if (dedupeKey && dedupeKeys.has(dedupeKey)) return;
+            if (dedupeKey) dedupeKeys.add(dedupeKey);
+            combinedRows.push(row);
+          });
+        });
+
+        const existingSources =
+          existing?.sources && existing.sources.length > 0
+            ? existing.sources
+            : existing
+              ? [
+                  {
+                    fileName: existing.fileName,
+                    uploadedAt: existing.uploadedAt,
+                    rowCount: existing.rows.length,
+                  },
+                ]
+              : [];
+
+        const newSources = parsedFiles.map((parsedFile) => ({
+          fileName: parsedFile.fileName,
+          uploadedAt: parsedFile.uploadedAt,
+          rowCount: parsedFile.rows.length,
+        }));
+        const sources = [...existingSources, ...newSources];
+
+        const uploadedAt = parsedFiles[parsedFiles.length - 1]?.uploadedAt ?? new Date();
+
+        return {
+          ...previous,
+          [key]: {
+            fileName: `${sources.length} files loaded`,
+            uploadedAt,
+            headers: combinedHeaders,
+            rows: combinedRows,
+            sources,
+          } satisfies CsvDataset,
+        };
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error while reading CSV files.";
+      setUploadErrors((previous) => ({ ...previous, [key]: message }));
     }
   };
 
