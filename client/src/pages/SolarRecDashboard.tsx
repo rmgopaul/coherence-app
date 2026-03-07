@@ -371,6 +371,14 @@ type CompliantSourceEntry = {
   evidence: CompliantSourceEvidence[];
 };
 
+type CompliantSourceTableRow = {
+  portalId: string;
+  compliantSource: string;
+  updatedAt: Date | null;
+  evidence: CompliantSourceEvidence[];
+  sourceType: "Manual" | "Auto";
+};
+
 type CompliantPerformanceRatioRow = PerformanceRatioRow & {
   compliantSource: string | null;
   evidenceCount: number;
@@ -458,6 +466,15 @@ const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
 
 const COO_TARGET_STATUS: ChangeOwnershipStatus = "Change of Ownership - Not Transferred and Not Reporting";
 const NO_COO_STATUS = "No COO Status";
+const TEN_KW_COMPLIANT_SOURCE = "10kW AC or Less";
+const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<string, string> = {
+  enphase: "Enphase",
+  alsoenergy: "AlsoEnergy",
+  "solar log": "Solar-Log",
+  "sdsi arraymeter": "SDSI Arraymeter",
+  "locus energy": "Locus Energy",
+  "vision metering": "Vision Metering",
+};
 
 const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
 const LOGS_STORAGE_KEY = "solarRecDashboardLogsV1";
@@ -656,6 +673,16 @@ function calculateExpectedWhForRange(monthlyKwh: number[], startDate: Date, endD
 
 function normalizeMonitoringMatch(value: string | null | undefined): string {
   return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function resolveMonitoringPlatformCompliantSource(value: string | null | undefined): string | null {
+  const normalized = normalizeMonitoringMatch(value);
+  if (!normalized) return null;
+  return AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY[normalized] ?? null;
+}
+
+function getAutoCompliantSourcePriority(value: string): number {
+  return value === TEN_KW_COMPLIANT_SOURCE ? 1 : 2;
 }
 
 function normalizeSystemIdMatch(value: string | null | undefined): string {
@@ -3366,36 +3393,80 @@ export default function SolarRecDashboard() {
 
   const autoCompliantSourceByPortalId = useMemo(() => {
     const mapping = new Map<string, string>();
-    performanceRatioResult.rows.forEach((row) => {
-      if (!row.systemId) return;
-      const csgAcSizeKw = row.portalAcSizeKw;
-      const abpAcSizeKw = row.abpAcSizeKw;
-      if (csgAcSizeKw === null || abpAcSizeKw === null) return;
-      if (csgAcSizeKw <= 10 && abpAcSizeKw <= 10) {
-        mapping.set(row.systemId, "10kW AC or Less");
+    systems.forEach((system) => {
+      if (!system.systemId) return;
+      const keyById = system.systemId ? `id:${system.systemId}` : "";
+      const keyByTracking = system.trackingSystemRefId ? `tracking:${system.trackingSystemRefId}` : "";
+      const keyByName = `name:${system.systemName.toLowerCase()}`;
+      const abpAcSizeKw =
+        (keyById ? abpAcSizeKwBySystemKey.get(keyById) : undefined) ??
+        (keyByTracking ? abpAcSizeKwBySystemKey.get(keyByTracking) : undefined) ??
+        abpAcSizeKwBySystemKey.get(keyByName) ??
+        null;
+
+      const monitoringPlatformCompliantSource = resolveMonitoringPlatformCompliantSource(system.monitoringPlatform);
+      const isTenKwCompliant =
+        system.installedKwAc !== null &&
+        abpAcSizeKw !== null &&
+        system.installedKwAc <= 10 &&
+        abpAcSizeKw <= 10;
+      const candidateSource = monitoringPlatformCompliantSource ?? (isTenKwCompliant ? TEN_KW_COMPLIANT_SOURCE : null);
+      if (!candidateSource) return;
+
+      const existingSource = mapping.get(system.systemId);
+      if (
+        !existingSource ||
+        getAutoCompliantSourcePriority(candidateSource) > getAutoCompliantSourcePriority(existingSource)
+      ) {
+        mapping.set(system.systemId, candidateSource);
       }
     });
     return mapping;
-  }, [performanceRatioResult.rows]);
+  }, [abpAcSizeKwBySystemKey, systems]);
 
-  const compliantSourceEntriesSorted = useMemo(
-    () =>
-      compliantSourceEntries
-        .slice()
-        .sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.portalId.localeCompare(b.portalId)),
-    [compliantSourceEntries]
-  );
+  const compliantSourcesTableRows = useMemo<CompliantSourceTableRow[]>(() => {
+    const mapping = new Map<string, CompliantSourceTableRow>();
+
+    autoCompliantSourceByPortalId.forEach((compliantSource, portalId) => {
+      mapping.set(portalId, {
+        portalId,
+        compliantSource,
+        updatedAt: null,
+        evidence: [],
+        sourceType: "Auto",
+      });
+    });
+
+    compliantSourceEntries.forEach((entry) => {
+      if (!entry.portalId) return;
+      mapping.set(entry.portalId, {
+        portalId: entry.portalId,
+        compliantSource: entry.compliantSource,
+        updatedAt: entry.updatedAt,
+        evidence: entry.evidence,
+        sourceType: "Manual",
+      });
+    });
+
+    return Array.from(mapping.values()).sort((a, b) => {
+      if (a.sourceType !== b.sourceType) return a.sourceType === "Manual" ? -1 : 1;
+      const aUpdated = a.updatedAt?.getTime() ?? 0;
+      const bUpdated = b.updatedAt?.getTime() ?? 0;
+      if (aUpdated !== bUpdated) return bUpdated - aUpdated;
+      return a.portalId.localeCompare(b.portalId, undefined, { sensitivity: "base", numeric: true });
+    });
+  }, [autoCompliantSourceByPortalId, compliantSourceEntries]);
 
   const compliantSourceTotalPages = Math.max(
     1,
-    Math.ceil(compliantSourceEntriesSorted.length / COMPLIANT_SOURCE_PAGE_SIZE)
+    Math.ceil(compliantSourcesTableRows.length / COMPLIANT_SOURCE_PAGE_SIZE)
   );
   const compliantSourceCurrentPage = Math.min(compliantSourcePage, compliantSourceTotalPages);
   const compliantSourcePageStartIndex = (compliantSourceCurrentPage - 1) * COMPLIANT_SOURCE_PAGE_SIZE;
   const compliantSourcePageEndIndex = compliantSourcePageStartIndex + COMPLIANT_SOURCE_PAGE_SIZE;
   const visibleCompliantSourceEntries = useMemo(
-    () => compliantSourceEntriesSorted.slice(compliantSourcePageStartIndex, compliantSourcePageEndIndex),
-    [compliantSourceEntriesSorted, compliantSourcePageEndIndex, compliantSourcePageStartIndex]
+    () => compliantSourcesTableRows.slice(compliantSourcePageStartIndex, compliantSourcePageEndIndex),
+    [compliantSourcePageEndIndex, compliantSourcePageStartIndex, compliantSourcesTableRows]
   );
 
   const compliantPerformanceRatioRows = useMemo<CompliantPerformanceRatioRow[]>(() => {
@@ -7009,10 +7080,11 @@ export default function SolarRecDashboard() {
 
                 <Card>
                   <CardHeader>
-                    <CardTitle className="text-base">Compliant Source Upload</CardTitle>
+                    <CardTitle className="text-base">Compliant Sources</CardTitle>
                     <CardDescription>
                       Tie a compliant-source string (max 100 chars: letters, numbers, spaces, underscores, hyphens, commas) and optional image/PDF evidence to
-                      a portal ID.
+                      a portal ID. Auto sources are also listed when monitoring platform is compliant (Enphase, AlsoEnergy,
+                      Solar-Log, SDSI Arraymeter, Locus Energy, Vision Metering) or when both AC sizes are 10kW AC or less.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -7090,11 +7162,11 @@ export default function SolarRecDashboard() {
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-slate-600">
                         Showing rows{" "}
-                        {compliantSourceEntriesSorted.length === 0
+                        {compliantSourcesTableRows.length === 0
                           ? "0"
                           : formatNumber(compliantSourcePageStartIndex + 1)}
-                        -{formatNumber(Math.min(compliantSourcePageEndIndex, compliantSourceEntriesSorted.length))} of{" "}
-                        {formatNumber(compliantSourceEntriesSorted.length)}.
+                        -{formatNumber(Math.min(compliantSourcePageEndIndex, compliantSourcesTableRows.length))} of{" "}
+                        {formatNumber(compliantSourcesTableRows.length)}.
                       </p>
                       <div className="flex items-center gap-2">
                         <Button
@@ -7127,23 +7199,25 @@ export default function SolarRecDashboard() {
                           <TableRow>
                             <TableHead>Portal ID</TableHead>
                             <TableHead>Compliant Source</TableHead>
+                            <TableHead>Type</TableHead>
                             <TableHead>Evidence</TableHead>
                             <TableHead>Updated</TableHead>
                             <TableHead>Action</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {compliantSourceEntriesSorted.length === 0 ? (
+                          {compliantSourcesTableRows.length === 0 ? (
                             <TableRow>
-                              <TableCell colSpan={5} className="text-center text-slate-500">
-                                No compliant source entries saved yet.
+                              <TableCell colSpan={6} className="text-center text-slate-500">
+                                No compliant sources available yet.
                               </TableCell>
                             </TableRow>
                           ) : (
                             visibleCompliantSourceEntries.map((entry) => (
-                              <TableRow key={entry.portalId}>
+                              <TableRow key={`${entry.sourceType}-${entry.portalId}`}>
                                 <TableCell className="font-medium">{entry.portalId}</TableCell>
                                 <TableCell>{entry.compliantSource}</TableCell>
+                                <TableCell>{entry.sourceType}</TableCell>
                                 <TableCell>
                                   {entry.evidence.length === 0 ? (
                                     <span className="text-slate-500">No files</span>
@@ -7163,11 +7237,15 @@ export default function SolarRecDashboard() {
                                     </div>
                                   )}
                                 </TableCell>
-                                <TableCell>{formatDate(entry.updatedAt)}</TableCell>
+                                <TableCell>{entry.updatedAt ? formatDate(entry.updatedAt) : "Auto"}</TableCell>
                                 <TableCell>
-                                  <Button variant="ghost" size="sm" onClick={() => removeCompliantSourceEntry(entry.portalId)}>
-                                    Remove
-                                  </Button>
+                                  {entry.sourceType === "Manual" ? (
+                                    <Button variant="ghost" size="sm" onClick={() => removeCompliantSourceEntry(entry.portalId)}>
+                                      Remove
+                                    </Button>
+                                  ) : (
+                                    <span className="text-xs text-slate-500">Auto</span>
+                                  )}
                                 </TableCell>
                               </TableRow>
                             ))

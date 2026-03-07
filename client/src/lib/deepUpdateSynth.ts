@@ -346,7 +346,27 @@ export async function parseDeepUpdateReportFile(file: File, key: DeepUpdateRepor
   const preferredSheet = REPORT_SHEET_HINTS[key].find((candidate) => workbook.SheetNames.includes(candidate));
   const sheetName = preferredSheet ?? workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
-  if (!sheet) throw new Error(`Could not read worksheet for ${key}.`);
+  if (!sheet) {
+    const availableSheets = (workbook.SheetNames ?? []).filter(Boolean);
+    const availableSheetLabel = availableSheets.length > 0 ? availableSheets.join(", ") : "none detected";
+    const fileExtension = file.name.split(".").pop()?.toLowerCase() ?? "";
+    const workbookFiles = (workbook as { files?: Record<string, unknown> }).files;
+    const hasWorksheetXml =
+      !!workbookFiles &&
+      Object.keys(workbookFiles).some((path) => path.toLowerCase().includes("xl/worksheets/"));
+
+    if (["xlsx", "xlsm", "xls"].includes(fileExtension) && hasWorksheetXml) {
+      throw new Error(
+        `Could not read worksheet for ${key}. This Excel file appears to use a malformed worksheet format that the browser parser cannot load. ` +
+          `Detected sheet name(s): ${availableSheetLabel}. Please open the file in Excel or Google Sheets and save it as CSV (recommended) or a newly-saved XLSX, then upload again.`
+      );
+    }
+
+    throw new Error(
+      `Could not read worksheet for ${key}. Detected sheet name(s): ${availableSheetLabel}. ` +
+        `Please verify the file and try again.`
+    );
+  }
 
   const headersRow = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1,
