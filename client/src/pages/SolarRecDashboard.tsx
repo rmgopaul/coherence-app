@@ -382,6 +382,8 @@ type CompliantSourceTableRow = {
 type CompliantPerformanceRatioRow = PerformanceRatioRow & {
   compliantSource: string | null;
   evidenceCount: number;
+  meterReadMonthYear: string;
+  readWindowMonthYear: string;
 };
 
 const DATASET_DEFINITIONS: Record<
@@ -430,7 +432,7 @@ const DATASET_DEFINITIONS: Record<
   },
   convertedReads: {
     label: "Converted Reads",
-    description: "Portal-ready meter read CSV output used to calculate performance ratio.",
+    description: "Portal-ready meter read CSV output used to calculate performance ratio. Supports multi-file append.",
     requiredHeaderSets: [["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "read_date"]],
   },
   annualProductionEstimates: {
@@ -474,6 +476,7 @@ const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<string, string> =
   "sdsi arraymeter": "SDSI Arraymeter",
   "locus energy": "Locus Energy",
   "vision metering": "Vision Metering",
+  sensergm: "SenseRGM",
 };
 
 const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
@@ -506,6 +509,7 @@ const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "
 const COMPLIANT_SOURCE_STORAGE_KEY = "solarRecDashboardCompliantSourcesV1";
 const MAX_COMPLIANT_SOURCE_CHARS = 100;
 const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
+const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads"]);
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
   "Last Meter Read (kWh)",
@@ -827,6 +831,18 @@ function formatDate(value: Date | null): string {
   return value.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+function formatMonthYear(value: Date | null): string {
+  if (!value) return "N/A";
+  return value.toLocaleDateString("en-US", { year: "numeric", month: "long" });
+}
+
+function toReadWindowMonthStart(value: Date): Date {
+  if (value.getDate() <= 15) {
+    return new Date(value.getFullYear(), value.getMonth() - 1, 1);
+  }
+  return new Date(value.getFullYear(), value.getMonth(), 1);
+}
+
 function formatCurrency(value: number | null): string {
   if (value === null) return "N/A";
   return CURRENCY_FORMATTER.format(value);
@@ -1023,6 +1039,16 @@ function accountSolarGenerationRowKey(row: CsvRow): string {
     clean(row["Last Meter Read Date"]),
     resolveLastMeterReadRawValue(row),
     clean(row["Facility Name"]),
+  ].join("|");
+}
+
+function convertedReadsRowKey(row: CsvRow): string {
+  return [
+    getCsvValueByHeader(row, "monitoring"),
+    getCsvValueByHeader(row, "monitoring_system_id"),
+    getCsvValueByHeader(row, "monitoring_system_name"),
+    getCsvValueByHeader(row, "lifetime_meter_read_wh"),
+    getCsvValueByHeader(row, "read_date"),
   ].join("|");
 }
 
@@ -1803,15 +1829,20 @@ export default function SolarRecDashboard() {
         ...previous,
         [key]: (() => {
           const uploadedAt = new Date();
-          const shouldAppend = key === "accountSolarGeneration" && mode === "append";
+          const shouldAppend = MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
           const existing = previous[key];
+          const rowKeyForAppend = (row: CsvRow): string => {
+            if (key === "accountSolarGeneration") return accountSolarGenerationRowKey(row);
+            if (key === "convertedReads") return convertedReadsRowKey(row);
+            return "";
+          };
 
           if (shouldAppend && existing) {
             const combinedHeaders = Array.from(new Set([...existing.headers, ...parsed.headers]));
             const existingRows = existing.rows;
-            const dedupeKeys = new Set(existingRows.map((row) => accountSolarGenerationRowKey(row)));
+            const dedupeKeys = new Set(existingRows.map((row) => rowKeyForAppend(row)));
             const appendedRows = parsed.rows.filter((row) => {
-              const dedupeKey = accountSolarGenerationRowKey(row);
+              const dedupeKey = rowKeyForAppend(row);
               if (!dedupeKey) return true;
               if (dedupeKeys.has(dedupeKey)) return false;
               dedupeKeys.add(dedupeKey);
@@ -1852,7 +1883,7 @@ export default function SolarRecDashboard() {
             headers: parsed.headers,
             rows: parsed.rows,
             sources:
-              key === "accountSolarGeneration"
+              MULTI_APPEND_DATASET_KEYS.has(key)
                 ? [
                     {
                       fileName: file.name,
@@ -1870,10 +1901,10 @@ export default function SolarRecDashboard() {
     }
   };
 
-  const handleAccountSolarGenerationUploads = async (files: File[]) => {
+  const handleMultiCsvUploads = async (key: DatasetKey, files: File[]) => {
     if (files.length === 0) return;
     for (const file of files) {
-      await handleUpload("accountSolarGeneration", file, "append");
+      await handleUpload(key, file, "append");
     }
   };
 
@@ -3486,10 +3517,15 @@ export default function SolarRecDashboard() {
         row.systemName.toLowerCase();
       const compliantEntry = row.systemId ? compliantSourceByPortalId.get(row.systemId) : undefined;
       const autoCompliantSource = row.systemId ? autoCompliantSourceByPortalId.get(row.systemId) : undefined;
+      const readWindowMonthYear = row.readDate
+        ? formatMonthYear(toReadWindowMonthStart(row.readDate))
+        : "N/A";
       const candidate: CompliantPerformanceRatioRow = {
         ...row,
         compliantSource: compliantEntry?.compliantSource ?? autoCompliantSource ?? null,
         evidenceCount: compliantEntry?.evidence.length ?? 0,
+        meterReadMonthYear: formatMonthYear(row.readDate),
+        readWindowMonthYear,
       };
 
       const existing = bestBySystem.get(systemKey);
@@ -3497,23 +3533,41 @@ export default function SolarRecDashboard() {
         bestBySystem.set(systemKey, candidate);
         return;
       }
-      const candidateRatio = candidate.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-      const existingRatio = existing.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
-      if (candidateRatio > existingRatio) {
+      const candidateWindowTime = candidate.readDate
+        ? toReadWindowMonthStart(candidate.readDate).getTime()
+        : Number.NEGATIVE_INFINITY;
+      const existingWindowTime = existing.readDate
+        ? toReadWindowMonthStart(existing.readDate).getTime()
+        : Number.NEGATIVE_INFINITY;
+      if (candidateWindowTime > existingWindowTime) {
         bestBySystem.set(systemKey, candidate);
         return;
       }
-      if (candidateRatio === existingRatio) {
-        const candidateReadTime = candidate.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-        const existingReadTime = existing.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-        if (candidateReadTime > existingReadTime) {
+      if (candidateWindowTime === existingWindowTime) {
+        const candidateRatio = candidate.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+        const existingRatio = existing.performanceRatioPercent ?? Number.NEGATIVE_INFINITY;
+        if (candidateRatio > existingRatio) {
           bestBySystem.set(systemKey, candidate);
+          return;
+        }
+        if (candidateRatio === existingRatio) {
+          const candidateReadTime = candidate.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+          const existingReadTime = existing.readDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+          if (candidateReadTime > existingReadTime) {
+            bestBySystem.set(systemKey, candidate);
+          }
         }
       }
     });
 
     return Array.from(bestBySystem.values()).sort((a, b) => {
-      const ratioDiff = (b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY) - (a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY);
+      const readWindowTimeDiff =
+        (b.readDate ? toReadWindowMonthStart(b.readDate).getTime() : Number.NEGATIVE_INFINITY) -
+        (a.readDate ? toReadWindowMonthStart(a.readDate).getTime() : Number.NEGATIVE_INFINITY);
+      if (readWindowTimeDiff !== 0) return readWindowTimeDiff;
+      const ratioDiff =
+        (b.performanceRatioPercent ?? Number.NEGATIVE_INFINITY) -
+        (a.performanceRatioPercent ?? Number.NEGATIVE_INFINITY);
       if (ratioDiff !== 0) return ratioDiff;
       return a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true });
     });
@@ -3568,6 +3622,8 @@ export default function SolarRecDashboard() {
       "monitoring_system_name",
       "match_type",
       "read_date",
+      "meter_read_month_year",
+      "read_window_month_year",
       "baseline_date",
       "baseline_source",
       "lifetime_read_wh",
@@ -3595,6 +3651,8 @@ export default function SolarRecDashboard() {
       monitoring_system_name: row.monitoringSystemName,
       match_type: row.matchType,
       read_date: row.readDate ? row.readDate.toISOString().slice(0, 10) : row.readDateRaw,
+      meter_read_month_year: formatMonthYear(row.readDate),
+      read_window_month_year: row.readDate ? formatMonthYear(toReadWindowMonthStart(row.readDate)) : "N/A",
       baseline_date: row.baselineDate ? row.baselineDate.toISOString().slice(0, 10) : "",
       baseline_source: row.baselineSource ?? "",
       lifetime_read_wh: row.lifetimeReadWh ?? "",
@@ -3634,6 +3692,8 @@ export default function SolarRecDashboard() {
       "monitoring_system_name",
       "match_type",
       "read_date",
+      "meter_read_month_year",
+      "read_window_month_year",
       "baseline_date",
       "baseline_source",
       "lifetime_read_wh",
@@ -3661,6 +3721,8 @@ export default function SolarRecDashboard() {
       monitoring_system_name: row.monitoringSystemName,
       match_type: row.matchType,
       read_date: row.readDate ? row.readDate.toISOString().slice(0, 10) : row.readDateRaw,
+      meter_read_month_year: row.meterReadMonthYear,
+      read_window_month_year: row.readWindowMonthYear,
       baseline_date: row.baselineDate ? row.baselineDate.toISOString().slice(0, 10) : "",
       baseline_source: row.baselineSource ?? "",
       lifetime_read_wh: row.lifetimeReadWh ?? "",
@@ -5096,7 +5158,7 @@ export default function SolarRecDashboard() {
             <CardTitle className="text-base">Step 1: Import Your CSV Files</CardTitle>
             <CardDescription>
               Upload each export into its matching slot. Files can be replaced later with newer exports. Account Solar
-              Generation supports multi-file append for building a longer baseline history.
+              Generation and Converted Reads support multi-file append for building longer history.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -5104,7 +5166,7 @@ export default function SolarRecDashboard() {
               const config = DATASET_DEFINITIONS[key];
               const dataset = datasets[key];
               const error = uploadErrors[key];
-              const isAccountSolarGeneration = key === "accountSolarGeneration";
+              const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
 
               return (
                 <div key={key} className="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
@@ -5119,13 +5181,13 @@ export default function SolarRecDashboard() {
                         {dataset.rows.length} rows loaded
                       </Badge>
                       <p className="text-xs text-slate-600 truncate">{dataset.fileName}</p>
-                      {isAccountSolarGeneration && dataset.sources && dataset.sources.length > 0 ? (
+                      {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
                         <p className="text-xs text-slate-500">
                           {formatNumber(dataset.sources.length)} files appended
                         </p>
                       ) : null}
                       <p className="text-xs text-slate-500">Last updated {dataset.uploadedAt.toLocaleString()}</p>
-                      {isAccountSolarGeneration && dataset.sources && dataset.sources.length > 0 ? (
+                      {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
                         <div className="max-h-24 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
                           {dataset.sources
                             .slice()
@@ -5150,16 +5212,16 @@ export default function SolarRecDashboard() {
                   <div className="flex items-center gap-2">
                     <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                       <Upload className="h-4 w-4" />
-                      {isAccountSolarGeneration ? "Add CSV(s)" : "Choose CSV"}
+                      {isMultiAppend ? "Add CSV(s)" : "Choose CSV"}
                       <input
                         type="file"
                         accept=".csv,text/csv"
                         className="hidden"
-                        multiple={isAccountSolarGeneration}
+                        multiple={isMultiAppend}
                         onChange={(event) => {
-                          if (isAccountSolarGeneration) {
+                          if (isMultiAppend) {
                             const files = Array.from(event.target.files ?? []);
-                            void handleAccountSolarGenerationUploads(files);
+                            void handleMultiCsvUploads(key, files);
                             event.currentTarget.value = "";
                             return;
                           }
@@ -7084,7 +7146,7 @@ export default function SolarRecDashboard() {
                     <CardDescription>
                       Tie a compliant-source string (max 100 chars: letters, numbers, spaces, underscores, hyphens, commas) and optional image/PDF evidence to
                       a portal ID. Auto sources are also listed when monitoring platform is compliant (Enphase, AlsoEnergy,
-                      Solar-Log, SDSI Arraymeter, Locus Energy, Vision Metering) or when both AC sizes are 10kW AC or less.
+                      Solar-Log, SDSI Arraymeter, Locus Energy, Vision Metering, SenseRGM) or when both AC sizes are 10kW AC or less.
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4">
@@ -7263,7 +7325,8 @@ export default function SolarRecDashboard() {
                         <CardTitle className="text-base">Compliant Performance Ratio Report</CardTitle>
                         <CardDescription>
                           Same report logic, but only systems with Part II verification dates and performance ratio between
-                          30% and 150% (inclusive). If multiple reads qualify, only the highest ratio per system is kept.
+                          30% and 150% (inclusive). If multiple reads qualify, the newest read window (16th to 15th) is
+                          selected first; within that window, the highest ratio per system is kept.
                         </CardDescription>
                       </div>
                       <Button variant="outline" size="sm" onClick={downloadCompliantPerformanceRatioCsv}>
@@ -7335,6 +7398,8 @@ export default function SolarRecDashboard() {
                           <TableHead>Portal ID</TableHead>
                           <TableHead>Part II Verified</TableHead>
                           <TableHead>Read Date</TableHead>
+                          <TableHead>Meter Read Month</TableHead>
+                          <TableHead>Read Window Month</TableHead>
                           <TableHead>Performance Ratio</TableHead>
                           <TableHead>Compliant Source</TableHead>
                           <TableHead>Evidence Files</TableHead>
@@ -7343,7 +7408,7 @@ export default function SolarRecDashboard() {
                       <TableBody>
                         {compliantPerformanceRatioRows.length === 0 ? (
                           <TableRow>
-                            <TableCell colSpan={8} className="text-center text-slate-500">
+                            <TableCell colSpan={10} className="text-center text-slate-500">
                               No systems currently meet the compliant report criteria.
                             </TableCell>
                           </TableRow>
@@ -7355,6 +7420,8 @@ export default function SolarRecDashboard() {
                               <TableCell>{row.systemId ?? "N/A"}</TableCell>
                               <TableCell>{formatDate(row.part2VerificationDate)}</TableCell>
                               <TableCell>{row.readDate ? formatDate(row.readDate) : row.readDateRaw || "N/A"}</TableCell>
+                              <TableCell>{row.meterReadMonthYear}</TableCell>
+                              <TableCell>{row.readWindowMonthYear}</TableCell>
                               <TableCell>{formatPercent(row.performanceRatioPercent)}</TableCell>
                               <TableCell>{row.compliantSource ?? "N/A"}</TableCell>
                               <TableCell>{formatNumber(row.evidenceCount)}</TableCell>
