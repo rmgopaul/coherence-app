@@ -482,9 +482,10 @@ const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<string, string> =
 const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
 const LOGS_STORAGE_KEY = "solarRecDashboardLogsV1";
 const DASHBOARD_DB_NAME = "solarRecDashboardDb";
-const DASHBOARD_DB_VERSION = 1;
+const DASHBOARD_DB_VERSION = 2;
 const DASHBOARD_DATASETS_STORE = "datasets";
 const DASHBOARD_DATASETS_RECORD_KEY = "activeDatasets";
+const DASHBOARD_DATASETS_MANIFEST_KEY = "__dataset_manifest_v2__";
 
 const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -502,7 +503,7 @@ const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
-const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 500_000;
+const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 4_000_000;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
@@ -1110,6 +1111,21 @@ function parseDatasetKeyManifestPayload(payload: string): DatasetKey[] {
   }
 }
 
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3, initialDelayMs = 250): Promise<T> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= attempts) break;
+      const delay = initialDelayMs * attempt;
+      await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+    }
+  }
+  throw (lastError instanceof Error ? lastError : new Error("Operation failed after retries."));
+}
+
 function serializeDatasetForRemote(dataset: CsvDataset): string {
   const payload: RemoteDatasetPayload = {
     fileName: dataset.fileName,
@@ -1206,6 +1222,11 @@ type SerializedCsvDataset = {
   }>;
 };
 
+type SerializedDatasetsManifest = {
+  keys: DatasetKey[];
+  updatedAt: string;
+};
+
 type RemoteDatasetPayload = {
   fileName: string;
   uploadedAt: string;
@@ -1246,37 +1267,58 @@ type SerializedDashboardLogEntry = Omit<DashboardLogEntry, "createdAt" | "datase
   }>;
 };
 
+function deserializeDatasetRecord(dataset: SerializedCsvDataset | undefined): CsvDataset | null {
+  if (!dataset) return null;
+  const uploadedAt = new Date(dataset.uploadedAt);
+  if (Number.isNaN(uploadedAt.getTime())) return null;
+
+  const sources = Array.isArray(dataset.sources)
+    ? dataset.sources
+        .map((source) => {
+          const sourceUploadedAt = new Date(source.uploadedAt);
+          if (Number.isNaN(sourceUploadedAt.getTime())) return null;
+          return {
+            fileName: source.fileName,
+            uploadedAt: sourceUploadedAt,
+            rowCount: source.rowCount,
+          };
+        })
+        .filter((source): source is NonNullable<typeof source> => source !== null)
+    : undefined;
+
+  return {
+    fileName: dataset.fileName,
+    uploadedAt,
+    headers: Array.isArray(dataset.headers) ? dataset.headers : [],
+    rows: Array.isArray(dataset.rows) ? dataset.rows : [],
+    sources,
+  };
+}
+
 function deserializeDatasets(
   parsed: Record<string, SerializedCsvDataset | undefined>
 ): Partial<Record<DatasetKey, CsvDataset>> {
   const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
   (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-    const dataset = parsed[key];
-    if (!dataset) return;
-    const uploadedAt = new Date(dataset.uploadedAt);
-    if (Number.isNaN(uploadedAt.getTime())) return;
-    const sources = Array.isArray(dataset.sources)
-      ? dataset.sources
-          .map((source) => {
-            const sourceUploadedAt = new Date(source.uploadedAt);
-            if (Number.isNaN(sourceUploadedAt.getTime())) return null;
-            return {
-              fileName: source.fileName,
-              uploadedAt: sourceUploadedAt,
-              rowCount: source.rowCount,
-            };
-          })
-          .filter((source): source is NonNullable<typeof source> => source !== null)
-      : undefined;
-    loaded[key] = {
-      fileName: dataset.fileName,
-      uploadedAt,
-      headers: Array.isArray(dataset.headers) ? dataset.headers : [],
-      rows: Array.isArray(dataset.rows) ? dataset.rows : [],
-      sources,
-    };
+    const deserialized = deserializeDatasetRecord(parsed[key]);
+    if (!deserialized) return;
+    loaded[key] = deserialized;
   });
   return loaded;
+}
+
+function serializeDatasetRecord(dataset: CsvDataset): SerializedCsvDataset {
+  return {
+    fileName: dataset.fileName,
+    uploadedAt: dataset.uploadedAt.toISOString(),
+    headers: dataset.headers,
+    rows: dataset.rows,
+    sources: dataset.sources?.map((source) => ({
+      fileName: source.fileName,
+      uploadedAt: source.uploadedAt.toISOString(),
+      rowCount: source.rowCount,
+    })),
+  };
 }
 
 function serializeDatasets(
@@ -1286,17 +1328,7 @@ function serializeDatasets(
   (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
     const dataset = datasets[key];
     if (!dataset) return;
-    serialized[key] = {
-      fileName: dataset.fileName,
-      uploadedAt: dataset.uploadedAt.toISOString(),
-      headers: dataset.headers,
-      rows: dataset.rows,
-      sources: dataset.sources?.map((source) => ({
-        fileName: source.fileName,
-        uploadedAt: source.uploadedAt.toISOString(),
-        rowCount: source.rowCount,
-      })),
-    };
+    serialized[key] = serializeDatasetRecord(dataset);
   });
   return serialized;
 }
@@ -1334,6 +1366,17 @@ async function openDashboardDatabase(): Promise<IDBDatabase> {
   });
 }
 
+function dashboardDatasetStorageKey(key: DatasetKey): string {
+  return `dataset:${key}`;
+}
+
+function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed."));
+  });
+}
+
 async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, CsvDataset>>> {
   if (typeof window === "undefined") return {};
 
@@ -1341,26 +1384,62 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
     return loadLegacyDatasetsFromLocalStorage();
   }
 
+  let db: IDBDatabase | null = null;
   try {
-    const db = await openDashboardDatabase();
-    const stored = await new Promise<
-      Record<string, SerializedCsvDataset | undefined> | undefined
-    >((resolve, reject) => {
-      const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readonly");
+    db = await openDashboardDatabase();
+    const openDb = db;
+    const stored = await new Promise<{
+      manifest: SerializedDatasetsManifest | null;
+      legacy: Record<string, SerializedCsvDataset | undefined> | null;
+    }>((resolve, reject) => {
+      const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
       const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-      const request = store.get(DASHBOARD_DATASETS_RECORD_KEY);
+      const manifestRequest = store.get(DASHBOARD_DATASETS_MANIFEST_KEY);
+      const legacyRequest = store.get(DASHBOARD_DATASETS_RECORD_KEY);
 
-      request.onsuccess = () => {
-        const result = request.result as Record<string, SerializedCsvDataset | undefined> | undefined;
-        resolve(result);
+      transaction.oncomplete = () => {
+        resolve({
+          manifest: (manifestRequest.result as SerializedDatasetsManifest | undefined) ?? null,
+          legacy:
+            (legacyRequest.result as Record<string, SerializedCsvDataset | undefined> | undefined) ?? null,
+        });
       };
-      request.onerror = () => reject(request.error ?? new Error("Failed reading datasets from IndexedDB."));
-      transaction.oncomplete = () => db.close();
-      transaction.onabort = () => db.close();
-      transaction.onerror = () => db.close();
+      transaction.onabort = () => reject(transaction.error ?? new Error("Failed reading datasets from IndexedDB."));
+      transaction.onerror = () => reject(transaction.error ?? new Error("Failed reading datasets from IndexedDB."));
     });
 
-    if (stored) return deserializeDatasets(stored);
+    if (stored.manifest && Array.isArray(stored.manifest.keys) && stored.manifest.keys.length > 0) {
+      const keys = stored.manifest.keys.filter((key): key is DatasetKey => isDatasetKey(key));
+      if (keys.length > 0) {
+        const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
+        const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+        const rows = await Promise.all(
+          keys.map(async (key) => {
+            const serialized = (await idbRequestToPromise(
+              store.get(dashboardDatasetStorageKey(key))
+            )) as SerializedCsvDataset | undefined;
+            return { key, serialized };
+          })
+        );
+        const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
+        rows.forEach(({ key, serialized }) => {
+          const dataset = deserializeDatasetRecord(serialized);
+          if (!dataset) return;
+          loaded[key] = dataset;
+        });
+        if (Object.keys(loaded).length > 0) {
+          return loaded;
+        }
+      }
+    }
+
+    if (stored.legacy) {
+      const legacyDatasets = deserializeDatasets(stored.legacy);
+      if (Object.keys(legacyDatasets).length > 0) {
+        await saveDatasetsToStorage(legacyDatasets);
+        return legacyDatasets;
+      }
+    }
 
     const legacy = loadLegacyDatasetsFromLocalStorage();
     if (Object.keys(legacy).length > 0) {
@@ -1372,6 +1451,8 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
     return {};
   } catch {
     return loadLegacyDatasetsFromLocalStorage();
+  } finally {
+    if (db) db.close();
   }
 }
 
@@ -1388,10 +1469,24 @@ async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDat
   await new Promise<void>((resolve, reject) => {
     const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
     const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-    const payload = serializeDatasets(datasets);
-    const request = store.put(payload, DASHBOARD_DATASETS_RECORD_KEY);
+    const activeKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
+    const manifest: SerializedDatasetsManifest = {
+      keys: activeKeys,
+      updatedAt: new Date().toISOString(),
+    };
 
-    request.onerror = () => reject(request.error ?? new Error("Failed saving datasets to IndexedDB."));
+    store.put(manifest, DASHBOARD_DATASETS_MANIFEST_KEY);
+    store.delete(DASHBOARD_DATASETS_RECORD_KEY);
+
+    (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+      const dataset = datasets[key];
+      if (!dataset) {
+        store.delete(dashboardDatasetStorageKey(key));
+        return;
+      }
+      store.put(serializeDatasetRecord(dataset), dashboardDatasetStorageKey(key));
+    });
+
     transaction.oncomplete = () => {
       db.close();
       resolve();
@@ -1591,6 +1686,7 @@ export default function SolarRecDashboard() {
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
   const remoteDatasetSignatureRef = useRef<Partial<Record<DatasetKey, string>>>({});
+  const remoteDatasetChunkKeysRef = useRef<Partial<Record<DatasetKey, string[]>>>({});
   const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
@@ -4703,6 +4799,7 @@ export default function SolarRecDashboard() {
       const loadRemoteDatasets = async (keys: DatasetKey[]) => {
         const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
         const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
+        const loadedChunkKeys: Partial<Record<DatasetKey, string[]>> = {};
 
         for (const rawKey of keys) {
           if (cancelled) break;
@@ -4713,6 +4810,7 @@ export default function SolarRecDashboard() {
             const chunkKeys = parseChunkPointerPayload(response.payload);
 
             if (chunkKeys) {
+              loadedChunkKeys[rawKey] = chunkKeys;
               const chunkResponses = await Promise.all(
                 chunkKeys.map((chunkKey) =>
                   getRemoteDatasetRef.current
@@ -4734,7 +4832,7 @@ export default function SolarRecDashboard() {
           }
         }
 
-        return { loadedDatasets, loadedSignatures };
+        return { loadedDatasets, loadedSignatures, loadedChunkKeys };
       };
 
       try {
@@ -4771,7 +4869,7 @@ export default function SolarRecDashboard() {
           }
         }
 
-        const { loadedDatasets, loadedSignatures } = await loadRemoteDatasets(Array.from(keysToLoad));
+        const { loadedDatasets, loadedSignatures, loadedChunkKeys } = await loadRemoteDatasets(Array.from(keysToLoad));
 
         if (!cancelled) {
           if (Object.keys(loadedDatasets).length > 0) {
@@ -4787,6 +4885,7 @@ export default function SolarRecDashboard() {
             });
           }
           remoteDatasetSignatureRef.current = loadedSignatures;
+          remoteDatasetChunkKeysRef.current = loadedChunkKeys;
           setStorageNotice(null);
         }
       } catch {
@@ -4854,7 +4953,9 @@ export default function SolarRecDashboard() {
             window.localStorage.setItem(LOGS_STORAGE_KEY, serializedLocalLogEntries);
           }
         } catch {
-          // Local save failure is non-critical when remote sync is also active
+          setStorageNotice(
+            "Local browser storage is full or unavailable. Keeping data in cloud sync may take longer for large uploads."
+          );
         }
       })();
     }, 250);
@@ -4924,9 +5025,14 @@ export default function SolarRecDashboard() {
           const dataset = datasets[key];
           if (!dataset) {
             if (!remoteDatasetSignatureRef.current[key]) continue;
+            const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
             try {
-              await saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" });
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
+              for (const chunkKey of previousChunkKeys) {
+                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+              }
               delete remoteDatasetSignatureRef.current[key];
+              delete remoteDatasetChunkKeysRef.current[key];
             } catch {
               setStorageNotice(`Could not clear ${DATASET_DEFINITIONS[key].label} dataset from cloud storage.`);
               return;
@@ -4939,23 +5045,37 @@ export default function SolarRecDashboard() {
           if (remoteDatasetSignatureRef.current[key] === signature) continue;
 
           try {
+            const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
             const payload = serializeDatasetForRemote(dataset);
             const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
 
             if (chunks.length === 1) {
-              await saveRemoteDatasetRef.current.mutateAsync({ key, payload });
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
+              for (const chunkKey of previousChunkKeys) {
+                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+              }
+              remoteDatasetChunkKeysRef.current[key] = [];
             } else {
               const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
               for (let index = 0; index < chunks.length; index += 1) {
-                await saveRemoteDatasetRef.current.mutateAsync({
-                  key: chunkKeys[index],
-                  payload: chunks[index],
-                });
+                await withRetry(() =>
+                  saveRemoteDatasetRef.current.mutateAsync({
+                    key: chunkKeys[index],
+                    payload: chunks[index],
+                  })
+                );
               }
-              await saveRemoteDatasetRef.current.mutateAsync({
-                key,
-                payload: buildChunkPointerPayload(chunkKeys),
-              });
+              const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
+              for (const staleChunkKey of staleChunkKeys) {
+                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+              }
+              await withRetry(() =>
+                saveRemoteDatasetRef.current.mutateAsync({
+                  key,
+                  payload: buildChunkPointerPayload(chunkKeys),
+                })
+              );
+              remoteDatasetChunkKeysRef.current[key] = chunkKeys;
             }
 
             remoteDatasetSignatureRef.current[key] = signature;
@@ -4967,10 +5087,12 @@ export default function SolarRecDashboard() {
 
         const activeKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
         try {
-          await saveRemoteDatasetRef.current.mutateAsync({
-            key: REMOTE_DATASET_KEY_MANIFEST,
-            payload: buildDatasetKeyManifestPayload(activeKeys),
-          });
+          await withRetry(() =>
+            saveRemoteDatasetRef.current.mutateAsync({
+              key: REMOTE_DATASET_KEY_MANIFEST,
+              payload: buildDatasetKeyManifestPayload(activeKeys),
+            })
+          );
         } catch {
           setStorageNotice("Could not sync dataset manifest to cloud storage.");
           return;

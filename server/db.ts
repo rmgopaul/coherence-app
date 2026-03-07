@@ -38,7 +38,7 @@ import { nanoid } from 'nanoid';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _solarRecDashboardTableEnsured = false;
-const SOLAR_REC_DB_CHUNK_CHARS = 60_000;
+const SOLAR_REC_DB_CHUNK_CHARS = 900_000;
 
 const RETRYABLE_DB_ERROR_CODES = new Set([
   "ETIMEDOUT",
@@ -179,13 +179,19 @@ async function ensureSolarRecDashboardStorageTable() {
         userId int NOT NULL,
         storageKey varchar(191) NOT NULL,
         chunkIndex int NOT NULL,
-        payload text NOT NULL,
+        payload mediumtext NOT NULL,
         createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
         updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         UNIQUE KEY solar_rec_dashboard_storage_user_key_chunk_idx (userId, storageKey, chunkIndex),
         KEY solar_rec_dashboard_storage_user_key_idx (userId, storageKey)
       )
+    `);
+
+    // Migrate older installs that created this as TEXT so larger payloads can persist.
+    await db.execute(sql`
+      ALTER TABLE solarRecDashboardStorage
+      MODIFY COLUMN payload MEDIUMTEXT NOT NULL
     `);
   });
 
