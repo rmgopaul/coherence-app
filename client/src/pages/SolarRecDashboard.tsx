@@ -477,6 +477,7 @@ const AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY: Record<string, string> =
   "locus energy": "Locus Energy",
   "vision metering": "Vision Metering",
   sensergm: "SenseRGM",
+  "ekm encompass io": "EKM Encompass.io",
 };
 
 const LEGACY_DATASETS_STORAGE_KEY = "solarRecDashboardDatasetsV1";
@@ -688,6 +689,14 @@ function resolveMonitoringPlatformCompliantSource(value: string | null | undefin
 
 function getAutoCompliantSourcePriority(value: string): number {
   return value === TEN_KW_COMPLIANT_SOURCE ? 1 : 2;
+}
+
+function isTenKwAcOrLess(portalAcSizeKw: number | null, abpAcSizeKw: number | null): boolean {
+  const hasAnySize = portalAcSizeKw !== null || abpAcSizeKw !== null;
+  if (!hasAnySize) return false;
+  const portalOk = portalAcSizeKw === null || portalAcSizeKw <= 10;
+  const abpOk = abpAcSizeKw === null || abpAcSizeKw <= 10;
+  return portalOk && abpOk;
 }
 
 function normalizeSystemIdMatch(value: string | null | undefined): string {
@@ -3638,11 +3647,7 @@ export default function SolarRecDashboard() {
         null;
 
       const monitoringPlatformCompliantSource = resolveMonitoringPlatformCompliantSource(system.monitoringPlatform);
-      const isTenKwCompliant =
-        system.installedKwAc !== null &&
-        abpAcSizeKw !== null &&
-        system.installedKwAc <= 10 &&
-        abpAcSizeKw <= 10;
+      const isTenKwCompliant = isTenKwAcOrLess(system.installedKwAc, abpAcSizeKw);
       const candidateSource = monitoringPlatformCompliantSource ?? (isTenKwCompliant ? TEN_KW_COMPLIANT_SOURCE : null);
       if (!candidateSource) return;
 
@@ -3718,7 +3723,11 @@ export default function SolarRecDashboard() {
         row.trackingSystemRefId ||
         row.systemName.toLowerCase();
       const compliantEntry = row.systemId ? compliantSourceByPortalId.get(row.systemId) : undefined;
-      const autoCompliantSource = row.systemId ? autoCompliantSourceByPortalId.get(row.systemId) : undefined;
+      const rowAutoCompliantSource =
+        resolveMonitoringPlatformCompliantSource(row.monitoringPlatform) ??
+        (isTenKwAcOrLess(row.portalAcSizeKw, row.abpAcSizeKw) ? TEN_KW_COMPLIANT_SOURCE : null);
+      const autoCompliantSource =
+        rowAutoCompliantSource ?? (row.systemId ? autoCompliantSourceByPortalId.get(row.systemId) : undefined);
       const readWindowMonthYear = row.readDate
         ? formatMonthYear(toReadWindowMonthStart(row.readDate))
         : "N/A";
