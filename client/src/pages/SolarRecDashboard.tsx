@@ -488,6 +488,7 @@ const DASHBOARD_DB_VERSION = 2;
 const DASHBOARD_DATASETS_STORE = "datasets";
 const DASHBOARD_DATASETS_RECORD_KEY = "activeDatasets";
 const DASHBOARD_DATASETS_MANIFEST_KEY = "__dataset_manifest_v2__";
+const DASHBOARD_LOGS_RECORD_KEY = "__snapshot_logs_v2__";
 
 const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -508,6 +509,7 @@ const REMOTE_LOG_ENTRY_LIMIT = 40;
 const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 4_000_000;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
+const REMOTE_SNAPSHOT_LOGS_KEY = "snapshot_logs_v1";
 const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 const COMPLIANT_SOURCE_STORAGE_KEY = "solarRecDashboardCompliantSourcesV1";
 const MAX_COMPLIANT_SOURCE_CHARS = 100;
@@ -1078,7 +1080,7 @@ function splitTextIntoChunks(value: string, chunkSize: number): string[] {
   return chunks;
 }
 
-function buildRemoteDatasetChunkKey(datasetKey: DatasetKey, chunkIndex: number): string {
+function buildRemoteDatasetChunkKey(datasetKey: string, chunkIndex: number): string {
   return `${datasetKey}_chunk_${String(chunkIndex).padStart(4, "0")}`;
 }
 
@@ -1564,6 +1566,14 @@ function compactLogsForRemoteSync(
   return serialized;
 }
 
+function buildLogSyncSignature(logEntries: DashboardLogEntry[]): string {
+  const count = logEntries.length;
+  if (count === 0) return "0";
+  const newest = logEntries[0];
+  const oldest = logEntries[count - 1];
+  return `${count}|${newest?.id ?? ""}|${newest?.createdAt.toISOString() ?? ""}|${oldest?.id ?? ""}|${oldest?.createdAt.toISOString() ?? ""}`;
+}
+
 function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
   try {
     const parsed = JSON.parse(raw) as Array<{
@@ -1642,6 +1652,79 @@ function loadPersistedLogs(): DashboardLogEntry[] {
     return [];
   }
   return deserializeDashboardLogs(raw);
+}
+
+async function loadLogsFromStorage(): Promise<DashboardLogEntry[]> {
+  if (typeof window === "undefined") return [];
+
+  if (!("indexedDB" in window)) {
+    return loadPersistedLogs();
+  }
+
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDashboardDatabase();
+    const openDb = db;
+    const logsPayload = (await new Promise<unknown>((resolve, reject) => {
+      const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
+      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+      const request = store.get(DASHBOARD_LOGS_RECORD_KEY);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Failed reading snapshot logs from IndexedDB."));
+      transaction.onabort = () => reject(transaction.error ?? new Error("Failed reading snapshot logs from IndexedDB."));
+      transaction.onerror = () => reject(transaction.error ?? new Error("Failed reading snapshot logs from IndexedDB."));
+    })) as string | null | undefined;
+
+    if (typeof logsPayload === "string" && logsPayload.length > 0) {
+      const parsed = deserializeDashboardLogs(logsPayload);
+      if (parsed.length > 0) return parsed;
+    }
+
+    const localFallback = loadPersistedLogs();
+    if (localFallback.length > 0) {
+      await saveLogsToStorage(localFallback);
+      return localFallback;
+    }
+    return [];
+  } catch {
+    return loadPersistedLogs();
+  } finally {
+    if (db) db.close();
+  }
+}
+
+async function saveLogsToStorage(logEntries: DashboardLogEntry[]): Promise<void> {
+  if (typeof window === "undefined") return;
+
+  const compactLogs = compactLogsForRemoteSync(logEntries);
+  const compactText = safeJsonStringify(compactLogs) ?? "[]";
+  try {
+    window.localStorage.setItem(LOGS_STORAGE_KEY, compactText);
+  } catch {
+    // Non-fatal fallback path.
+  }
+
+  if (!("indexedDB" in window)) return;
+
+  const fullText = safeJsonStringify(serializeDashboardLogs(logEntries, { includeSystemName: false })) ?? "[]";
+  const db = await openDashboardDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
+    const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+    store.put(fullText, DASHBOARD_LOGS_RECORD_KEY);
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onabort = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
+    };
+  });
 }
 
 function loadPersistedCompliantSources(): CompliantSourceEntry[] {
@@ -1763,10 +1846,13 @@ export default function SolarRecDashboard() {
   const [activeTab, setActiveTab] = useState("overview");
   const datasetsRef = useRef(datasets);
   datasetsRef.current = datasets;
-  const serializedLocalLogEntriesRef = useRef("[]");
+  const logEntriesRef = useRef(logEntries);
+  logEntriesRef.current = logEntries;
   const datasetsHydratedRef = useRef(false);
   const remoteStateHydratedRef = useRef(false);
   const remoteStatusRef = useRef(remoteDashboardStateQuery.status);
+  const remoteLogsSignatureRef = useRef<string>("0");
+  const remoteLogsChunkKeysRef = useRef<string[]>([]);
 
   const jumpToSection = (sectionId: string) => {
     if (typeof document === "undefined") return;
@@ -4698,7 +4784,6 @@ export default function SolarRecDashboard() {
   }, [contractDeliveryRows]);
 
   const compactRemoteLogs = useMemo(() => compactLogsForRemoteSync(logEntries), [logEntries]);
-  const serializedLocalLogEntries = useMemo(() => safeJsonStringify(compactRemoteLogs) ?? "[]", [compactRemoteLogs]);
 
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
@@ -4762,10 +4847,6 @@ export default function SolarRecDashboard() {
   }, [compactRemoteLogs, manifestOnlyRemoteStatePayload, remoteDatasetManifest]);
 
   useEffect(() => {
-    serializedLocalLogEntriesRef.current = serializedLocalLogEntries;
-  }, [serializedLocalLogEntries]);
-
-  useEffect(() => {
     datasetsHydratedRef.current = datasetsHydrated;
   }, [datasetsHydrated]);
 
@@ -4781,9 +4862,18 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        const loaded = await loadDatasetsFromStorage();
+        const [loadedDatasets, loadedLogs] = await Promise.all([
+          loadDatasetsFromStorage(),
+          loadLogsFromStorage(),
+        ]);
         if (cancelled) return;
-        setDatasets((current) => (Object.keys(current).length > 0 ? current : loaded));
+        setDatasets((current) => (Object.keys(current).length > 0 ? current : loadedDatasets));
+        if (loadedLogs.length > 0) {
+          setLogEntries((current) => {
+            if (current.length === 0) return loadedLogs;
+            return loadedLogs.length >= current.length ? loadedLogs : current;
+          });
+        }
         setStorageNotice(null);
       } catch {
         if (cancelled) return;
@@ -4848,6 +4938,7 @@ export default function SolarRecDashboard() {
       try {
         const payload = remoteDashboardStateQuery.data?.payload;
         let manifest: Record<string, RemoteDatasetManifestEntry> = {};
+        let stateLogs: DashboardLogEntry[] = [];
 
         if (payload) {
           const parsed = JSON.parse(payload) as {
@@ -4855,8 +4946,8 @@ export default function SolarRecDashboard() {
             logs?: unknown;
           };
 
-          if (Array.isArray(parsed.logs) && !cancelled) {
-            setLogEntries(deserializeDashboardLogs(JSON.stringify(parsed.logs)));
+          if (Array.isArray(parsed.logs)) {
+            stateLogs = deserializeDashboardLogs(JSON.stringify(parsed.logs));
           }
 
           manifest = parsed.datasetManifest ?? {};
@@ -4881,6 +4972,38 @@ export default function SolarRecDashboard() {
 
         const { loadedDatasets, loadedSignatures, loadedChunkKeys } = await loadRemoteDatasets(Array.from(keysToLoad));
 
+        let loadedCloudLogs: DashboardLogEntry[] = [];
+        try {
+          const logsResponse = await getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY });
+          if (logsResponse?.payload) {
+            let logsPayload = logsResponse.payload;
+            const chunkKeys = parseChunkPointerPayload(logsResponse.payload);
+            if (chunkKeys) {
+              remoteLogsChunkKeysRef.current = chunkKeys;
+              const chunkPayloads = await Promise.all(
+                chunkKeys.map((chunkKey) =>
+                  getRemoteDatasetRef.current
+                    .mutateAsync({ key: chunkKey })
+                    .then((chunkResponse) => chunkResponse?.payload ?? null)
+                    .catch(() => null)
+                )
+              );
+              if (!chunkPayloads.some((chunk) => chunk === null)) {
+                logsPayload = chunkPayloads.join("");
+              }
+            } else {
+              remoteLogsChunkKeysRef.current = [];
+            }
+            loadedCloudLogs = deserializeDashboardLogs(logsPayload);
+            remoteLogsSignatureRef.current = buildLogSyncSignature(loadedCloudLogs);
+          } else {
+            remoteLogsChunkKeysRef.current = [];
+            remoteLogsSignatureRef.current = "0";
+          }
+        } catch {
+          // Keep existing logs if remote log fetch fails.
+        }
+
         if (!cancelled) {
           if (Object.keys(loadedDatasets).length > 0) {
             setDatasets((current) => {
@@ -4896,6 +5019,11 @@ export default function SolarRecDashboard() {
           }
           remoteDatasetSignatureRef.current = loadedSignatures;
           remoteDatasetChunkKeysRef.current = loadedChunkKeys;
+          if (loadedCloudLogs.length > 0) {
+            setLogEntries(loadedCloudLogs);
+          } else if (stateLogs.length > 0) {
+            setLogEntries((current) => (current.length > 0 ? current : stateLogs));
+          }
           setStorageNotice(null);
         }
       } catch {
@@ -4924,9 +5052,7 @@ export default function SolarRecDashboard() {
       void (async () => {
         try {
           await saveDatasetsToStorage(datasetsRef.current);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem(LOGS_STORAGE_KEY, serializedLocalLogEntriesRef.current);
-          }
+          await saveLogsToStorage(logEntriesRef.current);
         } catch {
           // Best-effort flush on navigation.
         }
@@ -4959,9 +5085,7 @@ export default function SolarRecDashboard() {
       void (async () => {
         try {
           await saveDatasetsToStorage(datasets);
-          if (typeof window !== "undefined") {
-            window.localStorage.setItem(LOGS_STORAGE_KEY, serializedLocalLogEntries);
-          }
+          await saveLogsToStorage(logEntries);
         } catch {
           setStorageNotice(
             "Local browser storage is full or unavailable. Keeping data in cloud sync may take longer for large uploads."
@@ -5020,7 +5144,7 @@ export default function SolarRecDashboard() {
     remoteStateHydrated,
     remoteStatePayload.payload,
     remoteStatePayload.usedManifestOnly,
-    serializedLocalLogEntries,
+    logEntries,
   ]);
 
   useEffect(() => {
@@ -5118,6 +5242,81 @@ export default function SolarRecDashboard() {
   }, [
     datasets,
     datasetsHydrated,
+    remoteDashboardStateQuery.status,
+    remoteStateHydrated,
+  ]);
+
+  useEffect(() => {
+    if (!datasetsHydrated || !remoteStateHydrated) return;
+    if (remoteDashboardStateQuery.status !== "success") return;
+
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        const nextSignature = buildLogSyncSignature(logEntries);
+        if (remoteLogsSignatureRef.current === nextSignature) return;
+
+        const previousChunkKeys = remoteLogsChunkKeysRef.current ?? [];
+        if (logEntries.length === 0) {
+          try {
+            await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload: "" }));
+            for (const chunkKey of previousChunkKeys) {
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+            }
+            remoteLogsChunkKeysRef.current = [];
+            remoteLogsSignatureRef.current = nextSignature;
+          } catch {
+            setStorageNotice("Could not clear snapshot logs from cloud storage.");
+          }
+          return;
+        }
+
+        const payload = safeJsonStringify(serializeDashboardLogs(logEntries, { includeSystemName: false })) ?? "[]";
+        const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+
+        try {
+          if (chunks.length === 1) {
+            await withRetry(() =>
+              saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload })
+            );
+            for (const chunkKey of previousChunkKeys) {
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+            }
+            remoteLogsChunkKeysRef.current = [];
+          } else {
+            const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(REMOTE_SNAPSHOT_LOGS_KEY, index));
+            for (let index = 0; index < chunks.length; index += 1) {
+              await withRetry(() =>
+                saveRemoteDatasetRef.current.mutateAsync({
+                  key: chunkKeys[index],
+                  payload: chunks[index],
+                })
+              );
+            }
+            const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
+            for (const staleChunkKey of staleChunkKeys) {
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+            }
+            await withRetry(() =>
+              saveRemoteDatasetRef.current.mutateAsync({
+                key: REMOTE_SNAPSHOT_LOGS_KEY,
+                payload: buildChunkPointerPayload(chunkKeys),
+              })
+            );
+            remoteLogsChunkKeysRef.current = chunkKeys;
+          }
+          remoteLogsSignatureRef.current = nextSignature;
+        } catch {
+          setStorageNotice("Could not sync snapshot logs to cloud storage.");
+        }
+      })();
+    }, 1200);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    datasetsHydrated,
+    logEntries,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
   ]);
