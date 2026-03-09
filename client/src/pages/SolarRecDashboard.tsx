@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { ArrowLeft, Database, Trash2, Upload } from "lucide-react";
+import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -5293,6 +5294,21 @@ export default function SolarRecDashboard() {
   }, [activeTab, logEntries]);
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
+  const snapshotTrendRows = useMemo(
+    () =>
+      [...logEntries]
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+        .map((entry) => ({
+          id: entry.id,
+          label: entry.createdAt.toLocaleDateString([], { month: "numeric", day: "numeric" }),
+          timestamp: entry.createdAt.toLocaleString(),
+          totalSystems: entry.totalSystems,
+          reportingSystems: entry.reportingSystems,
+          cooNotTransferredNotReporting: entry.changedNotTransferredNotReporting,
+          changeOwnershipSystems: entry.changeOwnershipSystems,
+        })),
+    [logEntries]
+  );
 
   const snapshotMetricRows = useMemo<SnapshotMetricRow[]>(
     () => [
@@ -7746,6 +7762,62 @@ export default function SolarRecDashboard() {
                 </CardHeader>
               </Card>
             </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Snapshot Trend Graphic</CardTitle>
+                <CardDescription>
+                  This chart updates automatically as each new snapshot is logged.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {snapshotTrendRows.length === 0 ? (
+                  <p className="text-sm text-slate-600">No snapshots logged yet.</p>
+                ) : (
+                  <div className="h-80 w-full">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={snapshotTrendRows} margin={{ top: 16, right: 24, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <Tooltip
+                          labelFormatter={(_, payload) =>
+                            payload && payload.length > 0 ? String(payload[0]?.payload?.timestamp ?? "") : ""
+                          }
+                        />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="reportingSystems"
+                          name="Reporting to GATS"
+                          stroke="#0f766e"
+                          strokeWidth={2}
+                          dot={{ r: 2 }}
+                          activeDot={{ r: 4 }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="cooNotTransferredNotReporting"
+                          name="COO Not Transferred + Not Reporting"
+                          stroke="#b45309"
+                          strokeWidth={2}
+                          dot={{ r: 2 }}
+                          activeDot={{ r: 4 }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="totalSystems"
+                          name="Part II Verified Total"
+                          stroke="#475569"
+                          strokeWidth={2}
+                          dot={false}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader>
