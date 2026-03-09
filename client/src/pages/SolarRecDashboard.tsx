@@ -2661,37 +2661,22 @@ export default function SolarRecDashboard() {
     const largeSystems = systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
     const unknownSizeSystems = systems.filter((system) => system.sizeBucket === "Unknown").length;
 
-    const ownershipCountsByStatus = new Map<OwnershipStatus, number>(
-      OWNERSHIP_ORDER.map((status) => [status, 0])
-    );
+    const ownershipCountsByStatus = new Map<OwnershipStatus, number>(OWNERSHIP_ORDER.map((status) => [status, 0]));
     systems.forEach((system) => {
       ownershipCountsByStatus.set(
         system.ownershipStatus,
         (ownershipCountsByStatus.get(system.ownershipStatus) ?? 0) + 1
       );
     });
-    const ownershipPercentBase = systems.length;
-    const terminatedCombined =
+    const terminatedTotal =
       (ownershipCountsByStatus.get("Terminated and Reporting") ?? 0) +
       (ownershipCountsByStatus.get("Terminated and Not Reporting") ?? 0);
-
-    const ownershipCounts = [
-      "Not Transferred and Reporting",
-      "Not Transferred and Not Reporting",
-      "Transferred and Reporting",
-      "Transferred and Not Reporting",
-      "Terminated",
-    ].map((status) => {
-      const count =
-        status === "Terminated"
-          ? terminatedCombined
-          : (ownershipCountsByStatus.get(status as OwnershipStatus) ?? 0);
-      return {
-        status,
-        count,
-        percent: toPercentValue(count, ownershipPercentBase),
-      };
-    });
+    const notTransferredReporting = ownershipCountsByStatus.get("Not Transferred and Reporting") ?? 0;
+    const transferredReporting = ownershipCountsByStatus.get("Transferred and Reporting") ?? 0;
+    const notTransferredNotReporting = ownershipCountsByStatus.get("Not Transferred and Not Reporting") ?? 0;
+    const transferredNotReporting = ownershipCountsByStatus.get("Transferred and Not Reporting") ?? 0;
+    const reportingOwnershipTotal = notTransferredReporting + transferredReporting;
+    const notReportingOwnershipTotal = notTransferredNotReporting + transferredNotReporting;
 
     const withValueData = systems.filter(
       (system) => system.contractedValue !== null && system.deliveredValue !== null
@@ -2712,7 +2697,15 @@ export default function SolarRecDashboard() {
       smallSystems,
       largeSystems,
       unknownSizeSystems,
-      ownershipCounts,
+      ownershipOverview: {
+        reportingOwnershipTotal,
+        notTransferredReporting,
+        transferredReporting,
+        notReportingOwnershipTotal,
+        notTransferredNotReporting,
+        transferredNotReporting,
+        terminatedTotal,
+      },
       withValueDataCount: withValueData.length,
       totalContractedValue,
       totalDeliveredValue,
@@ -5858,17 +5851,36 @@ export default function SolarRecDashboard() {
               <CardHeader>
                 <CardTitle className="text-base">Ownership and Reporting Status Counts</CardTitle>
                 <CardDescription>
-                  Part II verified systems only. Percentages in this card use this table's own total and sum to 100%.
+                  Part II verified systems only.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {summary.ownershipCounts.map((item) => (
-                  <div key={item.status} className="rounded-lg border border-slate-200 p-3 bg-white">
-                    <p className="text-xs text-slate-500">{item.status}</p>
-                    <p className="text-2xl font-semibold text-slate-900">{formatNumber(item.count)}</p>
-                    <p className="text-xs text-slate-500">{formatPercent(item.percent)}</p>
+              <CardContent className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                  <p className="text-xs font-semibold text-emerald-800">Reporting</p>
+                  <p className="text-2xl font-semibold text-emerald-900">
+                    {formatNumber(summary.ownershipOverview.reportingOwnershipTotal)}
+                  </p>
+                  <div className="mt-2 space-y-1 text-xs text-emerald-900">
+                    <p>Not Transferred and Reporting: {formatNumber(summary.ownershipOverview.notTransferredReporting)}</p>
+                    <p>Transferred and Reporting: {formatNumber(summary.ownershipOverview.transferredReporting)}</p>
                   </div>
-                ))}
+                </div>
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-semibold text-amber-800">Not Reporting</p>
+                  <p className="text-2xl font-semibold text-amber-900">
+                    {formatNumber(summary.ownershipOverview.notReportingOwnershipTotal)}
+                  </p>
+                  <div className="mt-2 space-y-1 text-xs text-amber-900">
+                    <p>Not Transferred and Not Reporting: {formatNumber(summary.ownershipOverview.notTransferredNotReporting)}</p>
+                    <p>Transferred and Not Reporting: {formatNumber(summary.ownershipOverview.transferredNotReporting)}</p>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-semibold text-slate-700">Terminated</p>
+                  <p className="text-2xl font-semibold text-slate-900">
+                    {formatNumber(summary.ownershipOverview.terminatedTotal)}
+                  </p>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
