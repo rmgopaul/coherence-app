@@ -5302,10 +5302,14 @@ export default function SolarRecDashboard() {
           id: entry.id,
           label: entry.createdAt.toLocaleDateString([], { month: "numeric", day: "numeric" }),
           timestamp: entry.createdAt.toLocaleString(),
-          totalSystems: entry.totalSystems,
-          reportingSystems: entry.reportingSystems,
-          cooNotTransferredNotReporting: entry.changedNotTransferredNotReporting,
-          changeOwnershipSystems: entry.changeOwnershipSystems,
+          reportingPercent:
+            entry.reportingPercent ?? toPercentValue(entry.reportingSystems, entry.totalSystems),
+          cooNotTransferredNotReportingPercent: toPercentValue(
+            entry.changedNotTransferredNotReporting,
+            entry.totalSystems
+          ),
+          changeOwnershipPercent:
+            entry.changeOwnershipPercent ?? toPercentValue(entry.changeOwnershipSystems, entry.totalSystems),
         })),
     [logEntries]
   );
@@ -7779,17 +7783,24 @@ export default function SolarRecDashboard() {
                       <LineChart data={snapshotTrendRows} margin={{ top: 16, right: 24, left: 8, bottom: 8 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
                         <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <YAxis
+                          domain={[0, 100]}
+                          tick={{ fontSize: 12 }}
+                          tickFormatter={(value) => `${value}%`}
+                        />
                         <Tooltip
                           labelFormatter={(_, payload) =>
                             payload && payload.length > 0 ? String(payload[0]?.payload?.timestamp ?? "") : ""
+                          }
+                          formatter={(value: number | string) =>
+                            typeof value === "number" ? `${value.toFixed(1)}%` : value
                           }
                         />
                         <Legend />
                         <Line
                           type="monotone"
-                          dataKey="reportingSystems"
-                          name="Reporting to GATS"
+                          dataKey="reportingPercent"
+                          name="Reporting to GATS (%)"
                           stroke="#0f766e"
                           strokeWidth={2}
                           dot={{ r: 2 }}
@@ -7797,8 +7808,8 @@ export default function SolarRecDashboard() {
                         />
                         <Line
                           type="monotone"
-                          dataKey="cooNotTransferredNotReporting"
-                          name="COO Not Transferred + Not Reporting"
+                          dataKey="cooNotTransferredNotReportingPercent"
+                          name="COO Not Transferred + Not Reporting (%)"
                           stroke="#b45309"
                           strokeWidth={2}
                           dot={{ r: 2 }}
@@ -7806,9 +7817,9 @@ export default function SolarRecDashboard() {
                         />
                         <Line
                           type="monotone"
-                          dataKey="totalSystems"
-                          name="Part II Verified Total"
-                          stroke="#475569"
+                          dataKey="changeOwnershipPercent"
+                          name="Change of Ownership (%)"
+                          stroke="#334155"
                           strokeWidth={2}
                           dot={false}
                         />
