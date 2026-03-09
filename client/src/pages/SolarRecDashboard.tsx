@@ -139,7 +139,7 @@ type DashboardLogEntry = {
   }>;
   cooStatuses: Array<{
     key: string;
-    systemName: string;
+    systemName?: string;
     status: ChangeOwnershipStatus;
   }>;
 };
@@ -1574,6 +1574,16 @@ function buildLogSyncSignature(logEntries: DashboardLogEntry[]): string {
   return `${count}|${newest?.id ?? ""}|${newest?.createdAt.toISOString() ?? ""}|${oldest?.id ?? ""}|${oldest?.createdAt.toISOString() ?? ""}`;
 }
 
+function buildDatasetStorageSignature(datasets: Partial<Record<DatasetKey, CsvDataset>>): string {
+  return (Object.keys(DATASET_DEFINITIONS) as DatasetKey[])
+    .map((key) => {
+      const dataset = datasets[key];
+      if (!dataset) return `${key}:`;
+      return `${key}:${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
+    })
+    .join("||");
+}
+
 function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
   try {
     const parsed = JSON.parse(raw) as Array<{
@@ -1615,11 +1625,9 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
             if (!item || typeof item.key !== "string") return null;
             if (typeof item.status !== "string") return null;
             if (!CHANGE_OWNERSHIP_ORDER.includes(item.status as ChangeOwnershipStatus)) return null;
-            return {
-              key: item.key,
-              systemName: typeof item.systemName === "string" ? item.systemName : item.key,
-              status: item.status as ChangeOwnershipStatus,
-            };
+            const status = item.status as ChangeOwnershipStatus;
+            const systemName = typeof item.systemName === "string" ? item.systemName : undefined;
+            return systemName ? { key: item.key, status, systemName } : { key: item.key, status };
           })
           .filter((item): item is NonNullable<typeof item> => item !== null);
         return {
@@ -1853,6 +1861,8 @@ export default function SolarRecDashboard() {
   const remoteStatusRef = useRef(remoteDashboardStateQuery.status);
   const remoteLogsSignatureRef = useRef<string>("0");
   const remoteLogsChunkKeysRef = useRef<string[]>([]);
+  const localDatasetSignatureRef = useRef<string>("");
+  const localLogsSignatureRef = useRef<string>("0");
 
   const jumpToSection = (sectionId: string) => {
     if (typeof document === "undefined") return;
@@ -4783,8 +4793,6 @@ export default function SolarRecDashboard() {
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
   }, [contractDeliveryRows]);
 
-  const compactRemoteLogs = useMemo(() => compactLogsForRemoteSync(logEntries), [logEntries]);
-
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
       const manifest: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
@@ -4818,33 +4826,11 @@ export default function SolarRecDashboard() {
   }, [remoteDatasetManifest]);
 
   const remoteStatePayload = useMemo(() => {
-    let logs = compactRemoteLogs;
-    let payload = safeJsonStringify({
-      datasetManifest: remoteDatasetManifest,
-      logs,
-    });
-
-    while (logs.length > 0 && (!payload || payload.length > MAX_REMOTE_STATE_PAYLOAD_CHARS)) {
-      const dropCount = Math.max(1, Math.ceil(logs.length / 3));
-      logs = logs.slice(dropCount);
-      payload = safeJsonStringify({
-        datasetManifest: remoteDatasetManifest,
-        logs,
-      });
-    }
-
-    if (payload && payload.length <= MAX_REMOTE_STATE_PAYLOAD_CHARS) {
-      return {
-        payload,
-        usedManifestOnly: false,
-      };
-    }
-
     return {
       payload: manifestOnlyRemoteStatePayload,
-      usedManifestOnly: true,
+      usedManifestOnly: false,
     };
-  }, [compactRemoteLogs, manifestOnlyRemoteStatePayload, remoteDatasetManifest]);
+  }, [manifestOnlyRemoteStatePayload]);
 
   useEffect(() => {
     datasetsHydratedRef.current = datasetsHydrated;
@@ -5022,7 +5008,7 @@ export default function SolarRecDashboard() {
           if (loadedCloudLogs.length > 0) {
             setLogEntries(loadedCloudLogs);
           } else if (stateLogs.length > 0) {
-            setLogEntries((current) => (current.length > 0 ? current : stateLogs));
+            setLogEntries((current) => (current.length >= stateLogs.length ? current : stateLogs));
           }
           setStorageNotice(null);
         }
@@ -5051,8 +5037,17 @@ export default function SolarRecDashboard() {
 
       void (async () => {
         try {
-          await saveDatasetsToStorage(datasetsRef.current);
-          await saveLogsToStorage(logEntriesRef.current);
+          const nextDatasetSignature = buildDatasetStorageSignature(datasetsRef.current);
+          if (localDatasetSignatureRef.current !== nextDatasetSignature) {
+            await saveDatasetsToStorage(datasetsRef.current);
+            localDatasetSignatureRef.current = nextDatasetSignature;
+          }
+
+          const nextLogSignature = buildLogSyncSignature(logEntriesRef.current);
+          if (localLogsSignatureRef.current !== nextLogSignature) {
+            await saveLogsToStorage(logEntriesRef.current);
+            localLogsSignatureRef.current = nextLogSignature;
+          }
         } catch {
           // Best-effort flush on navigation.
         }
@@ -5084,8 +5079,17 @@ export default function SolarRecDashboard() {
     const localSaveTimeout = window.setTimeout(() => {
       void (async () => {
         try {
-          await saveDatasetsToStorage(datasets);
-          await saveLogsToStorage(logEntries);
+          const nextDatasetSignature = buildDatasetStorageSignature(datasets);
+          if (localDatasetSignatureRef.current !== nextDatasetSignature) {
+            await saveDatasetsToStorage(datasets);
+            localDatasetSignatureRef.current = nextDatasetSignature;
+          }
+
+          const nextLogSignature = buildLogSyncSignature(logEntries);
+          if (localLogsSignatureRef.current !== nextLogSignature) {
+            await saveLogsToStorage(logEntries);
+            localLogsSignatureRef.current = nextLogSignature;
+          }
         } catch {
           setStorageNotice(
             "Local browser storage is full or unavailable. Keeping data in cloud sync may take longer for large uploads."
@@ -5347,7 +5351,6 @@ export default function SolarRecDashboard() {
         if (!system.changeOwnershipStatus) return null;
         return {
           key: buildSystemSnapshotKey(system),
-          systemName: system.systemName,
           status: system.changeOwnershipStatus,
         };
       })
