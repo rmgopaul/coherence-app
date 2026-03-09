@@ -2661,14 +2661,37 @@ export default function SolarRecDashboard() {
     const largeSystems = systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
     const unknownSizeSystems = systems.filter((system) => system.sizeBucket === "Unknown").length;
 
-    const ownershipCounts = OWNERSHIP_ORDER.map((status) => ({
-      status,
-      count: systems.filter((system) => system.ownershipStatus === status).length,
-      percent: toPercentValue(
-        systems.filter((system) => system.ownershipStatus === status).length,
-        totalSystems
-      ),
-    }));
+    const ownershipCountsByStatus = new Map<OwnershipStatus, number>(
+      OWNERSHIP_ORDER.map((status) => [status, 0])
+    );
+    systems.forEach((system) => {
+      ownershipCountsByStatus.set(
+        system.ownershipStatus,
+        (ownershipCountsByStatus.get(system.ownershipStatus) ?? 0) + 1
+      );
+    });
+    const ownershipPercentBase = systems.length;
+    const terminatedCombined =
+      (ownershipCountsByStatus.get("Terminated and Reporting") ?? 0) +
+      (ownershipCountsByStatus.get("Terminated and Not Reporting") ?? 0);
+
+    const ownershipCounts = [
+      "Not Transferred and Reporting",
+      "Not Transferred and Not Reporting",
+      "Transferred and Reporting",
+      "Transferred and Not Reporting",
+      "Terminated",
+    ].map((status) => {
+      const count =
+        status === "Terminated"
+          ? terminatedCombined
+          : (ownershipCountsByStatus.get(status as OwnershipStatus) ?? 0);
+      return {
+        status,
+        count,
+        percent: toPercentValue(count, ownershipPercentBase),
+      };
+    });
 
     const withValueData = systems.filter(
       (system) => system.contractedValue !== null && system.deliveredValue !== null
@@ -5835,7 +5858,7 @@ export default function SolarRecDashboard() {
               <CardHeader>
                 <CardTitle className="text-base">Ownership and Reporting Status Counts</CardTitle>
                 <CardDescription>
-                  These counts map directly to your six required categories.
+                  Part II verified systems only. Percentages in this card use this table's own total and sum to 100%.
                 </CardDescription>
               </CardHeader>
               <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
