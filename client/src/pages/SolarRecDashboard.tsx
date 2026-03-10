@@ -5923,32 +5923,63 @@ export default function SolarRecDashboard() {
                   Part II verified systems only.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-3">
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
-                  <p className="text-xs font-semibold text-emerald-800">Reporting</p>
-                  <p className="text-2xl font-semibold text-emerald-900">
-                    {formatNumber(summary.ownershipOverview.reportingOwnershipTotal)}
-                  </p>
-                  <div className="mt-2 space-y-1 text-xs text-emerald-900">
-                    <p>Not Transferred and Reporting: {formatNumber(summary.ownershipOverview.notTransferredReporting)}</p>
-                    <p>Transferred and Reporting: {formatNumber(summary.ownershipOverview.transferredReporting)}</p>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                    <p className="text-xs font-semibold text-emerald-800">Reporting</p>
+                    <p className="text-2xl font-semibold text-emerald-900">
+                      {formatNumber(summary.ownershipOverview.reportingOwnershipTotal)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-xs font-semibold text-amber-800">Not Reporting</p>
+                    <p className="text-2xl font-semibold text-amber-900">
+                      {formatNumber(summary.ownershipOverview.notReportingOwnershipTotal)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs font-semibold text-slate-700">Terminated</p>
+                    <p className="text-2xl font-semibold text-slate-900">
+                      {formatNumber(summary.ownershipOverview.terminatedTotal)}
+                    </p>
                   </div>
                 </div>
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="text-xs font-semibold text-amber-800">Not Reporting</p>
-                  <p className="text-2xl font-semibold text-amber-900">
-                    {formatNumber(summary.ownershipOverview.notReportingOwnershipTotal)}
-                  </p>
-                  <div className="mt-2 space-y-1 text-xs text-amber-900">
-                    <p>Not Transferred and Not Reporting: {formatNumber(summary.ownershipOverview.notTransferredNotReporting)}</p>
-                    <p>Transferred and Not Reporting: {formatNumber(summary.ownershipOverview.transferredNotReporting)}</p>
-                  </div>
+
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Change of Ownership</p>
                 </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <p className="text-xs font-semibold text-slate-700">Terminated</p>
-                  <p className="text-2xl font-semibold text-slate-900">
-                    {formatNumber(summary.ownershipOverview.terminatedTotal)}
-                  </p>
+
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+                    <p className="text-xs font-semibold text-sky-800">Ownership Changed, Transferred and Reporting</p>
+                    <p className="text-2xl font-semibold text-sky-900">
+                      {formatNumber(
+                        changeOwnershipSummary.counts.find((item) => item.status === "Transferred and Reporting")
+                          ?.count ?? 0
+                      )}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3">
+                    <p className="text-xs font-semibold text-cyan-800">Ownership Changed, Transferred but not Reporting</p>
+                    <p className="text-2xl font-semibold text-cyan-900">
+                      {formatNumber(
+                        changeOwnershipSummary.counts.find((item) => item.status === "Transferred and Not Reporting")
+                          ?.count ?? 0
+                      )}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
+                    <p className="text-xs font-semibold text-indigo-800">
+                      Ownership Changed, but not Transferred and not Reporting
+                    </p>
+                    <p className="text-2xl font-semibold text-indigo-900">
+                      {formatNumber(
+                        changeOwnershipSummary.counts.find(
+                          (item) => item.status === "Change of Ownership - Not Transferred and Not Reporting"
+                        )?.count ?? 0
+                      )}
+                    </p>
+                  </div>
                 </div>
               </CardContent>
             </Card>
