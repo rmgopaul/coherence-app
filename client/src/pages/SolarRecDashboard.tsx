@@ -593,9 +593,8 @@ function parsePart2VerificationDate(value: string | undefined): Date | null {
   }
 
   const looksLikeCalendarDate =
-    /^(\d{4})-(\d{2})-(\d{2})$/.test(raw) ||
-    /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/.test(raw) ||
-    /^[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}$/.test(raw);
+    /(?:19|20)\d{2}/.test(raw) &&
+    (raw.includes("/") || raw.includes("-") || /[A-Za-z]{3,9}/.test(raw));
   if (!looksLikeCalendarDate) return null;
 
   const parsed = parseDate(raw);
