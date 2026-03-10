@@ -6161,19 +6161,19 @@ export default function SolarRecDashboard() {
         ) : null}
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto whitespace-nowrap">
-            <TabsTrigger className="shrink-0" value="overview">Overview</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="size">Size + Reporting</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="value">REC Value</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="contracts">Utility Contracts</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="annual-review">Annual REC Review</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="performance-eval">REC Performance Eval</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="change-ownership">Change of Ownership</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="ownership">Ownership Status</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="offline-monitoring">Offline by Monitoring</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="meter-reads">Meter Reads</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="performance-ratio">Performance Ratio</TabsTrigger>
-            <TabsTrigger className="shrink-0" value="snapshot-log">Snapshot Log</TabsTrigger>
+          <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1 overflow-visible whitespace-normal p-0">
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="overview">Overview</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="size">Size + Reporting</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="value">REC Value</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="contracts">Utility Contracts</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="annual-review">Annual REC Review</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="performance-eval">REC Performance Eval</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="change-ownership">Change of Ownership</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="ownership">Ownership Status</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="offline-monitoring">Offline by Monitoring</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="meter-reads">Meter Reads</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="performance-ratio">Performance Ratio</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="snapshot-log">Snapshot Log</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
