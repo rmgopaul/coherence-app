@@ -2864,29 +2864,7 @@ export default function SolarRecDashboard() {
     };
   }, [datasets.abpReport, systems]);
 
-  const sizeBreakdownRows = useMemo(() => {
-    const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
-    return breakdown.map((bucket) => {
-      const scoped = systems.filter((system) => system.sizeBucket === bucket);
-      const reporting = scoped.filter((system) => system.isReporting).length;
-      const notReporting = scoped.length - reporting;
-      const reportingPercent = toPercentValue(reporting, scoped.length);
-      const contractedValue = scoped.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
-      const deliveredValue = scoped.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
-      return {
-        bucket,
-        total: scoped.length,
-        reporting,
-        notReporting,
-        reportingPercent,
-        contractedValue,
-        deliveredValue,
-        valueDeliveredPercent: toPercentValue(deliveredValue, contractedValue),
-      };
-    });
-  }, [systems]);
-
-  const sizeTabNotReportingPart2Rows = useMemo(() => {
+  const part2EligibleSystemsForSizeReporting = useMemo(() => {
     const eligiblePart2ApplicationIds = new Set<string>();
     const eligiblePart2PortalSystemIds = new Set<string>();
     const eligiblePart2TrackingIds = new Set<string>();
@@ -2905,7 +2883,6 @@ export default function SolarRecDashboard() {
 
     return systems
       .filter((system) => {
-        if (system.isReporting) return false;
         const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
         const byApplicationId = system.stateApplicationRefId
           ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
@@ -2914,9 +2891,36 @@ export default function SolarRecDashboard() {
           ? eligiblePart2TrackingIds.has(system.trackingSystemRefId)
           : false;
         return byPortalSystemId || byApplicationId || byTrackingId;
-      })
-      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
+      });
   }, [datasets.abpReport, systems]);
+
+  const sizeBreakdownRows = useMemo(() => {
+    const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
+    return breakdown.map((bucket) => {
+      const scoped = part2EligibleSystemsForSizeReporting.filter((system) => system.sizeBucket === bucket);
+      const reporting = scoped.filter((system) => system.isReporting).length;
+      const notReporting = scoped.length - reporting;
+      const reportingPercent = toPercentValue(reporting, scoped.length);
+      const contractedValue = scoped.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+      const deliveredValue = scoped.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
+      return {
+        bucket,
+        total: scoped.length,
+        reporting,
+        notReporting,
+        reportingPercent,
+        contractedValue,
+        deliveredValue,
+        valueDeliveredPercent: toPercentValue(deliveredValue, contractedValue),
+      };
+    });
+  }, [part2EligibleSystemsForSizeReporting]);
+
+  const sizeTabNotReportingPart2Rows = useMemo(() => {
+    return part2EligibleSystemsForSizeReporting
+      .filter((system) => !system.isReporting)
+      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
+  }, [part2EligibleSystemsForSizeReporting]);
 
   const sizeSiteListTotalPages = Math.max(
     1,
