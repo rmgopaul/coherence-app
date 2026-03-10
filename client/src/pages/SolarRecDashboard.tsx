@@ -507,7 +507,7 @@ const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
-const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 4_000_000;
+const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 1_000_000;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const REMOTE_SNAPSHOT_LOGS_KEY = "snapshot_logs_v1";
@@ -5113,6 +5113,18 @@ export default function SolarRecDashboard() {
         const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
         const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
         const loadedChunkKeys: Partial<Record<DatasetKey, string[]>> = {};
+        const loadChunkedPayload = async (chunkKeys: string[]): Promise<string | null> => {
+          let combined = "";
+          for (const chunkKey of chunkKeys) {
+            if (cancelled) return null;
+            const chunkResponse = await getRemoteDatasetRef.current
+              .mutateAsync({ key: chunkKey })
+              .catch(() => null);
+            if (!chunkResponse?.payload) return null;
+            combined += chunkResponse.payload;
+          }
+          return combined;
+        };
 
         for (const rawKey of keys) {
           if (cancelled) break;
@@ -5124,16 +5136,9 @@ export default function SolarRecDashboard() {
 
             if (chunkKeys) {
               loadedChunkKeys[rawKey] = chunkKeys;
-              const chunkResponses = await Promise.all(
-                chunkKeys.map((chunkKey) =>
-                  getRemoteDatasetRef.current
-                    .mutateAsync({ key: chunkKey })
-                    .then((chunkResponse) => chunkResponse?.payload ?? null)
-                    .catch(() => null)
-                )
-              );
-              if (chunkResponses.some((chunkPayload) => chunkPayload === null)) continue;
-              datasetPayload = chunkResponses.join("");
+              const chunkedPayload = await loadChunkedPayload(chunkKeys);
+              if (!chunkedPayload) continue;
+              datasetPayload = chunkedPayload;
             }
 
             const deserializedDataset = deserializeRemoteDatasetPayload(datasetPayload);
@@ -5193,16 +5198,24 @@ export default function SolarRecDashboard() {
             const chunkKeys = parseChunkPointerPayload(logsResponse.payload);
             if (chunkKeys) {
               remoteLogsChunkKeysRef.current = chunkKeys;
-              const chunkPayloads = await Promise.all(
-                chunkKeys.map((chunkKey) =>
-                  getRemoteDatasetRef.current
-                    .mutateAsync({ key: chunkKey })
-                    .then((chunkResponse) => chunkResponse?.payload ?? null)
-                    .catch(() => null)
-                )
-              );
-              if (!chunkPayloads.some((chunk) => chunk === null)) {
-                logsPayload = chunkPayloads.join("");
+              let combinedLogsPayload = "";
+              let allLogsChunksLoaded = true;
+              for (const chunkKey of chunkKeys) {
+                if (cancelled) {
+                  allLogsChunksLoaded = false;
+                  break;
+                }
+                const chunkResponse = await getRemoteDatasetRef.current
+                  .mutateAsync({ key: chunkKey })
+                  .catch(() => null);
+                if (!chunkResponse?.payload) {
+                  allLogsChunksLoaded = false;
+                  break;
+                }
+                combinedLogsPayload += chunkResponse.payload;
+              }
+              if (allLogsChunksLoaded && combinedLogsPayload) {
+                logsPayload = combinedLogsPayload;
               }
             } else {
               remoteLogsChunkKeysRef.current = [];
