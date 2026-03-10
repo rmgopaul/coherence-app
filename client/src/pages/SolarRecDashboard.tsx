@@ -6018,7 +6018,7 @@ export default function SolarRecDashboard() {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
               <Card>
                 <CardHeader>
                   <CardDescription>Total Systems</CardDescription>
@@ -6054,6 +6054,12 @@ export default function SolarRecDashboard() {
                 <CardHeader>
                   <CardDescription>Delivered Value %</CardDescription>
                   <CardTitle className="text-2xl">{formatPercent(summary.deliveredValuePercent)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>COO: Not Transferred + Not Reporting</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(cooNotTransferredNotReportingCurrentCount)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
