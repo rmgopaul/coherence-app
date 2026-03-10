@@ -2812,26 +2812,8 @@ export default function SolarRecDashboard() {
   }, [systems]);
 
   const sizeTabNotReportingPart2Rows = useMemo(() => {
-    const systemsById = new Map<string, SystemRecord[]>();
-    const systemsByTrackingId = new Map<string, SystemRecord[]>();
-    const systemsByName = new Map<string, SystemRecord[]>();
-
-    const addToMap = (map: Map<string, SystemRecord[]>, key: string | null | undefined, system: SystemRecord) => {
-      const normalized = clean(key);
-      if (!normalized) return;
-      const existing = map.get(normalized) ?? [];
-      existing.push(system);
-      map.set(normalized, existing);
-    };
-
-    systems.forEach((system) => {
-      addToMap(systemsById, system.systemId, system);
-      addToMap(systemsByTrackingId, system.trackingSystemRefId, system);
-      addToMap(systemsByName, system.systemName.toLowerCase(), system);
-    });
-
-    const selected = new Map<string, SystemRecord>();
-    const seenPart2Projects = new Set<string>();
+    const eligiblePart2SystemIds = new Set<string>();
+    const eligiblePart2TrackingIds = new Set<string>();
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
@@ -2840,63 +2822,20 @@ export default function SolarRecDashboard() {
 
       const applicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
-      const part2ProjectKey = applicationId
-        ? `id:${applicationId}`
-        : trackingId
-          ? `tracking:${trackingId}`
-          : projectName
-            ? `name:${projectName.toLowerCase()}`
-            : "";
-      if (!part2ProjectKey || seenPart2Projects.has(part2ProjectKey)) return;
-      seenPart2Projects.add(part2ProjectKey);
-
-      const candidates = new Map<string, SystemRecord>();
-      if (applicationId || trackingId) {
-        (systemsById.get(applicationId) ?? []).forEach((system) => {
-          candidates.set(system.key, system);
-        });
-        (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => {
-          candidates.set(system.key, system);
-        });
-      } else if (projectName) {
-        (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => {
-          candidates.set(system.key, system);
-        });
-      }
-
-      const nonReportingCandidates = Array.from(candidates.values()).filter((system) => {
-        if (system.isReporting) return false;
-        if (applicationId && system.systemId && system.systemId !== applicationId) return false;
-        if (trackingId && system.trackingSystemRefId && system.trackingSystemRefId !== trackingId) return false;
-        return true;
-      });
-
-      if (nonReportingCandidates.length === 0) return;
-      const ranked = nonReportingCandidates
-        .slice()
-        .sort((a, b) => {
-          const score = (system: SystemRecord) => {
-            let value = 0;
-            if (applicationId && system.systemId === applicationId) value += 4;
-            if (trackingId && system.trackingSystemRefId === trackingId) value += 3;
-            if (!applicationId && !trackingId && projectName && system.systemName.toLowerCase() === projectName.toLowerCase()) {
-              value += 2;
-            }
-            if (system.stateApplicationRefId) value += 1;
-            return value;
-          };
-          const diff = score(b) - score(a);
-          if (diff !== 0) return diff;
-          return a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true });
-        });
-
-      selected.set(ranked[0].key, ranked[0]);
+      if (applicationId) eligiblePart2SystemIds.add(applicationId);
+      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
     });
 
-    return Array.from(selected.values()).sort((a, b) =>
-      a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true })
-    );
+    return systems
+      .filter((system) => {
+        if (system.isReporting) return false;
+        const bySystemId = system.systemId ? eligiblePart2SystemIds.has(system.systemId) : false;
+        const byTrackingId = system.trackingSystemRefId
+          ? eligiblePart2TrackingIds.has(system.trackingSystemRefId)
+          : false;
+        return bySystemId || byTrackingId;
+      })
+      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
   }, [datasets.abpReport, systems]);
 
   const sizeSiteListTotalPages = Math.max(
@@ -6071,7 +6010,7 @@ export default function SolarRecDashboard() {
               </Card>
               <Card>
                 <CardHeader>
-                  <CardDescription>COO: Not Transferred + Not Reporting</CardDescription>
+                  <CardDescription>Ownership Changed, but not Transferred and not Reporting</CardDescription>
                   <CardTitle className="text-2xl">{formatNumber(cooNotTransferredNotReportingCurrentCount)}</CardTitle>
                 </CardHeader>
               </Card>
