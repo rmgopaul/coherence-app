@@ -142,6 +142,14 @@ type DashboardLogEntry = {
     systemName?: string;
     status: ChangeOwnershipStatus;
   }>;
+  recPerformanceContracts2025: Array<{
+    contractId: string;
+    deliveryYearLabel: string;
+    requiredToAvoidShortfallRecs: number;
+    deliveredTowardShortfallRecs: number;
+    deliveredPercentOfRequired: number | null;
+    unallocatedShortfallRecs: number;
+  }>;
 };
 
 type SnapshotMetricRow =
@@ -502,6 +510,10 @@ const SIZE_SITE_LIST_PAGE_SIZE = 10;
 const PERFORMANCE_RATIO_PAGE_SIZE = 10;
 const COMPLIANT_SOURCE_PAGE_SIZE = 10;
 const COMPLIANT_REPORT_PAGE_SIZE = 10;
+const SNAPSHOT_CONTRACT_PAGE_SIZE = 25;
+const SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL = "2025-2026";
+const SNAPSHOT_REC_CONTRACT_ID_MIN = 153;
+const SNAPSHOT_REC_CONTRACT_ID_MAX = 527;
 const GENERIC_TABLE_RENDER_LIMIT = 400;
 const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
@@ -1638,6 +1650,14 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
       contractedValueReportingPercent?: number | null;
       datasets: Array<{ key: DatasetKey; label: string; fileName: string; rows: number; updatedAt: string }>;
       cooStatuses?: Array<{ key: string; systemName?: string; status: ChangeOwnershipStatus }>;
+      recPerformanceContracts2025?: Array<{
+        contractId: string;
+        deliveryYearLabel?: string;
+        requiredToAvoidShortfallRecs: number;
+        deliveredTowardShortfallRecs: number;
+        deliveredPercentOfRequired?: number | null;
+        unallocatedShortfallRecs: number;
+      }>;
     }>;
     return parsed
       .map((entry) => {
@@ -1660,6 +1680,36 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
             return systemName ? { key: item.key, status, systemName } : { key: item.key, status };
           })
           .filter((item): item is NonNullable<typeof item> => item !== null);
+        const recPerformanceContracts2025 = (entry.recPerformanceContracts2025 ?? [])
+          .map((item) => {
+            if (!item || typeof item.contractId !== "string") return null;
+            const requiredToAvoidShortfallRecs = Number(item.requiredToAvoidShortfallRecs ?? 0);
+            const deliveredTowardShortfallRecs = Number(item.deliveredTowardShortfallRecs ?? 0);
+            const unallocatedShortfallRecs = Number(item.unallocatedShortfallRecs ?? 0);
+            if (
+              !Number.isFinite(requiredToAvoidShortfallRecs) ||
+              !Number.isFinite(deliveredTowardShortfallRecs) ||
+              !Number.isFinite(unallocatedShortfallRecs)
+            ) {
+              return null;
+            }
+            const parsedPercent =
+              item.deliveredPercentOfRequired === null || item.deliveredPercentOfRequired === undefined
+                ? toPercentValue(deliveredTowardShortfallRecs, requiredToAvoidShortfallRecs)
+                : Number(item.deliveredPercentOfRequired);
+            const deliveredPercentOfRequired =
+              parsedPercent === null || Number.isFinite(parsedPercent) ? parsedPercent : null;
+
+            return {
+              contractId: item.contractId,
+              deliveryYearLabel: item.deliveryYearLabel || SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
+              requiredToAvoidShortfallRecs,
+              deliveredTowardShortfallRecs,
+              deliveredPercentOfRequired,
+              unallocatedShortfallRecs,
+            };
+          })
+          .filter((item): item is NonNullable<typeof item> => item !== null);
         return {
           ...entry,
           createdAt,
@@ -1673,6 +1723,7 @@ function deserializeDashboardLogs(raw: string): DashboardLogEntry[] {
             toPercentValue(entry.contractedValueReporting ?? 0, entry.totalContractedValue),
           datasets,
           cooStatuses,
+          recPerformanceContracts2025,
         };
       })
       .filter((entry): entry is DashboardLogEntry => entry !== null);
@@ -1859,6 +1910,7 @@ export default function SolarRecDashboard() {
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
   const [sizeSiteListCollapsed, setSizeSiteListCollapsed] = useState(false);
   const [sizeSiteListPage, setSizeSiteListPage] = useState(1);
+  const [snapshotContractPage, setSnapshotContractPage] = useState(1);
   const [compliantSourcePage, setCompliantSourcePage] = useState(1);
   const [compliantReportPage, setCompliantReportPage] = useState(1);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
@@ -4594,6 +4646,87 @@ export default function SolarRecDashboard() {
     performanceSourceRows,
   ]);
 
+  const recPerformanceSnapshotContracts2025 = useMemo(() => {
+    const rowsByContract = new Map<string, PerformanceSourceRow[]>();
+    performanceSourceRows.forEach((row) => {
+      const existing = rowsByContract.get(row.contractId) ?? [];
+      existing.push(row);
+      rowsByContract.set(row.contractId, existing);
+    });
+
+    const contractIds = Array.from(
+      { length: SNAPSHOT_REC_CONTRACT_ID_MAX - SNAPSHOT_REC_CONTRACT_ID_MIN + 1 },
+      (_, index) => String(SNAPSHOT_REC_CONTRACT_ID_MIN + index)
+    );
+
+    return contractIds.map((contractId) => {
+      const contractRows = rowsByContract.get(contractId) ?? [];
+      const evaluationRows = contractRows
+        .map((row) => {
+          const targetYearIndex = row.years.findIndex((year) => {
+            const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+            return label === SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL;
+          });
+          if (targetYearIndex < 2) return null;
+
+          const dyOneYear = row.years[targetYearIndex - 2];
+          const dyTwoYear = row.years[targetYearIndex - 1];
+          const dyThreeYear = row.years[targetYearIndex];
+          if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
+
+          const isThirdDeliveryYear = targetYearIndex === 2;
+          const values = isThirdDeliveryYear
+            ? [dyOneYear.delivered, dyTwoYear.delivered, dyThreeYear.delivered]
+            : [dyOneYear.required, dyTwoYear.required, dyThreeYear.delivered];
+          const rollingAverage = Math.floor((values[0] + values[1] + values[2]) / 3);
+          const expectedRecs = dyThreeYear.required;
+
+          return {
+            contractPrice: row.recPrice,
+            systemId: row.systemId ?? row.trackingSystemRefId,
+            surplusShortfall: rollingAverage - expectedRecs,
+          };
+        })
+        .filter((row): row is NonNullable<typeof row> => row !== null);
+
+      const requiredToAvoidShortfallRecs = evaluationRows.reduce(
+        (sum, row) => sum + Math.max(0, Math.abs(Math.min(0, row.surplusShortfall))),
+        0
+      );
+      const surplusPool = evaluationRows.reduce((sum, row) => sum + Math.max(0, row.surplusShortfall), 0);
+      let remainingPool = surplusPool;
+      let deliveredTowardShortfallRecs = 0;
+
+      const shortfallRows = evaluationRows
+        .filter((row) => row.surplusShortfall < 0)
+        .slice()
+        .sort((a, b) => {
+          const aPrice = a.contractPrice ?? Number.POSITIVE_INFINITY;
+          const bPrice = b.contractPrice ?? Number.POSITIVE_INFINITY;
+          if (aPrice !== bPrice) return aPrice - bPrice;
+          return a.systemId.localeCompare(b.systemId, undefined, { numeric: true, sensitivity: "base" });
+        });
+
+      shortfallRows.forEach((row) => {
+        const shortfall = Math.abs(row.surplusShortfall);
+        const allocated = Math.min(shortfall, remainingPool);
+        remainingPool -= allocated;
+        deliveredTowardShortfallRecs += allocated;
+      });
+
+      const unallocatedShortfallRecs = Math.max(0, requiredToAvoidShortfallRecs - deliveredTowardShortfallRecs);
+
+      return {
+        contractId,
+        deliveryYearLabel: SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
+        requiredToAvoidShortfallRecs,
+        deliveredTowardShortfallRecs,
+        deliveredPercentOfRequired: toPercentValue(deliveredTowardShortfallRecs, requiredToAvoidShortfallRecs),
+        unallocatedShortfallRecs,
+      };
+    });
+  }, [performanceSourceRows]);
+
   const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(() => {
     const groups = new Map<
       string,
@@ -5596,6 +5729,7 @@ export default function SolarRecDashboard() {
         })
         .filter((dataset): dataset is NonNullable<typeof dataset> => dataset !== null),
       cooStatuses: snapshotCooStatuses,
+      recPerformanceContracts2025: recPerformanceSnapshotContracts2025,
     };
 
     setLogEntries((previous) => [entry, ...previous].slice(0, 500));
@@ -5702,6 +5836,59 @@ export default function SolarRecDashboard() {
   }, [activeTab, logEntries]);
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
+  const snapshotContractIds = useMemo(
+    () =>
+      Array.from(
+        { length: SNAPSHOT_REC_CONTRACT_ID_MAX - SNAPSHOT_REC_CONTRACT_ID_MIN + 1 },
+        (_, index) => String(SNAPSHOT_REC_CONTRACT_ID_MIN + index)
+      ),
+    []
+  );
+  const snapshotContractMetricsByLogId = useMemo(() => {
+    const mapping = new Map<
+      string,
+      Map<
+        string,
+        {
+          contractId: string;
+          deliveryYearLabel: string;
+          requiredToAvoidShortfallRecs: number;
+          deliveredTowardShortfallRecs: number;
+          deliveredPercentOfRequired: number | null;
+          unallocatedShortfallRecs: number;
+        }
+      >
+    >();
+    snapshotLogColumns.forEach((entry) => {
+      const byContract = new Map<
+        string,
+        {
+          contractId: string;
+          deliveryYearLabel: string;
+          requiredToAvoidShortfallRecs: number;
+          deliveredTowardShortfallRecs: number;
+          deliveredPercentOfRequired: number | null;
+          unallocatedShortfallRecs: number;
+        }
+      >();
+      (entry.recPerformanceContracts2025 ?? []).forEach((item) => {
+        byContract.set(item.contractId, item);
+      });
+      mapping.set(entry.id, byContract);
+    });
+    return mapping;
+  }, [snapshotLogColumns]);
+  const snapshotContractTotalPages = Math.max(
+    1,
+    Math.ceil(snapshotContractIds.length / SNAPSHOT_CONTRACT_PAGE_SIZE)
+  );
+  const snapshotContractCurrentPage = Math.min(snapshotContractPage, snapshotContractTotalPages);
+  const snapshotContractStartIndex = (snapshotContractCurrentPage - 1) * SNAPSHOT_CONTRACT_PAGE_SIZE;
+  const snapshotContractEndIndex = snapshotContractStartIndex + SNAPSHOT_CONTRACT_PAGE_SIZE;
+  const visibleSnapshotContractIds = useMemo(
+    () => snapshotContractIds.slice(snapshotContractStartIndex, snapshotContractEndIndex),
+    [snapshotContractEndIndex, snapshotContractIds, snapshotContractStartIndex]
+  );
   const snapshotTrendRows = useMemo(
     () =>
       [...logEntries]
@@ -5721,6 +5908,11 @@ export default function SolarRecDashboard() {
         })),
     [logEntries]
   );
+
+  useEffect(() => {
+    if (snapshotContractPage <= snapshotContractTotalPages) return;
+    setSnapshotContractPage(snapshotContractTotalPages);
+  }, [snapshotContractPage, snapshotContractTotalPages]);
 
   const snapshotMetricRows = useMemo<SnapshotMetricRow[]>(
     () => [
@@ -8507,6 +8699,87 @@ export default function SolarRecDashboard() {
                       })}
                     </TableBody>
                   </Table>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">REC Performance Eval Snapshot by Contract</CardTitle>
+                <CardDescription>
+                  Delivery Year {SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL}. Shows each contract ID from{" "}
+                  {SNAPSHOT_REC_CONTRACT_ID_MIN} to {SNAPSHOT_REC_CONTRACT_ID_MAX} with unallocated shortfall, required
+                  to avoid shortfall, delivered so far, and delivered percentage.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {snapshotLogColumns.length === 0 ? (
+                  <p className="text-sm text-slate-600">No snapshots logged yet.</p>
+                ) : (
+                  <>
+                    <div className="mb-3 flex items-center justify-between text-xs text-slate-600">
+                      <span>
+                        Showing contracts {formatNumber(snapshotContractStartIndex + 1)}-
+                        {formatNumber(Math.min(snapshotContractEndIndex, snapshotContractIds.length))} of{" "}
+                        {formatNumber(snapshotContractIds.length)}
+                      </span>
+                      <span>
+                        Page {formatNumber(snapshotContractCurrentPage)} of {formatNumber(snapshotContractTotalPages)}
+                      </span>
+                    </div>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Contract ID</TableHead>
+                          {snapshotLogColumns.map((entry) => (
+                            <TableHead key={`contract-snapshot-${entry.id}`}>
+                              <div className="min-w-[180px]">
+                                {entry.createdAt.toLocaleDateString()} {entry.createdAt.toLocaleTimeString()}
+                              </div>
+                            </TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {visibleSnapshotContractIds.map((contractId) => (
+                          <TableRow key={`snapshot-contract-${contractId}`}>
+                            <TableCell className="font-medium">{contractId}</TableCell>
+                            {snapshotLogColumns.map((entry) => {
+                              const metric = snapshotContractMetricsByLogId.get(entry.id)?.get(contractId);
+                              return (
+                                <TableCell key={`${entry.id}-${contractId}`}>
+                                  <div className="space-y-0.5 text-xs leading-5 text-slate-700">
+                                    <p>Unallocated: {formatNumber(metric?.unallocatedShortfallRecs ?? 0)}</p>
+                                    <p>Required: {formatNumber(metric?.requiredToAvoidShortfallRecs ?? 0)}</p>
+                                    <p>Delivered: {formatNumber(metric?.deliveredTowardShortfallRecs ?? 0)}</p>
+                                    <p>Delivered %: {formatPercent(metric?.deliveredPercentOfRequired ?? null)}</p>
+                                  </div>
+                                </TableCell>
+                              );
+                            })}
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSnapshotContractPage((page) => Math.max(1, page - 1))}
+                        disabled={snapshotContractCurrentPage <= 1}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSnapshotContractPage((page) => Math.min(snapshotContractTotalPages, page + 1))}
+                        disabled={snapshotContractCurrentPage >= snapshotContractTotalPages}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </>
                 )}
               </CardContent>
             </Card>
