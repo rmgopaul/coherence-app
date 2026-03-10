@@ -575,6 +575,36 @@ function parseDate(value: string | undefined): Date | null {
   return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
 
+function parsePart2VerificationDate(value: string | undefined): Date | null {
+  const raw = clean(value);
+  if (!raw || raw.toLowerCase() === "null") return null;
+
+  const excelSerial = raw.match(/^\d{5}(?:\.\d+)?$/);
+  if (excelSerial) {
+    const serial = Number(raw);
+    if (Number.isFinite(serial) && serial >= 20_000 && serial <= 80_000) {
+      const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+      const utcDate = new Date(excelEpoch.getTime() + Math.round(serial * DAY_MS));
+      const converted = new Date(utcDate.getUTCFullYear(), utcDate.getUTCMonth(), utcDate.getUTCDate());
+      const year = converted.getFullYear();
+      if (year >= 2009 && year <= 2100) return converted;
+    }
+    return null;
+  }
+
+  const looksLikeCalendarDate =
+    /^(\d{4})-(\d{2})-(\d{2})$/.test(raw) ||
+    /^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/.test(raw) ||
+    /^[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4}$/.test(raw);
+  if (!looksLikeCalendarDate) return null;
+
+  const parsed = parseDate(raw);
+  if (!parsed) return null;
+  const year = parsed.getFullYear();
+  if (year < 2009 || year > 2100) return null;
+  return parsed;
+}
+
 function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
   const raw = clean(value);
   if (!raw) return null;
@@ -2261,8 +2291,7 @@ export default function SolarRecDashboard() {
     abpReportRows.forEach((row, index) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
 
       const systemId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
@@ -2286,8 +2315,7 @@ export default function SolarRecDashboard() {
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
       if (trackingId) ids.add(trackingId);
     });
@@ -2303,8 +2331,7 @@ export default function SolarRecDashboard() {
     abpReportRows.forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
 
       const systemId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
@@ -2690,8 +2717,7 @@ export default function SolarRecDashboard() {
     (datasets.abpReport?.rows ?? []).forEach((row, index) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
 
       const applicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
@@ -2812,28 +2838,33 @@ export default function SolarRecDashboard() {
   }, [systems]);
 
   const sizeTabNotReportingPart2Rows = useMemo(() => {
-    const eligiblePart2SystemIds = new Set<string>();
+    const eligiblePart2ApplicationIds = new Set<string>();
+    const eligiblePart2PortalSystemIds = new Set<string>();
     const eligiblePart2TrackingIds = new Set<string>();
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
 
-      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      const applicationId = clean(row.Application_ID);
+      const portalSystemId = clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (applicationId) eligiblePart2SystemIds.add(applicationId);
+      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
+      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
       if (trackingId) eligiblePart2TrackingIds.add(trackingId);
     });
 
     return systems
       .filter((system) => {
         if (system.isReporting) return false;
-        const bySystemId = system.systemId ? eligiblePart2SystemIds.has(system.systemId) : false;
+        const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
+        const byApplicationId = system.stateApplicationRefId
+          ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
+          : false;
         const byTrackingId = system.trackingSystemRefId
           ? eligiblePart2TrackingIds.has(system.trackingSystemRefId)
           : false;
-        return bySystemId || byTrackingId;
+        return byPortalSystemId || byApplicationId || byTrackingId;
       })
       .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
   }, [datasets.abpReport, systems]);
@@ -3234,8 +3265,7 @@ export default function SolarRecDashboard() {
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
 
       const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
@@ -3259,8 +3289,7 @@ export default function SolarRecDashboard() {
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      if (!parseDate(part2VerifiedDateRaw)) return;
+      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
 
       const acSizeKw = parseAbpAcSizeKw(row);
       const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
@@ -3298,8 +3327,7 @@ export default function SolarRecDashboard() {
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
-      const part2VerifiedDate = parseDate(part2VerifiedDateRaw);
+      const part2VerifiedDate = parsePart2VerificationDate(part2VerifiedDateRaw);
       if (!part2VerifiedDate) return;
 
       const applicationId = clean(row.Application_ID) || clean(row.system_id);
