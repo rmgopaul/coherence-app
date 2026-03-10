@@ -512,8 +512,6 @@ const COMPLIANT_SOURCE_PAGE_SIZE = 10;
 const COMPLIANT_REPORT_PAGE_SIZE = 10;
 const SNAPSHOT_CONTRACT_PAGE_SIZE = 25;
 const SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL = "2025-2026";
-const SNAPSHOT_REC_CONTRACT_ID_MIN = 153;
-const SNAPSHOT_REC_CONTRACT_ID_MAX = 527;
 const GENERIC_TABLE_RENDER_LIMIT = 400;
 const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
@@ -4647,84 +4645,67 @@ export default function SolarRecDashboard() {
   ]);
 
   const recPerformanceSnapshotContracts2025 = useMemo(() => {
-    const rowsByContract = new Map<string, PerformanceSourceRow[]>();
+    const byContract = new Map<
+      string,
+      {
+        contractId: string;
+        deliveryYearLabel: string;
+        requiredToAvoidShortfallRecs: number;
+        deliveredTowardShortfallRecs: number;
+        unallocatedShortfallRecs: number;
+      }
+    >();
+
     performanceSourceRows.forEach((row) => {
-      const existing = rowsByContract.get(row.contractId) ?? [];
-      existing.push(row);
-      rowsByContract.set(row.contractId, existing);
-    });
-
-    const contractIds = Array.from(
-      { length: SNAPSHOT_REC_CONTRACT_ID_MAX - SNAPSHOT_REC_CONTRACT_ID_MIN + 1 },
-      (_, index) => String(SNAPSHOT_REC_CONTRACT_ID_MIN + index)
-    );
-
-    return contractIds.map((contractId) => {
-      const contractRows = rowsByContract.get(contractId) ?? [];
-      const evaluationRows = contractRows
-        .map((row) => {
-          const targetYearIndex = row.years.findIndex((year) => {
-            const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
-            return label === SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL;
-          });
-          if (targetYearIndex < 2) return null;
-
-          const dyOneYear = row.years[targetYearIndex - 2];
-          const dyTwoYear = row.years[targetYearIndex - 1];
-          const dyThreeYear = row.years[targetYearIndex];
-          if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
-
-          const isThirdDeliveryYear = targetYearIndex === 2;
-          const values = isThirdDeliveryYear
-            ? [dyOneYear.delivered, dyTwoYear.delivered, dyThreeYear.delivered]
-            : [dyOneYear.required, dyTwoYear.required, dyThreeYear.delivered];
-          const rollingAverage = Math.floor((values[0] + values[1] + values[2]) / 3);
-          const expectedRecs = dyThreeYear.required;
-
-          return {
-            contractPrice: row.recPrice,
-            systemId: row.systemId ?? row.trackingSystemRefId,
-            surplusShortfall: rollingAverage - expectedRecs,
-          };
-        })
-        .filter((row): row is NonNullable<typeof row> => row !== null);
-
-      const requiredToAvoidShortfallRecs = evaluationRows.reduce(
-        (sum, row) => sum + Math.max(0, Math.abs(Math.min(0, row.surplusShortfall))),
-        0
-      );
-      const surplusPool = evaluationRows.reduce((sum, row) => sum + Math.max(0, row.surplusShortfall), 0);
-      let remainingPool = surplusPool;
-      let deliveredTowardShortfallRecs = 0;
-
-      const shortfallRows = evaluationRows
-        .filter((row) => row.surplusShortfall < 0)
-        .slice()
-        .sort((a, b) => {
-          const aPrice = a.contractPrice ?? Number.POSITIVE_INFINITY;
-          const bPrice = b.contractPrice ?? Number.POSITIVE_INFINITY;
-          if (aPrice !== bPrice) return aPrice - bPrice;
-          return a.systemId.localeCompare(b.systemId, undefined, { numeric: true, sensitivity: "base" });
-        });
-
-      shortfallRows.forEach((row) => {
-        const shortfall = Math.abs(row.surplusShortfall);
-        const allocated = Math.min(shortfall, remainingPool);
-        remainingPool -= allocated;
-        deliveredTowardShortfallRecs += allocated;
+      const targetYearIndex = row.years.findIndex((year) => {
+        const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+        return label === SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL;
       });
+      if (targetYearIndex < 0) return;
 
-      const unallocatedShortfallRecs = Math.max(0, requiredToAvoidShortfallRecs - deliveredTowardShortfallRecs);
+      const dyCurrent = row.years[targetYearIndex];
+      if (!dyCurrent || dyCurrent.required <= 0) return;
 
-      return {
-        contractId,
-        deliveryYearLabel: SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
-        requiredToAvoidShortfallRecs,
-        deliveredTowardShortfallRecs,
-        deliveredPercentOfRequired: toPercentValue(deliveredTowardShortfallRecs, requiredToAvoidShortfallRecs),
-        unallocatedShortfallRecs,
-      };
+      const dyPrevious = targetYearIndex > 0 ? row.years[targetYearIndex - 1] : null;
+      const dyTwoBack = targetYearIndex > 1 ? row.years[targetYearIndex - 2] : null;
+
+      const requiredThreeYear =
+        (dyCurrent?.required ?? 0) + (dyPrevious?.required ?? 0) + (dyTwoBack?.required ?? 0);
+      const deliveredThreeYear =
+        (dyCurrent?.delivered ?? 0) + (dyPrevious?.delivered ?? 0) + (dyTwoBack?.delivered ?? 0);
+
+      let current = byContract.get(row.contractId);
+      if (!current) {
+        current = {
+          contractId: row.contractId,
+          deliveryYearLabel: SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
+          requiredToAvoidShortfallRecs: 0,
+          deliveredTowardShortfallRecs: 0,
+          unallocatedShortfallRecs: 0,
+        };
+        byContract.set(row.contractId, current);
+      }
+
+      current.requiredToAvoidShortfallRecs += requiredThreeYear;
+      current.deliveredTowardShortfallRecs += deliveredThreeYear;
     });
+
+    return Array.from(byContract.values())
+      .map((contract) => {
+        const unallocatedShortfallRecs = Math.max(
+          0,
+          contract.requiredToAvoidShortfallRecs - contract.deliveredTowardShortfallRecs
+        );
+        return {
+          ...contract,
+          unallocatedShortfallRecs,
+          deliveredPercentOfRequired: toPercentValue(
+            contract.deliveredTowardShortfallRecs,
+            contract.requiredToAvoidShortfallRecs
+          ),
+        };
+      })
+      .sort((a, b) => a.contractId.localeCompare(b.contractId, undefined, { numeric: true, sensitivity: "base" }));
   }, [performanceSourceRows]);
 
   const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(() => {
@@ -5837,12 +5818,19 @@ export default function SolarRecDashboard() {
 
   const snapshotLogColumns = useMemo(() => logEntries.slice(0, 12), [logEntries]);
   const snapshotContractIds = useMemo(
-    () =>
-      Array.from(
-        { length: SNAPSHOT_REC_CONTRACT_ID_MAX - SNAPSHOT_REC_CONTRACT_ID_MIN + 1 },
-        (_, index) => String(SNAPSHOT_REC_CONTRACT_ID_MIN + index)
-      ),
-    []
+    () => {
+      const ids = new Set<string>();
+      snapshotLogColumns.forEach((entry) => {
+        (entry.recPerformanceContracts2025 ?? []).forEach((item) => {
+          ids.add(item.contractId);
+        });
+      });
+      if (ids.size === 0) {
+        recPerformanceSnapshotContracts2025.forEach((item) => ids.add(item.contractId));
+      }
+      return Array.from(ids).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+    },
+    [recPerformanceSnapshotContracts2025, snapshotLogColumns]
   );
   const snapshotContractMetricsByLogId = useMemo(() => {
     const mapping = new Map<
@@ -8707,9 +8695,9 @@ export default function SolarRecDashboard() {
               <CardHeader>
                 <CardTitle className="text-base">REC Performance Eval Snapshot by Contract</CardTitle>
                 <CardDescription>
-                  Delivery Year {SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL}. Shows each contract ID from{" "}
-                  {SNAPSHOT_REC_CONTRACT_ID_MIN} to {SNAPSHOT_REC_CONTRACT_ID_MAX} with unallocated shortfall, required
-                  to avoid shortfall, delivered so far, and delivered percentage.
+                  Delivery Year {SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL}. Shows only contracts with delivery
+                  obligations in that year, including unallocated shortfall, required to avoid shortfall, delivered so
+                  far, and delivered percentage.
                 </CardDescription>
               </CardHeader>
               <CardContent>
