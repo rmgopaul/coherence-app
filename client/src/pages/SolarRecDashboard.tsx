@@ -2654,27 +2654,96 @@ export default function SolarRecDashboard() {
   }, [datasets]);
 
   const summary = useMemo(() => {
-    const totalSystems = abpEligibleTotalSystems;
-    const reportingSystems = systems.filter((system) => system.isReporting).length;
+    const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByTrackingId = new Map<string, SystemRecord[]>();
+    const systemsByName = new Map<string, SystemRecord[]>();
+
+    const addIndexedSystem = (
+      map: Map<string, SystemRecord[]>,
+      key: string | null | undefined,
+      system: SystemRecord
+    ) => {
+      const normalized = clean(key);
+      if (!normalized) return;
+      const existing = map.get(normalized) ?? [];
+      existing.push(system);
+      map.set(normalized, existing);
+    };
+
+    systems.forEach((system) => {
+      addIndexedSystem(systemsById, system.systemId, system);
+      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
+      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
+    });
+
+    let notTransferredReporting = 0;
+    let transferredReporting = 0;
+    let notTransferredNotReporting = 0;
+    let transferredNotReporting = 0;
+    let terminatedReporting = 0;
+    let terminatedNotReporting = 0;
+    const uniquePart2Projects = new Set<string>();
+
+    (datasets.abpReport?.rows ?? []).forEach((row, index) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      if (!parseDate(part2VerifiedDateRaw)) return;
+
+      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+      const part2ProjectKey = applicationId
+        ? `id:${applicationId}`
+        : trackingId
+          ? `tracking:${trackingId}`
+          : projectName
+            ? `name:${projectName.toLowerCase()}`
+            : `row:${index}`;
+      if (uniquePart2Projects.has(part2ProjectKey)) return;
+      uniquePart2Projects.add(part2ProjectKey);
+
+      const matchedSystems = new Map<string, SystemRecord>();
+      (systemsById.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+
+      if (matchedSystems.size === 0) {
+        notTransferredNotReporting += 1;
+        return;
+      }
+
+      let isReporting = false;
+      let isTransferred = false;
+      let isTerminated = false;
+      matchedSystems.forEach((system) => {
+        if (system.isReporting) isReporting = true;
+        if (system.isTransferred) isTransferred = true;
+        if (system.isTerminated) isTerminated = true;
+      });
+
+      if (isTerminated) {
+        if (isReporting) terminatedReporting += 1;
+        else terminatedNotReporting += 1;
+        return;
+      }
+      if (isTransferred) {
+        if (isReporting) transferredReporting += 1;
+        else transferredNotReporting += 1;
+        return;
+      }
+      if (isReporting) notTransferredReporting += 1;
+      else notTransferredNotReporting += 1;
+    });
+
+    const totalSystems = uniquePart2Projects.size;
+    const reportingSystems = notTransferredReporting + transferredReporting + terminatedReporting;
     const reportingPercent = toPercentValue(reportingSystems, totalSystems);
     const smallSystems = systems.filter((system) => system.sizeBucket === "<=10 kW AC").length;
     const largeSystems = systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
     const unknownSizeSystems = systems.filter((system) => system.sizeBucket === "Unknown").length;
 
-    const ownershipCountsByStatus = new Map<OwnershipStatus, number>(OWNERSHIP_ORDER.map((status) => [status, 0]));
-    systems.forEach((system) => {
-      ownershipCountsByStatus.set(
-        system.ownershipStatus,
-        (ownershipCountsByStatus.get(system.ownershipStatus) ?? 0) + 1
-      );
-    });
-    const terminatedTotal =
-      (ownershipCountsByStatus.get("Terminated and Reporting") ?? 0) +
-      (ownershipCountsByStatus.get("Terminated and Not Reporting") ?? 0);
-    const notTransferredReporting = ownershipCountsByStatus.get("Not Transferred and Reporting") ?? 0;
-    const transferredReporting = ownershipCountsByStatus.get("Transferred and Reporting") ?? 0;
-    const notTransferredNotReporting = ownershipCountsByStatus.get("Not Transferred and Not Reporting") ?? 0;
-    const transferredNotReporting = ownershipCountsByStatus.get("Transferred and Not Reporting") ?? 0;
+    const terminatedTotal = terminatedReporting + terminatedNotReporting;
     const reportingOwnershipTotal = notTransferredReporting + transferredReporting;
     const notReportingOwnershipTotal = notTransferredNotReporting + transferredNotReporting;
 
@@ -2715,7 +2784,7 @@ export default function SolarRecDashboard() {
       contractedValueReportingPercent,
       deliveredValuePercent,
     };
-  }, [abpEligibleTotalSystems, systems]);
+  }, [datasets.abpReport, systems]);
 
   const sizeBreakdownRows = useMemo(() => {
     const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
