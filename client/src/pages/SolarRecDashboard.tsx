@@ -6049,30 +6049,42 @@ export default function SolarRecDashboard() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Change of Ownership</p>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
-                    <p className="text-xs font-semibold text-sky-800">Ownership Changed, Transferred and Reporting</p>
-                    <p className="text-2xl font-semibold text-sky-900">
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border border-emerald-300 bg-emerald-100 p-3">
+                    <p className="text-xs font-semibold text-emerald-900">Ownership Changed, Transferred and Reporting</p>
+                    <p className="text-2xl font-semibold text-emerald-950">
                       {formatNumber(
                         changeOwnershipSummary.counts.find((item) => item.status === "Transferred and Reporting")
                           ?.count ?? 0
                       )}
                     </p>
                   </div>
-                  <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3">
-                    <p className="text-xs font-semibold text-cyan-800">Ownership Changed, Transferred but not Reporting</p>
-                    <p className="text-2xl font-semibold text-cyan-900">
+                  <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                    <p className="text-xs font-semibold text-green-800">
+                      Change of Ownership - Not Transferred and Reporting
+                    </p>
+                    <p className="text-2xl font-semibold text-green-900">
+                      {formatNumber(
+                        changeOwnershipSummary.counts.find(
+                          (item) => item.status === "Change of Ownership - Not Transferred and Reporting"
+                        )?.count ?? 0
+                      )}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-amber-300 bg-amber-100 p-3">
+                    <p className="text-xs font-semibold text-amber-800">Ownership Changed, Transferred but not Reporting</p>
+                    <p className="text-2xl font-semibold text-amber-900">
                       {formatNumber(
                         changeOwnershipSummary.counts.find((item) => item.status === "Transferred and Not Reporting")
                           ?.count ?? 0
                       )}
                     </p>
                   </div>
-                  <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3">
-                    <p className="text-xs font-semibold text-indigo-800">
+                  <div className="rounded-lg border border-rose-300 bg-rose-100 p-3">
+                    <p className="text-xs font-semibold text-rose-800">
                       Ownership Changed, but not Transferred and not Reporting
                     </p>
-                    <p className="text-2xl font-semibold text-indigo-900">
+                    <p className="text-2xl font-semibold text-rose-900">
                       {formatNumber(
                         changeOwnershipSummary.counts.find(
                           (item) => item.status === "Change of Ownership - Not Transferred and Not Reporting"
