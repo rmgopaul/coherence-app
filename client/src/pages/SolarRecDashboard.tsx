@@ -498,6 +498,7 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SIZE_SITE_LIST_PAGE_SIZE = 10;
 const PERFORMANCE_RATIO_PAGE_SIZE = 10;
 const COMPLIANT_SOURCE_PAGE_SIZE = 10;
 const COMPLIANT_REPORT_PAGE_SIZE = 10;
@@ -1827,6 +1828,8 @@ export default function SolarRecDashboard() {
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
+  const [sizeSiteListCollapsed, setSizeSiteListCollapsed] = useState(false);
+  const [sizeSiteListPage, setSizeSiteListPage] = useState(1);
   const [compliantSourcePage, setCompliantSourcePage] = useState(1);
   const [compliantReportPage, setCompliantReportPage] = useState(1);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
@@ -2807,6 +2810,63 @@ export default function SolarRecDashboard() {
       };
     });
   }, [systems]);
+
+  const sizeTabNotReportingPart2Rows = useMemo(() => {
+    const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByTrackingId = new Map<string, SystemRecord[]>();
+    const systemsByName = new Map<string, SystemRecord[]>();
+
+    const addToMap = (map: Map<string, SystemRecord[]>, key: string | null | undefined, system: SystemRecord) => {
+      const normalized = clean(key);
+      if (!normalized) return;
+      const existing = map.get(normalized) ?? [];
+      existing.push(system);
+      map.set(normalized, existing);
+    };
+
+    systems.forEach((system) => {
+      addToMap(systemsById, system.systemId, system);
+      addToMap(systemsByTrackingId, system.trackingSystemRefId, system);
+      addToMap(systemsByName, system.systemName.toLowerCase(), system);
+    });
+
+    const selected = new Map<string, SystemRecord>();
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
+      const part2VerifiedDateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      if (!part2VerifiedDateRaw || part2VerifiedDateRaw.toLowerCase() === "null") return;
+      if (!parseDate(part2VerifiedDateRaw)) return;
+
+      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+
+      const addMatchedSystem = (system: SystemRecord) => {
+        if (system.isReporting) return;
+        selected.set(system.key, system);
+      };
+
+      (systemsById.get(applicationId) ?? []).forEach(addMatchedSystem);
+      (systemsByTrackingId.get(trackingId) ?? []).forEach(addMatchedSystem);
+      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach(addMatchedSystem);
+    });
+
+    return Array.from(selected.values()).sort((a, b) =>
+      a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true })
+    );
+  }, [datasets.abpReport, systems]);
+
+  const sizeSiteListTotalPages = Math.max(
+    1,
+    Math.ceil(sizeTabNotReportingPart2Rows.length / SIZE_SITE_LIST_PAGE_SIZE)
+  );
+  const sizeSiteListCurrentPage = Math.min(sizeSiteListPage, sizeSiteListTotalPages);
+  const sizeSiteListPageStartIndex = (sizeSiteListCurrentPage - 1) * SIZE_SITE_LIST_PAGE_SIZE;
+  const sizeSiteListPageEndIndex = sizeSiteListPageStartIndex + SIZE_SITE_LIST_PAGE_SIZE;
+  const visibleSizeSiteListRows = useMemo(
+    () => sizeTabNotReportingPart2Rows.slice(sizeSiteListPageStartIndex, sizeSiteListPageEndIndex),
+    [sizeTabNotReportingPart2Rows, sizeSiteListPageStartIndex, sizeSiteListPageEndIndex]
+  );
 
   const recValueRows = useMemo(
     () =>
@@ -3999,6 +4059,11 @@ export default function SolarRecDashboard() {
     setCompliantReportPage(compliantReportTotalPages);
   }, [compliantReportPage, compliantReportTotalPages]);
 
+  useEffect(() => {
+    if (sizeSiteListPage <= sizeSiteListTotalPages) return;
+    setSizeSiteListPage(sizeSiteListTotalPages);
+  }, [sizeSiteListPage, sizeSiteListTotalPages]);
+
   const downloadPerformanceRatioCsv = () => {
     const headers = [
       "system_name",
@@ -4242,6 +4307,40 @@ export default function SolarRecDashboard() {
 
     const csv = buildCsv(headers, rows);
     const fileName = `offline-systems-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadSizeSiteListCsv = () => {
+    const headers = [
+      "system_name",
+      "tracking_id",
+      "portal_id",
+      "state_certification_number",
+      "size_bucket",
+      "system_size_kw_ac",
+      "last_reporting_date",
+    ];
+
+    const rows = sizeTabNotReportingPart2Rows.map((system) => ({
+      system_name: system.systemName,
+      tracking_id: system.trackingSystemRefId ?? "",
+      portal_id: system.systemId ?? "",
+      state_certification_number: system.stateApplicationRefId ?? "",
+      size_bucket: system.sizeBucket,
+      system_size_kw_ac: system.installedKwAc ?? "",
+      last_reporting_date: system.latestReportingDate ? system.latestReportingDate.toISOString().slice(0, 10) : "",
+    }));
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `size-reporting-sites-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -6032,32 +6131,96 @@ export default function SolarRecDashboard() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Systems Not Reporting in Last 3 Months</CardTitle>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Systems Not Reporting in Last 3 Months</CardTitle>
+                    <CardDescription>Part II verified systems only.</CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={downloadSizeSiteListCsv}>
+                      Download Site List CSV
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setSizeSiteListCollapsed((value) => !value)}
+                    >
+                      {sizeSiteListCollapsed ? "Expand List" : "Collapse List"}
+                    </Button>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>System</TableHead>
-                      <TableHead>Tracking ID</TableHead>
-                      <TableHead>Size Bucket</TableHead>
-                      <TableHead>Last Reporting Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {systems
-                      .filter((system) => !system.isReporting)
-                      .slice(0, 200)
-                      .map((system) => (
-                        <TableRow key={system.key}>
-                          <TableCell className="font-medium">{system.systemName}</TableCell>
-                          <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                          <TableCell>{system.sizeBucket}</TableCell>
-                          <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
+                <div className="mb-3 flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleSizeSiteListRows.length)} of{" "}
+                    {formatNumber(sizeTabNotReportingPart2Rows.length)} systems
+                  </span>
+                  {!sizeSiteListCollapsed ? (
+                    <span>
+                      Page {formatNumber(sizeSiteListCurrentPage)} of {formatNumber(sizeSiteListTotalPages)}
+                    </span>
+                  ) : null}
+                </div>
+                {sizeSiteListCollapsed ? (
+                  <p className="text-sm text-slate-600">
+                    Site list is collapsed. Click <strong>Expand List</strong> to view rows.
+                  </p>
+                ) : (
+                  <>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>System</TableHead>
+                          <TableHead>Tracking ID</TableHead>
+                          <TableHead>Portal ID</TableHead>
+                          <TableHead>State Certification #</TableHead>
+                          <TableHead>Size Bucket</TableHead>
+                          <TableHead>System Size (kW AC)</TableHead>
+                          <TableHead>Last Reporting Date</TableHead>
                         </TableRow>
-                      ))}
-                  </TableBody>
-                </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {visibleSizeSiteListRows.map((system) => (
+                          <TableRow key={system.key}>
+                            <TableCell className="font-medium">{system.systemName}</TableCell>
+                            <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
+                            <TableCell>{system.systemId ?? "N/A"}</TableCell>
+                            <TableCell>{system.stateApplicationRefId ?? "N/A"}</TableCell>
+                            <TableCell>{system.sizeBucket}</TableCell>
+                            <TableCell>{system.installedKwAc === null ? "N/A" : formatNumber(system.installedKwAc, 3)}</TableCell>
+                            <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
+                          </TableRow>
+                        ))}
+                        {visibleSizeSiteListRows.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={7} className="py-6 text-center text-slate-500">
+                              No Part II verified non-reporting systems found.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </TableBody>
+                    </Table>
+                    <div className="mt-3 flex items-center justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSizeSiteListPage((page) => Math.max(1, page - 1))}
+                        disabled={sizeSiteListCurrentPage <= 1}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setSizeSiteListPage((page) => Math.min(sizeSiteListTotalPages, page + 1))}
+                        disabled={sizeSiteListCurrentPage >= sizeSiteListTotalPages}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
