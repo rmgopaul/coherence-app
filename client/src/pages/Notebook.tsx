@@ -77,6 +77,7 @@ type SmartView = "all" | "pinned" | "linked";
 type AttachTarget = "calendar" | "todoist" | "note" | "drive";
 type SaveState = "saved" | "saving" | "unsaved" | "error";
 type NotesSort = "context" | "updated_desc" | "created_desc" | "title_asc";
+type EditorViewMode = "write" | "split" | "preview";
 type NavigationSelection =
   | { kind: "view"; key: SmartView }
   | { kind: "notebook"; name: string };
@@ -233,6 +234,149 @@ function sanitizeEditorHtml(rawHtml: string): string {
   return cleaned.length > 0 ? cleaned : "<p></p>";
 }
 
+function htmlToEditorText(content: string | null | undefined): string {
+  const normalized = normalizeStoredHtml(content || "");
+  if (typeof window === "undefined") {
+    return stripHtml(normalized);
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = normalized;
+
+  const toText = (node: ChildNode): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+    const element = node as HTMLElement;
+    const tag = element.tagName.toLowerCase();
+    const childText = Array.from(element.childNodes).map(toText).join("");
+
+    if (tag === "br") return "\n";
+    if (tag === "li") return `- ${childText.trim()}\n`;
+    if (tag === "ul" || tag === "ol") return `${childText}\n`;
+    if (tag === "p" || tag === "div" || tag === "section" || tag === "article") {
+      return childText.trim().length > 0 ? `${childText.trim()}\n\n` : "\n";
+    }
+    if (tag === "h1" || tag === "h2" || tag === "h3") {
+      const marker = tag === "h1" ? "# " : tag === "h2" ? "## " : "### ";
+      return `${marker}${childText.trim()}\n\n`;
+    }
+    if (tag === "a") {
+      const href = (element.getAttribute("href") || "").trim();
+      const label = childText.trim() || href;
+      if (href) return `[${label}](${href})`;
+      return label;
+    }
+    if (tag === "strong" || tag === "b") return `**${childText}**`;
+    if (tag === "em" || tag === "i") return `*${childText}*`;
+    if (tag === "u") return `__${childText}__`;
+    return childText;
+  };
+
+  return Array.from(wrapper.childNodes)
+    .map(toText)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function applyInlineMarkdown(text: string): string {
+  let html = escapeHtml(text);
+  html = html.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+  );
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(/__([^_]+)__/g, "<u>$1</u>");
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  return html;
+}
+
+function stripInlineFormatting(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1");
+}
+
+function editorTextToHtml(content: string): string {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  if (lines.every((line) => !line.trim())) return "<p></p>";
+
+  const htmlLines: string[] = [];
+  let inUl = false;
+  let inOl = false;
+
+  const closeLists = () => {
+    if (inUl) {
+      htmlLines.push("</ul>");
+      inUl = false;
+    }
+    if (inOl) {
+      htmlLines.push("</ol>");
+      inOl = false;
+    }
+  };
+
+  lines.forEach((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      closeLists();
+      return;
+    }
+
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      if (inOl) {
+        htmlLines.push("</ol>");
+        inOl = false;
+      }
+      if (!inUl) {
+        htmlLines.push("<ul>");
+        inUl = true;
+      }
+      htmlLines.push(`<li>${applyInlineMarkdown(trimmed.slice(2).trim())}</li>`);
+      return;
+    }
+
+    const orderedMatch = trimmed.match(/^(\d+)[.)]\s+(.*)$/);
+    if (orderedMatch) {
+      if (inUl) {
+        htmlLines.push("</ul>");
+        inUl = false;
+      }
+      if (!inOl) {
+        htmlLines.push("<ol>");
+        inOl = true;
+      }
+      htmlLines.push(`<li>${applyInlineMarkdown(orderedMatch[2].trim())}</li>`);
+      return;
+    }
+
+    closeLists();
+
+    if (trimmed.startsWith("### ")) {
+      htmlLines.push(`<h3>${applyInlineMarkdown(trimmed.slice(4).trim())}</h3>`);
+      return;
+    }
+    if (trimmed.startsWith("## ")) {
+      htmlLines.push(`<h2>${applyInlineMarkdown(trimmed.slice(3).trim())}</h2>`);
+      return;
+    }
+    if (trimmed.startsWith("# ")) {
+      htmlLines.push(`<h1>${applyInlineMarkdown(trimmed.slice(2).trim())}</h1>`);
+      return;
+    }
+
+    htmlLines.push(`<p>${applyInlineMarkdown(trimmed)}</p>`);
+  });
+
+  closeLists();
+  return sanitizeEditorHtml(htmlLines.join(""));
+}
+
 function getSaveStateLabel(state: SaveState): string {
   if (state === "saving") return "Saving...";
   if (state === "unsaved") return "Unsaved";
@@ -282,10 +426,11 @@ export default function Notebook() {
 
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
   const [noteTitleInput, setNoteTitleInput] = useState("");
-  const [noteContentHtml, setNoteContentHtml] = useState("<p></p>");
+  const [noteContentInput, setNoteContentInput] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [draftsByKey, setDraftsByKey] = useState<Record<string, NotebookEditorDraft>>({});
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>("write");
 
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachType, setAttachType] = useState<AttachTarget>("calendar");
@@ -297,9 +442,8 @@ export default function Notebook() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [mobilePanel, setMobilePanel] = useState<"list" | "editor">("list");
 
-  const editorRef = useRef<HTMLDivElement | null>(null);
+  const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
-  const isSwitchingNoteRef = useRef(false);
 
   const clearAutosaveTimer = useCallback(() => {
     if (autosaveTimerRef.current !== null) {
@@ -311,14 +455,11 @@ export default function Notebook() {
   const applyEditorSnapshot = useCallback((snapshot: { title: string; notebook: string; content: string; dirty: boolean; source: "note" | "draft" | "empty" }) => {
     const notebookValue = (snapshot.notebook || "General").trim() || "General";
     const titleValue = String(snapshot.title || "");
-    const htmlValue =
-      snapshot.source === "note"
-        ? normalizeStoredHtml(snapshot.content)
-        : sanitizeEditorHtml(snapshot.content || "<p></p>");
+    const textValue = htmlToEditorText(snapshot.content || "");
 
     setNoteNotebookInput(notebookValue);
     setNoteTitleInput(titleValue);
-    setNoteContentHtml(htmlValue);
+    setNoteContentInput(textValue);
     setIsDirty(Boolean(snapshot.dirty));
     setSaveState(snapshot.dirty ? "unsaved" : "saved");
   }, []);
@@ -327,19 +468,17 @@ export default function Notebook() {
     if (!isDirty) return;
     const draftKey = getSelectionDraftKey(selectedNoteId, isDraftMode);
     if (!draftKey) return;
-
-    const sanitized = sanitizeEditorHtml(editorRef.current?.innerHTML || noteContentHtml || "<p></p>");
     setDraftsByKey((prev) => ({
       ...prev,
       [draftKey]: {
         title: noteTitleInput,
         notebook: noteNotebookInput.trim() || "General",
-        contentHtml: sanitized,
+        contentHtml: noteContentInput,
         dirty: true,
         updatedAt: Date.now(),
       },
     }));
-  }, [isDirty, selectedNoteId, isDraftMode, noteContentHtml, noteTitleInput, noteNotebookInput]);
+  }, [isDirty, selectedNoteId, isDraftMode, noteContentInput, noteTitleInput, noteNotebookInput]);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -800,21 +939,11 @@ export default function Notebook() {
     });
   }, [selectedNoteId, isDraftMode, notes, draftsByKey, applyEditorSnapshot]);
 
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const nextHtml = noteContentHtml || "<p></p>";
-    if (editor.innerHTML !== nextHtml) {
-      editor.innerHTML = nextHtml;
-    }
-  }, [noteContentHtml]);
-
   const persistNote = useCallback(async (showSuccessToast = false): Promise<string | null> => {
     const notebook = noteNotebookInput.trim() || "General";
     const titleInput = noteTitleInput.trim();
-    const rawContent = editorRef.current?.innerHTML || noteContentHtml || "<p></p>";
-    const content = sanitizeEditorHtml(rawContent);
-    const contentText = stripHtml(content);
+    const contentText = noteContentInput.trim();
+    const content = editorTextToHtml(noteContentInput);
 
     if (isDraftMode && !titleInput && !contentText) {
       setIsDirty(false);
@@ -883,7 +1012,7 @@ export default function Notebook() {
   }, [
     noteNotebookInput,
     noteTitleInput,
-    noteContentHtml,
+    noteContentInput,
     isDraftMode,
     selectedNoteId,
     updateNoteMutation,
@@ -906,30 +1035,87 @@ export default function Notebook() {
     return clearAutosaveTimer;
   }, [isDirty, selectedNoteId, isDraftMode, persistNote, clearAutosaveTimer]);
 
-  const runEditorCommand = (command: string, value?: string) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    editor.focus();
-    document.execCommand(command, false, value);
-    setNoteContentHtml(sanitizeEditorHtml(editor.innerHTML || "<p></p>"));
-    setIsDirty(true);
-  };
+  const updateEditorBySelection = useCallback(
+    (
+      transform: (selectedText: string) => {
+        replacement: string;
+        selectionStart?: number;
+        selectionEnd?: number;
+      }
+    ) => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const start = editor.selectionStart ?? 0;
+      const end = editor.selectionEnd ?? start;
+      const selectedText = noteContentInput.slice(start, end);
+      const { replacement, selectionStart, selectionEnd } = transform(selectedText);
 
-  const captureEditorContentAndMarkDirty = useCallback(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    const sanitized = sanitizeEditorHtml(editor.innerHTML || "<p></p>");
-    setNoteContentHtml((prev) => (prev === sanitized ? prev : sanitized));
-    setIsDirty(true);
-  }, []);
+      const nextValue = `${noteContentInput.slice(0, start)}${replacement}${noteContentInput.slice(end)}`;
+      setNoteContentInput(nextValue);
+      setIsDirty(true);
 
-  const handleInsertLink = () => {
+      const nextSelectionStart = selectionStart !== undefined ? start + selectionStart : start + replacement.length;
+      const nextSelectionEnd = selectionEnd !== undefined ? start + selectionEnd : nextSelectionStart;
+      window.requestAnimationFrame(() => {
+        if (!editorRef.current) return;
+        editorRef.current.focus();
+        editorRef.current.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+      });
+    },
+    [noteContentInput]
+  );
+
+  const wrapSelection = useCallback(
+    (prefix: string, suffix: string = prefix) => {
+      updateEditorBySelection((selectedText) => {
+        const text = selectedText || "";
+        const replacement = `${prefix}${text}${suffix}`;
+        const caretStart = text.length > 0 ? undefined : prefix.length;
+        return {
+          replacement,
+          selectionStart: caretStart,
+          selectionEnd: caretStart,
+        };
+      });
+    },
+    [updateEditorBySelection]
+  );
+
+  const toggleLinePrefix = useCallback(
+    (prefix: string) => {
+      const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const prefixPattern = new RegExp(`^${escaped}`);
+      updateEditorBySelection((selectedText) => {
+        if (!selectedText) {
+          return { replacement: prefix };
+        }
+        const lines = (selectedText || "").split("\n");
+        const nonEmpty = lines.filter((line) => line.trim().length > 0);
+        const removePrefix = nonEmpty.length > 0 && nonEmpty.every((line) => prefixPattern.test(line));
+        const replacement = lines
+          .map((line) => {
+            if (!line.trim()) return line;
+            return removePrefix ? line.replace(prefixPattern, "") : `${prefix}${line}`;
+          })
+          .join("\n");
+        return { replacement };
+      });
+    },
+    [updateEditorBySelection]
+  );
+
+  const handleInsertLink = useCallback(() => {
     const input = window.prompt("Enter URL (https://...)");
     if (!input) return;
     const url = input.trim();
     if (!url) return;
-    runEditorCommand("createLink", url);
-  };
+    updateEditorBySelection((selectedText) => {
+      const label = selectedText.trim() || "link";
+      return {
+        replacement: `[${label}](${url})`,
+      };
+    });
+  }, [updateEditorBySelection]);
 
   const createDraft = () => {
     clearAutosaveTimer();
@@ -946,7 +1132,7 @@ export default function Notebook() {
           [draftKey]: {
             title: "",
             notebook: activeNav.kind === "notebook" ? activeNav.name : "General",
-            contentHtml: "<p></p>",
+            contentHtml: "",
             dirty: false,
             updatedAt: Date.now(),
           },
@@ -958,15 +1144,10 @@ export default function Notebook() {
   const selectNote = (note: any) => {
     clearAutosaveTimer();
     stashCurrentDraft();
-    isSwitchingNoteRef.current = true;
     setIsDraftMode(false);
     setSelectedNoteId(String(note.id));
     setMobilePanel("editor");
   };
-
-  useEffect(() => {
-    isSwitchingNoteRef.current = false;
-  }, [selectedNoteId, isDraftMode]);
 
   useEffect(() => {
     setIsLinkMenuOpen(false);
@@ -1037,7 +1218,7 @@ export default function Notebook() {
       setIsDraftMode(false);
       setNoteNotebookInput("General");
       setNoteTitleInput("");
-      setNoteContentHtml("<p></p>");
+      setNoteContentInput("");
       setSaveState("saved");
       setMobilePanel("list");
       await refetchNotes();
@@ -1386,32 +1567,24 @@ export default function Notebook() {
     }
   };
 
-  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      const selection = window.getSelection();
-      const node = selection?.anchorNode || null;
-      const startElement =
-        node && node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node?.parentElement || null;
-      const currentLi = startElement?.closest("li") || null;
-      if (currentLi) {
-        const liText = (currentLi.textContent || "").replace(/\u00a0/g, "").trim();
-        if (!liText) {
-          event.preventDefault();
-          document.execCommand("outdent");
-          if (editorRef.current) {
-            const sanitized = sanitizeEditorHtml(editorRef.current.innerHTML || "<p></p>");
-            editorRef.current.innerHTML = sanitized;
-            setNoteContentHtml(sanitized);
-            setIsDirty(true);
-          }
-          return;
-        }
-      }
+  const handleEditorKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const mod = event.metaKey || event.ctrlKey;
+    const key = event.key.toLowerCase();
+
+    if (event.key === "Tab") {
+      event.preventDefault();
+      updateEditorBySelection((selectedText) => ({
+        replacement: selectedText
+          ? selectedText
+              .split("\n")
+              .map((line) => `  ${line}`)
+              .join("\n")
+          : "  ",
+      }));
+      return;
     }
 
-    const mod = event.metaKey || event.ctrlKey;
     if (!mod) return;
-    const key = event.key.toLowerCase();
 
     if (key === "s") {
       event.preventDefault();
@@ -1420,17 +1593,17 @@ export default function Notebook() {
     }
     if (key === "b") {
       event.preventDefault();
-      runEditorCommand("bold");
+      wrapSelection("**");
       return;
     }
     if (key === "i") {
       event.preventDefault();
-      runEditorCommand("italic");
+      wrapSelection("*");
       return;
     }
     if (key === "u") {
       event.preventDefault();
-      runEditorCommand("underline");
+      wrapSelection("__");
       return;
     }
     if (key === "k") {
@@ -1441,13 +1614,13 @@ export default function Notebook() {
 
     if (event.shiftKey && key === "7") {
       event.preventDefault();
-      runEditorCommand("insertOrderedList");
+      toggleLinePrefix("1. ");
       return;
     }
 
     if (event.shiftKey && key === "8") {
       event.preventDefault();
-      runEditorCommand("insertUnorderedList");
+      toggleLinePrefix("- ");
       return;
     }
   };
@@ -1555,6 +1728,8 @@ export default function Notebook() {
       }}
     />
   );
+
+  const editorPreviewHtml = useMemo(() => editorTextToHtml(noteContentInput), [noteContentInput]);
 
   const notesListPane = (
     <Card className="h-full">
@@ -1743,10 +1918,6 @@ export default function Notebook() {
                   <button
                     key={note.id}
                     type="button"
-                    onMouseDown={() => {
-                      // Mark switch before contentEditable blur fires to avoid stale editor write-back.
-                      isSwitchingNoteRef.current = true;
-                    }}
                     onClick={() => selectNote(note)}
                     className={`w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
                       active ? "bg-emerald-50" : "hover:bg-slate-50"
@@ -1979,51 +2150,100 @@ export default function Notebook() {
               </div>
             </div>
 
-            <div className="rounded-md border border-slate-200 bg-white">
-              <div className="flex items-center gap-1 border-b border-slate-200 p-1.5">
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={() => runEditorCommand("bold")}>
-                  <Bold className="h-3.5 w-3.5" />
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={() => runEditorCommand("italic")}>
-                  <Italic className="h-3.5 w-3.5" />
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={() => runEditorCommand("underline")}>
-                  <Underline className="h-3.5 w-3.5" />
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={handleInsertLink}>
-                  <Link2 className="h-3.5 w-3.5" />
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={() => runEditorCommand("unlink")}>
-                  <Unlink className="h-3.5 w-3.5" />
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={() => runEditorCommand("insertUnorderedList")}>
-                  <List className="h-3.5 w-3.5" />
-                </Button>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onMouseDown={(e) => e.preventDefault()} onClick={() => runEditorCommand("insertOrderedList")}>
-                  <ListOrdered className="h-3.5 w-3.5" />
-                </Button>
-              </div>
+	            <div className="rounded-md border border-slate-200 bg-white">
+	              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 p-1.5">
+	                <div className="flex items-center gap-1">
+	                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => wrapSelection("**")}>
+	                  <Bold className="h-3.5 w-3.5" />
+	                </Button>
+	                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => wrapSelection("*")}>
+	                  <Italic className="h-3.5 w-3.5" />
+	                </Button>
+	                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => wrapSelection("__")}>
+	                  <Underline className="h-3.5 w-3.5" />
+	                </Button>
+	                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={handleInsertLink}>
+	                  <Link2 className="h-3.5 w-3.5" />
+	                </Button>
+	                  <Button
+	                    type="button"
+	                    size="sm"
+	                    variant="ghost"
+	                    className="h-7 px-2"
+	                    onClick={() =>
+	                      updateEditorBySelection((selectedText) => ({
+	                        replacement: stripInlineFormatting(selectedText),
+	                      }))
+	                    }
+	                  >
+	                  <Unlink className="h-3.5 w-3.5" />
+	                </Button>
+	                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => toggleLinePrefix("- ")}>
+	                  <List className="h-3.5 w-3.5" />
+	                </Button>
+	                  <Button type="button" size="sm" variant="ghost" className="h-7 px-2" onClick={() => toggleLinePrefix("1. ")}>
+	                  <ListOrdered className="h-3.5 w-3.5" />
+	                </Button>
+	                </div>
+	                <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+	                  <Button
+	                    type="button"
+	                    size="sm"
+	                    variant={editorViewMode === "write" ? "default" : "ghost"}
+	                    className="h-7 px-2 text-xs"
+	                    onClick={() => setEditorViewMode("write")}
+	                  >
+	                    Write
+	                  </Button>
+	                  <Button
+	                    type="button"
+	                    size="sm"
+	                    variant={editorViewMode === "split" ? "default" : "ghost"}
+	                    className="h-7 px-2 text-xs"
+	                    onClick={() => setEditorViewMode("split")}
+	                  >
+	                    Split
+	                  </Button>
+	                  <Button
+	                    type="button"
+	                    size="sm"
+	                    variant={editorViewMode === "preview" ? "default" : "ghost"}
+	                    className="h-7 px-2 text-xs"
+	                    onClick={() => setEditorViewMode("preview")}
+	                  >
+	                    Preview
+	                  </Button>
+	                </div>
+	              </div>
 
-              <div
-                key={isDraftMode ? "draft-editor" : `note-editor-${selectedNoteId || "none"}`}
-                ref={editorRef}
-                contentEditable
-                suppressContentEditableWarning
-                onInput={captureEditorContentAndMarkDirty}
-                onKeyUp={captureEditorContentAndMarkDirty}
-                onPaste={() => window.setTimeout(captureEditorContentAndMarkDirty, 0)}
-                onDrop={() => window.setTimeout(captureEditorContentAndMarkDirty, 0)}
-                onBlur={(event) => {
-                  if (isSwitchingNoteRef.current) return;
-                  if (!editorRef.current) return;
-                  const sanitized = sanitizeEditorHtml(editorRef.current.innerHTML || "<p></p>");
-                  editorRef.current.innerHTML = sanitized;
-                  setNoteContentHtml(sanitized);
-                }}
-                onKeyDown={handleEditorKeyDown}
-                className="notes-richtext min-h-[260px] max-h-[calc(100vh-480px)] overflow-y-auto p-3 text-sm outline-none"
-              />
-            </div>
+	              <div className={`grid ${editorViewMode === "split" ? "gap-0 lg:grid-cols-2" : "grid-cols-1"}`}>
+	                {editorViewMode !== "preview" ? (
+	                  <textarea
+	                    key={isDraftMode ? "draft-editor" : `note-editor-${selectedNoteId || "none"}`}
+	                    ref={editorRef}
+	                    value={noteContentInput}
+	                    onChange={(event) => {
+	                      setNoteContentInput(event.target.value);
+	                      setIsDirty(true);
+	                    }}
+	                    onKeyDown={handleEditorKeyDown}
+	                    className={`min-h-[320px] max-h-[calc(100vh-480px)] w-full resize-none overflow-y-auto p-3 font-mono text-sm outline-none ${
+	                      editorViewMode === "split" ? "border-r border-slate-200" : ""
+	                    }`}
+	                    placeholder="Start typing your note... Markdown shortcuts supported (#, -, 1., **bold**, *italic*, [link](https://...))."
+	                  />
+	                ) : null}
+
+	                {editorViewMode !== "write" ? (
+	                  <div className="min-h-[320px] max-h-[calc(100vh-480px)] overflow-y-auto bg-slate-50 p-3 text-sm">
+	                    <div
+	                      className="prose prose-sm max-w-none prose-headings:mb-2 prose-p:my-2 prose-li:my-0.5"
+	                      dangerouslySetInnerHTML={{ __html: editorPreviewHtml }}
+	                    />
+	                  </div>
+	                ) : null}
+	              </div>
+	            </div>
           </>
         )}
       </CardContent>

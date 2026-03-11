@@ -641,6 +641,12 @@ function parsePart2VerificationDate(value: string | undefined): Date | null {
   return parsed;
 }
 
+function isPart2VerifiedAbpRow(row: CsvRow): boolean {
+  const part2VerifiedDateRaw =
+    clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+  return parsePart2VerificationDate(part2VerifiedDateRaw) !== null;
+}
+
 function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
   const raw = clean(value);
   if (!raw) return null;
@@ -2399,15 +2405,14 @@ export default function SolarRecDashboard() {
     URL.revokeObjectURL(url);
   };
 
+  const part2VerifiedAbpRows = useMemo(() => {
+    return (datasets.abpReport?.rows ?? []).filter((row) => isPart2VerifiedAbpRow(row));
+  }, [datasets.abpReport]);
+
   const abpEligibleTotalSystems = useMemo(() => {
-    const abpReportRows = datasets.abpReport?.rows ?? [];
     const uniqueEligibleKeys = new Set<string>();
 
-    abpReportRows.forEach((row, index) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
-
+    part2VerifiedAbpRows.forEach((row, index) => {
       const systemId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
       const name = clean(row.Project_Name) || clean(row.system_name);
@@ -2423,31 +2428,24 @@ export default function SolarRecDashboard() {
     });
 
     return uniqueEligibleKeys.size;
-  }, [datasets.abpReport]);
+  }, [part2VerifiedAbpRows]);
 
   const abpEligibleTrackingIdsStrict = useMemo(() => {
     const ids = new Set<string>();
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
+    part2VerifiedAbpRows.forEach((row) => {
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
       if (trackingId) ids.add(trackingId);
     });
     return ids;
-  }, [datasets.abpReport]);
+  }, [part2VerifiedAbpRows]);
 
   const systems = useMemo<SystemRecord[]>(() => {
-    const abpReportRows = datasets.abpReport?.rows ?? [];
+    const abpReportRows = part2VerifiedAbpRows;
     const eligibleAbpSystemIds = new Set<string>();
     const eligibleAbpTrackingIds = new Set<string>();
     const eligibleAbpNames = new Set<string>();
 
     abpReportRows.forEach((row) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
-
       const systemId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
       const name = clean(row.Project_Name) || clean(row.system_name);
@@ -2807,7 +2805,7 @@ export default function SolarRecDashboard() {
         return byName;
       })
       .sort((a, b) => a.systemName.localeCompare(b.systemName));
-  }, [datasets]);
+  }, [datasets, part2VerifiedAbpRows]);
 
   const summary = useMemo(() => {
     const systemsById = new Map<string, SystemRecord[]>();
@@ -2840,11 +2838,7 @@ export default function SolarRecDashboard() {
     let terminatedNotReporting = 0;
     const uniquePart2Projects = new Set<string>();
 
-    (datasets.abpReport?.rows ?? []).forEach((row, index) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
-
+    part2VerifiedAbpRows.forEach((row, index) => {
       const applicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
       const projectName = clean(row.Project_Name) || clean(row.system_name);
@@ -2939,17 +2933,13 @@ export default function SolarRecDashboard() {
       contractedValueReportingPercent,
       deliveredValuePercent,
     };
-  }, [datasets.abpReport, systems]);
+  }, [part2VerifiedAbpRows, systems]);
 
   const part2EligibleSystemsForSizeReporting = useMemo(() => {
     const eligiblePart2ApplicationIds = new Set<string>();
     const eligiblePart2PortalSystemIds = new Set<string>();
     const eligiblePart2TrackingIds = new Set<string>();
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
-
+    part2VerifiedAbpRows.forEach((row) => {
       const applicationId = clean(row.Application_ID);
       const portalSystemId = clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
@@ -2969,7 +2959,7 @@ export default function SolarRecDashboard() {
           : false;
         return byPortalSystemId || byApplicationId || byTrackingId;
       });
-  }, [datasets.abpReport, systems]);
+  }, [part2VerifiedAbpRows, systems]);
 
   const overviewPart2Totals = useMemo(() => {
     const totalContractedValuePart2 = part2EligibleSystemsForSizeReporting.reduce(
@@ -3485,11 +3475,7 @@ export default function SolarRecDashboard() {
 
   const abpApplicationIdBySystemKey = useMemo(() => {
     const mapping = new Map<string, string>();
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
-
+    part2VerifiedAbpRows.forEach((row) => {
       const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
       const projectName = clean(row.Project_Name) || clean(row.system_name);
@@ -3499,7 +3485,7 @@ export default function SolarRecDashboard() {
       if (projectName && abpApplicationId) mapping.set(`name:${projectName.toLowerCase()}`, abpApplicationId);
     });
     return mapping;
-  }, [datasets.abpReport]);
+  }, [part2VerifiedAbpRows]);
 
   const abpAcSizeKwBySystemKey = useMemo(() => {
     const mapping = new Map<string, number>();
@@ -3509,11 +3495,7 @@ export default function SolarRecDashboard() {
       if (!mapping.has(key)) mapping.set(key, value);
     };
 
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
-      const part2VerifiedDateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      if (!parsePart2VerificationDate(part2VerifiedDateRaw)) return;
-
+    part2VerifiedAbpRows.forEach((row) => {
       const acSizeKw = parseAbpAcSizeKw(row);
       const abpApplicationId = clean(row.Application_ID) || clean(row.system_id);
       const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
@@ -3525,12 +3507,12 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.abpReport]);
+  }, [part2VerifiedAbpRows]);
 
   const abpAcSizeKwByApplicationId = useMemo(() => {
     const mapping = new Map<string, number>();
 
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
+    part2VerifiedAbpRows.forEach((row) => {
       const applicationId = clean(row.Application_ID) || clean(row.application_id);
       if (!applicationId) return;
       if (mapping.has(applicationId)) return;
@@ -3542,12 +3524,12 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.abpReport]);
+  }, [part2VerifiedAbpRows]);
 
   const abpPart2VerificationDateByApplicationId = useMemo(() => {
     const mapping = new Map<string, Date>();
 
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
+    part2VerifiedAbpRows.forEach((row) => {
       const part2VerifiedDateRaw =
         clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
       const part2VerifiedDate = parsePart2VerificationDate(part2VerifiedDateRaw);
@@ -3563,7 +3545,7 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.abpReport]);
+  }, [part2VerifiedAbpRows]);
 
   const monitoringDetailsBySystemKey = useMemo(() => {
     const mapping = new Map<string, MonitoringDetailsRecord>();
@@ -6396,6 +6378,20 @@ export default function SolarRecDashboard() {
     saveRemoteDataset.isPending,
   ]);
 
+  const part2FilterAudit = useMemo(() => {
+    const totalAbpRows = datasets.abpReport?.rows.length ?? 0;
+    const part2Rows = part2VerifiedAbpRows.length;
+    const excludedRows = Math.max(0, totalAbpRows - part2Rows);
+    return {
+      totalAbpRows,
+      part2Rows,
+      excludedRows,
+      part2UniqueSystems: abpEligibleTotalSystems,
+      scopedSystems: systems.length,
+      scopedCoveragePercent: toPercentValue(systems.length, abpEligibleTotalSystems),
+    };
+  }, [abpEligibleTotalSystems, datasets.abpReport?.rows.length, part2VerifiedAbpRows.length, systems.length]);
+
   const sizeReportingChartRows = useMemo(
     () =>
       sizeBreakdownRows.map((row) => ({
@@ -6425,6 +6421,75 @@ export default function SolarRecDashboard() {
       },
     ],
     [summary.ownershipOverview]
+  );
+
+  const recValueByStatusChartRows = useMemo(() => {
+    const groups = new Map<
+      "Reporting" | "Not Reporting" | "Terminated",
+      { label: string; systems: number; contractedValue: number; deliveredValue: number }
+    >([
+      ["Reporting", { label: "Reporting", systems: 0, contractedValue: 0, deliveredValue: 0 }],
+      ["Not Reporting", { label: "Not Reporting", systems: 0, contractedValue: 0, deliveredValue: 0 }],
+      ["Terminated", { label: "Terminated", systems: 0, contractedValue: 0, deliveredValue: 0 }],
+    ]);
+
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
+      const groupKey: "Reporting" | "Not Reporting" | "Terminated" = system.isTerminated
+        ? "Terminated"
+        : system.isReporting
+          ? "Reporting"
+          : "Not Reporting";
+      const group = groups.get(groupKey);
+      if (!group) return;
+      group.systems += 1;
+      group.contractedValue += resolveContractValueAmount(system);
+      group.deliveredValue += system.deliveredValue ?? 0;
+    });
+
+    return Array.from(groups.values()).map((group) => ({
+      ...group,
+      valueGap: group.contractedValue - group.deliveredValue,
+      deliveredPercent: toPercentValue(group.deliveredValue, group.contractedValue),
+    }));
+  }, [part2EligibleSystemsForSizeReporting]);
+
+  const recTopGapChartRows = useMemo(
+    () =>
+      [...recValueRows]
+        .map((row) => ({
+          label:
+            row.systemName.length > 28
+              ? `${row.systemName.slice(0, 25).trimEnd()}...`
+              : row.systemName,
+          valueGap: Math.max(0, row.valueGap ?? 0),
+        }))
+        .sort((a, b) => b.valueGap - a.valueGap)
+        .slice(0, 12),
+    [recValueRows]
+  );
+
+  const contractPerformanceChartRows = useMemo(
+    () =>
+      contractSummaryRows
+        .map((row) => ({
+          contractId: row.contractId,
+          required: row.required,
+          delivered: row.delivered,
+          deliveredPercent: row.deliveredPercent ?? 0,
+        }))
+        .slice(0, 20),
+    [contractSummaryRows]
+  );
+
+  const annualVintageTrendChartRows = useMemo(
+    () =>
+      annualVintageRows.map((row) => ({
+        label: row.label,
+        required: row.required,
+        delivered: row.delivered,
+        deliveredPercent: row.deliveredPercent ?? 0,
+      })),
+    [annualVintageRows]
   );
 
   return (
@@ -6548,7 +6613,7 @@ export default function SolarRecDashboard() {
 
         <Card className="sticky top-2 z-20 border-slate-300 bg-white/95 backdrop-blur-sm">
           <CardContent className="py-3">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-[11px] uppercase tracking-wide text-slate-500">Datasets Loaded</p>
                 <p className="text-lg font-semibold text-slate-900">
@@ -6589,6 +6654,18 @@ export default function SolarRecDashboard() {
                   }`}
                 >
                   {formatNumber(dataHealthSummary.staleDatasetCount)}
+                </p>
+              </div>
+              <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Part II Filter QA</p>
+                <p className="text-sm font-semibold text-slate-900">
+                  {formatNumber(part2FilterAudit.scopedSystems)} / {formatNumber(part2FilterAudit.part2UniqueSystems)} systems mapped
+                </p>
+                <p className="mt-1 text-[11px] text-slate-700">
+                  Coverage: {formatPercent(part2FilterAudit.scopedCoveragePercent)}
+                </p>
+                <p className="text-[11px] text-slate-700">
+                  Rows: {formatNumber(part2FilterAudit.part2Rows)} Part II, {formatNumber(part2FilterAudit.excludedRows)} excluded
                 </p>
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 xl:col-span-2">
@@ -6954,8 +7031,8 @@ export default function SolarRecDashboard() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="value" className="space-y-4 mt-4">
-            <div className="grid gap-4 md:grid-cols-4">
+	          <TabsContent value="value" className="space-y-4 mt-4">
+	            <div className="grid gap-4 md:grid-cols-4">
               <Card>
                 <CardHeader>
                   <CardDescription>Systems with Value Data</CardDescription>
@@ -6974,17 +7051,63 @@ export default function SolarRecDashboard() {
                   <CardTitle className="text-2xl">{formatCurrency(summary.totalGap)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Contract Value Reporting %</CardDescription>
-                  <CardTitle className="text-2xl">{formatPercent(summary.contractedValueReportingPercent)}</CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
+	              <Card>
+	                <CardHeader>
+	                  <CardDescription>Contract Value Reporting %</CardDescription>
+	                  <CardTitle className="text-2xl">{formatPercent(summary.contractedValueReportingPercent)}</CardTitle>
+	                </CardHeader>
+	              </Card>
+	            </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">REC Value by System</CardTitle>
+	            <div className="grid gap-4 lg:grid-cols-2">
+	              <Card>
+	                <CardHeader>
+	                  <CardTitle className="text-base">Contracted vs Delivered Value by Reporting Status</CardTitle>
+	                  <CardDescription>Part II verified systems grouped into Reporting, Not Reporting, and Terminated.</CardDescription>
+	                </CardHeader>
+	                <CardContent>
+	                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+	                    <ResponsiveContainer width="100%" height="100%">
+	                      <BarChart data={recValueByStatusChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+	                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+	                        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+	                        <YAxis tick={{ fontSize: 12 }} />
+	                        <Tooltip
+	                          formatter={(value: number, name: string) => [formatCurrency(value), name]}
+	                        />
+	                        <Legend />
+	                        <Bar dataKey="contractedValue" fill="#0ea5e9" name="Contracted Value" />
+	                        <Bar dataKey="deliveredValue" fill="#16a34a" name="Delivered Value" />
+	                      </BarChart>
+	                    </ResponsiveContainer>
+	                  </div>
+	                </CardContent>
+	              </Card>
+
+	              <Card>
+	                <CardHeader>
+	                  <CardTitle className="text-base">Top Value Gaps by System</CardTitle>
+	                  <CardDescription>Largest contracted-vs-delivered dollar gaps across Part II verified systems.</CardDescription>
+	                </CardHeader>
+	                <CardContent>
+	                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+	                    <ResponsiveContainer width="100%" height="100%">
+	                      <BarChart data={recTopGapChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 56 }}>
+	                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+	                        <XAxis dataKey="label" angle={-35} textAnchor="end" interval={0} height={72} tick={{ fontSize: 10 }} />
+	                        <YAxis tick={{ fontSize: 12 }} />
+	                        <Tooltip formatter={(value: number) => [formatCurrency(value), "Value Gap"]} />
+	                        <Bar dataKey="valueGap" fill="#f59e0b" name="Value Gap" />
+	                      </BarChart>
+	                    </ResponsiveContainer>
+	                  </div>
+	                </CardContent>
+	              </Card>
+	            </div>
+
+	            <Card>
+	              <CardHeader>
+	                <CardTitle className="text-base">REC Value by System</CardTitle>
                 <CardDescription>
                   Compares delivered value vs contracted value at system REC price.
                 </CardDescription>
@@ -7069,20 +7192,65 @@ export default function SolarRecDashboard() {
             </Card>
           </TabsContent>
 
-          <TabsContent value="contracts" className="space-y-4 mt-4">
-            <Card>
+	          <TabsContent value="contracts" className="space-y-4 mt-4">
+	            <Card>
               <CardHeader>
                 <CardTitle className="text-base">Utility Contract ID Tracking</CardTitle>
                 <CardDescription>
                   Aggregated by Utility Contract ID and <code>year1_start_date</code>. Matching Contract ID + start
                   date rows are combined.
                 </CardDescription>
-              </CardHeader>
-            </Card>
+	              </CardHeader>
+	            </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Contract Summary</CardTitle>
+	            <Card>
+	              <CardHeader>
+	                <CardTitle className="text-base">Contract Delivery Performance Chart</CardTitle>
+	                <CardDescription>
+	                  Required vs delivered RECs by contract ID (top 20 rows shown), with delivered percent overlay.
+	                </CardDescription>
+	              </CardHeader>
+	              <CardContent>
+	                <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
+	                  <ResponsiveContainer width="100%" height="100%">
+	                    <BarChart data={contractPerformanceChartRows} margin={{ top: 10, right: 16, left: 8, bottom: 8 }}>
+	                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+	                      <XAxis dataKey="contractId" tick={{ fontSize: 11 }} />
+	                      <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+	                      <YAxis
+	                        yAxisId="right"
+	                        orientation="right"
+	                        domain={[0, 100]}
+	                        tickFormatter={(value: number) => `${value}%`}
+	                        tick={{ fontSize: 11 }}
+	                      />
+	                      <Tooltip
+	                        formatter={(value: number, name: string) => {
+	                          if (name === "Delivered %") return [`${formatNumber(value, 1)}%`, name];
+	                          return [formatNumber(value), name];
+	                        }}
+	                      />
+	                      <Legend />
+	                      <Bar yAxisId="left" dataKey="required" fill="#94a3b8" name="Required RECs" />
+	                      <Bar yAxisId="left" dataKey="delivered" fill="#16a34a" name="Delivered RECs" />
+	                      <Line
+	                        yAxisId="right"
+	                        type="monotone"
+	                        dataKey="deliveredPercent"
+	                        stroke="#2563eb"
+	                        strokeWidth={2}
+	                        dot={false}
+	                        name="Delivered %"
+	                      />
+	                    </BarChart>
+	                  </ResponsiveContainer>
+	                </div>
+	              </CardContent>
+	            </Card>
+
+	            <Card>
+	              <CardHeader>
+	                <CardTitle className="text-base">Contract Summary</CardTitle>
                 <CardDescription>Total required vs delivered by Utility Contract ID.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -7289,7 +7457,7 @@ export default function SolarRecDashboard() {
               </Card>
             </div>
 
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+	            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <Card>
                 <CardHeader>
                   <CardDescription>Delivery Vintages</CardDescription>
@@ -7313,9 +7481,9 @@ export default function SolarRecDashboard() {
                   </CardDescription>
                 </CardHeader>
               </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>3-Year Rolling Value %</CardDescription>
+	              <Card>
+	                <CardHeader>
+	                  <CardDescription>3-Year Rolling Value %</CardDescription>
                   <CardTitle className="text-2xl">
                     {formatPercent(annualPortfolioSummary.rollingThreeValueDeliveredPercent)}
                   </CardTitle>
@@ -7323,13 +7491,74 @@ export default function SolarRecDashboard() {
                     {formatCurrency(annualPortfolioSummary.rollingThreeDeliveredValue)} /{" "}
                     {formatCurrency(annualPortfolioSummary.rollingThreeRequiredValue)}
                   </CardDescription>
-                </CardHeader>
-              </Card>
-            </div>
+	                </CardHeader>
+	              </Card>
+	            </div>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Annual Vintage Summary</CardTitle>
+	            <Card>
+	              <CardHeader>
+	                <CardTitle className="text-base">Annual Vintage Trend (Required vs Delivered)</CardTitle>
+	                <CardDescription>
+	                  Trend by Project Delivery Start Date with delivered percent overlay.
+	                </CardDescription>
+	              </CardHeader>
+	              <CardContent>
+	                <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
+	                  <ResponsiveContainer width="100%" height="100%">
+	                    <LineChart data={annualVintageTrendChartRows} margin={{ top: 10, right: 16, left: 8, bottom: 8 }}>
+	                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+	                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+	                      <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+	                      <YAxis
+	                        yAxisId="right"
+	                        orientation="right"
+	                        domain={[0, 100]}
+	                        tickFormatter={(value: number) => `${value}%`}
+	                        tick={{ fontSize: 11 }}
+	                      />
+	                      <Tooltip
+	                        formatter={(value: number, name: string) => {
+	                          if (name === "Delivered %") return [`${formatNumber(value, 1)}%`, name];
+	                          return [formatNumber(value), name];
+	                        }}
+	                      />
+	                      <Legend />
+	                      <Line
+	                        yAxisId="left"
+	                        type="monotone"
+	                        dataKey="required"
+	                        stroke="#64748b"
+	                        strokeWidth={2}
+	                        dot
+	                        name="Required RECs"
+	                      />
+	                      <Line
+	                        yAxisId="left"
+	                        type="monotone"
+	                        dataKey="delivered"
+	                        stroke="#16a34a"
+	                        strokeWidth={2}
+	                        dot
+	                        name="Delivered RECs"
+	                      />
+	                      <Line
+	                        yAxisId="right"
+	                        type="monotone"
+	                        dataKey="deliveredPercent"
+	                        stroke="#2563eb"
+	                        strokeWidth={2}
+	                        dot={false}
+	                        name="Delivered %"
+	                      />
+	                    </LineChart>
+	                  </ResponsiveContainer>
+	                </div>
+	              </CardContent>
+	            </Card>
+
+	            <Card>
+	              <CardHeader>
+	                <CardTitle className="text-base">Annual Vintage Summary</CardTitle>
                 <CardDescription>
                   Aggregated across all contracts by Project Delivery Start Date (June 1 vintages).
                 </CardDescription>
