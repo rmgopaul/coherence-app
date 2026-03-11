@@ -2933,6 +2933,32 @@ export default function SolarRecDashboard() {
     };
   }, [part2EligibleSystemsForSizeReporting]);
 
+  const snapshotPart2ValueSummary = useMemo(() => {
+    const totalContractedValue = part2EligibleSystemsForSizeReporting.reduce(
+      (sum, system) => sum + resolveContractValueAmount(system),
+      0
+    );
+    const contractedValueReporting = part2EligibleSystemsForSizeReporting
+      .filter((system) => system.isReporting)
+      .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
+    const contractedValueNotReporting = totalContractedValue - contractedValueReporting;
+    const contractedValueReportingPercent = toPercentValue(contractedValueReporting, totalContractedValue);
+    const totalDeliveredValue = part2EligibleSystemsForSizeReporting.reduce(
+      (sum, system) => sum + (system.deliveredValue ?? 0),
+      0
+    );
+    const totalGap = totalContractedValue - totalDeliveredValue;
+
+    return {
+      totalContractedValue,
+      totalDeliveredValue,
+      totalGap,
+      contractedValueReporting,
+      contractedValueNotReporting,
+      contractedValueReportingPercent,
+    };
+  }, [part2EligibleSystemsForSizeReporting]);
+
   const sizeBreakdownRows = useMemo(() => {
     const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
     return breakdown.map((bucket) => {
@@ -5733,12 +5759,12 @@ export default function SolarRecDashboard() {
       terminatedNotReporting: statusCount("Terminated and Not Reporting"),
       changedNotTransferredReporting: statusCount("Change of Ownership - Not Transferred and Reporting"),
       changedNotTransferredNotReporting: statusCount("Change of Ownership - Not Transferred and Not Reporting"),
-      totalContractedValue: summary.totalContractedValue,
-      totalDeliveredValue: summary.totalDeliveredValue,
-      totalGap: summary.totalGap,
-      contractedValueReporting: summary.contractedValueReporting,
-      contractedValueNotReporting: summary.contractedValueNotReporting,
-      contractedValueReportingPercent: summary.contractedValueReportingPercent,
+      totalContractedValue: snapshotPart2ValueSummary.totalContractedValue,
+      totalDeliveredValue: snapshotPart2ValueSummary.totalDeliveredValue,
+      totalGap: snapshotPart2ValueSummary.totalGap,
+      contractedValueReporting: snapshotPart2ValueSummary.contractedValueReporting,
+      contractedValueNotReporting: snapshotPart2ValueSummary.contractedValueNotReporting,
+      contractedValueReportingPercent: snapshotPart2ValueSummary.contractedValueReportingPercent,
       datasets: (Object.keys(DATASET_DEFINITIONS) as DatasetKey[])
         .map((key) => {
           const dataset = datasets[key];
