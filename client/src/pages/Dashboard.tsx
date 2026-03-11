@@ -1781,7 +1781,7 @@ export default function Dashboard() {
       steps: row.samsungSteps ?? null,
       completed: row.todoistCompletedCount ?? null,
     }));
-  const emailPriorityChartData = useMemo(() => {
+  const emailPriorityChartData = (() => {
     const buckets = [
       { label: "High (4+)", count: 0 },
       { label: "Medium (2-3)", count: 0 },
@@ -1793,15 +1793,15 @@ export default function Dashboard() {
       else buckets[2].count += 1;
     });
     return buckets;
-  }, [prioritizedEmails]);
-  const habitCompletionChartData = useMemo(() => {
+  })();
+  const habitCompletionChartData = (() => {
     const total = (habitsForToday || []).length;
     const completed = (habitsForToday || []).filter((habit: any) => habit.completed).length;
     return [
       { name: "Completed", value: completed, color: "#059669" },
       { name: "Remaining", value: Math.max(0, total - completed), color: "#cbd5e1" },
     ];
-  }, [habitsForToday]);
+  })();
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
     if (!el) return;
