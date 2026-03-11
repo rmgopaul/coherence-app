@@ -228,6 +228,7 @@ type SystemBuilder = {
   primaryName: string | null;
   names: Set<string>;
   installedKwAc: number | null;
+  installedKwDc: number | null;
   recPrice: number | null;
   totalContractAmount: number | null;
   annualRecs: number | null;
@@ -255,6 +256,7 @@ type SystemRecord = {
   trackingSystemRefId: string | null;
   systemName: string;
   installedKwAc: number | null;
+  installedKwDc: number | null;
   sizeBucket: SizeBucket;
   recPrice: number | null;
   totalContractAmount: number | null;
@@ -905,6 +907,11 @@ function formatNumber(value: number | null, digits = 0): string {
   if (value === null) return "N/A";
   if (digits > 0) return value.toFixed(digits);
   return NUMBER_FORMATTER.format(value);
+}
+
+function formatCapacityKw(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "N/A";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 3 });
 }
 
 function toPercentValue(numerator: number, denominator: number): number | null {
@@ -2426,6 +2433,7 @@ export default function SolarRecDashboard() {
         primaryName: null,
         names: new Set<string>(),
         installedKwAc: null,
+        installedKwDc: null,
         recPrice: null,
         totalContractAmount: null,
         annualRecs: null,
@@ -2480,6 +2488,15 @@ export default function SolarRecDashboard() {
         parseNumber(row.Inverter_Size_kW_AC_Part_1)
       );
       if (installed !== null) builder.installedKwAc = installed;
+
+      const installedDc = firstNonNull(
+        parseNumber(row.installed_system_size_kw_dc),
+        parseNumber(row.planned_system_size_kw_dc),
+        parseNumber(row["financialDetail.contract_kw_dc"]),
+        parseNumber(row.Inverter_Size_kW_DC_Part_2),
+        parseNumber(row.Inverter_Size_kW_DC_Part_1)
+      );
+      if (installedDc !== null) builder.installedKwDc = installedDc;
 
       const recPrice = parseNumber(row.rec_price);
       if (recPrice !== null) builder.recPrice = recPrice;
@@ -2693,6 +2710,7 @@ export default function SolarRecDashboard() {
           trackingSystemRefId: builder.trackingSystemRefId,
           systemName,
           installedKwAc: builder.installedKwAc,
+          installedKwDc: builder.installedKwDc,
           sizeBucket,
           recPrice: builder.recPrice,
           totalContractAmount: builder.totalContractAmount,
@@ -2893,6 +2911,27 @@ export default function SolarRecDashboard() {
         return byPortalSystemId || byApplicationId || byTrackingId;
       });
   }, [datasets.abpReport, systems]);
+
+  const overviewPart2Totals = useMemo(() => {
+    const totalContractedValuePart2 = part2EligibleSystemsForSizeReporting.reduce(
+      (sum, system) => sum + resolveContractValueAmount(system),
+      0
+    );
+    const cumulativeKwAcPart2 = part2EligibleSystemsForSizeReporting.reduce(
+      (sum, system) => sum + (system.installedKwAc ?? 0),
+      0
+    );
+    const cumulativeKwDcPart2 = part2EligibleSystemsForSizeReporting.reduce(
+      (sum, system) => sum + (system.installedKwDc ?? 0),
+      0
+    );
+
+    return {
+      totalContractedValuePart2,
+      cumulativeKwAcPart2,
+      cumulativeKwDcPart2,
+    };
+  }, [part2EligibleSystemsForSizeReporting]);
 
   const sizeBreakdownRows = useMemo(() => {
     const breakdown = ["<=10 kW AC", ">10 kW AC", "Unknown"] as SizeBucket[];
@@ -6209,20 +6248,20 @@ export default function SolarRecDashboard() {
               </Card>
               <Card>
                 <CardHeader>
-                  <CardDescription>Unknown Size</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(summary.unknownSizeSystems)}</CardTitle>
+                  <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(overviewPart2Totals.totalContractedValuePart2)}</CardTitle>
                 </CardHeader>
               </Card>
               <Card>
                 <CardHeader>
-                  <CardDescription>Delivered Value %</CardDescription>
-                  <CardTitle className="text-2xl">{formatPercent(summary.deliveredValuePercent)}</CardTitle>
+                  <CardDescription>Cumulative kW AC (Part II Verified)</CardDescription>
+                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwAcPart2)}</CardTitle>
                 </CardHeader>
               </Card>
               <Card>
                 <CardHeader>
-                  <CardDescription>Ownership Changed, but not Transferred and not Reporting</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(cooNotTransferredNotReportingCurrentCount)}</CardTitle>
+                  <CardDescription>Cumulative kW DC (Part II Verified)</CardDescription>
+                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
