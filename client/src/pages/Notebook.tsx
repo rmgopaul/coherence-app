@@ -20,19 +20,17 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { Textarea } from "@/components/ui/textarea";
+import { extractTextPreview, normalizeContentForEditor } from "@/lib/noteContent";
+import { NoteSaveController, type NoteDraftSnapshot } from "@/lib/noteSaveController";
 import { trpc } from "@/lib/trpc";
 import {
+  AlertTriangle,
   ArrowLeft,
-  Bold,
   BookOpen,
   Clock3,
   FileText,
   Filter,
-  Italic,
   Link2,
-  List,
-  ListOrdered,
   Loader2,
   PanelLeft,
   Pin,
@@ -43,65 +41,41 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
 type ViewFilter = "all" | "pinned" | "linked";
-type SaveState = "saved" | "saving" | "unsaved" | "error";
-type NoteRow = {
+type SaveState = "idle" | "saved" | "saving" | "unsaved" | "error";
+
+type NoteLinkRow = {
   id: string;
-  title?: string;
-  notebook?: string;
-  content?: string;
-  pinned?: boolean;
+  linkType?: string;
+  externalId?: string;
+  seriesId?: string;
+  sourceTitle?: string | null;
+  sourceUrl?: string | null;
+  metadata?: string | Record<string, unknown> | null;
   createdAt?: string;
-  updatedAt?: string;
-  links?: Array<{
-    id: string;
-    linkType?: string;
-    externalId?: string;
-    seriesId?: string;
-    sourceTitle?: string | null;
-    sourceUrl?: string | null;
-    metadata?: string | Record<string, unknown> | null;
-    createdAt?: string;
-  }>;
 };
 
+type NoteRow = {
+  id: string;
+  userId?: number;
+  notebook?: string | null;
+  title?: string | null;
+  content?: string | null;
+  pinned?: boolean | null;
+  createdAt?: string | Date | null;
+  updatedAt?: string | Date | null;
+  links?: NoteLinkRow[];
+};
+
+const RichTextEditor = lazy(() => import("@/components/notebook/RichTextEditor"));
+
 const NOTES_PAGE_SIZE = 30;
-
-function decodeHtmlEntities(content: string): string {
-  if (typeof window === "undefined") {
-    return content.replace(/&nbsp;/gi, " ");
-  }
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = content;
-  return textarea.value;
-}
-
-function stripHtml(content: string): string {
-  const decoded = decodeHtmlEntities(content || "");
-  return decoded
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<li>/gi, "\n- ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\u00a0/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]+\n/g, "\n")
-    .trim();
-}
-
-function toEditorText(content: string): string {
-  const raw = String(content || "");
-  if (!raw) return "";
-  if (/<[a-z][\s\S]*>/i.test(raw)) {
-    return stripHtml(raw);
-  }
-  return decodeHtmlEntities(raw);
-}
+const AUTOSAVE_DEBOUNCE_MS = 2500;
+const AUTOSAVE_MAX_WAIT_MS = 10000;
 
 function normalizeNotebook(value: string | null | undefined): string {
   const cleaned = String(value || "").trim();
@@ -111,18 +85,6 @@ function normalizeNotebook(value: string | null | undefined): string {
 function normalizeTitle(value: string | null | undefined): string {
   const cleaned = String(value || "").trim();
   return cleaned || "Untitled note";
-}
-
-function formatDateTime(value: unknown): string {
-  if (typeof value !== "string" || !value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "-";
-  return date.toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 function relativeTime(value: unknown): string {
@@ -141,11 +103,16 @@ function relativeTime(value: unknown): string {
   return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-function getNotePreview(content: string, maxLen = 160): string {
-  const text = toEditorText(content || "").replace(/\s+/g, " ").trim();
-  if (!text) return "No content yet.";
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, maxLen - 1).trimEnd()}...`;
+function formatDateTime(value: unknown): string {
+  if (typeof value !== "string" || !value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function parseLinkMetadata(metadata: unknown): Record<string, unknown> {
@@ -199,6 +166,7 @@ function saveStateLabel(state: SaveState, lastSavedAt: Date | null): string {
   if (state === "saving") return "Saving...";
   if (state === "unsaved") return "Unsaved changes";
   if (state === "error") return "Save failed";
+  if (state === "idle") return "Ready";
   if (!lastSavedAt) return "Saved";
   return `Saved ${lastSavedAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
@@ -216,74 +184,48 @@ export default function Notebook() {
   const [notesPage, setNotesPage] = useState(1);
 
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
-  const [isDraftMode, setIsDraftMode] = useState(true);
+  const [pendingRouteNoteId, setPendingRouteNoteId] = useState<string | null>(null);
+  const [routeWantsNewDraft, setRouteWantsNewDraft] = useState(false);
+
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
-
-  const [noteTitleInput, setNoteTitleInput] = useState("");
-  const [noteNotebookInput, setNoteNotebookInput] = useState("General");
-  const [noteContentInput, setNoteContentInput] = useState("");
-  const [notePinnedInput, setNotePinnedInput] = useState(false);
-  const [isDirty, setIsDirty] = useState(false);
-  const [saveState, setSaveState] = useState<SaveState>("saved");
-  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
-
   const [mobileNotebooksOpen, setMobileNotebooksOpen] = useState(false);
   const [mobilePagesOpen, setMobilePagesOpen] = useState(false);
 
-  const editorRef = useRef<HTMLTextAreaElement | null>(null);
+  const initialDraft = useMemo<NoteDraftSnapshot>(
+    () => ({
+      noteId: null,
+      title: "",
+      notebook: "General",
+      contentHtml: "<p></p>",
+      pinned: false,
+      revision: 0,
+    }),
+    []
+  );
+
+  const saveControllerRef = useRef(
+    new NoteSaveController({
+      noteId: null,
+      title: "",
+      notebook: "General",
+      contentHtml: "<p></p>",
+      pinned: false,
+    })
+  );
+
+  const [noteDraft, setNoteDraft] = useState<NoteDraftSnapshot>(initialDraft);
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<Date | null>(null);
+
+  const [conflictNote, setConflictNote] = useState<NoteRow | null>(null);
+  const baselineServerRef = useRef<{ noteId: string | null; updatedAt: string }>({
+    noteId: null,
+    updatedAt: "",
+  });
+  const dismissedConflictUpdatedAtRef = useRef<string | null>(null);
+
   const autosaveTimerRef = useRef<number | null>(null);
-  const savePromiseRef = useRef<Promise<string | null> | null>(null);
-
-  useEffect(() => {
-    if (!loading && !user) {
-      setLocation("/");
-    }
-  }, [loading, user, setLocation]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const routeNotebook = params.get("notebook");
-    const routeView = params.get("view")?.trim().toLowerCase();
-    const routeNoteId = params.get("noteId");
-    const routeEventId = params.get("eventId");
-    const routeSeriesId = params.get("seriesId");
-    const routeNew = params.get("new") === "1";
-
-    if (routeNotebook && routeNotebook.trim()) {
-      if (routeNotebook.trim().toLowerCase() === "all") {
-        setSelectedNotebook("All Notebooks");
-      } else {
-        setSelectedNotebook(routeNotebook.trim());
-      }
-    }
-
-    if (routeView === "pinned") setViewFilter("pinned");
-    if (routeView === "linked" || routeView === "calendar") setViewFilter("linked");
-
-    if (routeSeriesId && routeSeriesId.trim()) {
-      setEventFilterKey(`series:${routeSeriesId.trim()}`);
-    } else if (routeEventId && routeEventId.trim()) {
-      setEventFilterKey(`event:${routeEventId.trim()}`);
-    }
-
-    if (routeNoteId && routeNoteId.trim()) {
-      setSelectedNoteId(routeNoteId.trim());
-      setIsDraftMode(false);
-      return;
-    }
-
-    if (routeNew) {
-      setSelectedNoteId(null);
-      setIsDraftMode(true);
-      setNoteTitleInput("");
-      setNoteNotebookInput(routeNotebook && routeNotebook.trim() ? normalizeNotebook(routeNotebook) : "General");
-      setNoteContentInput("");
-      setNotePinnedInput(false);
-      setIsDirty(false);
-      setSaveState("saved");
-    }
-  }, []);
+  const autosaveMaxTimerRef = useRef<number | null>(null);
 
   const {
     data: notesData,
@@ -303,7 +245,12 @@ export default function Notebook() {
   const deleteNoteMutation = trpc.notes.delete.useMutation();
   const removeNoteLinkMutation = trpc.notes.removeLink.useMutation();
 
-  const notes = useMemo(() => (notesData ?? []) as NoteRow[], [notesData]);
+  const notes = useMemo<NoteRow[]>(() => (notesData ?? []).map((note: any) => ({ ...note })), [notesData]);
+
+  const selectedNoteFromQuery = useMemo(() => {
+    if (!selectedNoteId) return null;
+    return notes.find((note) => String(note.id) === String(selectedNoteId)) ?? null;
+  }, [notes, selectedNoteId]);
 
   const smartCounts = useMemo(() => {
     const all = notes.length;
@@ -318,16 +265,10 @@ export default function Notebook() {
       const notebook = normalizeNotebook(note.notebook);
       counts.set(notebook, (counts.get(notebook) || 0) + 1);
     }
-
     return Array.from(counts.entries())
       .map(([name, count]) => ({ name, count }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [notes]);
-
-  const selectedNote = useMemo(() => {
-    if (!selectedNoteId) return null;
-    return notes.find((note) => String(note.id) === String(selectedNoteId)) ?? null;
-  }, [notes, selectedNoteId]);
 
   const visibleNotes = useMemo(() => {
     let rows = [...notes];
@@ -351,7 +292,7 @@ export default function Notebook() {
       rows = rows.filter((note) => {
         const title = normalizeTitle(note.title).toLowerCase();
         const notebook = normalizeNotebook(note.notebook).toLowerCase();
-        const content = toEditorText(note.content || "").toLowerCase();
+        const content = extractTextPreview(note.content).toLowerCase();
         return title.includes(query) || notebook.includes(query) || content.includes(query);
       });
     }
@@ -373,252 +314,272 @@ export default function Notebook() {
   const pagesCurrent = Math.min(notesPage, pagesTotal);
   const pageStart = (pagesCurrent - 1) * NOTES_PAGE_SIZE;
   const pageEnd = pageStart + NOTES_PAGE_SIZE;
-  const notesInPage = useMemo(() => visibleNotes.slice(pageStart, pageEnd), [visibleNotes, pageStart, pageEnd]);
 
-  useEffect(() => {
-    if (notesPage > pagesTotal) {
-      setNotesPage(pagesTotal);
-    }
-  }, [notesPage, pagesTotal]);
+  const notesInPage = useMemo(
+    () => visibleNotes.slice(pageStart, pageEnd),
+    [visibleNotes, pageStart, pageEnd]
+  );
 
-  useEffect(() => {
-    setNotesPage(1);
-  }, [selectedNotebook, viewFilter, eventFilterKey, searchQuery]);
+  const notebookSearchRows = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return notebookCounts;
+    return notebookCounts.filter((row) => row.name.toLowerCase().includes(query));
+  }, [notebookCounts, searchQuery]);
 
-  useEffect(() => {
-    if (isDraftMode) return;
-    if (!selectedNoteId || !selectedNote) return;
-    if (isDirty) return;
+  const selectedNoteLinks = useMemo(() => {
+    if (!selectedNoteFromQuery) return [];
+    return Array.isArray(selectedNoteFromQuery.links) ? selectedNoteFromQuery.links : [];
+  }, [selectedNoteFromQuery]);
 
-    setNoteTitleInput(String(selectedNote.title || ""));
-    setNoteNotebookInput(normalizeNotebook(selectedNote.notebook));
-    setNoteContentInput(toEditorText(selectedNote.content || ""));
-    setNotePinnedInput(Boolean(selectedNote.pinned));
-    setSaveState("saved");
-  }, [
-    selectedNoteId,
-    selectedNote?.id,
-    selectedNote?.title,
-    selectedNote?.notebook,
-    selectedNote?.content,
-    selectedNote?.pinned,
-    selectedNote?.updatedAt,
-    isDraftMode,
-    isDirty,
-  ]);
-
-  useEffect(() => {
-    if (notesLoading) return;
-    if (!selectedNoteId && !isDraftMode && visibleNotes.length > 0) {
-      setSelectedNoteId(String(visibleNotes[0].id));
-      setIsDraftMode(false);
-    }
-  }, [notesLoading, selectedNoteId, isDraftMode, visibleNotes]);
-
-  const canLoadMore = useMemo(() => notes.length >= notesFetchLimit, [notes.length, notesFetchLimit]);
-
-  const saveCurrentNote = useCallback(async (): Promise<string | null> => {
-    if (!user) return null;
-    if (!isDirty) return selectedNoteId;
-
-    if (savePromiseRef.current) {
-      return savePromiseRef.current;
-    }
-
-    const runner = (async (): Promise<string | null> => {
-      const payload = {
-        notebook: normalizeNotebook(noteNotebookInput),
-        title: normalizeTitle(noteTitleInput),
-        content: noteContentInput,
-        pinned: notePinnedInput,
-      };
-
-      setSaveState("saving");
-
-      try {
-        let resolvedNoteId = selectedNoteId;
-
-        if (resolvedNoteId) {
-          await updateNoteMutation.mutateAsync({
-            noteId: resolvedNoteId,
-            ...payload,
-          });
-        } else {
-          const created = await createNoteMutation.mutateAsync(payload);
-          resolvedNoteId = String(created.noteId);
-          setSelectedNoteId(resolvedNoteId);
-          setIsDraftMode(false);
-        }
-
-        setIsDirty(false);
-        setSaveState("saved");
-        setLastSavedAt(new Date());
-
-        await trpcUtils.notes.list.invalidate();
-        return resolvedNoteId;
-      } catch (error) {
-        setSaveState("error");
-        toast.error(`Could not save note: ${error instanceof Error ? error.message : "Unknown error"}`);
-        return null;
-      }
-    })();
-
-    savePromiseRef.current = runner;
-    try {
-      return await runner;
-    } finally {
-      savePromiseRef.current = null;
-    }
-  }, [
-    user,
-    isDirty,
-    selectedNoteId,
-    noteNotebookInput,
-    noteTitleInput,
-    noteContentInput,
-    notePinnedInput,
-    updateNoteMutation,
-    createNoteMutation,
-    trpcUtils.notes.list,
-  ]);
-
-  const discardAutosaveTimer = useCallback(() => {
+  const clearAutosaveTimers = useCallback(() => {
     if (autosaveTimerRef.current !== null) {
       window.clearTimeout(autosaveTimerRef.current);
       autosaveTimerRef.current = null;
     }
+    if (autosaveMaxTimerRef.current !== null) {
+      window.clearTimeout(autosaveMaxTimerRef.current);
+      autosaveMaxTimerRef.current = null;
+    }
   }, []);
 
-  useEffect(() => {
-    discardAutosaveTimer();
-    if (!user || !isDirty) return;
+  const updateDraftFromController = useCallback((nextSnapshot: NoteDraftSnapshot) => {
+    setNoteDraft(nextSnapshot);
+    setSelectedNoteId(nextSnapshot.noteId);
+  }, []);
 
-    setSaveState("unsaved");
-    autosaveTimerRef.current = window.setTimeout(() => {
-      void saveCurrentNote();
-    }, 900);
+  const applyLocalDraftChanges = useCallback(
+    (changes: Partial<Omit<NoteDraftSnapshot, "revision">>) => {
+      const nextSnapshot = saveControllerRef.current.markLocalChange(changes);
+      updateDraftFromController(nextSnapshot);
+      setSaveState("unsaved");
+      setConflictNote(null);
+      dismissedConflictUpdatedAtRef.current = null;
+    },
+    [updateDraftFromController]
+  );
 
-    return () => {
-      discardAutosaveTimer();
-    };
-  }, [user, isDirty, noteTitleInput, noteNotebookInput, noteContentInput, notePinnedInput, saveCurrentNote, discardAutosaveTimer]);
+  const hydrateFromServerNote = useCallback(
+    (note: NoteRow | null, fallbackNotebook?: string) => {
+      const snapshot = saveControllerRef.current.hydrate({
+        noteId: note ? String(note.id) : null,
+        title: note ? String(note.title || "") : "",
+        notebook: note ? normalizeNotebook(note.notebook) : normalizeNotebook(fallbackNotebook || "General"),
+        contentHtml: note ? normalizeContentForEditor(String(note.content || "")) : "<p></p>",
+        pinned: note ? Boolean(note.pinned) : false,
+      });
 
-  useEffect(() => {
-    const handleKeydown = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      const key = event.key.toLowerCase();
+      updateDraftFromController(snapshot);
+      baselineServerRef.current = {
+        noteId: snapshot.noteId,
+        updatedAt: note ? String(note.updatedAt || "") : "",
+      };
+      setConflictNote(null);
+      dismissedConflictUpdatedAtRef.current = null;
+      setSaveState("saved");
+    },
+    [updateDraftFromController]
+  );
 
-      if (key === "s") {
-        event.preventDefault();
-        void saveCurrentNote();
+  const updateCacheWithSnapshot = useCallback(
+    (snapshot: NoteDraftSnapshot, updatedAtIso: string) => {
+      const noteId = snapshot.noteId;
+      if (!noteId) return;
+
+      trpcUtils.notes.list.setData({ limit: notesFetchLimit }, (current) => {
+        if (!Array.isArray(current)) return current;
+        const rows = [...current] as any[];
+
+        const existingIndex = rows.findIndex((row: any) => String(row.id) === String(noteId));
+        const existing = existingIndex >= 0 ? rows[existingIndex] : null;
+
+        const nextRow: any = {
+          ...(existing || {}),
+          id: noteId,
+          notebook: normalizeNotebook(snapshot.notebook),
+          title: normalizeTitle(snapshot.title),
+          content: snapshot.contentHtml,
+          pinned: snapshot.pinned,
+          createdAt: existing?.createdAt || updatedAtIso,
+          updatedAt: updatedAtIso,
+          links: existing?.links || [],
+        };
+
+        const nextRows = [...rows];
+        if (existingIndex >= 0) {
+          nextRows[existingIndex] = nextRow;
+        } else {
+          nextRows.unshift(nextRow);
+        }
+
+        nextRows.sort((a: any, b: any) => {
+          const aPinned = Boolean(a?.pinned) ? 1 : 0;
+          const bPinned = Boolean(b?.pinned) ? 1 : 0;
+          if (aPinned !== bPinned) return bPinned - aPinned;
+
+          const aTs = new Date(a?.updatedAt || a?.createdAt || 0).getTime();
+          const bTs = new Date(b?.updatedAt || b?.createdAt || 0).getTime();
+          return bTs - aTs;
+        });
+
+        return nextRows as any;
+      });
+    },
+    [notesFetchLimit, trpcUtils.notes.list]
+  );
+
+  const persistSnapshot = useCallback(
+    async (snapshot: NoteDraftSnapshot): Promise<{ noteId: string | null }> => {
+      const payload = {
+        notebook: normalizeNotebook(snapshot.notebook),
+        title: normalizeTitle(snapshot.title),
+        content: snapshot.contentHtml,
+        pinned: snapshot.pinned,
+      };
+
+      if (snapshot.noteId) {
+        await updateNoteMutation.mutateAsync({
+          noteId: snapshot.noteId,
+          ...payload,
+        });
+        return { noteId: snapshot.noteId };
       }
 
-      if (key === "n") {
-        event.preventDefault();
-        void (async () => {
-          await saveCurrentNote();
-          setSelectedNoteId(null);
-          setIsDraftMode(true);
-          setNoteTitleInput("");
-          setNoteNotebookInput(selectedNotebook === "All Notebooks" ? "General" : selectedNotebook);
-          setNoteContentInput("");
-          setNotePinnedInput(false);
-          setIsDirty(false);
+      const created = await createNoteMutation.mutateAsync(payload);
+      return { noteId: String(created.noteId) };
+    },
+    [createNoteMutation, updateNoteMutation]
+  );
+
+  const applySaveResult = useCallback(
+    (updatedAtIso: string) => {
+      const controller = saveControllerRef.current;
+      const latest = controller.getSnapshot();
+      updateDraftFromController(latest);
+
+      if (latest.noteId) {
+        updateCacheWithSnapshot(latest, updatedAtIso);
+        baselineServerRef.current = {
+          noteId: latest.noteId,
+          updatedAt: updatedAtIso,
+        };
+      }
+
+      if (controller.isDirty()) {
+        setSaveState("unsaved");
+      } else {
+        setSaveState("saved");
+        setLastSavedAt(new Date(updatedAtIso));
+        clearAutosaveTimers();
+      }
+    },
+    [clearAutosaveTimers, updateCacheWithSnapshot, updateDraftFromController]
+  );
+
+  const runSave = useCallback(
+    async (mode: "auto" | "manual" | "switch" = "manual"): Promise<boolean> => {
+      const controller = saveControllerRef.current;
+
+      if (!controller.isDirty() && !controller.isSaving()) {
+        if (mode === "manual") {
           setSaveState("saved");
-          setMobilePagesOpen(false);
-        })();
+        }
+        return true;
       }
-    };
 
-    window.addEventListener("keydown", handleKeydown);
-    return () => window.removeEventListener("keydown", handleKeydown);
-  }, [saveCurrentNote, selectedNotebook]);
+      setSaveState("saving");
+      const result = await controller.save(persistSnapshot);
+
+      if (!result.ok) {
+        setSaveState("error");
+        toast.error(`Could not save note: ${result.error instanceof Error ? result.error.message : "Unknown error"}`);
+        return false;
+      }
+
+      applySaveResult(new Date().toISOString());
+      return true;
+    },
+    [applySaveResult, persistSnapshot]
+  );
+
+  const flushSaves = useCallback(async (): Promise<boolean> => {
+    const controller = saveControllerRef.current;
+    if (!controller.isDirty() && !controller.isSaving()) return true;
+
+    setSaveState("saving");
+    const result = await controller.flush(persistSnapshot);
+
+    if (!result.ok) {
+      setSaveState("error");
+      toast.error(`Could not save note: ${result.error instanceof Error ? result.error.message : "Unknown error"}`);
+      return false;
+    }
+
+    applySaveResult(new Date().toISOString());
+    return true;
+  }, [applySaveResult, persistSnapshot]);
 
   const createDraft = useCallback(async () => {
-    await saveCurrentNote();
-    setSelectedNoteId(null);
-    setIsDraftMode(true);
-    setNoteTitleInput("");
-    setNoteNotebookInput(selectedNotebook === "All Notebooks" ? "General" : selectedNotebook);
-    setNoteContentInput("");
-    setNotePinnedInput(false);
-    setIsDirty(false);
-    setSaveState("saved");
+    const ok = await flushSaves();
+    if (!ok) return;
+
+    const fallbackNotebook = selectedNotebook === "All Notebooks" ? "General" : selectedNotebook;
+    hydrateFromServerNote(null, fallbackNotebook);
     setMobilePagesOpen(false);
-    requestAnimationFrame(() => {
-      editorRef.current?.focus();
-    });
-  }, [saveCurrentNote, selectedNotebook]);
+  }, [flushSaves, hydrateFromServerNote, selectedNotebook]);
 
   const selectExistingNote = useCallback(
     async (noteId: string) => {
       if (!noteId) return;
-      if (!isDraftMode && String(selectedNoteId || "") === String(noteId)) {
+      if (String(selectedNoteId || "") === String(noteId) && saveControllerRef.current.getSnapshot().noteId === noteId) {
         setMobilePagesOpen(false);
         return;
       }
 
-      await saveCurrentNote();
-      setSelectedNoteId(noteId);
-      setIsDraftMode(false);
-      setIsDirty(false);
-      setSaveState("saved");
+      const ok = await flushSaves();
+      if (!ok) return;
+
+      const target = notes.find((note) => String(note.id) === String(noteId));
+      if (!target) {
+        toast.error("Could not load note");
+        return;
+      }
+
+      hydrateFromServerNote(target);
       setMobilePagesOpen(false);
     },
-    [isDraftMode, selectedNoteId, saveCurrentNote]
+    [flushSaves, hydrateFromServerNote, notes, selectedNoteId]
   );
 
   const deleteSelectedNote = useCallback(async () => {
-    if (!selectedNoteId) {
+    const noteId = saveControllerRef.current.getSnapshot().noteId;
+
+    if (!noteId) {
       setIsDeleteDialogOpen(false);
-      setSelectedNoteId(null);
-      setIsDraftMode(true);
-      setNoteTitleInput("");
-      setNoteNotebookInput(selectedNotebook === "All Notebooks" ? "General" : selectedNotebook);
-      setNoteContentInput("");
-      setNotePinnedInput(false);
-      setIsDirty(false);
-      setSaveState("saved");
+      const fallbackNotebook = selectedNotebook === "All Notebooks" ? "General" : selectedNotebook;
+      hydrateFromServerNote(null, fallbackNotebook);
       return;
     }
 
-    const currentIndex = visibleNotes.findIndex((note) => String(note.id) === String(selectedNoteId));
-    const fallback =
-      visibleNotes[currentIndex + 1] ||
-      visibleNotes[currentIndex - 1] ||
-      null;
+    const currentIndex = visibleNotes.findIndex((note) => String(note.id) === String(noteId));
+    const fallback = visibleNotes[currentIndex + 1] || visibleNotes[currentIndex - 1] || null;
 
     try {
-      await deleteNoteMutation.mutateAsync({ noteId: selectedNoteId });
+      await deleteNoteMutation.mutateAsync({ noteId });
       await trpcUtils.notes.list.invalidate();
       toast.success("Note deleted.");
 
       if (fallback) {
-        setSelectedNoteId(String(fallback.id));
-        setIsDraftMode(false);
+        hydrateFromServerNote(fallback);
       } else {
-        setSelectedNoteId(null);
-        setIsDraftMode(true);
-        setNoteTitleInput("");
-        setNoteNotebookInput(selectedNotebook === "All Notebooks" ? "General" : selectedNotebook);
-        setNoteContentInput("");
-        setNotePinnedInput(false);
+        const fallbackNotebook = selectedNotebook === "All Notebooks" ? "General" : selectedNotebook;
+        hydrateFromServerNote(null, fallbackNotebook);
       }
-
-      setIsDirty(false);
-      setSaveState("saved");
     } catch (error) {
       toast.error(`Could not delete note: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
       setIsDeleteDialogOpen(false);
     }
-  }, [
-    selectedNoteId,
-    visibleNotes,
-    deleteNoteMutation,
-    trpcUtils.notes.list,
-    selectedNotebook,
-  ]);
+  }, [deleteNoteMutation, hydrateFromServerNote, selectedNotebook, trpcUtils.notes.list, visibleNotes]);
 
   const removeLink = useCallback(
     async (linkId: string) => {
@@ -634,103 +595,211 @@ export default function Notebook() {
     [removeNoteLinkMutation, trpcUtils.notes.list]
   );
 
-  const applyWrap = useCallback(
-    (prefix: string, suffix = prefix) => {
-      const el = editorRef.current;
-      if (!el) return;
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
-      const before = noteContentInput.slice(0, start);
-      const selected = noteContentInput.slice(start, end);
-      const after = noteContentInput.slice(end);
-      const next = `${before}${prefix}${selected}${suffix}${after}`;
-      setNoteContentInput(next);
-      setIsDirty(true);
-      requestAnimationFrame(() => {
-        el.focus();
-        el.setSelectionRange(start + prefix.length, end + prefix.length);
-      });
-    },
-    [noteContentInput]
-  );
+  useEffect(() => {
+    if (!loading && !user) {
+      setLocation("/");
+    }
+  }, [loading, user, setLocation]);
 
-  const applyLinePrefix = useCallback(
-    (kind: "bullet" | "number") => {
-      const el = editorRef.current;
-      if (!el) return;
-      const start = el.selectionStart;
-      const end = el.selectionEnd;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
 
-      const blockStart = noteContentInput.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
-      const nextBreak = noteContentInput.indexOf("\n", end);
-      const blockEnd = nextBreak === -1 ? noteContentInput.length : nextBreak;
-      const block = noteContentInput.slice(blockStart, blockEnd);
-      const lines = block.split("\n");
+    const params = new URLSearchParams(window.location.search);
+    const routeNotebook = params.get("notebook");
+    const routeView = params.get("view")?.trim().toLowerCase();
+    const routeNoteId = params.get("noteId");
+    const routeEventId = params.get("eventId");
+    const routeSeriesId = params.get("seriesId");
+    const routeNew = params.get("new") === "1";
 
-      const bulletRegex = /^-\s+/;
-      const numberRegex = /^\d+\.\s+/;
-
-      let transformed: string[];
-      if (kind === "bullet") {
-        const allBullets = lines.every((line) => line.trim() === "" || bulletRegex.test(line));
-        transformed = allBullets
-          ? lines.map((line) => line.replace(bulletRegex, ""))
-          : lines.map((line) => (line.trim() ? (bulletRegex.test(line) ? line : `- ${line}`) : line));
+    if (routeNotebook && routeNotebook.trim()) {
+      if (routeNotebook.trim().toLowerCase() === "all") {
+        setSelectedNotebook("All Notebooks");
       } else {
-        const allNumbered = lines.every((line) => line.trim() === "" || numberRegex.test(line));
-        transformed = allNumbered
-          ? lines.map((line) => line.replace(numberRegex, ""))
-          : lines.map((line, index) => {
-              if (!line.trim()) return line;
-              if (numberRegex.test(line)) return line;
-              return `${index + 1}. ${line}`;
-            });
+        setSelectedNotebook(routeNotebook.trim());
+      }
+    }
+
+    if (routeView === "pinned") {
+      setViewFilter("pinned");
+    } else if (routeView === "linked" || routeView === "calendar") {
+      setViewFilter("linked");
+    }
+
+    if (routeSeriesId && routeSeriesId.trim()) {
+      setEventFilterKey(`series:${routeSeriesId.trim()}`);
+    } else if (routeEventId && routeEventId.trim()) {
+      setEventFilterKey(`event:${routeEventId.trim()}`);
+    }
+
+    if (routeNoteId && routeNoteId.trim()) {
+      setPendingRouteNoteId(routeNoteId.trim());
+    }
+
+    if (routeNew) {
+      setRouteWantsNewDraft(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (notesPage > pagesTotal) {
+      setNotesPage(pagesTotal);
+    }
+  }, [notesPage, pagesTotal]);
+
+  useEffect(() => {
+    setNotesPage(1);
+  }, [selectedNotebook, viewFilter, eventFilterKey, searchQuery]);
+
+  useEffect(() => {
+    if (notesLoading) return;
+
+    if (routeWantsNewDraft) {
+      const fallbackNotebook = selectedNotebook === "All Notebooks" ? "General" : selectedNotebook;
+      hydrateFromServerNote(null, fallbackNotebook);
+      setRouteWantsNewDraft(false);
+      return;
+    }
+
+    if (pendingRouteNoteId) {
+      const target = notes.find((note) => String(note.id) === String(pendingRouteNoteId));
+      if (target) {
+        hydrateFromServerNote(target);
+      }
+      setPendingRouteNoteId(null);
+      return;
+    }
+
+    const controller = saveControllerRef.current;
+    const currentSnapshot = controller.getSnapshot();
+
+    if (currentSnapshot.noteId) {
+      const target = notes.find((note) => String(note.id) === String(currentSnapshot.noteId));
+      if (target) {
+        const baseline = baselineServerRef.current;
+        const targetUpdatedAt = String(target.updatedAt || "");
+        const shouldHydrate =
+          !controller.isDirty() &&
+          !controller.isSaving() &&
+          (baseline.noteId !== currentSnapshot.noteId || baseline.updatedAt !== targetUpdatedAt);
+
+        if (shouldHydrate) {
+          hydrateFromServerNote(target);
+        }
+      }
+      return;
+    }
+
+    if (visibleNotes.length > 0) {
+      hydrateFromServerNote(visibleNotes[0]);
+      return;
+    }
+
+    if (!controller.isDirty()) {
+      const fallbackNotebook = selectedNotebook === "All Notebooks" ? "General" : selectedNotebook;
+      hydrateFromServerNote(null, fallbackNotebook);
+    }
+  }, [
+    notesLoading,
+    notes,
+    pendingRouteNoteId,
+    routeWantsNewDraft,
+    visibleNotes,
+    selectedNotebook,
+    hydrateFromServerNote,
+  ]);
+
+  useEffect(() => {
+    const controller = saveControllerRef.current;
+    if (!user) return;
+
+    if (!controller.isDirty()) {
+      clearAutosaveTimers();
+      return;
+    }
+
+    setSaveState((current) => (current === "saving" ? current : "unsaved"));
+
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+    }
+
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void runSave("auto");
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    if (autosaveMaxTimerRef.current === null) {
+      autosaveMaxTimerRef.current = window.setTimeout(() => {
+        void runSave("auto");
+      }, AUTOSAVE_MAX_WAIT_MS);
+    }
+  }, [clearAutosaveTimers, noteDraft.revision, runSave, user]);
+
+  useEffect(() => {
+    return () => {
+      clearAutosaveTimers();
+    };
+  }, [clearAutosaveTimers]);
+
+  useEffect(() => {
+    const handleKeydown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+
+      if (key === "s") {
+        event.preventDefault();
+        void runSave("manual");
+        return;
       }
 
-      const nextBlock = transformed.join("\n");
-      const nextText = `${noteContentInput.slice(0, blockStart)}${nextBlock}${noteContentInput.slice(blockEnd)}`;
-      setNoteContentInput(nextText);
-      setIsDirty(true);
+      if (key === "n") {
+        event.preventDefault();
+        void createDraft();
+      }
+    };
 
-      requestAnimationFrame(() => {
-        el.focus();
-        el.setSelectionRange(blockStart, blockStart + nextBlock.length);
-      });
-    },
-    [noteContentInput]
-  );
+    window.addEventListener("keydown", handleKeydown);
+    return () => window.removeEventListener("keydown", handleKeydown);
+  }, [createDraft, runSave]);
 
-  const insertLinkTemplate = useCallback(() => {
-    const el = editorRef.current;
-    if (!el) return;
+  useEffect(() => {
+    const handleFocus = () => {
+      const controller = saveControllerRef.current;
+      if (!controller.isDirty() && !controller.isSaving()) {
+        void refetchNotes();
+      } else {
+        void trpcUtils.notes.list.fetch({ limit: notesFetchLimit });
+      }
+    };
 
-    const start = el.selectionStart;
-    const end = el.selectionEnd;
-    const selected = noteContentInput.slice(start, end).trim() || "link text";
-    const template = `[${selected}](https://)`;
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [notesFetchLimit, refetchNotes, trpcUtils.notes.list]);
 
-    const next = `${noteContentInput.slice(0, start)}${template}${noteContentInput.slice(end)}`;
-    setNoteContentInput(next);
-    setIsDirty(true);
+  useEffect(() => {
+    const currentNoteId = saveControllerRef.current.getSnapshot().noteId;
+    if (!currentNoteId) return;
 
-    requestAnimationFrame(() => {
-      const cursorStart = start + selected.length + 3;
-      const cursorEnd = cursorStart + "https://".length;
-      el.focus();
-      el.setSelectionRange(cursorStart, cursorEnd);
-    });
-  }, [noteContentInput]);
+    const baseline = baselineServerRef.current;
+    if (baseline.noteId !== currentNoteId) return;
 
-  const selectedNoteLinks = useMemo(() => {
-    if (isDraftMode || !selectedNote) return [];
-    return Array.isArray(selectedNote.links) ? selectedNote.links : [];
-  }, [isDraftMode, selectedNote]);
+    const serverNote = notes.find((note) => String(note.id) === String(currentNoteId));
+    if (!serverNote) return;
 
-  const notebookSearchRows = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (!query) return notebookCounts;
-    return notebookCounts.filter((row) => row.name.toLowerCase().includes(query));
-  }, [notebookCounts, searchQuery]);
+    const serverUpdatedAt = String(serverNote.updatedAt || "");
+    if (!serverUpdatedAt || !baseline.updatedAt || serverUpdatedAt === baseline.updatedAt) return;
+
+    const controller = saveControllerRef.current;
+    if (controller.isDirty() || controller.isSaving()) {
+      if (dismissedConflictUpdatedAtRef.current === serverUpdatedAt) return;
+      setConflictNote(serverNote);
+      return;
+    }
+
+    hydrateFromServerNote(serverNote);
+  }, [hydrateFromServerNote, noteDraft.revision, notes]);
+
+  const canLoadMore = useMemo(() => notes.length >= notesFetchLimit, [notes.length, notesFetchLimit]);
 
   const statusLabel = saveStateLabel(saveState, lastSavedAt);
 
@@ -884,7 +953,7 @@ export default function Notebook() {
         ) : (
           <div className="space-y-2">
             {notesInPage.map((note) => {
-              const active = !isDraftMode && String(selectedNoteId || "") === String(note.id);
+              const active = String(saveControllerRef.current.getSnapshot().noteId || "") === String(note.id);
               const linksCount = note.links?.length ?? 0;
               return (
                 <button
@@ -902,7 +971,9 @@ export default function Notebook() {
                     {note.pinned ? <Pin className="h-3.5 w-3.5 shrink-0 text-amber-500" /> : null}
                   </div>
 
-                  <p className="mb-2 line-clamp-2 text-xs text-slate-600">{getNotePreview(String(note.content || ""), 100)}</p>
+                  <p className="mb-2 line-clamp-2 text-xs text-slate-600">
+                    {extractTextPreview(note.content).slice(0, 100) || "No content yet."}
+                  </p>
 
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
                     <Badge variant="outline" className="h-5 border-slate-300 px-1.5 font-normal">
@@ -995,11 +1066,11 @@ export default function Notebook() {
               </div>
               <h1 className="text-2xl font-semibold text-slate-900">Structured Notes Workspace</h1>
               <p className="mt-1 text-sm text-slate-600">
-                OneNote-style layout with notebooks, pages, and a focused writing canvas.
+                Stable rich-text editing with deterministic autosave and OneNote-style navigation.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => setLocation("/dashboard")}> 
+              <Button variant="outline" onClick={() => setLocation("/dashboard")}>
                 <ArrowLeft className="mr-2 h-4 w-4" />
                 Back to Dashboard
               </Button>
@@ -1050,27 +1121,21 @@ export default function Notebook() {
               <div className="space-y-3 border-b border-slate-200 p-4">
                 <div className="flex flex-wrap items-center gap-2">
                   <Input
-                    value={noteTitleInput}
-                    onChange={(event) => {
-                      setNoteTitleInput(event.target.value);
-                      setIsDirty(true);
-                    }}
+                    value={noteDraft.title}
+                    onChange={(event) => applyLocalDraftChanges({ title: event.target.value })}
                     placeholder="Page title"
                     className="h-11 flex-1 border-slate-300 text-lg font-semibold"
                   />
                   <Button
-                    variant={notePinnedInput ? "default" : "outline"}
-                    className={notePinnedInput ? "bg-amber-500 text-white hover:bg-amber-600" : ""}
-                    onClick={() => {
-                      setNotePinnedInput((current) => !current);
-                      setIsDirty(true);
-                    }}
-                    title={notePinnedInput ? "Unpin page" : "Pin page"}
+                    variant={noteDraft.pinned ? "default" : "outline"}
+                    className={noteDraft.pinned ? "bg-amber-500 text-white hover:bg-amber-600" : ""}
+                    onClick={() => applyLocalDraftChanges({ pinned: !noteDraft.pinned })}
+                    title={noteDraft.pinned ? "Unpin page" : "Pin page"}
                   >
-                    {notePinnedInput ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}
-                    {notePinnedInput ? "Unpin" : "Pin"}
+                    {noteDraft.pinned ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}
+                    {noteDraft.pinned ? "Unpin" : "Pin"}
                   </Button>
-                  <Button variant="outline" onClick={() => void saveCurrentNote()} disabled={saveState === "saving"}>
+                  <Button variant="outline" onClick={() => void runSave("manual")} disabled={saveState === "saving"}>
                     {saveState === "saving" ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1095,32 +1160,11 @@ export default function Notebook() {
 
                 <div className="flex flex-wrap items-center gap-2">
                   <Input
-                    value={noteNotebookInput}
-                    onChange={(event) => {
-                      setNoteNotebookInput(event.target.value);
-                      setIsDirty(true);
-                    }}
+                    value={noteDraft.notebook}
+                    onChange={(event) => applyLocalDraftChanges({ notebook: event.target.value })}
                     placeholder="Notebook (example: Meetings, Projects, Personal)"
                     className="h-9 w-full max-w-sm border-slate-300"
                   />
-
-                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 p-1">
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => applyWrap("**")}> 
-                      <Bold className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => applyWrap("_")}> 
-                      <Italic className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => applyLinePrefix("bullet")}> 
-                      <List className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => applyLinePrefix("number")}> 
-                      <ListOrdered className="h-4 w-4" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-8 w-8" onClick={insertLinkTemplate}> 
-                      <Link2 className="h-4 w-4" />
-                    </Button>
-                  </div>
 
                   <div className="ml-auto flex items-center gap-2">
                     <Badge
@@ -1139,20 +1183,55 @@ export default function Notebook() {
                     </Badge>
                   </div>
                 </div>
+
+                {conflictNote ? (
+                  <div className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-900">
+                    <AlertTriangle className="h-4 w-4" />
+                    <span className="mr-1">This note was updated in another tab.</span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 border-amber-400 bg-white text-amber-900 hover:bg-amber-100"
+                      onClick={() => {
+                        dismissedConflictUpdatedAtRef.current = String(conflictNote.updatedAt || "");
+                        setConflictNote(null);
+                      }}
+                    >
+                      Keep mine
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 border-amber-400 bg-white text-amber-900 hover:bg-amber-100"
+                      onClick={() => {
+                        hydrateFromServerNote(conflictNote);
+                        setConflictNote(null);
+                      }}
+                    >
+                      Reload latest
+                    </Button>
+                  </div>
+                ) : null}
               </div>
 
               <div className="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px]">
-                <div className="flex min-h-0 flex-col border-r border-slate-200">
-                  <Textarea
-                    ref={editorRef}
-                    value={noteContentInput}
-                    onChange={(event) => {
-                      setNoteContentInput(event.target.value);
-                      setIsDirty(true);
-                    }}
-                    placeholder="Start typing your notes..."
-                    className="h-full min-h-[340px] resize-none rounded-none border-0 px-5 py-4 font-[ui-serif] text-[15px] leading-7 shadow-none focus-visible:ring-0"
-                  />
+                <div className="min-h-0 border-r border-slate-200">
+                  <Suspense
+                    fallback={
+                      <div className="flex h-full min-h-[320px] items-center justify-center text-sm text-slate-500">
+                        Loading editor...
+                      </div>
+                    }
+                  >
+                    <RichTextEditor
+                      value={noteDraft.contentHtml}
+                      onChange={(value) => applyLocalDraftChanges({ contentHtml: value })}
+                      onSaveShortcut={() => {
+                        void runSave("manual");
+                      }}
+                      className="h-full"
+                    />
+                  </Suspense>
                 </div>
 
                 <div className="hidden min-h-0 flex-col border-t border-slate-200 bg-slate-50/60 xl:flex xl:border-t-0">
@@ -1176,7 +1255,7 @@ export default function Notebook() {
                                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                                   {linkLabel(link.linkType)}
                                 </p>
-                                <p className="mt-1 text-sm font-medium text-slate-900 line-clamp-2">
+                                <p className="mt-1 line-clamp-2 text-sm font-medium text-slate-900">
                                   {link.sourceTitle || link.externalId || "Linked item"}
                                 </p>
                                 <p className="mt-1 text-[11px] text-slate-500">Added {formatDateTime(link.createdAt)}</p>

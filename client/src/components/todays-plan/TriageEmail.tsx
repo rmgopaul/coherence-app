@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Archive, Reply, SquareCheckBig } from "lucide-react";
+import { Loader2, MailCheck, Reply, SquareCheckBig } from "lucide-react";
 
 type TriageEmailData = {
   id: string;
@@ -11,11 +11,20 @@ type TriageEmailData = {
 type TriageEmailProps = {
   email: TriageEmailData;
   onReply?: (email: TriageEmailData) => void;
-  onArchive?: (email: TriageEmailData) => void;
+  onMarkRead?: (email: TriageEmailData) => void;
   onMakeTask?: (email: TriageEmailData) => void;
+  markReadDisabled?: boolean;
+  markReadPending?: boolean;
 };
 
-export function TriageEmail({ email, onReply, onArchive, onMakeTask }: TriageEmailProps) {
+export function TriageEmail({
+  email,
+  onReply,
+  onMarkRead,
+  onMakeTask,
+  markReadDisabled = false,
+  markReadPending = false,
+}: TriageEmailProps) {
   return (
     <article className="min-w-0 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
       <p className="line-clamp-2 break-all text-xs font-semibold uppercase tracking-wide text-slate-500">{email.sender}</p>
@@ -36,10 +45,11 @@ export function TriageEmail({ email, onReply, onArchive, onMakeTask }: TriageEma
           size="sm"
           variant="outline"
           className="h-7 gap-1 px-2 text-xs"
-          onClick={() => (onArchive ? onArchive(email) : console.log("[TriageEmail] Archive", email))}
+          disabled={markReadDisabled}
+          onClick={() => (onMarkRead ? onMarkRead(email) : console.log("[TriageEmail] Mark as read", email))}
         >
-          <Archive className="h-3.5 w-3.5" />
-          Archive
+          {markReadPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MailCheck className="h-3.5 w-3.5" />}
+          Mark as read
         </Button>
         <Button
           size="sm"

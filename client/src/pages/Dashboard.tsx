@@ -1120,7 +1120,7 @@ export default function Dashboard() {
     window.open(`https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(email.id)}`, "_blank", "noopener,noreferrer");
   };
 
-  const handleTriageArchive = (email: { id: string }) => {
+  const handleTriageMarkRead = (email: { id: string }) => {
     if (markEmailAsRead.isPending) return;
     markEmailAsRead.mutate({ messageId: email.id });
   };
@@ -1668,7 +1668,23 @@ export default function Dashboard() {
     };
 
     switch (action.kind) {
-      case "open_email":
+      case "open_email": {
+        const wantsMarkRead =
+          Boolean(action.payload?.markRead) || Boolean(action.payload?.archiveHint);
+        const messageId = typeof action.payload?.id === "string" ? action.payload.id : "";
+
+        if (wantsMarkRead) {
+          if (!messageId) {
+            toast.error("No email id available to mark as read");
+            return;
+          }
+          if (markEmailAsRead.isPending) return;
+          markEmailAsRead.mutate({ messageId });
+          return;
+        }
+        openUrl(action.payload?.url);
+        return;
+      }
       case "open_event":
       case "open_task":
       case "open_note":
@@ -2059,8 +2075,10 @@ export default function Dashboard() {
                       key={email.id}
                       email={email}
                       onReply={handleTriageReply}
-                      onArchive={handleTriageArchive}
+                      onMarkRead={handleTriageMarkRead}
                       onMakeTask={handleTriageMakeTask}
+                      markReadDisabled={markEmailAsRead.isPending}
+                      markReadPending={markEmailAsRead.isPending && markingEmailId === email.id}
                     />
                   ))
                 )}

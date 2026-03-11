@@ -1675,7 +1675,7 @@ export const appRouter = router({
         z.object({
           notebook: z.string().min(1).max(120).optional(),
           title: z.string().min(1).max(180),
-          content: z.string().max(20000).optional(),
+          content: z.string().max(250000).optional(),
           pinned: z.boolean().optional(),
         })
       )
@@ -1701,7 +1701,7 @@ export const appRouter = router({
           noteId: z.string(),
           notebook: z.string().min(1).max(120).optional(),
           title: z.string().min(1).max(180).optional(),
-          content: z.string().max(20000).optional(),
+          content: z.string().max(250000).optional(),
           pinned: z.boolean().optional(),
         })
       )

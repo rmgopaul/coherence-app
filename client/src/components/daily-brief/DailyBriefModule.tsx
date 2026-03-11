@@ -271,6 +271,8 @@ function InboxTriageCard({ brief, onAction }: { brief: DailyBrief; onAction: (ac
   const [expanded, setExpanded] = useState(false);
   const [expandedDraftIds, setExpandedDraftIds] = useState<Record<string, boolean>>({});
   const [activeDraftItemId, setActiveDraftItemId] = useState<string | null>(null);
+  const formatRecommendedAction = (action: DailyBrief["inboxTriage"][number]["recommendedAction"]) =>
+    action === "archive" ? "mark as read" : action;
 
   const rows = expanded ? brief.inboxTriage : brief.inboxTriage.slice(0, 3);
   const activeDraftItem = rows.find((item) => item.id === activeDraftItemId) || null;
@@ -302,7 +304,7 @@ function InboxTriageCard({ brief, onAction }: { brief: DailyBrief; onAction: (ac
                   <Badge className={urgencyClass}>{item.urgency || "med"}</Badge>
                 </div>
                 <p className="mt-1 text-xs text-slate-600">{item.from}</p>
-                <p className="mt-1 text-xs text-slate-700">Recommended: {item.recommendedAction}</p>
+                <p className="mt-1 text-xs text-slate-700">Recommended: {formatRecommendedAction(item.recommendedAction)}</p>
 
                 <div className="mt-2 flex flex-wrap gap-2">
                   <Button
@@ -354,13 +356,13 @@ function InboxTriageCard({ brief, onAction }: { brief: DailyBrief; onAction: (ac
                     className="h-8 text-xs"
                     onClick={() =>
                       onAction({
-                        label: "Archive",
+                        label: "Mark as read",
                         kind: "open_email",
-                        payload: { url: item.sourceRef.url, archiveHint: true, id: item.sourceRef.id },
+                        payload: { id: item.sourceRef.id, markRead: true },
                       })
                     }
                   >
-                    Archive
+                    Mark as read
                   </Button>
                 </div>
 
