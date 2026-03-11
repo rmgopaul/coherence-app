@@ -40,6 +40,20 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 const DAILY_BRIEF_CACHE_KEY = "dailyBriefCacheV1";
 
@@ -166,6 +180,28 @@ const HABIT_COLOR_STYLES: Record<string, { active: string; inactive: string }> =
 
 const SUPPLEMENT_UNITS = ["capsule", "tablet", "mg", "mcg", "g", "ml", "drop", "scoop", "other"] as const;
 
+function LiveClockValue() {
+  const [currentTime, setCurrentTime] = useState(() => new Date());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setCurrentTime(new Date());
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <>
+      <Clock3 className="h-4 w-4 text-slate-600" />
+      {currentTime.toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+      })}
+    </>
+  );
+}
+
 export default function Dashboard() {
   const { user, loading } = useAuth();
   const [, setLocation] = useLocation();
@@ -198,7 +234,8 @@ export default function Dashboard() {
   const [manualSleepScoreInput, setManualSleepScoreInput] = useState("");
   const [manualEnergyScoreInput, setManualEnergyScoreInput] = useState("");
   const [editingSamsungField, setEditingSamsungField] = useState<"sleep" | "energy" | null>(null);
-  const [currentTime, setCurrentTime] = useState(() => new Date());
+  const [minuteTick, setMinuteTick] = useState(() => new Date());
+  const [dashboardViewMode, setDashboardViewMode] = useState<"essential" | "detailed">("essential");
   const [noteTitleInput, setNoteTitleInput] = useState("");
   const [noteContentInput, setNoteContentInput] = useState("");
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
@@ -658,14 +695,14 @@ export default function Dashboard() {
 
   useEffect(() => {
     const timer = window.setInterval(() => {
-      setCurrentTime(new Date());
-    }, 1000);
+      setMinuteTick(new Date());
+    }, 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
   const nextCalendarEvent = useMemo(() => {
-    const nowMs = currentTime.getTime();
-    const todayStart = new Date(currentTime);
+    const nowMs = minuteTick.getTime();
+    const todayStart = new Date(minuteTick);
     todayStart.setHours(0, 0, 0, 0);
 
     const candidates = (calendarEvents || [])
@@ -694,7 +731,7 @@ export default function Dashboard() {
       .sort((a: any, b: any) => a.startDate.getTime() - b.startDate.getTime());
 
     return candidates[0] ?? null;
-  }, [calendarEvents, currentTime]);
+  }, [calendarEvents, minuteTick]);
 
   const prioritizedEmails = useMemo(() => {
     const urgentPattern =
@@ -1596,7 +1633,7 @@ export default function Dashboard() {
   const effectiveDailyBrief = useMemo(() => {
     if (dailyBrief) return withFreshness(dailyBrief, new Date());
     return withFreshness({ ...MOCK_DAILY_BRIEF, generatedAt: new Date().toISOString() }, new Date());
-  }, [dailyBrief, currentTime]);
+  }, [dailyBrief, minuteTick]);
 
   const toGoogleCalendarUtcStamp = (value: Date) =>
     value
@@ -1735,6 +1772,36 @@ export default function Dashboard() {
     return `${remainder}m`;
   };
   const recentMetricRows = (metricHistory || []).slice(0, 7);
+  const isDetailedMode = dashboardViewMode === "detailed";
+  const dailyTrendChartData = [...recentMetricRows]
+    .reverse()
+    .map((row: any) => ({
+      date: String(row.dateKey || "").slice(5),
+      recovery: row.whoopRecoveryScore ?? null,
+      steps: row.samsungSteps ?? null,
+      completed: row.todoistCompletedCount ?? null,
+    }));
+  const emailPriorityChartData = useMemo(() => {
+    const buckets = [
+      { label: "High (4+)", count: 0 },
+      { label: "Medium (2-3)", count: 0 },
+      { label: "Low (0-1)", count: 0 },
+    ];
+    prioritizedEmails.forEach((email) => {
+      if (email.score >= 4) buckets[0].count += 1;
+      else if (email.score >= 2) buckets[1].count += 1;
+      else buckets[2].count += 1;
+    });
+    return buckets;
+  }, [prioritizedEmails]);
+  const habitCompletionChartData = useMemo(() => {
+    const total = (habitsForToday || []).length;
+    const completed = (habitsForToday || []).filter((habit: any) => habit.completed).length;
+    return [
+      { name: "Completed", value: completed, color: "#059669" },
+      { name: "Remaining", value: Math.max(0, total - completed), color: "#cbd5e1" },
+    ];
+  }, [habitsForToday]);
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -1800,12 +1867,7 @@ export default function Dashboard() {
                 <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
                   <p className="text-[11px] uppercase tracking-wide text-slate-500">Current Time</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                    <Clock3 className="h-4 w-4 text-slate-600" />
-                    {currentTime.toLocaleTimeString("en-US", {
-                      hour: "numeric",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}
+                    <LiveClockValue />
                   </p>
                 </div>
 
@@ -1883,24 +1945,46 @@ export default function Dashboard() {
               <CheckSquare className="h-3.5 w-3.5 mr-1.5 text-red-600" />
               Todoist
             </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
-              onClick={() => scrollToSection("section-workspace")}
-            >
-              <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
-              Workspace
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
-              onClick={() => scrollToSection("section-chat")}
-            >
-              <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
-              Chat
-            </Button>
+            {isDetailedMode ? (
+              <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
+                  onClick={() => scrollToSection("section-workspace")}
+                >
+                  <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
+                  Workspace
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
+                  onClick={() => scrollToSection("section-chat")}
+                >
+                  <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
+                  Chat
+                </Button>
+              </>
+            ) : null}
+            <div className="ml-auto flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
+              <Button
+                variant={dashboardViewMode === "essential" ? "default" : "ghost"}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setDashboardViewMode("essential")}
+              >
+                Essential
+              </Button>
+              <Button
+                variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => setDashboardViewMode("detailed")}
+              >
+                Detailed
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -1924,6 +2008,17 @@ export default function Dashboard() {
                 <CardTitle className="text-base">Triage Inbox</CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
+                <div className="h-32 rounded-md border border-slate-200 bg-white px-2 py-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={emailPriorityChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip />
+                      <Bar dataKey="count" name="Emails" fill="#e11d48" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
                 {triageEmails.length === 0 ? (
                   <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
                     No priority emails to triage right now.
@@ -2353,6 +2448,19 @@ export default function Dashboard() {
               <p className="text-xs text-slate-500">
                 One row per day. Captured every 15m while this dashboard is open, and when you complete a Todoist task.
               </p>
+              <div className="h-40 rounded-md border border-slate-200 bg-white px-2 py-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={dailyTrendChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} />
+                    <Tooltip />
+                    <Line yAxisId="left" type="monotone" dataKey="recovery" stroke="#2563eb" strokeWidth={2} dot={false} />
+                    <Line yAxisId="right" type="monotone" dataKey="completed" stroke="#dc2626" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
               {recentMetricRows.length === 0 ? (
                 <p className="text-sm text-slate-500">No entries yet.</p>
               ) : (
@@ -2385,7 +2493,8 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="min-w-0 flex flex-col">
+          {isDetailedMode ? (
+            <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
                 <Pill className="h-4 w-4 text-emerald-600" />
@@ -2532,7 +2641,8 @@ export default function Dashboard() {
                 )}
               </div>
             </CardContent>
-          </Card>
+            </Card>
+          ) : null}
 
           <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -2549,6 +2659,25 @@ export default function Dashboard() {
               </Button>
             </CardHeader>
             <CardContent>
+              <div className="mb-3 h-36 rounded-md border border-slate-200 bg-white px-2 py-1">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Tooltip />
+                    <Pie
+                      data={habitCompletionChartData}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={36}
+                      outerRadius={56}
+                      paddingAngle={2}
+                    >
+                      {habitCompletionChartData.map((entry) => (
+                        <Cell key={entry.name} fill={entry.color} />
+                      ))}
+                    </Pie>
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
               {(habitsForToday || []).length === 0 ? (
                 <div className="text-sm text-slate-500">
                   No habits configured.
@@ -2586,17 +2715,18 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          <Card className="min-w-0 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <FileText className="h-4 w-4 text-emerald-600" />
-                <CardTitle className="text-base">Notes</CardTitle>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => refetchNotes()}>
-                <RefreshCw className="h-4 w-4" />
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-3">
+          {isDetailedMode ? (
+            <Card className="min-w-0 flex flex-col">
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-emerald-600" />
+                  <CardTitle className="text-base">Notes</CardTitle>
+                </div>
+                <Button variant="ghost" size="sm" onClick={() => refetchNotes()}>
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <Input
                   value={noteNotebookInput}
@@ -2810,8 +2940,9 @@ export default function Dashboard() {
                   ))
                 )}
               </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          ) : null}
         </div>
       </div>
 

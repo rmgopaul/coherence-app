@@ -2,37 +2,57 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
+import { Suspense, lazy, type ComponentType } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import PinGate from "./components/PinGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
-import Dashboard from "./pages/Dashboard";
-import SolarRecDashboard from "./pages/SolarRecDashboard";
-import EnphaseV2MeterReads from "./pages/EnphaseV2MeterReads";
-import DeepUpdateSynthesizer from "./pages/DeepUpdateSynthesizer";
-import Notebook from "./pages/Notebook";
-import Settings from "./pages/Settings";
-import TodoistWidget from "./pages/TodoistWidget";
-import ChatGPTWidget from "./pages/ChatGPTWidget";
-import GoogleCalendarWidget from "./pages/GoogleCalendarWidget";
-import GmailWidget from "./pages/GmailWidget";
+
+const Home = lazy(() => import("./pages/Home"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const SolarRecDashboard = lazy(() => import("./pages/SolarRecDashboard"));
+const EnphaseV2MeterReads = lazy(() => import("./pages/EnphaseV2MeterReads"));
+const DeepUpdateSynthesizer = lazy(() => import("./pages/DeepUpdateSynthesizer"));
+const Notebook = lazy(() => import("./pages/Notebook"));
+const Settings = lazy(() => import("./pages/Settings"));
+const TodoistWidget = lazy(() => import("./pages/TodoistWidget"));
+const ChatGPTWidget = lazy(() => import("./pages/ChatGPTWidget"));
+const GoogleCalendarWidget = lazy(() => import("./pages/GoogleCalendarWidget"));
+const GmailWidget = lazy(() => import("./pages/GmailWidget"));
+
+function RouteFallback() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="text-sm text-slate-600">Loading page...</div>
+    </div>
+  );
+}
+
+function withRouteSuspense(Component: ComponentType) {
+  return function SuspendedRouteComponent() {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Component />
+      </Suspense>
+    );
+  };
+}
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
   return (
     <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/dashboard"} component={Dashboard} />
-      <Route path={"/solar-rec-dashboard"} component={SolarRecDashboard} />
-      <Route path={"/deep-update-synthesizer"} component={DeepUpdateSynthesizer} />
-      <Route path={"/enphase-v4-meter-reads"} component={EnphaseV2MeterReads} />
-      <Route path={"/enphase-v2-meter-reads"} component={EnphaseV2MeterReads} />
-      <Route path={"/notes"} component={Notebook} />
-      <Route path={"/settings"} component={Settings} />
-      <Route path={"/widget/todoist"} component={TodoistWidget} />
-      <Route path={"/widget/chatgpt"} component={ChatGPTWidget} />
-      <Route path={"/widget/google-calendar"} component={GoogleCalendarWidget} />
-      <Route path={"/widget/gmail"} component={GmailWidget} />
+      <Route path={"/"} component={withRouteSuspense(Home)} />
+      <Route path={"/dashboard"} component={withRouteSuspense(Dashboard)} />
+      <Route path={"/solar-rec-dashboard"} component={withRouteSuspense(SolarRecDashboard)} />
+      <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
+      <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
+      <Route path={"/enphase-v2-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
+      <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
+      <Route path={"/settings"} component={withRouteSuspense(Settings)} />
+      <Route path={"/widget/todoist"} component={withRouteSuspense(TodoistWidget)} />
+      <Route path={"/widget/chatgpt"} component={withRouteSuspense(ChatGPTWidget)} />
+      <Route path={"/widget/google-calendar"} component={withRouteSuspense(GoogleCalendarWidget)} />
+      <Route path={"/widget/gmail"} component={withRouteSuspense(GmailWidget)} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

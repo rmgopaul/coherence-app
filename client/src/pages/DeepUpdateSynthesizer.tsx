@@ -15,6 +15,7 @@ import {
 } from "@/lib/deepUpdateSynth";
 import { ArrowLeft, Download, Loader2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -24,6 +25,9 @@ const DEEP_UPDATE_STORE = "reports";
 const DEEP_UPDATE_RECORD_KEY = "activeReports";
 const DEEP_UPDATE_REMOTE_MANIFEST_KEY = "deep_update_manifest_v1";
 const DEEP_UPDATE_REMOTE_CHUNK_CHAR_LIMIT = 500_000;
+const DEEP_UPDATE_PREVIEW_PAGE_SIZE = 50;
+const DEEP_UPDATE_OUTPUT_PAGE_SIZE = 25;
+const DEEP_UPDATE_REMOTE_REPORT_WARN_CHARS = 8_000_000;
 
 type DeepUpdateRemoteReportPayload = {
   fileName: string;
@@ -148,6 +152,14 @@ function deserializeReportFromRemote(payload: string, key: DeepUpdateReportKey):
   } catch {
     return null;
   }
+}
+
+function buildReportsSignature(reports: Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>>): string {
+  return REPORTS.map((report) => {
+    const reportData = reports[report.key];
+    if (!reportData) return `${report.key}:none`;
+    return `${report.key}:${reportData.fileName}|${reportData.sheetName}|${reportData.headers.length}|${reportData.rows.length}`;
+  }).join("||");
 }
 
 async function openDeepUpdateDatabase(): Promise<IDBDatabase> {
@@ -278,6 +290,11 @@ function toErrorMessage(error: unknown): string {
   return "Unknown error.";
 }
 
+function formatPercent(value: number): string {
+  if (!Number.isFinite(value)) return "0.0%";
+  return `${value.toFixed(1)}%`;
+}
+
 function triggerCsvDownload(fileName: string, csvText: string): void {
   const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -300,6 +317,9 @@ export default function DeepUpdateSynthesizer() {
   const [result, setResult] = useState<DeepUpdateSynthesisResult | null>(null);
   const [synthError, setSynthError] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
+  const [lastSuccessfulSynthesisAt, setLastSuccessfulSynthesisAt] = useState<Date | null>(null);
+  const [statusPreviewPage, setStatusPreviewPage] = useState(1);
+  const [deepUpdatePreviewPage, setDeepUpdatePreviewPage] = useState(1);
   const [reportsHydrated, setReportsHydrated] = useState(false);
   const [remoteHydrated, setRemoteHydrated] = useState(false);
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
@@ -314,6 +334,8 @@ export default function DeepUpdateSynthesizer() {
   reportsRef.current = reports;
   const reportsHydratedRef = useRef(reportsHydrated);
   reportsHydratedRef.current = reportsHydrated;
+  const localReportsSignatureRef = useRef("");
+  const remoteReportsAggregateSignatureRef = useRef("");
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -328,6 +350,7 @@ export default function DeepUpdateSynthesizer() {
       if (cancelled) return;
       if (Object.keys(storedReports).length > 0) {
         setReports(storedReports);
+        localReportsSignatureRef.current = buildReportsSignature(storedReports);
       }
       setReportsHydrated(true);
     })();
@@ -339,13 +362,16 @@ export default function DeepUpdateSynthesizer() {
 
   useEffect(() => {
     if (!reportsHydrated) return;
+    const nextSignature = buildReportsSignature(reports);
+    if (localReportsSignatureRef.current === nextSignature) return;
     const timeout = window.setTimeout(() => {
       void saveDeepUpdateReportsToStorage(reports).catch(() => {
         setStorageNotice(
           "Browser storage is full for this device. Keeping uploads in cloud sync; local browser persistence is limited."
         );
       });
-    }, 400);
+      localReportsSignatureRef.current = nextSignature;
+    }, 800);
 
     return () => {
       window.clearTimeout(timeout);
@@ -404,6 +430,7 @@ export default function DeepUpdateSynthesizer() {
           });
         }
         remoteReportSignaturesRef.current = signatures;
+        remoteReportsAggregateSignatureRef.current = buildReportsSignature(loaded);
         setStorageNotice(null);
       } catch {
         if (!cancelled) {
@@ -421,13 +448,20 @@ export default function DeepUpdateSynthesizer() {
 
   useEffect(() => {
     if (authLoading || !user || !reportsHydrated || !remoteHydrated) return;
+    const nextAggregateSignature = buildReportsSignature(reports);
+    if (nextAggregateSignature === remoteReportsAggregateSignatureRef.current) return;
 
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
       void (async () => {
+        if (cancelled) return;
+        if (nextAggregateSignature === remoteReportsAggregateSignatureRef.current) return;
         const nextSignatures: Partial<Record<DeepUpdateReportKey, string>> = {};
+        let warnedLargePayload = false;
 
         try {
           for (const report of REPORTS) {
+            if (cancelled) return;
             const key = report.key;
             const reportData = reports[key];
             const storageKey = reportStorageKey(key);
@@ -444,6 +478,12 @@ export default function DeepUpdateSynthesizer() {
             if (remoteReportSignaturesRef.current[key] === signature) continue;
 
             const payload = serializeReportForRemote(reportData);
+            if (payload.length > DEEP_UPDATE_REMOTE_REPORT_WARN_CHARS && !warnedLargePayload) {
+              warnedLargePayload = true;
+              setStorageNotice(
+                "Large Deep Update uploads detected. Cloud sync will continue in chunks and may take longer than usual."
+              );
+            }
             const chunks = splitTextIntoChunks(payload, DEEP_UPDATE_REMOTE_CHUNK_CHAR_LIMIT);
 
             if (chunks.length === 1) {
@@ -467,14 +507,20 @@ export default function DeepUpdateSynthesizer() {
             payload: buildManifestPayload(activeKeys),
           });
           remoteReportSignaturesRef.current = nextSignatures;
-          setStorageNotice(null);
+          remoteReportsAggregateSignatureRef.current = nextAggregateSignature;
+          if (!warnedLargePayload) {
+            setStorageNotice(null);
+          }
         } catch {
-          setStorageNotice("Could not sync Deep Update uploads to cloud storage.");
+          if (!cancelled) {
+            setStorageNotice("Could not sync Deep Update uploads to cloud storage.");
+          }
         }
       })();
-    }, 1000);
+    }, 1500);
 
     return () => {
+      cancelled = true;
       window.clearTimeout(timeout);
     };
   }, [authLoading, remoteHydrated, reports, reportsHydrated, user]);
@@ -509,9 +555,81 @@ export default function DeepUpdateSynthesizer() {
     () => REPORTS.filter((report) => report.required && !reports[report.key]),
     [reports]
   );
+  const loadedReportCount = useMemo(
+    () => REPORTS.filter((report) => Boolean(reports[report.key])).length,
+    [reports]
+  );
+  const requiredReportCount = useMemo(
+    () => REPORTS.filter((report) => report.required).length,
+    []
+  );
+  const loadedRequiredReportCount = useMemo(
+    () => REPORTS.filter((report) => report.required && Boolean(reports[report.key])).length,
+    [reports]
+  );
+  const uploadCompletionPercent = useMemo(
+    () => (REPORTS.length === 0 ? 0 : (loadedReportCount / REPORTS.length) * 100),
+    [loadedReportCount]
+  );
 
-  const previewRows = useMemo(() => (result ? result.rows.slice(0, 200) : []), [result]);
-  const deepUpdatePreviewRows = useMemo(() => (result ? result.rows.slice(0, 30).map((row) => row.deepUpdateRow) : []), [result]);
+  const stepDistributionRows = useMemo(() => {
+    if (!result) return [] as Array<{ step: string; total: number; needsUpdate: number }>;
+    const groups = new Map<string, { step: string; total: number; needsUpdate: number }>();
+    result.rows.forEach((row) => {
+      const step = row.calculatedStep || "Unknown";
+      const current = groups.get(step) ?? { step, total: 0, needsUpdate: 0 };
+      current.total += 1;
+      if (row.shouldBeUpdated) current.needsUpdate += 1;
+      groups.set(step, current);
+    });
+    return Array.from(groups.values()).sort((a, b) => b.total - a.total).slice(0, 15);
+  }, [result]);
+
+  const statusPreviewTotalRows = result?.rows.length ?? 0;
+  const statusPreviewTotalPages = Math.max(1, Math.ceil(statusPreviewTotalRows / DEEP_UPDATE_PREVIEW_PAGE_SIZE));
+  const statusPreviewCurrentPage = Math.min(statusPreviewPage, statusPreviewTotalPages);
+  const statusPreviewStartIndex = (statusPreviewCurrentPage - 1) * DEEP_UPDATE_PREVIEW_PAGE_SIZE;
+  const statusPreviewEndIndex = statusPreviewStartIndex + DEEP_UPDATE_PREVIEW_PAGE_SIZE;
+  const previewRows = useMemo(
+    () => (result ? result.rows.slice(statusPreviewStartIndex, statusPreviewEndIndex) : []),
+    [result, statusPreviewEndIndex, statusPreviewStartIndex]
+  );
+
+  const deepUpdatePreviewTotalRows = result?.rows.length ?? 0;
+  const deepUpdatePreviewTotalPages = Math.max(1, Math.ceil(deepUpdatePreviewTotalRows / DEEP_UPDATE_OUTPUT_PAGE_SIZE));
+  const deepUpdatePreviewCurrentPage = Math.min(deepUpdatePreviewPage, deepUpdatePreviewTotalPages);
+  const deepUpdatePreviewStartIndex = (deepUpdatePreviewCurrentPage - 1) * DEEP_UPDATE_OUTPUT_PAGE_SIZE;
+  const deepUpdatePreviewEndIndex = deepUpdatePreviewStartIndex + DEEP_UPDATE_OUTPUT_PAGE_SIZE;
+  const deepUpdatePreviewRows = useMemo(
+    () =>
+      result
+        ? result.rows.slice(deepUpdatePreviewStartIndex, deepUpdatePreviewEndIndex).map((row) => row.deepUpdateRow)
+        : [],
+    [deepUpdatePreviewEndIndex, deepUpdatePreviewStartIndex, result]
+  );
+  const firstNeedsUpdateIndex = useMemo(
+    () => (result ? result.rows.findIndex((row) => row.shouldBeUpdated) : -1),
+    [result]
+  );
+
+  useEffect(() => {
+    if (statusPreviewPage <= statusPreviewTotalPages) return;
+    setStatusPreviewPage(statusPreviewTotalPages);
+  }, [statusPreviewPage, statusPreviewTotalPages]);
+
+  useEffect(() => {
+    if (deepUpdatePreviewPage <= deepUpdatePreviewTotalPages) return;
+    setDeepUpdatePreviewPage(deepUpdatePreviewTotalPages);
+  }, [deepUpdatePreviewPage, deepUpdatePreviewTotalPages]);
+
+  const jumpToFirstNeedsUpdate = () => {
+    if (firstNeedsUpdateIndex < 0) return;
+    const targetPage = Math.floor(firstNeedsUpdateIndex / DEEP_UPDATE_PREVIEW_PAGE_SIZE) + 1;
+    setStatusPreviewPage(targetPage);
+    if (typeof document !== "undefined") {
+      document.getElementById("deep-update-status-preview")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  };
 
   const handleUpload = async (key: DeepUpdateReportKey, file: File | null) => {
     if (!file) return;
@@ -545,6 +663,9 @@ export default function DeepUpdateSynthesizer() {
     try {
       const synthesized = synthesizeDeepUpdate(reports);
       setResult(synthesized);
+      setLastSuccessfulSynthesisAt(new Date());
+      setStatusPreviewPage(1);
+      setDeepUpdatePreviewPage(1);
       toast.success(`Synthesized ${synthesized.summary.synthesizedRows} row(s).`);
     } catch (error) {
       const message = toErrorMessage(error);
@@ -648,6 +769,37 @@ export default function DeepUpdateSynthesizer() {
           </CardContent>
         </Card>
 
+        <Card>
+          <CardHeader>
+            <CardTitle>Upload Checklist</CardTitle>
+            <CardDescription>
+              {formatPercent(uploadCompletionPercent)} complete ({loadedReportCount}/{REPORTS.length} files loaded).
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-slate-200">
+              <div
+                className="h-full rounded-full bg-emerald-600 transition-all"
+                style={{ width: `${Math.max(0, Math.min(100, uploadCompletionPercent))}%` }}
+              />
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Required Uploads</p>
+                <p className="text-lg font-semibold text-slate-900">
+                  {loadedRequiredReportCount}/{requiredReportCount}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Last Successful Synthesis</p>
+                <p className="text-sm font-semibold text-slate-900">
+                  {lastSuccessfulSynthesisAt ? lastSuccessfulSynthesisAt.toLocaleString() : "Not run yet"}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {storageNotice ? (
           <Card className="border-amber-200 bg-amber-50/70">
             <CardHeader>
@@ -728,29 +880,71 @@ export default function DeepUpdateSynthesizer() {
               </CardContent>
             </Card>
 
+            <Card>
+              <CardHeader>
+                <CardTitle>Calculated Step Distribution</CardTitle>
+                <CardDescription>
+                  Total synthesized rows by calculated step, with rows needing update highlighted.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {stepDistributionRows.length === 0 ? (
+                  <p className="text-sm text-slate-600">No synthesized rows available yet.</p>
+                ) : (
+                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={stepDistributionRows} margin={{ top: 8, right: 12, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="step" tick={{ fontSize: 11 }} interval={0} angle={-22} textAnchor="end" height={70} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Bar dataKey="total" fill="#94a3b8" name="Total Rows" />
+                        <Bar dataKey="needsUpdate" fill="#f59e0b" name="Needs Update" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
             {result.warnings.length > 0 && (
               <Card>
                 <CardHeader>
                   <CardTitle>Warnings</CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-1">
+                <CardContent className="space-y-2">
                   {result.warnings.map((warning) => (
                     <p key={warning} className="text-sm text-amber-700">
                       - {warning}
                     </p>
                   ))}
+                  {firstNeedsUpdateIndex >= 0 ? (
+                    <div>
+                      <Button variant="outline" size="sm" onClick={jumpToFirstNeedsUpdate}>
+                        Jump to first row needing update
+                      </Button>
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
             )}
 
-            <Card>
+            <Card id="deep-update-status-preview">
               <CardHeader>
-                <CardTitle>Status Preview (First 200 Rows)</CardTitle>
+                <CardTitle>Status Preview</CardTitle>
                 <CardDescription>
                   Use this to review where computed calc-step status differs from current internal status.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {previewRows.length.toLocaleString()} of {statusPreviewTotalRows.toLocaleString()} rows
+                  </span>
+                  <span>
+                    Page {statusPreviewCurrentPage.toLocaleString()} of {statusPreviewTotalPages.toLocaleString()}
+                  </span>
+                </div>
                 <div className="max-h-[540px] overflow-auto rounded-md border border-slate-200">
                   <Table>
                     <TableHeader className="sticky top-0 bg-white z-10">
@@ -782,20 +976,55 @@ export default function DeepUpdateSynthesizer() {
                           </TableCell>
                         </TableRow>
                       ))}
+                      {previewRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={7} className="py-6 text-center text-slate-500">
+                            No status rows to display.
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
                     </TableBody>
                   </Table>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setStatusPreviewPage((page) => Math.max(1, page - 1))}
+                    disabled={statusPreviewCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setStatusPreviewPage((page) => Math.min(statusPreviewTotalPages, page + 1))}
+                    disabled={statusPreviewCurrentPage >= statusPreviewTotalPages}
+                  >
+                    Next
+                  </Button>
                 </div>
               </CardContent>
             </Card>
 
             <Card>
               <CardHeader>
-                <CardTitle>Deep Update Preview (First 30 Rows)</CardTitle>
+                <CardTitle>Deep Update Preview</CardTitle>
                 <CardDescription>
                   This mirrors the Deep Update output format: id + 10 update columns.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {deepUpdatePreviewRows.length.toLocaleString()} of{" "}
+                    {deepUpdatePreviewTotalRows.toLocaleString()} rows
+                  </span>
+                  <span>
+                    Page {deepUpdatePreviewCurrentPage.toLocaleString()} of{" "}
+                    {deepUpdatePreviewTotalPages.toLocaleString()}
+                  </span>
+                </div>
                 <div className="max-h-[420px] overflow-auto rounded-md border border-slate-200">
                   <Table>
                     <TableHeader className="sticky top-0 bg-white z-10">
@@ -829,8 +1058,35 @@ export default function DeepUpdateSynthesizer() {
                           <TableCell>{row.utility_contract_number}</TableCell>
                         </TableRow>
                       ))}
+                      {deepUpdatePreviewRows.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                            No deep update rows to display.
+                          </TableCell>
+                        </TableRow>
+                      ) : null}
                     </TableBody>
                   </Table>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDeepUpdatePreviewPage((page) => Math.max(1, page - 1))}
+                    disabled={deepUpdatePreviewCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setDeepUpdatePreviewPage((page) => Math.min(deepUpdatePreviewTotalPages, page + 1))
+                    }
+                    disabled={deepUpdatePreviewCurrentPage >= deepUpdatePreviewTotalPages}
+                  >
+                    Next
+                  </Button>
                 </div>
               </CardContent>
             </Card>

@@ -1,16 +1,25 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { APP_LOGO, APP_TITLE, getLoginUrl } from "@/const";
+import { useEffect } from "react";
 import { useLocation } from "wouter";
 
 export default function Home() {
   const { user, loading } = useAuth();
   const [, setLocation] = useLocation();
 
-  // Redirect to dashboard if already logged in
-  if (user && !loading) {
-    setLocation("/dashboard");
-    return null;
+  useEffect(() => {
+    if (!loading && user) {
+      setLocation("/dashboard");
+    }
+  }, [loading, setLocation, user]);
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <div className="text-sm text-slate-600">Loading...</div>
+      </div>
+    );
   }
 
   return (
@@ -22,7 +31,7 @@ export default function Home() {
               Welcome to {APP_TITLE}
             </h1>
             <p className="text-xl text-slate-600 dark:text-slate-300 mb-8">
-              Your unified productivity dashboard - bringing together Todoist, Google Calendar, Gmail, health signals, and ChatGPT in one seamless experience
+              Your operations dashboard for daily workflows and portfolio analytics.
             </p>
           </div>
 
@@ -35,21 +44,18 @@ export default function Home() {
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-16 text-left">
             <div className="bg-white/80 dark:bg-slate-900/70 backdrop-blur-sm rounded-lg p-6 shadow-sm border border-transparent dark:border-slate-700/70">
-              <div className="text-4xl mb-4">📋</div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">Task Management</h3>
-              <p className="text-slate-600 dark:text-slate-300">Sync and manage your Todoist tasks alongside your calendar and emails</p>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">Portfolio Analytics</h3>
+              <p className="text-slate-600 dark:text-slate-300 text-sm">Solar REC, ownership, delivery, and reporting status.</p>
             </div>
             <div className="bg-white/80 dark:bg-slate-900/70 backdrop-blur-sm rounded-lg p-6 shadow-sm border border-transparent dark:border-slate-700/70">
-              <div className="text-4xl mb-4">📅</div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">Calendar Integration</h3>
-              <p className="text-slate-600 dark:text-slate-300">View and manage Google Calendar events in one unified interface</p>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">Daily Operations</h3>
+              <p className="text-slate-600 dark:text-slate-300 text-sm">Email, calendar, tasks, notes, and daily decision support.</p>
             </div>
             <div className="bg-white/80 dark:bg-slate-900/70 backdrop-blur-sm rounded-lg p-6 shadow-sm border border-transparent dark:border-slate-700/70">
-              <div className="text-4xl mb-4">🤖</div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-2">AI Assistant</h3>
-              <p className="text-slate-600 dark:text-slate-300">Get help from ChatGPT to organize your tasks and schedule</p>
+              <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100 mb-1">Automation + Exports</h3>
+              <p className="text-slate-600 dark:text-slate-300 text-sm">Deep-update synthesis, CSV export, and integration tooling.</p>
             </div>
           </div>
 

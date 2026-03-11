@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { ArrowLeft, Database, Trash2, Upload } from "lucide-react";
-import { CartesianGrid, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { AlertCircle, ArrowLeft, Database, Trash2, Upload } from "lucide-react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -512,10 +523,15 @@ const SIZE_SITE_LIST_PAGE_SIZE = 10;
 const PERFORMANCE_RATIO_PAGE_SIZE = 10;
 const COMPLIANT_SOURCE_PAGE_SIZE = 10;
 const COMPLIANT_REPORT_PAGE_SIZE = 10;
+const REC_VALUE_PAGE_SIZE = 50;
 const SNAPSHOT_CONTRACT_PAGE_SIZE = 25;
+const CONTRACT_SUMMARY_PAGE_SIZE = 50;
+const CONTRACT_DETAIL_PAGE_SIZE = 50;
+const ANNUAL_CONTRACT_VINTAGE_PAGE_SIZE = 50;
+const ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE = 50;
+const REC_PERFORMANCE_RESULTS_PAGE_SIZE = 50;
+const OFFLINE_DETAIL_PAGE_SIZE = 50;
 const SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL = "2025-2026";
-const GENERIC_TABLE_RENDER_LIMIT = 400;
-const OFFLINE_DETAIL_RENDER_LIMIT = 300;
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
@@ -527,7 +543,16 @@ const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "
 const COMPLIANT_SOURCE_STORAGE_KEY = "solarRecDashboardCompliantSourcesV1";
 const MAX_COMPLIANT_SOURCE_CHARS = 100;
 const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_SINGLE_CSV_UPLOAD_BYTES = 60 * 1024 * 1024;
 const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads"]);
+const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
+  "solarApplications",
+  "abpReport",
+  "recDeliverySchedules",
+  "generationEntry",
+  "accountSolarGeneration",
+];
+const STALE_UPLOAD_DAYS = 14;
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
   "Last Meter Read (kWh)",
@@ -922,6 +947,12 @@ function toPercentValue(numerator: number, denominator: number): number | null {
 function formatPercent(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "N/A";
   return `${value.toFixed(1)}%`;
+}
+
+function isStaleUpload(uploadedAt: Date | null | undefined, thresholdDays = STALE_UPLOAD_DAYS): boolean {
+  if (!uploadedAt) return true;
+  const ageMs = Date.now() - uploadedAt.getTime();
+  return ageMs > thresholdDays * DAY_MS;
 }
 
 function formatSignedNumber(value: number): string {
@@ -1913,9 +1944,16 @@ export default function SolarRecDashboard() {
   >("performanceRatioPercent");
   const [performanceRatioSortDir, setPerformanceRatioSortDir] = useState<"asc" | "desc">("desc");
   const [performanceRatioPage, setPerformanceRatioPage] = useState(1);
+  const [recValuePage, setRecValuePage] = useState(1);
   const [sizeSiteListCollapsed, setSizeSiteListCollapsed] = useState(false);
   const [sizeSiteListPage, setSizeSiteListPage] = useState(1);
   const [snapshotContractPage, setSnapshotContractPage] = useState(1);
+  const [contractSummaryPage, setContractSummaryPage] = useState(1);
+  const [contractDetailPage, setContractDetailPage] = useState(1);
+  const [annualContractVintagePage, setAnnualContractVintagePage] = useState(1);
+  const [annualContractSummaryPage, setAnnualContractSummaryPage] = useState(1);
+  const [recPerformanceResultsPage, setRecPerformanceResultsPage] = useState(1);
+  const [offlineDetailPage, setOfflineDetailPage] = useState(1);
   const [compliantSourcePage, setCompliantSourcePage] = useState(1);
   const [compliantReportPage, setCompliantReportPage] = useState(1);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
@@ -1941,6 +1979,13 @@ export default function SolarRecDashboard() {
     }>
   >([]);
   const [activeTab, setActiveTab] = useState("overview");
+  const isContractsTabActive = activeTab === "contracts";
+  const isAnnualReviewTabActive = activeTab === "annual-review";
+  const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
+  const isOfflineTabActive = activeTab === "offline-monitoring";
+  const isPerformanceRatioTabActive = activeTab === "performance-ratio";
+  const isContractsComputationActive =
+    isContractsTabActive || isAnnualReviewTabActive || isPerformanceEvalTabActive;
   const datasetsRef = useRef(datasets);
   datasetsRef.current = datasets;
   const logEntriesRef = useRef(logEntries);
@@ -2113,6 +2158,13 @@ export default function SolarRecDashboard() {
     if (!file) return;
 
     const config = DATASET_DEFINITIONS[key];
+    if (file.size > MAX_SINGLE_CSV_UPLOAD_BYTES) {
+      setUploadErrors((previous) => ({
+        ...previous,
+        [key]: `${file.name} is too large (${formatNumber(file.size / 1024 / 1024, 1)} MB). Please split files larger than ${formatNumber(MAX_SINGLE_CSV_UPLOAD_BYTES / 1024 / 1024)} MB.`,
+      }));
+      return;
+    }
 
     try {
       const raw = await file.text();
@@ -2211,6 +2263,13 @@ export default function SolarRecDashboard() {
 
     try {
       for (const file of files) {
+        if (file.size > MAX_SINGLE_CSV_UPLOAD_BYTES) {
+          setUploadErrors((previous) => ({
+            ...previous,
+            [key]: `${file.name} is too large (${formatNumber(file.size / 1024 / 1024, 1)} MB). Please split files larger than ${formatNumber(MAX_SINGLE_CSV_UPLOAD_BYTES / 1024 / 1024)} MB.`,
+          }));
+          return;
+        }
         const raw = await file.text();
         const parsed = parseCsv(raw);
         const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
@@ -3006,6 +3065,14 @@ export default function SolarRecDashboard() {
         .sort((a, b) => Math.abs((b.valueGap ?? 0) - (a.valueGap ?? 0))),
     [systems]
   );
+  const recValueTotalPages = Math.max(1, Math.ceil(recValueRows.length / REC_VALUE_PAGE_SIZE));
+  const recValueCurrentPage = Math.min(recValuePage, recValueTotalPages);
+  const recValuePageStartIndex = (recValueCurrentPage - 1) * REC_VALUE_PAGE_SIZE;
+  const recValuePageEndIndex = recValuePageStartIndex + REC_VALUE_PAGE_SIZE;
+  const visibleRecValueRows = useMemo(
+    () => recValueRows.slice(recValuePageStartIndex, recValuePageEndIndex),
+    [recValuePageEndIndex, recValuePageStartIndex, recValueRows]
+  );
 
   const filteredOwnershipRows = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase();
@@ -3096,13 +3163,15 @@ export default function SolarRecDashboard() {
   }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
 
   const offlineBaseSystems = useMemo(
-    () =>
-      systems.filter(
+    () => {
+      if (!isOfflineTabActive) return [] as SystemRecord[];
+      return systems.filter(
         (system) =>
           !!system.trackingSystemRefId &&
           abpEligibleTrackingIdsStrict.has(system.trackingSystemRefId)
-      ),
-    [abpEligibleTrackingIdsStrict, systems]
+      );
+    },
+    [abpEligibleTrackingIdsStrict, isOfflineTabActive, systems]
   );
 
   const offlineSystems = useMemo(
@@ -3111,30 +3180,37 @@ export default function SolarRecDashboard() {
   );
 
   const offlineMonitoringOptions = useMemo(
-    () =>
-      Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringType || "Unknown"))).sort((a, b) =>
+    () => {
+      if (!isOfflineTabActive) return [] as string[];
+      return Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringType || "Unknown"))).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
-      ),
-    [offlineBaseSystems]
+      );
+    },
+    [isOfflineTabActive, offlineBaseSystems]
   );
 
   const offlinePlatformOptions = useMemo(
-    () =>
-      Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringPlatform || "Unknown"))).sort((a, b) =>
+    () => {
+      if (!isOfflineTabActive) return [] as string[];
+      return Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringPlatform || "Unknown"))).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
-      ),
-    [offlineBaseSystems]
+      );
+    },
+    [isOfflineTabActive, offlineBaseSystems]
   );
 
   const offlineInstallerOptions = useMemo(
-    () =>
-      Array.from(new Set(offlineBaseSystems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
+    () => {
+      if (!isOfflineTabActive) return [] as string[];
+      return Array.from(new Set(offlineBaseSystems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
         a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
-      ),
-    [offlineBaseSystems]
+      );
+    },
+    [isOfflineTabActive, offlineBaseSystems]
   );
 
   const offlineMonitoringBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
+    if (!isOfflineTabActive) return [];
     const groups = new Map<
       string,
       { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
@@ -3177,9 +3253,10 @@ export default function SolarRecDashboard() {
       return ((aValue as number) - (bValue as number)) * direction;
     });
     return rows;
-  }, [offlineMonitoringSortBy, offlineMonitoringSortDir, offlineBaseSystems]);
+  }, [isOfflineTabActive, offlineMonitoringSortBy, offlineMonitoringSortDir, offlineBaseSystems]);
 
   const offlineInstallerBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
+    if (!isOfflineTabActive) return [];
     const groups = new Map<
       string,
       { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
@@ -3222,9 +3299,10 @@ export default function SolarRecDashboard() {
       return ((aValue as number) - (bValue as number)) * direction;
     });
     return rows;
-  }, [offlineInstallerSortBy, offlineInstallerSortDir, offlineBaseSystems]);
+  }, [isOfflineTabActive, offlineInstallerSortBy, offlineInstallerSortDir, offlineBaseSystems]);
 
   const offlinePlatformBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
+    if (!isOfflineTabActive) return [];
     const groups = new Map<
       string,
       { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
@@ -3267,9 +3345,10 @@ export default function SolarRecDashboard() {
       return ((aValue as number) - (bValue as number)) * direction;
     });
     return rows;
-  }, [offlinePlatformSortBy, offlinePlatformSortDir, offlineBaseSystems]);
+  }, [isOfflineTabActive, offlinePlatformSortBy, offlinePlatformSortDir, offlineBaseSystems]);
 
   const filteredOfflineSystems = useMemo(() => {
+    if (!isOfflineTabActive) return [] as SystemRecord[];
     const normalizedSearch = offlineSearch.trim().toLowerCase();
     const rows = offlineSystems.filter((system) => {
       const monitoringMatch =
@@ -3340,6 +3419,7 @@ export default function SolarRecDashboard() {
     });
     return rows;
   }, [
+    isOfflineTabActive,
     offlineDetailSortBy,
     offlineDetailSortDir,
     offlineInstallerFilter,
@@ -3350,6 +3430,19 @@ export default function SolarRecDashboard() {
   ]);
 
   const offlineSummary = useMemo(() => {
+    if (!isOfflineTabActive) {
+      return {
+        offlineSystemCount: 0,
+        offlineSystemPercent: null,
+        filteredOfflineCount: 0,
+        monitoringTypeCount: 0,
+        monitoringPlatformCount: 0,
+        installerCount: 0,
+        totalOfflineContractValue: 0,
+        totalPortfolioContractValue: 0,
+        offlineContractValuePercent: null,
+      };
+    }
     const totalOfflineContractValue = offlineSystems.reduce(
       (sum, system) => sum + resolveContractValueAmount(system),
       0
@@ -3371,11 +3464,23 @@ export default function SolarRecDashboard() {
     };
   }, [
     filteredOfflineSystems.length,
+    isOfflineTabActive,
     offlineInstallerBreakdownRows.length,
     offlineMonitoringBreakdownRows.length,
     offlinePlatformBreakdownRows.length,
     offlineBaseSystems,
     offlineSystems,
+  ]);
+
+  useEffect(() => {
+    setOfflineDetailPage(1);
+  }, [
+    offlineDetailSortBy,
+    offlineDetailSortDir,
+    offlineInstallerFilter,
+    offlineMonitoringFilter,
+    offlinePlatformFilter,
+    offlineSearch,
   ]);
 
   const abpApplicationIdBySystemKey = useMemo(() => {
@@ -3515,6 +3620,7 @@ export default function SolarRecDashboard() {
   }, [datasets.solarApplications]);
 
   const annualProductionByTrackingId = useMemo(() => {
+    if (!isPerformanceRatioTabActive) return new Map<string, AnnualProductionProfile>();
     const mapping = new Map<string, AnnualProductionProfile>();
 
     (datasets.annualProductionEstimates?.rows ?? []).forEach((row) => {
@@ -3544,9 +3650,10 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.annualProductionEstimates]);
+  }, [datasets.annualProductionEstimates, isPerformanceRatioTabActive]);
 
   const generatorDateOnlineByTrackingId = useMemo(() => {
+    if (!isPerformanceRatioTabActive) return new Map<string, Date>();
     const mapping = new Map<string, Date>();
 
     (datasets.generatorDetails?.rows ?? []).forEach((row) => {
@@ -3563,9 +3670,10 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.generatorDetails]);
+  }, [datasets.generatorDetails, isPerformanceRatioTabActive]);
 
   const generationBaselineByTrackingId = useMemo(() => {
+    if (!isPerformanceRatioTabActive) return new Map<string, GenerationBaseline>();
     const mapping = new Map<string, GenerationBaseline>();
 
     const updateBaseline = (
@@ -3637,9 +3745,10 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.accountSolarGeneration, datasets.generationEntry]);
+  }, [datasets.accountSolarGeneration, datasets.generationEntry, isPerformanceRatioTabActive]);
 
   const portalMonitoringCandidates = useMemo<PortalMonitoringCandidate[]>(() => {
+    if (!isPerformanceRatioTabActive) return [];
     return systems
       .filter((system) => !!system.trackingSystemRefId)
       .map((system) => {
@@ -3676,9 +3785,17 @@ export default function SolarRecDashboard() {
           nameTokens,
         } satisfies PortalMonitoringCandidate;
       });
-  }, [monitoringDetailsBySystemKey, systems]);
+  }, [isPerformanceRatioTabActive, monitoringDetailsBySystemKey, systems]);
 
   const performanceRatioMatchIndexes = useMemo(() => {
+    if (!isPerformanceRatioTabActive) {
+      return {
+        byMonitoringAndId: new Map<string, Set<string>>(),
+        byMonitoringAndName: new Map<string, Set<string>>(),
+        byMonitoringAndIdAndName: new Map<string, Set<string>>(),
+        candidateByKey: new Map<string, PortalMonitoringCandidate>(),
+      };
+    }
     const byMonitoringAndId = new Map<string, Set<string>>();
     const byMonitoringAndName = new Map<string, Set<string>>();
     const byMonitoringAndIdAndName = new Map<string, Set<string>>();
@@ -3713,9 +3830,10 @@ export default function SolarRecDashboard() {
     });
 
     return { byMonitoringAndId, byMonitoringAndName, byMonitoringAndIdAndName, candidateByKey };
-  }, [portalMonitoringCandidates]);
+  }, [isPerformanceRatioTabActive, portalMonitoringCandidates]);
 
   const convertedReadRows = useMemo<ConvertedReadInputRow[]>(() => {
+    if (!isPerformanceRatioTabActive) return [];
     return (datasets.convertedReads?.rows ?? []).map((row, index) => {
       const monitoring = clean(row.monitoring);
       const monitoringSystemId = clean(row.monitoring_system_id);
@@ -3734,9 +3852,18 @@ export default function SolarRecDashboard() {
         readDateRaw,
       };
     });
-  }, [datasets.convertedReads]);
+  }, [datasets.convertedReads, isPerformanceRatioTabActive]);
 
   const performanceRatioResult = useMemo(() => {
+    if (!isPerformanceRatioTabActive) {
+      return {
+        rows: [] as PerformanceRatioRow[],
+        convertedReadCount: 0,
+        matchedConvertedReads: 0,
+        unmatchedConvertedReads: 0,
+        invalidConvertedReads: 0,
+      };
+    }
     const rows: PerformanceRatioRow[] = [];
     let matchedConvertedReads = 0;
     let unmatchedConvertedReads = 0;
@@ -3872,6 +3999,7 @@ export default function SolarRecDashboard() {
     convertedReadRows,
     generatorDateOnlineByTrackingId,
     generationBaselineByTrackingId,
+    isPerformanceRatioTabActive,
     performanceRatioMatchIndexes,
   ]);
 
@@ -4192,6 +4320,11 @@ export default function SolarRecDashboard() {
     setSizeSiteListPage(sizeSiteListTotalPages);
   }, [sizeSiteListPage, sizeSiteListTotalPages]);
 
+  useEffect(() => {
+    if (recValuePage <= recValueTotalPages) return;
+    setRecValuePage(recValueTotalPages);
+  }, [recValuePage, recValueTotalPages]);
+
   const downloadPerformanceRatioCsv = () => {
     const headers = [
       "system_name",
@@ -4481,33 +4614,37 @@ export default function SolarRecDashboard() {
   };
 
   const recPriceByTrackingId = useMemo(() => {
+    if (!isContractsComputationActive) return new Map<string, number>();
     const mapping = new Map<string, number>();
     systems.forEach((system) => {
       if (!system.trackingSystemRefId || system.recPrice === null) return;
       mapping.set(system.trackingSystemRefId, system.recPrice);
     });
     return mapping;
-  }, [systems]);
+  }, [isContractsComputationActive, systems]);
 
   const eligibleTrackingIds = useMemo(() => {
+    if (!isContractsComputationActive) return new Set<string>();
     const ids = new Set<string>();
     systems.forEach((system) => {
       if (!system.trackingSystemRefId) return;
       ids.add(system.trackingSystemRefId);
     });
     return ids;
-  }, [systems]);
+  }, [isContractsComputationActive, systems]);
 
   const systemsByTrackingId = useMemo(() => {
+    if (!isContractsComputationActive) return new Map<string, SystemRecord>();
     const mapping = new Map<string, SystemRecord>();
     systems.forEach((system) => {
       if (!system.trackingSystemRefId) return;
       mapping.set(system.trackingSystemRefId, system);
     });
     return mapping;
-  }, [systems]);
+  }, [isContractsComputationActive, systems]);
 
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
+    if (!isPerformanceEvalTabActive) return [];
     return (datasets.recDeliverySchedules?.rows ?? [])
       .map((row, rowIndex) => {
         const trackingSystemRefId = clean(row.tracking_system_ref_id);
@@ -4528,7 +4665,7 @@ export default function SolarRecDashboard() {
         } satisfies PerformanceSourceRow;
       })
       .filter((row): row is PerformanceSourceRow => row !== null);
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, systemsByTrackingId]);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isPerformanceEvalTabActive, systemsByTrackingId]);
 
   const performanceContractOptions = useMemo(
     () =>
@@ -4544,6 +4681,7 @@ export default function SolarRecDashboard() {
       : (performanceContractOptions[0] ?? "");
 
   const performanceDeliveryYearOptions = useMemo(() => {
+    if (!isPerformanceEvalTabActive) return [];
     const byKey = new Map<
       string,
       {
@@ -4575,7 +4713,7 @@ export default function SolarRecDashboard() {
       const bTime = b.startDate?.getTime() ?? Number.POSITIVE_INFINITY;
       return aTime - bTime;
     });
-  }, [effectivePerformanceContractId, performanceSourceRows]);
+  }, [effectivePerformanceContractId, isPerformanceEvalTabActive, performanceSourceRows]);
 
   const effectivePerformanceDeliveryYearKey =
     performanceDeliveryYearOptions.some((option) => option.key === performanceDeliveryYearKey)
@@ -4590,6 +4728,19 @@ export default function SolarRecDashboard() {
   const performancePreviousDrawdown = parseNumber(performancePreviousDrawdownInput) ?? 0;
 
   const recPerformanceEvaluation = useMemo(() => {
+    if (!isPerformanceEvalTabActive) {
+      return {
+        rows: [] as RecPerformanceResultRow[],
+        systemCount: 0,
+        shortfallSystemCount: 0,
+        surplusBeforeAllocation: 0,
+        totalAllocatedRecs: 0,
+        netSurplusAfterAllocation: 0,
+        unallocatedShortfallRecs: 0,
+        drawdownThisReport: 0,
+        drawdownCumulative: performancePreviousDrawdown,
+      };
+    }
     const baseRows: RecPerformanceResultRow[] = performanceSourceRows
       .filter((row) => row.contractId === effectivePerformanceContractId)
       .map((row) => {
@@ -4708,6 +4859,7 @@ export default function SolarRecDashboard() {
   }, [
     effectivePerformanceContractId,
     effectivePerformanceDeliveryYearKey,
+    isPerformanceEvalTabActive,
     performancePreviousDrawdown,
     performancePreviousSurplus,
     performanceSourceRows,
@@ -4778,6 +4930,7 @@ export default function SolarRecDashboard() {
   }, [performanceSourceRows]);
 
   const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(() => {
+    if (!isAnnualReviewTabActive) return [];
     const groups = new Map<
       string,
       {
@@ -4862,9 +5015,10 @@ export default function SolarRecDashboard() {
         if (aTime !== bTime) return aTime - bTime;
         return a.contractId.localeCompare(b.contractId);
       });
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, recPriceByTrackingId, systemsByTrackingId]);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isAnnualReviewTabActive, recPriceByTrackingId, systemsByTrackingId]);
 
   const annualVintageRows = useMemo<AnnualVintageAggregate[]>(() => {
+    if (!isAnnualReviewTabActive) return [];
     const groups = new Map<
       string,
       {
@@ -4928,9 +5082,10 @@ export default function SolarRecDashboard() {
         const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
         return aTime - bTime;
       });
-  }, [annualContractVintageRows]);
+  }, [annualContractVintageRows, isAnnualReviewTabActive]);
 
   const annualContractSummaryRows = useMemo(() => {
+    if (!isAnnualReviewTabActive) return [];
     const groups = new Map<
       string,
       {
@@ -4987,9 +5142,32 @@ export default function SolarRecDashboard() {
         valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
       }))
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
-  }, [annualContractVintageRows]);
+  }, [annualContractVintageRows, isAnnualReviewTabActive]);
 
   const annualPortfolioSummary = useMemo(() => {
+    if (!isAnnualReviewTabActive) {
+      return {
+        totalRequired: 0,
+        totalDelivered: 0,
+        totalGap: 0,
+        totalDeliveredPercent: null,
+        totalRequiredValue: 0,
+        totalDeliveredValue: 0,
+        totalValueGap: 0,
+        totalValueDeliveredPercent: null,
+        totalProjects: 0,
+        totalReportingProjects: 0,
+        totalReportingProjectPercent: null,
+        vintageCount: 0,
+        latestVintage: null,
+        rollingThreeRequired: 0,
+        rollingThreeDelivered: 0,
+        rollingThreeDeliveredPercent: null,
+        rollingThreeRequiredValue: 0,
+        rollingThreeDeliveredValue: 0,
+        rollingThreeValueDeliveredPercent: null,
+      };
+    }
     const totalRequired = annualVintageRows.reduce((sum, row) => sum + row.required, 0);
     const totalDelivered = annualVintageRows.reduce((sum, row) => sum + row.delivered, 0);
     const totalRequiredValue = annualVintageRows.reduce((sum, row) => sum + row.requiredValue, 0);
@@ -5025,9 +5203,10 @@ export default function SolarRecDashboard() {
       rollingThreeDeliveredValue,
       rollingThreeValueDeliveredPercent: toPercentValue(rollingThreeDeliveredValue, rollingThreeRequiredValue),
     };
-  }, [annualVintageRows]);
+  }, [annualVintageRows, isAnnualReviewTabActive]);
 
   const contractDeliveryRows = useMemo<ContractDeliveryAggregate[]>(() => {
+    if (!isContractsTabActive) return [];
     const groups = new Map<
       string,
       {
@@ -5110,9 +5289,10 @@ export default function SolarRecDashboard() {
         const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
         return aTime - bTime;
       });
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, recPriceByTrackingId]);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isContractsTabActive, recPriceByTrackingId]);
 
   const contractSummaryRows = useMemo(() => {
+    if (!isContractsTabActive) return [];
     const groups = new Map<
       string,
       {
@@ -5167,7 +5347,110 @@ export default function SolarRecDashboard() {
         pricedProjectCount: group.pricedProjectCount,
       }))
       .sort((a, b) => a.contractId.localeCompare(b.contractId));
-  }, [contractDeliveryRows]);
+  }, [contractDeliveryRows, isContractsTabActive]);
+
+  const contractSummaryTotalPages = Math.max(1, Math.ceil(contractSummaryRows.length / CONTRACT_SUMMARY_PAGE_SIZE));
+  const contractSummaryCurrentPage = Math.min(contractSummaryPage, contractSummaryTotalPages);
+  const contractSummaryPageStartIndex = (contractSummaryCurrentPage - 1) * CONTRACT_SUMMARY_PAGE_SIZE;
+  const contractSummaryPageEndIndex = contractSummaryPageStartIndex + CONTRACT_SUMMARY_PAGE_SIZE;
+  const visibleContractSummaryRows = useMemo(
+    () => contractSummaryRows.slice(contractSummaryPageStartIndex, contractSummaryPageEndIndex),
+    [contractSummaryPageEndIndex, contractSummaryPageStartIndex, contractSummaryRows]
+  );
+
+  const contractDetailTotalPages = Math.max(1, Math.ceil(contractDeliveryRows.length / CONTRACT_DETAIL_PAGE_SIZE));
+  const contractDetailCurrentPage = Math.min(contractDetailPage, contractDetailTotalPages);
+  const contractDetailPageStartIndex = (contractDetailCurrentPage - 1) * CONTRACT_DETAIL_PAGE_SIZE;
+  const contractDetailPageEndIndex = contractDetailPageStartIndex + CONTRACT_DETAIL_PAGE_SIZE;
+  const visibleContractDeliveryRows = useMemo(
+    () => contractDeliveryRows.slice(contractDetailPageStartIndex, contractDetailPageEndIndex),
+    [contractDeliveryRows, contractDetailPageEndIndex, contractDetailPageStartIndex]
+  );
+
+  const annualContractVintageTotalPages = Math.max(
+    1,
+    Math.ceil(annualContractVintageRows.length / ANNUAL_CONTRACT_VINTAGE_PAGE_SIZE)
+  );
+  const annualContractVintageCurrentPage = Math.min(annualContractVintagePage, annualContractVintageTotalPages);
+  const annualContractVintagePageStartIndex =
+    (annualContractVintageCurrentPage - 1) * ANNUAL_CONTRACT_VINTAGE_PAGE_SIZE;
+  const annualContractVintagePageEndIndex =
+    annualContractVintagePageStartIndex + ANNUAL_CONTRACT_VINTAGE_PAGE_SIZE;
+  const visibleAnnualContractVintageRows = useMemo(
+    () => annualContractVintageRows.slice(annualContractVintagePageStartIndex, annualContractVintagePageEndIndex),
+    [annualContractVintagePageEndIndex, annualContractVintagePageStartIndex, annualContractVintageRows]
+  );
+
+  const annualContractSummaryTotalPages = Math.max(
+    1,
+    Math.ceil(annualContractSummaryRows.length / ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE)
+  );
+  const annualContractSummaryCurrentPage = Math.min(annualContractSummaryPage, annualContractSummaryTotalPages);
+  const annualContractSummaryPageStartIndex =
+    (annualContractSummaryCurrentPage - 1) * ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE;
+  const annualContractSummaryPageEndIndex =
+    annualContractSummaryPageStartIndex + ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE;
+  const visibleAnnualContractSummaryRows = useMemo(
+    () => annualContractSummaryRows.slice(annualContractSummaryPageStartIndex, annualContractSummaryPageEndIndex),
+    [annualContractSummaryPageEndIndex, annualContractSummaryPageStartIndex, annualContractSummaryRows]
+  );
+
+  const recPerformanceResultsTotalPages = Math.max(
+    1,
+    Math.ceil(recPerformanceEvaluation.rows.length / REC_PERFORMANCE_RESULTS_PAGE_SIZE)
+  );
+  const recPerformanceResultsCurrentPage = Math.min(recPerformanceResultsPage, recPerformanceResultsTotalPages);
+  const recPerformanceResultsPageStartIndex =
+    (recPerformanceResultsCurrentPage - 1) * REC_PERFORMANCE_RESULTS_PAGE_SIZE;
+  const recPerformanceResultsPageEndIndex =
+    recPerformanceResultsPageStartIndex + REC_PERFORMANCE_RESULTS_PAGE_SIZE;
+  const visibleRecPerformanceRows = useMemo(
+    () => recPerformanceEvaluation.rows.slice(recPerformanceResultsPageStartIndex, recPerformanceResultsPageEndIndex),
+    [recPerformanceEvaluation.rows, recPerformanceResultsPageEndIndex, recPerformanceResultsPageStartIndex]
+  );
+
+  const offlineDetailTotalPages = Math.max(1, Math.ceil(filteredOfflineSystems.length / OFFLINE_DETAIL_PAGE_SIZE));
+  const offlineDetailCurrentPage = Math.min(offlineDetailPage, offlineDetailTotalPages);
+  const offlineDetailPageStartIndex = (offlineDetailCurrentPage - 1) * OFFLINE_DETAIL_PAGE_SIZE;
+  const offlineDetailPageEndIndex = offlineDetailPageStartIndex + OFFLINE_DETAIL_PAGE_SIZE;
+  const visibleOfflineDetailRows = useMemo(
+    () => filteredOfflineSystems.slice(offlineDetailPageStartIndex, offlineDetailPageEndIndex),
+    [filteredOfflineSystems, offlineDetailPageEndIndex, offlineDetailPageStartIndex]
+  );
+
+  useEffect(() => {
+    if (contractSummaryPage <= contractSummaryTotalPages) return;
+    setContractSummaryPage(contractSummaryTotalPages);
+  }, [contractSummaryPage, contractSummaryTotalPages]);
+
+  useEffect(() => {
+    if (contractDetailPage <= contractDetailTotalPages) return;
+    setContractDetailPage(contractDetailTotalPages);
+  }, [contractDetailPage, contractDetailTotalPages]);
+
+  useEffect(() => {
+    if (annualContractVintagePage <= annualContractVintageTotalPages) return;
+    setAnnualContractVintagePage(annualContractVintageTotalPages);
+  }, [annualContractVintagePage, annualContractVintageTotalPages]);
+
+  useEffect(() => {
+    if (annualContractSummaryPage <= annualContractSummaryTotalPages) return;
+    setAnnualContractSummaryPage(annualContractSummaryTotalPages);
+  }, [annualContractSummaryPage, annualContractSummaryTotalPages]);
+
+  useEffect(() => {
+    if (recPerformanceResultsPage <= recPerformanceResultsTotalPages) return;
+    setRecPerformanceResultsPage(recPerformanceResultsTotalPages);
+  }, [recPerformanceResultsPage, recPerformanceResultsTotalPages]);
+
+  useEffect(() => {
+    if (offlineDetailPage <= offlineDetailTotalPages) return;
+    setOfflineDetailPage(offlineDetailTotalPages);
+  }, [offlineDetailPage, offlineDetailTotalPages]);
+
+  useEffect(() => {
+    setRecPerformanceResultsPage(1);
+  }, [effectivePerformanceContractId, effectivePerformanceDeliveryYearKey]);
 
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
@@ -6080,14 +6363,69 @@ export default function SolarRecDashboard() {
   );
 
   const missingCoreDatasets = datasetsHydrated
-    ? ([
-        "solarApplications",
-        "abpReport",
-        "recDeliverySchedules",
-        "generationEntry",
-        "accountSolarGeneration",
-      ] as DatasetKey[]).filter((key) => !datasets[key])
+    ? CORE_REQUIRED_DATASET_KEYS.filter((key) => !datasets[key])
     : [];
+
+  const dataHealthSummary = useMemo(() => {
+    const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
+    const totalRowsLoaded = loadedDatasetKeys.reduce((sum, key) => sum + (datasets[key]?.rows.length ?? 0), 0);
+    const staleDatasets = loadedDatasetKeys.filter((key) => isStaleUpload(datasets[key]?.uploadedAt));
+    const syncStatus =
+      remoteDashboardStateQuery.status === "pending"
+        ? "Checking cloud sync..."
+        : saveRemoteDashboardState.isPending || saveRemoteDataset.isPending
+          ? "Syncing to cloud..."
+          : remoteDashboardStateQuery.status === "error"
+            ? "Cloud sync currently unavailable"
+            : "Cloud sync healthy";
+
+    return {
+      loadedDatasetCount: loadedDatasetKeys.length,
+      totalDatasetCount: Object.keys(DATASET_DEFINITIONS).length,
+      totalRowsLoaded,
+      staleDatasetCount: staleDatasets.length,
+      staleDatasetLabels: staleDatasets.map((key) => DATASET_DEFINITIONS[key].label),
+      missingRequiredCount: missingCoreDatasets.length,
+      syncStatus,
+    };
+  }, [
+    datasets,
+    missingCoreDatasets.length,
+    remoteDashboardStateQuery.status,
+    saveRemoteDashboardState.isPending,
+    saveRemoteDataset.isPending,
+  ]);
+
+  const sizeReportingChartRows = useMemo(
+    () =>
+      sizeBreakdownRows.map((row) => ({
+        bucket: row.bucket,
+        reporting: row.reporting,
+        notReporting: row.notReporting,
+      })),
+    [sizeBreakdownRows]
+  );
+
+  const ownershipStackedChartRows = useMemo(
+    () => [
+      {
+        label: "Reporting",
+        notTransferred: summary.ownershipOverview.notTransferredReporting,
+        transferred: summary.ownershipOverview.transferredReporting,
+      },
+      {
+        label: "Not Reporting",
+        notTransferred: summary.ownershipOverview.notTransferredNotReporting,
+        transferred: summary.ownershipOverview.transferredNotReporting,
+      },
+      {
+        label: "Terminated",
+        notTransferred: summary.ownershipOverview.terminatedTotal,
+        transferred: 0,
+      },
+    ],
+    [summary.ownershipOverview]
+  );
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
@@ -6208,10 +6546,71 @@ export default function SolarRecDashboard() {
           </CardContent>
         </Card>
 
+        <Card className="sticky top-2 z-20 border-slate-300 bg-white/95 backdrop-blur-sm">
+          <CardContent className="py-3">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Datasets Loaded</p>
+                <p className="text-lg font-semibold text-slate-900">
+                  {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Rows Loaded</p>
+                <p className="text-lg font-semibold text-slate-900">{formatNumber(dataHealthSummary.totalRowsLoaded)}</p>
+              </div>
+              <div
+                className={`rounded-md border px-3 py-2 ${
+                  dataHealthSummary.missingRequiredCount > 0
+                    ? "border-amber-300 bg-amber-50"
+                    : "border-emerald-300 bg-emerald-50"
+                }`}
+              >
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Missing Required</p>
+                <p
+                  className={`text-lg font-semibold ${
+                    dataHealthSummary.missingRequiredCount > 0 ? "text-amber-900" : "text-emerald-800"
+                  }`}
+                >
+                  {formatNumber(dataHealthSummary.missingRequiredCount)}
+                </p>
+              </div>
+              <div
+                className={`rounded-md border px-3 py-2 ${
+                  dataHealthSummary.staleDatasetCount > 0
+                    ? "border-amber-300 bg-amber-50"
+                    : "border-emerald-300 bg-emerald-50"
+                }`}
+              >
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Stale Uploads (&gt;14d)</p>
+                <p
+                  className={`text-lg font-semibold ${
+                    dataHealthSummary.staleDatasetCount > 0 ? "text-amber-900" : "text-emerald-800"
+                  }`}
+                >
+                  {formatNumber(dataHealthSummary.staleDatasetCount)}
+                </p>
+              </div>
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 xl:col-span-2">
+                <p className="text-[11px] uppercase tracking-wide text-slate-500">Cloud Sync</p>
+                <p className="text-sm font-semibold text-slate-900">{dataHealthSummary.syncStatus}</p>
+                {dataHealthSummary.staleDatasetLabels.length > 0 ? (
+                  <p className="mt-1 text-[11px] text-amber-800">
+                    Stale: {dataHealthSummary.staleDatasetLabels.join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {missingCoreDatasets.length > 0 ? (
           <Card className="border-amber-200 bg-amber-50/60">
             <CardHeader>
-              <CardTitle className="text-base text-amber-900">Missing Required Files</CardTitle>
+              <CardTitle className="text-base text-amber-900 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4" />
+                Missing Required Files
+              </CardTitle>
               <CardDescription className="text-amber-800">
                 Upload these files to get complete results:{" "}
                 {missingCoreDatasets.map((key) => DATASET_DEFINITIONS[key].label).join(", ")}.
@@ -6289,6 +6688,52 @@ export default function SolarRecDashboard() {
                   <CardDescription>Cumulative kW DC (Part II Verified)</CardDescription>
                   <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
                 </CardHeader>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Reporting by Size Bucket</CardTitle>
+                  <CardDescription>Stacked reporting vs not reporting counts.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={sizeReportingChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="bucket" tick={{ fontSize: 12 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        <Bar dataKey="reporting" stackId="size-status" fill="#16a34a" name="Reporting" />
+                        <Bar dataKey="notReporting" stackId="size-status" fill="#f59e0b" name="Not Reporting" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Ownership Mix by Reporting State</CardTitle>
+                  <CardDescription>Distribution of transferred vs not transferred systems.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={ownershipStackedChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        <Bar dataKey="notTransferred" stackId="ownership" fill="#0ea5e9" name="Not Transferred" />
+                        <Bar dataKey="transferred" stackId="ownership" fill="#8b5cf6" name="Transferred" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
               </Card>
             </div>
 
@@ -6382,11 +6827,6 @@ export default function SolarRecDashboard() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                {contractSummaryRows.length > GENERIC_TABLE_RENDER_LIMIT ? (
-                  <p className="mb-2 text-xs text-slate-500">
-                    Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(contractSummaryRows.length)} rows.
-                  </p>
-                ) : null}
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -6549,7 +6989,15 @@ export default function SolarRecDashboard() {
                   Compares delivered value vs contracted value at system REC price.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleRecValueRows.length)} of {formatNumber(recValueRows.length)} rows
+                  </span>
+                  <span>
+                    Page {formatNumber(recValueCurrentPage)} of {formatNumber(recValueTotalPages)}
+                  </span>
+                </div>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -6566,7 +7014,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {recValueRows.slice(0, 300).map((system) => (
+                    {visibleRecValueRows.map((system) => (
                       <TableRow key={system.key}>
                         <TableCell className="font-medium">{system.systemName}</TableCell>
                         <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
@@ -6590,8 +7038,33 @@ export default function SolarRecDashboard() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {visibleRecValueRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="py-6 text-center text-slate-500">
+                          No systems with REC value data available.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRecValuePage((page) => Math.max(1, page - 1))}
+                    disabled={recValueCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRecValuePage((page) => Math.min(recValueTotalPages, page + 1))}
+                    disabled={recValueCurrentPage >= recValueTotalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -6612,7 +7085,15 @@ export default function SolarRecDashboard() {
                 <CardTitle className="text-base">Contract Summary</CardTitle>
                 <CardDescription>Total required vs delivered by Utility Contract ID.</CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleContractSummaryRows.length)} of {formatNumber(contractSummaryRows.length)} rows
+                  </span>
+                  <span>
+                    Page {formatNumber(contractSummaryCurrentPage)} of {formatNumber(contractSummaryTotalPages)}
+                  </span>
+                </div>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -6629,7 +7110,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {contractSummaryRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                    {visibleContractSummaryRows.map((row) => (
                       <TableRow key={row.contractId}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{formatNumber(row.startDateCount)}</TableCell>
@@ -6645,8 +7126,33 @@ export default function SolarRecDashboard() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {visibleContractSummaryRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="py-6 text-center text-slate-500">
+                          No contract summary rows available for current filters.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setContractSummaryPage((page) => Math.max(1, page - 1))}
+                    disabled={contractSummaryCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setContractSummaryPage((page) => Math.min(contractSummaryTotalPages, page + 1))}
+                    disabled={contractSummaryCurrentPage >= contractSummaryTotalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
@@ -6657,12 +7163,15 @@ export default function SolarRecDashboard() {
                   For matching contract ID and start date, required and delivered values are aggregated.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                {contractDeliveryRows.length > GENERIC_TABLE_RENDER_LIMIT ? (
-                  <p className="mb-2 text-xs text-slate-500">
-                    Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(contractDeliveryRows.length)} rows.
-                  </p>
-                ) : null}
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleContractDeliveryRows.length)} of {formatNumber(contractDeliveryRows.length)} rows
+                  </span>
+                  <span>
+                    Page {formatNumber(contractDetailCurrentPage)} of {formatNumber(contractDetailTotalPages)}
+                  </span>
+                </div>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -6680,7 +7189,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {contractDeliveryRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                    {visibleContractDeliveryRows.map((row) => (
                       <TableRow key={`${row.contractId}-${row.deliveryStartRaw}`}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
@@ -6697,8 +7206,33 @@ export default function SolarRecDashboard() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {visibleContractDeliveryRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                          No contract delivery rows available for current filters.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setContractDetailPage((page) => Math.max(1, page - 1))}
+                    disabled={contractDetailCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setContractDetailPage((page) => Math.min(contractDetailTotalPages, page + 1))}
+                    disabled={contractDetailCurrentPage >= contractDetailTotalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -6849,7 +7383,17 @@ export default function SolarRecDashboard() {
                   Combined by Utility Contract ID and Project Delivery Start Date.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleAnnualContractVintageRows.length)} of{" "}
+                    {formatNumber(annualContractVintageRows.length)} rows
+                  </span>
+                  <span>
+                    Page {formatNumber(annualContractVintageCurrentPage)} of{" "}
+                    {formatNumber(annualContractVintageTotalPages)}
+                  </span>
+                </div>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -6869,7 +7413,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {annualContractVintageRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                    {visibleAnnualContractVintageRows.map((row) => (
                       <TableRow key={`${row.contractId}-${row.deliveryStartRaw}`}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{row.deliveryStartDate ? formatDate(row.deliveryStartDate) : row.deliveryStartRaw}</TableCell>
@@ -6888,8 +7432,37 @@ export default function SolarRecDashboard() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {visibleAnnualContractVintageRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={13} className="py-6 text-center text-slate-500">
+                          No annual contract vintage rows available.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAnnualContractVintagePage((page) => Math.max(1, page - 1))}
+                    disabled={annualContractVintageCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setAnnualContractVintagePage((page) =>
+                        Math.min(annualContractVintageTotalPages, page + 1)
+                      )
+                    }
+                    disabled={annualContractVintageCurrentPage >= annualContractVintageTotalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
 
@@ -6900,12 +7473,17 @@ export default function SolarRecDashboard() {
                   Contract-level annual totals across all start dates.
                 </CardDescription>
               </CardHeader>
-              <CardContent>
-                {annualContractSummaryRows.length > GENERIC_TABLE_RENDER_LIMIT ? (
-                  <p className="mb-2 text-xs text-slate-500">
-                    Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(annualContractSummaryRows.length)} rows.
-                  </p>
-                ) : null}
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleAnnualContractSummaryRows.length)} of{" "}
+                    {formatNumber(annualContractSummaryRows.length)} rows
+                  </span>
+                  <span>
+                    Page {formatNumber(annualContractSummaryCurrentPage)} of{" "}
+                    {formatNumber(annualContractSummaryTotalPages)}
+                  </span>
+                </div>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -6925,7 +7503,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {annualContractSummaryRows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                    {visibleAnnualContractSummaryRows.map((row) => (
                       <TableRow key={row.contractId}>
                         <TableCell className="font-medium">{row.contractId}</TableCell>
                         <TableCell>{formatNumber(row.startDateCount)}</TableCell>
@@ -6944,8 +7522,37 @@ export default function SolarRecDashboard() {
                         </TableCell>
                       </TableRow>
                     ))}
+                    {visibleAnnualContractSummaryRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={13} className="py-6 text-center text-slate-500">
+                          No annual contract summary rows available.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setAnnualContractSummaryPage((page) => Math.max(1, page - 1))}
+                    disabled={annualContractSummaryCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setAnnualContractSummaryPage((page) =>
+                        Math.min(annualContractSummaryTotalPages, page + 1)
+                      )
+                    }
+                    disabled={annualContractSummaryCurrentPage >= annualContractSummaryTotalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -7107,12 +7714,17 @@ export default function SolarRecDashboard() {
                       Columns follow the REC Performance Evaluation workbook structure.
                     </CardDescription>
                   </CardHeader>
-                  <CardContent>
-                    {recPerformanceEvaluation.rows.length > GENERIC_TABLE_RENDER_LIMIT ? (
-                      <p className="mb-2 text-xs text-slate-500">
-                        Showing first {formatNumber(GENERIC_TABLE_RENDER_LIMIT)} of {formatNumber(recPerformanceEvaluation.rows.length)} rows.
-                      </p>
-                    ) : null}
+                  <CardContent className="space-y-3">
+                    <div className="flex items-center justify-between text-xs text-slate-600">
+                      <span>
+                        Showing {formatNumber(visibleRecPerformanceRows.length)} of{" "}
+                        {formatNumber(recPerformanceEvaluation.rows.length)} rows
+                      </span>
+                      <span>
+                        Page {formatNumber(recPerformanceResultsCurrentPage)} of{" "}
+                        {formatNumber(recPerformanceResultsTotalPages)}
+                      </span>
+                    </div>
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -7135,7 +7747,7 @@ export default function SolarRecDashboard() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {recPerformanceEvaluation.rows.slice(0, GENERIC_TABLE_RENDER_LIMIT).map((row) => (
+                        {visibleRecPerformanceRows.map((row) => (
                           <TableRow key={row.key}>
                             <TableCell>{row.applicationId}</TableCell>
                             <TableCell>{row.unitId}</TableCell>
@@ -7163,8 +7775,37 @@ export default function SolarRecDashboard() {
                             <TableCell>{row.deliveryYearThreeSource}</TableCell>
                           </TableRow>
                         ))}
+                        {visibleRecPerformanceRows.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={16} className="py-6 text-center text-slate-500">
+                              No REC performance rows available.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
                       </TableBody>
                     </Table>
+                    <div className="flex items-center justify-end gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setRecPerformanceResultsPage((page) => Math.max(1, page - 1))}
+                        disabled={recPerformanceResultsCurrentPage <= 1}
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          setRecPerformanceResultsPage((page) =>
+                            Math.min(recPerformanceResultsTotalPages, page + 1)
+                          )
+                        }
+                        disabled={recPerformanceResultsCurrentPage >= recPerformanceResultsTotalPages}
+                      >
+                        Next
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
               </>
@@ -7277,9 +7918,9 @@ export default function SolarRecDashboard() {
                   </div>
                 </div>
 
-                {filteredOfflineSystems.length > OFFLINE_DETAIL_RENDER_LIMIT ? (
+                {filteredChangeOwnershipRows.length > 500 ? (
                   <p className="text-xs text-slate-500">
-                    Showing first {formatNumber(OFFLINE_DETAIL_RENDER_LIMIT)} of {formatNumber(filteredOfflineSystems.length)} systems.
+                    Showing first 500 of {formatNumber(filteredChangeOwnershipRows.length)} systems.
                   </p>
                 ) : null}
 
@@ -7849,7 +8490,7 @@ export default function SolarRecDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredOfflineSystems.slice(0, OFFLINE_DETAIL_RENDER_LIMIT).map((system) => (
+                    {visibleOfflineDetailRows.map((system) => (
                       <TableRow key={system.key}>
                         <TableCell className="font-medium">{system.systemName}</TableCell>
                         <TableCell>{system.systemId ?? "N/A"}</TableCell>
@@ -7861,8 +8502,42 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
                       </TableRow>
                     ))}
+                    {visibleOfflineDetailRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} className="py-6 text-center text-slate-500">
+                          No offline systems match the current filters.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
+                <div className="flex items-center justify-between text-xs text-slate-600">
+                  <span>
+                    Showing {formatNumber(visibleOfflineDetailRows.length)} of{" "}
+                    {formatNumber(filteredOfflineSystems.length)} rows
+                  </span>
+                  <span>
+                    Page {formatNumber(offlineDetailCurrentPage)} of {formatNumber(offlineDetailTotalPages)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setOfflineDetailPage((page) => Math.max(1, page - 1))}
+                    disabled={offlineDetailCurrentPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setOfflineDetailPage((page) => Math.min(offlineDetailTotalPages, page + 1))}
+                    disabled={offlineDetailCurrentPage >= offlineDetailTotalPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
