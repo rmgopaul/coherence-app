@@ -833,6 +833,10 @@ function resolveContractValueAmount(system: SystemRecord): number {
   return firstNonNull(system.totalContractAmount, system.contractedValue) ?? 0;
 }
 
+function resolveValueGapAmount(system: SystemRecord): number {
+  return resolveContractValueAmount(system) - (system.deliveredValue ?? 0);
+}
+
 function normalizeMonitoringMethod(accessTypeRaw: string, entryMethodRaw: string, selfReportRaw: string): string {
   const accessType = clean(accessTypeRaw).toLowerCase();
   if (accessType === "granted") return "Granted Access";
@@ -2891,6 +2895,27 @@ export default function SolarRecDashboard() {
   }, [datasets, part2VerifiedAbpRows]);
 
   const summary = useMemo(() => {
+    const eligiblePart2ApplicationIds = new Set<string>();
+    const eligiblePart2PortalSystemIds = new Set<string>();
+    const eligiblePart2TrackingIds = new Set<string>();
+    part2VerifiedAbpRows.forEach((row) => {
+      const applicationId = clean(row.Application_ID);
+      const portalSystemId = clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
+      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
+      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
+    });
+
+    const scopedPart2Systems = systems.filter((system) => {
+      const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
+      const byApplicationId = system.stateApplicationRefId
+        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
+        : false;
+      const byTrackingId = system.trackingSystemRefId ? eligiblePart2TrackingIds.has(system.trackingSystemRefId) : false;
+      return byPortalSystemId || byApplicationId || byTrackingId;
+    });
+
     const systemsById = new Map<string, SystemRecord[]>();
     const systemsByTrackingId = new Map<string, SystemRecord[]>();
     const systemsByName = new Map<string, SystemRecord[]>();
@@ -2907,7 +2932,7 @@ export default function SolarRecDashboard() {
       map.set(normalized, existing);
     };
 
-    systems.forEach((system) => {
+    scopedPart2Systems.forEach((system) => {
       addIndexedSystem(systemsById, system.systemId, system);
       addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
       addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
@@ -2971,22 +2996,22 @@ export default function SolarRecDashboard() {
     const totalSystems = uniquePart2Projects.size;
     const reportingSystems = notTransferredReporting + transferredReporting + terminatedReporting;
     const reportingPercent = toPercentValue(reportingSystems, totalSystems);
-    const smallSystems = systems.filter((system) => system.sizeBucket === "<=10 kW AC").length;
-    const largeSystems = systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
-    const unknownSizeSystems = systems.filter((system) => system.sizeBucket === "Unknown").length;
+    const smallSystems = scopedPart2Systems.filter((system) => system.sizeBucket === "<=10 kW AC").length;
+    const largeSystems = scopedPart2Systems.filter((system) => system.sizeBucket === ">10 kW AC").length;
+    const unknownSizeSystems = scopedPart2Systems.filter((system) => system.sizeBucket === "Unknown").length;
 
     const terminatedTotal = terminatedReporting + terminatedNotReporting;
     const reportingOwnershipTotal = notTransferredReporting + transferredReporting;
     const notReportingOwnershipTotal = notTransferredNotReporting + transferredNotReporting;
 
-    const withValueData = systems.filter(
-      (system) => system.contractedValue !== null && system.deliveredValue !== null
+    const withValueData = scopedPart2Systems.filter(
+      (system) => resolveContractValueAmount(system) > 0 || (system.deliveredValue ?? 0) > 0
     );
-    const totalContractedValue = withValueData.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+    const totalContractedValue = withValueData.reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
     const totalDeliveredValue = withValueData.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
     const contractedValueReporting = withValueData
       .filter((system) => system.isReporting)
-      .reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+      .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
     const contractedValueNotReporting = totalContractedValue - contractedValueReporting;
     const contractedValueReportingPercent = toPercentValue(contractedValueReporting, totalContractedValue);
     const deliveredValuePercent = toPercentValue(totalDeliveredValue, totalContractedValue);
@@ -3098,7 +3123,7 @@ export default function SolarRecDashboard() {
       const reporting = scoped.filter((system) => system.isReporting).length;
       const notReporting = scoped.length - reporting;
       const reportingPercent = toPercentValue(reporting, scoped.length);
-      const contractedValue = scoped.reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+      const contractedValue = scoped.reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
       const deliveredValue = scoped.reduce((sum, system) => sum + (system.deliveredValue ?? 0), 0);
       return {
         bucket,
@@ -3133,10 +3158,10 @@ export default function SolarRecDashboard() {
 
   const recValueRows = useMemo(
     () =>
-      systems
-        .filter((system) => system.contractedValue !== null || system.deliveredValue !== null)
-        .sort((a, b) => Math.abs((b.valueGap ?? 0) - (a.valueGap ?? 0))),
-    [systems]
+      part2EligibleSystemsForSizeReporting
+        .filter((system) => resolveContractValueAmount(system) > 0 || (system.deliveredValue ?? 0) > 0)
+        .sort((a, b) => resolveValueGapAmount(b) - resolveValueGapAmount(a)),
+    [part2EligibleSystemsForSizeReporting]
   );
   const recValueTotalPages = Math.max(1, Math.ceil(recValueRows.length / REC_VALUE_PAGE_SIZE));
   const recValueCurrentPage = Math.min(recValuePage, recValueTotalPages);
@@ -3149,7 +3174,7 @@ export default function SolarRecDashboard() {
 
   const filteredOwnershipRows = useMemo(() => {
     const normalizedSearch = searchTerm.trim().toLowerCase();
-    return systems.filter((system) => {
+    return part2EligibleSystemsForSizeReporting.filter((system) => {
       const matchesFilter = ownershipFilter === "All" ? true : system.ownershipStatus === ownershipFilter;
       if (!matchesFilter) return false;
       if (!normalizedSearch) return true;
@@ -3165,11 +3190,14 @@ export default function SolarRecDashboard() {
 
       return haystack.includes(normalizedSearch);
     });
-  }, [ownershipFilter, searchTerm, systems]);
+  }, [ownershipFilter, part2EligibleSystemsForSizeReporting, searchTerm]);
 
   const changeOwnershipRows = useMemo(
-    () => systems.filter((system) => system.hasChangedOwnership && system.changeOwnershipStatus !== null),
-    [systems]
+    () =>
+      part2EligibleSystemsForSizeReporting.filter(
+        (system) => system.hasChangedOwnership && system.changeOwnershipStatus !== null
+      ),
+    [part2EligibleSystemsForSizeReporting]
   );
 
   const changeOwnershipSummary = useMemo(() => {
@@ -3178,12 +3206,12 @@ export default function SolarRecDashboard() {
     const notReporting = total - reporting;
     const reportingPercent = toPercentValue(reporting, total);
     const contractedValueTotal = changeOwnershipRows.reduce(
-      (sum, system) => sum + (system.contractedValue ?? 0),
+      (sum, system) => sum + resolveContractValueAmount(system),
       0
     );
     const contractedValueReporting = changeOwnershipRows
       .filter((system) => system.isReporting)
-      .reduce((sum, system) => sum + (system.contractedValue ?? 0), 0);
+      .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
     const contractedValueNotReporting = contractedValueTotal - contractedValueReporting;
     const counts = CHANGE_OWNERSHIP_ORDER.map((status) => ({
       status,
@@ -3238,13 +3266,13 @@ export default function SolarRecDashboard() {
   const offlineBaseSystems = useMemo(
     () => {
       if (!isOfflineTabActive) return [] as SystemRecord[];
-      return systems.filter(
+      return part2EligibleSystemsForSizeReporting.filter(
         (system) =>
           !!system.trackingSystemRefId &&
           abpEligibleTrackingIdsStrict.has(system.trackingSystemRefId)
       );
     },
-    [abpEligibleTrackingIdsStrict, isOfflineTabActive, systems]
+    [abpEligibleTrackingIdsStrict, isOfflineTabActive, part2EligibleSystemsForSizeReporting]
   );
 
   const offlineSystems = useMemo(
@@ -3814,7 +3842,7 @@ export default function SolarRecDashboard() {
 
   const portalMonitoringCandidates = useMemo<PortalMonitoringCandidate[]>(() => {
     if (!isPerformanceRatioTabActive) return [];
-    return systems
+    return part2EligibleSystemsForSizeReporting
       .filter((system) => !!system.trackingSystemRefId)
       .map((system) => {
         const details = getMonitoringDetailsForSystem(system, monitoringDetailsBySystemKey);
@@ -3850,7 +3878,7 @@ export default function SolarRecDashboard() {
           nameTokens,
         } satisfies PortalMonitoringCandidate;
       });
-  }, [isPerformanceRatioTabActive, monitoringDetailsBySystemKey, systems]);
+  }, [isPerformanceRatioTabActive, monitoringDetailsBySystemKey, part2EligibleSystemsForSizeReporting]);
 
   const performanceRatioMatchIndexes = useMemo(() => {
     if (!isPerformanceRatioTabActive) {
@@ -4198,7 +4226,7 @@ export default function SolarRecDashboard() {
 
   const autoCompliantSourceByPortalId = useMemo(() => {
     const mapping = new Map<string, string>();
-    systems.forEach((system) => {
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
       if (!system.systemId) return;
       const keyById = system.systemId ? `id:${system.systemId}` : "";
       const keyByTracking = system.trackingSystemRefId ? `tracking:${system.trackingSystemRefId}` : "";
@@ -4223,7 +4251,7 @@ export default function SolarRecDashboard() {
       }
     });
     return mapping;
-  }, [abpAcSizeKwBySystemKey, systems]);
+  }, [abpAcSizeKwBySystemKey, part2EligibleSystemsForSizeReporting]);
 
   const compliantSourcesTableRows = useMemo<CompliantSourceTableRow[]>(() => {
     const mapping = new Map<string, CompliantSourceTableRow>();
@@ -4681,32 +4709,32 @@ export default function SolarRecDashboard() {
   const recPriceByTrackingId = useMemo(() => {
     if (!isContractsComputationActive) return new Map<string, number>();
     const mapping = new Map<string, number>();
-    systems.forEach((system) => {
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
       if (!system.trackingSystemRefId || system.recPrice === null) return;
       mapping.set(system.trackingSystemRefId, system.recPrice);
     });
     return mapping;
-  }, [isContractsComputationActive, systems]);
+  }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
   const eligibleTrackingIds = useMemo(() => {
     if (!isContractsComputationActive) return new Set<string>();
     const ids = new Set<string>();
-    systems.forEach((system) => {
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
       if (!system.trackingSystemRefId) return;
       ids.add(system.trackingSystemRefId);
     });
     return ids;
-  }, [isContractsComputationActive, systems]);
+  }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
   const systemsByTrackingId = useMemo(() => {
     if (!isContractsComputationActive) return new Map<string, SystemRecord>();
     const mapping = new Map<string, SystemRecord>();
-    systems.forEach((system) => {
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
       if (!system.trackingSystemRefId) return;
       mapping.set(system.trackingSystemRefId, system);
     });
     return mapping;
-  }, [isContractsComputationActive, systems]);
+  }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
     if (!isPerformanceEvalTabActive) return [];
@@ -6470,10 +6498,15 @@ export default function SolarRecDashboard() {
       part2Rows,
       excludedRows,
       part2UniqueSystems: abpEligibleTotalSystems,
-      scopedSystems: systems.length,
-      scopedCoveragePercent: toPercentValue(systems.length, abpEligibleTotalSystems),
+      scopedSystems: part2EligibleSystemsForSizeReporting.length,
+      scopedCoveragePercent: toPercentValue(part2EligibleSystemsForSizeReporting.length, abpEligibleTotalSystems),
     };
-  }, [abpEligibleTotalSystems, datasets.abpReport?.rows.length, part2VerifiedAbpRows.length, systems.length]);
+  }, [
+    abpEligibleTotalSystems,
+    datasets.abpReport?.rows.length,
+    part2EligibleSystemsForSizeReporting.length,
+    part2VerifiedAbpRows.length,
+  ]);
 
   const sizeReportingChartRows = useMemo(
     () =>
@@ -6544,7 +6577,7 @@ export default function SolarRecDashboard() {
             row.systemName.length > 28
               ? `${row.systemName.slice(0, 25).trimEnd()}...`
               : row.systemName,
-          valueGap: Math.max(0, row.valueGap ?? 0),
+          valueGap: Math.max(0, resolveValueGapAmount(row)),
         }))
         .sort((a, b) => b.valueGap - a.valueGap)
         .slice(0, 12),
@@ -7027,33 +7060,35 @@ export default function SolarRecDashboard() {
             </Card>
           </TabsContent>
 
-	          <TabsContent value="value" className="space-y-4 mt-4">
-	            <div className="grid gap-4 md:grid-cols-4">
+		          <TabsContent value="value" className="space-y-4 mt-4">
+		            <div className="grid gap-4 md:grid-cols-4">
               <Card>
                 <CardHeader>
-                  <CardDescription>Systems with Value Data</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(summary.withValueDataCount)}</CardTitle>
+                  <CardDescription>Part II Systems with Value Data</CardDescription>
+                  <CardTitle className="text-2xl">{formatNumber(recValueRows.length)}</CardTitle>
                 </CardHeader>
               </Card>
               <Card>
                 <CardHeader>
-                  <CardDescription>Total Contracted Value</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(summary.totalContractedValue)}</CardTitle>
+                  <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalContractedValue)}</CardTitle>
                 </CardHeader>
               </Card>
               <Card>
                 <CardHeader>
                   <CardDescription>Value Gap (Contracted - Delivered)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(summary.totalGap)}</CardTitle>
+                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalGap)}</CardTitle>
                 </CardHeader>
               </Card>
-	              <Card>
-	                <CardHeader>
-	                  <CardDescription>Contract Value Reporting %</CardDescription>
-	                  <CardTitle className="text-2xl">{formatPercent(summary.contractedValueReportingPercent)}</CardTitle>
-	                </CardHeader>
-	              </Card>
-	            </div>
+		              <Card>
+		                <CardHeader>
+		                  <CardDescription>Contract Value Reporting %</CardDescription>
+		                  <CardTitle className="text-2xl">
+                        {formatPercent(snapshotPart2ValueSummary.contractedValueReportingPercent)}
+                      </CardTitle>
+		                </CardHeader>
+		              </Card>
+		            </div>
 
 	            <div className="grid gap-4 lg:grid-cols-2">
 	              <Card>
@@ -7149,11 +7184,11 @@ export default function SolarRecDashboard() {
                         <TableCell>{formatCurrency(system.deliveredValue)}</TableCell>
                         <TableCell>
                           {formatPercent(
-                            toPercentValue(system.deliveredValue ?? 0, system.contractedValue ?? 0)
+                            toPercentValue(system.deliveredValue ?? 0, resolveContractValueAmount(system))
                           )}
                         </TableCell>
-                        <TableCell className={system.valueGap !== null && system.valueGap > 0 ? "text-amber-700" : ""}>
-                          {formatCurrency(system.valueGap)}
+                        <TableCell className={resolveValueGapAmount(system) > 0 ? "text-amber-700" : ""}>
+                          {formatCurrency(resolveValueGapAmount(system))}
                         </TableCell>
                       </TableRow>
                     ))}
