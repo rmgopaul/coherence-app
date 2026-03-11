@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertCircle, ArrowLeft, Database, Trash2, Upload } from "lucide-react";
 import {
@@ -1103,6 +1103,24 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   return { headers, rows };
 }
 
+type CsvParserWorkerRequest = {
+  id: number;
+  text: string;
+};
+
+type CsvParserWorkerResponse =
+  | {
+      id: number;
+      ok: true;
+      headers: string[];
+      rows: CsvRow[];
+    }
+  | {
+      id: number;
+      ok: false;
+      error: string;
+    };
+
 function csvEscape(value: string | number | null | undefined): string {
   const normalized = value === null || value === undefined ? "" : String(value);
   if (/["\n,]/.test(normalized)) {
@@ -2003,6 +2021,70 @@ export default function SolarRecDashboard() {
   const remoteLogsChunkKeysRef = useRef<string[]>([]);
   const localDatasetSignatureRef = useRef<string>("");
   const localLogsSignatureRef = useRef<string>("0");
+  const csvParserWorkerRef = useRef<Worker | null>(null);
+  const csvParserRequestSeqRef = useRef(1);
+  const csvParserPendingRef = useRef(
+    new Map<number, { resolve: (value: { headers: string[]; rows: CsvRow[] }) => void; reject: (error: Error) => void }>()
+  );
+
+  const ensureCsvParserWorker = useCallback(() => {
+    if (typeof window === "undefined" || typeof Worker === "undefined") return null;
+    if (csvParserWorkerRef.current) return csvParserWorkerRef.current;
+
+    const worker = new Worker(new URL("../workers/csvParser.worker.ts", import.meta.url), {
+      type: "module",
+    });
+
+    worker.onmessage = (event: MessageEvent<CsvParserWorkerResponse>) => {
+      const message = event.data;
+      const pending = csvParserPendingRef.current.get(message.id);
+      if (!pending) return;
+      csvParserPendingRef.current.delete(message.id);
+      if (message.ok) {
+        pending.resolve({ headers: message.headers, rows: message.rows });
+        return;
+      }
+      pending.reject(new Error(message.error || "Failed to parse CSV in worker."));
+    };
+
+    worker.onerror = () => {
+      csvParserPendingRef.current.forEach(({ reject }) => {
+        reject(new Error("CSV parsing worker crashed."));
+      });
+      csvParserPendingRef.current.clear();
+      worker.terminate();
+      csvParserWorkerRef.current = null;
+    };
+
+    csvParserWorkerRef.current = worker;
+    return worker;
+  }, []);
+
+  const parseCsvAsync = useCallback(
+    async (text: string): Promise<{ headers: string[]; rows: CsvRow[] }> => {
+      const worker = ensureCsvParserWorker();
+      if (!worker) return parseCsv(text);
+
+      return new Promise((resolve, reject) => {
+        const id = csvParserRequestSeqRef.current++;
+        csvParserPendingRef.current.set(id, { resolve, reject });
+        const message: CsvParserWorkerRequest = { id, text };
+        worker.postMessage(message);
+      });
+    },
+    [ensureCsvParserWorker]
+  );
+
+  useEffect(() => {
+    return () => {
+      csvParserPendingRef.current.forEach(({ reject }) => {
+        reject(new Error("CSV parser worker terminated."));
+      });
+      csvParserPendingRef.current.clear();
+      csvParserWorkerRef.current?.terminate();
+      csvParserWorkerRef.current = null;
+    };
+  }, []);
 
   const jumpToSection = (sectionId: string) => {
     if (typeof document === "undefined") return;
@@ -2095,7 +2177,7 @@ export default function SolarRecDashboard() {
     if (!file) return;
     try {
       const raw = await file.text();
-      const parsed = parseCsv(raw);
+      const parsed = await parseCsvAsync(raw);
       if (!matchesExpectedHeaders(parsed.headers, ["portal_id", "source"])) {
         setCompliantSourceUploadError("CSV must include headers: portal_id, source");
         setCompliantSourceCsvMessage(null);
@@ -2174,7 +2256,7 @@ export default function SolarRecDashboard() {
 
     try {
       const raw = await file.text();
-      const parsed = parseCsv(raw);
+      const parsed = await parseCsvAsync(raw);
       const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
 
       if (!isValid) {
@@ -2277,7 +2359,7 @@ export default function SolarRecDashboard() {
           return;
         }
         const raw = await file.text();
-        const parsed = parseCsv(raw);
+        const parsed = await parseCsvAsync(raw);
         const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
         if (!isValid) {
           setUploadErrors((previous) => ({

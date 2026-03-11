@@ -82,6 +82,8 @@ type NavigationSelection =
   | { kind: "view"; key: SmartView }
   | { kind: "notebook"; name: string };
 
+const NOTES_LIST_PAGE_SIZE = 60;
+
 type CalendarFilterOption = {
   key: string;
   eventId: string;
@@ -418,6 +420,7 @@ export default function Notebook() {
   const [activeEventFilterKey, setActiveEventFilterKey] = useState("");
   const [notesSort, setNotesSort] = useState<NotesSort>("context");
   const [notesFetchLimit, setNotesFetchLimit] = useState(300);
+  const [notesListPage, setNotesListPage] = useState(1);
   const [isCalendarFilterOpen, setIsCalendarFilterOpen] = useState(false);
   const [calendarFilterQuery, setCalendarFilterQuery] = useState("");
   const [seriesOnlyFilter, setSeriesOnlyFilter] = useState(false);
@@ -908,6 +911,15 @@ export default function Notebook() {
     });
   }, [notes, activeNav, linkedOnlyFilter, effectiveEventFilterKey, searchQuery, notesSort]);
 
+  const notesListTotalPages = Math.max(1, Math.ceil(visibleNotes.length / NOTES_LIST_PAGE_SIZE));
+  const notesListCurrentPage = Math.min(notesListPage, notesListTotalPages);
+  const notesListPageStart = (notesListCurrentPage - 1) * NOTES_LIST_PAGE_SIZE;
+  const notesListPageEnd = notesListPageStart + NOTES_LIST_PAGE_SIZE;
+  const pagedVisibleNotes = useMemo(
+    () => visibleNotes.slice(notesListPageStart, notesListPageEnd),
+    [visibleNotes, notesListPageEnd, notesListPageStart]
+  );
+
   useEffect(() => {
     if (isDraftMode) return;
     if (!shouldAutoSelectFromRoute) return;
@@ -920,6 +932,15 @@ export default function Notebook() {
     setMobilePanel("editor");
     setShouldAutoSelectFromRoute(false);
   }, [isDraftMode, shouldAutoSelectFromRoute, selectedNoteId, visibleNotes]);
+
+  useEffect(() => {
+    setNotesListPage(1);
+  }, [activeNav, linkedOnlyFilter, effectiveEventFilterKey, searchQuery, notesSort]);
+
+  useEffect(() => {
+    if (notesListPage <= notesListTotalPages) return;
+    setNotesListPage(notesListTotalPages);
+  }, [notesListPage, notesListTotalPages]);
 
   useEffect(() => {
     const snapshot = resolveNotebookEditorSnapshot({
@@ -1733,15 +1754,18 @@ export default function Notebook() {
 
   const notesListPane = (
     <Card className="h-full">
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="truncate text-base" title={scopeBreadcrumb}>
-            {scopeBreadcrumb}
-          </CardTitle>
-          <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
-            <span>{visibleNotes.length}</span>
-            {hasAnyFilter && (
-              <button
+	      <CardHeader className="pb-2">
+	        <div className="flex items-center justify-between gap-2">
+	          <CardTitle className="truncate text-base" title={scopeBreadcrumb}>
+	            {scopeBreadcrumb}
+	          </CardTitle>
+	          <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
+	            <span>{visibleNotes.length}</span>
+	            <span>
+	              Page {notesListCurrentPage}/{notesListTotalPages}
+	            </span>
+	            {hasAnyFilter && (
+	              <button
                 type="button"
                 className="text-emerald-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
                 onClick={clearAllFilters}
@@ -1905,11 +1929,11 @@ export default function Notebook() {
           <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-4 py-6 text-sm text-slate-600">
             No notes match this filter.
           </div>
-        ) : (
-          <>
-            <div className="max-h-[calc(100vh-245px)] overflow-y-auto rounded-md border border-slate-200 bg-white">
-              {visibleNotes.map((note: any) => {
-                const active = !isDraftMode && String(selectedNoteId || "") === String(note.id);
+	        ) : (
+	          <>
+	            <div className="max-h-[calc(100vh-245px)] overflow-y-auto rounded-md border border-slate-200 bg-white">
+	              {pagedVisibleNotes.map((note: any) => {
+	                const active = !isDraftMode && String(selectedNoteId || "") === String(note.id);
                 const links = Array.isArray(note.links) ? note.links.length : 0;
                 const preview = stripHtml(note.content || "");
                 const showNotebookChip = activeNav.kind !== "notebook";
@@ -1949,24 +1973,42 @@ export default function Notebook() {
                         </div>
                       </div>
                     </div>
-                  </button>
-                );
-              })}
-            </div>
-            {canLoadMoreNotes ? (
-              <div className="flex justify-center">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setNotesFetchLimit((limit) => limit + 200)}
-                >
-                  Load 200 More Notes
-                </Button>
-              </div>
-            ) : null}
-          </>
-        )}
-      </CardContent>
+	                  </button>
+	                );
+	              })}
+	            </div>
+	            <div className="flex flex-wrap items-center justify-between gap-2">
+	              <div className="flex items-center gap-2">
+	                <Button
+	                  variant="outline"
+	                  size="sm"
+	                  onClick={() => setNotesListPage((page) => Math.max(1, page - 1))}
+	                  disabled={notesListCurrentPage <= 1}
+	                >
+	                  Previous
+	                </Button>
+	                <Button
+	                  variant="outline"
+	                  size="sm"
+	                  onClick={() => setNotesListPage((page) => Math.min(notesListTotalPages, page + 1))}
+	                  disabled={notesListCurrentPage >= notesListTotalPages}
+	                >
+	                  Next
+	                </Button>
+	              </div>
+	              {canLoadMoreNotes ? (
+	                <Button
+	                  variant="outline"
+	                  size="sm"
+	                  onClick={() => setNotesFetchLimit((limit) => limit + 200)}
+	                >
+	                  Load 200 More Notes
+	                </Button>
+	              ) : null}
+	            </div>
+	          </>
+	        )}
+	      </CardContent>
     </Card>
   );
 
