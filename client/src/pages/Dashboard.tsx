@@ -1881,6 +1881,10 @@ export default function Dashboard() {
               <Database className="h-4 w-4 mr-2" />
               Enphase v4
             </Button>
+            <Button variant="outline" onClick={() => setLocation("/solaredge-meter-reads")}>
+              <Database className="h-4 w-4 mr-2" />
+              SolarEdge API
+            </Button>
             <Button variant="outline" onClick={() => setLocation("/settings")}>
               <SettingsIcon className="h-4 w-4 mr-2" />
               Settings

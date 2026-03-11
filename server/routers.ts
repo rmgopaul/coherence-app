@@ -42,6 +42,7 @@ function getTodayDateKey(): string {
 
 const ENPHASE_V2_PROVIDER = "enphase-v2";
 const ENPHASE_V4_PROVIDER = "enphase-v4";
+const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -72,6 +73,15 @@ function parseEnphaseV4Metadata(metadata: string | null | undefined): {
     clientSecret: toNonEmptyString(parsed.clientSecret),
     baseUrl: toNonEmptyString(parsed.baseUrl),
     redirectUri: toNonEmptyString(parsed.redirectUri),
+  };
+}
+
+function parseSolarEdgeMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    baseUrl: toNonEmptyString(parsed.baseUrl),
   };
 }
 
@@ -142,6 +152,25 @@ async function getEnphaseV4Context(userId: number): Promise<{
   return {
     accessToken,
     apiKey: metadata.apiKey,
+    baseUrl: metadata.baseUrl,
+  };
+}
+
+async function getSolarEdgeContext(userId: number): Promise<{
+  apiKey: string;
+  baseUrl: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, SOLAR_EDGE_PROVIDER);
+  const apiKey = toNonEmptyString(integration?.accessToken);
+  const metadata = parseSolarEdgeMetadata(integration?.metadata);
+
+  if (!apiKey) {
+    throw new Error("SolarEdge is not connected. Save API key first.");
+  }
+
+  return {
+    apiKey,
     baseUrl: metadata.baseUrl,
   };
 }
@@ -597,6 +626,129 @@ export const appRouter = router({
           input.startDate,
           input.endDate
         );
+      }),
+  }),
+
+  solarEdge: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+      const metadata = parseSolarEdgeMetadata(integration?.metadata);
+      return {
+        connected: Boolean(toNonEmptyString(integration?.accessToken)),
+        baseUrl: metadata.baseUrl,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          apiKey: z.string().min(1),
+          baseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+
+        const metadata = JSON.stringify({
+          baseUrl: toNonEmptyString(input.baseUrl),
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: SOLAR_EDGE_PROVIDER,
+          accessToken: input.apiKey.trim(),
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    listSites: protectedProcedure.query(async ({ ctx }) => {
+      const context = await getSolarEdgeContext(ctx.user.id);
+      const { listSites } = await import("./services/solarEdge");
+      return listSites(context);
+    }),
+    getOverview: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteOverview } = await import("./services/solarEdge");
+        return getSiteOverview(context, input.siteId.trim());
+      }),
+    getDetails: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteDetails } = await import("./services/solarEdge");
+        return getSiteDetails(context, input.siteId.trim());
+      }),
+    getEnergy: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          timeUnit: z.enum(["QUARTER_OF_AN_HOUR", "HOUR", "DAY", "WEEK", "MONTH", "YEAR"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteEnergy } = await import("./services/solarEdge");
+        return getSiteEnergy(context, input.siteId.trim(), input.startDate, input.endDate, input.timeUnit);
+      }),
+    getProductionMeterReadings: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          timeUnit: z.enum(["QUARTER_OF_AN_HOUR", "HOUR", "DAY", "WEEK", "MONTH", "YEAR"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteEnergyDetails } = await import("./services/solarEdge");
+        return getSiteEnergyDetails(
+          context,
+          input.siteId.trim(),
+          input.startDate,
+          input.endDate,
+          input.timeUnit,
+          "PRODUCTION"
+        );
+      }),
+    getMeters: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteMeters } = await import("./services/solarEdge");
+        return getSiteMeters(context, input.siteId.trim(), input.startDate, input.endDate);
       }),
   }),
 
