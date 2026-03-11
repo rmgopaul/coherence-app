@@ -48,6 +48,29 @@ function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+async function mapWithConcurrency<TInput, TOutput>(
+  items: TInput[],
+  concurrency: number,
+  mapper: (item: TInput, index: number) => Promise<TOutput>
+): Promise<TOutput[]> {
+  const safeConcurrency = Math.max(1, Math.floor(concurrency));
+  const results: TOutput[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (true) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      if (currentIndex >= items.length) return;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  };
+
+  const workerCount = Math.min(safeConcurrency, items.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 function parseEnphaseV2Metadata(metadata: string | null | undefined): {
   userId: string | null;
   baseUrl: string | null;
@@ -76,13 +99,90 @@ function parseEnphaseV4Metadata(metadata: string | null | undefined): {
   };
 }
 
-function parseSolarEdgeMetadata(metadata: string | null | undefined): {
+type SolarEdgeConnectionConfig = {
+  id: string;
+  name: string;
+  apiKey: string;
   baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function maskApiKey(apiKey: string): string {
+  const normalized = apiKey.trim();
+  if (!normalized) return "";
+  if (normalized.length <= 6) return `${"*".repeat(Math.max(0, normalized.length - 2))}${normalized.slice(-2)}`;
+  return `${normalized.slice(0, 3)}${"*".repeat(Math.max(0, normalized.length - 6))}${normalized.slice(-3)}`;
+}
+
+function parseSolarEdgeMetadata(
+  metadata: string | null | undefined,
+  fallbackApiKey?: string | null
+): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: SolarEdgeConnectionConfig[];
 } {
   const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: SolarEdgeConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `solaredge-conn-${index + 1}`;
+      const apiKey = toNonEmptyString(row.apiKey);
+      if (!apiKey) return null;
+      const createdAt = toNonEmptyString(row.createdAt) ?? new Date().toISOString();
+      const updatedAt = toNonEmptyString(row.updatedAt) ?? createdAt;
+      return {
+        id,
+        name: toNonEmptyString(row.name) ?? `SolarEdge API ${index + 1}`,
+        apiKey,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt,
+        updatedAt,
+      } satisfies SolarEdgeConnectionConfig;
+    })
+    .filter((value): value is SolarEdgeConnectionConfig => value !== null);
+
+  if (connections.length === 0) {
+    const legacyApiKey = toNonEmptyString(fallbackApiKey);
+    if (legacyApiKey) {
+      const nowIso = new Date().toISOString();
+      connections.push({
+        id: "legacy-solaredge-key",
+        name: "Legacy API Key",
+        apiKey: legacyApiKey,
+        baseUrl,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+  }
+
+  const activeConnectionId =
+    (activeConnectionIdRaw && connections.some((connection) => connection.id === activeConnectionIdRaw)
+      ? activeConnectionIdRaw
+      : connections[0]?.id) ?? null;
+
   return {
-    baseUrl: toNonEmptyString(parsed.baseUrl),
+    baseUrl,
+    activeConnectionId,
+    connections,
   };
+}
+
+function serializeSolarEdgeMetadata(
+  connections: SolarEdgeConnectionConfig[],
+  activeConnectionId: string | null,
+  baseUrl: string | null
+): string {
+  return JSON.stringify({
+    baseUrl,
+    activeConnectionId,
+    connections,
+  });
 }
 
 async function getEnphaseV2Credentials(userId: number): Promise<{
@@ -162,16 +262,17 @@ async function getSolarEdgeContext(userId: number): Promise<{
 }> {
   const { getIntegrationByProvider } = await import("./db");
   const integration = await getIntegrationByProvider(userId, SOLAR_EDGE_PROVIDER);
-  const apiKey = toNonEmptyString(integration?.accessToken);
-  const metadata = parseSolarEdgeMetadata(integration?.metadata);
+  const metadata = parseSolarEdgeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection =
+    metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ?? metadata.connections[0];
 
-  if (!apiKey) {
+  if (!activeConnection) {
     throw new Error("SolarEdge is not connected. Save API key first.");
   }
 
   return {
-    apiKey,
-    baseUrl: metadata.baseUrl,
+    apiKey: activeConnection.apiKey,
+    baseUrl: activeConnection.baseUrl ?? metadata.baseUrl,
   };
 }
 
@@ -633,39 +734,167 @@ export const appRouter = router({
     getStatus: protectedProcedure.query(async ({ ctx }) => {
       const { getIntegrationByProvider } = await import("./db");
       const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
-      const metadata = parseSolarEdgeMetadata(integration?.metadata);
+      const metadata = parseSolarEdgeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const activeConnection =
+        metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ?? metadata.connections[0];
+
       return {
-        connected: Boolean(toNonEmptyString(integration?.accessToken)),
-        baseUrl: metadata.baseUrl,
+        connected: metadata.connections.length > 0,
+        baseUrl: activeConnection?.baseUrl ?? metadata.baseUrl,
+        activeConnectionId: activeConnection?.id ?? null,
+        connections: metadata.connections.map((connection) => ({
+          id: connection.id,
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          apiKeyMasked: maskApiKey(connection.apiKey),
+          updatedAt: connection.updatedAt,
+          isActive: connection.id === activeConnection?.id,
+        })),
       };
     }),
     connect: protectedProcedure
       .input(
         z.object({
           apiKey: z.string().min(1),
+          connectionName: z.string().optional(),
           baseUrl: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { upsertIntegration } = await import("./db");
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-
-        const metadata = JSON.stringify({
-          baseUrl: toNonEmptyString(input.baseUrl),
-        });
+        const existing = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+        const existingMetadata = parseSolarEdgeMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+        const nowIso = new Date().toISOString();
+        const newConnection: SolarEdgeConnectionConfig = {
+          id: nanoid(),
+          name:
+            toNonEmptyString(input.connectionName) ??
+            `SolarEdge API ${existingMetadata.connections.length + 1}`,
+          apiKey: input.apiKey.trim(),
+          baseUrl: toNonEmptyString(input.baseUrl) ?? existingMetadata.baseUrl,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        const connections = [newConnection, ...existingMetadata.connections];
+        const activeConnectionId = newConnection.id;
+        const metadata = serializeSolarEdgeMetadata(
+          connections,
+          activeConnectionId,
+          newConnection.baseUrl ?? existingMetadata.baseUrl
+        );
 
         await upsertIntegration({
           id: nanoid(),
           userId: ctx.user.id,
           provider: SOLAR_EDGE_PROVIDER,
-          accessToken: input.apiKey.trim(),
+          accessToken: newConnection.apiKey,
           refreshToken: null,
           expiresAt: null,
           scope: null,
           metadata,
         });
 
-        return { success: true };
+        return {
+          success: true,
+          activeConnectionId,
+          totalConnections: connections.length,
+        };
+      }),
+    setActiveConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+        if (!integration) {
+          throw new Error("SolarEdge is not connected.");
+        }
+        const metadataState = parseSolarEdgeMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const activeConnection = metadataState.connections.find((connection) => connection.id === input.connectionId);
+        if (!activeConnection) {
+          throw new Error("Selected SolarEdge API profile was not found.");
+        }
+
+        const metadata = serializeSolarEdgeMetadata(
+          metadataState.connections,
+          activeConnection.id,
+          activeConnection.baseUrl ?? metadataState.baseUrl
+        );
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: SOLAR_EDGE_PROVIDER,
+          accessToken: activeConnection.apiKey,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          activeConnectionId: activeConnection.id,
+        };
+      }),
+    removeConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+        if (!integration) {
+          throw new Error("SolarEdge is not connected.");
+        }
+        const metadataState = parseSolarEdgeMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const nextConnections = metadataState.connections.filter((connection) => connection.id !== input.connectionId);
+
+        if (nextConnections.length === 0) {
+          if (integration.id) {
+            await deleteIntegration(integration.id);
+          }
+          return {
+            success: true,
+            connected: false,
+            activeConnectionId: null,
+            totalConnections: 0,
+          };
+        }
+
+        const nextActiveConnection =
+          nextConnections.find((connection) => connection.id === metadataState.activeConnectionId) ?? nextConnections[0];
+        const metadata = serializeSolarEdgeMetadata(
+          nextConnections,
+          nextActiveConnection.id,
+          nextActiveConnection.baseUrl ?? metadataState.baseUrl
+        );
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: SOLAR_EDGE_PROVIDER,
+          accessToken: nextActiveConnection.apiKey,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          connected: true,
+          activeConnectionId: nextActiveConnection.id,
+          totalConnections: nextConnections.length,
+        };
       }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => {
       const { deleteIntegration, getIntegrationByProvider } = await import("./db");
@@ -749,6 +978,45 @@ export const appRouter = router({
         const context = await getSolarEdgeContext(ctx.user.id);
         const { getSiteMeters } = await import("./services/solarEdge");
         return getSiteMeters(context, input.siteId.trim(), input.startDate, input.endDate);
+      }),
+    getProductionSnapshot: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteProductionSnapshot } = await import("./services/solarEdge");
+        return getSiteProductionSnapshot(context, input.siteId.trim(), input.anchorDate);
+      }),
+    getProductionSnapshots: protectedProcedure
+      .input(
+        z.object({
+          siteIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteProductionSnapshot } = await import("./services/solarEdge");
+
+        const uniqueSiteIds = Array.from(
+          new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
+        );
+
+        const rows = await mapWithConcurrency(uniqueSiteIds, 5, async (siteId) => {
+          return getSiteProductionSnapshot(context, siteId, input.anchorDate);
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          rows,
+        };
       }),
   }),
 

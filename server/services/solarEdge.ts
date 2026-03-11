@@ -14,6 +14,20 @@ export type SolarEdgeSite = {
   location: string | null;
 };
 
+export type SolarEdgeProductionSnapshot = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  lifetimeKwh: number | null;
+  monthlyProductionKwh: number | null;
+  weeklyProductionKwh: number | null;
+  dailyProductionKwh: number | null;
+  anchorDate: string;
+  monthlyStartDate: string;
+  weeklyStartDate: string;
+  error: string | null;
+};
+
 function toNullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -46,6 +60,99 @@ function parseIsoDate(input: string): { year: number; month: number; day: number
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
   return { year, month, day };
+}
+
+function formatIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftIsoDate(dateIso: string, deltaDays: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setDate(date.getDate() + deltaDays);
+  return formatIsoDate(date);
+}
+
+function asDateKey(value: string | null | undefined): string | null {
+  const normalized = toNullableString(value);
+  if (!normalized) return null;
+  const leading = normalized.slice(0, 10);
+  return parseIsoDate(leading) ? leading : null;
+}
+
+function toKwh(value: number | null, unit: string | null): number | null {
+  if (value === null) return null;
+  const normalizedUnit = (unit ?? "").trim().toLowerCase();
+  if (normalizedUnit.includes("kwh")) return value;
+  if (normalizedUnit.includes("wh")) return value / 1000;
+  return value / 1000;
+}
+
+function safeRound(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.round(value * 1000) / 1000;
+}
+
+function sumKwh(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const total = values.reduce((sum, current) => sum + current, 0);
+  return safeRound(total);
+}
+
+function extractOverviewLifetimeKwh(payload: unknown): number | null {
+  const root = asRecord(payload);
+  const overview = asRecord(root.overview);
+  const lifeTimeData = asRecord(
+    overview.lifeTimeData ?? overview.lifetimeData ?? overview.lifeTime ?? overview.life_time_data
+  );
+  const energy = toNullableNumber(lifeTimeData.energy ?? overview.lifeTimeEnergy ?? overview.lifetimeEnergy);
+  return safeRound(toKwh(energy, "Wh"));
+}
+
+type DailyEnergyPoint = {
+  dateKey: string;
+  kwh: number;
+};
+
+function extractDailyEnergySeriesKwh(payload: unknown): DailyEnergyPoint[] {
+  const root = asRecord(payload);
+  const energy = asRecord(root.energy);
+  const values = Array.isArray(energy.values)
+    ? energy.values
+    : Array.isArray(root.values)
+      ? root.values
+      : [];
+  const unit = toNullableString(energy.unit) ?? toNullableString(root.unit);
+  const output: DailyEnergyPoint[] = [];
+
+  for (const row of values) {
+    const record = asRecord(row);
+    const dateKey = asDateKey(
+      toNullableString(record.date) ??
+        toNullableString(record.dateTime) ??
+        toNullableString(record.endTime) ??
+        toNullableString(record.startTime)
+    );
+    const value = toNullableNumber(record.value ?? record.energy ?? record.production);
+    const kwh = toKwh(value, unit);
+    if (!dateKey || kwh === null) continue;
+    output.push({
+      dateKey,
+      kwh,
+    });
+  }
+
+  return output;
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("(404") || message.includes("not found");
 }
 
 function toSolarEdgeDateTime(dateIso: string, endOfDay: boolean): string {
@@ -82,19 +189,65 @@ function buildApiUrl(
   return url.toString();
 }
 
+function buildApiHeaders(context: SolarEdgeApiContext): HeadersInit {
+  const apiKey = context.apiKey.trim();
+  return {
+    Accept: "application/json",
+    // Some SolarEdge endpoints expect OAuth-style bearer auth.
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}`, "x-api-key": apiKey } : {}),
+  };
+}
+
+function stripV2Suffix(rawBaseUrl: string | null | undefined): string | null {
+  const base = normalizeBaseUrl(rawBaseUrl);
+  if (!base.toLowerCase().endsWith("/v2")) return null;
+  return base.slice(0, -3).replace(/\/+$/, "");
+}
+
 async function getSolarEdgeJson(
   path: string,
   context: SolarEdgeApiContext,
   query?: Record<string, string | number | null | undefined>
 ): Promise<unknown> {
   const url = buildApiUrl(path, context, query);
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    headers: buildApiHeaders(context),
+  });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");
-    throw new Error(
-      `SolarEdge request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`
-    );
+    const loweredErrorText = errorText.toLowerCase();
+
+    const shouldTryBaseFallback =
+      response.status === 401 &&
+      (loweredErrorText.includes("access token is missing") ||
+        loweredErrorText.includes("invalid access token") ||
+        loweredErrorText.includes("invalid_token"));
+
+    if (shouldTryBaseFallback) {
+      const fallbackBaseUrl = stripV2Suffix(context.baseUrl);
+      if (fallbackBaseUrl) {
+        const fallbackContext: SolarEdgeApiContext = {
+          ...context,
+          baseUrl: fallbackBaseUrl,
+        };
+        const fallbackUrl = buildApiUrl(path, fallbackContext, query);
+        const fallbackResponse = await fetch(fallbackUrl, {
+          headers: buildApiHeaders(fallbackContext),
+        });
+
+        if (fallbackResponse.ok) {
+          return fallbackResponse.json();
+        }
+
+        const fallbackErrorText = await fallbackResponse.text().catch(() => "");
+        throw new Error(
+          `SolarEdge request failed (${fallbackResponse.status} ${fallbackResponse.statusText})${fallbackErrorText ? `: ${fallbackErrorText}` : ""}`
+        );
+      }
+    }
+
+    throw new Error(`SolarEdge request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`);
   }
 
   return response.json();
@@ -193,4 +346,84 @@ export async function getSiteMeters(
     startTime: startDate ? toSolarEdgeDateTime(startDate, false) : undefined,
     endTime: endDate ? toSolarEdgeDateTime(endDate, true) : undefined,
   });
+}
+
+export async function getSiteProductionSnapshot(
+  context: SolarEdgeApiContext,
+  siteIdRaw: string,
+  anchorDateRaw?: string | null
+): Promise<SolarEdgeProductionSnapshot> {
+  const siteId = siteIdRaw.trim();
+  const anchorDate = (anchorDateRaw ?? "").trim() || formatIsoDate(new Date());
+  if (!parseIsoDate(anchorDate)) {
+    throw new Error("Anchor date must be in YYYY-MM-DD format.");
+  }
+
+  const monthlyStartDate = shiftIsoDate(anchorDate, -29);
+  const weeklyStartDate = shiftIsoDate(anchorDate, -6);
+
+  try {
+    const [overviewPayload, energyPayload] = await Promise.all([
+      getSiteOverview(context, siteId),
+      getSiteEnergy(context, siteId, monthlyStartDate, anchorDate, "DAY"),
+    ]);
+
+    const lifetimeKwh = extractOverviewLifetimeKwh(overviewPayload);
+    const dailySeries = extractDailyEnergySeriesKwh(energyPayload);
+    const monthlyProductionKwh = sumKwh(dailySeries.map((point) => point.kwh));
+    const weeklyProductionKwh = sumKwh(
+      dailySeries
+        .filter((point) => point.dateKey >= weeklyStartDate && point.dateKey <= anchorDate)
+        .map((point) => point.kwh)
+    );
+    const dailyProductionKwh = sumKwh(
+      dailySeries
+        .filter((point) => point.dateKey === anchorDate)
+        .map((point) => point.kwh)
+    );
+
+    return {
+      siteId,
+      status: "Found",
+      found: true,
+      lifetimeKwh,
+      monthlyProductionKwh,
+      weeklyProductionKwh,
+      dailyProductionKwh,
+      anchorDate,
+      monthlyStartDate,
+      weeklyStartDate,
+      error: null,
+    };
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return {
+        siteId,
+        status: "Not Found",
+        found: false,
+        lifetimeKwh: null,
+        monthlyProductionKwh: null,
+        weeklyProductionKwh: null,
+        dailyProductionKwh: null,
+        anchorDate,
+        monthlyStartDate,
+        weeklyStartDate,
+        error: error instanceof Error ? error.message : "Site not found.",
+      };
+    }
+
+    return {
+      siteId,
+      status: "Error",
+      found: false,
+      lifetimeKwh: null,
+      monthlyProductionKwh: null,
+      weeklyProductionKwh: null,
+      dailyProductionKwh: null,
+      anchorDate,
+      monthlyStartDate,
+      weeklyStartDate,
+      error: error instanceof Error ? error.message : "Unknown error.",
+    };
+  }
 }
