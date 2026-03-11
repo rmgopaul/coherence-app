@@ -236,6 +236,8 @@ export default function Dashboard() {
   const [editingSamsungField, setEditingSamsungField] = useState<"sleep" | "energy" | null>(null);
   const [minuteTick, setMinuteTick] = useState(() => new Date());
   const [dashboardViewMode, setDashboardViewMode] = useState<"essential" | "detailed">("essential");
+  const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
+  const [chatExpanded, setChatExpanded] = useState(false);
   const [noteTitleInput, setNoteTitleInput] = useState("");
   const [noteContentInput, setNoteContentInput] = useState("");
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
@@ -255,6 +257,9 @@ export default function Dashboard() {
   const lastSamsungSyncSeenRef = useRef<string | null>(null);
   const todayKey = buildLocalDateKey();
   const trpcUtils = trpc.useUtils();
+  const isDetailedMode = dashboardViewMode === "detailed";
+  const shouldLoadWorkspaceData = isDetailedMode && workspaceExpanded;
+  const shouldLoadChatData = isDetailedMode && chatExpanded;
   
   const {
     data: integrations,
@@ -366,6 +371,16 @@ export default function Dashboard() {
     if (!user) return;
     setWelcomeDisplayNameInput(greetingDisplayName);
   }, [user?.id, greetingDisplayName]);
+
+  useEffect(() => {
+    if (dashboardViewMode === "detailed") {
+      setWorkspaceExpanded(true);
+      setChatExpanded(true);
+      return;
+    }
+    setWorkspaceExpanded(false);
+    setChatExpanded(false);
+  }, [dashboardViewMode]);
   
   const { data: calendarEvents, isLoading: calendarLoading, refetch: refetchCalendar } = trpc.google.getCalendarEvents.useQuery(undefined, {
     enabled: !!user && hasGoogle,
@@ -502,7 +517,7 @@ export default function Dashboard() {
   });
   
   const { data: driveFiles, isLoading: driveLoading, refetch: refetchDrive } = trpc.google.getDriveFiles.useQuery(undefined, {
-    enabled: !!user && hasGoogle,
+    enabled: !!user && hasGoogle && shouldLoadWorkspaceData,
     retry: false,
   });
 
@@ -531,14 +546,14 @@ export default function Dashboard() {
   const { data: supplementLogs, refetch: refetchSupplementLogs } = trpc.supplements.getLogs.useQuery(
     { dateKey: todayKey, limit: 50 },
     {
-      enabled: !!user,
+      enabled: !!user && isDetailedMode,
       retry: false,
     }
   );
 
   const { data: supplementDefinitions, refetch: refetchSupplementDefinitions } =
     trpc.supplements.listDefinitions.useQuery(undefined, {
-      enabled: !!user,
+      enabled: !!user && isDetailedMode,
       retry: false,
     });
 
@@ -553,7 +568,7 @@ export default function Dashboard() {
   const { data: notes, isLoading: notesLoading, refetch: refetchNotes } = trpc.notes.list.useQuery(
     { limit: 300 },
     {
-      enabled: !!user,
+      enabled: !!user && isDetailedMode,
       retry: false,
     }
   );
@@ -1355,12 +1370,12 @@ export default function Dashboard() {
   const displayedDriveFiles = driveSearchResults !== null ? driveSearchResults : (driveFiles || []);
   
   const { data: conversations, refetch: refetchConversations } = trpc.conversations.list.useQuery(undefined, {
-    enabled: !!user,
+    enabled: !!user && shouldLoadChatData,
   });
   
   const { data: messages, refetch: refetchMessages } = trpc.conversations.getMessages.useQuery(
     { conversationId: selectedConversationId! },
-    { enabled: !!selectedConversationId }
+    { enabled: !!selectedConversationId && shouldLoadChatData }
   );
   
   const createConversation = trpc.conversations.create.useMutation({
@@ -1772,7 +1787,6 @@ export default function Dashboard() {
     return `${remainder}m`;
   };
   const recentMetricRows = (metricHistory || []).slice(0, 7);
-  const isDetailedMode = dashboardViewMode === "detailed";
   const dailyTrendChartData = [...recentMetricRows]
     .reverse()
     .map((row: any) => ({
@@ -1964,6 +1978,22 @@ export default function Dashboard() {
                 >
                   <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
                   Chat
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs border border-emerald-200 bg-white hover:bg-emerald-50"
+                  onClick={() => setWorkspaceExpanded((current) => !current)}
+                >
+                  {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs border border-violet-200 bg-white hover:bg-violet-50"
+                  onClick={() => setChatExpanded((current) => !current)}
+                >
+                  {chatExpanded ? "Hide Chat" : "Show Chat"}
                 </Button>
               </>
             ) : null}
@@ -2952,6 +2982,8 @@ export default function Dashboard() {
       </div>
 
       {/* Main Content - Four Column Layout */}
+      {isDetailedMode ? (
+        workspaceExpanded ? (
       <main id="section-workspace" className="container mx-auto px-4 py-6 flex-1 overflow-hidden scroll-mt-40">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-full">
           {/* Left Column - Calendar Events */}
@@ -3490,8 +3522,39 @@ export default function Dashboard() {
 
         </div>
       </main>
+        ) : (
+          <div id="section-workspace" className="container mx-auto px-4 py-6 scroll-mt-40">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Workspace Hidden</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm text-slate-600 mb-3">
+                  Workspace data loading is paused until you expand this section.
+                </p>
+                <Button onClick={() => setWorkspaceExpanded(true)}>Show Workspace</Button>
+              </CardContent>
+            </Card>
+          </div>
+        )
+      ) : (
+        <div id="section-workspace" className="container mx-auto px-4 py-6 scroll-mt-40">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Detailed Workspace</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-slate-600 mb-3">
+                Switch to Detailed mode to view calendar, Todoist, Gmail, Drive, and Chat workspace sections.
+              </p>
+              <Button onClick={() => setDashboardViewMode("detailed")}>Switch to Detailed Mode</Button>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {/* Chat Panel at Bottom */}
+      {isDetailedMode && chatExpanded ? (
       <div id="section-chat" className="border-t bg-white scroll-mt-40">
         <div className="container mx-auto px-4 py-4">
           <div className="grid grid-cols-12 gap-4 h-80">
@@ -3624,6 +3687,21 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+      ) : isDetailedMode ? (
+        <div id="section-chat" className="container mx-auto px-4 pb-6 scroll-mt-40">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Chat Hidden</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-slate-600 mb-3">
+                Chat queries are paused while this section is collapsed.
+              </p>
+              <Button onClick={() => setChatExpanded(true)}>Show Chat</Button>
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
     </div>
   );
 }
