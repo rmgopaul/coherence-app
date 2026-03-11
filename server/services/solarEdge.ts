@@ -172,13 +172,18 @@ function toSolarEdgeDateTime(dateIso: string, endOfDay: boolean): string {
 function buildApiUrl(
   path: string,
   context: SolarEdgeApiContext,
-  query?: Record<string, string | number | null | undefined>
+  query?: Record<string, string | number | null | undefined>,
+  options?: {
+    includeApiKeyQuery?: boolean;
+  }
 ): string {
   const baseUrl = normalizeBaseUrl(context.baseUrl);
   const safePath = path.startsWith("/") ? path : `/${path}`;
   const url = new URL(`${baseUrl}${safePath}`);
 
-  url.searchParams.set("api_key", context.apiKey);
+  if (options?.includeApiKeyQuery !== false) {
+    url.searchParams.set("api_key", context.apiKey);
+  }
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value === null || value === undefined) continue;
     const normalized = String(value).trim();
@@ -189,11 +194,17 @@ function buildApiUrl(
   return url.toString();
 }
 
-function buildApiHeaders(context: SolarEdgeApiContext): HeadersInit {
+type SolarEdgeAuthMode = "query-only" | "bearer-plus-query";
+
+function buildApiHeaders(context: SolarEdgeApiContext, authMode: SolarEdgeAuthMode): HeadersInit {
   const apiKey = context.apiKey.trim();
+  if (authMode === "query-only") {
+    return {
+      Accept: "application/json",
+    };
+  }
   return {
     Accept: "application/json",
-    // Some SolarEdge endpoints expect OAuth-style bearer auth.
     ...(apiKey ? { Authorization: `Bearer ${apiKey}`, "x-api-key": apiKey } : {}),
   };
 }
@@ -209,48 +220,60 @@ async function getSolarEdgeJson(
   context: SolarEdgeApiContext,
   query?: Record<string, string | number | null | undefined>
 ): Promise<unknown> {
-  const url = buildApiUrl(path, context, query);
-  const response = await fetch(url, {
-    headers: buildApiHeaders(context),
-  });
+  const primaryBase = normalizeBaseUrl(context.baseUrl);
+  const fallbackBase = stripV2Suffix(context.baseUrl);
 
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    const loweredErrorText = errorText.toLowerCase();
+  const attempted = new Set<string>();
+  const attempts: Array<{ baseUrl: string; authMode: SolarEdgeAuthMode }> = [];
 
-    const shouldTryBaseFallback =
-      response.status === 401 &&
-      (loweredErrorText.includes("access token is missing") ||
-        loweredErrorText.includes("invalid access token") ||
-        loweredErrorText.includes("invalid_token"));
+  const addAttempt = (baseUrl: string | null | undefined, authMode: SolarEdgeAuthMode) => {
+    if (!baseUrl) return;
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    const signature = `${authMode}:${normalizedBase}`;
+    if (attempted.has(signature)) return;
+    attempted.add(signature);
+    attempts.push({ baseUrl: normalizedBase, authMode });
+  };
 
-    if (shouldTryBaseFallback) {
-      const fallbackBaseUrl = stripV2Suffix(context.baseUrl);
-      if (fallbackBaseUrl) {
-        const fallbackContext: SolarEdgeApiContext = {
-          ...context,
-          baseUrl: fallbackBaseUrl,
-        };
-        const fallbackUrl = buildApiUrl(path, fallbackContext, query);
-        const fallbackResponse = await fetch(fallbackUrl, {
-          headers: buildApiHeaders(fallbackContext),
-        });
+  // Most SolarEdge monitoring keys are valid with query-string api_key only.
+  addAttempt(primaryBase, "query-only");
+  addAttempt(fallbackBase, "query-only");
+  // Some endpoint variants require bearer-style auth.
+  addAttempt(primaryBase, "bearer-plus-query");
+  addAttempt(fallbackBase, "bearer-plus-query");
 
-        if (fallbackResponse.ok) {
-          return fallbackResponse.json();
-        }
+  let lastFailureMessage = "SolarEdge request failed.";
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    const attemptContext: SolarEdgeApiContext = {
+      ...context,
+      baseUrl: attempt.baseUrl,
+    };
 
-        const fallbackErrorText = await fallbackResponse.text().catch(() => "");
-        throw new Error(
-          `SolarEdge request failed (${fallbackResponse.status} ${fallbackResponse.statusText})${fallbackErrorText ? `: ${fallbackErrorText}` : ""}`
-        );
-      }
+    const url = buildApiUrl(path, attemptContext, query, {
+      includeApiKeyQuery: true,
+    });
+    const response = await fetch(url, {
+      headers: buildApiHeaders(attemptContext, attempt.authMode),
+    });
+
+    if (response.ok) {
+      return response.json();
     }
 
-    throw new Error(`SolarEdge request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`);
+    const errorText = await response.text().catch(() => "");
+    lastFailureMessage = `SolarEdge request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`;
+
+    // Retry auth permutations only for auth failures.
+    const isAuthFailure = response.status === 401 || response.status === 403;
+    if (isAuthFailure && index < attempts.length - 1) {
+      continue;
+    }
+
+    throw new Error(lastFailureMessage);
   }
 
-  return response.json();
+  throw new Error(lastFailureMessage);
 }
 
 export function extractSites(payload: unknown): SolarEdgeSite[] {
