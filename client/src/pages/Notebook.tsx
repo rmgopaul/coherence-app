@@ -273,6 +273,7 @@ export default function Notebook() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeEventFilterKey, setActiveEventFilterKey] = useState("");
   const [notesSort, setNotesSort] = useState<NotesSort>("context");
+  const [notesFetchLimit, setNotesFetchLimit] = useState(300);
   const [isCalendarFilterOpen, setIsCalendarFilterOpen] = useState(false);
   const [calendarFilterQuery, setCalendarFilterQuery] = useState("");
   const [seriesOnlyFilter, setSeriesOnlyFilter] = useState(false);
@@ -407,7 +408,7 @@ export default function Notebook() {
     error: notesError,
     refetch: refetchNotes,
   } = trpc.notes.list.useQuery(
-    { limit: 1000 },
+    { limit: notesFetchLimit },
     {
       enabled: !!user,
       retry: false,
@@ -463,6 +464,88 @@ export default function Notebook() {
     const pinned = rows.filter((note: any) => Boolean(note.pinned)).length;
     const linked = rows.filter((note: any) => (Array.isArray(note.links) ? note.links.length > 0 : false)).length;
     return { all, pinned, linked };
+  }, [notes]);
+
+  const canLoadMoreNotes = useMemo(
+    () => (notes?.length ?? 0) >= notesFetchLimit,
+    [notes?.length, notesFetchLimit]
+  );
+
+  const notesActivitySparkRows = useMemo(() => {
+    const rows = notes || [];
+    const dayKeys: string[] = [];
+    const createdCounts = new Map<string, number>();
+    const updatedCounts = new Map<string, number>();
+
+    for (let i = 6; i >= 0; i -= 1) {
+      const date = new Date();
+      date.setHours(0, 0, 0, 0);
+      date.setDate(date.getDate() - i);
+      const key = date.toISOString().slice(0, 10);
+      dayKeys.push(key);
+      createdCounts.set(key, 0);
+      updatedCounts.set(key, 0);
+    }
+
+    rows.forEach((note: any) => {
+      const createdDate = new Date(note.createdAt || 0);
+      const updatedDate = new Date(note.updatedAt || note.createdAt || 0);
+      if (Number.isFinite(createdDate.getTime())) {
+        const createdKey = createdDate.toISOString().slice(0, 10);
+        if (createdCounts.has(createdKey)) {
+          createdCounts.set(createdKey, (createdCounts.get(createdKey) || 0) + 1);
+        }
+      }
+      if (Number.isFinite(updatedDate.getTime())) {
+        const updatedKey = updatedDate.toISOString().slice(0, 10);
+        if (updatedCounts.has(updatedKey)) {
+          updatedCounts.set(updatedKey, (updatedCounts.get(updatedKey) || 0) + 1);
+        }
+      }
+    });
+
+    const result = dayKeys.map((key) => ({
+      key,
+      label: key.slice(5),
+      created: createdCounts.get(key) || 0,
+      updated: updatedCounts.get(key) || 0,
+    }));
+    const peak = Math.max(
+      1,
+      ...result.map((row) => Math.max(row.created, row.updated))
+    );
+    return { rows: result, peak };
+  }, [notes]);
+
+  const linkTypeBreakdown = useMemo(() => {
+    const counts = new Map<string, number>();
+    (notes || []).forEach((note: any) => {
+      const links = Array.isArray(note.links) ? note.links : [];
+      links.forEach((link: any) => {
+        const type = String(link.linkType || "other");
+        counts.set(type, (counts.get(type) || 0) + 1);
+      });
+    });
+    const total = Array.from(counts.values()).reduce((sum, value) => sum + value, 0);
+    const labelMap: Record<string, string> = {
+      google_calendar_event: "Calendar",
+      todoist_task: "Todoist",
+      note_link: "Note",
+      google_drive_file: "Drive",
+      other: "Other",
+    };
+    return {
+      total,
+      rows: Array.from(counts.entries())
+        .map(([type, count]) => ({
+          type,
+          label: labelMap[type] || type,
+          count,
+          percent: total > 0 ? (count / total) * 100 : 0,
+        }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5),
+    };
   }, [notes]);
 
   const notebooks = useMemo(() => {
@@ -1580,6 +1663,61 @@ export default function Notebook() {
           </div>
         )}
 
+        <div className="rounded-md border border-slate-200 bg-slate-50 p-2.5">
+          <div className="grid gap-2 md:grid-cols-2">
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Notes Activity (7 days)
+              </p>
+              <div className="mt-1.5 flex items-end gap-1.5">
+                {notesActivitySparkRows.rows.map((row) => {
+                  const createdHeight = Math.max(2, Math.round((row.created / notesActivitySparkRows.peak) * 26));
+                  const updatedHeight = Math.max(2, Math.round((row.updated / notesActivitySparkRows.peak) * 26));
+                  return (
+                    <div key={row.key} className="flex min-w-0 flex-1 flex-col items-center gap-1">
+                      <div className="flex h-7 items-end gap-0.5">
+                        <span
+                          className="w-1.5 rounded-sm bg-emerald-500"
+                          style={{ height: `${createdHeight}px` }}
+                          title={`${row.created} created`}
+                        />
+                        <span
+                          className="w-1.5 rounded-sm bg-slate-500"
+                          style={{ height: `${updatedHeight}px` }}
+                          title={`${row.updated} updated`}
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-500">{row.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Link Type Mix
+              </p>
+              {linkTypeBreakdown.total === 0 ? (
+                <p className="mt-1.5 text-xs text-slate-500">No linked items yet.</p>
+              ) : (
+                <div className="mt-1.5 space-y-1">
+                  {linkTypeBreakdown.rows.map((row) => (
+                    <div key={row.type} className="space-y-0.5">
+                      <div className="flex items-center justify-between text-[11px] text-slate-600">
+                        <span>{row.label}</span>
+                        <span>{row.count}</span>
+                      </div>
+                      <div className="h-1.5 overflow-hidden rounded bg-slate-200">
+                        <div className="h-full rounded bg-emerald-500" style={{ width: `${row.percent}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         {notesLoading ? (
           <div className="flex items-center justify-center py-10">
             <Loader2 className="h-5 w-5 animate-spin text-slate-600" />
@@ -1593,56 +1731,69 @@ export default function Notebook() {
             No notes match this filter.
           </div>
         ) : (
-          <div className="max-h-[calc(100vh-245px)] overflow-y-auto rounded-md border border-slate-200 bg-white">
-            {visibleNotes.map((note: any) => {
-              const active = !isDraftMode && String(selectedNoteId || "") === String(note.id);
-              const links = Array.isArray(note.links) ? note.links.length : 0;
-              const preview = stripHtml(note.content || "");
-              const showNotebookChip = activeNav.kind !== "notebook";
+          <>
+            <div className="max-h-[calc(100vh-245px)] overflow-y-auto rounded-md border border-slate-200 bg-white">
+              {visibleNotes.map((note: any) => {
+                const active = !isDraftMode && String(selectedNoteId || "") === String(note.id);
+                const links = Array.isArray(note.links) ? note.links.length : 0;
+                const preview = stripHtml(note.content || "");
+                const showNotebookChip = activeNav.kind !== "notebook";
 
-              return (
-                <button
-                  key={note.id}
-                  type="button"
-                  onMouseDown={() => {
-                    // Mark switch before contentEditable blur fires to avoid stale editor write-back.
-                    isSwitchingNoteRef.current = true;
-                  }}
-                  onClick={() => selectNote(note)}
-                  className={`w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
-                    active ? "bg-emerald-50" : "hover:bg-slate-50"
-                  }`}
-                  aria-label={`Open note ${String(note.title || "Untitled note")}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-slate-900">{note.title}</p>
-                      {preview ? <p className="mt-0.5 line-clamp-1 text-xs text-slate-600">{preview}</p> : null}
-                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                        <div className="min-w-0">
-                          {showNotebookChip ? (
-                            <Badge variant="outline" className="max-w-full truncate text-[10px]">
-                              {note.notebook || "General"}
-                            </Badge>
-                          ) : null}
-                        </div>
-                        <div className="flex shrink-0 items-center gap-2">
-                          {links > 0 ? (
-                            <span className="inline-flex items-center gap-1" title={`${links} linked items`}>
-                              <Link2 className="h-3 w-3" />
-                              {links}
-                            </span>
-                          ) : null}
-                          {note.pinned ? <Pin className="h-3 w-3" aria-label="Pinned note" /> : null}
-                          <span>{formatDateTime(note.updatedAt || note.createdAt)}</span>
+                return (
+                  <button
+                    key={note.id}
+                    type="button"
+                    onMouseDown={() => {
+                      // Mark switch before contentEditable blur fires to avoid stale editor write-back.
+                      isSwitchingNoteRef.current = true;
+                    }}
+                    onClick={() => selectNote(note)}
+                    className={`w-full border-b border-slate-100 px-3 py-2 text-left last:border-b-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
+                      active ? "bg-emerald-50" : "hover:bg-slate-50"
+                    }`}
+                    aria-label={`Open note ${String(note.title || "Untitled note")}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-slate-900">{note.title}</p>
+                        {preview ? <p className="mt-0.5 line-clamp-1 text-xs text-slate-600">{preview}</p> : null}
+                        <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                          <div className="min-w-0">
+                            {showNotebookChip ? (
+                              <Badge variant="outline" className="max-w-full truncate text-[10px]">
+                                {note.notebook || "General"}
+                              </Badge>
+                            ) : null}
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            {links > 0 ? (
+                              <span className="inline-flex items-center gap-1" title={`${links} linked items`}>
+                                <Link2 className="h-3 w-3" />
+                                {links}
+                              </span>
+                            ) : null}
+                            {note.pinned ? <Pin className="h-3 w-3" aria-label="Pinned note" /> : null}
+                            <span>{formatDateTime(note.updatedAt || note.createdAt)}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+                  </button>
+                );
+              })}
+            </div>
+            {canLoadMoreNotes ? (
+              <div className="flex justify-center">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setNotesFetchLimit((limit) => limit + 200)}
+                >
+                  Load 200 More Notes
+                </Button>
+              </div>
+            ) : null}
+          </>
         )}
       </CardContent>
     </Card>

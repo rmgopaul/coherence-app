@@ -11,7 +11,9 @@ import { trpc } from "@/lib/trpc";
 import { ArrowLeft, CheckSquare, Loader2, Plus } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+
+const TODOIST_PAGE_SIZE = 20;
 
 export default function TodoistWidget() {
   const { user, loading: authLoading } = useAuth();
@@ -28,11 +30,16 @@ export default function TodoistWidget() {
   const [newTaskContent, setNewTaskContent] = useState("");
   const [newTaskDescription, setNewTaskDescription] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<number>(1);
+  const [localTasks, setLocalTasks] = useState<any[]>([]);
+  const [taskSearch, setTaskSearch] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<"priority_desc" | "priority_asc" | "due_soon" | "content_asc">("priority_desc");
+  const [taskPage, setTaskPage] = useState(1);
   
   const completeTask = trpc.todoist.completeTask.useMutation({
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       toast.success("Task completed!");
-      refetch();
+      setLocalTasks((previous) => previous.filter((task) => task.id !== variables.taskId));
     },
     onError: (error) => {
       toast.error(`Failed to complete task: ${error.message}`);
@@ -40,13 +47,14 @@ export default function TodoistWidget() {
   });
   
   const createTask = trpc.todoist.createTask.useMutation({
-    onSuccess: () => {
+    onSuccess: (createdTask) => {
       toast.success("Task created successfully!");
       setIsCreateDialogOpen(false);
       setNewTaskContent("");
       setNewTaskDescription("");
       setNewTaskPriority(1);
-      refetch();
+      setLocalTasks((previous) => [createdTask, ...previous]);
+      setTaskPage(1);
     },
     onError: (error) => {
       toast.error(`Failed to create task: ${error.message}`);
@@ -71,6 +79,58 @@ export default function TodoistWidget() {
     }
   }, [authLoading, user, setLocation]);
 
+  useEffect(() => {
+    setLocalTasks(tasks || []);
+  }, [tasks]);
+
+  const projectMap = new Map(projects?.map((p) => [p.id, p]) || []);
+
+  const priorityColors = {
+    1: "text-slate-600",
+    2: "text-blue-600",
+    3: "text-amber-600",
+    4: "text-red-600",
+  };
+
+  const filteredTasks = useMemo(() => {
+    const query = taskSearch.trim().toLowerCase();
+    const rows = localTasks.filter((task) => {
+      if (priorityFilter !== "all" && String(task.priority) !== priorityFilter) return false;
+      if (!query) return true;
+      const haystack = `${task.content || ""} ${task.description || ""}`.toLowerCase();
+      return haystack.includes(query);
+    });
+
+    return rows.sort((a, b) => {
+      if (sortBy === "priority_asc") return (a.priority ?? 0) - (b.priority ?? 0);
+      if (sortBy === "due_soon") {
+        const aDue = a.due?.date ? new Date(a.due.date).getTime() : Number.POSITIVE_INFINITY;
+        const bDue = b.due?.date ? new Date(b.due.date).getTime() : Number.POSITIVE_INFINITY;
+        if (aDue !== bDue) return aDue - bDue;
+        return String(a.content || "").localeCompare(String(b.content || ""), undefined, { sensitivity: "base" });
+      }
+      if (sortBy === "content_asc") {
+        return String(a.content || "").localeCompare(String(b.content || ""), undefined, { sensitivity: "base" });
+      }
+      return (b.priority ?? 0) - (a.priority ?? 0);
+    });
+  }, [localTasks, priorityFilter, sortBy, taskSearch]);
+
+  const totalTaskPages = Math.max(1, Math.ceil(filteredTasks.length / TODOIST_PAGE_SIZE));
+  const currentTaskPage = Math.min(taskPage, totalTaskPages);
+  const taskStartIndex = (currentTaskPage - 1) * TODOIST_PAGE_SIZE;
+  const taskEndIndex = taskStartIndex + TODOIST_PAGE_SIZE;
+  const visibleTasks = filteredTasks.slice(taskStartIndex, taskEndIndex);
+
+  useEffect(() => {
+    setTaskPage(1);
+  }, [priorityFilter, sortBy, taskSearch]);
+
+  useEffect(() => {
+    if (taskPage <= totalTaskPages) return;
+    setTaskPage(totalTaskPages);
+  }, [taskPage, totalTaskPages]);
+
   if (authLoading || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -82,15 +142,6 @@ export default function TodoistWidget() {
   if (!user) {
     return null;
   }
-
-  const projectMap = new Map(projects?.map((p) => [p.id, p]) || []);
-
-  const priorityColors = {
-    1: "text-slate-600",
-    2: "text-blue-600",
-    3: "text-amber-600",
-    4: "text-red-600",
-  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
@@ -190,13 +241,17 @@ export default function TodoistWidget() {
       </header>
 
       <main className="container max-w-4xl mx-auto px-4 py-8">
-        {!tasks || tasks.length === 0 ? (
+        {filteredTasks.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center">
               <CheckSquare className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-              <h3 className="text-lg font-semibold text-slate-900 mb-2">No inbox tasks</h3>
+              <h3 className="text-lg font-semibold text-slate-900 mb-2">
+                {localTasks.length === 0 ? "No inbox tasks" : "No tasks match these filters"}
+              </h3>
               <p className="text-slate-600">
-                Your inbox is empty! Create tasks in Todoist and they'll appear here.
+                {localTasks.length === 0
+                  ? "Your inbox is empty! Create tasks in Todoist and they'll appear here."
+                  : "Try clearing search/filters to view more tasks."}
               </p>
             </CardContent>
           </Card>
@@ -204,14 +259,50 @@ export default function TodoistWidget() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-900">
-                {tasks.length} {tasks.length === 1 ? "task" : "tasks"}
+                {filteredTasks.length} {filteredTasks.length === 1 ? "task" : "tasks"}
               </h2>
               <Button variant="outline" onClick={() => refetch()}>
                 Refresh
               </Button>
             </div>
 
-            {tasks.map((task) => {
+            <Card>
+              <CardContent className="pt-4">
+                <div className="grid gap-2 md:grid-cols-4">
+                  <Input
+                    value={taskSearch}
+                    onChange={(event) => setTaskSearch(event.target.value)}
+                    placeholder="Search tasks..."
+                    className="md:col-span-2"
+                  />
+                  <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Filter priority" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All priorities</SelectItem>
+                      <SelectItem value="4">P1 (Urgent)</SelectItem>
+                      <SelectItem value="3">P2 (High)</SelectItem>
+                      <SelectItem value="2">P3 (Medium)</SelectItem>
+                      <SelectItem value="1">P4 (Low)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select value={sortBy} onValueChange={(value) => setSortBy(value as typeof sortBy)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Sort by" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="priority_desc">Priority (High to Low)</SelectItem>
+                      <SelectItem value="priority_asc">Priority (Low to High)</SelectItem>
+                      <SelectItem value="due_soon">Due Soon</SelectItem>
+                      <SelectItem value="content_asc">Title A-Z</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+
+            {visibleTasks.map((task) => {
               const project = projectMap.get(task.projectId);
               const priorityColor = priorityColors[task.priority as keyof typeof priorityColors] || "text-slate-600";
 
@@ -252,6 +343,32 @@ export default function TodoistWidget() {
                 </Card>
               );
             })}
+            <div className="flex items-center justify-between gap-2 text-sm text-slate-600">
+              <span>
+                Showing {visibleTasks.length} of {filteredTasks.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setTaskPage((page) => Math.max(1, page - 1))}
+                  disabled={currentTaskPage <= 1}
+                >
+                  Previous
+                </Button>
+                <span>
+                  Page {currentTaskPage} of {totalTaskPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setTaskPage((page) => Math.min(totalTaskPages, page + 1))}
+                  disabled={currentTaskPage >= totalTaskPages}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           </div>
         )}
       </main>
