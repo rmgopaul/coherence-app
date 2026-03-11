@@ -1,38 +1,110 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Loader2, MessageSquare, Send } from "lucide-react";
-import { useState, useEffect } from "react";
+import { ArrowLeft, Loader2, MessageSquare, Plus, Send, Trash2 } from "lucide-react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 
-interface Message {
+type ConversationMessage = {
+  id?: string;
   role: "user" | "assistant";
   content: string;
+  createdAt?: string | Date | null;
+  pending?: boolean;
+};
+
+type ResponseMetric = {
+  at: number;
+  durationMs: number;
+};
+
+const RESPONSE_METRIC_STORAGE_KEY = "chatgpt-widget-response-metrics-v1";
+
+function formatTimestamp(value: unknown): string {
+  if (!value) return "";
+  const date = new Date(String(value));
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function loadResponseMetrics(): ResponseMetric[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(RESPONSE_METRIC_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) => {
+        const at = Number((entry as any)?.at);
+        const durationMs = Number((entry as any)?.durationMs);
+        if (!Number.isFinite(at) || !Number.isFinite(durationMs)) return null;
+        return { at, durationMs };
+      })
+      .filter((entry): entry is ResponseMetric => Boolean(entry))
+      .slice(-300);
+  } catch {
+    return [];
+  }
 }
 
 export default function ChatGPTWidget() {
   const { user, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
-  const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [conversationId, setConversationId] = useState<string | null>(null);
-  
+  const trpcUtils = trpc.useUtils();
+
+  const [messageInput, setMessageInput] = useState("");
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [conversationSearch, setConversationSearch] = useState("");
+  const [pendingUserMessage, setPendingUserMessage] = useState<ConversationMessage | null>(null);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [responseMetrics, setResponseMetrics] = useState<ResponseMetric[]>(() => loadResponseMetrics());
+
+  const sendLockRef = useRef(false);
+  const shouldAutoScrollRef = useRef(false);
+  const messageListRef = useRef<HTMLDivElement | null>(null);
+
+  const conversationsQuery = trpc.conversations.list.useQuery(undefined, {
+    enabled: !!user,
+    retry: false,
+    staleTime: 20_000,
+  });
+
+  const messagesQuery = trpc.conversations.getMessages.useQuery(
+    { conversationId: selectedConversationId || "" },
+    {
+      enabled: !!selectedConversationId,
+      retry: false,
+      staleTime: 5_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+
   const createConversation = trpc.conversations.create.useMutation({
-    onSuccess: (data) => {
-      setConversationId(data.id);
+    onError: (error) => {
+      toast.error(`Failed to create conversation: ${error.message}`);
     },
   });
-  
-  const chat = trpc.openai.chat.useMutation({
-    onSuccess: (data) => {
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+
+  const deleteConversation = trpc.conversations.delete.useMutation({
+    onError: (error) => {
+      toast.error(`Failed to delete conversation: ${error.message}`);
     },
+  });
+
+  const chat = trpc.openai.chat.useMutation({
     onError: (error) => {
       toast.error(`Chat error: ${error.message}`);
+      setSendError(error.message);
     },
   });
 
@@ -42,7 +114,182 @@ export default function ChatGPTWidget() {
     }
   }, [authLoading, user, setLocation]);
 
-  if (authLoading) {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(RESPONSE_METRIC_STORAGE_KEY, JSON.stringify(responseMetrics.slice(-300)));
+  }, [responseMetrics]);
+
+  const conversations = useMemo(() => {
+    const rows = [...(conversationsQuery.data || [])];
+    rows.sort((a, b) => {
+      const aMs = new Date(String(a.updatedAt || a.createdAt || "")).getTime();
+      const bMs = new Date(String(b.updatedAt || b.createdAt || "")).getTime();
+      return (Number.isFinite(bMs) ? bMs : 0) - (Number.isFinite(aMs) ? aMs : 0);
+    });
+
+    const query = conversationSearch.trim().toLowerCase();
+    if (!query) return rows;
+    return rows.filter((conversation) => String(conversation.title || "").toLowerCase().includes(query));
+  }, [conversationsQuery.data, conversationSearch]);
+
+  useEffect(() => {
+    if (!conversationsQuery.data) return;
+    if (selectedConversationId && conversationsQuery.data.some((row) => row.id === selectedConversationId)) {
+      return;
+    }
+    const firstConversation = conversationsQuery.data[0];
+    setSelectedConversationId(firstConversation?.id || null);
+  }, [conversationsQuery.data, selectedConversationId]);
+
+  const currentMessages = useMemo<ConversationMessage[]>(() => {
+    const rows = (messagesQuery.data || []) as ConversationMessage[];
+    if (!pendingUserMessage) return rows;
+    return [...rows, pendingUserMessage];
+  }, [messagesQuery.data, pendingUserMessage]);
+
+  const todayStart = useMemo(() => {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    return date.getTime();
+  }, []);
+
+  const messagesToday = useMemo(() => {
+    return currentMessages.filter((message) => {
+      const ts = new Date(String(message.createdAt || "")).getTime();
+      return Number.isFinite(ts) && ts >= todayStart;
+    }).length;
+  }, [currentMessages, todayStart]);
+
+  const avgResponseMs = useMemo(() => {
+    if (responseMetrics.length === 0) return null;
+    const windowed = responseMetrics.slice(-30);
+    const total = windowed.reduce((sum, entry) => sum + entry.durationMs, 0);
+    return total / windowed.length;
+  }, [responseMetrics]);
+
+  const todayResponseCount = useMemo(() => {
+    return responseMetrics.filter((entry) => entry.at >= todayStart).length;
+  }, [responseMetrics, todayStart]);
+
+  const scrollStorageKey = selectedConversationId ? `chat-widget-scroll:${selectedConversationId}` : "chat-widget-scroll:none";
+
+  useEffect(() => {
+    const container = messageListRef.current;
+    if (!container || typeof window === "undefined") return;
+
+    const saved = window.sessionStorage.getItem(scrollStorageKey);
+    if (saved !== null) {
+      const parsed = Number(saved);
+      if (Number.isFinite(parsed)) {
+        container.scrollTop = parsed;
+      }
+    } else {
+      container.scrollTop = container.scrollHeight;
+    }
+
+    const onScroll = () => {
+      window.sessionStorage.setItem(scrollStorageKey, String(container.scrollTop));
+    };
+
+    container.addEventListener("scroll", onScroll);
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+    };
+  }, [scrollStorageKey]);
+
+  useEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
+    const container = messageListRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+    shouldAutoScrollRef.current = false;
+  }, [currentMessages.length, chat.isPending]);
+
+  const ensureConversation = async (seedMessage: string): Promise<string | null> => {
+    if (selectedConversationId) return selectedConversationId;
+
+    const title = seedMessage.slice(0, 80).trim() || "New conversation";
+    const created = await createConversation.mutateAsync({ title });
+    setSelectedConversationId(created.id);
+    await trpcUtils.conversations.list.invalidate();
+    return created.id;
+  };
+
+  const handleCreateConversation = async () => {
+    const title = `New conversation ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    const created = await createConversation.mutateAsync({ title });
+    setSelectedConversationId(created.id);
+    setMessageInput("");
+    setSendError(null);
+    setPendingUserMessage(null);
+    await trpcUtils.conversations.list.invalidate();
+    shouldAutoScrollRef.current = true;
+  };
+
+  const handleDeleteConversation = async (conversationId: string) => {
+    if (!window.confirm("Delete this conversation?")) return;
+    await deleteConversation.mutateAsync({ conversationId });
+
+    if (selectedConversationId === conversationId) {
+      setSelectedConversationId(null);
+      setPendingUserMessage(null);
+      setSendError(null);
+    }
+
+    await trpcUtils.conversations.list.invalidate();
+    if (selectedConversationId === conversationId) {
+      await trpcUtils.conversations.getMessages.invalidate({ conversationId });
+    }
+  };
+
+  const handleSend = async () => {
+    const trimmed = messageInput.trim();
+    if (!trimmed) return;
+    if (sendLockRef.current || chat.isPending) return;
+
+    setSendError(null);
+    setMessageInput("");
+    const startedAt = performance.now();
+    const optimisticMessage: ConversationMessage = {
+      id: `pending-${Date.now()}`,
+      role: "user",
+      content: trimmed,
+      createdAt: new Date().toISOString(),
+      pending: true,
+    };
+
+    setPendingUserMessage(optimisticMessage);
+    shouldAutoScrollRef.current = true;
+
+    sendLockRef.current = true;
+    try {
+      const conversationId = await ensureConversation(trimmed);
+      if (!conversationId) {
+        throw new Error("Conversation could not be created.");
+      }
+
+      await chat.mutateAsync({ conversationId, message: trimmed });
+
+      const durationMs = Math.max(1, Math.round(performance.now() - startedAt));
+      setResponseMetrics((previous) => [...previous, { at: Date.now(), durationMs }].slice(-300));
+
+      setPendingUserMessage(null);
+      await Promise.all([
+        trpcUtils.conversations.list.invalidate(),
+        trpcUtils.conversations.getMessages.invalidate({ conversationId }),
+      ]);
+      shouldAutoScrollRef.current = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to send message";
+      setSendError(message);
+      setMessageInput(trimmed);
+      setPendingUserMessage(null);
+    } finally {
+      sendLockRef.current = false;
+    }
+  };
+
+  if (authLoading || (conversationsQuery.isLoading && !conversationsQuery.data)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-slate-600" />
@@ -54,33 +301,6 @@ export default function ChatGPTWidget() {
     return null;
   }
 
-  const handleSend = () => {
-    if (!message.trim()) return;
-    
-    const userMessage = message;
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
-    setMessage("");
-    
-    if (!conversationId) {
-      // Create a new conversation first
-      const title = userMessage.slice(0, 50);
-      createConversation.mutate({ title }, {
-        onSuccess: (data) => {
-          chat.mutate({ conversationId: data.id, message: userMessage });
-        },
-      });
-    } else {
-      chat.mutate({ conversationId, message: userMessage });
-    }
-  };
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-10">
@@ -90,65 +310,197 @@ export default function ChatGPTWidget() {
             Back to Dashboard
           </Button>
           <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-green-100 text-green-600">
+            <div className="p-2 rounded-lg bg-green-100 text-green-700">
               <MessageSquare className="w-6 h-6" />
             </div>
             <div>
               <h1 className="text-2xl font-bold text-slate-900">ChatGPT Assistant</h1>
-              <p className="text-sm text-slate-600">AI-powered productivity assistant</p>
+              <p className="text-sm text-slate-600">Conversation search, timestamps, and usage metrics</p>
             </div>
           </div>
         </div>
       </header>
 
-      <main className="container max-w-4xl mx-auto px-4 py-8 h-[calc(100vh-200px)] flex flex-col">
-        <div className="flex-1 overflow-y-auto mb-4 space-y-4">
-          {messages.length === 0 ? (
-            <Card>
-              <CardContent className="py-12 text-center">
-                <MessageSquare className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-slate-900 mb-2">Start a conversation</h3>
-                <p className="text-slate-600">
-                  Ask me anything about productivity, task management, or get help organizing your schedule.
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            messages.map((msg, idx) => (
-              <div key={idx} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-[80%] rounded-lg p-4 ${msg.role === "user" ? "bg-blue-600 text-white" : "bg-white border border-slate-200"}`}>
-                  <div className={`text-sm break-words prose prose-sm max-w-none ${msg.role === "user" ? "prose-invert" : ""}`}>
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
-                  </div>
-                </div>
-              </div>
-            ))
-          )}
-          {chat.isPending && (
-            <div className="flex justify-start">
-              <Card className="bg-white">
-                <CardHeader className="p-4">
-                  <Loader2 className="w-4 h-4 animate-spin text-slate-600" />
-                </CardHeader>
-              </Card>
-            </div>
-          )}
+      <main className="container max-w-6xl mx-auto px-4 py-6 space-y-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <Card>
+            <CardContent className="pt-4">
+              <p className="text-sm text-slate-500">Conversations</p>
+              <p className="text-2xl font-semibold text-slate-900">{(conversationsQuery.data || []).length.toLocaleString()}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <p className="text-sm text-slate-500">Messages Today</p>
+              <p className="text-2xl font-semibold text-slate-900">{messagesToday.toLocaleString()}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <p className="text-sm text-slate-500">Avg Reply Time</p>
+              <p className="text-2xl font-semibold text-slate-900">
+                {avgResponseMs === null ? "-" : `${(avgResponseMs / 1000).toFixed(1)}s`}
+              </p>
+              <p className="text-xs text-slate-500 mt-1">{todayResponseCount} replies measured today</p>
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="flex gap-2">
-          <Input
-            placeholder="Type your message..."
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
-            disabled={chat.isPending}
-          />
-          <Button onClick={handleSend} disabled={chat.isPending || !message.trim()}>
-            <Send className="w-4 h-4" />
-          </Button>
+        <div className="grid gap-4 lg:grid-cols-12">
+          <Card className="lg:col-span-4">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base">Conversations</CardTitle>
+                <Button size="sm" onClick={handleCreateConversation} disabled={createConversation.isPending}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  New
+                </Button>
+              </div>
+              <Input
+                value={conversationSearch}
+                onChange={(event) => setConversationSearch(event.target.value)}
+                placeholder="Search conversations..."
+              />
+            </CardHeader>
+            <CardContent className="space-y-2 max-h-[560px] overflow-y-auto">
+              {conversations.length === 0 ? (
+                <p className="text-sm text-slate-500">No conversations yet.</p>
+              ) : (
+                conversations.map((conversation) => {
+                  const isSelected = selectedConversationId === conversation.id;
+                  return (
+                    <div
+                      key={conversation.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        setSelectedConversationId(conversation.id);
+                        setSendError(null);
+                        shouldAutoScrollRef.current = false;
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedConversationId(conversation.id);
+                          setSendError(null);
+                          shouldAutoScrollRef.current = false;
+                        }
+                      }}
+                      className={`w-full text-left rounded-md border px-3 py-2 transition cursor-pointer ${
+                        isSelected
+                          ? "border-emerald-400 bg-emerald-50"
+                          : "border-slate-200 bg-white hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-slate-900 truncate">{conversation.title || "Untitled"}</p>
+                          <p className="text-xs text-slate-500">
+                            {formatTimestamp(conversation.updatedAt || conversation.createdAt)}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleDeleteConversation(conversation.id);
+                          }}
+                        >
+                          <Trash2 className="w-4 h-4 text-red-600" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="lg:col-span-8 flex flex-col min-h-[560px]">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">
+                {selectedConversationId
+                  ? conversationsQuery.data?.find((conversation) => conversation.id === selectedConversationId)?.title || "Conversation"
+                  : "Select or create a conversation"}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex-1 flex flex-col gap-3">
+              <div ref={messageListRef} className="flex-1 overflow-y-auto rounded-md border bg-slate-50 p-3 space-y-3">
+                {!selectedConversationId ? (
+                  <div className="h-full flex items-center justify-center text-center text-slate-500 text-sm">
+                    Start a new conversation to chat.
+                  </div>
+                ) : messagesQuery.isLoading && !messagesQuery.data ? (
+                  <div className="h-full flex items-center justify-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
+                  </div>
+                ) : currentMessages.length === 0 && !chat.isPending ? (
+                  <div className="h-full flex items-center justify-center text-center text-slate-500 text-sm">
+                    Send a message to begin this conversation.
+                  </div>
+                ) : (
+                  currentMessages.map((message, index) => (
+                    <div key={message.id || `${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                      <div
+                        className={`max-w-[85%] rounded-lg px-3 py-2 ${
+                          message.role === "user"
+                            ? "bg-blue-600 text-white"
+                            : "bg-white border border-slate-200 text-slate-900"
+                        }`}
+                      >
+                        <div className={`text-sm break-words prose prose-sm max-w-none ${message.role === "user" ? "prose-invert" : ""}`}>
+                          <ReactMarkdown>{message.content}</ReactMarkdown>
+                        </div>
+                        <p className={`text-[11px] mt-1 ${message.role === "user" ? "text-blue-100" : "text-slate-500"}`}>
+                          {formatTimestamp(message.createdAt)} {message.pending ? "• sending" : ""}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                )}
+
+                {chat.isPending && (
+                  <div className="flex justify-start">
+                    <div className="rounded-lg bg-white border border-slate-200 px-3 py-2 text-sm text-slate-600 flex items-center gap-2">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Generating response...
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {sendError ? (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {sendError}
+                </div>
+              ) : null}
+
+              <div className="flex gap-2">
+                <Input
+                  placeholder={selectedConversationId ? "Type your message..." : "Type your first message to start a conversation..."}
+                  value={messageInput}
+                  onChange={(event) => setMessageInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      void handleSend();
+                    }
+                  }}
+                  disabled={chat.isPending || createConversation.isPending}
+                />
+                <Button
+                  onClick={() => void handleSend()}
+                  disabled={chat.isPending || createConversation.isPending || !messageInput.trim()}
+                >
+                  {chat.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </main>
     </div>
   );
 }
-
