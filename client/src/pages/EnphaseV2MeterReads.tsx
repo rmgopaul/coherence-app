@@ -411,7 +411,18 @@ export default function EnphaseV4MeterReads() {
 
             {!systemsQuery.isLoading && !systemsError && isConnected && systems.length === 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-                No systems were returned for this key/token combination.
+                <div>No systems were returned for this key/token combination.</div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-auto px-0 py-0 mt-1 text-amber-800 underline"
+                  onClick={() => {
+                    setResultTitle("Raw Systems Payload");
+                    setResultText(JSON.stringify(systemsQuery.data?.raw ?? {}, null, 2));
+                  }}
+                >
+                  Show raw systems response
+                </Button>
               </div>
             )}
 

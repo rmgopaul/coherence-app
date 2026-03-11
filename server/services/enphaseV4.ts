@@ -41,6 +41,12 @@ function toNullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function toIdString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
 function toNullableNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -213,23 +219,47 @@ async function getEnphaseV4Json(
 
 export function extractSystems(payload: unknown): EnphaseV4System[] {
   const record = asRecord(payload);
+  const dataRecord = asRecord(record.data);
   const rows = Array.isArray(record.systems)
     ? record.systems
-    : Array.isArray(payload)
-      ? payload
-      : [];
+    : Array.isArray(record.results)
+      ? record.results
+      : Array.isArray(dataRecord.systems)
+        ? dataRecord.systems
+        : Array.isArray(dataRecord.results)
+          ? dataRecord.results
+          : Array.isArray(payload)
+            ? payload
+            : [];
   const output: EnphaseV4System[] = [];
 
   for (const row of rows) {
     const value = asRecord(row);
-    const id = toNullableString(value.system_id ?? value.id ?? value.systemId);
+    const nestedSystem = asRecord(value.system);
+    const source = Object.keys(nestedSystem).length > 0 ? nestedSystem : value;
+
+    const id = toIdString(
+      source.system_id ??
+      source.systemId ??
+      source.id ??
+      source.site_id ??
+      source.siteId
+    );
     if (!id) continue;
+
     output.push({
       systemId: id,
-      systemName: toNullableString(value.system_name ?? value.name ?? value.systemName) ?? `System ${id}`,
-      status: toNullableString(value.status),
-      sizeW: toNullableNumber(value.size_w ?? value.system_size ?? value.sizeW),
-      timezone: toNullableString(value.timezone),
+      systemName:
+        toNullableString(
+          source.system_name ??
+          source.systemName ??
+          source.site_name ??
+          source.siteName ??
+          source.name
+        ) ?? `System ${id}`,
+      status: toNullableString(source.status),
+      sizeW: toNullableNumber(source.size_w ?? source.system_size ?? source.sizeW ?? source.size),
+      timezone: toNullableString(source.timezone),
     });
   }
 
