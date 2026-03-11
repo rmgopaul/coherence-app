@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, ArrowLeft, Database, Trash2, Upload } from "lucide-react";
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, Trash2, Upload } from "lucide-react";
 import {
   Bar,
   BarChart,
@@ -1980,6 +1980,7 @@ export default function SolarRecDashboard() {
   const [offlineDetailPage, setOfflineDetailPage] = useState(1);
   const [compliantSourcePage, setCompliantSourcePage] = useState(1);
   const [compliantReportPage, setCompliantReportPage] = useState(1);
+  const [uploadsExpanded, setUploadsExpanded] = useState(false);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
     () => loadPersistedCompliantSources()
   );
@@ -6596,102 +6597,15 @@ export default function SolarRecDashboard() {
             <Button variant="outline" onClick={createLogEntry}>
               Log Snapshot
             </Button>
+            <Button variant="outline" onClick={() => setUploadsExpanded((current) => !current)}>
+              {uploadsExpanded ? "Hide Uploads" : "Show Uploads"}
+              {uploadsExpanded ? <ChevronUp className="ml-2 h-4 w-4" /> : <ChevronDown className="ml-2 h-4 w-4" />}
+            </Button>
             <Button variant="outline" onClick={clearAll}>
               Clear All Files
             </Button>
           </div>
         </div>
-
-        <Card className="border-slate-200">
-          <CardHeader>
-            <CardTitle className="text-base">Step 1: Import Your CSV Files</CardTitle>
-            <CardDescription>
-              Upload each export into its matching slot. Files can be replaced later with newer exports. Account Solar
-              Generation and Converted Reads support multi-file append for building longer history.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {(Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).map((key) => {
-              const config = DATASET_DEFINITIONS[key];
-              const dataset = datasets[key];
-              const error = uploadErrors[key];
-              const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
-
-              return (
-                <div key={key} className="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
-                  <div className="space-y-1">
-                    <p className="font-medium text-sm text-slate-900">{config.label}</p>
-                    <p className="text-xs text-slate-600">{config.description}</p>
-                  </div>
-
-                  {dataset ? (
-                    <div className="space-y-2">
-                      <Badge className="bg-emerald-100 text-emerald-800 border-emerald-200">
-                        {dataset.rows.length} rows loaded
-                      </Badge>
-                      <p className="text-xs text-slate-600 truncate">{dataset.fileName}</p>
-                      {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
-                        <p className="text-xs text-slate-500">
-                          {formatNumber(dataset.sources.length)} files appended
-                        </p>
-                      ) : null}
-                      <p className="text-xs text-slate-500">Last updated {dataset.uploadedAt.toLocaleString()}</p>
-                      {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
-                        <div className="max-h-24 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
-                          {dataset.sources
-                            .slice()
-                            .reverse()
-                            .slice(0, 8)
-                            .map((source) => (
-                              <p key={`${source.fileName}-${source.uploadedAt.toISOString()}`} className="text-[11px] text-slate-600">
-                                {source.fileName} ({formatNumber(source.rowCount)} rows)
-                              </p>
-                            ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <Badge variant="outline" className="text-slate-600">
-                      Not uploaded
-                    </Badge>
-                  )}
-
-                  {error ? <p className="text-xs text-rose-700">{error}</p> : null}
-
-                  <div className="flex items-center gap-2">
-                    <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                      <Upload className="h-4 w-4" />
-                      {isMultiAppend ? "Add CSV(s)" : "Choose CSV"}
-                      <input
-                        type="file"
-                        accept=".csv,text/csv"
-                        className="hidden"
-                        multiple={isMultiAppend}
-                        onChange={(event) => {
-                          if (isMultiAppend) {
-                            const files = Array.from(event.target.files ?? []);
-                            void handleMultiCsvUploads(key, files);
-                            event.currentTarget.value = "";
-                            return;
-                          }
-
-                          const file = event.target.files?.[0] ?? null;
-                          void handleUpload(key, file, "replace");
-                          event.currentTarget.value = "";
-                        }}
-                      />
-                    </label>
-                    {dataset ? (
-                      <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
-                        Remove
-                      </Button>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
 
         <Card className="sticky top-2 z-20 border-slate-300 bg-white/95 backdrop-blur-sm">
           <CardContent className="py-3">
@@ -9828,6 +9742,119 @@ export default function SolarRecDashboard() {
             </Card>
           </TabsContent>
         </Tabs>
+
+        <Card className="border-slate-200">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle className="text-base">Step 1: Import Your CSV Files</CardTitle>
+                <CardDescription className="mt-1">
+                  Upload each export into its matching slot. Files can be replaced later with newer exports. Account
+                  Solar Generation and Converted Reads support multi-file append for building longer history.
+                </CardDescription>
+              </div>
+              <Button variant="outline" size="sm" onClick={() => setUploadsExpanded((current) => !current)}>
+                {uploadsExpanded ? "Hide Upload Slots" : "Show Upload Slots"}
+                {uploadsExpanded ? (
+                  <ChevronUp className="ml-2 h-4 w-4" />
+                ) : (
+                  <ChevronDown className="ml-2 h-4 w-4" />
+                )}
+              </Button>
+            </div>
+          </CardHeader>
+          {uploadsExpanded ? (
+            <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {(Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).map((key) => {
+                const config = DATASET_DEFINITIONS[key];
+                const dataset = datasets[key];
+                const error = uploadErrors[key];
+                const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
+
+                return (
+                  <div key={key} className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-slate-900">{config.label}</p>
+                      <p className="text-xs text-slate-600">{config.description}</p>
+                    </div>
+
+                    {dataset ? (
+                      <div className="space-y-2">
+                        <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                          {dataset.rows.length} rows loaded
+                        </Badge>
+                        <p className="truncate text-xs text-slate-600">{dataset.fileName}</p>
+                        {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
+                          <p className="text-xs text-slate-500">{formatNumber(dataset.sources.length)} files appended</p>
+                        ) : null}
+                        <p className="text-xs text-slate-500">Last updated {dataset.uploadedAt.toLocaleString()}</p>
+                        {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
+                          <div className="max-h-24 overflow-auto rounded-md border border-slate-200 bg-slate-50 p-2">
+                            {dataset.sources
+                              .slice()
+                              .reverse()
+                              .slice(0, 8)
+                              .map((source) => (
+                                <p
+                                  key={`${source.fileName}-${source.uploadedAt.toISOString()}`}
+                                  className="text-[11px] text-slate-600"
+                                >
+                                  {source.fileName} ({formatNumber(source.rowCount)} rows)
+                                </p>
+                              ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <Badge variant="outline" className="text-slate-600">
+                        Not uploaded
+                      </Badge>
+                    )}
+
+                    {error ? <p className="text-xs text-rose-700">{error}</p> : null}
+
+                    <div className="flex items-center gap-2">
+                      <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                        <Upload className="h-4 w-4" />
+                        {isMultiAppend ? "Add CSV(s)" : "Choose CSV"}
+                        <input
+                          type="file"
+                          accept=".csv,text/csv"
+                          className="hidden"
+                          multiple={isMultiAppend}
+                          onChange={(event) => {
+                            if (isMultiAppend) {
+                              const files = Array.from(event.target.files ?? []);
+                              void handleMultiCsvUploads(key, files);
+                              event.currentTarget.value = "";
+                              return;
+                            }
+
+                            const file = event.target.files?.[0] ?? null;
+                            void handleUpload(key, file, "replace");
+                            event.currentTarget.value = "";
+                          }}
+                        />
+                      </label>
+                      {dataset ? (
+                        <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
+                          Remove
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          ) : (
+            <CardContent className="pt-0">
+              <p className="text-sm text-slate-600">
+                Upload slots are collapsed to keep analytics front-and-center. Use “Show Upload Slots” when you need
+                to import or replace files.
+              </p>
+            </CardContent>
+          )}
+        </Card>
       </div>
     </div>
   );
