@@ -88,11 +88,42 @@ function buildBasicAuth(clientId: string, clientSecret: string): string {
   return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
 }
 
-function parseTokenPayload(payload: unknown): TeslaPowerhubTokenResponse {
+function parseJsonBody(raw: string): unknown {
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function formatPayloadPreview(payload: unknown, raw: string): string {
+  if (raw.trim()) {
+    return raw.trim().slice(0, 400);
+  }
+  try {
+    return JSON.stringify(payload).slice(0, 400);
+  } catch {
+    return "";
+  }
+}
+
+function parseTokenPayload(payload: unknown, rawBody: string): TeslaPowerhubTokenResponse {
   const record = asRecord(payload);
   const accessToken = toNonEmptyString(record.access_token);
   if (!accessToken) {
-    throw new Error("Tesla Powerhub token response missing access_token.");
+    const errorDescription =
+      toNonEmptyString(record.error_description) ??
+      toNonEmptyString(asRecord(record.error).error_description) ??
+      toNonEmptyString(asRecord(record.error).message);
+    const requestId =
+      toNonEmptyString(record.request_id) ?? toNonEmptyString(asRecord(record.error).request_id);
+    const preview = formatPayloadPreview(payload, rawBody);
+    throw new Error(
+      `Tesla Powerhub token response missing access_token.${
+        errorDescription ? ` ${errorDescription}` : ""
+      }${requestId ? ` request_id=${requestId}` : ""}${preview ? ` payload=${preview}` : ""}`
+    );
   }
   const expiresInRaw = record.expires_in;
   const expiresIn =
@@ -127,7 +158,9 @@ async function requestClientCredentialsToken(
     );
   }
 
-  return parseTokenPayload(await response.json().catch(() => ({})));
+  const rawBody = await response.text().catch(() => "");
+  const payload = parseJsonBody(rawBody);
+  return parseTokenPayload(payload, rawBody);
 }
 
 function parseTimestampMs(value: unknown): number | null {
