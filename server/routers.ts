@@ -45,6 +45,7 @@ const ENPHASE_V4_PROVIDER = "enphase-v4";
 const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
 const ZENDESK_PROVIDER = "zendesk";
 const TESLA_SOLAR_PROVIDER = "tesla-solar";
+const TESLA_POWERHUB_PROVIDER = "tesla-powerhub";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -126,6 +127,23 @@ function parseTeslaSolarMetadata(metadata: string | null | undefined): {
   const parsed = parseJsonMetadata(metadata);
   return {
     baseUrl: toNonEmptyString(parsed.baseUrl),
+  };
+}
+
+function parseTeslaPowerhubMetadata(metadata: string | null | undefined): {
+  clientId: string | null;
+  groupId: string | null;
+  tokenUrl: string | null;
+  apiBaseUrl: string | null;
+  portalBaseUrl: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    clientId: toNonEmptyString(parsed.clientId),
+    groupId: toNonEmptyString(parsed.groupId),
+    tokenUrl: toNonEmptyString(parsed.tokenUrl),
+    apiBaseUrl: toNonEmptyString(parsed.apiBaseUrl),
+    portalBaseUrl: toNonEmptyString(parsed.portalBaseUrl),
   };
 }
 
@@ -361,6 +379,33 @@ async function getTeslaSolarContext(userId: number): Promise<{
   return {
     accessToken,
     baseUrl: metadata.baseUrl,
+  };
+}
+
+async function getTeslaPowerhubContext(userId: number): Promise<{
+  clientId: string;
+  clientSecret: string;
+  groupId: string | null;
+  tokenUrl: string | null;
+  apiBaseUrl: string | null;
+  portalBaseUrl: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, TESLA_POWERHUB_PROVIDER);
+  const clientSecret = toNonEmptyString(integration?.accessToken);
+  const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
+
+  if (!clientSecret || !metadata.clientId) {
+    throw new Error("Tesla Powerhub is not connected. Save client ID and client secret first.");
+  }
+
+  return {
+    clientId: metadata.clientId,
+    clientSecret,
+    groupId: metadata.groupId,
+    tokenUrl: metadata.tokenUrl,
+    apiBaseUrl: metadata.apiBaseUrl,
+    portalBaseUrl: metadata.portalBaseUrl,
   };
 }
 
@@ -1433,6 +1478,96 @@ export const appRouter = router({
           startDate: input.startDate,
           endDate: input.endDate,
         });
+      }),
+  }),
+
+  teslaPowerhub: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
+      const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
+      return {
+        connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.clientId),
+        clientId: metadata.clientId,
+        groupId: metadata.groupId,
+        tokenUrl: metadata.tokenUrl,
+        apiBaseUrl: metadata.apiBaseUrl,
+        portalBaseUrl: metadata.portalBaseUrl,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          clientId: z.string().min(1),
+          clientSecret: z.string().min(1),
+          groupId: z.string().optional(),
+          tokenUrl: z.string().optional(),
+          apiBaseUrl: z.string().optional(),
+          portalBaseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { normalizeTeslaPowerhubUrl } = await import("./services/teslaPowerhub");
+
+        const metadata = JSON.stringify({
+          clientId: input.clientId.trim(),
+          groupId: toNonEmptyString(input.groupId),
+          tokenUrl: normalizeTeslaPowerhubUrl(input.tokenUrl),
+          apiBaseUrl: normalizeTeslaPowerhubUrl(input.apiBaseUrl),
+          portalBaseUrl: normalizeTeslaPowerhubUrl(input.portalBaseUrl),
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: TESLA_POWERHUB_PROVIDER,
+          accessToken: input.clientSecret.trim(),
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    getGroupUsers: protectedProcedure
+      .input(
+        z.object({
+          groupId: z.string().optional(),
+          endpointUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getTeslaPowerhubContext(ctx.user.id);
+        const groupId = toNonEmptyString(input.groupId) ?? context.groupId;
+        if (!groupId) {
+          throw new Error("groupId is required. Provide one in the request or save a default group ID.");
+        }
+
+        const { getTeslaPowerhubGroupUsers } = await import("./services/teslaPowerhub");
+        return getTeslaPowerhubGroupUsers(
+          {
+            clientId: context.clientId,
+            clientSecret: context.clientSecret,
+            tokenUrl: context.tokenUrl,
+            apiBaseUrl: context.apiBaseUrl,
+            portalBaseUrl: context.portalBaseUrl,
+          },
+          {
+            groupId,
+            endpointUrl: input.endpointUrl,
+          }
+        );
       }),
   }),
 

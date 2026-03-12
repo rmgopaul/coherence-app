@@ -1889,6 +1889,10 @@ export default function Dashboard() {
               <Database className="h-4 w-4 mr-2" />
               Tesla Solar API
             </Button>
+            <Button variant="outline" onClick={() => setLocation("/tesla-powerhub-api")}>
+              <Database className="h-4 w-4 mr-2" />
+              Tesla Powerhub API
+            </Button>
             <Button variant="outline" onClick={() => setLocation("/zendesk-ticket-metrics")}>
               <Database className="h-4 w-4 mr-2" />
               Zendesk API
