@@ -545,7 +545,7 @@ const MONTH_HEADERS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "
 const COMPLIANT_SOURCE_STORAGE_KEY = "solarRecDashboardCompliantSourcesV1";
 const MAX_COMPLIANT_SOURCE_CHARS = 100;
 const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
-const MAX_SINGLE_CSV_UPLOAD_BYTES = 60 * 1024 * 1024;
+const MAX_SINGLE_CSV_UPLOAD_BYTES = 150 * 1024 * 1024;
 const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "solarApplications",

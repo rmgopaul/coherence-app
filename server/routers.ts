@@ -44,6 +44,7 @@ const ENPHASE_V2_PROVIDER = "enphase-v2";
 const ENPHASE_V4_PROVIDER = "enphase-v4";
 const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
 const ZENDESK_PROVIDER = "zendesk";
+const TESLA_SOLAR_PROVIDER = "tesla-solar";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -116,6 +117,15 @@ function parseZendeskMetadata(metadata: string | null | undefined): {
     subdomain: toNonEmptyString(parsed.subdomain),
     email: toNonEmptyString(parsed.email),
     trackedUsers,
+  };
+}
+
+function parseTeslaSolarMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    baseUrl: toNonEmptyString(parsed.baseUrl),
   };
 }
 
@@ -332,6 +342,25 @@ async function getZendeskContext(userId: number): Promise<{
     subdomain: metadata.subdomain,
     email: metadata.email,
     apiToken,
+  };
+}
+
+async function getTeslaSolarContext(userId: number): Promise<{
+  accessToken: string;
+  baseUrl: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, TESLA_SOLAR_PROVIDER);
+  const accessToken = toNonEmptyString(integration?.accessToken);
+  const metadata = parseTeslaSolarMetadata(integration?.metadata);
+
+  if (!accessToken) {
+    throw new Error("Tesla Solar is not connected. Save an access token first.");
+  }
+
+  return {
+    accessToken,
+    baseUrl: metadata.baseUrl,
   };
 }
 
@@ -1301,6 +1330,108 @@ export const appRouter = router({
           periodStartDate: input?.periodStartDate,
           periodEndDate: input?.periodEndDate,
           trackedUsers: input?.trackedUsersOnly ? metadata.trackedUsers : undefined,
+        });
+      }),
+  }),
+
+  teslaSolar: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, TESLA_SOLAR_PROVIDER);
+      const metadata = parseTeslaSolarMetadata(integration?.metadata);
+      return {
+        connected: Boolean(toNonEmptyString(integration?.accessToken)),
+        baseUrl: metadata.baseUrl,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          accessToken: z.string().min(1),
+          baseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const metadata = JSON.stringify({
+          baseUrl: toNonEmptyString(input.baseUrl),
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: TESLA_SOLAR_PROVIDER,
+          accessToken: input.accessToken.trim(),
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, TESLA_SOLAR_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    listProducts: protectedProcedure.query(async ({ ctx }) => {
+      const context = await getTeslaSolarContext(ctx.user.id);
+      const { listTeslaProducts } = await import("./services/teslaSolar");
+      return listTeslaProducts(context);
+    }),
+    listSites: protectedProcedure.query(async ({ ctx }) => {
+      const context = await getTeslaSolarContext(ctx.user.id);
+      const { listTeslaProducts } = await import("./services/teslaSolar");
+      const result = await listTeslaProducts(context);
+      return {
+        sites: result.energySites,
+      };
+    }),
+    getLiveStatus: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getTeslaSolarContext(ctx.user.id);
+        const { getTeslaEnergySiteLiveStatus } = await import("./services/teslaSolar");
+        return getTeslaEnergySiteLiveStatus(context, input.siteId.trim());
+      }),
+    getSiteInfo: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getTeslaSolarContext(ctx.user.id);
+        const { getTeslaEnergySiteInfo } = await import("./services/teslaSolar");
+        return getTeslaEnergySiteInfo(context, input.siteId.trim());
+      }),
+    getHistory: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+          kind: z.string().optional(),
+          period: z.string().optional(),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getTeslaSolarContext(ctx.user.id);
+        const { getTeslaEnergySiteHistory } = await import("./services/teslaSolar");
+        return getTeslaEnergySiteHistory(context, input.siteId.trim(), {
+          kind: input.kind,
+          period: input.period,
+          startDate: input.startDate,
+          endDate: input.endDate,
         });
       }),
   }),

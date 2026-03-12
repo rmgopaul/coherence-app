@@ -12,6 +12,7 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const SolarRecDashboard = lazy(() => import("./pages/SolarRecDashboard"));
 const EnphaseV2MeterReads = lazy(() => import("./pages/EnphaseV2MeterReads"));
 const SolarEdgeMeterReads = lazy(() => import("./pages/SolarEdgeMeterReads"));
+const TeslaSolarApi = lazy(() => import("./pages/TeslaSolarApi"));
 const ZendeskTicketMetrics = lazy(() => import("./pages/ZendeskTicketMetrics"));
 const DeepUpdateSynthesizer = lazy(() => import("./pages/DeepUpdateSynthesizer"));
 const Notebook = lazy(() => import("./pages/Notebook"));
@@ -50,6 +51,7 @@ function Router() {
       <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
       <Route path={"/enphase-v2-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
       <Route path={"/solaredge-meter-reads"} component={withRouteSuspense(SolarEdgeMeterReads)} />
+      <Route path={"/tesla-solar-api"} component={withRouteSuspense(TeslaSolarApi)} />
       <Route path={"/zendesk-ticket-metrics"} component={withRouteSuspense(ZendeskTicketMetrics)} />
       <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
       <Route path={"/settings"} component={withRouteSuspense(Settings)} />
