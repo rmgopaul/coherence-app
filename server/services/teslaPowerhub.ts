@@ -110,14 +110,19 @@ function formatPayloadPreview(payload: unknown, raw: string): string {
 
 function parseTokenPayload(payload: unknown, rawBody: string): TeslaPowerhubTokenResponse {
   const record = asRecord(payload);
-  const accessToken = toNonEmptyString(record.access_token);
+  const dataRecord = asRecord(record.data);
+  const accessToken = toNonEmptyString(record.access_token) ?? toNonEmptyString(dataRecord.access_token);
   if (!accessToken) {
     const errorDescription =
       toNonEmptyString(record.error_description) ??
+      toNonEmptyString(dataRecord.error_description) ??
       toNonEmptyString(asRecord(record.error).error_description) ??
       toNonEmptyString(asRecord(record.error).message);
     const requestId =
-      toNonEmptyString(record.request_id) ?? toNonEmptyString(asRecord(record.error).request_id);
+      toNonEmptyString(record.request_id) ??
+      toNonEmptyString(asRecord(record.meta).request_id) ??
+      toNonEmptyString(dataRecord.request_id) ??
+      toNonEmptyString(asRecord(record.error).request_id);
     const preview = formatPayloadPreview(payload, rawBody);
     throw new Error(
       `Tesla Powerhub token response missing access_token.${
@@ -125,15 +130,27 @@ function parseTokenPayload(payload: unknown, rawBody: string): TeslaPowerhubToke
       }${requestId ? ` request_id=${requestId}` : ""}${preview ? ` payload=${preview}` : ""}`
     );
   }
-  const expiresInRaw = record.expires_in;
+  const tokenType =
+    toNonEmptyString(record.token_type) ??
+    toNonEmptyString(dataRecord.token_type) ??
+    toNonEmptyString(record.tokenType) ??
+    toNonEmptyString(dataRecord.tokenType);
+  const scopeRaw = record.scope ?? dataRecord.scope;
+  const scope =
+    toNonEmptyString(scopeRaw) ??
+    (Array.isArray(scopeRaw)
+      ? scopeRaw.map((value) => toNonEmptyString(value)).filter((value): value is string => Boolean(value)).join(" ")
+      : null);
+
+  const expiresInRaw = record.expires_in ?? dataRecord.expires_in;
   const expiresIn =
     typeof expiresInRaw === "number" && Number.isFinite(expiresInRaw) ? expiresInRaw : undefined;
 
   return {
     access_token: accessToken,
-    token_type: toNonEmptyString(record.token_type) ?? undefined,
+    token_type: tokenType ?? undefined,
     expires_in: expiresIn,
-    scope: toNonEmptyString(record.scope) ?? undefined,
+    scope: scope ?? undefined,
   };
 }
 
