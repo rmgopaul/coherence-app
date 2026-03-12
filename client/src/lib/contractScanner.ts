@@ -259,13 +259,30 @@ const extractAddressParts = (
 
 const countAsterisks = (value: string): number => (value.match(/\*/g) ?? []).length;
 
+const toErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) return error.message;
+  return String(error ?? "Unknown error");
+};
+
+const loadPdfDocumentWithFallback = async (data: Uint8Array) => {
+  try {
+    return await getDocument({ data }).promise;
+  } catch (primaryError) {
+    try {
+      // Some environments fail to initialize the PDF worker; retry without worker.
+      return await getDocument({ data, disableWorker: true } as any).promise;
+    } catch (fallbackError) {
+      throw new Error(
+        `PDF parsing failed. Primary: ${toErrorMessage(primaryError)} | Fallback: ${toErrorMessage(fallbackError)}`
+      );
+    }
+  }
+};
+
 const readPdfPages = async (file: File): Promise<PdfPageData[]> => {
   const buffer = await file.arrayBuffer();
   const uint8 = new Uint8Array(buffer);
-  const loadingTask = getDocument({
-    data: uint8,
-  });
-  const pdf = await loadingTask.promise;
+  const pdf = await loadPdfDocumentWithFallback(uint8);
 
   const pages: PdfPageData[] = [];
 

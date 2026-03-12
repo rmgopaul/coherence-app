@@ -195,11 +195,13 @@ export default function ContractScanner() {
       setRows((currentRows) => [...currentRows, ...nextRows]);
       const successCount = nextRows.filter((row) => !row.error).length;
       const errorCount = nextRows.length - successCount;
+      const firstError = nextRows.find((row) => row.error)?.error ?? null;
       if (successCount > 0) {
         toast.success(`Parsed ${successCount} contract${successCount === 1 ? "" : "s"}.`);
       }
       if (errorCount > 0) {
-        toast.error(`${errorCount} file${errorCount === 1 ? "" : "s"} could not be parsed.`);
+        const detail = firstError ? ` First error: ${firstError}` : "";
+        toast.error(`${errorCount} file${errorCount === 1 ? "" : "s"} could not be parsed.${detail}`);
       }
     } finally {
       setIsProcessing(false);
