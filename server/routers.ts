@@ -43,6 +43,7 @@ function getTodayDateKey(): string {
 const ENPHASE_V2_PROVIDER = "enphase-v2";
 const ENPHASE_V4_PROVIDER = "enphase-v4";
 const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
+const ZENDESK_PROVIDER = "zendesk";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -96,6 +97,17 @@ function parseEnphaseV4Metadata(metadata: string | null | undefined): {
     clientSecret: toNonEmptyString(parsed.clientSecret),
     baseUrl: toNonEmptyString(parsed.baseUrl),
     redirectUri: toNonEmptyString(parsed.redirectUri),
+  };
+}
+
+function parseZendeskMetadata(metadata: string | null | undefined): {
+  subdomain: string | null;
+  email: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    subdomain: toNonEmptyString(parsed.subdomain),
+    email: toNonEmptyString(parsed.email),
   };
 }
 
@@ -273,6 +285,27 @@ async function getSolarEdgeContext(userId: number): Promise<{
   return {
     apiKey: activeConnection.apiKey,
     baseUrl: activeConnection.baseUrl ?? metadata.baseUrl,
+  };
+}
+
+async function getZendeskContext(userId: number): Promise<{
+  subdomain: string;
+  email: string;
+  apiToken: string;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, ZENDESK_PROVIDER);
+  const apiToken = toNonEmptyString(integration?.accessToken);
+  const metadata = parseZendeskMetadata(integration?.metadata);
+
+  if (!apiToken || !metadata.subdomain || !metadata.email) {
+    throw new Error("Zendesk is not connected. Save subdomain, email, and API token first.");
+  }
+
+  return {
+    subdomain: metadata.subdomain,
+    email: metadata.email,
+    apiToken,
   };
 }
 
@@ -1117,6 +1150,77 @@ export const appRouter = router({
           checkedConnections: targetConnections.length,
           rows,
         };
+      }),
+  }),
+
+  zendesk: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
+      const metadata = parseZendeskMetadata(integration?.metadata);
+
+      return {
+        connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.subdomain && metadata.email),
+        subdomain: metadata.subdomain,
+        email: metadata.email,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          subdomain: z.string().min(1),
+          email: z.string().email(),
+          apiToken: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { normalizeZendeskSubdomainInput } = await import("./services/zendesk");
+
+        const normalizedSubdomain = normalizeZendeskSubdomainInput(input.subdomain);
+        if (!normalizedSubdomain) {
+          throw new Error("Zendesk subdomain is invalid.");
+        }
+
+        const metadata = JSON.stringify({
+          subdomain: normalizedSubdomain,
+          email: input.email.trim().toLowerCase(),
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: ZENDESK_PROVIDER,
+          accessToken: input.apiToken.trim(),
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    getTicketMetrics: protectedProcedure
+      .input(
+        z
+          .object({
+            maxTickets: z.number().int().min(100).max(50000).optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ ctx, input }) => {
+        const zendeskContext = await getZendeskContext(ctx.user.id);
+        const { getZendeskTicketMetricsByAssignee } = await import("./services/zendesk");
+        return getZendeskTicketMetricsByAssignee(zendeskContext, input?.maxTickets ?? 10000);
       }),
   }),
 

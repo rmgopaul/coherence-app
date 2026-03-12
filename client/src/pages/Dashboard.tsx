@@ -1885,6 +1885,10 @@ export default function Dashboard() {
               <Database className="h-4 w-4 mr-2" />
               SolarEdge API
             </Button>
+            <Button variant="outline" onClick={() => setLocation("/zendesk-ticket-metrics")}>
+              <Database className="h-4 w-4 mr-2" />
+              Zendesk API
+            </Button>
             <Button variant="outline" onClick={() => setLocation("/settings")}>
               <SettingsIcon className="h-4 w-4 mr-2" />
               Settings
