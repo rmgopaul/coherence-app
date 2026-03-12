@@ -180,6 +180,52 @@ async function fetchTeslaPowerhubServerEgressIpv4(options?: {
   );
 }
 
+type TeslaPowerhubProductionJobStatus = "queued" | "running" | "completed" | "failed";
+
+type TeslaPowerhubProductionJob = {
+  id: string;
+  userId: number;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  status: TeslaPowerhubProductionJobStatus;
+  progress: {
+    currentStep: number;
+    totalSteps: number;
+    percent: number;
+    message: string;
+    windowKey: string | null;
+  };
+  error: string | null;
+  result: unknown | null;
+};
+
+const TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
+const teslaPowerhubProductionJobs = new Map<string, TeslaPowerhubProductionJob>();
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 100) return 100;
+  return value;
+}
+
+function normalizeProgressPercent(currentStep: number, totalSteps: number): number {
+  if (!Number.isFinite(totalSteps) || totalSteps <= 0) return 0;
+  return clampPercent((currentStep / totalSteps) * 100);
+}
+
+function pruneTeslaPowerhubProductionJobs(nowMs: number): void {
+  Array.from(teslaPowerhubProductionJobs.entries()).forEach(([jobId, job]) => {
+    const updatedAtMs = Date.parse(job.updatedAt);
+    if (!Number.isFinite(updatedAtMs)) return;
+    if (nowMs - updatedAtMs > TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS) {
+      teslaPowerhubProductionJobs.delete(jobId);
+    }
+  });
+}
+
 async function mapWithConcurrency<TInput, TOutput>(
   items: TInput[],
   concurrency: number,
@@ -1700,6 +1746,148 @@ export const appRouter = router({
       }
       return { success: true };
     }),
+    startGroupProductionMetricsJob: protectedProcedure
+      .input(
+        z.object({
+          groupId: z.string().min(1),
+          endpointUrl: z.string().optional(),
+          signal: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getTeslaPowerhubContext(ctx.user.id);
+        const { nanoid } = await import("nanoid");
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
+        pruneTeslaPowerhubProductionJobs(nowMs);
+
+        const jobId = nanoid();
+        const groupId = input.groupId.trim();
+        const endpointUrl = input.endpointUrl;
+        const signal = input.signal;
+
+        teslaPowerhubProductionJobs.set(jobId, {
+          id: jobId,
+          userId: ctx.user.id,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          startedAt: null,
+          finishedAt: null,
+          status: "queued",
+          progress: {
+            currentStep: 0,
+            totalSteps: 7,
+            percent: 0,
+            message: "Queued",
+            windowKey: null,
+          },
+          error: null,
+          result: null,
+        });
+
+        void (async () => {
+          const markJob = (updater: (job: TeslaPowerhubProductionJob) => TeslaPowerhubProductionJob) => {
+            const existing = teslaPowerhubProductionJobs.get(jobId);
+            if (!existing) return;
+            teslaPowerhubProductionJobs.set(jobId, updater(existing));
+          };
+
+          markJob((job) => ({
+            ...job,
+            status: "running",
+            startedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            progress: {
+              ...job.progress,
+              message: "Starting...",
+            },
+          }));
+
+          try {
+            const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
+            const result = await getTeslaPowerhubGroupProductionMetrics(
+              {
+                clientId: context.clientId,
+                clientSecret: context.clientSecret,
+                tokenUrl: context.tokenUrl,
+                apiBaseUrl: context.apiBaseUrl,
+                portalBaseUrl: context.portalBaseUrl,
+              },
+              {
+                groupId,
+                endpointUrl,
+                signal,
+                onProgress: (progress) => {
+                  markJob((job) => {
+                    const currentStep = Math.max(0, progress.currentStep);
+                    const totalSteps = Math.max(1, progress.totalSteps);
+                    return {
+                      ...job,
+                      updatedAt: new Date().toISOString(),
+                      progress: {
+                        currentStep,
+                        totalSteps,
+                        percent: normalizeProgressPercent(currentStep, totalSteps),
+                        message: progress.message,
+                        windowKey: progress.windowKey ?? null,
+                      },
+                    };
+                  });
+                },
+              }
+            );
+
+            markJob((job) => ({
+              ...job,
+              status: "completed",
+              updatedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+              error: null,
+              result,
+              progress: {
+                ...job.progress,
+                currentStep: job.progress.totalSteps,
+                percent: 100,
+                message: "Completed",
+                windowKey: null,
+              },
+            }));
+          } catch (error) {
+            markJob((job) => ({
+              ...job,
+              status: "failed",
+              updatedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+              error: error instanceof Error ? error.message : "Unknown job error.",
+              result: null,
+              progress: {
+                ...job.progress,
+                message: "Failed",
+                windowKey: null,
+              },
+            }));
+          }
+        })();
+
+        return {
+          jobId,
+          status: "queued" as const,
+        };
+      }),
+    getGroupProductionMetricsJob: protectedProcedure
+      .input(
+        z.object({
+          jobId: z.string().min(1),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        pruneTeslaPowerhubProductionJobs(Date.now());
+        const job = teslaPowerhubProductionJobs.get(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Tesla production job not found.");
+        }
+        return job;
+      }),
     getGroupUsers: protectedProcedure
       .input(
         z.object({

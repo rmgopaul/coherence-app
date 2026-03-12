@@ -54,6 +54,13 @@ type SiteTotal = {
   totalKwh: number;
 };
 
+export type TeslaPowerhubMetricsProgress = {
+  currentStep: number;
+  totalSteps: number;
+  message: string;
+  windowKey?: TeslaPowerhubWindowKey;
+};
+
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
@@ -777,6 +784,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     groupId: string;
     endpointUrl?: string | null;
     signal?: string | null;
+    onProgress?: (progress: TeslaPowerhubMetricsProgress) => void;
   }
 ): Promise<{
   sites: TeslaPowerhubSiteProductionMetrics[];
@@ -796,16 +804,50 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     windows: Record<TeslaPowerhubWindowKey, { startDatetime: string; endDatetime: string }>;
   };
 }> {
+  const totalSteps = 7;
+  const emitProgress = (progress: TeslaPowerhubMetricsProgress): void => {
+    try {
+      options.onProgress?.(progress);
+    } catch {
+      // Progress callbacks should never break primary request flow.
+    }
+  };
+
   const groupId = options.groupId.trim();
   if (!groupId) {
     throw new Error("groupId is required.");
   }
+  emitProgress({
+    currentStep: 0,
+    totalSteps,
+    message: "Starting Tesla Powerhub production request.",
+  });
   const signal = toNonEmptyString(options.signal) ?? "solar_energy_exported";
+  emitProgress({
+    currentStep: 1,
+    totalSteps,
+    message: "Requesting Tesla access token.",
+  });
   const token = await requestClientCredentialsToken(context);
+  emitProgress({
+    currentStep: 1,
+    totalSteps,
+    message: "Access token received.",
+  });
 
+  emitProgress({
+    currentStep: 2,
+    totalSteps,
+    message: "Loading group site inventory.",
+  });
   const siteResult = await fetchGroupSites(context, token.access_token, {
     groupId,
     endpointUrl: options.endpointUrl,
+  });
+  emitProgress({
+    currentStep: 2,
+    totalSteps,
+    message: `Group site inventory loaded (${siteResult.sites.length} sites discovered).`,
   });
 
   const now = new Date();
@@ -834,6 +876,20 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   const totalsByWindow = new Map<TeslaPowerhubWindowKey, Map<string, SiteTotal>>();
 
   for (const window of windows) {
+    const stepByWindow: Record<TeslaPowerhubWindowKey, number> = {
+      daily: 3,
+      weekly: 4,
+      monthly: 5,
+      yearly: 6,
+      lifetime: 7,
+    };
+    const step = stepByWindow[window.key];
+    emitProgress({
+      currentStep: step,
+      totalSteps,
+      windowKey: window.key,
+      message: `Loading ${window.key} telemetry window.`,
+    });
     try {
       const telemetryResult = await fetchTelemetryWindowTotals(context, token.access_token, {
         groupId,
@@ -845,9 +901,21 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       resolvedTelemetryEndpoints[window.key] = telemetryResult.resolvedEndpointUrl;
       telemetryPreviewByWindow[window.key] = telemetryResult.rawPreview;
       totalsByWindow.set(window.key, telemetryResult.totals);
+      emitProgress({
+        currentStep: step,
+        totalSteps,
+        windowKey: window.key,
+        message: `${window.key} telemetry loaded (${telemetryResult.totals.size} sites with values).`,
+      });
     } catch (error) {
       telemetryErrorsByWindow[window.key] = error instanceof Error ? error.message : "Unknown error.";
       totalsByWindow.set(window.key, new Map<string, SiteTotal>());
+      emitProgress({
+        currentStep: step,
+        totalSteps,
+        windowKey: window.key,
+        message: `${window.key} telemetry failed; continuing with remaining windows.`,
+      });
     }
   }
 
@@ -895,6 +963,11 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     const nameB = (b.siteName ?? "").toLowerCase();
     if (nameA !== nameB) return nameA.localeCompare(nameB);
     return a.siteId.localeCompare(b.siteId);
+  });
+  emitProgress({
+    currentStep: totalSteps,
+    totalSteps,
+    message: `Production metrics ready (${rows.length} sites).`,
   });
 
   return {

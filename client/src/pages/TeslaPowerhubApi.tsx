@@ -2,11 +2,12 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Search, Unplug } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -31,6 +32,25 @@ type SiteProductionRow = {
   monthlyKwh: number;
   yearlyKwh: number;
   lifetimeKwh: number;
+};
+
+type ProductionPayload = {
+  sites: SiteProductionRow[];
+  debug?: unknown;
+};
+
+type ProductionJobSnapshot = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  progress: {
+    currentStep: number;
+    totalSteps: number;
+    percent: number;
+    message: string;
+    windowKey: string | null;
+  };
+  result: ProductionPayload | null;
+  error: string | null;
 };
 
 function clean(value: string | null | undefined): string {
@@ -88,8 +108,15 @@ export default function TeslaPowerhubApi() {
   const [signalInput, setSignalInput] = useState(DEFAULT_SIGNAL);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
+  const [jobPollIntervalMs, setJobPollIntervalMs] = useState<number | false>(false);
+  const [jobStartedAtMs, setJobStartedAtMs] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [latestPayload, setLatestPayload] = useState<ProductionPayload | null>(null);
   const [resultTitle, setResultTitle] = useState("No request run yet");
   const [resultText, setResultText] = useState("{}");
+  const lastCompletedJobIdRef = useRef<string | null>(null);
+  const lastFailedJobIdRef = useRef<string | null>(null);
 
   const statusQuery = trpc.teslaPowerhub.getStatus.useQuery(undefined, {
     enabled: !!user,
@@ -107,7 +134,16 @@ export default function TeslaPowerhubApi() {
   const connectMutation = trpc.teslaPowerhub.connect.useMutation();
   const disconnectMutation = trpc.teslaPowerhub.disconnect.useMutation();
   const refreshEgressMutation = trpc.teslaPowerhub.refreshServerEgressIpv4.useMutation();
-  const productionMutation = trpc.teslaPowerhub.getGroupProductionMetrics.useMutation();
+  const startProductionJobMutation = trpc.teslaPowerhub.startGroupProductionMetricsJob.useMutation();
+  const productionJobQuery = trpc.teslaPowerhub.getGroupProductionMetricsJob.useQuery(
+    { jobId: activeJobId ?? "__none__" },
+    {
+      enabled: Boolean(activeJobId),
+      refetchInterval: jobPollIntervalMs,
+      retry: 1,
+      refetchOnWindowFocus: false,
+    }
+  );
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -125,7 +161,39 @@ export default function TeslaPowerhubApi() {
 
   useEffect(() => {
     setPage(1);
-  }, [search, productionMutation.data?.sites.length]);
+  }, [search, latestPayload?.sites.length, activeJobId]);
+
+  useEffect(() => {
+    if (!activeJobId || !jobStartedAtMs || jobPollIntervalMs === false) return;
+    const intervalId = window.setInterval(() => {
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - jobStartedAtMs) / 1000)));
+    }, 1000);
+    return () => window.clearInterval(intervalId);
+  }, [activeJobId, jobPollIntervalMs, jobStartedAtMs]);
+
+  useEffect(() => {
+    const snapshot = productionJobQuery.data as ProductionJobSnapshot | undefined;
+    if (!snapshot) return;
+    if (snapshot.status === "completed") {
+      setJobPollIntervalMs(false);
+      if (snapshot.result) {
+        setLatestPayload(snapshot.result);
+        setResultTitle(`Site Production Metrics (${snapshot.result.sites.length})`);
+        setResultText(JSON.stringify(snapshot.result.debug ?? {}, null, 2));
+      }
+      if (lastCompletedJobIdRef.current !== snapshot.id) {
+        lastCompletedJobIdRef.current = snapshot.id;
+        toast.success("Production metrics loaded.");
+      }
+    }
+    if (snapshot.status === "failed") {
+      setJobPollIntervalMs(false);
+      if (lastFailedJobIdRef.current !== snapshot.id) {
+        lastFailedJobIdRef.current = snapshot.id;
+        toast.error(`Failed to load production metrics: ${snapshot.error ?? "Unknown job error."}`);
+      }
+    }
+  }, [productionJobQuery.data]);
 
   const handleConnect = async () => {
     const clientId = clean(clientIdInput);
@@ -162,7 +230,11 @@ export default function TeslaPowerhubApi() {
     try {
       await disconnectMutation.mutateAsync();
       await trpcUtils.teslaPowerhub.getStatus.invalidate();
-      productionMutation.reset();
+      setActiveJobId(null);
+      setJobPollIntervalMs(false);
+      setJobStartedAtMs(null);
+      setElapsedSeconds(0);
+      setLatestPayload(null);
       toast.success("Tesla Powerhub disconnected.");
     } catch (error) {
       toast.error(`Failed to disconnect: ${toErrorMessage(error)}`);
@@ -177,14 +249,18 @@ export default function TeslaPowerhubApi() {
     }
 
     try {
-      const payload = await productionMutation.mutateAsync({
+      const job = await startProductionJobMutation.mutateAsync({
         groupId,
         endpointUrl: clean(endpointUrlInput) || undefined,
         signal: clean(signalInput) || undefined,
       });
-      setResultTitle(`Site Production Metrics (${payload.sites.length})`);
-      setResultText(JSON.stringify(payload.debug, null, 2));
-      toast.success("Production metrics loaded.");
+      setActiveJobId(job.jobId);
+      setJobPollIntervalMs(1200);
+      setJobStartedAtMs(Date.now());
+      setElapsedSeconds(0);
+      setResultTitle("Site Production Metrics (running...)");
+      setResultText("{}");
+      toast.success("Production job started. Progress will update below.");
     } catch (error) {
       toast.error(`Failed to load production metrics: ${toErrorMessage(error)}`);
     }
@@ -215,7 +291,11 @@ export default function TeslaPowerhubApi() {
     }
   };
 
-  const rows: SiteProductionRow[] = productionMutation.data?.sites ?? [];
+  const activeJob = productionJobQuery.data as ProductionJobSnapshot | undefined;
+  const activeCompletedPayload =
+    activeJob?.status === "completed" ? (activeJob.result as ProductionPayload | null) : null;
+  const payload = activeCompletedPayload ?? latestPayload;
+  const rows: SiteProductionRow[] = payload?.sites ?? [];
   const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) return rows;
@@ -294,7 +374,16 @@ export default function TeslaPowerhubApi() {
 
   const isConnected = Boolean(statusQuery.data?.connected);
   const statusError = statusQuery.error ? toErrorMessage(statusQuery.error) : null;
-  const mutationError = productionMutation.error ? toErrorMessage(productionMutation.error) : null;
+  const isJobRunning =
+    startProductionJobMutation.isPending || activeJob?.status === "queued" || activeJob?.status === "running";
+  const mutationError =
+    startProductionJobMutation.error
+      ? toErrorMessage(startProductionJobMutation.error)
+      : productionJobQuery.error
+        ? toErrorMessage(productionJobQuery.error)
+        : activeJob?.status === "failed"
+          ? activeJob.error ?? "Unknown job error."
+          : null;
   const serverIpData = refreshEgressMutation.data ?? egressIpv4Query.data;
   const serverIpError =
     refreshEgressMutation.error ? toErrorMessage(refreshEgressMutation.error) : egressIpv4Query.error ? toErrorMessage(egressIpv4Query.error) : null;
@@ -504,8 +593,8 @@ export default function TeslaPowerhubApi() {
             </div>
 
             <div className="flex flex-wrap items-end gap-2">
-              <Button onClick={handleFetchProduction} disabled={productionMutation.isPending || !isConnected}>
-                {productionMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+              <Button onClick={handleFetchProduction} disabled={isJobRunning || !isConnected}>
+                {isJobRunning ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
                 Fetch Site Production
               </Button>
               <div className="space-y-1">
@@ -527,6 +616,21 @@ export default function TeslaPowerhubApi() {
                 Export CSV
               </Button>
             </div>
+
+            {isJobRunning && activeJob ? (
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-emerald-900">
+                    Processing: Step {activeJob.progress.currentStep} of {activeJob.progress.totalSteps}
+                  </p>
+                  <p className="text-xs text-emerald-800">
+                    {Math.max(0, elapsedSeconds)}s elapsed
+                  </p>
+                </div>
+                <Progress value={activeJob.progress.percent} />
+                <p className="text-sm text-emerald-900">{activeJob.progress.message}</p>
+              </div>
+            ) : null}
 
             {mutationError ? (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
