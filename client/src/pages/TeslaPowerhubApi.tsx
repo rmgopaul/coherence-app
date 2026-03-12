@@ -77,7 +77,6 @@ export default function TeslaPowerhubApi() {
   useEffect(() => {
     if (!statusQuery.data) return;
     if (statusQuery.data.clientId) setClientIdInput(statusQuery.data.clientId);
-    if (statusQuery.data.groupId) setGroupIdInput(statusQuery.data.groupId);
     if (statusQuery.data.tokenUrl) setTokenUrlInput(statusQuery.data.tokenUrl);
     if (statusQuery.data.apiBaseUrl) setApiBaseUrlInput(statusQuery.data.apiBaseUrl);
     if (statusQuery.data.portalBaseUrl) setPortalBaseUrlInput(statusQuery.data.portalBaseUrl);
@@ -98,8 +97,7 @@ export default function TeslaPowerhubApi() {
     try {
       await connectMutation.mutateAsync({
         clientId,
-        clientSecret,
-        groupId: clean(groupIdInput),
+        clientSecret: clientSecret || undefined,
         tokenUrl: clean(tokenUrlInput),
         apiBaseUrl: clean(apiBaseUrlInput),
         portalBaseUrl: clean(portalBaseUrlInput),
@@ -207,11 +205,11 @@ export default function TeslaPowerhubApi() {
           <CardHeader>
             <CardTitle>1) Connect Tesla Powerhub</CardTitle>
             <CardDescription>
-              Save client ID/client secret and default group ID for repeated requests.
+              Save client ID/client secret and API base settings. Group ID is always entered per request.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="tesla-powerhub-client-id">Client ID</Label>
                 <Input
@@ -228,16 +226,11 @@ export default function TeslaPowerhubApi() {
                   type="password"
                   value={clientSecretInput}
                   onChange={(event) => setClientSecretInput(event.target.value)}
-                  placeholder="Tesla app client secret"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="tesla-powerhub-group-id">Default Group ID</Label>
-                <Input
-                  id="tesla-powerhub-group-id"
-                  value={groupIdInput}
-                  onChange={(event) => setGroupIdInput(event.target.value)}
-                  placeholder="b4b6a137-0387-4f5a-bfd0-82638a119472"
+                  placeholder={
+                    statusQuery.data?.hasClientSecret
+                      ? "Leave blank to keep saved secret"
+                      : "Tesla app client secret"
+                  }
                 />
               </div>
             </div>
@@ -301,6 +294,9 @@ export default function TeslaPowerhubApi() {
               </Button>
               <span className="text-sm text-slate-600">
                 Status: {isConnected ? "Connected" : "Not connected"}
+              </span>
+              <span className="text-sm text-slate-600">
+                Client secret: {statusQuery.data?.hasClientSecret ? "Saved" : "Not saved"}
               </span>
             </div>
           </CardContent>

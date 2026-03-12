@@ -132,7 +132,6 @@ function parseTeslaSolarMetadata(metadata: string | null | undefined): {
 
 function parseTeslaPowerhubMetadata(metadata: string | null | undefined): {
   clientId: string | null;
-  groupId: string | null;
   tokenUrl: string | null;
   apiBaseUrl: string | null;
   portalBaseUrl: string | null;
@@ -140,7 +139,6 @@ function parseTeslaPowerhubMetadata(metadata: string | null | undefined): {
   const parsed = parseJsonMetadata(metadata);
   return {
     clientId: toNonEmptyString(parsed.clientId),
-    groupId: toNonEmptyString(parsed.groupId),
     tokenUrl: toNonEmptyString(parsed.tokenUrl),
     apiBaseUrl: toNonEmptyString(parsed.apiBaseUrl),
     portalBaseUrl: toNonEmptyString(parsed.portalBaseUrl),
@@ -385,7 +383,6 @@ async function getTeslaSolarContext(userId: number): Promise<{
 async function getTeslaPowerhubContext(userId: number): Promise<{
   clientId: string;
   clientSecret: string;
-  groupId: string | null;
   tokenUrl: string | null;
   apiBaseUrl: string | null;
   portalBaseUrl: string | null;
@@ -402,7 +399,6 @@ async function getTeslaPowerhubContext(userId: number): Promise<{
   return {
     clientId: metadata.clientId,
     clientSecret,
-    groupId: metadata.groupId,
     tokenUrl: metadata.tokenUrl,
     apiBaseUrl: metadata.apiBaseUrl,
     portalBaseUrl: metadata.portalBaseUrl,
@@ -1488,8 +1484,8 @@ export const appRouter = router({
       const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
       return {
         connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.clientId),
+        hasClientSecret: Boolean(toNonEmptyString(integration?.accessToken)),
         clientId: metadata.clientId,
-        groupId: metadata.groupId,
         tokenUrl: metadata.tokenUrl,
         apiBaseUrl: metadata.apiBaseUrl,
         portalBaseUrl: metadata.portalBaseUrl,
@@ -1499,21 +1495,26 @@ export const appRouter = router({
       .input(
         z.object({
           clientId: z.string().min(1),
-          clientSecret: z.string().min(1),
-          groupId: z.string().optional(),
+          clientSecret: z.string().optional(),
           tokenUrl: z.string().optional(),
           apiBaseUrl: z.string().optional(),
           portalBaseUrl: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { upsertIntegration } = await import("./db");
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
         const { normalizeTeslaPowerhubUrl } = await import("./services/teslaPowerhub");
+        const existing = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
+        const persistedSecret = toNonEmptyString(existing?.accessToken);
+        const incomingSecret = toNonEmptyString(input.clientSecret);
+        const resolvedSecret = incomingSecret ?? persistedSecret;
+        if (!resolvedSecret) {
+          throw new Error("Client secret is required for initial Tesla Powerhub connection.");
+        }
 
         const metadata = JSON.stringify({
           clientId: input.clientId.trim(),
-          groupId: toNonEmptyString(input.groupId),
           tokenUrl: normalizeTeslaPowerhubUrl(input.tokenUrl),
           apiBaseUrl: normalizeTeslaPowerhubUrl(input.apiBaseUrl),
           portalBaseUrl: normalizeTeslaPowerhubUrl(input.portalBaseUrl),
@@ -1523,7 +1524,7 @@ export const appRouter = router({
           id: nanoid(),
           userId: ctx.user.id,
           provider: TESLA_POWERHUB_PROVIDER,
-          accessToken: input.clientSecret.trim(),
+          accessToken: resolvedSecret,
           refreshToken: null,
           expiresAt: null,
           scope: null,
@@ -1543,16 +1544,13 @@ export const appRouter = router({
     getGroupUsers: protectedProcedure
       .input(
         z.object({
-          groupId: z.string().optional(),
+          groupId: z.string().min(1),
           endpointUrl: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getTeslaPowerhubContext(ctx.user.id);
-        const groupId = toNonEmptyString(input.groupId) ?? context.groupId;
-        if (!groupId) {
-          throw new Error("groupId is required. Provide one in the request or save a default group ID.");
-        }
+        const groupId = input.groupId.trim();
 
         const { getTeslaPowerhubGroupUsers } = await import("./services/teslaPowerhub");
         return getTeslaPowerhubGroupUsers(
