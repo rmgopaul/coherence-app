@@ -21,6 +21,7 @@ const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 type TimeUnit = (typeof TIME_UNIT_OPTIONS)[number];
 type BulkStatusFilter = "All" | "Found" | "Not Found" | "Error";
 type BulkSortKey = "siteId" | "status" | "lifetime" | "monthly" | "weekly" | "daily";
+type BulkConnectionScope = "active" | "all";
 
 type BulkSnapshotRow = {
   siteId: string;
@@ -34,6 +35,11 @@ type BulkSnapshotRow = {
   monthlyStartDate: string;
   weeklyStartDate: string;
   error: string | null;
+  matchedConnectionId: string | null;
+  matchedConnectionName: string | null;
+  checkedConnections: number;
+  foundInConnections: number;
+  profileStatusSummary: string;
 };
 
 type CsvRow = Record<string, string>;
@@ -233,6 +239,7 @@ export default function SolarEdgeMeterReads() {
   const [bulkStatusFilter, setBulkStatusFilter] = useState<BulkStatusFilter>("All");
   const [bulkSearch, setBulkSearch] = useState("");
   const [bulkSort, setBulkSort] = useState<BulkSortKey>("siteId");
+  const [bulkConnectionScope, setBulkConnectionScope] = useState<BulkConnectionScope>("active");
   const [bulkPage, setBulkPage] = useState(1);
   const bulkCancelRef = useRef(false);
 
@@ -440,6 +447,7 @@ export default function SolarEdgeMeterReads() {
         const response = await bulkSnapshotsMutation.mutateAsync({
           siteIds: chunk,
           anchorDate: bulkAnchorDate,
+          connectionScope: bulkConnectionScope,
         });
 
         collectedRows.push(...response.rows);
@@ -464,7 +472,7 @@ export default function SolarEdgeMeterReads() {
         );
       } else {
         toast.success(
-          `Completed ${NUMBER_FORMATTER.format(processed)} site IDs. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
+          `Completed ${NUMBER_FORMATTER.format(processed)} site IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
         );
       }
     } catch (error) {
@@ -528,6 +536,11 @@ export default function SolarEdgeMeterReads() {
       "monthly_start_date",
       "weekly_start_date",
       "error",
+      "matched_connection_id",
+      "matched_connection_name",
+      "checked_connections",
+      "found_in_connections",
+      "profile_status_summary",
     ];
 
     const csvRows = rows.map((row) => ({
@@ -542,6 +555,11 @@ export default function SolarEdgeMeterReads() {
       monthly_start_date: row.monthlyStartDate,
       weekly_start_date: row.weeklyStartDate,
       error: row.error,
+      matched_connection_id: row.matchedConnectionId,
+      matched_connection_name: row.matchedConnectionName,
+      checked_connections: row.checkedConnections,
+      found_in_connections: row.foundInConnections,
+      profile_status_summary: row.profileStatusSummary,
     }));
 
     const csvText = buildCsv(headers, csvRows);
@@ -905,7 +923,7 @@ export default function SolarEdgeMeterReads() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2 md:col-span-1">
+              <div className="space-y-2">
                 <Label htmlFor="bulk-anchor-date">Anchor Date</Label>
                 <Input
                   id="bulk-anchor-date"
@@ -917,7 +935,25 @@ export default function SolarEdgeMeterReads() {
                   Monthly = last 30 days, weekly = last 7 days, daily = anchor day.
                 </p>
               </div>
-              <div className="space-y-2 md:col-span-2">
+              <div className="space-y-2">
+                <Label>API Scope</Label>
+                <Select
+                  value={bulkConnectionScope}
+                  onValueChange={(value) => setBulkConnectionScope(value as BulkConnectionScope)}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="active">Active API Profile Only</SelectItem>
+                    <SelectItem value="all">All Saved API Profiles</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Use <span className="font-medium">All Saved API Profiles</span> to check each site ID against every connected API.
+                </p>
+              </div>
+              <div className="space-y-2 md:col-span-1">
                 <Label htmlFor="bulk-csv-upload">Site IDs CSV</Label>
                 <div className="flex items-center gap-2">
                   <Input
@@ -1062,10 +1098,13 @@ export default function SolarEdgeMeterReads() {
                 <TableRow>
                   <TableHead>Site ID</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Matched API Profile</TableHead>
+                  <TableHead>Found In APIs</TableHead>
                   <TableHead>Lifetime (kWh)</TableHead>
                   <TableHead>Monthly (kWh)</TableHead>
                   <TableHead>Weekly (kWh)</TableHead>
                   <TableHead>Daily (kWh)</TableHead>
+                  <TableHead>API Check Summary</TableHead>
                   <TableHead>Error</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1074,16 +1113,21 @@ export default function SolarEdgeMeterReads() {
                   <TableRow key={row.siteId}>
                     <TableCell className="font-medium">{row.siteId}</TableCell>
                     <TableCell>{row.status}</TableCell>
+                    <TableCell>{row.matchedConnectionName ?? "N/A"}</TableCell>
+                    <TableCell>
+                      {NUMBER_FORMATTER.format(row.foundInConnections)} / {NUMBER_FORMATTER.format(row.checkedConnections)}
+                    </TableCell>
                     <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
                     <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
+                    <TableCell className="text-xs text-slate-600">{row.profileStatusSummary}</TableCell>
                     <TableCell className="text-xs text-slate-600">{row.error ?? ""}</TableCell>
                   </TableRow>
                 ))}
                 {bulkPageRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={10} className="py-6 text-center text-slate-500">
                       No bulk rows to display.
                     </TableCell>
                   </TableRow>

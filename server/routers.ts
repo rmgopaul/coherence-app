@@ -996,18 +996,116 @@ export const appRouter = router({
         z.object({
           siteIds: z.array(z.string().min(1)).min(1).max(200),
           anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          connectionScope: z.enum(["active", "all"]).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getIntegrationByProvider } = await import("./db");
         const { getSiteProductionSnapshot } = await import("./services/solarEdge");
 
         const uniqueSiteIds = Array.from(
           new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
         );
 
-        const rows = await mapWithConcurrency(uniqueSiteIds, 5, async (siteId) => {
-          return getSiteProductionSnapshot(context, siteId, input.anchorDate);
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+        const metadata = parseSolarEdgeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("SolarEdge is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrency(uniqueSiteIds, 4, async (siteId) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getSiteProductionSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          let fallbackSnapshot: Awaited<ReturnType<typeof getSiteProductionSnapshot>> | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getSiteProductionSnapshot(
+              {
+                apiKey: connection.apiKey,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              siteId,
+              input.anchorDate
+            );
+
+            if (!fallbackSnapshot) {
+              fallbackSnapshot = snapshot;
+            }
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          const anchorDate = selectedSnapshot?.anchorDate ?? fallbackSnapshot?.anchorDate ?? input.anchorDate ?? "";
+          const monthlyStartDate =
+            selectedSnapshot?.monthlyStartDate ?? fallbackSnapshot?.monthlyStartDate ?? input.anchorDate ?? "";
+          const weeklyStartDate =
+            selectedSnapshot?.weeklyStartDate ?? fallbackSnapshot?.weeklyStartDate ?? input.anchorDate ?? "";
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            siteId,
+            status: notFoundStatus,
+            found: false,
+            lifetimeKwh: null,
+            monthlyProductionKwh: null,
+            weeklyProductionKwh: null,
+            dailyProductionKwh: null,
+            anchorDate,
+            monthlyStartDate,
+            weeklyStartDate,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
         });
 
         return {
@@ -1015,6 +1113,8 @@ export const appRouter = router({
           found: rows.filter((row) => row.status === "Found").length,
           notFound: rows.filter((row) => row.status === "Not Found").length,
           errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
           rows,
         };
       }),
