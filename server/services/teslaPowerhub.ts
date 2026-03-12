@@ -40,6 +40,7 @@ type TeslaPowerhubWindowKey = "daily" | "weekly" | "monthly" | "yearly" | "lifet
 type TeslaPowerhubWindowConfig = {
   key: TeslaPowerhubWindowKey;
   startDatetime: string;
+  endDatetime: string;
 };
 
 type SiteDescriptor = {
@@ -577,12 +578,13 @@ function sumSiteTotalsByTelemetryPayload(
 
 function buildWindowConfigs(now: Date): TeslaPowerhubWindowConfig[] {
   const DAY_MS = 24 * 60 * 60 * 1000;
+  const endDatetime = now.toISOString();
   return [
-    { key: "daily", startDatetime: new Date(now.getTime() - DAY_MS).toISOString() },
-    { key: "weekly", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString() },
-    { key: "monthly", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString() },
-    { key: "yearly", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString() },
-    { key: "lifetime", startDatetime: "2010-01-01T00:00:00.000Z" },
+    { key: "daily", startDatetime: new Date(now.getTime() - DAY_MS).toISOString(), endDatetime },
+    { key: "weekly", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString(), endDatetime },
+    { key: "monthly", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString(), endDatetime },
+    { key: "yearly", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString(), endDatetime },
+    { key: "lifetime", startDatetime: "2010-01-01T00:00:00.000Z", endDatetime },
   ];
 }
 
@@ -590,11 +592,13 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
   groupId: string;
   signal: string;
   startDatetime: string;
+  endDatetime: string;
 }): string {
   const url = new URL(baseUrl);
   url.searchParams.set("target_id", options.groupId);
   url.searchParams.set("signals", options.signal);
   url.searchParams.set("start_datetime", options.startDatetime);
+  url.searchParams.set("end_datetime", options.endDatetime);
   url.searchParams.set("period", "1d");
   url.searchParams.set("rollup", "sum");
   url.searchParams.set("fill", "none");
@@ -671,6 +675,7 @@ async function fetchTelemetryWindowTotals(
     groupId: string;
     signal: string;
     startDatetime: string;
+    endDatetime: string;
     endpointUrl?: string | null;
   }
 ): Promise<{
@@ -686,6 +691,7 @@ async function fetchTelemetryWindowTotals(
       groupId: options.groupId,
       signal: options.signal,
       startDatetime: options.startDatetime,
+      endDatetime: options.endDatetime,
     });
     try {
       const raw = await fetchJsonWithBearerToken(requestUrl, accessToken);
@@ -781,7 +787,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     siteSourcePreview: unknown;
     telemetryPreviewByWindow: Record<TeslaPowerhubWindowKey, unknown>;
     telemetryErrorsByWindow: Record<TeslaPowerhubWindowKey, string | null>;
-    windows: Record<TeslaPowerhubWindowKey, { startDatetime: string }>;
+    windows: Record<TeslaPowerhubWindowKey, { startDatetime: string; endDatetime: string }>;
   };
 }> {
   const groupId = options.groupId.trim();
@@ -827,6 +833,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         groupId,
         signal,
         startDatetime: window.startDatetime,
+        endDatetime: window.endDatetime,
         endpointUrl: options.endpointUrl,
       });
       resolvedTelemetryEndpoints[window.key] = telemetryResult.resolvedEndpointUrl;
@@ -900,11 +907,26 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       telemetryPreviewByWindow,
       telemetryErrorsByWindow,
       windows: {
-        daily: { startDatetime: windows.find((window) => window.key === "daily")?.startDatetime ?? "" },
-        weekly: { startDatetime: windows.find((window) => window.key === "weekly")?.startDatetime ?? "" },
-        monthly: { startDatetime: windows.find((window) => window.key === "monthly")?.startDatetime ?? "" },
-        yearly: { startDatetime: windows.find((window) => window.key === "yearly")?.startDatetime ?? "" },
-        lifetime: { startDatetime: windows.find((window) => window.key === "lifetime")?.startDatetime ?? "" },
+        daily: {
+          startDatetime: windows.find((window) => window.key === "daily")?.startDatetime ?? "",
+          endDatetime: windows.find((window) => window.key === "daily")?.endDatetime ?? "",
+        },
+        weekly: {
+          startDatetime: windows.find((window) => window.key === "weekly")?.startDatetime ?? "",
+          endDatetime: windows.find((window) => window.key === "weekly")?.endDatetime ?? "",
+        },
+        monthly: {
+          startDatetime: windows.find((window) => window.key === "monthly")?.startDatetime ?? "",
+          endDatetime: windows.find((window) => window.key === "monthly")?.endDatetime ?? "",
+        },
+        yearly: {
+          startDatetime: windows.find((window) => window.key === "yearly")?.startDatetime ?? "",
+          endDatetime: windows.find((window) => window.key === "yearly")?.endDatetime ?? "",
+        },
+        lifetime: {
+          startDatetime: windows.find((window) => window.key === "lifetime")?.startDatetime ?? "",
+          endDatetime: windows.find((window) => window.key === "lifetime")?.endDatetime ?? "",
+        },
       },
     },
   };
