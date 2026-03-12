@@ -532,6 +532,8 @@ const ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE = 50;
 const REC_PERFORMANCE_RESULTS_PAGE_SIZE = 50;
 const OFFLINE_DETAIL_PAGE_SIZE = 50;
 const SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL = "2025-2026";
+const IL_ABP_TRANSFERRED_CONTRACT_TYPE = "il abp - transferred";
+const IL_ABP_TERMINATED_CONTRACT_TYPE = "il abp - terminated";
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
@@ -835,6 +837,18 @@ function resolveContractValueAmount(system: SystemRecord): number {
 
 function resolveValueGapAmount(system: SystemRecord): number {
   return resolveContractValueAmount(system) - (system.deliveredValue ?? 0);
+}
+
+function normalizeContractType(value: string | null | undefined): string {
+  return clean(value).toLowerCase().replace(/\s+/g, " ");
+}
+
+function isTransferredContractType(value: string | null | undefined): boolean {
+  return normalizeContractType(value) === IL_ABP_TRANSFERRED_CONTRACT_TYPE;
+}
+
+function isTerminatedContractType(value: string | null | undefined): boolean {
+  return normalizeContractType(value) === IL_ABP_TERMINATED_CONTRACT_TYPE;
 }
 
 function normalizeMonitoringMethod(accessTypeRaw: string, entryMethodRaw: string, selfReportRaw: string): string {
@@ -2685,8 +2699,7 @@ export default function SolarRecDashboard() {
       const contractType = clean(row.contract_type);
       if (contractType) {
         builder.contractType = contractType;
-        const normalizedContractType = contractType.toLowerCase();
-        if (normalizedContractType.includes("il abp - transferred")) {
+        if (isTransferredContractType(contractType)) {
           builder.transferSeen = true;
         }
       }
@@ -2809,9 +2822,8 @@ export default function SolarRecDashboard() {
         const valueGap =
           contractedValue !== null && deliveredValue !== null ? contractedValue - deliveredValue : null;
 
-        const contractTypeNormalized = clean(builder.contractType).toLowerCase();
-        const isContractTransferred = contractTypeNormalized.includes("il abp - transferred");
-        const isContractTerminated = contractTypeNormalized.includes("il abp - terminated");
+        const isContractTransferred = isTransferredContractType(builder.contractType);
+        const isContractTerminated = isTerminatedContractType(builder.contractType);
         const isTerminated = isContractTerminated;
         const zillowStatusNormalized = clean(builder.zillowStatus).toLowerCase();
         const isZillowSold = zillowStatusNormalized.includes("sold");
@@ -2833,9 +2845,9 @@ export default function SolarRecDashboard() {
 
         let changeOwnershipStatus: ChangeOwnershipStatus | null = null;
         if (hasChangedOwnership) {
-          if (contractTypeNormalized.includes("il abp - transferred")) {
+          if (isContractTransferred) {
             changeOwnershipStatus = isReporting ? "Transferred and Reporting" : "Transferred and Not Reporting";
-          } else if (contractTypeNormalized.includes("il abp - terminated")) {
+          } else if (isContractTerminated) {
             changeOwnershipStatus = isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting";
           } else {
             changeOwnershipStatus = isReporting
@@ -3030,6 +3042,8 @@ export default function SolarRecDashboard() {
         notReportingOwnershipTotal,
         notTransferredNotReporting,
         transferredNotReporting,
+        terminatedReporting,
+        terminatedNotReporting,
         terminatedTotal,
       },
       withValueDataCount: withValueData.length,
@@ -6131,8 +6145,8 @@ export default function SolarRecDashboard() {
       changeOwnershipPercent: toPercentValue(changeOwnershipSummary.total, summary.totalSystems),
       transferredReporting: statusCount("Transferred and Reporting"),
       transferredNotReporting: statusCount("Transferred and Not Reporting"),
-      terminatedReporting: statusCount("Terminated and Reporting"),
-      terminatedNotReporting: statusCount("Terminated and Not Reporting"),
+      terminatedReporting: summary.ownershipOverview.terminatedReporting,
+      terminatedNotReporting: summary.ownershipOverview.terminatedNotReporting,
       changedNotTransferredReporting: statusCount("Change of Ownership - Not Transferred and Reporting"),
       changedNotTransferredNotReporting: statusCount("Change of Ownership - Not Transferred and Not Reporting"),
       totalContractedValue: snapshotPart2ValueSummary.totalContractedValue,
