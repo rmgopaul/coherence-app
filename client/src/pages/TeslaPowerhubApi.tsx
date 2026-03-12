@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
+import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Search, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -13,10 +13,35 @@ import { useLocation } from "wouter";
 const DEFAULT_TOKEN_URL = "https://gridlogic-api.sn.tesla.services/v1/auth/token";
 const DEFAULT_API_BASE_URL = "https://gridlogic-api.sn.tesla.services/v2";
 const DEFAULT_PORTAL_BASE_URL = "https://powerhub.energy.tesla.com";
-const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+const DEFAULT_GROUP_URL = "https://powerhub.energy.tesla.com/group/b4b6a137-0387-4f5a-bfd0-82638a119472";
+const DEFAULT_SIGNAL = "solar_energy_exported";
+const PAGE_SIZE = 50;
+
+const COUNT_FORMATTER = new Intl.NumberFormat("en-US");
+const KWH_FORMATTER = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
+
+type SiteProductionRow = {
+  siteId: string;
+  siteName: string | null;
+  dailyKwh: number;
+  weeklyKwh: number;
+  monthlyKwh: number;
+  yearlyKwh: number;
+  lifetimeKwh: number;
+};
 
 function clean(value: string | null | undefined): string {
   return (value ?? "").trim();
+}
+
+function normalizeGroupId(raw: string): string {
+  const trimmed = clean(raw);
+  if (!trimmed) return "";
+  const match = trimmed.match(/\/group\/([a-zA-Z0-9-]+)/i);
+  return match?.[1]?.trim() || trimmed;
 }
 
 function toErrorMessage(error: unknown): string {
@@ -44,6 +69,10 @@ function downloadTextFile(fileName: string, content: string, mimeType: string): 
   URL.revokeObjectURL(url);
 }
 
+function formatKwh(value: number): string {
+  return KWH_FORMATTER.format(Number.isFinite(value) ? value : 0);
+}
+
 export default function TeslaPowerhubApi() {
   const { user, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
@@ -56,7 +85,9 @@ export default function TeslaPowerhubApi() {
   const [apiBaseUrlInput, setApiBaseUrlInput] = useState(DEFAULT_API_BASE_URL);
   const [portalBaseUrlInput, setPortalBaseUrlInput] = useState(DEFAULT_PORTAL_BASE_URL);
   const [endpointUrlInput, setEndpointUrlInput] = useState("");
+  const [signalInput, setSignalInput] = useState(DEFAULT_SIGNAL);
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [resultTitle, setResultTitle] = useState("No request run yet");
   const [resultText, setResultText] = useState("{}");
 
@@ -66,7 +97,7 @@ export default function TeslaPowerhubApi() {
   });
   const connectMutation = trpc.teslaPowerhub.connect.useMutation();
   const disconnectMutation = trpc.teslaPowerhub.disconnect.useMutation();
-  const groupUsersMutation = trpc.teslaPowerhub.getGroupUsers.useMutation();
+  const productionMutation = trpc.teslaPowerhub.getGroupProductionMetrics.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -81,6 +112,10 @@ export default function TeslaPowerhubApi() {
     if (statusQuery.data.apiBaseUrl) setApiBaseUrlInput(statusQuery.data.apiBaseUrl);
     if (statusQuery.data.portalBaseUrl) setPortalBaseUrlInput(statusQuery.data.portalBaseUrl);
   }, [statusQuery.data]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, productionMutation.data?.sites.length]);
 
   const handleConnect = async () => {
     const clientId = clean(clientIdInput);
@@ -114,56 +149,98 @@ export default function TeslaPowerhubApi() {
     try {
       await disconnectMutation.mutateAsync();
       await trpcUtils.teslaPowerhub.getStatus.invalidate();
-      groupUsersMutation.reset();
+      productionMutation.reset();
       toast.success("Tesla Powerhub disconnected.");
     } catch (error) {
       toast.error(`Failed to disconnect: ${toErrorMessage(error)}`);
     }
   };
 
-  const handleFetchGroupUsers = async () => {
-    const groupId = clean(groupIdInput);
+  const handleFetchProduction = async () => {
+    const groupId = normalizeGroupId(groupIdInput);
     if (!groupId) {
       toast.error("Enter a group ID.");
       return;
     }
 
     try {
-      const payload = await groupUsersMutation.mutateAsync({
+      const payload = await productionMutation.mutateAsync({
         groupId,
         endpointUrl: clean(endpointUrlInput) || undefined,
+        signal: clean(signalInput) || undefined,
       });
-      setResultTitle(`Group Users (${payload.users.length})`);
-      setResultText(JSON.stringify(payload, null, 2));
-      toast.success("Group users loaded.");
+      setResultTitle(`Site Production Metrics (${payload.sites.length})`);
+      setResultText(JSON.stringify(payload.debug, null, 2));
+      toast.success("Production metrics loaded.");
     } catch (error) {
-      toast.error(`Failed to load users: ${toErrorMessage(error)}`);
+      toast.error(`Failed to load production metrics: ${toErrorMessage(error)}`);
     }
   };
 
-  const users = groupUsersMutation.data?.users ?? [];
-  const filteredUsers = useMemo(() => {
+  const rows: SiteProductionRow[] = productionMutation.data?.sites ?? [];
+  const filteredRows = useMemo(() => {
     const query = search.trim().toLowerCase();
-    if (!query) return users;
-    return users.filter((user) => {
-      const haystack = `${user.id} ${user.name} ${user.email ?? ""} ${user.role ?? ""} ${user.status ?? ""}`.toLowerCase();
+    if (!query) return rows;
+    return rows.filter((row) => {
+      const haystack = `${row.siteId} ${row.siteName ?? ""}`.toLowerCase();
       return haystack.includes(query);
     });
-  }, [users, search]);
+  }, [rows, search]);
 
-  const exportUsersCsv = () => {
-    if (filteredUsers.length === 0) {
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const clampedPage = Math.min(page, totalPages);
+  const pagedRows = useMemo(() => {
+    const start = (clampedPage - 1) * PAGE_SIZE;
+    return filteredRows.slice(start, start + PAGE_SIZE);
+  }, [filteredRows, clampedPage]);
+
+  const totals = useMemo(() => {
+    let daily = 0;
+    let weekly = 0;
+    let monthly = 0;
+    let yearly = 0;
+    let lifetime = 0;
+    for (const row of filteredRows) {
+      daily += row.dailyKwh;
+      weekly += row.weeklyKwh;
+      monthly += row.monthlyKwh;
+      yearly += row.yearlyKwh;
+      lifetime += row.lifetimeKwh;
+    }
+    return { daily, weekly, monthly, yearly, lifetime };
+  }, [filteredRows]);
+
+  const exportMetricsCsv = () => {
+    if (filteredRows.length === 0) {
       toast.error("No rows to export.");
       return;
     }
-    const headers = ["id", "name", "email", "role", "status"];
+    const headers = [
+      "site_id",
+      "site_name",
+      "daily_kwh",
+      "weekly_kwh",
+      "monthly_kwh",
+      "yearly_kwh",
+      "lifetime_kwh",
+    ];
     const lines = [
       headers.join(","),
-      ...filteredUsers.map((row) =>
-        [row.id, row.name, row.email, row.role, row.status].map((value) => csvEscape(value)).join(",")
+      ...filteredRows.map((row) =>
+        [
+          row.siteId,
+          row.siteName,
+          row.dailyKwh,
+          row.weeklyKwh,
+          row.monthlyKwh,
+          row.yearlyKwh,
+          row.lifetimeKwh,
+        ]
+          .map((value) => csvEscape(value))
+          .join(",")
       ),
     ];
-    const fileName = `tesla-powerhub-group-users-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    const fileName = `tesla-powerhub-site-production-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
     downloadTextFile(fileName, lines.join("\n"), "text/csv;charset=utf-8");
   };
 
@@ -179,9 +256,7 @@ export default function TeslaPowerhubApi() {
 
   const isConnected = Boolean(statusQuery.data?.connected);
   const statusError = statusQuery.error ? toErrorMessage(statusQuery.error) : null;
-  const mutationError = groupUsersMutation.error ? toErrorMessage(groupUsersMutation.error) : null;
-  const activeUsers = users.filter((user) => clean(user.status).toLowerCase() === "active").length;
-  const inactiveUsers = users.filter((user) => clean(user.status).toLowerCase() === "inactive").length;
+  const mutationError = productionMutation.error ? toErrorMessage(productionMutation.error) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
@@ -193,9 +268,7 @@ export default function TeslaPowerhubApi() {
           </Button>
           <h1 className="text-2xl font-bold text-slate-900">Tesla Powerhub API</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Client credentials auth + group users endpoint (for example:
-            {" "}
-            <code>https://powerhub.energy.tesla.com/group/{"{groupId}"}/users</code>).
+            Fetch per-site production from a Tesla Powerhub group for daily, weekly, monthly, yearly, and lifetime kWh.
           </p>
         </div>
       </header>
@@ -205,7 +278,7 @@ export default function TeslaPowerhubApi() {
           <CardHeader>
             <CardTitle>1) Connect Tesla Powerhub</CardTitle>
             <CardDescription>
-              Save client ID/client secret and API base settings. Group ID is always entered per request.
+              Save client ID/client secret and API base settings. Group ID is entered per request.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -292,9 +365,7 @@ export default function TeslaPowerhubApi() {
                 <RefreshCw className="h-4 w-4 mr-2" />
                 Refresh
               </Button>
-              <span className="text-sm text-slate-600">
-                Status: {isConnected ? "Connected" : "Not connected"}
-              </span>
+              <span className="text-sm text-slate-600">Status: {isConnected ? "Connected" : "Not connected"}</span>
               <span className="text-sm text-slate-600">
                 Client secret: {statusQuery.data?.hasClientSecret ? "Saved" : "Not saved"}
               </span>
@@ -304,13 +375,14 @@ export default function TeslaPowerhubApi() {
 
         <Card>
           <CardHeader>
-            <CardTitle>2) Group Users</CardTitle>
+            <CardTitle>2) Site Production Metrics</CardTitle>
             <CardDescription>
-              Fetch users for a group. Leave endpoint override blank for automatic URL fallback attempts.
+              Pull per-site kWh from your group. Use the group ID from your Tesla URL and keep the signal as{" "}
+              <code>{DEFAULT_SIGNAL}</code> unless your Tesla setup uses another production signal.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="tesla-powerhub-group-id-query">Group ID</Label>
                 <Input
@@ -320,32 +392,46 @@ export default function TeslaPowerhubApi() {
                   placeholder="b4b6a137-0387-4f5a-bfd0-82638a119472"
                 />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="tesla-powerhub-signal">Signal</Label>
+                <Input
+                  id="tesla-powerhub-signal"
+                  value={signalInput}
+                  onChange={(event) => setSignalInput(event.target.value)}
+                  placeholder={DEFAULT_SIGNAL}
+                />
+              </div>
               <div className="space-y-2 md:col-span-2">
                 <Label htmlFor="tesla-powerhub-endpoint-override">Endpoint Override (optional)</Label>
                 <Input
                   id="tesla-powerhub-endpoint-override"
                   value={endpointUrlInput}
                   onChange={(event) => setEndpointUrlInput(event.target.value)}
-                  placeholder={`https://powerhub.energy.tesla.com/group/${clean(groupIdInput) || "{groupId}"}/users`}
+                  placeholder={DEFAULT_GROUP_URL}
                 />
               </div>
             </div>
 
             <div className="flex flex-wrap items-end gap-2">
-              <Button onClick={handleFetchGroupUsers} disabled={groupUsersMutation.isPending || !isConnected}>
-                {groupUsersMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                Fetch Group Users
+              <Button onClick={handleFetchProduction} disabled={productionMutation.isPending || !isConnected}>
+                {productionMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                Fetch Site Production
               </Button>
               <div className="space-y-1">
-                <Label htmlFor="tesla-powerhub-search">Search Users</Label>
+                <Label htmlFor="tesla-powerhub-search">
+                  <span className="inline-flex items-center gap-1">
+                    <Search className="h-4 w-4" />
+                    Search Sites
+                  </span>
+                </Label>
                 <Input
                   id="tesla-powerhub-search"
                   value={search}
                   onChange={(event) => setSearch(event.target.value)}
-                  placeholder="name/email/role"
+                  placeholder="site name or site ID"
                 />
               </div>
-              <Button variant="outline" onClick={exportUsersCsv} disabled={filteredUsers.length === 0}>
+              <Button variant="outline" onClick={exportMetricsCsv} disabled={filteredRows.length === 0}>
                 <Download className="h-4 w-4 mr-2" />
                 Export CSV
               </Button>
@@ -357,60 +443,100 @@ export default function TeslaPowerhubApi() {
               </div>
             ) : null}
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Total Users</p>
-                <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(users.length)}</p>
+                <p className="text-xs text-slate-500">Sites</p>
+                <p className="text-xl font-semibold">{COUNT_FORMATTER.format(filteredRows.length)}</p>
               </div>
               <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Active</p>
-                <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(activeUsers)}</p>
+                <p className="text-xs text-slate-500">Daily kWh</p>
+                <p className="text-xl font-semibold">{formatKwh(totals.daily)}</p>
               </div>
               <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Inactive</p>
-                <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(inactiveUsers)}</p>
+                <p className="text-xs text-slate-500">Weekly kWh</p>
+                <p className="text-xl font-semibold">{formatKwh(totals.weekly)}</p>
               </div>
               <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Resolved Endpoint</p>
-                <p className="text-xs font-medium break-all">{groupUsersMutation.data?.resolvedEndpointUrl ?? "N/A"}</p>
+                <p className="text-xs text-slate-500">Monthly kWh</p>
+                <p className="text-xl font-semibold">{formatKwh(totals.monthly)}</p>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs text-slate-500">Yearly kWh</p>
+                <p className="text-xl font-semibold">{formatKwh(totals.yearly)}</p>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs text-slate-500">Lifetime kWh</p>
+                <p className="text-xl font-semibold">{formatKwh(totals.lifetime)}</p>
               </div>
             </div>
 
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>User ID</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Site ID</TableHead>
+                  <TableHead>Site Name</TableHead>
+                  <TableHead className="text-right">Daily kWh</TableHead>
+                  <TableHead className="text-right">Weekly kWh</TableHead>
+                  <TableHead className="text-right">Monthly kWh</TableHead>
+                  <TableHead className="text-right">Yearly kWh</TableHead>
+                  <TableHead className="text-right">Lifetime kWh</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredUsers.map((row) => (
-                  <TableRow key={row.id}>
-                    <TableCell className="font-medium">{row.id}</TableCell>
-                    <TableCell>{row.name}</TableCell>
-                    <TableCell>{row.email ?? "N/A"}</TableCell>
-                    <TableCell>{row.role ?? "N/A"}</TableCell>
-                    <TableCell>{row.status ?? "N/A"}</TableCell>
+                {pagedRows.map((row) => (
+                  <TableRow key={row.siteId}>
+                    <TableCell className="font-medium">{row.siteId}</TableCell>
+                    <TableCell>{row.siteName ?? "N/A"}</TableCell>
+                    <TableCell className="text-right">{formatKwh(row.dailyKwh)}</TableCell>
+                    <TableCell className="text-right">{formatKwh(row.weeklyKwh)}</TableCell>
+                    <TableCell className="text-right">{formatKwh(row.monthlyKwh)}</TableCell>
+                    <TableCell className="text-right">{formatKwh(row.yearlyKwh)}</TableCell>
+                    <TableCell className="text-right">{formatKwh(row.lifetimeKwh)}</TableCell>
                   </TableRow>
                 ))}
-                {filteredUsers.length === 0 ? (
+                {pagedRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="py-6 text-center text-slate-500">
-                      No users to display.
+                    <TableCell colSpan={7} className="py-6 text-center text-slate-500">
+                      No sites to display.
                     </TableCell>
                   </TableRow>
                 ) : null}
               </TableBody>
             </Table>
+
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-slate-600">
+                Showing {pagedRows.length === 0 ? 0 : (clampedPage - 1) * PAGE_SIZE + 1}-
+                {Math.min(clampedPage * PAGE_SIZE, filteredRows.length)} of {COUNT_FORMATTER.format(filteredRows.length)}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={clampedPage <= 1}
+                  onClick={() => setPage((previous) => Math.max(1, previous - 1))}
+                >
+                  Previous
+                </Button>
+                <span className="text-sm text-slate-600">
+                  Page {clampedPage} of {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={clampedPage >= totalPages}
+                  onClick={() => setPage((previous) => Math.min(totalPages, previous + 1))}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>3) Raw API Response</CardTitle>
+            <CardTitle>3) Raw API Debug</CardTitle>
             <CardDescription>{resultTitle}</CardDescription>
           </CardHeader>
           <CardContent>

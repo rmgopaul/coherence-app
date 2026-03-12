@@ -1567,6 +1567,34 @@ export const appRouter = router({
           }
         );
       }),
+    getGroupProductionMetrics: protectedProcedure
+      .input(
+        z.object({
+          groupId: z.string().min(1),
+          endpointUrl: z.string().optional(),
+          signal: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getTeslaPowerhubContext(ctx.user.id);
+        const groupId = input.groupId.trim();
+
+        const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
+        return getTeslaPowerhubGroupProductionMetrics(
+          {
+            clientId: context.clientId,
+            clientSecret: context.clientSecret,
+            tokenUrl: context.tokenUrl,
+            apiBaseUrl: context.apiBaseUrl,
+            portalBaseUrl: context.portalBaseUrl,
+          },
+          {
+            groupId,
+            endpointUrl: input.endpointUrl,
+            signal: input.signal,
+          }
+        );
+      }),
   }),
 
   todoist: router({

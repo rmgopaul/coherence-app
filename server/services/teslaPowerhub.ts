@@ -18,6 +18,16 @@ export type TeslaPowerhubUser = {
   status: string | null;
 };
 
+export type TeslaPowerhubSiteProductionMetrics = {
+  siteId: string;
+  siteName: string | null;
+  dailyKwh: number;
+  weeklyKwh: number;
+  monthlyKwh: number;
+  yearlyKwh: number;
+  lifetimeKwh: number;
+};
+
 type TeslaPowerhubTokenResponse = {
   access_token: string;
   token_type?: string;
@@ -25,8 +35,43 @@ type TeslaPowerhubTokenResponse = {
   scope?: string;
 };
 
+type TeslaPowerhubWindowKey = "daily" | "weekly" | "monthly" | "yearly" | "lifetime";
+
+type TeslaPowerhubWindowConfig = {
+  key: TeslaPowerhubWindowKey;
+  startDatetime: string;
+};
+
+type SiteDescriptor = {
+  siteId: string;
+  siteName: string | null;
+};
+
+type SiteTotal = {
+  siteId: string;
+  siteName: string | null;
+  totalKwh: number;
+};
+
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function toIdString(value: unknown): string | null {
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -85,6 +130,24 @@ async function requestClientCredentialsToken(
   return parseTokenPayload(await response.json().catch(() => ({})));
 }
 
+function parseTimestampMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    if (value > 1_000_000_000_000) return value;
+    if (value > 1_000_000_000) return value * 1000;
+    return null;
+  }
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  const numeric = Number(normalized);
+  if (Number.isFinite(numeric)) {
+    if (numeric > 1_000_000_000_000) return numeric;
+    if (numeric > 1_000_000_000) return numeric * 1000;
+  }
+  const parsed = Date.parse(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function extractUsers(payload: unknown): TeslaPowerhubUser[] {
   const root = asRecord(payload);
   const rows = Array.isArray(root.users)
@@ -140,6 +203,56 @@ function buildCandidateUrls(
   return candidates;
 }
 
+function buildAssetGroupCandidateUrls(
+  context: TeslaPowerhubApiContext,
+  groupId: string,
+  endpointOverride: string | null
+): string[] {
+  const candidates: string[] = [];
+  const add = (value: string | null | undefined) => {
+    const normalized = toNonEmptyString(value);
+    if (!normalized) return;
+    if (!candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  add(endpointOverride);
+
+  const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
+  const portalBase = normalizeUrlOrFallback(context.portalBaseUrl, TESLA_POWERHUB_DEFAULT_PORTAL_BASE_URL);
+  const encodedGroupId = encodeURIComponent(groupId);
+
+  add(`${apiBase}/asset/groups/${encodedGroupId}`);
+  add(`${apiBase}/asset/group/${encodedGroupId}`);
+  add(`${apiBase}/groups/${encodedGroupId}`);
+  add(`${apiBase}/group/${encodedGroupId}`);
+  add(`${portalBase}/group/${encodedGroupId}`);
+
+  return candidates;
+}
+
+function buildTelemetryCandidateUrls(
+  context: TeslaPowerhubApiContext,
+  endpointOverride: string | null
+): string[] {
+  const candidates: string[] = [];
+  const add = (value: string | null | undefined) => {
+    const normalized = toNonEmptyString(value);
+    if (!normalized) return;
+    if (!candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
+  const override = toNonEmptyString(endpointOverride);
+  if (override && override.includes("/telemetry/")) {
+    add(override);
+  }
+
+  add(`${apiBase}/telemetry/history`);
+  add(`${apiBase}/telemetry/history/operational/aggregate`);
+
+  return candidates;
+}
+
 async function fetchJsonWithBearerToken(url: string, accessToken: string): Promise<unknown> {
   const response = await fetch(url, {
     headers: {
@@ -160,6 +273,389 @@ async function fetchJsonWithBearerToken(url: string, accessToken: string): Promi
   }
 
   return response.json();
+}
+
+function detectSiteId(
+  record: Record<string, unknown>,
+  groupId: string,
+  inheritedSiteId: string | null
+): string | null {
+  const directSiteId =
+    toIdString(record.site_id) ??
+    toIdString(record.siteId) ??
+    toIdString(record.site_uuid) ??
+    toIdString(record.siteUuid) ??
+    toIdString(record.energy_site_id);
+  if (directSiteId) return directSiteId;
+
+  const targetType = `${toNonEmptyString(record.target_type) ?? ""} ${toNonEmptyString(record.targetType) ?? ""} ${
+    toNonEmptyString(record.type) ?? ""
+  } ${toNonEmptyString(record.asset_type) ?? ""}`.toLowerCase();
+  const targetId = toIdString(record.target_id) ?? toIdString(record.targetId);
+  if (targetId && targetId !== groupId && /site/.test(targetType)) return targetId;
+
+  const fallbackId = toIdString(record.id) ?? toIdString(record.uuid);
+  const hasSiteField =
+    "site_name" in record ||
+    "siteName" in record ||
+    "energy_site_id" in record ||
+    "site_id" in record ||
+    "siteId" in record;
+  if (fallbackId && fallbackId !== groupId && (hasSiteField || /site/.test(targetType))) {
+    return fallbackId;
+  }
+
+  return inheritedSiteId;
+}
+
+function detectSiteName(record: Record<string, unknown>, inheritedSiteName: string | null): string | null {
+  return (
+    toNonEmptyString(record.site_name) ??
+    toNonEmptyString(record.siteName) ??
+    toNonEmptyString(record.name) ??
+    toNonEmptyString(record.display_name) ??
+    toNonEmptyString(record.target_name) ??
+    inheritedSiteName
+  );
+}
+
+function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescriptor[] {
+  const siteMap = new Map<string, SiteDescriptor>();
+
+  const walk = (value: unknown, inheritedSiteId: string | null, inheritedSiteName: string | null): void => {
+    if (Array.isArray(value)) {
+      for (const row of value) {
+        walk(row, inheritedSiteId, inheritedSiteName);
+      }
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+
+    const record = asRecord(value);
+    const siteId = detectSiteId(record, groupId, inheritedSiteId);
+    const siteName = detectSiteName(record, inheritedSiteName);
+    if (siteId && siteId !== groupId && !siteMap.has(siteId)) {
+      siteMap.set(siteId, {
+        siteId,
+        siteName: siteName ?? null,
+      });
+    } else if (siteId && siteMap.has(siteId) && siteName) {
+      const existing = siteMap.get(siteId);
+      if (existing && !existing.siteName) {
+        siteMap.set(siteId, { ...existing, siteName });
+      }
+    }
+
+    for (const child of Object.values(record)) {
+      walk(child, siteId ?? inheritedSiteId, siteName ?? inheritedSiteName);
+    }
+  };
+
+  walk(payload, null, null);
+  return Array.from(siteMap.values());
+}
+
+function roundToFourDecimals(value: number): number {
+  return Number(value.toFixed(4));
+}
+
+function sumSiteTotalsByTelemetryPayload(
+  payload: unknown,
+  groupId: string,
+  signal: string
+): Map<string, SiteTotal> {
+  const totals = new Map<string, SiteTotal>();
+  const dedupe = new Set<string>();
+  const signalKey = signal.trim();
+
+  const addValue = (
+    siteId: string | null,
+    siteName: string | null,
+    value: unknown,
+    timestamp: unknown,
+    path: string
+  ): void => {
+    if (!siteId || siteId === groupId) return;
+    const numeric = toFiniteNumber(value);
+    if (numeric === null) return;
+    const timestampMs = parseTimestampMs(timestamp);
+    const dedupeKey = `${siteId}|${timestampMs ?? "na"}|${numeric}|${path}`;
+    if (dedupe.has(dedupeKey)) return;
+    dedupe.add(dedupeKey);
+
+    const existing = totals.get(siteId);
+    if (!existing) {
+      totals.set(siteId, {
+        siteId,
+        siteName: siteName ?? null,
+        totalKwh: numeric,
+      });
+      return;
+    }
+
+    totals.set(siteId, {
+      siteId,
+      siteName: existing.siteName ?? siteName ?? null,
+      totalKwh: existing.totalKwh + numeric,
+    });
+  };
+
+  const parseNumericContainer = (
+    value: unknown,
+    siteId: string | null,
+    siteName: string | null,
+    path: string
+  ): void => {
+    if (Array.isArray(value)) {
+      value.forEach((entry, index) => {
+        const entryPath = `${path}[${index}]`;
+        if (Array.isArray(entry)) {
+          if (entry.length >= 2) {
+            addValue(siteId, siteName, entry[1], entry[0], entryPath);
+          }
+          return;
+        }
+        if (entry && typeof entry === "object") {
+          const record = asRecord(entry);
+          addValue(
+            siteId,
+            siteName,
+            record.value ?? record.kwh ?? record.energy_kwh ?? record.sum ?? record.total,
+            record.timestamp ?? record.ts ?? record.datetime ?? record.time,
+            entryPath
+          );
+          parseNumericContainer(record.values, siteId, siteName, `${entryPath}.values`);
+          parseNumericContainer(record.data, siteId, siteName, `${entryPath}.data`);
+          parseNumericContainer(record.points, siteId, siteName, `${entryPath}.points`);
+          parseNumericContainer(record.series, siteId, siteName, `${entryPath}.series`);
+          return;
+        }
+        addValue(siteId, siteName, entry, null, entryPath);
+      });
+      return;
+    }
+
+    if (!value || typeof value !== "object") {
+      addValue(siteId, siteName, value, null, path);
+      return;
+    }
+
+    const record = asRecord(value);
+    const entries = Object.entries(record);
+    const isTimestampMap =
+      entries.length > 0 &&
+      entries.every(([key, rowValue]) => parseTimestampMs(key) !== null && toFiniteNumber(rowValue) !== null);
+    if (isTimestampMap) {
+      for (const [key, rowValue] of entries) {
+        addValue(siteId, siteName, rowValue, key, `${path}.${key}`);
+      }
+      return;
+    }
+
+    addValue(
+      siteId,
+      siteName,
+      record.value ?? record.kwh ?? record.energy_kwh ?? record.sum ?? record.total,
+      record.timestamp ?? record.ts ?? record.datetime ?? record.time,
+      path
+    );
+
+    parseNumericContainer(record.values, siteId, siteName, `${path}.values`);
+    parseNumericContainer(record.data, siteId, siteName, `${path}.data`);
+    parseNumericContainer(record.points, siteId, siteName, `${path}.points`);
+    parseNumericContainer(record.series, siteId, siteName, `${path}.series`);
+  };
+
+  const walk = (value: unknown, inheritedSiteId: string | null, inheritedSiteName: string | null, path: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((row, index) => walk(row, inheritedSiteId, inheritedSiteName, `${path}[${index}]`));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+
+    const record = asRecord(value);
+    const siteId = detectSiteId(record, groupId, inheritedSiteId);
+    const siteName = detectSiteName(record, inheritedSiteName);
+    const handledKeys = new Set<string>();
+
+    const signalObject = asRecord(record.signals);
+    const signalEntry =
+      record[signalKey] ??
+      signalObject[signalKey] ??
+      signalObject[signalKey.toLowerCase()] ??
+      signalObject[signalKey.toUpperCase()];
+    if (signalEntry !== undefined) {
+      parseNumericContainer(signalEntry, siteId, siteName, `${path}.${signalKey}`);
+      if (record[signalKey] !== undefined) handledKeys.add(signalKey);
+      if (record.signals !== undefined) handledKeys.add("signals");
+    }
+
+    parseNumericContainer(record.values, siteId, siteName, `${path}.values`);
+    parseNumericContainer(record.data, siteId, siteName, `${path}.data`);
+    parseNumericContainer(record.points, siteId, siteName, `${path}.points`);
+    parseNumericContainer(record.series, siteId, siteName, `${path}.series`);
+    handledKeys.add("values");
+    handledKeys.add("data");
+    handledKeys.add("points");
+    handledKeys.add("series");
+
+    addValue(
+      siteId,
+      siteName,
+      record.value ?? record.kwh ?? record.energy_kwh ?? record.sum ?? record.total,
+      record.timestamp ?? record.ts ?? record.datetime ?? record.time,
+      `${path}.value`
+    );
+
+    for (const [key, child] of Object.entries(record)) {
+      if (handledKeys.has(key)) continue;
+      walk(child, siteId, siteName, `${path}.${key}`);
+    }
+  };
+
+  walk(payload, null, null, "root");
+
+  Array.from(totals.entries()).forEach(([siteId, row]) => {
+    totals.set(siteId, {
+      ...row,
+      totalKwh: roundToFourDecimals(row.totalKwh),
+    });
+  });
+
+  return totals;
+}
+
+function buildWindowConfigs(now: Date): TeslaPowerhubWindowConfig[] {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  return [
+    { key: "daily", startDatetime: new Date(now.getTime() - DAY_MS).toISOString() },
+    { key: "weekly", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString() },
+    { key: "monthly", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString() },
+    { key: "yearly", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString() },
+    { key: "lifetime", startDatetime: "2010-01-01T00:00:00.000Z" },
+  ];
+}
+
+function buildTelemetryRequestUrl(baseUrl: string, options: {
+  groupId: string;
+  signal: string;
+  startDatetime: string;
+}): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("target_id", options.groupId);
+  url.searchParams.set("signals", options.signal);
+  url.searchParams.set("start_datetime", options.startDatetime);
+  url.searchParams.set("period", "1d");
+  url.searchParams.set("rollup", "sum");
+  url.searchParams.set("fill", "none");
+  return url.toString();
+}
+
+function createPreview(value: unknown, depth = 0): unknown {
+  if (depth >= 3) return "[truncated]";
+  if (Array.isArray(value)) {
+    const limited = value.slice(0, 5).map((entry) => createPreview(entry, depth + 1));
+    if (value.length > 5) {
+      limited.push(`... ${value.length - 5} more item(s)`);
+    }
+    return limited;
+  }
+  if (!value || typeof value !== "object") return value;
+  const entries = Object.entries(asRecord(value));
+  const preview: Record<string, unknown> = {};
+  for (let index = 0; index < entries.length; index += 1) {
+    const [key, rowValue] = entries[index];
+    if (index >= 20) {
+      preview.__truncatedKeys = entries.length - 20;
+      break;
+    }
+    preview[key] = createPreview(rowValue, depth + 1);
+  }
+  return preview;
+}
+
+async function fetchGroupSites(
+  context: TeslaPowerhubApiContext,
+  accessToken: string,
+  options: {
+    groupId: string;
+    endpointUrl?: string | null;
+  }
+): Promise<{
+  sites: SiteDescriptor[];
+  resolvedEndpointUrl: string | null;
+  rawPreview: unknown;
+}> {
+  const groupId = options.groupId.trim();
+  const candidateUrls = buildAssetGroupCandidateUrls(context, groupId, toNonEmptyString(options.endpointUrl));
+  let lastError: string | null = null;
+
+  for (const url of candidateUrls) {
+    try {
+      const raw = await fetchJsonWithBearerToken(url, accessToken);
+      const sites = collectSitesFromUnknown(raw, groupId);
+      if (sites.length > 0) {
+        return {
+          sites,
+          resolvedEndpointUrl: url,
+          rawPreview: createPreview(raw),
+        };
+      }
+      lastError = "Endpoint returned no recognizable site rows.";
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown request error.";
+    }
+  }
+
+  return {
+    sites: [],
+    resolvedEndpointUrl: null,
+    rawPreview: lastError ? { error: lastError } : null,
+  };
+}
+
+async function fetchTelemetryWindowTotals(
+  context: TeslaPowerhubApiContext,
+  accessToken: string,
+  options: {
+    groupId: string;
+    signal: string;
+    startDatetime: string;
+    endpointUrl?: string | null;
+  }
+): Promise<{
+  totals: Map<string, SiteTotal>;
+  resolvedEndpointUrl: string;
+  rawPreview: unknown;
+}> {
+  const candidateUrls = buildTelemetryCandidateUrls(context, toNonEmptyString(options.endpointUrl));
+  let lastError: string | null = null;
+
+  for (const baseUrl of candidateUrls) {
+    const requestUrl = buildTelemetryRequestUrl(baseUrl, {
+      groupId: options.groupId,
+      signal: options.signal,
+      startDatetime: options.startDatetime,
+    });
+    try {
+      const raw = await fetchJsonWithBearerToken(requestUrl, accessToken);
+      const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
+      if (totals.size > 0) {
+        return {
+          totals,
+          resolvedEndpointUrl: requestUrl,
+          rawPreview: createPreview(raw),
+        };
+      }
+      lastError = `No site telemetry values parsed from ${requestUrl}.`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown request error.";
+    }
+  }
+
+  throw new Error(
+    `Tesla Powerhub telemetry request failed for all endpoint candidates.${lastError ? ` Last error ${lastError}` : ""}`
+  );
 }
 
 export async function getTeslaPowerhubGroupUsers(
@@ -211,6 +707,157 @@ export async function getTeslaPowerhubGroupUsers(
   }
 
   throw new Error(`Tesla Powerhub users request failed for all endpoint candidates.${lastError ? ` Last error ${lastError}` : ""}`);
+}
+
+export async function getTeslaPowerhubGroupProductionMetrics(
+  context: TeslaPowerhubApiContext,
+  options: {
+    groupId: string;
+    endpointUrl?: string | null;
+    signal?: string | null;
+  }
+): Promise<{
+  sites: TeslaPowerhubSiteProductionMetrics[];
+  requestedGroupId: string;
+  signal: string;
+  resolvedSitesEndpointUrl: string | null;
+  resolvedTelemetryEndpoints: Record<TeslaPowerhubWindowKey, string | null>;
+  token: {
+    tokenType: string;
+    expiresIn: number | null;
+    scope: string | null;
+  };
+  debug: {
+    siteSourcePreview: unknown;
+    telemetryPreviewByWindow: Record<TeslaPowerhubWindowKey, unknown>;
+    telemetryErrorsByWindow: Record<TeslaPowerhubWindowKey, string | null>;
+    windows: Record<TeslaPowerhubWindowKey, { startDatetime: string }>;
+  };
+}> {
+  const groupId = options.groupId.trim();
+  if (!groupId) {
+    throw new Error("groupId is required.");
+  }
+  const signal = toNonEmptyString(options.signal) ?? "solar_energy_exported";
+  const token = await requestClientCredentialsToken(context);
+
+  const siteResult = await fetchGroupSites(context, token.access_token, {
+    groupId,
+    endpointUrl: options.endpointUrl,
+  });
+
+  const now = new Date();
+  const windows = buildWindowConfigs(now);
+  const resolvedTelemetryEndpoints: Record<TeslaPowerhubWindowKey, string | null> = {
+    daily: null,
+    weekly: null,
+    monthly: null,
+    yearly: null,
+    lifetime: null,
+  };
+  const telemetryPreviewByWindow: Record<TeslaPowerhubWindowKey, unknown> = {
+    daily: null,
+    weekly: null,
+    monthly: null,
+    yearly: null,
+    lifetime: null,
+  };
+  const telemetryErrorsByWindow: Record<TeslaPowerhubWindowKey, string | null> = {
+    daily: null,
+    weekly: null,
+    monthly: null,
+    yearly: null,
+    lifetime: null,
+  };
+  const totalsByWindow = new Map<TeslaPowerhubWindowKey, Map<string, SiteTotal>>();
+
+  for (const window of windows) {
+    try {
+      const telemetryResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+        groupId,
+        signal,
+        startDatetime: window.startDatetime,
+        endpointUrl: options.endpointUrl,
+      });
+      resolvedTelemetryEndpoints[window.key] = telemetryResult.resolvedEndpointUrl;
+      telemetryPreviewByWindow[window.key] = telemetryResult.rawPreview;
+      totalsByWindow.set(window.key, telemetryResult.totals);
+    } catch (error) {
+      telemetryErrorsByWindow[window.key] = error instanceof Error ? error.message : "Unknown error.";
+      totalsByWindow.set(window.key, new Map<string, SiteTotal>());
+    }
+  }
+
+  const successfulWindowCount = windows.filter((window) => (totalsByWindow.get(window.key)?.size ?? 0) > 0).length;
+  if (successfulWindowCount === 0) {
+    throw new Error(
+      `Unable to fetch telemetry for group ${groupId}. ${telemetryErrorsByWindow.daily ?? telemetryErrorsByWindow.weekly ?? ""}`.trim()
+    );
+  }
+
+  const siteMap = new Map<string, SiteDescriptor>();
+  for (const site of siteResult.sites) {
+    siteMap.set(site.siteId, site);
+  }
+  Array.from(totalsByWindow.values()).forEach((totals) => {
+    Array.from(totals.values()).forEach((total) => {
+      if (!siteMap.has(total.siteId)) {
+        siteMap.set(total.siteId, {
+          siteId: total.siteId,
+          siteName: total.siteName ?? null,
+        });
+      }
+    });
+  });
+
+  const rows: TeslaPowerhubSiteProductionMetrics[] = Array.from(siteMap.values()).map((site) => {
+    const daily = totalsByWindow.get("daily")?.get(site.siteId)?.totalKwh ?? 0;
+    const weekly = totalsByWindow.get("weekly")?.get(site.siteId)?.totalKwh ?? 0;
+    const monthly = totalsByWindow.get("monthly")?.get(site.siteId)?.totalKwh ?? 0;
+    const yearly = totalsByWindow.get("yearly")?.get(site.siteId)?.totalKwh ?? 0;
+    const lifetime = totalsByWindow.get("lifetime")?.get(site.siteId)?.totalKwh ?? 0;
+    return {
+      siteId: site.siteId,
+      siteName: site.siteName ?? totalsByWindow.get("lifetime")?.get(site.siteId)?.siteName ?? null,
+      dailyKwh: roundToFourDecimals(daily),
+      weeklyKwh: roundToFourDecimals(weekly),
+      monthlyKwh: roundToFourDecimals(monthly),
+      yearlyKwh: roundToFourDecimals(yearly),
+      lifetimeKwh: roundToFourDecimals(lifetime),
+    };
+  });
+
+  rows.sort((a, b) => {
+    const nameA = (a.siteName ?? "").toLowerCase();
+    const nameB = (b.siteName ?? "").toLowerCase();
+    if (nameA !== nameB) return nameA.localeCompare(nameB);
+    return a.siteId.localeCompare(b.siteId);
+  });
+
+  return {
+    sites: rows,
+    requestedGroupId: groupId,
+    signal,
+    resolvedSitesEndpointUrl: siteResult.resolvedEndpointUrl,
+    resolvedTelemetryEndpoints,
+    token: {
+      tokenType: token.token_type ?? "Bearer",
+      expiresIn: typeof token.expires_in === "number" ? token.expires_in : null,
+      scope: token.scope ?? null,
+    },
+    debug: {
+      siteSourcePreview: siteResult.rawPreview,
+      telemetryPreviewByWindow,
+      telemetryErrorsByWindow,
+      windows: {
+        daily: { startDatetime: windows.find((window) => window.key === "daily")?.startDatetime ?? "" },
+        weekly: { startDatetime: windows.find((window) => window.key === "weekly")?.startDatetime ?? "" },
+        monthly: { startDatetime: windows.find((window) => window.key === "monthly")?.startDatetime ?? "" },
+        yearly: { startDatetime: windows.find((window) => window.key === "yearly")?.startDatetime ?? "" },
+        lifetime: { startDatetime: windows.find((window) => window.key === "lifetime")?.startDatetime ?? "" },
+      },
+    },
+  };
 }
 
 export function normalizeTeslaPowerhubUrl(raw: string | null | undefined): string | null {
