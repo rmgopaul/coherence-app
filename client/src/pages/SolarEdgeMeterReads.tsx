@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
@@ -13,7 +14,10 @@ import { useLocation } from "wouter";
 
 const DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com/v2";
 const TIME_UNIT_OPTIONS = ["QUARTER_OF_AN_HOUR", "HOUR", "DAY", "WEEK", "MONTH", "YEAR"] as const;
-const BULK_BATCH_SIZE = 200;
+const BULK_BATCH_SIZE_ACTIVE = 200;
+const BULK_BATCH_SIZE_ALL_PROFILES = 25;
+const BULK_ROWS_RENDER_INTERVAL_ACTIVE = 1;
+const BULK_ROWS_RENDER_INTERVAL_ALL_PROFILES = 4;
 const BULK_PAGE_SIZE = 25;
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
@@ -203,6 +207,12 @@ function chunkArray<T>(values: T[], chunkSize: number): T[][] {
     output.push(values.slice(index, index + chunkSize));
   }
   return output;
+}
+
+function waitForNextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 0);
+  });
 }
 
 export default function SolarEdgeMeterReads() {
@@ -432,16 +442,27 @@ export default function SolarEdgeMeterReads() {
     setBulkIsRunning(true);
     bulkCancelRef.current = false;
     setBulkRows([]);
-
-    const chunks = chunkArray(bulkSiteIds, BULK_BATCH_SIZE);
+    const effectiveBatchSize =
+      bulkConnectionScope === "all" ? BULK_BATCH_SIZE_ALL_PROFILES : BULK_BATCH_SIZE_ACTIVE;
+    const rowRenderInterval =
+      bulkConnectionScope === "all" ? BULK_ROWS_RENDER_INTERVAL_ALL_PROFILES : BULK_ROWS_RENDER_INTERVAL_ACTIVE;
+    const chunks = chunkArray(bulkSiteIds, effectiveBatchSize);
     let processed = 0;
     let found = 0;
     let notFound = 0;
     let errored = 0;
     const collectedRows: BulkSnapshotRow[] = [];
+    setBulkProgress({
+      total: bulkSiteIds.length,
+      processed: 0,
+      found: 0,
+      notFound: 0,
+      errored: 0,
+    });
 
     try {
-      for (const chunk of chunks) {
+      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
+        const chunk = chunks[chunkIndex];
         if (bulkCancelRef.current) break;
 
         const response = await bulkSnapshotsMutation.mutateAsync({
@@ -456,7 +477,6 @@ export default function SolarEdgeMeterReads() {
         notFound += response.notFound;
         errored += response.errored;
 
-        setBulkRows([...collectedRows]);
         setBulkProgress({
           total: bulkSiteIds.length,
           processed,
@@ -464,6 +484,15 @@ export default function SolarEdgeMeterReads() {
           notFound,
           errored,
         });
+
+        const shouldRenderRows =
+          chunkIndex % rowRenderInterval === 0 || chunkIndex === chunks.length - 1 || bulkCancelRef.current;
+        if (shouldRenderRows) {
+          setBulkRows([...collectedRows]);
+        }
+
+        // Yield back to the browser so progress UI can paint between batch requests.
+        await waitForNextFrame();
       }
 
       if (bulkCancelRef.current) {
@@ -517,6 +546,8 @@ export default function SolarEdgeMeterReads() {
   const bulkCurrentPage = Math.min(bulkPage, bulkTotalPages);
   const bulkPageStartIndex = (bulkCurrentPage - 1) * BULK_PAGE_SIZE;
   const bulkPageRows = filteredBulkRows.slice(bulkPageStartIndex, bulkPageStartIndex + BULK_PAGE_SIZE);
+  const bulkProgressPercent =
+    bulkProgress.total > 0 ? Math.min(100, (bulkProgress.processed / bulkProgress.total) * 100) : 0;
 
   const downloadBulkCsv = (rows: BulkSnapshotRow[], fileNamePrefix: string) => {
     if (rows.length === 0) {
@@ -1017,6 +1048,22 @@ export default function SolarEdgeMeterReads() {
               >
                 Download Filtered CSV
               </Button>
+            </div>
+
+            <div className="rounded-lg border bg-white p-3 space-y-2">
+              <div className="flex items-center justify-between text-xs text-slate-600">
+                <span>
+                  Progress: {NUMBER_FORMATTER.format(bulkProgress.processed)} / {NUMBER_FORMATTER.format(bulkProgress.total)} site IDs
+                </span>
+                <span>{bulkProgressPercent.toFixed(1)}%</span>
+              </div>
+              <Progress value={bulkProgressPercent} />
+              <p className="text-xs text-slate-500">
+                Update cadence:{" "}
+                {bulkConnectionScope === "all"
+                  ? `${NUMBER_FORMATTER.format(BULK_BATCH_SIZE_ALL_PROFILES)} sites per request (all API profiles).`
+                  : `${NUMBER_FORMATTER.format(BULK_BATCH_SIZE_ACTIVE)} sites per request (active API profile).`}
+              </p>
             </div>
 
             <div className="grid gap-3 md:grid-cols-5">
