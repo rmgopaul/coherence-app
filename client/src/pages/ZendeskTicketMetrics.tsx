@@ -3,7 +3,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -11,6 +14,21 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+type PeriodPreset = "all" | "last_7_days" | "last_30_days" | "last_90_days" | "custom";
+
+function formatDateInput(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftDate(input: string, deltaDays: number): string {
+  const [year, month, day] = input.split("-").map((value) => Number(value));
+  const date = new Date(year, month - 1, day);
+  date.setDate(date.getDate() + deltaDays);
+  return formatDateInput(date);
+}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -45,11 +63,18 @@ export default function ZendeskTicketMetrics() {
   const { user, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const trpcUtils = trpc.useUtils();
+  const today = useMemo(() => formatDateInput(new Date()), []);
+  const defaultStartDate = useMemo(() => shiftDate(today, -29), [today]);
 
   const [subdomainInput, setSubdomainInput] = useState("");
   const [emailInput, setEmailInput] = useState("");
   const [apiTokenInput, setApiTokenInput] = useState("");
   const [maxTicketsInput, setMaxTicketsInput] = useState("10000");
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>("last_30_days");
+  const [periodStartDateInput, setPeriodStartDateInput] = useState(defaultStartDate);
+  const [periodEndDateInput, setPeriodEndDateInput] = useState(today);
+  const [trackedUsersInput, setTrackedUsersInput] = useState("");
+  const [trackedUsersOnly, setTrackedUsersOnly] = useState(false);
   const [search, setSearch] = useState("");
 
   const statusQuery = trpc.zendesk.getStatus.useQuery(undefined, {
@@ -58,6 +83,7 @@ export default function ZendeskTicketMetrics() {
   });
 
   const connectMutation = trpc.zendesk.connect.useMutation();
+  const saveTrackedUsersMutation = trpc.zendesk.saveTrackedUsers.useMutation();
   const disconnectMutation = trpc.zendesk.disconnect.useMutation();
   const metricsMutation = trpc.zendesk.getTicketMetrics.useMutation();
 
@@ -71,7 +97,64 @@ export default function ZendeskTicketMetrics() {
     if (!statusQuery.data) return;
     if (statusQuery.data.subdomain) setSubdomainInput(statusQuery.data.subdomain);
     if (statusQuery.data.email) setEmailInput(statusQuery.data.email);
+    setTrackedUsersInput((statusQuery.data.trackedUsers ?? []).join("\n"));
+    if ((statusQuery.data.trackedUsers ?? []).length > 0) {
+      setTrackedUsersOnly(true);
+    }
   }, [statusQuery.data]);
+
+  const parseTrackedUsersInput = (): string[] => {
+    return trackedUsersInput
+      .split(/\r?\n|,/g)
+      .map((value) => clean(value))
+      .filter((value) => value.length > 0)
+      .map((value) => value.toLowerCase())
+      .filter((value, index, array) => array.indexOf(value) === index);
+  };
+
+  const resolvePeriodRange = (): { periodStartDate?: string; periodEndDate?: string } => {
+    if (periodPreset === "all") return {};
+    if (periodPreset === "custom") {
+      const start = clean(periodStartDateInput);
+      const end = clean(periodEndDateInput);
+      if (!start || !end) {
+        throw new Error("Choose both start and end dates for custom period.");
+      }
+      return {
+        periodStartDate: start,
+        periodEndDate: end,
+      };
+    }
+
+    const end = today;
+    const start =
+      periodPreset === "last_7_days"
+        ? shiftDate(end, -6)
+        : periodPreset === "last_30_days"
+          ? shiftDate(end, -29)
+          : shiftDate(end, -89);
+
+    return {
+      periodStartDate: start,
+      periodEndDate: end,
+    };
+  };
+
+  const handleSaveTrackedUsers = async () => {
+    if (!isConnected) {
+      toast.error("Connect Zendesk before saving tracked users.");
+      return;
+    }
+    const users = parseTrackedUsersInput();
+    try {
+      const response = await saveTrackedUsersMutation.mutateAsync({ users });
+      setTrackedUsersInput(response.trackedUsers.join("\n"));
+      await trpcUtils.zendesk.getStatus.invalidate();
+      toast.success(`Saved ${NUMBER_FORMATTER.format(response.trackedUsers.length)} tracked user(s).`);
+    } catch (error) {
+      toast.error(`Failed to save tracked users: ${toErrorMessage(error)}`);
+    }
+  };
 
   const runMetricsLoad = async () => {
     const maxTicketsRaw = Number(maxTicketsInput);
@@ -82,7 +165,13 @@ export default function ZendeskTicketMetrics() {
     }
 
     try {
-      await metricsMutation.mutateAsync({ maxTickets });
+      const range = resolvePeriodRange();
+      await metricsMutation.mutateAsync({
+        maxTickets,
+        periodStartDate: range.periodStartDate,
+        periodEndDate: range.periodEndDate,
+        trackedUsersOnly,
+      });
       toast.success("Zendesk metrics loaded.");
     } catch (error) {
       toast.error(`Failed to load metrics: ${toErrorMessage(error)}`);
@@ -155,6 +244,7 @@ export default function ZendeskTicketMetrics() {
       "email",
       "role",
       "assigned",
+      "active",
       "new",
       "open",
       "pending",
@@ -171,6 +261,7 @@ export default function ZendeskTicketMetrics() {
           row.email,
           row.role,
           row.assigned,
+          row.new + row.open + row.pending + row.hold,
           row.new,
           row.open,
           row.pending,
@@ -220,7 +311,7 @@ export default function ZendeskTicketMetrics() {
           <CardHeader>
             <CardTitle>1) Connect Zendesk</CardTitle>
             <CardDescription>
-              Save your Zendesk subdomain, account email, and API token.
+              Save your Zendesk subdomain, account email, API token, and tracked-user list.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -291,6 +382,35 @@ export default function ZendeskTicketMetrics() {
                 Status: {isConnected ? "Connected" : "Not connected"}
               </span>
             </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="zendesk-tracked-users">Tracked Users (persisted)</Label>
+                <span className="text-xs text-slate-500">
+                  Saved: {NUMBER_FORMATTER.format(statusQuery.data?.trackedUsers?.length ?? 0)}
+                </span>
+              </div>
+              <Textarea
+                id="zendesk-tracked-users"
+                value={trackedUsersInput}
+                onChange={(event) => setTrackedUsersInput(event.target.value)}
+                placeholder={"One user per line:\n- user email (agent@company.com)\n- or Zendesk user ID (123456789)"}
+                rows={6}
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={handleSaveTrackedUsers}
+                  disabled={saveTrackedUsersMutation.isPending || !isConnected}
+                >
+                  {saveTrackedUsersMutation.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                  Save Tracked Users
+                </Button>
+                <span className="text-xs text-slate-500">
+                  Use this to keep the same user list every time you reload.
+                </span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -302,7 +422,7 @@ export default function ZendeskTicketMetrics() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="zendesk-max-tickets">Max Tickets to Scan</Label>
                 <Input
@@ -316,6 +436,41 @@ export default function ZendeskTicketMetrics() {
                 <p className="text-xs text-slate-500">Higher values include more history but take longer.</p>
               </div>
               <div className="space-y-2">
+                <Label>Time Period</Label>
+                <Select value={periodPreset} onValueChange={(value) => setPeriodPreset(value as PeriodPreset)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Time</SelectItem>
+                    <SelectItem value="last_7_days">Last 7 Days</SelectItem>
+                    <SelectItem value="last_30_days">Last 30 Days</SelectItem>
+                    <SelectItem value="last_90_days">Last 90 Days</SelectItem>
+                    <SelectItem value="custom">Custom Range</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="zendesk-period-start">Start Date</Label>
+                <Input
+                  id="zendesk-period-start"
+                  type="date"
+                  value={periodStartDateInput}
+                  onChange={(event) => setPeriodStartDateInput(event.target.value)}
+                  disabled={periodPreset !== "custom"}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="zendesk-period-end">End Date</Label>
+                <Input
+                  id="zendesk-period-end"
+                  type="date"
+                  value={periodEndDateInput}
+                  onChange={(event) => setPeriodEndDateInput(event.target.value)}
+                  disabled={periodPreset !== "custom"}
+                />
+              </div>
+              <div className="space-y-2">
                 <Label htmlFor="zendesk-search">Search User</Label>
                 <Input
                   id="zendesk-search"
@@ -323,6 +478,17 @@ export default function ZendeskTicketMetrics() {
                   onChange={(event) => setSearch(event.target.value)}
                   placeholder="Filter by name, email, or user ID"
                 />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-6">
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="zendesk-tracked-users-only"
+                  checked={trackedUsersOnly}
+                  onCheckedChange={setTrackedUsersOnly}
+                />
+                <Label htmlFor="zendesk-tracked-users-only">Tracked users only</Label>
               </div>
               <div className="flex items-end gap-2">
                 <Button onClick={runMetricsLoad} disabled={metricsMutation.isPending || !isConnected}>
@@ -342,10 +508,21 @@ export default function ZendeskTicketMetrics() {
               </div>
             ) : null}
 
-            <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-8 gap-3">
               <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Assigned</p>
+                <p className="text-xs text-slate-500">Assigned (Total)</p>
                 <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(metrics?.totals.assigned ?? 0)}</p>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs text-slate-500">Assigned (Active)</p>
+                <p className="text-xl font-semibold">
+                  {NUMBER_FORMATTER.format(
+                    (metrics?.totals.new ?? 0) +
+                      (metrics?.totals.open ?? 0) +
+                      (metrics?.totals.pending ?? 0) +
+                      (metrics?.totals.hold ?? 0)
+                  )}
+                </p>
               </div>
               <div className="rounded-lg border bg-white p-3">
                 <p className="text-xs text-slate-500">New</p>
@@ -378,6 +555,9 @@ export default function ZendeskTicketMetrics() {
                 Tickets scanned: {NUMBER_FORMATTER.format(metrics?.ticketCount ?? 0)} (max {NUMBER_FORMATTER.format(metrics?.maxTickets ?? 0)})
               </span>
               <span>
+                Period: {metrics?.periodStartDate ?? "Earliest"} to {metrics?.periodEndDate ?? "Now"}
+              </span>
+              <span>
                 {metrics?.generatedAt ? `Generated ${new Date(metrics.generatedAt).toLocaleString()}` : "No run yet"}
               </span>
             </div>
@@ -394,6 +574,7 @@ export default function ZendeskTicketMetrics() {
                   <TableHead>User</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Assigned</TableHead>
+                  <TableHead>Active</TableHead>
                   <TableHead>New</TableHead>
                   <TableHead>Open</TableHead>
                   <TableHead>Pending</TableHead>
@@ -408,6 +589,7 @@ export default function ZendeskTicketMetrics() {
                     <TableCell className="font-medium">{row.name}</TableCell>
                     <TableCell>{row.email ?? "N/A"}</TableCell>
                     <TableCell>{NUMBER_FORMATTER.format(row.assigned)}</TableCell>
+                    <TableCell>{NUMBER_FORMATTER.format(row.new + row.open + row.pending + row.hold)}</TableCell>
                     <TableCell>{NUMBER_FORMATTER.format(row.new)}</TableCell>
                     <TableCell>{NUMBER_FORMATTER.format(row.open)}</TableCell>
                     <TableCell>{NUMBER_FORMATTER.format(row.pending)}</TableCell>
@@ -418,7 +600,7 @@ export default function ZendeskTicketMetrics() {
                 ))}
                 {filteredUsers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={10} className="py-6 text-center text-slate-500">
                       No rows to display.
                     </TableCell>
                   </TableRow>

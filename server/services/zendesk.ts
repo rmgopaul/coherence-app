@@ -8,6 +8,8 @@ type ZendeskTicketRecord = {
   id: number;
   assigneeId: number | null;
   status: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
 };
 
 type ZendeskUserRecord = {
@@ -46,6 +48,9 @@ export type ZendeskTicketMetricsResult = {
   maxTickets: number;
   ticketCount: number;
   truncated: boolean;
+  periodStartDate: string | null;
+  periodEndDate: string | null;
+  trackedUsers: string[];
   users: ZendeskAssigneeTicketMetrics[];
   totals: {
     assigned: number;
@@ -57,6 +62,13 @@ export type ZendeskTicketMetricsResult = {
     closed: number;
     unassigned: number;
   };
+};
+
+export type ZendeskTicketMetricsOptions = {
+  maxTickets?: number;
+  periodStartDate?: string | null;
+  periodEndDate?: string | null;
+  trackedUsers?: string[] | null;
 };
 
 function sleep(ms: number): Promise<void> {
@@ -110,6 +122,59 @@ function normalizeZendeskStatus(raw: string | null | undefined): string {
   return normalized;
 }
 
+function parseDateOnly(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function normalizeDateRange(
+  rawStartDate: string | null | undefined,
+  rawEndDate: string | null | undefined
+): { startDate: string | null; endDate: string | null; startMs: number | null; endMs: number | null } {
+  const startDate = toNonEmptyString(rawStartDate);
+  const endDate = toNonEmptyString(rawEndDate);
+
+  const startDateValue = startDate ? parseDateOnly(startDate) : null;
+  const endDateValue = endDate ? parseDateOnly(endDate) : null;
+
+  if (startDate && !startDateValue) {
+    throw new Error("Start date must use YYYY-MM-DD.");
+  }
+  if (endDate && !endDateValue) {
+    throw new Error("End date must use YYYY-MM-DD.");
+  }
+
+  const startMs = startDateValue ? startDateValue.getTime() : null;
+  const endMs = endDateValue ? endDateValue.getTime() + (24 * 60 * 60 * 1000 - 1) : null;
+
+  if (startMs !== null && endMs !== null && startMs > endMs) {
+    throw new Error("Start date must be on or before end date.");
+  }
+
+  return {
+    startDate: startDate ?? null,
+    endDate: endDate ?? null,
+    startMs,
+    endMs,
+  };
+}
+
+function normalizeTrackedUsers(values: string[] | null | undefined): string[] {
+  const deduped = new Set<string>();
+  for (const value of values ?? []) {
+    const cleaned = toNonEmptyString(value);
+    if (!cleaned) continue;
+    deduped.add(cleaned.toLowerCase());
+  }
+  return Array.from(deduped);
+}
+
 function createAccumulator(): ZendeskTicketMetricsAccumulator {
   return {
     assigned: 0,
@@ -156,13 +221,18 @@ async function zendeskFetchJson(
   return response.json();
 }
 
-async function fetchTickets(context: ZendeskApiContext, maxTickets: number): Promise<{
+async function fetchTickets(
+  context: ZendeskApiContext,
+  maxTickets: number,
+  dateRange: { startMs: number | null; endMs: number | null }
+): Promise<{
   tickets: ZendeskTicketRecord[];
   truncated: boolean;
 }> {
   const tickets: ZendeskTicketRecord[] = [];
   let nextUrl: string | null = "/api/v2/tickets.json?page[size]=100&sort_by=updated_at&sort_order=desc";
   let truncated = false;
+  let reachedOlderThanStart = false;
 
   while (nextUrl) {
     const payload = asRecord(await zendeskFetchJson(context, nextUrl));
@@ -172,10 +242,25 @@ async function fetchTickets(context: ZendeskApiContext, maxTickets: number): Pro
       const ticket = asRecord(row);
       const id = toNullableNumber(ticket.id);
       if (id === null) continue;
+
+      const updatedAt = toNonEmptyString(ticket.updated_at);
+      const updatedMs = updatedAt ? Date.parse(updatedAt) : NaN;
+      const hasValidUpdatedAt = Number.isFinite(updatedMs);
+
+      if (hasValidUpdatedAt && dateRange.startMs !== null && updatedMs < dateRange.startMs) {
+        reachedOlderThanStart = true;
+        break;
+      }
+      if (hasValidUpdatedAt && dateRange.endMs !== null && updatedMs > dateRange.endMs) {
+        continue;
+      }
+
       tickets.push({
         id,
         assigneeId: toNullableNumber(ticket.assignee_id),
         status: toNonEmptyString(ticket.status),
+        createdAt: toNonEmptyString(ticket.created_at),
+        updatedAt,
       });
       if (tickets.length >= maxTickets) {
         truncated = true;
@@ -183,7 +268,7 @@ async function fetchTickets(context: ZendeskApiContext, maxTickets: number): Pro
       }
     }
 
-    if (truncated) break;
+    if (truncated || reachedOlderThanStart) break;
 
     const links = asRecord(payload.links);
     const meta = asRecord(payload.meta);
@@ -233,10 +318,12 @@ async function fetchUsersByIds(
 
 export async function getZendeskTicketMetricsByAssignee(
   context: ZendeskApiContext,
-  maxTickets = 10000
+  options?: ZendeskTicketMetricsOptions
 ): Promise<ZendeskTicketMetricsResult> {
-  const safeMaxTickets = Math.max(100, Math.min(50000, Math.floor(maxTickets)));
-  const ticketResult = await fetchTickets(context, safeMaxTickets);
+  const safeMaxTickets = Math.max(100, Math.min(50000, Math.floor(options?.maxTickets ?? 10000)));
+  const normalizedRange = normalizeDateRange(options?.periodStartDate, options?.periodEndDate);
+  const trackedUsers = normalizeTrackedUsers(options?.trackedUsers);
+  const ticketResult = await fetchTickets(context, safeMaxTickets, normalizedRange);
   const assigneeIds = ticketResult.tickets
     .map((ticket) => ticket.assigneeId)
     .filter((id): id is number => id !== null);
@@ -260,7 +347,7 @@ export async function getZendeskTicketMetricsByAssignee(
     byAssignee.set(key, current);
   }
 
-  const users: ZendeskAssigneeTicketMetrics[] = Array.from(byAssignee.entries())
+  let users: ZendeskAssigneeTicketMetrics[] = Array.from(byAssignee.entries())
     .map(([userId, metrics]) => {
       if (userId === null) {
         return {
@@ -298,6 +385,69 @@ export async function getZendeskTicketMetricsByAssignee(
       return a.name.localeCompare(b.name);
     });
 
+  if (trackedUsers.length > 0) {
+    const trackedByUserId = new Set<number>();
+    const trackedByEmail = new Set<string>();
+    const trackedByName = new Set<string>();
+
+    for (const tracked of trackedUsers) {
+      const numeric = Number(tracked);
+      if (Number.isFinite(numeric) && String(Math.floor(numeric)) === tracked) {
+        trackedByUserId.add(Math.floor(numeric));
+        continue;
+      }
+      if (tracked.includes("@")) {
+        trackedByEmail.add(tracked);
+        continue;
+      }
+      trackedByName.add(tracked);
+    }
+
+    const trackedKeysMatched = new Set<string>();
+    users = users.filter((row) => {
+      if (row.userId !== null && trackedByUserId.has(row.userId)) {
+        trackedKeysMatched.add(String(row.userId));
+        return true;
+      }
+      const rowEmail = row.email?.toLowerCase() ?? "";
+      if (rowEmail && trackedByEmail.has(rowEmail)) {
+        trackedKeysMatched.add(rowEmail);
+        return true;
+      }
+      const rowName = row.name.toLowerCase();
+      if (trackedByName.has(rowName)) {
+        trackedKeysMatched.add(rowName);
+        return true;
+      }
+      return false;
+    });
+
+    for (const tracked of trackedUsers) {
+      if (trackedKeysMatched.has(tracked)) continue;
+      const numeric = Number(tracked);
+      const isNumeric = Number.isFinite(numeric) && String(Math.floor(numeric)) === tracked;
+      const isEmail = tracked.includes("@");
+      users.push({
+        userId: isNumeric ? Math.floor(numeric) : null,
+        name: isEmail ? tracked : `User ${tracked}`,
+        email: isEmail ? tracked : null,
+        role: null,
+        assigned: 0,
+        new: 0,
+        open: 0,
+        pending: 0,
+        hold: 0,
+        solved: 0,
+        closed: 0,
+      });
+    }
+
+    users.sort((a, b) => {
+      if (b.assigned !== a.assigned) return b.assigned - a.assigned;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
   const totals = users.reduce(
     (acc, row) => {
       acc.assigned += row.assigned;
@@ -329,6 +479,9 @@ export async function getZendeskTicketMetricsByAssignee(
     maxTickets: safeMaxTickets,
     ticketCount: ticketResult.tickets.length,
     truncated: ticketResult.truncated,
+    periodStartDate: normalizedRange.startDate,
+    periodEndDate: normalizedRange.endDate,
+    trackedUsers,
     users,
     totals,
   };
