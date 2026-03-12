@@ -51,11 +51,22 @@ queryClient.getMutationCache().subscribe(event => {
   }
 });
 
-const trpcFetch: typeof fetch = (input, init) =>
-  globalThis.fetch(input, {
+const trpcFetch: typeof fetch = async (input, init) => {
+  const response = await globalThis.fetch(input, {
     ...(init ?? {}),
     credentials: "include",
   });
+
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (contentType.includes("text/html")) {
+    const statusPart = response.status ? ` (HTTP ${response.status})` : "";
+    throw new Error(
+      `API returned HTML instead of JSON${statusPart}. This usually happens when the app/server reconnects after sleep; refresh and retry.`
+    );
+  }
+
+  return response;
+};
 
 const trpcClient = trpc.createClient({
   links: [
