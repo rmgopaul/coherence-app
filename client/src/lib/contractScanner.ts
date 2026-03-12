@@ -1,4 +1,5 @@
-import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { GlobalWorkerOptions, getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import pdfWorkerUrl from "pdfjs-dist/legacy/build/pdf.worker.min.mjs?url";
 
 type PositionedText = {
   text: string;
@@ -32,6 +33,7 @@ export type ContractExtraction = {
 };
 
 const BLANK_RE = /^[_\s]*$/;
+let pdfWorkerConfigured = false;
 
 const normalizeText = (value: string): string =>
   value
@@ -259,12 +261,20 @@ const extractAddressParts = (
 
 const countAsterisks = (value: string): number => (value.match(/\*/g) ?? []).length;
 
+const ensurePdfWorkerConfigured = () => {
+  if (pdfWorkerConfigured) return;
+  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  pdfWorkerConfigured = true;
+};
+
 const toErrorMessage = (error: unknown): string => {
   if (error instanceof Error && error.message) return error.message;
   return String(error ?? "Unknown error");
 };
 
 const loadPdfDocumentWithFallback = async (data: Uint8Array) => {
+  ensurePdfWorkerConfigured();
+
   try {
     return await getDocument({ data }).promise;
   } catch (primaryError) {
