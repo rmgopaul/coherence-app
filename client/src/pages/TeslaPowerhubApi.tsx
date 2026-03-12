@@ -95,8 +95,18 @@ export default function TeslaPowerhubApi() {
     enabled: !!user,
     retry: false,
   });
+  const egressIpv4Query = trpc.teslaPowerhub.getServerEgressIpv4.useQuery(
+    { forceRefresh: false },
+    {
+      enabled: !!user,
+      retry: 1,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    }
+  );
   const connectMutation = trpc.teslaPowerhub.connect.useMutation();
   const disconnectMutation = trpc.teslaPowerhub.disconnect.useMutation();
+  const refreshEgressMutation = trpc.teslaPowerhub.refreshServerEgressIpv4.useMutation();
   const productionMutation = trpc.teslaPowerhub.getGroupProductionMetrics.useMutation();
 
   useEffect(() => {
@@ -174,6 +184,31 @@ export default function TeslaPowerhubApi() {
       toast.success("Production metrics loaded.");
     } catch (error) {
       toast.error(`Failed to load production metrics: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const handleRefreshServerIp = async () => {
+    try {
+      await refreshEgressMutation.mutateAsync();
+      await trpcUtils.teslaPowerhub.getServerEgressIpv4.invalidate({ forceRefresh: false });
+      await egressIpv4Query.refetch();
+      toast.success("Server egress IP refreshed.");
+    } catch (error) {
+      toast.error(`Failed to refresh server IP: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const handleCopyServerCidr = async () => {
+    const cidr = refreshEgressMutation.data?.cidr ?? egressIpv4Query.data?.cidr;
+    if (!cidr) {
+      toast.error("No server CIDR to copy yet.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(cidr);
+      toast.success(`Copied ${cidr}`);
+    } catch {
+      toast.error("Could not copy to clipboard.");
     }
   };
 
@@ -257,6 +292,9 @@ export default function TeslaPowerhubApi() {
   const isConnected = Boolean(statusQuery.data?.connected);
   const statusError = statusQuery.error ? toErrorMessage(statusQuery.error) : null;
   const mutationError = productionMutation.error ? toErrorMessage(productionMutation.error) : null;
+  const serverIpData = refreshEgressMutation.data ?? egressIpv4Query.data;
+  const serverIpError =
+    refreshEgressMutation.error ? toErrorMessage(refreshEgressMutation.error) : egressIpv4Query.error ? toErrorMessage(egressIpv4Query.error) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
@@ -369,6 +407,56 @@ export default function TeslaPowerhubApi() {
               <span className="text-sm text-slate-600">
                 Client secret: {statusQuery.data?.hasClientSecret ? "Saved" : "Not saved"}
               </span>
+            </div>
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium text-slate-900">Server Egress IPv4 (for Tesla allowlist)</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleRefreshServerIp}
+                    disabled={refreshEgressMutation.isPending || egressIpv4Query.isFetching}
+                  >
+                    {refreshEgressMutation.isPending || egressIpv4Query.isFetching ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4 mr-2" />
+                    )}
+                    Refresh Server IP
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={handleCopyServerCidr}
+                    disabled={!serverIpData?.cidr}
+                  >
+                    Copy CIDR
+                  </Button>
+                </div>
+              </div>
+
+              {serverIpError ? (
+                <p className="text-sm text-red-700">{serverIpError}</p>
+              ) : serverIpData ? (
+                <div className="text-sm text-slate-700 space-y-1">
+                  <p>
+                    IPv4: <span className="font-semibold">{serverIpData.ip}</span>
+                  </p>
+                  <p>
+                    CIDR to whitelist: <span className="font-semibold">{serverIpData.cidr}</span>
+                  </p>
+                  <p>
+                    Source: {serverIpData.source} {serverIpData.fromCache ? "(cached)" : "(fresh)"}
+                  </p>
+                  <p>Fetched: {new Date(serverIpData.fetchedAt).toLocaleString()}</p>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-600">Checking server egress IP...</p>
+              )}
             </div>
           </CardContent>
         </Card>

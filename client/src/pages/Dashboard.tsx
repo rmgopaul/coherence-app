@@ -1877,6 +1877,10 @@ export default function Dashboard() {
               <FileSpreadsheet className="h-4 w-4 mr-2" />
               Deep Update
             </Button>
+            <Button variant="outline" onClick={() => setLocation("/contract-scanner")}>
+              <FileText className="h-4 w-4 mr-2" />
+              Contract Scanner
+            </Button>
             <Button variant="outline" onClick={() => setLocation("/enphase-v4-meter-reads")}>
               <Database className="h-4 w-4 mr-2" />
               Enphase v4
