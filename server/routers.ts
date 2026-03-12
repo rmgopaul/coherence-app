@@ -1641,7 +1641,7 @@ export const appRouter = router({
     connect: protectedProcedure
       .input(
         z.object({
-          clientId: z.string().min(1),
+          clientId: z.string().optional(),
           clientSecret: z.string().optional(),
           tokenUrl: z.string().optional(),
           apiBaseUrl: z.string().optional(),
@@ -1653,18 +1653,30 @@ export const appRouter = router({
         const { nanoid } = await import("nanoid");
         const { normalizeTeslaPowerhubUrl } = await import("./services/teslaPowerhub");
         const existing = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
+        const existingMetadata = parseTeslaPowerhubMetadata(existing?.metadata);
+
+        const incomingClientId = toNonEmptyString(input.clientId);
+        const resolvedClientId = incomingClientId ?? existingMetadata.clientId;
         const persistedSecret = toNonEmptyString(existing?.accessToken);
         const incomingSecret = toNonEmptyString(input.clientSecret);
         const resolvedSecret = incomingSecret ?? persistedSecret;
+
+        if (!resolvedClientId) {
+          throw new Error("Client ID is required for initial Tesla Powerhub connection.");
+        }
         if (!resolvedSecret) {
           throw new Error("Client secret is required for initial Tesla Powerhub connection.");
         }
 
+        const incomingTokenUrl = normalizeTeslaPowerhubUrl(input.tokenUrl);
+        const incomingApiBaseUrl = normalizeTeslaPowerhubUrl(input.apiBaseUrl);
+        const incomingPortalBaseUrl = normalizeTeslaPowerhubUrl(input.portalBaseUrl);
+
         const metadata = JSON.stringify({
-          clientId: input.clientId.trim(),
-          tokenUrl: normalizeTeslaPowerhubUrl(input.tokenUrl),
-          apiBaseUrl: normalizeTeslaPowerhubUrl(input.apiBaseUrl),
-          portalBaseUrl: normalizeTeslaPowerhubUrl(input.portalBaseUrl),
+          clientId: resolvedClientId,
+          tokenUrl: incomingTokenUrl ?? existingMetadata.tokenUrl,
+          apiBaseUrl: incomingApiBaseUrl ?? existingMetadata.apiBaseUrl,
+          portalBaseUrl: incomingPortalBaseUrl ?? existingMetadata.portalBaseUrl,
         });
 
         await upsertIntegration({

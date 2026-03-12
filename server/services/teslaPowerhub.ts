@@ -593,12 +593,14 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
   signal: string;
   startDatetime: string;
   endDatetime: string;
+  groupRollup: string;
 }): string {
   const url = new URL(baseUrl);
   url.searchParams.set("target_id", options.groupId);
   url.searchParams.set("signals", options.signal);
   url.searchParams.set("start_datetime", options.startDatetime);
   url.searchParams.set("end_datetime", options.endDatetime);
+  url.searchParams.set("group_rollup", options.groupRollup);
   url.searchParams.set("period", "1d");
   url.searchParams.set("rollup", "sum");
   url.searchParams.set("fill", "none");
@@ -684,28 +686,32 @@ async function fetchTelemetryWindowTotals(
   rawPreview: unknown;
 }> {
   const candidateUrls = buildTelemetryCandidateUrls(context, toNonEmptyString(options.endpointUrl));
+  const groupRollupCandidates = ["false", "true", "site", "none"];
   let lastError: string | null = null;
 
   for (const baseUrl of candidateUrls) {
-    const requestUrl = buildTelemetryRequestUrl(baseUrl, {
-      groupId: options.groupId,
-      signal: options.signal,
-      startDatetime: options.startDatetime,
-      endDatetime: options.endDatetime,
-    });
-    try {
-      const raw = await fetchJsonWithBearerToken(requestUrl, accessToken);
-      const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
-      if (totals.size > 0) {
-        return {
-          totals,
-          resolvedEndpointUrl: requestUrl,
-          rawPreview: createPreview(raw),
-        };
+    for (const groupRollup of groupRollupCandidates) {
+      const requestUrl = buildTelemetryRequestUrl(baseUrl, {
+        groupId: options.groupId,
+        signal: options.signal,
+        startDatetime: options.startDatetime,
+        endDatetime: options.endDatetime,
+        groupRollup,
+      });
+      try {
+        const raw = await fetchJsonWithBearerToken(requestUrl, accessToken);
+        const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
+        if (totals.size > 0) {
+          return {
+            totals,
+            resolvedEndpointUrl: requestUrl,
+            rawPreview: createPreview(raw),
+          };
+        }
+        lastError = `No site telemetry values parsed from ${requestUrl}.`;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : "Unknown request error.";
       }
-      lastError = `No site telemetry values parsed from ${requestUrl}.`;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown request error.";
     }
   }
 

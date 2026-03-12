@@ -130,18 +130,21 @@ export default function TeslaPowerhubApi() {
   const handleConnect = async () => {
     const clientId = clean(clientIdInput);
     const clientSecret = clean(clientSecretInput);
-    if (!clientId) {
-      toast.error("Enter your Tesla Powerhub client ID.");
+    const hasSavedClientId = Boolean(statusQuery.data?.clientId);
+    const hasSavedClientSecret = Boolean(statusQuery.data?.hasClientSecret);
+
+    if (!clientId && !hasSavedClientId) {
+      toast.error("Enter your Tesla Powerhub client ID for first-time setup.");
       return;
     }
-    if (!clientSecret) {
-      toast.error("Enter your Tesla Powerhub client secret.");
+    if (!clientSecret && !hasSavedClientSecret) {
+      toast.error("Enter your Tesla Powerhub client secret for first-time setup.");
       return;
     }
 
     try {
       await connectMutation.mutateAsync({
-        clientId,
+        clientId: clientId || undefined,
         clientSecret: clientSecret || undefined,
         tokenUrl: clean(tokenUrlInput),
         apiBaseUrl: clean(apiBaseUrlInput),
@@ -327,7 +330,7 @@ export default function TeslaPowerhubApi() {
                   id="tesla-powerhub-client-id"
                   value={clientIdInput}
                   onChange={(event) => setClientIdInput(event.target.value)}
-                  placeholder="Tesla app client ID"
+                  placeholder={statusQuery.data?.clientId ? "Leave blank to keep saved client ID" : "Tesla app client ID"}
                 />
               </div>
               <div className="space-y-2">
