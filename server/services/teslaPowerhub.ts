@@ -297,6 +297,11 @@ function buildAssetGroupCandidateUrls(
   const portalBase = normalizeUrlOrFallback(context.portalBaseUrl, TESLA_POWERHUB_DEFAULT_PORTAL_BASE_URL);
   const encodedGroupId = encodeURIComponent(groupId);
 
+  // Try dedicated sites sub-resource first, then group detail endpoints
+  // (which may embed the site list in their response).
+  add(`${apiBase}/asset/groups/${encodedGroupId}/sites`);
+  add(`${apiBase}/asset/group/${encodedGroupId}/sites`);
+  add(`${apiBase}/asset/groups/${encodedGroupId}/assets`);
   add(`${apiBase}/asset/groups/${encodedGroupId}`);
   add(`${apiBase}/asset/group/${encodedGroupId}`);
   add(`${apiBase}/groups/${encodedGroupId}`);
@@ -1271,9 +1276,8 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       message: `Loading ${window.key} telemetry (RGM + inverter signals).`,
     });
 
-    // Query RGM signal at group level — returns empty when endpoint only
-    // has group-aggregated data (no per-site breakdown).  Per-site fallback
-    // (Phase 2) handles the actual site-level queries.
+    // Query RGM signal at group level.  The history endpoint may return
+    // per-site breakdowns that feed the site list for Phase 2.
     let rgmTotals = new Map<string, SiteTotal>();
     try {
       const rgmResult = await fetchTelemetryWindowTotals(context, token.access_token, {
@@ -1284,7 +1288,6 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         period: window.period,
         endpointUrl: options.endpointUrl,
         preferredAttempt: preferredTelemetryAttempt,
-        allowEmptyTotals: true,
       });
       preferredTelemetryAttempt = rgmResult.attemptUsed;
       rgmTotals = rgmResult.totals;
@@ -1306,7 +1309,6 @@ export async function getTeslaPowerhubGroupProductionMetrics(
           period: window.period,
           endpointUrl: options.endpointUrl,
           preferredAttempt: preferredTelemetryAttempt,
-          allowEmptyTotals: true,
         });
         preferredTelemetryAttempt = invResult.attemptUsed;
         invTotals = invResult.totals;
@@ -1348,6 +1350,34 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     });
   }
 
+  // ---- Build combined site list from inventory + Phase 1 telemetry --------
+  // The site inventory endpoint may return 0 sites if the group detail
+  // endpoint doesn't embed a site list.  In that case, Phase 1 telemetry
+  // data (from the /telemetry/history endpoint) may have discovered
+  // individual site IDs.  Merge both sources so Phase 2 has sites to query.
+  const combinedSiteMap = new Map<string, SiteDescriptor>();
+  for (const site of siteResult.sites) {
+    combinedSiteMap.set(site.siteId, site);
+  }
+  totalsByWindow.forEach((totals) => {
+    totals.forEach((total, siteId) => {
+      if (siteId !== groupId && !combinedSiteMap.has(siteId)) {
+        combinedSiteMap.set(siteId, {
+          siteId,
+          siteExternalId: null,
+          siteName: total.siteName ?? null,
+        });
+      }
+    });
+  });
+  const combinedSiteList = Array.from(combinedSiteMap.values());
+
+  emitProgress({
+    currentStep: 7,
+    totalSteps,
+    message: `Site list: ${siteResult.sites.length} from inventory + ${combinedSiteList.length - siteResult.sites.length} from telemetry = ${combinedSiteList.length} total.`,
+  });
+
   // ---- Phase 2: Per-site queries ------------------------------------------
   // Group-level endpoints typically return aggregated totals without per-site
   // breakdown.  For any window lacking real per-site data, query each site
@@ -1361,7 +1391,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     );
   });
 
-  if (windowsNeedingPerSite.length > 0 && siteResult.sites.length > 0) {
+  if (windowsNeedingPerSite.length > 0 && combinedSiteList.length > 0) {
     const perSiteThrottle = createApiThrottle(4);
     let perSiteToken = token.access_token;
 
@@ -1384,13 +1414,13 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         currentStep: 7,
         totalSteps,
         windowKey: window.key,
-        message: `Per-site ${window.key} telemetry for ${siteResult.sites.length} site(s) — starting.`,
+        message: `Per-site ${window.key} telemetry for ${combinedSiteList.length} site(s) — starting.`,
       });
 
       const windowTotals = new Map<string, SiteTotal>();
       const batchToken = perSiteToken; // capture for this window batch
 
-      await mapConcurrent(siteResult.sites, 4, async (site) => {
+      await mapConcurrent(combinedSiteList, 4, async (site) => {
         await perSiteThrottle();
         try {
           const result = await fetchSingleSiteTelemetryTotal(context, batchToken, {
@@ -1426,7 +1456,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
             currentStep: 7,
             totalSteps,
             windowKey: window.key,
-            message: `Per-site ${window.key}: ${processed}/${siteResult.sites.length} queried (${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors).`,
+            message: `Per-site ${window.key}: ${processed}/${combinedSiteList.length} queried (${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors).`,
           });
         }
       });
@@ -1443,14 +1473,14 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         telemetryErrorsByWindow[window.key] = null;
       } else if (perSiteErr > 0) {
         telemetryErrorsByWindow[window.key] =
-          `All ${siteResult.sites.length} per-site queries failed for ${window.key}. First error: ${lastPerSiteError.slice(0, 300)}`;
+          `All ${combinedSiteList.length} per-site queries failed for ${window.key}. First error: ${lastPerSiteError.slice(0, 300)}`;
       }
     }
-  } else if (windowsNeedingPerSite.length > 0 && siteResult.sites.length === 0) {
+  } else if (windowsNeedingPerSite.length > 0 && combinedSiteList.length === 0) {
     emitProgress({
       currentStep: 7,
       totalSteps,
-      message: `WARNING: Site inventory is empty — cannot run per-site telemetry queries. Only group-level data available.`,
+      message: `WARNING: No sites discovered from inventory or telemetry — cannot run per-site queries.`,
     });
   }
   // ---- End per-site queries -----------------------------------------------
@@ -1508,17 +1538,16 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       .map(([key, error]) => `${key}: ${error}`)
       .join(" | ");
     throw new Error(
-      `Unable to fetch telemetry for group ${groupId}. Sites discovered: ${siteResult.sites.length}. ${allErrors || "No telemetry data returned for any window."}`.trim()
+      `Unable to fetch telemetry for group ${groupId}. Sites from inventory: ${siteResult.sites.length}, from telemetry: ${combinedSiteList.length - siteResult.sites.length}, total: ${combinedSiteList.length}. ${allErrors || "No telemetry data returned for any window."}`.trim()
     );
   }
 
-  const siteMap = new Map<string, SiteDescriptor>();
-  for (const site of siteResult.sites) {
-    siteMap.set(site.siteId, site);
-  }
+  // Use the combined site map (inventory + telemetry) as the base.
+  // Also add any new site IDs discovered in Phase 2 per-site results.
+  const siteMap = new Map<string, SiteDescriptor>(combinedSiteMap);
   Array.from(totalsByWindow.values()).forEach((totals) => {
     Array.from(totals.values()).forEach((total) => {
-      if (!siteMap.has(total.siteId)) {
+      if (!siteMap.has(total.siteId) && total.siteId !== groupId) {
         siteMap.set(total.siteId, {
           siteId: total.siteId,
           siteExternalId: null,
