@@ -323,10 +323,11 @@ function buildTelemetryCandidateUrls(
     add(override);
   }
 
-  // Aggregate endpoint first — returns per-site breakdowns with group_rollup.
-  // Plain history endpoint as fallback.
-  add(`${apiBase}/telemetry/history/operational/aggregate`);
+  // History endpoint first — may return per-site breakdowns when used with
+  // group_rollup.  Aggregate endpoint as fallback (returns group-level
+  // aggregated totals only, NOT per-site data).
   add(`${apiBase}/telemetry/history`);
+  add(`${apiBase}/telemetry/history/operational/aggregate`);
 
   return candidates;
 }
@@ -350,11 +351,10 @@ function buildTelemetryAttempts(
   }
 
   // The Tesla API requires `group_rollup` when target_id is a group UUID.
-  // Using "sum" — the response still contains per-site breakdowns that our
-  // parser extracts; the rollup value controls the optional aggregate row.
-  // Aggregate endpoint first (returns per-site data), plain history as fallback.
-  const aggregateUrls: string[] = [];
+  // History endpoint first (may return per-site breakdowns), aggregate
+  // endpoint as fallback (returns group-level totals only).
   const historyUrls: string[] = [];
+  const aggregateUrls: string[] = [];
   candidateUrls.forEach((baseUrl) => {
     if (/\/telemetry\/history\/operational\/aggregate\/?$/i.test(baseUrl)) {
       aggregateUrls.push(baseUrl);
@@ -363,11 +363,11 @@ function buildTelemetryAttempts(
     }
   });
 
-  aggregateUrls.forEach((baseUrl) => {
+  historyUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
-  historyUrls.forEach((baseUrl) => {
+  aggregateUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
@@ -1064,29 +1064,13 @@ async function fetchTelemetryWindowTotals(
         };
       }
 
-      // Aggregate endpoints return group-level totals without per-site
-      // breakdown.  Re-parse, attributing unidentified values to the group
-      // ID so they are not silently discarded.
-      const isAggregate = /\/operational\/aggregate\/?/i.test(attempt.baseUrl);
-      if (isAggregate) {
-        const groupTotals = computeSiteDeltasByTelemetryPayload(
-          raw,
-          options.groupId,
-          options.signal,
-          { unattributedSiteId: options.groupId }
-        );
-        if (groupTotals.size > 0) {
-          return {
-            totals: groupTotals,
-            resolvedEndpointUrl: requestUrl,
-            rawPreview: createPreview(raw),
-            attemptUsed: attempt,
-          };
-        }
-      }
-
+      // Group-level endpoints (aggregate and history with group_rollup)
+      // return aggregated totals without per-site breakdown.  Do NOT
+      // attribute these values to the group UUID — they are not useful
+      // for per-site reporting.  Fall through so the per-site fallback
+      // phase can query individual sites.
       lastRawPreview = createPreview(raw);
-      lastError = `No site telemetry values parsed from ${requestUrl}.`;
+      lastError = `No per-site telemetry values parsed from ${requestUrl} (likely group-aggregated data only).`;
     } catch (error) {
       lastError = error instanceof Error ? error.message : "Unknown request error.";
     }
@@ -1265,11 +1249,11 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   let preferredTelemetryAttempt: TelemetryAttempt | null = null;
   const siteSignalUsed = new Map<string, string>();
 
-  // ---- Phase 1: Dual-signal group-level queries ----------------------------
-  // Query BOTH signals (RGM + inverter) at the group level for each window.
-  // The /telemetry/history endpoint with a group UUID as target_id returns
-  // per-site data as a list — only 10 API calls total (5 windows × 2 signals)
-  // instead of ~29k per-site calls.
+  // ---- Phase 1: Group-level query attempt ------------------------------------
+  // Try group-level endpoints first to see if the API returns per-site
+  // breakdowns.  In practice, group-level endpoints usually return only
+  // aggregated totals (NOT per-site data).  When that happens, the results
+  // are empty and Phase 2 per-site fallback handles the actual site queries.
   const stepByWindow: Record<TeslaPowerhubWindowKey, number> = {
     daily: 3,
     weekly: 4,
@@ -1287,7 +1271,9 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       message: `Loading ${window.key} telemetry (RGM + inverter signals).`,
     });
 
-    // Query RGM signal at group level
+    // Query RGM signal at group level — returns empty when endpoint only
+    // has group-aggregated data (no per-site breakdown).  Per-site fallback
+    // (Phase 2) handles the actual site-level queries.
     let rgmTotals = new Map<string, SiteTotal>();
     try {
       const rgmResult = await fetchTelemetryWindowTotals(context, token.access_token, {
@@ -1298,6 +1284,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         period: window.period,
         endpointUrl: options.endpointUrl,
         preferredAttempt: preferredTelemetryAttempt,
+        allowEmptyTotals: true,
       });
       preferredTelemetryAttempt = rgmResult.attemptUsed;
       rgmTotals = rgmResult.totals;
@@ -1319,6 +1306,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
           period: window.period,
           endpointUrl: options.endpointUrl,
           preferredAttempt: preferredTelemetryAttempt,
+          allowEmptyTotals: true,
         });
         preferredTelemetryAttempt = invResult.attemptUsed;
         invTotals = invResult.totals;
@@ -1360,9 +1348,10 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     });
   }
 
-  // ---- Phase 2: Per-site fallback for empty windows ------------------------
-  // Only fires for windows where NEITHER group-level signal returned any
-  // per-site data.  Rate-limited to stay within Tesla's 5 req/s cap.
+  // ---- Phase 2: Per-site queries ------------------------------------------
+  // Group-level endpoints typically return aggregated totals without per-site
+  // breakdown.  For any window lacking real per-site data, query each site
+  // individually.  Rate-limited to 4 req/s with token refresh per window.
   const windowsNeedingPerSite = windows.filter((w) => {
     const existing = totalsByWindow.get(w.key);
     return !(
@@ -1373,52 +1362,98 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   });
 
   if (windowsNeedingPerSite.length > 0 && siteResult.sites.length > 0) {
-    let perSiteToken = token.access_token;
-    try {
-      const refreshed = await requestClientCredentialsToken(context);
-      perSiteToken = refreshed.access_token;
-    } catch {
-      // Use original token if refresh fails.
-    }
-
     const perSiteThrottle = createApiThrottle(4);
+    let perSiteToken = token.access_token;
 
     for (const window of windowsNeedingPerSite) {
+      // Refresh token before each window batch to prevent expiration
+      // during long-running per-site queries (~12 min per window for ~3k sites).
+      try {
+        const refreshed = await requestClientCredentialsToken(context);
+        perSiteToken = refreshed.access_token;
+      } catch {
+        // Use previous token if refresh fails.
+      }
+
+      let perSiteOk = 0;
+      let perSiteEmpty = 0;
+      let perSiteErr = 0;
+      let lastPerSiteError = "";
+
       emitProgress({
         currentStep: 7,
         totalSteps,
-        message: `Fallback: per-site ${window.key} telemetry for ${siteResult.sites.length} site(s).`,
+        windowKey: window.key,
+        message: `Per-site ${window.key} telemetry for ${siteResult.sites.length} site(s) — starting.`,
       });
 
       const windowTotals = new Map<string, SiteTotal>();
+      const batchToken = perSiteToken; // capture for this window batch
 
       await mapConcurrent(siteResult.sites, 4, async (site) => {
         await perSiteThrottle();
-        const result = await fetchSingleSiteTelemetryTotal(context, perSiteToken, {
-          siteId: site.siteId,
-          signal: primarySignal,
-          startDatetime: window.startDatetime,
-          endDatetime: window.endDatetime,
-          period: window.period,
-          fallbackSignal: fallbackSignal ?? undefined,
-        });
-        if (result) {
-          windowTotals.set(site.siteId, {
+        try {
+          const result = await fetchSingleSiteTelemetryTotal(context, batchToken, {
             siteId: site.siteId,
-            siteName: site.siteName ?? null,
-            totalKwh: roundToFourDecimals(result.totalKwh),
+            signal: primarySignal,
+            startDatetime: window.startDatetime,
+            endDatetime: window.endDatetime,
+            period: window.period,
+            fallbackSignal: fallbackSignal ?? undefined,
           });
-          if (!siteSignalUsed.has(site.siteId)) siteSignalUsed.set(site.siteId, result.usedSignal);
+          if (result) {
+            perSiteOk++;
+            windowTotals.set(site.siteId, {
+              siteId: site.siteId,
+              siteName: site.siteName ?? null,
+              totalKwh: roundToFourDecimals(result.totalKwh),
+            });
+            if (!siteSignalUsed.has(site.siteId)) siteSignalUsed.set(site.siteId, result.usedSignal);
+          } else {
+            perSiteEmpty++;
+          }
+        } catch (error) {
+          perSiteErr++;
+          if (!lastPerSiteError) {
+            lastPerSiteError = error instanceof Error ? error.message : "Unknown error";
+          }
         }
+
+        // Periodic progress updates
+        const processed = perSiteOk + perSiteEmpty + perSiteErr;
+        if (processed % 200 === 0) {
+          emitProgress({
+            currentStep: 7,
+            totalSteps,
+            windowKey: window.key,
+            message: `Per-site ${window.key}: ${processed}/${siteResult.sites.length} queried (${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors).`,
+          });
+        }
+      });
+
+      emitProgress({
+        currentStep: 7,
+        totalSteps,
+        windowKey: window.key,
+        message: `Per-site ${window.key} done: ${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors.${lastPerSiteError ? ` First error: ${lastPerSiteError.slice(0, 200)}` : ""}`,
       });
 
       if (windowTotals.size > 0) {
         totalsByWindow.set(window.key, windowTotals);
         telemetryErrorsByWindow[window.key] = null;
+      } else if (perSiteErr > 0) {
+        telemetryErrorsByWindow[window.key] =
+          `All ${siteResult.sites.length} per-site queries failed for ${window.key}. First error: ${lastPerSiteError.slice(0, 300)}`;
       }
     }
+  } else if (windowsNeedingPerSite.length > 0 && siteResult.sites.length === 0) {
+    emitProgress({
+      currentStep: 7,
+      totalSteps,
+      message: `WARNING: Site inventory is empty — cannot run per-site telemetry queries. Only group-level data available.`,
+    });
   }
-  // ---- End per-site fallback ---------------------------------------------
+  // ---- End per-site queries -----------------------------------------------
 
   // ---- Phase 3: Fetch STE external identifiers -----------------------------
   // The STE identifier (e.g. STE20250403-01158) lives in the individual
@@ -1468,8 +1503,12 @@ export async function getTeslaPowerhubGroupProductionMetrics(
 
   const successfulWindowCount = windows.filter((window) => (totalsByWindow.get(window.key)?.size ?? 0) > 0).length;
   if (successfulWindowCount === 0) {
+    const allErrors = Object.entries(telemetryErrorsByWindow)
+      .filter(([, error]) => error)
+      .map(([key, error]) => `${key}: ${error}`)
+      .join(" | ");
     throw new Error(
-      `Unable to fetch telemetry for group ${groupId}. ${telemetryErrorsByWindow.daily ?? telemetryErrorsByWindow.weekly ?? ""}`.trim()
+      `Unable to fetch telemetry for group ${groupId}. Sites discovered: ${siteResult.sites.length}. ${allErrors || "No telemetry data returned for any window."}`.trim()
     );
   }
 
@@ -1489,7 +1528,12 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     });
   });
 
-  const rows: TeslaPowerhubSiteProductionMetrics[] = Array.from(siteMap.values()).map((site) => {
+  // Filter out the group UUID itself — it is NOT an individual site.
+  // Group-level endpoints may insert aggregated data keyed by the group ID;
+  // it must never appear as an output row.
+  const rows: TeslaPowerhubSiteProductionMetrics[] = Array.from(siteMap.values())
+    .filter((site) => site.siteId !== groupId)
+    .map((site) => {
     const daily = totalsByWindow.get("daily")?.get(site.siteId)?.totalKwh ?? 0;
     const weekly = totalsByWindow.get("weekly")?.get(site.siteId)?.totalKwh ?? 0;
     const monthly = totalsByWindow.get("monthly")?.get(site.siteId)?.totalKwh ?? 0;
