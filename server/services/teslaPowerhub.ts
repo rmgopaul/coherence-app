@@ -600,14 +600,17 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
   signal: string;
   startDatetime: string;
   endDatetime: string;
-  groupRollup: string;
+  groupRollup?: string | null;
 }): string {
   const url = new URL(baseUrl);
   url.searchParams.set("target_id", options.groupId);
   url.searchParams.set("signals", options.signal);
   url.searchParams.set("start_datetime", options.startDatetime);
   url.searchParams.set("end_datetime", options.endDatetime);
-  url.searchParams.set("group_rollup", options.groupRollup);
+  const groupRollup = toNonEmptyString(options.groupRollup);
+  if (groupRollup) {
+    url.searchParams.set("group_rollup", groupRollup);
+  }
   url.searchParams.set("period", "1d");
   url.searchParams.set("rollup", "sum");
   url.searchParams.set("fill", "none");
@@ -693,7 +696,7 @@ async function fetchTelemetryWindowTotals(
   rawPreview: unknown;
 }> {
   const candidateUrls = buildTelemetryCandidateUrls(context, toNonEmptyString(options.endpointUrl));
-  const groupRollupCandidates = ["false", "true", "site", "none"];
+  const groupRollupCandidates: Array<string | null> = [null, "false", "true", "site", "none", "group"];
   let lastError: string | null = null;
 
   for (const baseUrl of candidateUrls) {
@@ -709,16 +712,16 @@ async function fetchTelemetryWindowTotals(
         const raw = await fetchJsonWithBearerToken(requestUrl, accessToken);
         const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
         if (totals.size > 0) {
-          return {
-            totals,
-            resolvedEndpointUrl: requestUrl,
-            rawPreview: createPreview(raw),
-          };
-        }
-        lastError = `No site telemetry values parsed from ${requestUrl}.`;
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : "Unknown request error.";
+        return {
+          totals,
+          resolvedEndpointUrl: requestUrl,
+          rawPreview: createPreview(raw),
+        };
       }
+      lastError = `No site telemetry values parsed from ${requestUrl}.`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : "Unknown request error.";
+    }
     }
   }
 
