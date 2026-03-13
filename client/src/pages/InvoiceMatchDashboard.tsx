@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { ArrowLeft, Loader2, Trash2, Upload } from "lucide-react";
+import { ArrowLeft, Download, Loader2, Trash2, Upload } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -81,6 +81,37 @@ type PotentialMatch = {
   reason: string;
 };
 
+const LINE_ITEM_CATEGORY_DEFINITIONS = [
+  {
+    key: "abpApplicationFee",
+    label: "ABP Application Fee",
+  },
+  {
+    key: "utilityHeldCollateral5Percent",
+    label: "5% Utility Held Collateral",
+  },
+  {
+    key: "ccFee3Percent",
+    label: "3% CC Fee",
+  },
+  {
+    key: "contractCancellationTerminationCost",
+    label: "Contract Cancellation / Termination Cost",
+  },
+  {
+    key: "transferFee25KwAc",
+    label: "$25/kW AC Transfer Fee",
+  },
+] as const;
+
+type LineItemCategoryKey = (typeof LINE_ITEM_CATEGORY_DEFINITIONS)[number]["key"];
+
+type LineItemSummary = {
+  totals: Record<LineItemCategoryKey, number>;
+  invoices: Record<LineItemCategoryKey, string[]>;
+  otherNotes: string[];
+};
+
 type DashboardRow = {
   systemId: string;
   invoiceCount: number;
@@ -88,6 +119,7 @@ type DashboardRow = {
   invoices: InvoiceCell[];
   statuses: string[];
   statusTokens: string[];
+  lineItemSummary: LineItemSummary;
   potentialMatches: PotentialMatch[];
   searchIndex: string;
 };
@@ -472,8 +504,136 @@ function formatUploadedAt(value: Date | null): string {
   return value.toLocaleString("en-US");
 }
 
+function buildCsvEscapedCell(value: string | number | null | undefined): string {
+  const normalized = value === null || value === undefined ? "" : String(value);
+  if (/["\n,]/.test(normalized)) {
+    return `"${normalized.replace(/"/g, '""')}"`;
+  }
+  return normalized;
+}
+
+function buildCsv(
+  headers: string[],
+  rows: Array<Record<string, string | number | null | undefined>>
+): string {
+  const headerRow = headers.map((header) => buildCsvEscapedCell(header)).join(",");
+  const bodyRows = rows.map((row) =>
+    headers.map((header) => buildCsvEscapedCell(row[header])).join(",")
+  );
+  return [headerRow, ...bodyRows].join("\n");
+}
+
+function downloadTextFile(fileName: string, content: string, mimeType: string): void {
+  if (typeof window === "undefined") return;
+  const blob = new Blob([content], { type: mimeType });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
+function createEmptyLineItemTotals(): Record<LineItemCategoryKey, number> {
+  return LINE_ITEM_CATEGORY_DEFINITIONS.reduce(
+    (accumulator, category) => ({
+      ...accumulator,
+      [category.key]: 0,
+    }),
+    {} as Record<LineItemCategoryKey, number>
+  );
+}
+
+function createEmptyLineItemInvoiceSets(): Record<LineItemCategoryKey, Set<string>> {
+  return LINE_ITEM_CATEGORY_DEFINITIONS.reduce(
+    (accumulator, category) => ({
+      ...accumulator,
+      [category.key]: new Set<string>(),
+    }),
+    {} as Record<LineItemCategoryKey, Set<string>>
+  );
+}
+
+function formatNumberForCsv(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "";
+  return value.toFixed(2);
+}
+
+function normalizeInvoiceReference(invoiceNumber: string): string {
+  const normalized = clean(invoiceNumber);
+  return normalized || "(missing invoice #)";
+}
+
+function detectLineItemCategories(value: string): LineItemCategoryKey[] {
+  const normalized = normalizeText(value);
+  if (!normalized) return [];
+
+  const categories: LineItemCategoryKey[] = [];
+
+  if (
+    /\btransfer\b/.test(normalized) ||
+    /25\s*\/\s*kw/.test(normalized) ||
+    /25\s*kw/.test(normalized)
+  ) {
+    categories.push("transferFee25KwAc");
+  }
+
+  if (
+    /\bcontract\b.*\b(cancellation|termination)\b/.test(normalized) ||
+    /\b(cancellation|termination)\s*(cost|fee)\b/.test(normalized)
+  ) {
+    categories.push("contractCancellationTerminationCost");
+  }
+
+  if (
+    /3\s*%\s*(cc|credit card)/.test(normalized) ||
+    /\bcc\s*fee\b/.test(normalized) ||
+    /\bcredit card fee\b/.test(normalized)
+  ) {
+    categories.push("ccFee3Percent");
+  }
+
+  if (
+    /5\s*%\s*(utility held\s*)?(abp\s*)?collateral/.test(normalized) ||
+    /\butility held collateral\b/.test(normalized)
+  ) {
+    categories.push("utilityHeldCollateral5Percent");
+  }
+
+  const alreadySpecific =
+    categories.includes("transferFee25KwAc") ||
+    categories.includes("contractCancellationTerminationCost") ||
+    categories.includes("ccFee3Percent");
+
+  if (
+    !alreadySpecific &&
+    (/\bapplication fee\b/.test(normalized) ||
+      /\bapp fee\b/.test(normalized) ||
+      /\babp fee\b/.test(normalized) ||
+      /\bnon refundable\b.*\bfee\b/.test(normalized) ||
+      /\bnonrefundable\b.*\bfee\b/.test(normalized) ||
+      /(10|20)\s*\/\s*kw/.test(normalized))
+  ) {
+    categories.push("abpApplicationFee");
+  }
+
+  return Array.from(new Set(categories));
+}
+
+function getQuickBooksInvoiceStatus(invoice: QuickBooksInvoice | undefined): string {
+  if (!invoice) return "Missing in QuickBooks";
+  if (normalizeText(invoice.voided) === "yes") return "Voided";
+  const paymentStatus = clean(invoice.paymentStatus);
+  return paymentStatus || "Unknown";
+}
+
 function getStatusClassName(status: string): string {
   const normalized = normalizeText(status);
+  if (normalized.includes("missing in quickbooks")) {
+    return "bg-slate-100 text-slate-700 border-slate-200";
+  }
   if (normalized.includes("unpaid")) {
     return "bg-amber-100 text-amber-900 border-amber-200";
   }
@@ -865,12 +1025,111 @@ function buildDashboardRows(
       return COLLATOR.compare(right.invoiceNumber, left.invoiceNumber);
     });
 
+    const lineItemTotals = createEmptyLineItemTotals();
+    const lineItemInvoiceSets = createEmptyLineItemInvoiceSets();
+    const otherLineItemNotesSet = new Set<string>();
+
+    const addCategoryObservation = (
+      category: LineItemCategoryKey,
+      amount: number | null,
+      invoiceReference: string
+    ) => {
+      if (amount !== null && Number.isFinite(amount)) {
+        lineItemTotals[category] += amount;
+      }
+      lineItemInvoiceSets[category].add(invoiceReference);
+    };
+
+    const fallbackClassifyUsingInvoiceType = (source: InvoiceSourceRow, invoiceReference: string) => {
+      const typeMatches = detectLineItemCategories(source.type);
+
+      if (typeMatches.length === 1) {
+        addCategoryObservation(typeMatches[0], source.amount, invoiceReference);
+        return;
+      }
+
+      if (typeMatches.length > 1) {
+        typeMatches.forEach((category) => addCategoryObservation(category, null, invoiceReference));
+        if (source.amount !== null) {
+          otherLineItemNotesSet.add(
+            `${invoiceReference}: Multi-category invoice type "${source.type}" (${formatCurrency(source.amount)})`
+          );
+        }
+        return;
+      }
+
+      const cleanedType = clean(source.type);
+      if (cleanedType) {
+        const detail = source.amount === null ? "" : ` (${formatCurrency(source.amount)})`;
+        otherLineItemNotesSet.add(`${invoiceReference}: ${cleanedType}${detail}`);
+      }
+    };
+
     const invoices = sortedSourceRows.map((source) => {
       const quickBooksMatch = source.invoiceNumber ? quickBooksByInvoice.get(source.invoiceNumber) : undefined;
+      const status = getQuickBooksInvoiceStatus(quickBooksMatch);
+      const invoiceReference = normalizeInvoiceReference(source.invoiceNumber);
+
+      let classifiedFromQuickBooksLine = false;
+
+      if (quickBooksMatch?.lineItems.length) {
+        quickBooksMatch.lineItems.forEach((lineItem) => {
+          const directMatches = detectLineItemCategories(lineItem.description);
+
+          if (directMatches.length === 1) {
+            addCategoryObservation(directMatches[0], lineItem.amount, invoiceReference);
+            classifiedFromQuickBooksLine = true;
+            return;
+          }
+
+          if (directMatches.length > 1) {
+            directMatches.forEach((category) => addCategoryObservation(category, null, invoiceReference));
+            classifiedFromQuickBooksLine = true;
+            if (lineItem.amount !== null || clean(lineItem.description)) {
+              const detail = lineItem.amount === null ? "" : ` (${formatCurrency(lineItem.amount)})`;
+              otherLineItemNotesSet.add(
+                `${invoiceReference}: Ambiguous QB line "${clean(lineItem.description) || "Unlabeled line"}"${detail}`
+              );
+            }
+            return;
+          }
+
+          const fallbackMatches = detectLineItemCategories(source.type);
+          if (fallbackMatches.length === 1) {
+            addCategoryObservation(fallbackMatches[0], lineItem.amount, invoiceReference);
+            classifiedFromQuickBooksLine = true;
+            return;
+          }
+
+          if (fallbackMatches.length > 1) {
+            fallbackMatches.forEach((category) => addCategoryObservation(category, null, invoiceReference));
+            classifiedFromQuickBooksLine = true;
+            if (lineItem.amount !== null || clean(lineItem.description)) {
+              const detail = lineItem.amount === null ? "" : ` (${formatCurrency(lineItem.amount)})`;
+              otherLineItemNotesSet.add(
+                `${invoiceReference}: QB line required fallback category "${clean(lineItem.description) || "Unlabeled line"}"${detail}`
+              );
+            }
+            return;
+          }
+
+          if (lineItem.amount !== null || clean(lineItem.description)) {
+            const detail = lineItem.amount === null ? "" : ` (${formatCurrency(lineItem.amount)})`;
+            otherLineItemNotesSet.add(
+              `${invoiceReference}: Unmatched QB line "${clean(lineItem.description) || "Unlabeled line"}"${detail}`
+            );
+          }
+        });
+      }
+
+      if (!classifiedFromQuickBooksLine) {
+        fallbackClassifyUsingInvoiceType(source, invoiceReference);
+      }
+
       return {
         invoiceNumber: source.invoiceNumber,
         amount: source.amount,
-        status: source.status,
+        status,
         cashReceived: quickBooksMatch?.cashReceived ?? null,
         lineItem: source.type,
         quickBooksLineItemPreview: quickBooksMatch?.lineItemPreview ?? "",
@@ -879,11 +1138,25 @@ function buildDashboardRows(
 
     const statuses = Array.from(
       new Set(
-        sortedSourceRows
-          .map((source) => clean(source.status))
+        invoices
+          .map((invoice) => clean(invoice.status))
           .filter((status) => status.length > 0)
       )
     );
+
+    const lineItemSummary: LineItemSummary = {
+      totals: LINE_ITEM_CATEGORY_DEFINITIONS.reduce((accumulator, category) => {
+        accumulator[category.key] = Math.round(lineItemTotals[category.key] * 100) / 100;
+        return accumulator;
+      }, {} as Record<LineItemCategoryKey, number>),
+      invoices: LINE_ITEM_CATEGORY_DEFINITIONS.reduce((accumulator, category) => {
+        accumulator[category.key] = Array.from(lineItemInvoiceSets[category.key]).sort((left, right) =>
+          COLLATOR.compare(left, right)
+        );
+        return accumulator;
+      }, {} as Record<LineItemCategoryKey, string[]>),
+      otherNotes: Array.from(otherLineItemNotesSet).sort((left, right) => COLLATOR.compare(left, right)),
+    };
 
     const statusTokens = statuses.map((status) => normalizeText(status));
     const hasMissingInvoiceNumber = sortedSourceRows.some((source) => !source.invoiceNumber);
@@ -974,8 +1247,10 @@ function buildDashboardRows(
         row.recipientName,
         row.recipientEmail,
         row.type,
-        row.status,
       ]),
+      ...invoices.map((invoice) => invoice.status),
+      ...LINE_ITEM_CATEGORY_DEFINITIONS.map((category) => category.label),
+      ...lineItemSummary.otherNotes,
       ...scoredCandidates.map((candidate) => candidate.invoiceNumber),
       ...scoredCandidates.map((candidate) => candidate.customerLabel),
     ];
@@ -987,6 +1262,7 @@ function buildDashboardRows(
       invoices,
       statuses,
       statusTokens,
+      lineItemSummary,
       potentialMatches: scoredCandidates,
       searchIndex: normalizeText(searchValues.join(" ")),
     } satisfies DashboardRow;
@@ -1208,6 +1484,91 @@ export default function InvoiceMatchDashboard() {
     () => rows.filter((row) => row.hasMissingInvoiceNumber).length,
     [rows]
   );
+
+  const handleExportFilteredRows = () => {
+    if (!filteredRows.length) {
+      toast.error("No rows available to export.");
+      return;
+    }
+
+    const baseHeaders = [
+      "System ID",
+      "Invoice Quantity",
+      "Invoice Numbers",
+      "Invoice Amounts",
+      "Invoice Statuses (QuickBooks)",
+      "Cash Received Total",
+    ];
+
+    const lineItemAmountHeaders = LINE_ITEM_CATEGORY_DEFINITIONS.map(
+      (category) => `${category.label} Amount`
+    );
+    const lineItemInvoiceHeaders = LINE_ITEM_CATEGORY_DEFINITIONS.map(
+      (category) => `${category.label} Invoices`
+    );
+
+    const potentialHeaders = Array.from({ length: POTENTIAL_MATCH_LIMIT }).flatMap((_, index) => [
+      `Potential Match ${index + 1} Invoice`,
+      `Potential Match ${index + 1} Score`,
+      `Potential Match ${index + 1} Cash`,
+      `Potential Match ${index + 1} Why`,
+    ]);
+
+    const headers = [
+      ...baseHeaders,
+      ...lineItemAmountHeaders,
+      ...lineItemInvoiceHeaders,
+      "Other Line Item Notes",
+      ...potentialHeaders,
+    ];
+
+    const rowsForCsv = filteredRows.map((row) => {
+      const record: Record<string, string | number | null> = {};
+      const invoiceNumbers = row.invoices
+        .map((invoice) => normalizeInvoiceReference(invoice.invoiceNumber))
+        .join(" | ");
+      const invoiceAmounts = row.invoices.map((invoice) => formatNumberForCsv(invoice.amount)).join(" | ");
+      const invoiceStatuses = row.invoices.map((invoice) => clean(invoice.status)).join(" | ");
+      const cashReceivedTotal = row.invoices.reduce((sum, invoice) => {
+        if (invoice.cashReceived === null || !Number.isFinite(invoice.cashReceived)) return sum;
+        return sum + invoice.cashReceived;
+      }, 0);
+
+      record["System ID"] = row.systemId;
+      record["Invoice Quantity"] = row.invoiceCount;
+      record["Invoice Numbers"] = invoiceNumbers;
+      record["Invoice Amounts"] = invoiceAmounts;
+      record["Invoice Statuses (QuickBooks)"] = invoiceStatuses;
+      record["Cash Received Total"] = cashReceivedTotal.toFixed(2);
+
+      LINE_ITEM_CATEGORY_DEFINITIONS.forEach((category) => {
+        const amount = row.lineItemSummary.totals[category.key];
+        const invoices = row.lineItemSummary.invoices[category.key];
+        record[`${category.label} Amount`] = amount > 0 ? amount.toFixed(2) : "";
+        record[`${category.label} Invoices`] = invoices.join(" | ");
+      });
+
+      record["Other Line Item Notes"] = row.lineItemSummary.otherNotes.join(" || ");
+
+      Array.from({ length: POTENTIAL_MATCH_LIMIT }).forEach((_, index) => {
+        const potential = row.potentialMatches[index];
+        record[`Potential Match ${index + 1} Invoice`] = potential?.invoiceNumber ?? "";
+        record[`Potential Match ${index + 1} Score`] = potential?.score ?? "";
+        record[`Potential Match ${index + 1} Cash`] = formatNumberForCsv(potential?.cashReceived ?? null);
+        record[`Potential Match ${index + 1} Why`] = potential?.reason ?? "";
+      });
+
+      return record;
+    });
+
+    const csv = buildCsv(headers, rowsForCsv);
+    const fileName = `invoice-match-dashboard-export-${new Date()
+      .toISOString()
+      .slice(0, 19)
+      .replace(/[:T]/g, "-")}.csv`;
+    downloadTextFile(fileName, csv, "text/csv;charset=utf-8");
+    toast.success(`Exported ${filteredRows.length.toLocaleString("en-US")} rows.`);
+  };
 
   const handleInvoicesUpload = async (files: FileList | null) => {
     const file = files?.[0];
@@ -1458,11 +1819,22 @@ export default function InvoiceMatchDashboard() {
         </div>
 
         <Card>
-          <CardHeader>
-            <CardTitle>2) Search and Filter</CardTitle>
-            <CardDescription>
-              Search by System ID, project, company, recipient, invoice number, or potential match invoice.
-            </CardDescription>
+          <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <CardTitle>2) Search, Filter, and Export</CardTitle>
+              <CardDescription>
+                Search by System ID, project, company, recipient, invoice number, or potential match invoice.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleExportFilteredRows}
+              disabled={!filteredRows.length}
+              className="md:self-center"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export Filtered CSV
+            </Button>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-4">
             <div className="space-y-2 md:col-span-2">
@@ -1580,6 +1952,11 @@ export default function InvoiceMatchDashboard() {
                             <TableHead className="min-w-[260px]">Line Item #{index + 1}</TableHead>
                           </Fragment>
                         ))}
+                        {LINE_ITEM_CATEGORY_DEFINITIONS.map((category) => (
+                          <TableHead key={category.key} className="min-w-[230px]">
+                            {category.label}
+                          </TableHead>
+                        ))}
                         {Array.from({ length: POTENTIAL_MATCH_LIMIT }).map((_, index) => (
                           <Fragment key={`potential-columns-${index}`}>
                             <TableHead className="min-w-[170px]">Potential #{index + 1} Invoice</TableHead>
@@ -1639,6 +2016,29 @@ export default function InvoiceMatchDashboard() {
                                   )}
                                 </TableCell>
                               </Fragment>
+                            );
+                          })}
+
+                          {LINE_ITEM_CATEGORY_DEFINITIONS.map((category) => {
+                            const amount = row.lineItemSummary.totals[category.key];
+                            const invoiceReferences = row.lineItemSummary.invoices[category.key];
+                            return (
+                              <TableCell key={`${row.systemId}-${category.key}`} className="max-w-[230px] align-top">
+                                {amount > 0 || invoiceReferences.length > 0 ? (
+                                  <div className="space-y-1">
+                                    <p className="text-sm font-medium text-slate-900">
+                                      {amount > 0 ? formatCurrency(amount) : "-"}
+                                    </p>
+                                    {invoiceReferences.length > 0 ? (
+                                      <p className="text-xs text-slate-600 whitespace-pre-wrap break-words">
+                                        {invoiceReferences.join(", ")}
+                                      </p>
+                                    ) : null}
+                                  </div>
+                                ) : (
+                                  "-"
+                                )}
+                              </TableCell>
                             );
                           })}
 
@@ -1731,7 +2131,8 @@ export default function InvoiceMatchDashboard() {
               associations.
             </p>
             <p>
-              `Cash Received` is estimated from QuickBooks as `Amount - Open Balance` for the same invoice number.
+              `Invoice Status` and `Cash Received` come only from the QuickBooks report. Cash received is estimated as
+              `Amount - Open Balance` for the same invoice number.
             </p>
             <p>
               `Potential Match` columns only use QuickBooks invoice numbers that are not already tied to a different
@@ -1740,6 +2141,10 @@ export default function InvoiceMatchDashboard() {
             <p>
               If a System ID has a missing invoice number, the matching score starts higher so those rows surface
               likely candidates first.
+            </p>
+            <p>
+              Line items are normalized under fixed headers: ABP Application Fee, 5% Utility Held Collateral, 3% CC
+              Fee, Contract Cancellation/Termination Cost, and $25/kW AC Transfer Fee.
             </p>
           </CardContent>
         </Card>
