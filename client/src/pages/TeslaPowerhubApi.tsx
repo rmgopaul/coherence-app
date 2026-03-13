@@ -32,6 +32,7 @@ type SiteProductionRow = {
   monthlyKwh: number;
   yearlyKwh: number;
   lifetimeKwh: number;
+  dataSource: "rgm" | "inverter" | null;
 };
 
 type ProductionPayload = {
@@ -341,6 +342,7 @@ export default function TeslaPowerhubApi() {
       "monthly_kwh",
       "yearly_kwh",
       "lifetime_kwh",
+      "data_source",
     ];
     const lines = [
       headers.join(","),
@@ -353,6 +355,7 @@ export default function TeslaPowerhubApi() {
           row.monthlyKwh,
           row.yearlyKwh,
           row.lifetimeKwh,
+          row.dataSource ?? "",
         ]
           .map((value) => csvEscape(value))
           .join(",")
@@ -675,6 +678,7 @@ export default function TeslaPowerhubApi() {
                   <TableHead className="text-right">Monthly kWh</TableHead>
                   <TableHead className="text-right">Yearly kWh</TableHead>
                   <TableHead className="text-right">Lifetime kWh</TableHead>
+                  <TableHead>Source</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -687,11 +691,12 @@ export default function TeslaPowerhubApi() {
                     <TableCell className="text-right">{formatKwh(row.monthlyKwh)}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.yearlyKwh)}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.lifetimeKwh)}</TableCell>
+                    <TableCell>{row.dataSource === "rgm" ? "RGM" : row.dataSource === "inverter" ? "Inverter" : "\u2014"}</TableCell>
                   </TableRow>
                 ))}
                 {pagedRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={8} className="py-6 text-center text-slate-500">
                       No sites to display.
                     </TableCell>
                   </TableRow>

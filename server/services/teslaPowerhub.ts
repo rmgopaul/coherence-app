@@ -26,6 +26,7 @@ export type TeslaPowerhubSiteProductionMetrics = {
   monthlyKwh: number;
   yearlyKwh: number;
   lifetimeKwh: number;
+  dataSource: "rgm" | "inverter" | null;
 };
 
 type TeslaPowerhubTokenResponse = {
@@ -508,13 +509,22 @@ function roundToFourDecimals(value: number): number {
   return Number(value.toFixed(4));
 }
 
-function sumSiteTotalsByTelemetryPayload(
+function computeSiteDeltasByTelemetryPayload(
   payload: unknown,
   groupId: string,
   signal: string,
   options?: { unattributedSiteId?: string }
 ): Map<string, SiteTotal> {
-  const totals = new Map<string, SiteTotal>();
+  // Tesla energy signals (solar_energy_exported, solar_energy_exported_rgm)
+  // are CUMULATIVE meter readings in Wh.  To derive production for a time
+  // window we must compute (max_reading − min_reading) rather than summing
+  // individual readings.
+  const accumulators = new Map<string, {
+    siteId: string;
+    siteName: string | null;
+    minWh: number;
+    maxWh: number;
+  }>();
   const dedupe = new Set<string>();
   const signalKey = signal.trim();
   const unattributedSiteId = options?.unattributedSiteId ?? null;
@@ -526,10 +536,6 @@ function sumSiteTotalsByTelemetryPayload(
     timestamp: unknown,
     path: string
   ): void => {
-    // When unattributedSiteId is set, values with no site attribution (null)
-    // or values matching the groupId are collected under that fallback ID.
-    // This allows aggregate endpoint responses (group-level totals) to be
-    // captured instead of silently discarded.
     const effectiveSiteId =
       siteId && siteId !== groupId ? siteId : unattributedSiteId ?? siteId;
     if (!effectiveSiteId || (effectiveSiteId === groupId && !unattributedSiteId)) return;
@@ -540,20 +546,22 @@ function sumSiteTotalsByTelemetryPayload(
     if (dedupe.has(dedupeKey)) return;
     dedupe.add(dedupeKey);
 
-    const existing = totals.get(effectiveSiteId);
+    const existing = accumulators.get(effectiveSiteId);
     if (!existing) {
-      totals.set(effectiveSiteId, {
+      accumulators.set(effectiveSiteId, {
         siteId: effectiveSiteId,
         siteName: siteName ?? null,
-        totalKwh: numeric,
+        minWh: numeric,
+        maxWh: numeric,
       });
       return;
     }
 
-    totals.set(effectiveSiteId, {
+    accumulators.set(effectiveSiteId, {
       siteId: effectiveSiteId,
       siteName: existing.siteName ?? siteName ?? null,
-      totalKwh: existing.totalKwh + numeric,
+      minWh: Math.min(existing.minWh, numeric),
+      maxWh: Math.max(existing.maxWh, numeric),
     });
   };
 
@@ -693,11 +701,16 @@ function sumSiteTotalsByTelemetryPayload(
 
   walk(payload, null, null, "root");
 
-  // Tesla Powerhub telemetry returns energy values in Wh — convert to kWh.
-  Array.from(totals.entries()).forEach(([siteId, row]) => {
-    totals.set(siteId, {
-      ...row,
-      totalKwh: roundToFourDecimals(row.totalKwh / 1000),
+  // Compute delta (max − min) for each site.  Cumulative meter readings
+  // only increase, so max is the latest reading and min is the earliest.
+  // Convert Wh → kWh.
+  const totals = new Map<string, SiteTotal>();
+  accumulators.forEach((acc) => {
+    const deltaWh = acc.maxWh - acc.minWh;
+    totals.set(acc.siteId, {
+      siteId: acc.siteId,
+      siteName: acc.siteName,
+      totalKwh: roundToFourDecimals(deltaWh / 1000),
     });
   });
 
@@ -724,6 +737,8 @@ async function mapConcurrent<T, R>(
 /**
  * Fetch telemetry for a single site using /telemetry/history.
  * Returns the total kWh for the window, or null on failure.
+ * When fallbackSignal is provided and the primary signal returns no data,
+ * automatically retries with the fallback signal.
  */
 async function fetchSingleSiteTelemetryTotal(
   context: TeslaPowerhubApiContext,
@@ -733,46 +748,61 @@ async function fetchSingleSiteTelemetryTotal(
     signal: string;
     startDatetime: string;
     endDatetime: string;
+    period?: string;
+    fallbackSignal?: string;
   }
-): Promise<{ totalKwh: number; rawPreview: unknown } | null> {
-  const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
-  const url = new URL(`${apiBase}/telemetry/history`);
-  url.searchParams.set("target_id", options.siteId);
-  url.searchParams.set("signals", options.signal);
-  url.searchParams.set("start_datetime", options.startDatetime);
-  url.searchParams.set("end_datetime", options.endDatetime);
-  url.searchParams.set("period", "1d");
-  url.searchParams.set("rollup", "sum");
-  url.searchParams.set("fill", "none");
+): Promise<{ totalKwh: number; rawPreview: unknown; usedSignal: string } | null> {
+  const trySignal = async (
+    sig: string
+  ): Promise<{ totalKwh: number; rawPreview: unknown; usedSignal: string } | null> => {
+    const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
+    const url = new URL(`${apiBase}/telemetry/history`);
+    url.searchParams.set("target_id", options.siteId);
+    url.searchParams.set("signals", sig);
+    url.searchParams.set("start_datetime", options.startDatetime);
+    url.searchParams.set("end_datetime", options.endDatetime);
+    url.searchParams.set("period", options.period || "1d");
+    url.searchParams.set("rollup", "last");
+    url.searchParams.set("fill", "none");
 
-  try {
-    const raw = await fetchJsonWithBearerToken(url.toString(), accessToken, {
-      timeoutMs: 120_000,
-    });
-    // Parse with unattributedSiteId so values without an explicit site_id
-    // field are attributed to this site (the only target in the request).
-    const totals = sumSiteTotalsByTelemetryPayload(raw, "", options.signal, {
-      unattributedSiteId: options.siteId,
-    });
-    const entry = totals.get(options.siteId);
-    if (entry && entry.totalKwh !== 0) {
-      return { totalKwh: entry.totalKwh, rawPreview: createPreview(raw) };
+    try {
+      const raw = await fetchJsonWithBearerToken(url.toString(), accessToken, {
+        timeoutMs: 120_000,
+      });
+      const totals = computeSiteDeltasByTelemetryPayload(raw, "", sig, {
+        unattributedSiteId: options.siteId,
+      });
+      const entry = totals.get(options.siteId);
+      if (entry && entry.totalKwh !== 0) {
+        return { totalKwh: entry.totalKwh, rawPreview: createPreview(raw), usedSignal: sig };
+      }
+      return null;
+    } catch {
+      return null;
     }
-    return null;
-  } catch {
-    return null;
+  };
+
+  const primary = await trySignal(options.signal);
+  if (primary) return primary;
+
+  if (options.fallbackSignal && options.fallbackSignal !== options.signal) {
+    return trySignal(options.fallbackSignal);
   }
+
+  return null;
 }
 
 function buildWindowConfigs(now: Date): TeslaPowerhubWindowConfig[] {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const endDatetime = now.toISOString();
+  // Periods chosen to give enough data points for an accurate max−min delta
+  // while keeping response sizes manageable.
   return [
-    { key: "daily", period: "1h", startDatetime: new Date(now.getTime() - DAY_MS).toISOString(), endDatetime },
-    { key: "weekly", period: "1d", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString(), endDatetime },
-    { key: "monthly", period: "1d", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString(), endDatetime },
-    { key: "yearly", period: "1w", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString(), endDatetime },
-    { key: "lifetime", period: "30d", startDatetime: "2010-01-01T00:00:00.000Z", endDatetime },
+    { key: "daily", period: "15m", startDatetime: new Date(now.getTime() - DAY_MS).toISOString(), endDatetime },
+    { key: "weekly", period: "1h", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString(), endDatetime },
+    { key: "monthly", period: "6h", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString(), endDatetime },
+    { key: "yearly", period: "1d", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString(), endDatetime },
+    { key: "lifetime", period: "7d", startDatetime: "2010-01-01T00:00:00.000Z", endDatetime },
   ];
 }
 
@@ -794,7 +824,7 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
     url.searchParams.set("group_rollup", groupRollup);
   }
   url.searchParams.set("period", options.period || "1d");
-  url.searchParams.set("rollup", "sum");
+  url.searchParams.set("rollup", "last");
   url.searchParams.set("fill", "none");
   return url.toString();
 }
@@ -899,7 +929,7 @@ async function fetchTelemetryWindowTotals(
       const raw = await fetchJsonWithBearerToken(requestUrl, accessToken, {
         timeoutMs: 120_000,
       });
-      const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
+      const totals = computeSiteDeltasByTelemetryPayload(raw, options.groupId, options.signal);
       if (totals.size > 0 || options.allowEmptyTotals) {
         return {
           totals,
@@ -914,7 +944,7 @@ async function fetchTelemetryWindowTotals(
       // ID so they are not silently discarded.
       const isAggregate = /\/operational\/aggregate\/?/i.test(attempt.baseUrl);
       if (isAggregate) {
-        const groupTotals = sumSiteTotalsByTelemetryPayload(
+        const groupTotals = computeSiteDeltasByTelemetryPayload(
           raw,
           options.groupId,
           options.signal,
@@ -1051,9 +1081,11 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     totalSteps,
     message: "Starting Tesla Powerhub production request.",
   });
-  // Default to the Revenue Grade Meter (RGM) signal for metered solar
-  // production.  Callers can override via options.signal if needed.
-  const signal = toNonEmptyString(options.signal) ?? "solar_energy_exported_rgm";
+  // Primary signal: Revenue Grade Meter (RGM).  Fallback: inverter AC meter.
+  // Sites without RGM data are automatically retried with the inverter signal.
+  const primarySignal = toNonEmptyString(options.signal) ?? "solar_energy_exported_rgm";
+  const fallbackSignal = primarySignal === "solar_energy_exported_rgm" ? "solar_energy_exported" : null;
+  const signal = primarySignal;
   emitProgress({
     currentStep: 1,
     totalSteps,
@@ -1155,31 +1187,40 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     }
   }
 
-  // ---- Per-site fallback ------------------------------------------------
-  // If every successful window only contains a single group-level total
-  // (siteId === groupId) and the site inventory has real sites, re-query
-  // /telemetry/history for each site individually so the caller gets a
-  // per-site breakdown instead of a single aggregated number.
-  const hasPerSiteBreakdown = Array.from(totalsByWindow.values()).some((totals) =>
-    Array.from(totals.keys()).some((siteId) => siteId !== groupId)
-  );
+  // ---- Per-window fallback -----------------------------------------------
+  // For each window that lacks per-site data (either empty or only has the
+  // group-level aggregate ID), re-query /telemetry/history per-site.  This
+  // runs per-window so that windows with good group-level data are kept
+  // while windows that failed (e.g. lifetime) get the per-site treatment.
+  // Track which signal was used per site for dataSource labeling.
+  const siteSignalUsed = new Map<string, string>();
 
-  if (!hasPerSiteBreakdown && siteResult.sites.length > 0) {
-    emitProgress({
-      currentStep: 7,
-      totalSteps,
-      message: `Group query returned aggregated totals only. Loading per-site telemetry for ${siteResult.sites.length} site(s).`,
-    });
-
+  if (siteResult.sites.length > 0) {
     for (const window of windows) {
+      const existing = totalsByWindow.get(window.key);
+      const hasPerSiteData =
+        existing &&
+        existing.size > 0 &&
+        Array.from(existing.keys()).some((siteId) => siteId !== groupId);
+
+      if (hasPerSiteData) continue;
+
+      emitProgress({
+        currentStep: 7,
+        totalSteps,
+        message: `Loading per-site ${window.key} telemetry for ${siteResult.sites.length} site(s).`,
+      });
+
       const windowTotals = new Map<string, SiteTotal>();
 
       await mapConcurrent(siteResult.sites, 3, async (site) => {
         const result = await fetchSingleSiteTelemetryTotal(context, token.access_token, {
           siteId: site.siteId,
-          signal,
+          signal: primarySignal,
           startDatetime: window.startDatetime,
           endDatetime: window.endDatetime,
+          period: window.period,
+          fallbackSignal: fallbackSignal ?? undefined,
         });
         if (result) {
           windowTotals.set(site.siteId, {
@@ -1187,6 +1228,9 @@ export async function getTeslaPowerhubGroupProductionMetrics(
             siteName: site.siteName ?? null,
             totalKwh: roundToFourDecimals(result.totalKwh),
           });
+          if (!siteSignalUsed.has(site.siteId)) {
+            siteSignalUsed.set(site.siteId, result.usedSignal);
+          }
         }
       });
 
@@ -1195,14 +1239,53 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         telemetryErrorsByWindow[window.key] = null;
       }
     }
-
-    emitProgress({
-      currentStep: 7,
-      totalSteps,
-      message: `Per-site telemetry loaded.`,
-    });
   }
-  // ---- End per-site fallback ---------------------------------------------
+  // ---- End per-window fallback -------------------------------------------
+
+  // ---- Dual-signal fallback for group-level results ----------------------
+  // For windows where the group query DID return per-site data, identify
+  // sites that have 0 kWh across ALL windows and retry them individually
+  // with the inverter signal.
+  if (fallbackSignal && siteResult.sites.length > 0) {
+    const zeroSites = siteResult.sites.filter((site) => {
+      // Only retry if the site has 0 across all windows.
+      return windows.every((w) => {
+        const val = totalsByWindow.get(w.key)?.get(site.siteId)?.totalKwh ?? 0;
+        return val === 0;
+      });
+    });
+
+    if (zeroSites.length > 0) {
+      emitProgress({
+        currentStep: 7,
+        totalSteps,
+        message: `Retrying ${zeroSites.length} site(s) with inverter signal (no RGM data).`,
+      });
+
+      for (const window of windows) {
+        await mapConcurrent(zeroSites, 3, async (site) => {
+          const result = await fetchSingleSiteTelemetryTotal(context, token.access_token, {
+            siteId: site.siteId,
+            signal: fallbackSignal,
+            startDatetime: window.startDatetime,
+            endDatetime: window.endDatetime,
+            period: window.period,
+          });
+          if (result) {
+            const windowTotals = totalsByWindow.get(window.key) ?? new Map<string, SiteTotal>();
+            windowTotals.set(site.siteId, {
+              siteId: site.siteId,
+              siteName: site.siteName ?? null,
+              totalKwh: roundToFourDecimals(result.totalKwh),
+            });
+            totalsByWindow.set(window.key, windowTotals);
+            siteSignalUsed.set(site.siteId, fallbackSignal);
+          }
+        });
+      }
+    }
+  }
+  // ---- End dual-signal fallback ------------------------------------------
 
   const successfulWindowCount = windows.filter((window) => (totalsByWindow.get(window.key)?.size ?? 0) > 0).length;
   if (successfulWindowCount === 0) {
@@ -1232,6 +1315,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     const monthly = totalsByWindow.get("monthly")?.get(site.siteId)?.totalKwh ?? 0;
     const yearly = totalsByWindow.get("yearly")?.get(site.siteId)?.totalKwh ?? 0;
     const lifetime = totalsByWindow.get("lifetime")?.get(site.siteId)?.totalKwh ?? 0;
+    const usedSignal = siteSignalUsed.get(site.siteId) ?? primarySignal;
     return {
       siteId: site.siteId,
       siteName: site.siteName ?? totalsByWindow.get("lifetime")?.get(site.siteId)?.siteName ?? null,
@@ -1240,6 +1324,12 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       monthlyKwh: roundToFourDecimals(monthly),
       yearlyKwh: roundToFourDecimals(yearly),
       lifetimeKwh: roundToFourDecimals(lifetime),
+      dataSource:
+        usedSignal === "solar_energy_exported_rgm"
+          ? "rgm"
+          : usedSignal === "solar_energy_exported"
+            ? "inverter"
+            : null,
     };
   });
 
