@@ -323,9 +323,11 @@ function buildTelemetryCandidateUrls(
     add(override);
   }
 
-  // Aggregate endpoint first — it's designed for group-level queries.
-  add(`${apiBase}/telemetry/history/operational/aggregate`);
+  // History endpoint first — when given a group UUID as target_id it returns
+  // per-site data as a list.  Aggregate endpoint is a fallback that returns
+  // a single combined value.
   add(`${apiBase}/telemetry/history`);
+  add(`${apiBase}/telemetry/history/operational/aggregate`);
 
   return candidates;
 }
@@ -348,10 +350,9 @@ function buildTelemetryAttempts(
     addAttempt(preferredAttempt);
   }
 
-  // Prefer the aggregate endpoint (designed for group-level queries) without
-  // group_rollup — aggregation is implicit in the endpoint itself.  Fall back
-  // to the plain history endpoint (site-level) with common group_rollup values
-  // in case the caller is targeting a site or the aggregate endpoint is unavailable.
+  // 1. History endpoint first — with a group UUID as target_id this returns
+  //    per-site data.  No group_rollup needed (that param is for aggregate).
+  // 2. Aggregate endpoint — fallback; returns a single combined value.
   const aggregateUrls: string[] = [];
   const historyUrls: string[] = [];
   candidateUrls.forEach((baseUrl) => {
@@ -362,16 +363,12 @@ function buildTelemetryAttempts(
     }
   });
 
-  // 1. Aggregate endpoint — no group_rollup parameter (it's inherent).
-  aggregateUrls.forEach((baseUrl) => {
+  historyUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: null });
   });
 
-  // 2. Plain history endpoint — try without, then with common rollup values.
-  historyUrls.forEach((baseUrl) => {
-    [null, "sum", "mean"].forEach((groupRollup) => {
-      addAttempt({ baseUrl, groupRollup });
-    });
+  aggregateUrls.forEach((baseUrl) => {
+    addAttempt({ baseUrl, groupRollup: null });
   });
 
   return attempts;
@@ -781,6 +778,88 @@ async function mapConcurrent<T, R>(
 }
 
 /**
+ * Creates a throttle that serialises callers to at most `maxPerSecond`
+ * requests per second.  Safe for use with concurrent workers.
+ */
+function createApiThrottle(maxPerSecond: number): () => Promise<void> {
+  const intervalMs = Math.ceil(1000 / maxPerSecond);
+  let tail = Promise.resolve();
+  return () => {
+    const next = tail.then(
+      () => new Promise<void>((resolve) => setTimeout(resolve, intervalMs))
+    );
+    tail = next;
+    return next;
+  };
+}
+
+/**
+ * Fetch the STE identifier (site_name field) for each site via the
+ * individual /asset/sites/{site_id} endpoint.  Rate-limited to stay
+ * within the Tesla API's 5 req/s cap.
+ */
+async function fetchSiteExternalIds(
+  context: TeslaPowerhubApiContext,
+  accessToken: string,
+  siteIds: string[],
+  onProgress?: (fetched: number, total: number) => void
+): Promise<Map<string, string>> {
+  const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
+  const externalIds = new Map<string, string>();
+  const throttle = createApiThrottle(4); // stay under 5 req/s limit
+  let fetched = 0;
+
+  await mapConcurrent(siteIds, 4, async (siteId) => {
+    await throttle();
+    const url = `${apiBase}/asset/sites/${encodeURIComponent(siteId)}`;
+    try {
+      const raw = await fetchJsonWithBearerToken(url, accessToken, {
+        timeoutMs: 30_000,
+      });
+      const record = asRecord(raw);
+      const dataRecord = asRecord(record.data);
+
+      // The STE identifier (e.g. STE20250403-01158) is stored in the
+      // site_name field for many Tesla sites.  Also check nested data
+      // and common alternative fields.
+      const candidates = [
+        record.site_name, record.name, record.display_name,
+        record.display_id, record.external_id, record.ste_id,
+        record.site_code, record.identifier, record.reference_id,
+        record.project_number, record.customer_site_id, record.asset_name,
+        dataRecord.site_name, dataRecord.name, dataRecord.display_name,
+        dataRecord.display_id, dataRecord.external_id, dataRecord.ste_id,
+      ];
+
+      // Priority 1: field with STE pattern (e.g. STE20250403-01158)
+      for (const candidate of candidates) {
+        const str = toNonEmptyString(candidate);
+        if (str && /^STE\d/i.test(str)) { externalIds.set(siteId, str); return; }
+      }
+
+      // Priority 2: scan all top-level and data-level string values for STE pattern
+      for (const value of [...Object.values(record), ...Object.values(dataRecord)]) {
+        const str = toNonEmptyString(value);
+        if (str && /^STE\d/i.test(str)) { externalIds.set(siteId, str); return; }
+      }
+
+      // Priority 3: use site_name as the external identifier
+      const siteName = toNonEmptyString(record.site_name) ?? toNonEmptyString(dataRecord.site_name);
+      if (siteName) { externalIds.set(siteId, siteName); return; }
+    } catch {
+      // Non-critical — STE ID just won't appear for this site.
+    } finally {
+      fetched++;
+      if (onProgress && fetched % 100 === 0) {
+        onProgress(fetched, siteIds.length);
+      }
+    }
+  });
+
+  return externalIds;
+}
+
+/**
  * Fetch telemetry for a single site using /telemetry/history.
  * Returns the total kWh for the window, or null on failure.
  * When fallbackSignal is provided and the primary signal returns no data,
@@ -1109,7 +1188,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     windows: Record<TeslaPowerhubWindowKey, { startDatetime: string; endDatetime: string }>;
   };
 }> {
-  const totalSteps = 7;
+  const totalSteps = 8;
   const emitProgress = (progress: TeslaPowerhubMetricsProgress): void => {
     try {
       options.onProgress?.(progress);
@@ -1184,62 +1263,108 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   };
   const totalsByWindow = new Map<TeslaPowerhubWindowKey, Map<string, SiteTotal>>();
   let preferredTelemetryAttempt: TelemetryAttempt | null = null;
+  const siteSignalUsed = new Map<string, string>();
+
+  // ---- Phase 1: Dual-signal group-level queries ----------------------------
+  // Query BOTH signals (RGM + inverter) at the group level for each window.
+  // The /telemetry/history endpoint with a group UUID as target_id returns
+  // per-site data as a list — only 10 API calls total (5 windows × 2 signals)
+  // instead of ~29k per-site calls.
+  const stepByWindow: Record<TeslaPowerhubWindowKey, number> = {
+    daily: 3,
+    weekly: 4,
+    monthly: 5,
+    yearly: 6,
+    lifetime: 7,
+  };
 
   for (const window of windows) {
-    const stepByWindow: Record<TeslaPowerhubWindowKey, number> = {
-      daily: 3,
-      weekly: 4,
-      monthly: 5,
-      yearly: 6,
-      lifetime: 7,
-    };
     const step = stepByWindow[window.key];
     emitProgress({
       currentStep: step,
       totalSteps,
       windowKey: window.key,
-      message: `Loading ${window.key} telemetry window.`,
+      message: `Loading ${window.key} telemetry (RGM + inverter signals).`,
     });
+
+    // Query RGM signal at group level
+    let rgmTotals = new Map<string, SiteTotal>();
     try {
-      const telemetryResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+      const rgmResult = await fetchTelemetryWindowTotals(context, token.access_token, {
         groupId,
-        signal,
+        signal: primarySignal,
         startDatetime: window.startDatetime,
         endDatetime: window.endDatetime,
         period: window.period,
         endpointUrl: options.endpointUrl,
         preferredAttempt: preferredTelemetryAttempt,
-        allowEmptyTotals: Boolean(preferredTelemetryAttempt),
+        allowEmptyTotals: true,
       });
-      preferredTelemetryAttempt = telemetryResult.attemptUsed;
-      resolvedTelemetryEndpoints[window.key] = telemetryResult.resolvedEndpointUrl;
-      telemetryPreviewByWindow[window.key] = telemetryResult.rawPreview;
-      totalsByWindow.set(window.key, telemetryResult.totals);
-      emitProgress({
-        currentStep: step,
-        totalSteps,
-        windowKey: window.key,
-        message: `${window.key} telemetry loaded (${telemetryResult.totals.size} sites with values).`,
-      });
+      preferredTelemetryAttempt = rgmResult.attemptUsed;
+      rgmTotals = rgmResult.totals;
+      resolvedTelemetryEndpoints[window.key] = rgmResult.resolvedEndpointUrl;
+      telemetryPreviewByWindow[window.key] = rgmResult.rawPreview;
     } catch (error) {
-      telemetryErrorsByWindow[window.key] = error instanceof Error ? error.message : "Unknown error.";
-      totalsByWindow.set(window.key, new Map<string, SiteTotal>());
-      emitProgress({
-        currentStep: step,
-        totalSteps,
-        windowKey: window.key,
-        message: `${window.key} telemetry failed; continuing with remaining windows.`,
-      });
+      telemetryErrorsByWindow[window.key] = `RGM: ${error instanceof Error ? error.message : "Unknown error."}`;
     }
+
+    // Query inverter signal at group level
+    let invTotals = new Map<string, SiteTotal>();
+    if (fallbackSignal) {
+      try {
+        const invResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+          groupId,
+          signal: fallbackSignal,
+          startDatetime: window.startDatetime,
+          endDatetime: window.endDatetime,
+          period: window.period,
+          endpointUrl: options.endpointUrl,
+          preferredAttempt: preferredTelemetryAttempt,
+          allowEmptyTotals: true,
+        });
+        preferredTelemetryAttempt = invResult.attemptUsed;
+        invTotals = invResult.totals;
+        if (!resolvedTelemetryEndpoints[window.key]) {
+          resolvedTelemetryEndpoints[window.key] = invResult.resolvedEndpointUrl;
+        }
+      } catch (error) {
+        const existing = telemetryErrorsByWindow[window.key];
+        telemetryErrorsByWindow[window.key] = `${existing ? `${existing} | ` : ""}Inverter: ${error instanceof Error ? error.message : "Unknown error."}`;
+      }
+    }
+
+    // Merge: prefer RGM data (totalKwh > 0), else fall back to inverter.
+    const merged = new Map<string, SiteTotal>();
+    const windowSiteIds = new Set([...Array.from(rgmTotals.keys()), ...Array.from(invTotals.keys())]);
+    for (const siteId of Array.from(windowSiteIds)) {
+      const rgmEntry = rgmTotals.get(siteId);
+      const invEntry = invTotals.get(siteId);
+      if (rgmEntry && rgmEntry.totalKwh > 0) {
+        merged.set(siteId, rgmEntry);
+        if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, primarySignal);
+      } else if (invEntry && invEntry.totalKwh > 0) {
+        merged.set(siteId, invEntry);
+        if (!siteSignalUsed.has(siteId) && fallbackSignal) siteSignalUsed.set(siteId, fallbackSignal);
+      } else if (rgmEntry) {
+        merged.set(siteId, rgmEntry);
+      } else if (invEntry) {
+        merged.set(siteId, invEntry);
+      }
+    }
+
+    totalsByWindow.set(window.key, merged);
+
+    emitProgress({
+      currentStep: step,
+      totalSteps,
+      windowKey: window.key,
+      message: `${window.key} telemetry loaded (${merged.size} sites: ${rgmTotals.size} RGM, ${invTotals.size} inverter).`,
+    });
   }
 
-  // ---- Per-window fallback -----------------------------------------------
-  // For each window that lacks per-site data, re-query per-site.  After the
-  // first window completes we learn which signal works for each site and
-  // skip the failed signal for subsequent windows (halves API calls).
-  const siteSignalUsed = new Map<string, string>();
-  let dominantSignal: string | null = null; // set after first per-site window
-
+  // ---- Phase 2: Per-site fallback for empty windows ------------------------
+  // Only fires for windows where NEITHER group-level signal returned any
+  // per-site data.  Rate-limited to stay within Tesla's 5 req/s cap.
   const windowsNeedingPerSite = windows.filter((w) => {
     const existing = totalsByWindow.get(w.key);
     return !(
@@ -1250,38 +1375,34 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   });
 
   if (windowsNeedingPerSite.length > 0 && siteResult.sites.length > 0) {
-    // Refresh token before potentially long per-site phase.
-    let accessToken = token.access_token;
+    let perSiteToken = token.access_token;
     try {
       const refreshed = await requestClientCredentialsToken(context);
-      accessToken = refreshed.access_token;
+      perSiteToken = refreshed.access_token;
     } catch {
       // Use original token if refresh fails.
     }
+
+    const perSiteThrottle = createApiThrottle(4);
 
     for (const window of windowsNeedingPerSite) {
       emitProgress({
         currentStep: 7,
         totalSteps,
-        message: `Loading per-site ${window.key} telemetry for ${siteResult.sites.length} site(s)${dominantSignal ? "" : " (detecting signal)"}.`,
+        message: `Fallback: per-site ${window.key} telemetry for ${siteResult.sites.length} site(s).`,
       });
 
       const windowTotals = new Map<string, SiteTotal>();
 
-      await mapConcurrent(siteResult.sites, 5, async (site) => {
-        // After the first window we know which signal works — skip the
-        // failing one to halve the number of API calls.
-        const siteKnownSignal = siteSignalUsed.get(site.siteId) ?? dominantSignal;
-        const sig = siteKnownSignal ?? primarySignal;
-        const fb = siteKnownSignal ? undefined : (fallbackSignal ?? undefined);
-
-        const result = await fetchSingleSiteTelemetryTotal(context, accessToken, {
+      await mapConcurrent(siteResult.sites, 4, async (site) => {
+        await perSiteThrottle();
+        const result = await fetchSingleSiteTelemetryTotal(context, perSiteToken, {
           siteId: site.siteId,
-          signal: sig,
+          signal: primarySignal,
           startDatetime: window.startDatetime,
           endDatetime: window.endDatetime,
           period: window.period,
-          fallbackSignal: fb,
+          fallbackSignal: fallbackSignal ?? undefined,
         });
         if (result) {
           windowTotals.set(site.siteId, {
@@ -1289,9 +1410,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
             siteName: site.siteName ?? null,
             totalKwh: roundToFourDecimals(result.totalKwh),
           });
-          if (!siteSignalUsed.has(site.siteId)) {
-            siteSignalUsed.set(site.siteId, result.usedSignal);
-          }
+          if (!siteSignalUsed.has(site.siteId)) siteSignalUsed.set(site.siteId, result.usedSignal);
         }
       });
 
@@ -1299,70 +1418,55 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         totalsByWindow.set(window.key, windowTotals);
         telemetryErrorsByWindow[window.key] = null;
       }
-
-      // After the first per-site window, determine the dominant signal so
-      // subsequent windows can skip the failing signal entirely.
-      if (!dominantSignal && siteSignalUsed.size > 0) {
-        const counts = new Map<string, number>();
-        siteSignalUsed.forEach((sig) => counts.set(sig, (counts.get(sig) ?? 0) + 1));
-        let best = primarySignal;
-        let bestCount = 0;
-        counts.forEach((count, sig) => {
-          if (count > bestCount) { best = sig; bestCount = count; }
-        });
-        dominantSignal = best;
-        emitProgress({
-          currentStep: 7,
-          totalSteps,
-          message: `Detected working signal: ${dominantSignal}. Skipping failed signal for remaining windows.`,
-        });
-      }
     }
   }
-  // ---- End per-window fallback -------------------------------------------
+  // ---- End per-site fallback ---------------------------------------------
 
-  // ---- Dual-signal fallback for group-level results ----------------------
-  // For windows where the group query DID return per-site data, identify
-  // sites that have 0 kWh across ALL windows and retry with inverter.
-  if (fallbackSignal && siteResult.sites.length > 0) {
-    const zeroSites = siteResult.sites.filter((site) => {
-      return windows.every((w) => {
-        const val = totalsByWindow.get(w.key)?.get(site.siteId)?.totalKwh ?? 0;
-        return val === 0;
-      });
+  // ---- Phase 3: Fetch STE external identifiers -----------------------------
+  // The STE identifier (e.g. STE20250403-01158) lives in the individual
+  // /asset/sites/{site_id} response — it is NOT included in the group
+  // endpoint.  Rate-limited to 4 req/s.
+  const allDiscoveredSiteIds = new Set<string>();
+  siteResult.sites.forEach((s) => allDiscoveredSiteIds.add(s.siteId));
+  totalsByWindow.forEach((totals) => {
+    totals.forEach((_, siteId) => {
+      if (siteId !== groupId) allDiscoveredSiteIds.add(siteId);
     });
+  });
 
-    if (zeroSites.length > 0) {
-      emitProgress({
-        currentStep: 7,
-        totalSteps,
-        message: `Retrying ${zeroSites.length} site(s) with inverter signal (no RGM data).`,
-      });
+  emitProgress({
+    currentStep: 8,
+    totalSteps,
+    message: `Fetching STE identifiers for ${allDiscoveredSiteIds.size} site(s).`,
+  });
 
-      for (const window of windows) {
-        await mapConcurrent(zeroSites, 3, async (site) => {
-          const result = await fetchSingleSiteTelemetryTotal(context, token.access_token, {
-            siteId: site.siteId,
-            signal: fallbackSignal,
-            startDatetime: window.startDatetime,
-            endDatetime: window.endDatetime,
-            period: window.period,
-          });
-          if (result) {
-            const windowTotals = totalsByWindow.get(window.key) ?? new Map<string, SiteTotal>();
-            windowTotals.set(site.siteId, {
-              siteId: site.siteId,
-              siteName: site.siteName ?? null,
-              totalKwh: roundToFourDecimals(result.totalKwh),
-            });
-            totalsByWindow.set(window.key, windowTotals);
-            siteSignalUsed.set(site.siteId, fallbackSignal);
-          }
-        });
-      }
-    }
+  let steToken = token.access_token;
+  try {
+    const refreshed = await requestClientCredentialsToken(context);
+    steToken = refreshed.access_token;
+  } catch {
+    // Use original token if refresh fails.
   }
-  // ---- End dual-signal fallback ------------------------------------------
+
+  const siteExternalIds = await fetchSiteExternalIds(
+    context,
+    steToken,
+    Array.from(allDiscoveredSiteIds),
+    (fetched, total) => {
+      emitProgress({
+        currentStep: 8,
+        totalSteps,
+        message: `Fetching STE identifiers (${fetched}/${total}).`,
+      });
+    }
+  );
+
+  emitProgress({
+    currentStep: 8,
+    totalSteps,
+    message: `STE identifiers fetched (${siteExternalIds.size} found).`,
+  });
+  // ---- End STE ID fetch --------------------------------------------------
 
   const successfulWindowCount = windows.filter((window) => (totalsByWindow.get(window.key)?.size ?? 0) > 0).length;
   if (successfulWindowCount === 0) {
@@ -1396,7 +1500,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     const usedSignal = siteSignalUsed.get(site.siteId) ?? primarySignal;
     return {
       siteId: site.siteId,
-      siteExternalId: site.siteExternalId ?? null,
+      siteExternalId: siteExternalIds.get(site.siteId) ?? site.siteExternalId ?? null,
       siteName: site.siteName ?? totalsByWindow.get("lifetime")?.get(site.siteId)?.siteName ?? null,
       dailyKwh: roundToFourDecimals(daily),
       weeklyKwh: roundToFourDecimals(weekly),
