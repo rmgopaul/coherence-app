@@ -1873,6 +1873,10 @@ export default function Dashboard() {
               <BarChart3 className="h-4 w-4 mr-2" />
               Solar REC
             </Button>
+            <Button variant="outline" onClick={() => setLocation("/invoice-match-dashboard")}>
+              <FileSpreadsheet className="h-4 w-4 mr-2" />
+              Invoice Match
+            </Button>
             <Button variant="outline" onClick={() => setLocation("/deep-update-synthesizer")}>
               <FileSpreadsheet className="h-4 w-4 mr-2" />
               Deep Update

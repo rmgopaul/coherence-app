@@ -10,6 +10,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 const Home = lazy(() => import("./pages/Home"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const SolarRecDashboard = lazy(() => import("./pages/SolarRecDashboard"));
+const InvoiceMatchDashboard = lazy(() => import("./pages/InvoiceMatchDashboard"));
 const EnphaseV2MeterReads = lazy(() => import("./pages/EnphaseV2MeterReads"));
 const SolarEdgeMeterReads = lazy(() => import("./pages/SolarEdgeMeterReads"));
 const TeslaSolarApi = lazy(() => import("./pages/TeslaSolarApi"));
@@ -49,6 +50,7 @@ function Router() {
       <Route path={"/"} component={withRouteSuspense(Home)} />
       <Route path={"/dashboard"} component={withRouteSuspense(Dashboard)} />
       <Route path={"/solar-rec-dashboard"} component={withRouteSuspense(SolarRecDashboard)} />
+      <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
       <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
       <Route path={"/contract-scanner"} component={withRouteSuspense(ContractScanner)} />
       <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
