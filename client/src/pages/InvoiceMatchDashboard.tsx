@@ -68,7 +68,10 @@ type InvoiceCell = {
   status: string;
   cashReceived: number | null;
   lineItem: string;
-  quickBooksLineItemPreview: string;
+  quickBooksLineItems: Array<{
+    description: string;
+    amount: number | null;
+  }>;
 };
 
 type PotentialMatch = {
@@ -501,6 +504,12 @@ function tokenize(values: string[]): string[] {
 function formatCurrency(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "-";
   return CURRENCY_FORMATTER.format(value);
+}
+
+function formatQuickBooksLineItemText(lineItem: QuickBooksLineItem): string {
+  const description = clean(lineItem.description) || "Unlabeled line item";
+  if (lineItem.amount === null || !Number.isFinite(lineItem.amount)) return description;
+  return `${description} (${formatCurrency(lineItem.amount)})`;
 }
 
 function formatUploadedAt(value: Date | null): string {
@@ -1149,13 +1158,30 @@ function buildDashboardRows(
         fallbackClassifyUsingInvoiceType(source, invoiceReference);
       }
 
+      const quickBooksLineItems =
+        quickBooksMatch?.lineItems.length
+          ? quickBooksMatch.lineItems.map((lineItem) => {
+              const detectedCategories = detectLineItemCategories(lineItem.description);
+              const normalizedAmount =
+                detectedCategories.includes("ccFee") && lineItem.amount !== null
+                  ? Math.abs(lineItem.amount)
+                  : lineItem.amount;
+              return {
+                description: clean(lineItem.description) || "Unlabeled line item",
+                amount: normalizedAmount,
+              };
+            })
+          : clean(source.type)
+            ? [{ description: clean(source.type), amount: source.amount }]
+            : [];
+
       return {
         invoiceNumber: source.invoiceNumber,
         amount: source.amount,
         status,
         cashReceived: quickBooksMatch?.cashReceived ?? null,
         lineItem: source.type,
-        quickBooksLineItemPreview: quickBooksMatch?.lineItemPreview ?? "",
+        quickBooksLineItems,
       } satisfies InvoiceCell;
     });
 
@@ -1498,6 +1524,23 @@ export default function InvoiceMatchDashboard() {
     return Math.max(1, ...filteredRows.map((row) => row.invoiceCount));
   }, [filteredRows]);
 
+  const maxLineItemSlotsPerInvoice = useMemo(() => {
+    if (!filteredRows.length) {
+      return Array.from({ length: maxInvoiceSlots }, () => 1);
+    }
+
+    return Array.from({ length: maxInvoiceSlots }, (_, invoiceIndex) => {
+      return Math.max(
+        1,
+        ...filteredRows.map((row) => {
+          const invoice = row.invoices[invoiceIndex];
+          if (!invoice) return 0;
+          return Math.max(1, invoice.quickBooksLineItems.length);
+        })
+      );
+    });
+  }, [filteredRows, maxInvoiceSlots]);
+
   const systemsWithPotentialMatches = useMemo(
     () => rows.filter((row) => row.potentialMatches.length > 0).length,
     [rows]
@@ -1520,13 +1563,22 @@ export default function InvoiceMatchDashboard() {
       "Cash Received Total",
     ];
 
-    const invoiceDetailHeaders = Array.from({ length: maxInvoiceSlots }).flatMap((_, index) => [
-      `Invoice #${index + 1}`,
-      `Invoice Amount #${index + 1}`,
-      `Invoice Status #${index + 1} (QuickBooks)`,
-      `Cash Received #${index + 1}`,
-      `Invoice Line Item #${index + 1}`,
-    ]);
+    const invoiceDetailHeaders = Array.from({ length: maxInvoiceSlots }).flatMap((_, invoiceIndex) => {
+      const lineItemHeaders = Array.from({
+        length: maxLineItemSlotsPerInvoice[invoiceIndex] ?? 1,
+      }).flatMap((__, lineItemIndex) => [
+        `Invoice #${invoiceIndex + 1} - Line Item #${lineItemIndex + 1}`,
+        `Invoice #${invoiceIndex + 1} - Line Item Amount #${lineItemIndex + 1}`,
+      ]);
+
+      return [
+        `Invoice #${invoiceIndex + 1}`,
+        `Invoice Amount #${invoiceIndex + 1}`,
+        `Invoice Status #${invoiceIndex + 1} (QuickBooks)`,
+        `Cash Received #${invoiceIndex + 1}`,
+        ...lineItemHeaders,
+      ];
+    });
 
     const lineItemAmountHeaders = LINE_ITEM_CATEGORY_DEFINITIONS.map(
       (category) => `${category.label} Amount`
@@ -1564,11 +1616,22 @@ export default function InvoiceMatchDashboard() {
 
       Array.from({ length: maxInvoiceSlots }).forEach((_, index) => {
         const invoice = row.invoices[index];
+        const lineItems = invoice?.quickBooksLineItems ?? [];
+        const maxLineItemsForInvoice = maxLineItemSlotsPerInvoice[index] ?? 1;
+
         record[`Invoice #${index + 1}`] = invoice?.invoiceNumber ?? "";
         record[`Invoice Amount #${index + 1}`] = formatNumberForCsv(invoice?.amount ?? null);
         record[`Invoice Status #${index + 1} (QuickBooks)`] = clean(invoice?.status);
         record[`Cash Received #${index + 1}`] = formatNumberForCsv(invoice?.cashReceived ?? null);
-        record[`Invoice Line Item #${index + 1}`] = invoice?.lineItem ?? "";
+
+        Array.from({ length: maxLineItemsForInvoice }).forEach((__, lineItemIndex) => {
+          const lineItem = lineItems[lineItemIndex];
+          record[`Invoice #${index + 1} - Line Item #${lineItemIndex + 1}`] =
+            lineItem?.description ?? "";
+          record[`Invoice #${index + 1} - Line Item Amount #${lineItemIndex + 1}`] = formatNumberForCsv(
+            lineItem?.amount ?? null
+          );
+        });
       });
 
       LINE_ITEM_CATEGORY_DEFINITIONS.forEach((category) => {
@@ -2031,15 +2094,20 @@ export default function InvoiceMatchDashboard() {
                                 <TableCell className="max-w-[260px] align-top">
                                   {invoice ? (
                                     <div className="space-y-1">
-                                      <p className="whitespace-pre-wrap break-words text-sm text-slate-900">
-                                        {invoice.lineItem || "-"}
-                                      </p>
-                                      {invoice.quickBooksLineItemPreview &&
-                                      invoice.quickBooksLineItemPreview !== invoice.lineItem ? (
-                                        <p className="whitespace-pre-wrap break-words text-xs text-slate-500">
-                                          QB: {invoice.quickBooksLineItemPreview}
+                                      {(invoice.quickBooksLineItems.length
+                                        ? invoice.quickBooksLineItems
+                                        : [{ description: invoice.lineItem || "-", amount: invoice.amount }]
+                                      ).map((lineItem, lineIndex) => (
+                                        <p
+                                          key={`${row.systemId}-invoice-${index}-line-item-${lineIndex}`}
+                                          className="whitespace-pre-wrap break-words text-xs text-slate-700"
+                                        >
+                                          {lineIndex + 1}. {lineItem.description}
+                                          {lineItem.amount !== null && Number.isFinite(lineItem.amount)
+                                            ? ` (${formatCurrency(lineItem.amount)})`
+                                            : ""}
                                         </p>
-                                      ) : null}
+                                      ))}
                                     </div>
                                   ) : (
                                     "-"
