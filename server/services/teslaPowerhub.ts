@@ -320,7 +320,6 @@ function buildTelemetryAttempts(
   candidateUrls: string[],
   preferredAttempt?: TelemetryAttempt | null
 ): TelemetryAttempt[] {
-  const defaultGroupRollupCandidates: Array<string | null> = [null, "false", "true", "site", "none", "group"];
   const attempts: TelemetryAttempt[] = [];
   const seen = new Set<string>();
 
@@ -336,7 +335,9 @@ function buildTelemetryAttempts(
   }
 
   candidateUrls.forEach((baseUrl) => {
-    defaultGroupRollupCandidates.forEach((groupRollup) => {
+    const isAggregateEndpoint = /\/telemetry\/history\/operational\/aggregate\/?$/i.test(baseUrl);
+    const groupRollupCandidates: Array<string | null> = isAggregateEndpoint ? ["sum", "mean"] : [null];
+    groupRollupCandidates.forEach((groupRollup) => {
       addAttempt({ baseUrl, groupRollup });
     });
   });
