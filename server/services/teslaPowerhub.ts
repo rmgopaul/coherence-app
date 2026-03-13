@@ -323,11 +323,10 @@ function buildTelemetryCandidateUrls(
     add(override);
   }
 
-  // History endpoint first — when given a group UUID as target_id it returns
-  // per-site data as a list.  Aggregate endpoint is a fallback that returns
-  // a single combined value.
-  add(`${apiBase}/telemetry/history`);
+  // Aggregate endpoint first — returns per-site breakdowns with group_rollup.
+  // Plain history endpoint as fallback.
   add(`${apiBase}/telemetry/history/operational/aggregate`);
+  add(`${apiBase}/telemetry/history`);
 
   return candidates;
 }
@@ -353,7 +352,7 @@ function buildTelemetryAttempts(
   // The Tesla API requires `group_rollup` when target_id is a group UUID.
   // Using "sum" — the response still contains per-site breakdowns that our
   // parser extracts; the rollup value controls the optional aggregate row.
-  // History endpoint first (returns per-site data list), aggregate as fallback.
+  // Aggregate endpoint first (returns per-site data), plain history as fallback.
   const aggregateUrls: string[] = [];
   const historyUrls: string[] = [];
   candidateUrls.forEach((baseUrl) => {
@@ -364,11 +363,11 @@ function buildTelemetryAttempts(
     }
   });
 
-  historyUrls.forEach((baseUrl) => {
+  aggregateUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
-  aggregateUrls.forEach((baseUrl) => {
+  historyUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
@@ -1299,7 +1298,6 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         period: window.period,
         endpointUrl: options.endpointUrl,
         preferredAttempt: preferredTelemetryAttempt,
-        allowEmptyTotals: true,
       });
       preferredTelemetryAttempt = rgmResult.attemptUsed;
       rgmTotals = rgmResult.totals;
@@ -1321,7 +1319,6 @@ export async function getTeslaPowerhubGroupProductionMetrics(
           period: window.period,
           endpointUrl: options.endpointUrl,
           preferredAttempt: preferredTelemetryAttempt,
-          allowEmptyTotals: true,
         });
         preferredTelemetryAttempt = invResult.attemptUsed;
         invTotals = invResult.totals;
