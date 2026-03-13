@@ -350,9 +350,10 @@ function buildTelemetryAttempts(
     addAttempt(preferredAttempt);
   }
 
-  // 1. History endpoint first — with a group UUID as target_id this returns
-  //    per-site data.  No group_rollup needed (that param is for aggregate).
-  // 2. Aggregate endpoint — fallback; returns a single combined value.
+  // The Tesla API requires `group_rollup` when target_id is a group UUID.
+  // Using "sum" — the response still contains per-site breakdowns that our
+  // parser extracts; the rollup value controls the optional aggregate row.
+  // History endpoint first (returns per-site data list), aggregate as fallback.
   const aggregateUrls: string[] = [];
   const historyUrls: string[] = [];
   candidateUrls.forEach((baseUrl) => {
@@ -364,11 +365,11 @@ function buildTelemetryAttempts(
   });
 
   historyUrls.forEach((baseUrl) => {
-    addAttempt({ baseUrl, groupRollup: null });
+    addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
   aggregateUrls.forEach((baseUrl) => {
-    addAttempt({ baseUrl, groupRollup: null });
+    addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
   return attempts;
