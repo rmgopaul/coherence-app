@@ -584,6 +584,7 @@ function sumSiteTotalsByTelemetryPayload(
           parseNumericContainer(record.data, siteId, siteName, `${entryPath}.data`);
           parseNumericContainer(record.points, siteId, siteName, `${entryPath}.points`);
           parseNumericContainer(record.series, siteId, siteName, `${entryPath}.series`);
+          parseNumericContainer(record.data_points, siteId, siteName, `${entryPath}.data_points`);
           return;
         }
         addValue(siteId, siteName, entry, null, entryPath);
@@ -635,6 +636,7 @@ function sumSiteTotalsByTelemetryPayload(
     parseNumericContainer(record.data, siteId, siteName, `${path}.data`);
     parseNumericContainer(record.points, siteId, siteName, `${path}.points`);
     parseNumericContainer(record.series, siteId, siteName, `${path}.series`);
+    parseNumericContainer(record.data_points, siteId, siteName, `${path}.data_points`);
   };
 
   const walk = (value: unknown, inheritedSiteId: string | null, inheritedSiteName: string | null, path: string): void => {
@@ -665,10 +667,14 @@ function sumSiteTotalsByTelemetryPayload(
     parseNumericContainer(record.data, siteId, siteName, `${path}.data`);
     parseNumericContainer(record.points, siteId, siteName, `${path}.points`);
     parseNumericContainer(record.series, siteId, siteName, `${path}.series`);
+    parseNumericContainer(record.data_points, siteId, siteName, `${path}.data_points`);
     handledKeys.add("values");
-    handledKeys.add("data");
+    // NOTE: "data" is intentionally NOT in handledKeys — the recursive walk
+    // must also process `data` entries so detectSiteId can extract `site_id`
+    // from each row (Tesla response format: data[].{site_id, data_points}).
     handledKeys.add("points");
     handledKeys.add("series");
+    handledKeys.add("data_points");
 
     addValue(
       siteId,
