@@ -355,9 +355,10 @@ function buildTelemetryAttempts(
     addAttempt(preferredAttempt);
   }
 
-  // The Tesla API requires `group_rollup` when target_id is a group UUID.
-  // History endpoint first (may return per-site breakdowns), aggregate
-  // endpoint as fallback (returns group-level totals only).
+  // Try multiple group_rollup strategies:
+  // 1. History endpoint WITHOUT group_rollup — may return per-site breakdowns
+  // 2. History endpoint WITH group_rollup=sum — required by some API versions
+  // 3. Aggregate endpoint WITH group_rollup=sum — returns group-level totals
   const historyUrls: string[] = [];
   const aggregateUrls: string[] = [];
   candidateUrls.forEach((baseUrl) => {
@@ -368,10 +369,17 @@ function buildTelemetryAttempts(
     }
   });
 
+  // Priority 1: history without group_rollup — may return per-site data
+  historyUrls.forEach((baseUrl) => {
+    addAttempt({ baseUrl, groupRollup: null });
+  });
+
+  // Priority 2: history with group_rollup=sum
   historyUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: "sum" });
   });
 
+  // Priority 3: aggregate endpoint (always aggregated, last resort)
   aggregateUrls.forEach((baseUrl) => {
     addAttempt({ baseUrl, groupRollup: "sum" });
   });
@@ -508,7 +516,61 @@ function detectSiteExternalId(record: Record<string, unknown>, inheritedExternal
 
 function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescriptor[] {
   const siteMap = new Map<string, SiteDescriptor>();
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+  // Helper: add a site ID if it looks valid and isn't the group itself.
+  const addSiteId = (id: string, name: string | null, extId: string | null): void => {
+    if (!id || id === groupId) return;
+    if (!siteMap.has(id)) {
+      siteMap.set(id, { siteId: id, siteExternalId: extId, siteName: name });
+    }
+  };
+
+  // Phase 1: handle arrays of UUID strings (e.g. { sites: ["uuid1", "uuid2"] })
+  const extractUuidArrays = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      // If the entire payload is an array of UUID strings
+      if (value.length > 0 && value.every((v) => typeof v === "string" && UUID_RE.test(v))) {
+        for (const uuid of value) {
+          addSiteId(uuid as string, null, null);
+        }
+      }
+      for (const row of value) extractUuidArrays(row);
+      return;
+    }
+    const record = asRecord(value);
+    // Check known field names that may contain arrays of site IDs
+    const siteListKeys = [
+      "sites", "site_ids", "siteIds", "assets", "asset_ids", "assetIds",
+      "children", "members", "member_ids", "items", "energy_sites",
+    ];
+    for (const key of siteListKeys) {
+      const child = record[key];
+      if (Array.isArray(child)) {
+        for (const item of child) {
+          if (typeof item === "string" && UUID_RE.test(item) && item !== groupId) {
+            addSiteId(item, null, null);
+          } else if (item && typeof item === "object") {
+            const itemRecord = asRecord(item);
+            const id = toIdString(itemRecord.site_id) ?? toIdString(itemRecord.siteId) ??
+              toIdString(itemRecord.id) ?? toIdString(itemRecord.uuid) ??
+              toIdString(itemRecord.energy_site_id) ?? toIdString(itemRecord.asset_id);
+            if (id && id !== groupId) {
+              addSiteId(id, detectSiteName(itemRecord, null), detectSiteExternalId(itemRecord, null));
+            }
+          }
+        }
+      }
+    }
+    // Recurse into data, results, etc.
+    for (const key of ["data", "results", "response", "payload", "content"]) {
+      if (record[key] !== undefined) extractUuidArrays(record[key]);
+    }
+  };
+  extractUuidArrays(payload);
+
+  // Phase 2: recursive walk for deeply nested structures with site_id fields.
   const walk = (
     value: unknown,
     inheritedSiteId: string | null,
@@ -959,25 +1021,27 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
   return url.toString();
 }
 
-function createPreview(value: unknown, depth = 0): unknown {
-  if (depth >= 3) return "[truncated]";
+function createPreview(value: unknown, depth = 0, maxDepth = 5): unknown {
+  if (depth >= maxDepth) return "[truncated]";
   if (Array.isArray(value)) {
-    const limited = value.slice(0, 5).map((entry) => createPreview(entry, depth + 1));
-    if (value.length > 5) {
-      limited.push(`... ${value.length - 5} more item(s)`);
+    const limit = depth <= 1 ? 5 : 3;
+    const limited = value.slice(0, limit).map((entry) => createPreview(entry, depth + 1, maxDepth));
+    if (value.length > limit) {
+      limited.push(`... ${value.length - limit} more item(s)`);
     }
     return limited;
   }
   if (!value || typeof value !== "object") return value;
   const entries = Object.entries(asRecord(value));
   const preview: Record<string, unknown> = {};
+  const keyLimit = depth <= 1 ? 20 : 10;
   for (let index = 0; index < entries.length; index += 1) {
     const [key, rowValue] = entries[index];
-    if (index >= 20) {
-      preview.__truncatedKeys = entries.length - 20;
+    if (index >= keyLimit) {
+      preview.__truncatedKeys = entries.length - keyLimit;
       break;
     }
-    preview[key] = createPreview(rowValue, depth + 1);
+    preview[key] = createPreview(rowValue, depth + 1, maxDepth);
   }
   return preview;
 }
@@ -996,7 +1060,7 @@ async function fetchGroupSites(
 }> {
   const groupId = options.groupId.trim();
   const candidateUrls = buildAssetGroupCandidateUrls(context, groupId, toNonEmptyString(options.endpointUrl));
-  let lastError: string | null = null;
+  const diagnostics: { url: string; status: string; preview?: unknown }[] = [];
 
   for (const url of candidateUrls) {
     try {
@@ -1009,16 +1073,27 @@ async function fetchGroupSites(
           rawPreview: createPreview(raw),
         };
       }
-      lastError = "Endpoint returned no recognizable site rows.";
+      // Deeper preview (depth 5) to help diagnose the response structure
+      diagnostics.push({
+        url,
+        status: `200 OK but 0 sites parsed`,
+        preview: createPreview(raw, 0),
+      });
     } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown request error.";
+      diagnostics.push({
+        url,
+        status: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   }
 
   return {
     sites: [],
     resolvedEndpointUrl: null,
-    rawPreview: lastError ? { error: lastError } : null,
+    rawPreview: {
+      error: `No sites found in ${candidateUrls.length} URL candidate(s).`,
+      attempts: diagnostics,
+    },
   };
 }
 
