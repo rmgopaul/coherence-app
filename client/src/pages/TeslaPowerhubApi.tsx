@@ -102,7 +102,9 @@ export default function TeslaPowerhubApi() {
 
   const [clientIdInput, setClientIdInput] = useState("");
   const [clientSecretInput, setClientSecretInput] = useState("");
-  const [groupIdInput, setGroupIdInput] = useState("");
+  const [groupIdInput, setGroupIdInput] = useState(() => {
+    try { return localStorage.getItem("tesla-powerhub-group-id") ?? ""; } catch { return ""; }
+  });
   const [tokenUrlInput, setTokenUrlInput] = useState(DEFAULT_TOKEN_URL);
   const [apiBaseUrlInput, setApiBaseUrlInput] = useState(DEFAULT_API_BASE_URL);
   const [portalBaseUrlInput, setPortalBaseUrlInput] = useState(DEFAULT_PORTAL_BASE_URL);
@@ -249,6 +251,7 @@ export default function TeslaPowerhubApi() {
       toast.error("Enter a group ID.");
       return;
     }
+    try { localStorage.setItem("tesla-powerhub-group-id", groupIdInput); } catch {}
 
     try {
       const job = await startProductionJobMutation.mutateAsync({
@@ -338,7 +341,6 @@ export default function TeslaPowerhubApi() {
     const headers = [
       "site_id",
       "ste_id",
-      "site_name",
       "daily_kwh",
       "weekly_kwh",
       "monthly_kwh",
@@ -352,7 +354,6 @@ export default function TeslaPowerhubApi() {
         [
           row.siteId,
           row.siteExternalId ?? "",
-          row.siteName,
           row.dailyKwh,
           row.weeklyKwh,
           row.monthlyKwh,
@@ -676,7 +677,6 @@ export default function TeslaPowerhubApi() {
                 <TableRow>
                   <TableHead>Site ID</TableHead>
                   <TableHead>STE ID</TableHead>
-                  <TableHead>Site Name</TableHead>
                   <TableHead className="text-right">Daily kWh</TableHead>
                   <TableHead className="text-right">Weekly kWh</TableHead>
                   <TableHead className="text-right">Monthly kWh</TableHead>
@@ -690,7 +690,6 @@ export default function TeslaPowerhubApi() {
                   <TableRow key={row.siteId}>
                     <TableCell className="font-medium">{row.siteId}</TableCell>
                     <TableCell>{row.siteExternalId ?? "\u2014"}</TableCell>
-                    <TableCell>{row.siteName ?? "N/A"}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.dailyKwh)}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.weeklyKwh)}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.monthlyKwh)}</TableCell>
@@ -701,7 +700,7 @@ export default function TeslaPowerhubApi() {
                 ))}
                 {pagedRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={8} className="py-6 text-center text-slate-500">
                       No sites to display.
                     </TableCell>
                   </TableRow>

@@ -1270,10 +1270,12 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     totalSteps,
     message: "Starting Tesla Powerhub production request.",
   });
-  // Primary signal: Revenue Grade Meter (RGM).  Fallback: inverter AC meter.
-  // Sites without RGM data are automatically retried with the inverter signal.
-  const primarySignal = toNonEmptyString(options.signal) ?? "solar_energy_exported_rgm";
-  const fallbackSignal = primarySignal === "solar_energy_exported_rgm" ? "solar_energy_exported" : null;
+  // Always try both signals.  RGM (revenue-grade meter) is preferred for
+  // accuracy; inverter AC meter is the fallback for sites without RGM data.
+  const RGM_SIGNAL = "solar_energy_exported_rgm";
+  const INV_SIGNAL = "solar_energy_exported";
+  const primarySignal = toNonEmptyString(options.signal) ?? RGM_SIGNAL;
+  const fallbackSignal = primarySignal === RGM_SIGNAL ? INV_SIGNAL : RGM_SIGNAL;
   const signal = primarySignal;
   emitProgress({
     currentStep: 1,
@@ -1351,11 +1353,11 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       message: `Loading ${window.key} telemetry (RGM + inverter signals).`,
     });
 
-    // Query RGM signal at group level.  The history endpoint may return
+    // Query primary signal at group level.  The history endpoint may return
     // per-site breakdowns that feed the site list for Phase 2.
-    let rgmTotals = new Map<string, SiteTotal>();
+    let primaryTotals = new Map<string, SiteTotal>();
     try {
-      const rgmResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+      const primaryResult = await fetchTelemetryWindowTotals(context, token.access_token, {
         groupId,
         signal: primarySignal,
         startDatetime: window.startDatetime,
@@ -1364,50 +1366,51 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         endpointUrl: options.endpointUrl,
         preferredAttempt: preferredTelemetryAttempt,
       });
-      preferredTelemetryAttempt = rgmResult.attemptUsed;
-      rgmTotals = rgmResult.totals;
-      resolvedTelemetryEndpoints[window.key] = rgmResult.resolvedEndpointUrl;
-      telemetryPreviewByWindow[window.key] = rgmResult.rawPreview;
+      preferredTelemetryAttempt = primaryResult.attemptUsed;
+      primaryTotals = primaryResult.totals;
+      resolvedTelemetryEndpoints[window.key] = primaryResult.resolvedEndpointUrl;
+      telemetryPreviewByWindow[window.key] = primaryResult.rawPreview;
     } catch (error) {
-      telemetryErrorsByWindow[window.key] = `RGM: ${error instanceof Error ? error.message : "Unknown error."}`;
+      telemetryErrorsByWindow[window.key] = `Primary (${primarySignal}): ${error instanceof Error ? error.message : "Unknown error."}`;
     }
 
-    // Query inverter signal at group level
-    let invTotals = new Map<string, SiteTotal>();
-    if (fallbackSignal) {
-      try {
-        const invResult = await fetchTelemetryWindowTotals(context, token.access_token, {
-          groupId,
-          signal: fallbackSignal,
-          startDatetime: window.startDatetime,
-          endDatetime: window.endDatetime,
-          period: window.period,
-          endpointUrl: options.endpointUrl,
-          preferredAttempt: preferredTelemetryAttempt,
-        });
-        preferredTelemetryAttempt = invResult.attemptUsed;
-        invTotals = invResult.totals;
-        if (!resolvedTelemetryEndpoints[window.key]) {
-          resolvedTelemetryEndpoints[window.key] = invResult.resolvedEndpointUrl;
-        }
-      } catch (error) {
-        const existing = telemetryErrorsByWindow[window.key];
-        telemetryErrorsByWindow[window.key] = `${existing ? `${existing} | ` : ""}Inverter: ${error instanceof Error ? error.message : "Unknown error."}`;
+    // Query fallback signal at group level
+    let fallbackTotals = new Map<string, SiteTotal>();
+    try {
+      const fallbackResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+        groupId,
+        signal: fallbackSignal,
+        startDatetime: window.startDatetime,
+        endDatetime: window.endDatetime,
+        period: window.period,
+        endpointUrl: options.endpointUrl,
+        preferredAttempt: preferredTelemetryAttempt,
+      });
+      preferredTelemetryAttempt = fallbackResult.attemptUsed;
+      fallbackTotals = fallbackResult.totals;
+      if (!resolvedTelemetryEndpoints[window.key]) {
+        resolvedTelemetryEndpoints[window.key] = fallbackResult.resolvedEndpointUrl;
       }
+    } catch (error) {
+      const existing = telemetryErrorsByWindow[window.key];
+      telemetryErrorsByWindow[window.key] = `${existing ? `${existing} | ` : ""}Fallback (${fallbackSignal}): ${error instanceof Error ? error.message : "Unknown error."}`;
     }
 
-    // Merge: prefer RGM data (totalKwh > 0), else fall back to inverter.
+    // Merge: always prefer RGM data over inverter for revenue-grade accuracy,
+    // regardless of which signal was queried as primary vs fallback.
     const merged = new Map<string, SiteTotal>();
-    const windowSiteIds = new Set([...Array.from(rgmTotals.keys()), ...Array.from(invTotals.keys())]);
+    const actualRgmTotals = primarySignal === RGM_SIGNAL ? primaryTotals : fallbackTotals;
+    const actualInvTotals = primarySignal === RGM_SIGNAL ? fallbackTotals : primaryTotals;
+    const windowSiteIds = new Set([...Array.from(primaryTotals.keys()), ...Array.from(fallbackTotals.keys())]);
     for (const siteId of Array.from(windowSiteIds)) {
-      const rgmEntry = rgmTotals.get(siteId);
-      const invEntry = invTotals.get(siteId);
+      const rgmEntry = actualRgmTotals.get(siteId);
+      const invEntry = actualInvTotals.get(siteId);
       if (rgmEntry && rgmEntry.totalKwh > 0) {
         merged.set(siteId, rgmEntry);
-        if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, primarySignal);
+        if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, RGM_SIGNAL);
       } else if (invEntry && invEntry.totalKwh > 0) {
         merged.set(siteId, invEntry);
-        if (!siteSignalUsed.has(siteId) && fallbackSignal) siteSignalUsed.set(siteId, fallbackSignal);
+        if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, INV_SIGNAL);
       } else if (rgmEntry) {
         merged.set(siteId, rgmEntry);
       } else if (invEntry) {
@@ -1421,7 +1424,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       currentStep: step,
       totalSteps,
       windowKey: window.key,
-      message: `${window.key} telemetry loaded (${merged.size} sites: ${rgmTotals.size} RGM, ${invTotals.size} inverter).`,
+      message: `${window.key} telemetry loaded (${merged.size} sites: ${actualRgmTotals.size} RGM, ${actualInvTotals.size} inverter).`,
     });
   }
 
@@ -1504,7 +1507,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
             startDatetime: window.startDatetime,
             endDatetime: window.endDatetime,
             period: window.period,
-            fallbackSignal: fallbackSignal ?? undefined,
+            fallbackSignal,
           });
           if (result) {
             perSiteOk++;
