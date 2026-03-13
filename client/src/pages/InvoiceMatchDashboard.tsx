@@ -1517,11 +1517,16 @@ export default function InvoiceMatchDashboard() {
     const baseHeaders = [
       "System ID",
       "Invoice Quantity",
-      "Invoice Numbers",
-      "Invoice Amounts",
-      "Invoice Statuses (QuickBooks)",
       "Cash Received Total",
     ];
+
+    const invoiceDetailHeaders = Array.from({ length: maxInvoiceSlots }).flatMap((_, index) => [
+      `Invoice #${index + 1}`,
+      `Invoice Amount #${index + 1}`,
+      `Invoice Status #${index + 1} (QuickBooks)`,
+      `Cash Received #${index + 1}`,
+      `Invoice Line Item #${index + 1}`,
+    ]);
 
     const lineItemAmountHeaders = LINE_ITEM_CATEGORY_DEFINITIONS.map(
       (category) => `${category.label} Amount`
@@ -1539,6 +1544,7 @@ export default function InvoiceMatchDashboard() {
 
     const headers = [
       ...baseHeaders,
+      ...invoiceDetailHeaders,
       ...lineItemAmountHeaders,
       ...lineItemInvoiceHeaders,
       "Other Line Item Notes",
@@ -1547,11 +1553,6 @@ export default function InvoiceMatchDashboard() {
 
     const rowsForCsv = filteredRows.map((row) => {
       const record: Record<string, string | number | null> = {};
-      const invoiceNumbers = row.invoices
-        .map((invoice) => normalizeInvoiceReference(invoice.invoiceNumber))
-        .join(" | ");
-      const invoiceAmounts = row.invoices.map((invoice) => formatNumberForCsv(invoice.amount)).join(" | ");
-      const invoiceStatuses = row.invoices.map((invoice) => clean(invoice.status)).join(" | ");
       const cashReceivedTotal = row.invoices.reduce((sum, invoice) => {
         if (invoice.cashReceived === null || !Number.isFinite(invoice.cashReceived)) return sum;
         return sum + invoice.cashReceived;
@@ -1559,10 +1560,16 @@ export default function InvoiceMatchDashboard() {
 
       record["System ID"] = row.systemId;
       record["Invoice Quantity"] = row.invoiceCount;
-      record["Invoice Numbers"] = invoiceNumbers;
-      record["Invoice Amounts"] = invoiceAmounts;
-      record["Invoice Statuses (QuickBooks)"] = invoiceStatuses;
       record["Cash Received Total"] = cashReceivedTotal.toFixed(2);
+
+      Array.from({ length: maxInvoiceSlots }).forEach((_, index) => {
+        const invoice = row.invoices[index];
+        record[`Invoice #${index + 1}`] = invoice?.invoiceNumber ?? "";
+        record[`Invoice Amount #${index + 1}`] = formatNumberForCsv(invoice?.amount ?? null);
+        record[`Invoice Status #${index + 1} (QuickBooks)`] = clean(invoice?.status);
+        record[`Cash Received #${index + 1}`] = formatNumberForCsv(invoice?.cashReceived ?? null);
+        record[`Invoice Line Item #${index + 1}`] = invoice?.lineItem ?? "";
+      });
 
       LINE_ITEM_CATEGORY_DEFINITIONS.forEach((category) => {
         const amount = row.lineItemSummary.totals[category.key];
