@@ -571,6 +571,7 @@ function normalizeInvoiceReference(invoiceNumber: string): string {
 }
 
 function detectLineItemCategories(value: string): LineItemCategoryKey[] {
+  const raw = clean(value).toLowerCase();
   const normalized = normalizeText(value);
   if (!normalized) return [];
 
@@ -599,7 +600,8 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
   }
 
   if (
-    /3\s*%\s*(cc|credit card)/.test(normalized) ||
+    /3\s*%\s*(cc|credit card)/.test(raw) ||
+    /\b3\b\s*(cc|credit card)\b/.test(normalized) ||
     /\bcc\s*fee\b/.test(normalized) ||
     /\bcredit card fee\b/.test(normalized)
   ) {
@@ -607,7 +609,8 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
   }
 
   if (
-    /5\s*%\s*(utility held\s*)?(abp\s*)?collateral/.test(normalized) ||
+    /5\s*%\s*(utility held\s*)?(abp\s*)?collateral/.test(raw) ||
+    /\b5\b\s*(utility held\s*)?(abp\s*)?collateral\b/.test(normalized) ||
     /\butility held collateral\b/.test(normalized)
   ) {
     categories.push("utilityHeldCollateral5Percent");
@@ -626,7 +629,8 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
       /\babp fee\b/.test(normalized) ||
       /\bnon refundable\b.*\bfee\b/.test(normalized) ||
       /\bnonrefundable\b.*\bfee\b/.test(normalized) ||
-      /(10|20)\s*\/\s*kw/.test(normalized))
+      /(10|20)\s*\/\s*kw/.test(raw) ||
+      /\b(10|20)\s*kw\b/.test(normalized))
   ) {
     categories.push("abpApplicationFee");
   }
@@ -813,11 +817,17 @@ function parseQuickBooksFile(parsed: ParsedCsv): Map<string, QuickBooksInvoice> 
       next.date = parseDate(readByHeaderOptions(row, headerLookup, ["Date"]));
     }
 
-    const description = readByHeaderOptions(row, headerLookup, [
+    const descriptionPrimary = readByHeaderOptions(row, headerLookup, [
       "Product/service description",
       "Product Service Description",
       "Description",
     ]);
+    const descriptionSecondary = readByHeaderOptions(row, headerLookup, [
+      "Product/Service",
+      "Product Service",
+      "Service Item",
+    ]);
+    const description = descriptionPrimary || descriptionSecondary;
     const lineAmount = parseNumber(
       readByHeaderOptions(row, headerLookup, [
         "Product/service amount line",
@@ -1047,7 +1057,8 @@ function buildDashboardRows(
       invoiceReference: string
     ) => {
       if (amount !== null && Number.isFinite(amount)) {
-        lineItemTotals[category] += amount;
+        const normalizedAmount = category === "ccFee" ? Math.abs(amount) : amount;
+        lineItemTotals[category] += normalizedAmount;
       }
       lineItemInvoiceSets[category].add(invoiceReference);
     };
