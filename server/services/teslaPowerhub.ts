@@ -54,6 +54,11 @@ type SiteTotal = {
   totalKwh: number;
 };
 
+type TelemetryAttempt = {
+  baseUrl: string;
+  groupRollup: string | null;
+};
+
 export type TeslaPowerhubMetricsProgress = {
   currentStep: number;
   totalSteps: number;
@@ -311,13 +316,69 @@ function buildTelemetryCandidateUrls(
   return candidates;
 }
 
-async function fetchJsonWithBearerToken(url: string, accessToken: string): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: "application/json",
-    },
+function buildTelemetryAttempts(
+  candidateUrls: string[],
+  preferredAttempt?: TelemetryAttempt | null
+): TelemetryAttempt[] {
+  const defaultGroupRollupCandidates: Array<string | null> = [null, "false", "true", "site", "none", "group"];
+  const attempts: TelemetryAttempt[] = [];
+  const seen = new Set<string>();
+
+  const addAttempt = (attempt: TelemetryAttempt) => {
+    const key = `${attempt.baseUrl}||${attempt.groupRollup ?? "__none__"}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    attempts.push(attempt);
+  };
+
+  if (preferredAttempt && candidateUrls.includes(preferredAttempt.baseUrl)) {
+    addAttempt(preferredAttempt);
+  }
+
+  candidateUrls.forEach((baseUrl) => {
+    defaultGroupRollupCandidates.forEach((groupRollup) => {
+      addAttempt({ baseUrl, groupRollup });
+    });
   });
+
+  return attempts;
+}
+
+async function fetchJsonWithBearerToken(
+  url: string,
+  accessToken: string,
+  options?: {
+    timeoutMs?: number;
+  }
+): Promise<unknown> {
+  const timeoutMs = typeof options?.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : null;
+  const controller = timeoutMs ? new AbortController() : null;
+  const timeoutHandle =
+    timeoutMs && controller
+      ? setTimeout(() => {
+          controller.abort();
+        }, timeoutMs)
+      : null;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+      signal: controller?.signal,
+    });
+  } catch (error) {
+    if ((error as { name?: string })?.name === "AbortError" && timeoutMs) {
+      throw new Error(`(Request timed out after ${timeoutMs} ms)`);
+    }
+    throw error;
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -689,39 +750,43 @@ async function fetchTelemetryWindowTotals(
     startDatetime: string;
     endDatetime: string;
     endpointUrl?: string | null;
+    preferredAttempt?: TelemetryAttempt | null;
+    allowEmptyTotals?: boolean;
   }
 ): Promise<{
   totals: Map<string, SiteTotal>;
   resolvedEndpointUrl: string;
   rawPreview: unknown;
+  attemptUsed: TelemetryAttempt;
 }> {
   const candidateUrls = buildTelemetryCandidateUrls(context, toNonEmptyString(options.endpointUrl));
-  const groupRollupCandidates: Array<string | null> = [null, "false", "true", "site", "none", "group"];
+  const attempts = buildTelemetryAttempts(candidateUrls, options.preferredAttempt);
   let lastError: string | null = null;
 
-  for (const baseUrl of candidateUrls) {
-    for (const groupRollup of groupRollupCandidates) {
-      const requestUrl = buildTelemetryRequestUrl(baseUrl, {
-        groupId: options.groupId,
-        signal: options.signal,
-        startDatetime: options.startDatetime,
-        endDatetime: options.endDatetime,
-        groupRollup,
+  for (const attempt of attempts) {
+    const requestUrl = buildTelemetryRequestUrl(attempt.baseUrl, {
+      groupId: options.groupId,
+      signal: options.signal,
+      startDatetime: options.startDatetime,
+      endDatetime: options.endDatetime,
+      groupRollup: attempt.groupRollup,
+    });
+    try {
+      const raw = await fetchJsonWithBearerToken(requestUrl, accessToken, {
+        timeoutMs: 120_000,
       });
-      try {
-        const raw = await fetchJsonWithBearerToken(requestUrl, accessToken);
-        const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
-        if (totals.size > 0) {
+      const totals = sumSiteTotalsByTelemetryPayload(raw, options.groupId, options.signal);
+      if (totals.size > 0 || options.allowEmptyTotals) {
         return {
           totals,
           resolvedEndpointUrl: requestUrl,
           rawPreview: createPreview(raw),
+          attemptUsed: attempt,
         };
       }
       lastError = `No site telemetry values parsed from ${requestUrl}.`;
     } catch (error) {
       lastError = error instanceof Error ? error.message : "Unknown request error.";
-    }
     }
   }
 
@@ -877,6 +942,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     lifetime: null,
   };
   const totalsByWindow = new Map<TeslaPowerhubWindowKey, Map<string, SiteTotal>>();
+  let preferredTelemetryAttempt: TelemetryAttempt | null = null;
 
   for (const window of windows) {
     const stepByWindow: Record<TeslaPowerhubWindowKey, number> = {
@@ -900,7 +966,10 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         startDatetime: window.startDatetime,
         endDatetime: window.endDatetime,
         endpointUrl: options.endpointUrl,
+        preferredAttempt: preferredTelemetryAttempt,
+        allowEmptyTotals: Boolean(preferredTelemetryAttempt),
       });
+      preferredTelemetryAttempt = telemetryResult.attemptUsed;
       resolvedTelemetryEndpoints[window.key] = telemetryResult.resolvedEndpointUrl;
       telemetryPreviewByWindow[window.key] = telemetryResult.rawPreview;
       totalsByWindow.set(window.key, telemetryResult.totals);
