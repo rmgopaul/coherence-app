@@ -510,11 +510,13 @@ function roundToFourDecimals(value: number): number {
 function sumSiteTotalsByTelemetryPayload(
   payload: unknown,
   groupId: string,
-  signal: string
+  signal: string,
+  options?: { unattributedSiteId?: string }
 ): Map<string, SiteTotal> {
   const totals = new Map<string, SiteTotal>();
   const dedupe = new Set<string>();
   const signalKey = signal.trim();
+  const unattributedSiteId = options?.unattributedSiteId ?? null;
 
   const addValue = (
     siteId: string | null,
@@ -523,26 +525,32 @@ function sumSiteTotalsByTelemetryPayload(
     timestamp: unknown,
     path: string
   ): void => {
-    if (!siteId || siteId === groupId) return;
+    // When unattributedSiteId is set, values with no site attribution (null)
+    // or values matching the groupId are collected under that fallback ID.
+    // This allows aggregate endpoint responses (group-level totals) to be
+    // captured instead of silently discarded.
+    const effectiveSiteId =
+      siteId && siteId !== groupId ? siteId : unattributedSiteId ?? siteId;
+    if (!effectiveSiteId || (effectiveSiteId === groupId && !unattributedSiteId)) return;
     const numeric = toFiniteNumber(value);
     if (numeric === null) return;
     const timestampMs = parseTimestampMs(timestamp);
-    const dedupeKey = `${siteId}|${timestampMs ?? "na"}|${numeric}|${path}`;
+    const dedupeKey = `${effectiveSiteId}|${timestampMs ?? "na"}|${numeric}|${path}`;
     if (dedupe.has(dedupeKey)) return;
     dedupe.add(dedupeKey);
 
-    const existing = totals.get(siteId);
+    const existing = totals.get(effectiveSiteId);
     if (!existing) {
-      totals.set(siteId, {
-        siteId,
+      totals.set(effectiveSiteId, {
+        siteId: effectiveSiteId,
         siteName: siteName ?? null,
         totalKwh: numeric,
       });
       return;
     }
 
-    totals.set(siteId, {
-      siteId,
+    totals.set(effectiveSiteId, {
+      siteId: effectiveSiteId,
       siteName: existing.siteName ?? siteName ?? null,
       totalKwh: existing.totalKwh + numeric,
     });
@@ -806,6 +814,7 @@ async function fetchTelemetryWindowTotals(
   const candidateUrls = buildTelemetryCandidateUrls(context, toNonEmptyString(options.endpointUrl));
   const attempts = buildTelemetryAttempts(candidateUrls, options.preferredAttempt);
   let lastError: string | null = null;
+  let lastRawPreview: unknown = null;
 
   for (const attempt of attempts) {
     const requestUrl = buildTelemetryRequestUrl(attempt.baseUrl, {
@@ -828,14 +837,51 @@ async function fetchTelemetryWindowTotals(
           attemptUsed: attempt,
         };
       }
+
+      // Aggregate endpoints return group-level totals without per-site
+      // breakdown.  Re-parse, attributing unidentified values to the group
+      // ID so they are not silently discarded.
+      const isAggregate = /\/operational\/aggregate\/?/i.test(attempt.baseUrl);
+      if (isAggregate) {
+        const groupTotals = sumSiteTotalsByTelemetryPayload(
+          raw,
+          options.groupId,
+          options.signal,
+          { unattributedSiteId: options.groupId }
+        );
+        if (groupTotals.size > 0) {
+          return {
+            totals: groupTotals,
+            resolvedEndpointUrl: requestUrl,
+            rawPreview: createPreview(raw),
+            attemptUsed: attempt,
+          };
+        }
+      }
+
+      lastRawPreview = createPreview(raw);
       lastError = `No site telemetry values parsed from ${requestUrl}.`;
     } catch (error) {
       lastError = error instanceof Error ? error.message : "Unknown request error.";
     }
   }
 
+  const previewSnippet =
+    lastRawPreview === null
+      ? ""
+      : (() => {
+          try {
+            const serialized = JSON.stringify(lastRawPreview);
+            return serialized.length > 700 ? `${serialized.slice(0, 700)}...` : serialized;
+          } catch {
+            return "";
+          }
+        })();
+
   throw new Error(
-    `Tesla Powerhub telemetry request failed for all endpoint candidates.${lastError ? ` Last error ${lastError}` : ""}`
+    `Tesla Powerhub telemetry request failed for all endpoint candidates.${lastError ? ` Last error ${lastError}` : ""}${
+      previewSnippet ? ` Preview ${previewSnippet}` : ""
+    }`
   );
 }
 
