@@ -696,6 +696,66 @@ function sumSiteTotalsByTelemetryPayload(
   return totals;
 }
 
+async function mapConcurrent<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
+/**
+ * Fetch telemetry for a single site using /telemetry/history.
+ * Returns the total kWh for the window, or null on failure.
+ */
+async function fetchSingleSiteTelemetryTotal(
+  context: TeslaPowerhubApiContext,
+  accessToken: string,
+  options: {
+    siteId: string;
+    signal: string;
+    startDatetime: string;
+    endDatetime: string;
+  }
+): Promise<{ totalKwh: number; rawPreview: unknown } | null> {
+  const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
+  const url = new URL(`${apiBase}/telemetry/history`);
+  url.searchParams.set("target_id", options.siteId);
+  url.searchParams.set("signals", options.signal);
+  url.searchParams.set("start_datetime", options.startDatetime);
+  url.searchParams.set("end_datetime", options.endDatetime);
+  url.searchParams.set("period", "1d");
+  url.searchParams.set("rollup", "sum");
+  url.searchParams.set("fill", "none");
+
+  try {
+    const raw = await fetchJsonWithBearerToken(url.toString(), accessToken, {
+      timeoutMs: 120_000,
+    });
+    // Parse with unattributedSiteId so values without an explicit site_id
+    // field are attributed to this site (the only target in the request).
+    const totals = sumSiteTotalsByTelemetryPayload(raw, "", options.signal, {
+      unattributedSiteId: options.siteId,
+    });
+    const entry = totals.get(options.siteId);
+    if (entry && entry.totalKwh !== 0) {
+      return { totalKwh: entry.totalKwh, rawPreview: createPreview(raw) };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function buildWindowConfigs(now: Date): TeslaPowerhubWindowConfig[] {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const endDatetime = now.toISOString();
@@ -1080,6 +1140,55 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       });
     }
   }
+
+  // ---- Per-site fallback ------------------------------------------------
+  // If every successful window only contains a single group-level total
+  // (siteId === groupId) and the site inventory has real sites, re-query
+  // /telemetry/history for each site individually so the caller gets a
+  // per-site breakdown instead of a single aggregated number.
+  const hasPerSiteBreakdown = Array.from(totalsByWindow.values()).some((totals) =>
+    Array.from(totals.keys()).some((siteId) => siteId !== groupId)
+  );
+
+  if (!hasPerSiteBreakdown && siteResult.sites.length > 0) {
+    emitProgress({
+      currentStep: 7,
+      totalSteps,
+      message: `Group query returned aggregated totals only. Loading per-site telemetry for ${siteResult.sites.length} site(s).`,
+    });
+
+    for (const window of windows) {
+      const windowTotals = new Map<string, SiteTotal>();
+
+      await mapConcurrent(siteResult.sites, 3, async (site) => {
+        const result = await fetchSingleSiteTelemetryTotal(context, token.access_token, {
+          siteId: site.siteId,
+          signal,
+          startDatetime: window.startDatetime,
+          endDatetime: window.endDatetime,
+        });
+        if (result) {
+          windowTotals.set(site.siteId, {
+            siteId: site.siteId,
+            siteName: site.siteName ?? null,
+            totalKwh: roundToFourDecimals(result.totalKwh),
+          });
+        }
+      });
+
+      if (windowTotals.size > 0) {
+        totalsByWindow.set(window.key, windowTotals);
+        telemetryErrorsByWindow[window.key] = null;
+      }
+    }
+
+    emitProgress({
+      currentStep: 7,
+      totalSteps,
+      message: `Per-site telemetry loaded.`,
+    });
+  }
+  // ---- End per-site fallback ---------------------------------------------
 
   const successfulWindowCount = windows.filter((window) => (totalsByWindow.get(window.key)?.size ?? 0) > 0).length;
   if (successfulWindowCount === 0) {
