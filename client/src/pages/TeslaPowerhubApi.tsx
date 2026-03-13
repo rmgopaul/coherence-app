@@ -26,6 +26,7 @@ const KWH_FORMATTER = new Intl.NumberFormat("en-US", {
 
 type SiteProductionRow = {
   siteId: string;
+  siteExternalId: string | null;
   siteName: string | null;
   dailyKwh: number;
   weeklyKwh: number;
@@ -301,7 +302,7 @@ export default function TeslaPowerhubApi() {
     const query = search.trim().toLowerCase();
     if (!query) return rows;
     return rows.filter((row) => {
-      const haystack = `${row.siteId} ${row.siteName ?? ""}`.toLowerCase();
+      const haystack = `${row.siteId} ${row.siteExternalId ?? ""} ${row.siteName ?? ""}`.toLowerCase();
       return haystack.includes(query);
     });
   }, [rows, search]);
@@ -336,6 +337,7 @@ export default function TeslaPowerhubApi() {
     }
     const headers = [
       "site_id",
+      "ste_id",
       "site_name",
       "daily_kwh",
       "weekly_kwh",
@@ -349,6 +351,7 @@ export default function TeslaPowerhubApi() {
       ...filteredRows.map((row) =>
         [
           row.siteId,
+          row.siteExternalId ?? "",
           row.siteName,
           row.dailyKwh,
           row.weeklyKwh,
@@ -672,6 +675,7 @@ export default function TeslaPowerhubApi() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Site ID</TableHead>
+                  <TableHead>STE ID</TableHead>
                   <TableHead>Site Name</TableHead>
                   <TableHead className="text-right">Daily kWh</TableHead>
                   <TableHead className="text-right">Weekly kWh</TableHead>
@@ -685,6 +689,7 @@ export default function TeslaPowerhubApi() {
                 {pagedRows.map((row) => (
                   <TableRow key={row.siteId}>
                     <TableCell className="font-medium">{row.siteId}</TableCell>
+                    <TableCell>{row.siteExternalId ?? "\u2014"}</TableCell>
                     <TableCell>{row.siteName ?? "N/A"}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.dailyKwh)}</TableCell>
                     <TableCell className="text-right">{formatKwh(row.weeklyKwh)}</TableCell>
@@ -696,7 +701,7 @@ export default function TeslaPowerhubApi() {
                 ))}
                 {pagedRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={8} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={9} className="py-6 text-center text-slate-500">
                       No sites to display.
                     </TableCell>
                   </TableRow>

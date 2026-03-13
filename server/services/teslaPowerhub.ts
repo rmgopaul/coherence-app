@@ -20,6 +20,7 @@ export type TeslaPowerhubUser = {
 
 export type TeslaPowerhubSiteProductionMetrics = {
   siteId: string;
+  siteExternalId: string | null;
   siteName: string | null;
   dailyKwh: number;
   weeklyKwh: number;
@@ -47,6 +48,7 @@ type TeslaPowerhubWindowConfig = {
 
 type SiteDescriptor = {
   siteId: string;
+  siteExternalId: string | null;
   siteName: string | null;
 };
 
@@ -469,13 +471,51 @@ function detectSiteName(record: Record<string, unknown>, inheritedSiteName: stri
   );
 }
 
+function detectSiteExternalId(record: Record<string, unknown>, inheritedExternalId: string | null): string | null {
+  // Look for Tesla STE-style identifiers (e.g. STE20250403-01158) and other
+  // common external / display ID field names.
+  const candidates = [
+    record.display_id,
+    record.displayId,
+    record.external_id,
+    record.externalId,
+    record.ste_id,
+    record.steId,
+    record.site_code,
+    record.siteCode,
+    record.identifier,
+    record.reference_id,
+    record.referenceId,
+    record.project_number,
+    record.customer_site_id,
+    record.asset_name,
+  ];
+  for (const candidate of candidates) {
+    const value = toNonEmptyString(candidate);
+    if (value) return value;
+  }
+
+  // Scan all string values for STE pattern as a last resort.
+  for (const value of Object.values(record)) {
+    const str = toNonEmptyString(value);
+    if (str && /^STE\d/i.test(str)) return str;
+  }
+
+  return inheritedExternalId;
+}
+
 function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescriptor[] {
   const siteMap = new Map<string, SiteDescriptor>();
 
-  const walk = (value: unknown, inheritedSiteId: string | null, inheritedSiteName: string | null): void => {
+  const walk = (
+    value: unknown,
+    inheritedSiteId: string | null,
+    inheritedSiteName: string | null,
+    inheritedExternalId: string | null
+  ): void => {
     if (Array.isArray(value)) {
       for (const row of value) {
-        walk(row, inheritedSiteId, inheritedSiteName);
+        walk(row, inheritedSiteId, inheritedSiteName, inheritedExternalId);
       }
       return;
     }
@@ -484,24 +524,30 @@ function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescrip
     const record = asRecord(value);
     const siteId = detectSiteId(record, groupId, inheritedSiteId);
     const siteName = detectSiteName(record, inheritedSiteName);
+    const externalId = detectSiteExternalId(record, inheritedExternalId);
     if (siteId && siteId !== groupId && !siteMap.has(siteId)) {
       siteMap.set(siteId, {
         siteId,
+        siteExternalId: externalId,
         siteName: siteName ?? null,
       });
-    } else if (siteId && siteMap.has(siteId) && siteName) {
+    } else if (siteId && siteMap.has(siteId)) {
       const existing = siteMap.get(siteId);
-      if (existing && !existing.siteName) {
-        siteMap.set(siteId, { ...existing, siteName });
+      if (existing && (!existing.siteName || !existing.siteExternalId)) {
+        siteMap.set(siteId, {
+          ...existing,
+          siteName: existing.siteName ?? siteName ?? null,
+          siteExternalId: existing.siteExternalId ?? externalId,
+        });
       }
     }
 
     for (const child of Object.values(record)) {
-      walk(child, siteId ?? inheritedSiteId, siteName ?? inheritedSiteName);
+      walk(child, siteId ?? inheritedSiteId, siteName ?? inheritedSiteName, externalId ?? inheritedExternalId);
     }
   };
 
-  walk(payload, null, null);
+  walk(payload, null, null, null);
   return Array.from(siteMap.values());
 }
 
@@ -1188,39 +1234,54 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   }
 
   // ---- Per-window fallback -----------------------------------------------
-  // For each window that lacks per-site data (either empty or only has the
-  // group-level aggregate ID), re-query /telemetry/history per-site.  This
-  // runs per-window so that windows with good group-level data are kept
-  // while windows that failed (e.g. lifetime) get the per-site treatment.
-  // Track which signal was used per site for dataSource labeling.
+  // For each window that lacks per-site data, re-query per-site.  After the
+  // first window completes we learn which signal works for each site and
+  // skip the failed signal for subsequent windows (halves API calls).
   const siteSignalUsed = new Map<string, string>();
+  let dominantSignal: string | null = null; // set after first per-site window
 
-  if (siteResult.sites.length > 0) {
-    for (const window of windows) {
-      const existing = totalsByWindow.get(window.key);
-      const hasPerSiteData =
-        existing &&
-        existing.size > 0 &&
-        Array.from(existing.keys()).some((siteId) => siteId !== groupId);
+  const windowsNeedingPerSite = windows.filter((w) => {
+    const existing = totalsByWindow.get(w.key);
+    return !(
+      existing &&
+      existing.size > 0 &&
+      Array.from(existing.keys()).some((siteId) => siteId !== groupId)
+    );
+  });
 
-      if (hasPerSiteData) continue;
+  if (windowsNeedingPerSite.length > 0 && siteResult.sites.length > 0) {
+    // Refresh token before potentially long per-site phase.
+    let accessToken = token.access_token;
+    try {
+      const refreshed = await requestClientCredentialsToken(context);
+      accessToken = refreshed.access_token;
+    } catch {
+      // Use original token if refresh fails.
+    }
 
+    for (const window of windowsNeedingPerSite) {
       emitProgress({
         currentStep: 7,
         totalSteps,
-        message: `Loading per-site ${window.key} telemetry for ${siteResult.sites.length} site(s).`,
+        message: `Loading per-site ${window.key} telemetry for ${siteResult.sites.length} site(s)${dominantSignal ? "" : " (detecting signal)"}.`,
       });
 
       const windowTotals = new Map<string, SiteTotal>();
 
-      await mapConcurrent(siteResult.sites, 3, async (site) => {
-        const result = await fetchSingleSiteTelemetryTotal(context, token.access_token, {
+      await mapConcurrent(siteResult.sites, 5, async (site) => {
+        // After the first window we know which signal works — skip the
+        // failing one to halve the number of API calls.
+        const siteKnownSignal = siteSignalUsed.get(site.siteId) ?? dominantSignal;
+        const sig = siteKnownSignal ?? primarySignal;
+        const fb = siteKnownSignal ? undefined : (fallbackSignal ?? undefined);
+
+        const result = await fetchSingleSiteTelemetryTotal(context, accessToken, {
           siteId: site.siteId,
-          signal: primarySignal,
+          signal: sig,
           startDatetime: window.startDatetime,
           endDatetime: window.endDatetime,
           period: window.period,
-          fallbackSignal: fallbackSignal ?? undefined,
+          fallbackSignal: fb,
         });
         if (result) {
           windowTotals.set(site.siteId, {
@@ -1238,17 +1299,33 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         totalsByWindow.set(window.key, windowTotals);
         telemetryErrorsByWindow[window.key] = null;
       }
+
+      // After the first per-site window, determine the dominant signal so
+      // subsequent windows can skip the failing signal entirely.
+      if (!dominantSignal && siteSignalUsed.size > 0) {
+        const counts = new Map<string, number>();
+        siteSignalUsed.forEach((sig) => counts.set(sig, (counts.get(sig) ?? 0) + 1));
+        let best = primarySignal;
+        let bestCount = 0;
+        counts.forEach((count, sig) => {
+          if (count > bestCount) { best = sig; bestCount = count; }
+        });
+        dominantSignal = best;
+        emitProgress({
+          currentStep: 7,
+          totalSteps,
+          message: `Detected working signal: ${dominantSignal}. Skipping failed signal for remaining windows.`,
+        });
+      }
     }
   }
   // ---- End per-window fallback -------------------------------------------
 
   // ---- Dual-signal fallback for group-level results ----------------------
   // For windows where the group query DID return per-site data, identify
-  // sites that have 0 kWh across ALL windows and retry them individually
-  // with the inverter signal.
+  // sites that have 0 kWh across ALL windows and retry with inverter.
   if (fallbackSignal && siteResult.sites.length > 0) {
     const zeroSites = siteResult.sites.filter((site) => {
-      // Only retry if the site has 0 across all windows.
       return windows.every((w) => {
         const val = totalsByWindow.get(w.key)?.get(site.siteId)?.totalKwh ?? 0;
         return val === 0;
@@ -1303,6 +1380,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       if (!siteMap.has(total.siteId)) {
         siteMap.set(total.siteId, {
           siteId: total.siteId,
+          siteExternalId: null,
           siteName: total.siteName ?? null,
         });
       }
@@ -1318,6 +1396,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     const usedSignal = siteSignalUsed.get(site.siteId) ?? primarySignal;
     return {
       siteId: site.siteId,
+      siteExternalId: site.siteExternalId ?? null,
       siteName: site.siteName ?? totalsByWindow.get("lifetime")?.get(site.siteId)?.siteName ?? null,
       dailyKwh: roundToFourDecimals(daily),
       weeklyKwh: roundToFourDecimals(weekly),
