@@ -84,23 +84,27 @@ type PotentialMatch = {
 const LINE_ITEM_CATEGORY_DEFINITIONS = [
   {
     key: "abpApplicationFee",
-    label: "ABP Application Fee",
+    label: "Application Fee",
   },
   {
     key: "utilityHeldCollateral5Percent",
-    label: "5% Utility Held Collateral",
+    label: "5% Collateral",
   },
   {
-    key: "ccFee3Percent",
-    label: "3% CC Fee",
+    key: "transferFee",
+    label: "Transfer Fee",
   },
   {
-    key: "contractCancellationTerminationCost",
-    label: "Contract Cancellation / Termination Cost",
+    key: "nonConnectionToInternetFee",
+    label: "Non-connection to internet fee",
   },
   {
-    key: "transferFee25KwAc",
-    label: "$25/kW AC Transfer Fee",
+    key: "ccFee",
+    label: "CC Fee",
+  },
+  {
+    key: "contractCancellationFee",
+    label: "Contract Cancellation Fee",
   },
 ] as const;
 
@@ -577,14 +581,21 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
     /25\s*\/\s*kw/.test(normalized) ||
     /25\s*kw/.test(normalized)
   ) {
-    categories.push("transferFee25KwAc");
+    categories.push("transferFee");
   }
 
   if (
     /\bcontract\b.*\b(cancellation|termination)\b/.test(normalized) ||
     /\b(cancellation|termination)\s*(cost|fee)\b/.test(normalized)
   ) {
-    categories.push("contractCancellationTerminationCost");
+    categories.push("contractCancellationFee");
+  }
+
+  if (
+    /non connection to internet/.test(normalized) ||
+    (/non connection/.test(normalized) && /internet/.test(normalized))
+  ) {
+    categories.push("nonConnectionToInternetFee");
   }
 
   if (
@@ -592,7 +603,7 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
     /\bcc\s*fee\b/.test(normalized) ||
     /\bcredit card fee\b/.test(normalized)
   ) {
-    categories.push("ccFee3Percent");
+    categories.push("ccFee");
   }
 
   if (
@@ -603,9 +614,10 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
   }
 
   const alreadySpecific =
-    categories.includes("transferFee25KwAc") ||
-    categories.includes("contractCancellationTerminationCost") ||
-    categories.includes("ccFee3Percent");
+    categories.includes("transferFee") ||
+    categories.includes("contractCancellationFee") ||
+    categories.includes("nonConnectionToInternetFee") ||
+    categories.includes("ccFee");
 
   if (
     !alreadySpecific &&
@@ -2143,8 +2155,8 @@ export default function InvoiceMatchDashboard() {
               likely candidates first.
             </p>
             <p>
-              Line items are normalized under fixed headers: ABP Application Fee, 5% Utility Held Collateral, 3% CC
-              Fee, Contract Cancellation/Termination Cost, and $25/kW AC Transfer Fee.
+              Line items are normalized under fixed headers: Application Fee, 5% Collateral, Transfer Fee,
+              Non-connection to internet fee, CC Fee, and Contract Cancellation Fee.
             </p>
           </CardContent>
         </Card>
