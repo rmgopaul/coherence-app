@@ -211,6 +211,15 @@ function parseTimestampMs(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function isLikelySiteIdKey(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) return false;
+  if (/^\d{4,}$/.test(normalized)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f-]{12,}$/i.test(normalized)) return true;
+  if (/^[A-Za-z0-9_-]{6,}$/.test(normalized) && /\d/.test(normalized)) return true;
+  return false;
+}
+
 function extractUsers(payload: unknown): TeslaPowerhubUser[] {
   const root = asRecord(payload);
   const rows = Array.isArray(root.users)
@@ -310,8 +319,9 @@ function buildTelemetryCandidateUrls(
     add(override);
   }
 
-  add(`${apiBase}/telemetry/history`);
+  // Aggregate endpoint first — it's designed for group-level queries.
   add(`${apiBase}/telemetry/history/operational/aggregate`);
+  add(`${apiBase}/telemetry/history`);
 
   return candidates;
 }
@@ -334,10 +344,28 @@ function buildTelemetryAttempts(
     addAttempt(preferredAttempt);
   }
 
+  // Prefer the aggregate endpoint (designed for group-level queries) without
+  // group_rollup — aggregation is implicit in the endpoint itself.  Fall back
+  // to the plain history endpoint (site-level) with common group_rollup values
+  // in case the caller is targeting a site or the aggregate endpoint is unavailable.
+  const aggregateUrls: string[] = [];
+  const historyUrls: string[] = [];
   candidateUrls.forEach((baseUrl) => {
-    const isAggregateEndpoint = /\/telemetry\/history\/operational\/aggregate\/?$/i.test(baseUrl);
-    const groupRollupCandidates: Array<string | null> = isAggregateEndpoint ? ["sum", "mean"] : [null];
-    groupRollupCandidates.forEach((groupRollup) => {
+    if (/\/telemetry\/history\/operational\/aggregate\/?$/i.test(baseUrl)) {
+      aggregateUrls.push(baseUrl);
+    } else {
+      historyUrls.push(baseUrl);
+    }
+  });
+
+  // 1. Aggregate endpoint — no group_rollup parameter (it's inherent).
+  aggregateUrls.forEach((baseUrl) => {
+    addAttempt({ baseUrl, groupRollup: null });
+  });
+
+  // 2. Plain history endpoint — try without, then with common rollup values.
+  historyUrls.forEach((baseUrl) => {
+    [null, "sum", "mean"].forEach((groupRollup) => {
       addAttempt({ baseUrl, groupRollup });
     });
   });
@@ -562,6 +590,21 @@ function sumSiteTotalsByTelemetryPayload(
 
     const record = asRecord(value);
     const entries = Object.entries(record);
+
+    const looksLikeSiteIdMap =
+      entries.length > 0 &&
+      entries.every(([key, rowValue]) => {
+        if (!isLikelySiteIdKey(key)) return false;
+        if (!rowValue || typeof rowValue !== "object") return false;
+        return true;
+      });
+    if (looksLikeSiteIdMap) {
+      entries.forEach(([key, rowValue]) => {
+        parseNumericContainer(rowValue, key, siteName, `${path}.${key}`);
+      });
+      return;
+    }
+
     const isTimestampMap =
       entries.length > 0 &&
       entries.every(([key, rowValue]) => parseTimestampMs(key) !== null && toFiniteNumber(rowValue) !== null);
