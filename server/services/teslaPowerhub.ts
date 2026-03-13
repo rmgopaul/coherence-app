@@ -39,6 +39,7 @@ type TeslaPowerhubWindowKey = "daily" | "weekly" | "monthly" | "yearly" | "lifet
 
 type TeslaPowerhubWindowConfig = {
   key: TeslaPowerhubWindowKey;
+  period: string;
   startDatetime: string;
   endDatetime: string;
 };
@@ -692,10 +693,11 @@ function sumSiteTotalsByTelemetryPayload(
 
   walk(payload, null, null, "root");
 
+  // Tesla Powerhub telemetry returns energy values in Wh — convert to kWh.
   Array.from(totals.entries()).forEach(([siteId, row]) => {
     totals.set(siteId, {
       ...row,
-      totalKwh: roundToFourDecimals(row.totalKwh),
+      totalKwh: roundToFourDecimals(row.totalKwh / 1000),
     });
   });
 
@@ -766,11 +768,11 @@ function buildWindowConfigs(now: Date): TeslaPowerhubWindowConfig[] {
   const DAY_MS = 24 * 60 * 60 * 1000;
   const endDatetime = now.toISOString();
   return [
-    { key: "daily", startDatetime: new Date(now.getTime() - DAY_MS).toISOString(), endDatetime },
-    { key: "weekly", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString(), endDatetime },
-    { key: "monthly", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString(), endDatetime },
-    { key: "yearly", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString(), endDatetime },
-    { key: "lifetime", startDatetime: "2010-01-01T00:00:00.000Z", endDatetime },
+    { key: "daily", period: "1h", startDatetime: new Date(now.getTime() - DAY_MS).toISOString(), endDatetime },
+    { key: "weekly", period: "1d", startDatetime: new Date(now.getTime() - 7 * DAY_MS).toISOString(), endDatetime },
+    { key: "monthly", period: "1d", startDatetime: new Date(now.getTime() - 30 * DAY_MS).toISOString(), endDatetime },
+    { key: "yearly", period: "1w", startDatetime: new Date(now.getTime() - 365 * DAY_MS).toISOString(), endDatetime },
+    { key: "lifetime", period: "30d", startDatetime: "2010-01-01T00:00:00.000Z", endDatetime },
   ];
 }
 
@@ -779,6 +781,7 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
   signal: string;
   startDatetime: string;
   endDatetime: string;
+  period?: string;
   groupRollup?: string | null;
 }): string {
   const url = new URL(baseUrl);
@@ -790,7 +793,7 @@ function buildTelemetryRequestUrl(baseUrl: string, options: {
   if (groupRollup) {
     url.searchParams.set("group_rollup", groupRollup);
   }
-  url.searchParams.set("period", "1d");
+  url.searchParams.set("period", options.period || "1d");
   url.searchParams.set("rollup", "sum");
   url.searchParams.set("fill", "none");
   return url.toString();
@@ -867,6 +870,7 @@ async function fetchTelemetryWindowTotals(
     signal: string;
     startDatetime: string;
     endDatetime: string;
+    period?: string;
     endpointUrl?: string | null;
     preferredAttempt?: TelemetryAttempt | null;
     allowEmptyTotals?: boolean;
@@ -888,6 +892,7 @@ async function fetchTelemetryWindowTotals(
       signal: options.signal,
       startDatetime: options.startDatetime,
       endDatetime: options.endDatetime,
+      period: options.period,
       groupRollup: attempt.groupRollup,
     });
     try {
@@ -1046,7 +1051,9 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     totalSteps,
     message: "Starting Tesla Powerhub production request.",
   });
-  const signal = toNonEmptyString(options.signal) ?? "solar_energy_exported";
+  // Default to the Revenue Grade Meter (RGM) signal for metered solar
+  // production.  Callers can override via options.signal if needed.
+  const signal = toNonEmptyString(options.signal) ?? "solar_energy_exported_rgm";
   emitProgress({
     currentStep: 1,
     totalSteps,
@@ -1121,6 +1128,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         signal,
         startDatetime: window.startDatetime,
         endDatetime: window.endDatetime,
+        period: window.period,
         endpointUrl: options.endpointUrl,
         preferredAttempt: preferredTelemetryAttempt,
         allowEmptyTotals: Boolean(preferredTelemetryAttempt),
