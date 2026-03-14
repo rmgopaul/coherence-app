@@ -230,13 +230,33 @@ async function fetchTickets(
   truncated: boolean;
 }> {
   const tickets: ZendeskTicketRecord[] = [];
-  let nextUrl: string | null = "/api/v2/tickets.json?page[size]=100&sort_by=updated_at&sort_order=desc";
+  // Offset pagination with explicit updated_at desc ordering is the most predictable
+  // shape for the date-window filter below.
+  let nextUrl: string | null = "/api/v2/tickets.json?per_page=100&sort_by=updated_at&sort_order=desc";
   let truncated = false;
   let reachedOlderThanStart = false;
+  let canShortCircuitByStartDate = true;
 
   while (nextUrl) {
     const payload = asRecord(await zendeskFetchJson(context, nextUrl));
     const pageRows = Array.isArray(payload.tickets) ? payload.tickets : [];
+    const pageUpdatedTimes = pageRows
+      .map((row) => {
+        const ticket = asRecord(row);
+        const updatedAt = toNonEmptyString(ticket.updated_at);
+        if (!updatedAt) return null;
+        const updatedMs = Date.parse(updatedAt);
+        return Number.isFinite(updatedMs) ? updatedMs : null;
+      })
+      .filter((value): value is number => value !== null);
+
+    if (pageUpdatedTimes.length >= 2) {
+      const first = pageUpdatedTimes[0];
+      const last = pageUpdatedTimes[pageUpdatedTimes.length - 1];
+      if (first < last) {
+        canShortCircuitByStartDate = false;
+      }
+    }
 
     for (const row of pageRows) {
       const ticket = asRecord(row);
@@ -248,8 +268,11 @@ async function fetchTickets(
       const hasValidUpdatedAt = Number.isFinite(updatedMs);
 
       if (hasValidUpdatedAt && dateRange.startMs !== null && updatedMs < dateRange.startMs) {
-        reachedOlderThanStart = true;
-        break;
+        if (canShortCircuitByStartDate) {
+          reachedOlderThanStart = true;
+          break;
+        }
+        continue;
       }
       if (hasValidUpdatedAt && dateRange.endMs !== null && updatedMs > dateRange.endMs) {
         continue;
