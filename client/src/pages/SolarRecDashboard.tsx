@@ -2798,6 +2798,9 @@ export default function SolarRecDashboard() {
     });
 
     const threshold = new Date();
+    // Reporting is month-based, so use the first day of the month three months back.
+    threshold.setHours(0, 0, 0, 0);
+    threshold.setDate(1);
     threshold.setMonth(threshold.getMonth() - 3);
 
     return Array.from(builders.values())
