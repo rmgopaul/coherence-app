@@ -1456,32 +1456,28 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     message: `Site list: ${siteResult.sites.length} from inventory + ${combinedSiteList.length - siteResult.sites.length} from telemetry = ${combinedSiteList.length} total.`,
   });
 
-  // ---- Phase 2: Per-site queries ------------------------------------------
-  // Group-level endpoints typically return aggregated totals without per-site
-  // breakdown.  For any window lacking real per-site data, query each site
-  // individually.  Rate-limited to 4 req/s with token refresh per window.
-  const windowsNeedingPerSite = windows.filter((w) => {
-    const existing = totalsByWindow.get(w.key);
-    return !(
-      existing &&
-      existing.size > 0 &&
-      Array.from(existing.keys()).some((siteId) => siteId !== groupId)
-    );
-  });
-
-  if (windowsNeedingPerSite.length > 0 && combinedSiteList.length > 0) {
+  // ---- Phase 2: Per-site gap-fill -----------------------------------------
+  // Phase 1 group-level queries may return per-site data for MOST sites but
+  // not all (the API may omit sites with no data for that signal, or large
+  // time-range requests may drop some sites).  Phase 2 fills the gaps by
+  // querying individual sites that are missing from Phase 1 results.
+  if (combinedSiteList.length > 0) {
     const perSiteThrottle = createApiThrottle(4);
     let perSiteToken = token.access_token;
 
-    for (const window of windowsNeedingPerSite) {
-      // Refresh token before each window batch to prevent expiration
-      // during long-running per-site queries (~12 min per window for ~3k sites).
+    for (const window of windows) {
+      const existingTotals = totalsByWindow.get(window.key) ?? new Map<string, SiteTotal>();
+      // Find sites missing from Phase 1 for this window
+      const missingSites = combinedSiteList.filter(
+        (site) => !existingTotals.has(site.siteId) || existingTotals.get(site.siteId)!.totalKwh === 0
+      );
+      if (missingSites.length === 0) continue; // all sites covered
+
+      // Refresh token before each window batch
       try {
         const refreshed = await requestClientCredentialsToken(context);
         perSiteToken = refreshed.access_token;
-      } catch {
-        // Use previous token if refresh fails.
-      }
+      } catch { /* use previous token */ }
 
       let perSiteOk = 0;
       let perSiteEmpty = 0;
@@ -1492,13 +1488,12 @@ export async function getTeslaPowerhubGroupProductionMetrics(
         currentStep: 7,
         totalSteps,
         windowKey: window.key,
-        message: `Per-site ${window.key} telemetry for ${combinedSiteList.length} site(s) — starting.`,
+        message: `Per-site ${window.key} gap-fill for ${missingSites.length} site(s) missing from group query.`,
       });
 
-      const windowTotals = new Map<string, SiteTotal>();
-      const batchToken = perSiteToken; // capture for this window batch
+      const batchToken = perSiteToken;
 
-      await mapConcurrent(combinedSiteList, 4, async (site) => {
+      await mapConcurrent(missingSites, 4, async (site) => {
         await perSiteThrottle();
         try {
           const result = await fetchSingleSiteTelemetryTotal(context, batchToken, {
@@ -1511,7 +1506,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
           });
           if (result) {
             perSiteOk++;
-            windowTotals.set(site.siteId, {
+            existingTotals.set(site.siteId, {
               siteId: site.siteId,
               siteName: site.siteName ?? null,
               totalKwh: roundToFourDecimals(result.totalKwh),
@@ -1527,41 +1522,35 @@ export async function getTeslaPowerhubGroupProductionMetrics(
           }
         }
 
-        // Periodic progress updates
         const processed = perSiteOk + perSiteEmpty + perSiteErr;
         if (processed % 200 === 0) {
           emitProgress({
             currentStep: 7,
             totalSteps,
             windowKey: window.key,
-            message: `Per-site ${window.key}: ${processed}/${combinedSiteList.length} queried (${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors).`,
+            message: `Per-site ${window.key}: ${processed}/${missingSites.length} queried (${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors).`,
           });
         }
       });
+
+      totalsByWindow.set(window.key, existingTotals);
+      if (perSiteOk > 0) telemetryErrorsByWindow[window.key] = null;
 
       emitProgress({
         currentStep: 7,
         totalSteps,
         windowKey: window.key,
-        message: `Per-site ${window.key} done: ${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors.${lastPerSiteError ? ` First error: ${lastPerSiteError.slice(0, 200)}` : ""}`,
+        message: `Per-site ${window.key} gap-fill done: ${perSiteOk} OK, ${perSiteEmpty} empty, ${perSiteErr} errors (of ${missingSites.length} missing).${lastPerSiteError ? ` First error: ${lastPerSiteError.slice(0, 200)}` : ""}`,
       });
-
-      if (windowTotals.size > 0) {
-        totalsByWindow.set(window.key, windowTotals);
-        telemetryErrorsByWindow[window.key] = null;
-      } else if (perSiteErr > 0) {
-        telemetryErrorsByWindow[window.key] =
-          `All ${combinedSiteList.length} per-site queries failed for ${window.key}. First error: ${lastPerSiteError.slice(0, 300)}`;
-      }
     }
-  } else if (windowsNeedingPerSite.length > 0 && combinedSiteList.length === 0) {
+  } else {
     emitProgress({
       currentStep: 7,
       totalSteps,
       message: `WARNING: No sites discovered from inventory or telemetry — cannot run per-site queries.`,
     });
   }
-  // ---- End per-site queries -----------------------------------------------
+  // ---- End per-site gap-fill -----------------------------------------------
 
   // ---- Phase 3: Fetch STE external identifiers -----------------------------
   // The STE identifier (e.g. STE20250403-01158) lives in the individual
@@ -1641,11 +1630,19 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   const rows: TeslaPowerhubSiteProductionMetrics[] = Array.from(siteMap.values())
     .filter((site) => site.siteId !== groupId)
     .map((site) => {
-    const daily = totalsByWindow.get("daily")?.get(site.siteId)?.totalKwh ?? 0;
-    const weekly = totalsByWindow.get("weekly")?.get(site.siteId)?.totalKwh ?? 0;
-    const monthly = totalsByWindow.get("monthly")?.get(site.siteId)?.totalKwh ?? 0;
-    const yearly = totalsByWindow.get("yearly")?.get(site.siteId)?.totalKwh ?? 0;
-    const lifetime = totalsByWindow.get("lifetime")?.get(site.siteId)?.totalKwh ?? 0;
+    const dailyRaw = totalsByWindow.get("daily")?.get(site.siteId)?.totalKwh ?? 0;
+    const weeklyRaw = totalsByWindow.get("weekly")?.get(site.siteId)?.totalKwh ?? 0;
+    const monthlyRaw = totalsByWindow.get("monthly")?.get(site.siteId)?.totalKwh ?? 0;
+    const yearlyRaw = totalsByWindow.get("yearly")?.get(site.siteId)?.totalKwh ?? 0;
+    const lifetimeRaw = totalsByWindow.get("lifetime")?.get(site.siteId)?.totalKwh ?? 0;
+    // Clamp: longer windows must be >= shorter windows.  Different API
+    // period granularities (15m / 1h / 6h / 1d / 7d) can cause the
+    // max−min delta to be slightly lower for coarser periods.
+    const daily = dailyRaw;
+    const weekly = Math.max(weeklyRaw, daily);
+    const monthly = Math.max(monthlyRaw, weekly);
+    const yearly = Math.max(yearlyRaw, monthly);
+    const lifetime = Math.max(lifetimeRaw, yearly);
     const usedSignal = siteSignalUsed.get(site.siteId) ?? primarySignal;
     return {
       siteId: site.siteId,
