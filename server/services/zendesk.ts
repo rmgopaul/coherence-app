@@ -230,14 +230,18 @@ async function fetchTickets(
   truncated: boolean;
 }> {
   const tickets: ZendeskTicketRecord[] = [];
-  // Offset pagination with explicit updated_at desc ordering is the most predictable
-  // shape for the date-window filter below.
-  let nextUrl: string | null = "/api/v2/tickets.json?per_page=100&sort_by=updated_at&sort_order=desc";
+  // Cursor pagination avoids Zendesk's offset-depth cap (10,000 rows).
+  const ticketCursorBasePath = "/api/v2/tickets.json?page[size]=100&sort_by=updated_at&sort_order=desc";
+  let nextUrl: string | null = ticketCursorBasePath;
   let truncated = false;
   let reachedOlderThanStart = false;
   let canShortCircuitByStartDate = true;
+  const visitedPageUrls = new Set<string>();
 
   while (nextUrl) {
+    if (visitedPageUrls.has(nextUrl)) break;
+    visitedPageUrls.add(nextUrl);
+
     const payload = asRecord(await zendeskFetchJson(context, nextUrl));
     const pageRows = Array.isArray(payload.tickets) ? payload.tickets : [];
     const pageUpdatedTimes = pageRows
@@ -295,10 +299,27 @@ async function fetchTickets(
 
     const links = asRecord(payload.links);
     const meta = asRecord(payload.meta);
-    const hasMore = Boolean(meta.has_more);
+    const hasMoreRaw = meta.has_more;
+    const hasMore = hasMoreRaw === true || hasMoreRaw === "true";
     const cursorNext = toNonEmptyString(links.next);
-    const offsetNext = toNonEmptyString(payload.next_page);
-    nextUrl = (hasMore ? cursorNext : null) ?? offsetNext ?? null;
+    const afterCursor = toNonEmptyString(meta.after_cursor);
+
+    if (!hasMore) {
+      nextUrl = null;
+      continue;
+    }
+
+    if (cursorNext) {
+      nextUrl = cursorNext;
+      continue;
+    }
+
+    if (afterCursor) {
+      nextUrl = `${ticketCursorBasePath}&page[after]=${encodeURIComponent(afterCursor)}`;
+      continue;
+    }
+
+    nextUrl = null;
   }
 
   return {
