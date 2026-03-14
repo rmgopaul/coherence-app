@@ -5,7 +5,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Switch } from "@/components/ui/switch";
 import { trpc } from "@/lib/trpc";
+import {
+  DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS,
+  buildDashboardWidgetLayoutWithHiddenButtons,
+  getHiddenDashboardHeaderButtons,
+  type DashboardHeaderToolButtonKey,
+} from "@/lib/dashboardPreferences";
 import { useTheme } from "@/contexts/ThemeContext";
 import {
   Activity,
@@ -84,6 +91,7 @@ export default function Settings() {
   const [whoopClientSecret, setWhoopClientSecret] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [selectedThemeMode, setSelectedThemeMode] = useState<"light" | "dark">(theme);
+  const [hiddenDashboardButtons, setHiddenDashboardButtons] = useState<DashboardHeaderToolButtonKey[]>([]);
   const [newHabitName, setNewHabitName] = useState("");
   const [newHabitColor, setNewHabitColor] = useState("slate");
   const [habitHistoryDate, setHabitHistoryDate] = useState(() => toDateKeyLocal(new Date()));
@@ -218,11 +226,11 @@ export default function Settings() {
 
   const updatePreferences = trpc.preferences.update.useMutation({
     onSuccess: () => {
-      toast.success("Display name saved");
+      toast.success("Preferences saved");
       refetchPreferences();
     },
     onError: (error) => {
-      toast.error(`Failed to save display name: ${error.message}`);
+      toast.error(`Failed to save preferences: ${error.message}`);
     },
   });
 
@@ -324,6 +332,10 @@ export default function Settings() {
     }
     setSelectedThemeMode(theme);
   }, [preferences?.theme, setTheme, theme]);
+
+  useEffect(() => {
+    setHiddenDashboardButtons(getHiddenDashboardHeaderButtons(preferences?.widgetLayout));
+  }, [preferences?.widgetLayout]);
 
   useEffect(() => {
     if (!supplementDefinitions) return;
@@ -533,6 +545,26 @@ export default function Settings() {
     });
   };
 
+  const toggleDashboardButtonVisibility = (buttonKey: DashboardHeaderToolButtonKey, hidden: boolean) => {
+    setHiddenDashboardButtons((current) => {
+      if (hidden) {
+        if (current.includes(buttonKey)) return current;
+        return [...current, buttonKey];
+      }
+      return current.filter((key) => key !== buttonKey);
+    });
+  };
+
+  const handleSaveDashboardButtonVisibility = () => {
+    const serializedWidgetLayout = buildDashboardWidgetLayoutWithHiddenButtons(
+      preferences?.widgetLayout,
+      hiddenDashboardButtons
+    );
+    updatePreferences.mutate({
+      widgetLayout: serializedWidgetLayout,
+    });
+  };
+
   const handleAddSupplementDefinition = () => {
     if (!newSupplementName.trim() || !newSupplementDose.trim()) {
       toast.error("Supplement name and default daily amount are required");
@@ -739,34 +771,76 @@ export default function Settings() {
 
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Appearance</h2>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Theme Mode</CardTitle>
-                <CardDescription className="text-sm">
-                  Choose Light Mode or Dark Mode (night mode uses a blue palette).
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="space-y-2">
-                  <Label htmlFor="theme-mode">Mode</Label>
-                  <Select
-                    value={selectedThemeMode}
-                    onValueChange={(value) => setSelectedThemeMode(value as "light" | "dark")}
-                  >
-                    <SelectTrigger id="theme-mode">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="light">Light Mode</SelectItem>
-                      <SelectItem value="dark">Dark Mode</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button onClick={handleSaveTheme} disabled={updatePreferences.isPending}>
-                  {updatePreferences.isPending ? "Saving..." : "Save Theme"}
-                </Button>
-              </CardContent>
-            </Card>
+            <div className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Theme Mode</CardTitle>
+                  <CardDescription className="text-sm">
+                    Choose Light Mode or Dark Mode (night mode uses a blue palette).
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="theme-mode">Mode</Label>
+                    <Select
+                      value={selectedThemeMode}
+                      onValueChange={(value) => setSelectedThemeMode(value as "light" | "dark")}
+                    >
+                      <SelectTrigger id="theme-mode">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="light">Light Mode</SelectItem>
+                        <SelectItem value="dark">Dark Mode</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button onClick={handleSaveTheme} disabled={updatePreferences.isPending}>
+                    {updatePreferences.isPending ? "Saving..." : "Save Theme"}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Dashboard Top Buttons</CardTitle>
+                  <CardDescription className="text-sm">
+                    Hide buttons you do not use often to reduce crowding on the dashboard header. Settings stays visible.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS.map((option) => {
+                      const isHidden = hiddenDashboardButtons.includes(option.key);
+                      return (
+                        <div
+                          key={option.key}
+                          className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2"
+                        >
+                          <div className="min-w-0 pr-3">
+                            <p className="text-sm font-medium text-slate-900">{option.label}</p>
+                            <p className="text-xs text-slate-500">{isHidden ? "Hidden" : "Visible"}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Label htmlFor={`hide-dashboard-button-${option.key}`} className="text-xs text-slate-600">
+                              Hide
+                            </Label>
+                            <Switch
+                              id={`hide-dashboard-button-${option.key}`}
+                              checked={isHidden}
+                              onCheckedChange={(checked) => toggleDashboardButtonVisibility(option.key, checked)}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <Button onClick={handleSaveDashboardButtonVisibility} disabled={updatePreferences.isPending}>
+                    {updatePreferences.isPending ? "Saving..." : "Save Button Visibility"}
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
           </div>
 
           <div style={{ order: 9999 }}>

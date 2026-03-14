@@ -11,6 +11,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import {
+  getHiddenDashboardHeaderButtons,
+  type DashboardHeaderToolButtonKey,
+} from "@/lib/dashboardPreferences";
 import { buildDailyBrief, MOCK_DAILY_BRIEF, withFreshness, type DailyBrief, type DailyBriefAction } from "@/lib/dailyBrief";
 import {
   Calendar,
@@ -35,6 +39,7 @@ import {
   Clock3,
   CloudSun,
   FileSpreadsheet,
+  type LucideIcon,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -92,6 +97,26 @@ const getWeatherLabel = (code?: number) => {
   if (typeof code !== "number") return "Weather unavailable";
   return WEATHER_CODE_LABELS[code] || "Weather unavailable";
 };
+
+type DashboardHeaderButtonConfig = {
+  key: DashboardHeaderToolButtonKey;
+  label: string;
+  route: string;
+  icon: LucideIcon;
+};
+
+const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
+  { key: "notebook", label: "Notebook", route: "/notes", icon: FileText },
+  { key: "solarRec", label: "Solar REC", route: "/solar-rec-dashboard", icon: BarChart3 },
+  { key: "invoiceMatch", label: "Invoice Match", route: "/invoice-match-dashboard", icon: FileSpreadsheet },
+  { key: "deepUpdate", label: "Deep Update", route: "/deep-update-synthesizer", icon: FileSpreadsheet },
+  { key: "contractScanner", label: "Contract Scanner", route: "/contract-scanner", icon: FileText },
+  { key: "enphaseV4", label: "Enphase v4", route: "/enphase-v4-meter-reads", icon: Database },
+  { key: "solarEdgeApi", label: "SolarEdge API", route: "/solaredge-meter-reads", icon: Database },
+  { key: "teslaSolarApi", label: "Tesla Solar API", route: "/tesla-solar-api", icon: Database },
+  { key: "teslaPowerhubApi", label: "Tesla Powerhub API", route: "/tesla-powerhub-api", icon: Database },
+  { key: "zendeskApi", label: "Zendesk API", route: "/zendesk-ticket-metrics", icon: Database },
+];
 
 const decodeHtmlEntities = (content: string) => {
   if (typeof window === "undefined") return content.replace(/&nbsp;/gi, " ");
@@ -235,7 +260,7 @@ export default function Dashboard() {
   const [manualEnergyScoreInput, setManualEnergyScoreInput] = useState("");
   const [editingSamsungField, setEditingSamsungField] = useState<"sleep" | "energy" | null>(null);
   const [minuteTick, setMinuteTick] = useState(() => new Date());
-  const [dashboardViewMode, setDashboardViewMode] = useState<"essential" | "detailed">("essential");
+  const [dashboardViewMode, setDashboardViewMode] = useState<"essential" | "detailed">("detailed");
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   const [chatExpanded, setChatExpanded] = useState(false);
   const [noteTitleInput, setNoteTitleInput] = useState("");
@@ -1838,11 +1863,30 @@ export default function Dashboard() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const hiddenHeaderButtons = useMemo(
+    () => new Set(getHiddenDashboardHeaderButtons(preferences?.widgetLayout)),
+    [preferences?.widgetLayout]
+  );
+
+  const visibleHeaderButtons = useMemo(
+    () => DASHBOARD_HEADER_BUTTONS.filter((button) => !hiddenHeaderButtons.has(button.key)),
+    [hiddenHeaderButtons]
+  );
+
+  const [headerButtonRowOne, headerButtonRowTwo] = useMemo(() => {
+    if (visibleHeaderButtons.length === 0) return [[], []] as const;
+    const firstRowSize = Math.max(1, Math.ceil(visibleHeaderButtons.length / 2));
+    return [
+      visibleHeaderButtons.slice(0, firstRowSize),
+      visibleHeaderButtons.slice(firstRowSize),
+    ] as const;
+  }, [visibleHeaderButtons]);
+
   return (
     <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
       {/* Header */}
       <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border-b sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="container mx-auto flex flex-col gap-3 px-4 py-4 xl:flex-row xl:items-start xl:justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900 dark:text-slate-100">Coherence</h1>
             <div className="mt-1 flex items-center gap-2">
@@ -1864,51 +1908,37 @@ export default function Dashboard() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" onClick={() => setLocation("/notes")}>
-              <FileText className="h-4 w-4 mr-2" />
-              Notebook
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/solar-rec-dashboard")}>
-              <BarChart3 className="h-4 w-4 mr-2" />
-              Solar REC
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/invoice-match-dashboard")}>
-              <FileSpreadsheet className="h-4 w-4 mr-2" />
-              Invoice Match
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/deep-update-synthesizer")}>
-              <FileSpreadsheet className="h-4 w-4 mr-2" />
-              Deep Update
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/contract-scanner")}>
-              <FileText className="h-4 w-4 mr-2" />
-              Contract Scanner
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/enphase-v4-meter-reads")}>
-              <Database className="h-4 w-4 mr-2" />
-              Enphase v4
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/solaredge-meter-reads")}>
-              <Database className="h-4 w-4 mr-2" />
-              SolarEdge API
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/tesla-solar-api")}>
-              <Database className="h-4 w-4 mr-2" />
-              Tesla Solar API
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/tesla-powerhub-api")}>
-              <Database className="h-4 w-4 mr-2" />
-              Tesla Powerhub API
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/zendesk-ticket-metrics")}>
-              <Database className="h-4 w-4 mr-2" />
-              Zendesk API
-            </Button>
-            <Button variant="outline" onClick={() => setLocation("/settings")}>
-              <SettingsIcon className="h-4 w-4 mr-2" />
-              Settings
-            </Button>
+          <div className="flex w-full flex-col gap-2 xl:w-auto">
+            <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
+              {headerButtonRowOne.map((button) => {
+                const Icon = button.icon;
+                return (
+                  <Button key={button.key} variant="outline" onClick={() => setLocation(button.route)}>
+                    <Icon className="mr-2 h-4 w-4" />
+                    {button.label}
+                  </Button>
+                );
+              })}
+            </div>
+            {headerButtonRowTwo.length > 0 ? (
+              <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
+                {headerButtonRowTwo.map((button) => {
+                  const Icon = button.icon;
+                  return (
+                    <Button key={button.key} variant="outline" onClick={() => setLocation(button.route)}>
+                      <Icon className="mr-2 h-4 w-4" />
+                      {button.label}
+                    </Button>
+                  );
+                })}
+              </div>
+            ) : null}
+            <div className="flex items-center justify-start xl:justify-end">
+              <Button variant="outline" onClick={() => setLocation("/settings")}>
+                <SettingsIcon className="h-4 w-4 mr-2" />
+                Settings
+              </Button>
+            </div>
           </div>
         </div>
       </header>
@@ -1962,159 +1992,175 @@ export default function Dashboard() {
         </div>
         <div className="container mx-auto px-4 py-2">
           <div className="rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-red-50 px-3 py-2 shadow-[0_10px_28px_rgba(225,29,72,0.12)]">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs border border-slate-200 bg-white hover:bg-slate-50"
-              onClick={() => scrollToSection("section-overview")}
-            >
-              <FileText className="h-3.5 w-3.5 mr-1.5 text-slate-700" />
-              Today's Plan
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs border border-cyan-200 bg-cyan-50 hover:bg-cyan-100"
-              onClick={() => scrollToSection("section-health")}
-            >
-              <HeartPulse className="h-3.5 w-3.5 mr-1.5 text-cyan-700" />
-              Health
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
-              onClick={() => scrollToSection("section-tracking")}
-            >
-              <BarChart3 className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
-              Tracking
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 text-xs border border-red-200 bg-red-50 hover:bg-red-100"
-              onClick={() => scrollToSection("section-todoist")}
-            >
-              <CheckSquare className="h-3.5 w-3.5 mr-1.5 text-red-600" />
-              Todoist
-            </Button>
-            {isDetailedMode ? (
-              <>
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs border border-slate-200 bg-white hover:bg-slate-50"
+                  onClick={() => scrollToSection("section-overview")}
+                >
+                  <FileText className="h-3.5 w-3.5 mr-1.5 text-slate-700" />
+                  Today's Plan
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 text-xs border border-cyan-200 bg-cyan-50 hover:bg-cyan-100"
+                  onClick={() => scrollToSection("section-health")}
+                >
+                  <HeartPulse className="h-3.5 w-3.5 mr-1.5 text-cyan-700" />
+                  Health
+                </Button>
                 <Button
                   variant="ghost"
                   size="sm"
                   className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
-                  onClick={() => scrollToSection("section-workspace")}
+                  onClick={() => scrollToSection("section-tracking")}
                 >
-                  <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
-                  Workspace
+                  <BarChart3 className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
+                  Tracking
                 </Button>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
-                  onClick={() => scrollToSection("section-chat")}
+                  className="h-8 text-xs border border-red-200 bg-red-50 hover:bg-red-100"
+                  onClick={() => scrollToSection("section-todoist")}
                 >
-                  <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
-                  Chat
+                  <CheckSquare className="h-3.5 w-3.5 mr-1.5 text-red-600" />
+                  Todoist
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs border border-emerald-200 bg-white hover:bg-emerald-50"
-                  onClick={() => setWorkspaceExpanded((current) => !current)}
-                >
-                  {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs border border-violet-200 bg-white hover:bg-violet-50"
-                  onClick={() => setChatExpanded((current) => !current)}
-                >
-                  {chatExpanded ? "Hide Chat" : "Show Chat"}
-                </Button>
-              </>
-            ) : null}
-            <div className="ml-auto flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
-              <Button
-                variant={dashboardViewMode === "essential" ? "default" : "ghost"}
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setDashboardViewMode("essential")}
-              >
-                Essential
-              </Button>
-              <Button
-                variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
-                size="sm"
-                className="h-7 text-xs"
-                onClick={() => setDashboardViewMode("detailed")}
-              >
-                Detailed
-              </Button>
+                {isDetailedMode ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
+                      onClick={() => scrollToSection("section-workspace")}
+                    >
+                      <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
+                      Workspace
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
+                      onClick={() => scrollToSection("section-chat")}
+                    >
+                      <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
+                      Chat
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {isDetailedMode ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs border border-emerald-200 bg-white hover:bg-emerald-50"
+                        onClick={() => setWorkspaceExpanded((current) => !current)}
+                      >
+                        {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 text-xs border border-violet-200 bg-white hover:bg-violet-50"
+                        onClick={() => setChatExpanded((current) => !current)}
+                      >
+                        {chatExpanded ? "Hide Chat" : "Show Chat"}
+                      </Button>
+                    </>
+                  ) : null}
+                </div>
+
+                <div className="ml-auto flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
+                  <Button
+                    variant={dashboardViewMode === "essential" ? "default" : "ghost"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setDashboardViewMode("essential")}
+                  >
+                    Essential
+                  </Button>
+                  <Button
+                    variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setDashboardViewMode("detailed")}
+                  >
+                    Detailed
+                  </Button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
       </div>
-      </div>
 
       {/* Today's Plan */}
       <div id="section-overview" className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <TodaysPlan
-            calendarEvents={calendarEvents || []}
-            todoistTasks={allTodoistTasks || []}
-            emails={gmailMessages || []}
-            habits={habitsForToday || []}
-            onCompleteHabit={handleCompleteHabitFromPlan}
-            onRegenerate={handleRegenerateTodaysPlan}
-          />
-
-          <div className="min-w-0 space-y-4">
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Triage Inbox</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <div className="h-32 rounded-md border border-slate-200 bg-white px-2 py-1">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={emailPriorityChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                      <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <Tooltip />
-                      <Bar dataKey="count" name="Emails" fill="#e11d48" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                {triageEmails.length === 0 ? (
-                  <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
-                    No priority emails to triage right now.
-                  </p>
-                ) : (
-                  triageEmails.map((email) => (
-                    <TriageEmail
-                      key={email.id}
-                      email={email}
-                      onReply={handleTriageReply}
-                      onMarkRead={handleTriageMarkRead}
-                      onMakeTask={handleTriageMakeTask}
-                      markReadDisabled={markEmailAsRead.isPending}
-                      markReadPending={markEmailAsRead.isPending && markingEmailId === email.id}
-                    />
-                  ))
-                )}
-              </CardContent>
-            </Card>
-
-            <DecisionsWidget
-              decisions={decisionsToMake}
-              waitingOn={waitingOnItems}
-              onSendNudge={handleSendNudge}
+        <div className="space-y-4">
+          <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <TodaysPlan
+              calendarEvents={calendarEvents || []}
+              todoistTasks={allTodoistTasks || []}
+              emails={gmailMessages || []}
+              habits={habitsForToday || []}
+              whoopSummary={whoopSummary}
+              samsungHealthSnapshot={samsungHealthSnapshot}
+              onCompleteHabit={handleCompleteHabitFromPlan}
+              onRegenerate={handleRegenerateTodaysPlan}
             />
+
+            <div className="min-w-0">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Triage Inbox</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  <div className="h-32 rounded-md border border-slate-200 bg-white px-2 py-1">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={emailPriorityChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <Tooltip />
+                        <Bar dataKey="count" name="Emails" fill="#e11d48" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  {triageEmails.length === 0 ? (
+                    <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+                      No priority emails to triage right now.
+                    </p>
+                  ) : (
+                    triageEmails.map((email) => (
+                      <TriageEmail
+                        key={email.id}
+                        email={email}
+                        onReply={handleTriageReply}
+                        onMarkRead={handleTriageMarkRead}
+                        onMakeTask={handleTriageMakeTask}
+                        markReadDisabled={markEmailAsRead.isPending}
+                        markReadPending={markEmailAsRead.isPending && markingEmailId === email.id}
+                      />
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            </div>
           </div>
+
+          <DecisionsWidget
+            decisions={decisionsToMake}
+            waitingOn={waitingOnItems}
+            onSendNudge={handleSendNudge}
+          />
         </div>
       </div>
 

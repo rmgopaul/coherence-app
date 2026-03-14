@@ -22,6 +22,8 @@ type TodaysPlanProps = {
   todoistTasks: any[];
   emails: any[];
   habits: any[];
+  whoopSummary?: any | null;
+  samsungHealthSnapshot?: any | null;
   onCompleteHabit?: (habitId: string) => void;
   onRegenerate?: () => Promise<void> | void;
 };
@@ -117,6 +119,8 @@ export function TodaysPlan({
   todoistTasks,
   emails,
   habits,
+  whoopSummary,
+  samsungHealthSnapshot,
   onCompleteHabit,
   onRegenerate,
 }: TodaysPlanProps) {
@@ -172,23 +176,112 @@ export function TodaysPlan({
     setPlanItems(displayedPlanItems);
   }, [displayedPlanItems]);
 
-  const suggestions = useMemo<SuggestedPlanAction[]>(
-    () => [
-      {
+  const suggestions = useMemo<SuggestedPlanAction[]>(() => {
+    const nextSuggestions: SuggestedPlanAction[] = [];
+    const nowMs = Date.now();
+
+    const whoopSleepHours =
+      typeof whoopSummary?.sleepHours === "number" && Number.isFinite(whoopSummary.sleepHours)
+        ? whoopSummary.sleepHours
+        : null;
+    const samsungSleepHours =
+      typeof samsungHealthSnapshot?.sleepTotalMinutes === "number" &&
+      Number.isFinite(samsungHealthSnapshot.sleepTotalMinutes)
+        ? Number(samsungHealthSnapshot.sleepTotalMinutes) / 60
+        : null;
+    const sleepHours = whoopSleepHours ?? samsungSleepHours;
+
+    const recoveryScore =
+      typeof whoopSummary?.recoveryScore === "number" && Number.isFinite(whoopSummary.recoveryScore)
+        ? whoopSummary.recoveryScore
+        : typeof samsungHealthSnapshot?.energyScore === "number" &&
+            Number.isFinite(samsungHealthSnapshot.energyScore)
+          ? samsungHealthSnapshot.energyScore
+          : null;
+
+    if (
+      (sleepHours !== null && sleepHours < 6) ||
+      (recoveryScore !== null && recoveryScore < 50)
+    ) {
+      nextSuggestions.push({
         id: "suggestion:walk-break",
-        description: "Your WHOOP recovery is low. Schedule a 15-min walk?",
         title: "15-min recovery walk",
+        description:
+          sleepHours !== null
+            ? `Sleep tracked at ${sleepHours.toFixed(1)}h. Add a short recovery walk before heavier work.`
+            : "Recovery score is lower than usual. Add a short walk before heavier work.",
         durationMinutes: 15,
-      },
-      {
+      });
+    }
+
+    const dueTodayCount = (todoistTasks || []).filter((task) => {
+      const dueDate = String(task?.due?.date || "").trim();
+      return dueDate === seed.dateKey;
+    }).length;
+
+    if (dueTodayCount >= 2) {
+      nextSuggestions.push({
         id: "suggestion:focus-sprint",
-        description: "You have multiple tasks due today. Add a 30-min focus sprint now?",
         title: "30-min focus sprint",
+        description: `${dueTodayCount} tasks are due today. Block focused time now to reduce end-of-day pressure.`,
         durationMinutes: 30,
-      },
-    ],
-    []
-  );
+      });
+    }
+
+    const nextMeeting = (calendarEvents || [])
+      .map((event) => {
+        const startRaw = event?.start?.dateTime || event?.start?.date;
+        if (!startRaw) return null;
+        const start = new Date(event?.start?.dateTime ? startRaw : `${startRaw}T00:00:00`);
+        if (Number.isNaN(start.getTime())) return null;
+        return {
+          id: String(event?.id || ""),
+          title: String(event?.summary || "Upcoming meeting").trim() || "Upcoming meeting",
+          startMs: start.getTime(),
+        };
+      })
+      .filter((event): event is { id: string; title: string; startMs: number } => Boolean(event))
+      .filter((event) => event.startMs > nowMs && event.startMs - nowMs <= 3 * 60 * 60 * 1000)
+      .sort((left, right) => left.startMs - right.startMs)[0];
+
+    if (nextMeeting) {
+      const minutesUntil = Math.max(1, Math.round((nextMeeting.startMs - nowMs) / (60 * 1000)));
+      nextSuggestions.push({
+        id: `suggestion:prep:${nextMeeting.id || "next"}`,
+        title: `Prep: ${nextMeeting.title}`,
+        description: `This starts in about ${minutesUntil} minutes. Add a 10-minute prep block now.`,
+        durationMinutes: 10,
+      });
+    }
+
+    const highPriorityEmailCount = (emails || []).filter((message) => {
+      const subject = String(
+        message?.payload?.headers?.find((header: any) => header?.name === "Subject")?.value || ""
+      );
+      const snippet = String(message?.snippet || "");
+      return /urgent|asap|deadline|invoice|payment|action required/i.test(`${subject} ${snippet}`);
+    }).length;
+
+    if (highPriorityEmailCount > 0) {
+      nextSuggestions.push({
+        id: "suggestion:inbox-triage",
+        title: "20-min inbox triage",
+        description: `${highPriorityEmailCount} likely urgent email${highPriorityEmailCount === 1 ? "" : "s"} detected. Add a fast triage block.`,
+        durationMinutes: 20,
+      });
+    }
+
+    if (nextSuggestions.length === 0) {
+      nextSuggestions.push({
+        id: "suggestion:plan-review",
+        title: "10-min plan review",
+        description: "No critical signal found. Run a short plan review and lock your top next step.",
+        durationMinutes: 10,
+      });
+    }
+
+    return nextSuggestions.slice(0, 4);
+  }, [calendarEvents, emails, samsungHealthSnapshot, seed.dateKey, todoistTasks, whoopSummary]);
 
   const handlePrimaryAction = (item: PlanItemData) => {
     if (item.sourceUrl) {
