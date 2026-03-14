@@ -1776,6 +1776,25 @@ export default function Dashboard() {
         return;
     }
   };
+
+  const hiddenHeaderButtons = useMemo(
+    () => new Set(getHiddenDashboardHeaderButtons(preferences?.widgetLayout)),
+    [preferences?.widgetLayout]
+  );
+
+  const visibleHeaderButtons = useMemo(
+    () => DASHBOARD_HEADER_BUTTONS.filter((button) => !hiddenHeaderButtons.has(button.key)),
+    [hiddenHeaderButtons]
+  );
+
+  const [headerButtonRowOne, headerButtonRowTwo] = useMemo(() => {
+    if (visibleHeaderButtons.length === 0) return [[], []] as const;
+    const firstRowSize = Math.max(1, Math.ceil(visibleHeaderButtons.length / 2));
+    return [
+      visibleHeaderButtons.slice(0, firstRowSize),
+      visibleHeaderButtons.slice(firstRowSize),
+    ] as const;
+  }, [visibleHeaderButtons]);
   
   if (loading || isLoading) {
     return (
@@ -1862,25 +1881,6 @@ export default function Dashboard() {
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
-
-  const hiddenHeaderButtons = useMemo(
-    () => new Set(getHiddenDashboardHeaderButtons(preferences?.widgetLayout)),
-    [preferences?.widgetLayout]
-  );
-
-  const visibleHeaderButtons = useMemo(
-    () => DASHBOARD_HEADER_BUTTONS.filter((button) => !hiddenHeaderButtons.has(button.key)),
-    [hiddenHeaderButtons]
-  );
-
-  const [headerButtonRowOne, headerButtonRowTwo] = useMemo(() => {
-    if (visibleHeaderButtons.length === 0) return [[], []] as const;
-    const firstRowSize = Math.max(1, Math.ceil(visibleHeaderButtons.length / 2));
-    return [
-      visibleHeaderButtons.slice(0, firstRowSize),
-      visibleHeaderButtons.slice(firstRowSize),
-    ] as const;
-  }, [visibleHeaderButtons]);
 
   return (
     <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
