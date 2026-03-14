@@ -94,20 +94,8 @@ const LINE_ITEM_CATEGORY_DEFINITIONS = [
     label: "5% Collateral",
   },
   {
-    key: "transferFee",
-    label: "Transfer Fee",
-  },
-  {
-    key: "nonConnectionToInternetFee",
-    label: "Non-connection to internet fee",
-  },
-  {
     key: "ccFee",
     label: "CC Fee",
-  },
-  {
-    key: "contractCancellationFee",
-    label: "Contract Cancellation Fee",
   },
 ] as const;
 
@@ -579,6 +567,39 @@ function normalizeInvoiceReference(invoiceNumber: string): string {
   return normalized || "(missing invoice #)";
 }
 
+function addCategoryAmount(
+  totals: Record<LineItemCategoryKey, number>,
+  category: LineItemCategoryKey,
+  amount: number | null
+): void {
+  if (amount === null || !Number.isFinite(amount)) return;
+  const normalizedAmount = category === "ccFee" ? Math.abs(amount) : amount;
+  totals[category] += normalizedAmount;
+}
+
+function summarizeInvoiceCategoryTotals(invoice: InvoiceCell | undefined): Record<LineItemCategoryKey, number> {
+  const totals = createEmptyLineItemTotals();
+  if (!invoice) return totals;
+
+  if (invoice.quickBooksLineItems.length > 0) {
+    invoice.quickBooksLineItems.forEach((lineItem) => {
+      const categories = detectLineItemCategories(lineItem.description);
+      if (categories.length === 1) {
+        addCategoryAmount(totals, categories[0], lineItem.amount);
+      }
+    });
+
+    return totals;
+  }
+
+  const fallbackCategories = detectLineItemCategories(invoice.lineItem);
+  if (fallbackCategories.length === 1) {
+    addCategoryAmount(totals, fallbackCategories[0], invoice.amount);
+  }
+
+  return totals;
+}
+
 function detectLineItemCategories(value: string): LineItemCategoryKey[] {
   const raw = clean(value).toLowerCase();
   const normalized = normalizeText(value);
@@ -587,25 +608,27 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
   const categories: LineItemCategoryKey[] = [];
 
   if (
-    /\btransfer\b/.test(normalized) ||
-    /25\s*\/\s*kw/.test(normalized) ||
-    /25\s*kw/.test(normalized)
+    /\bapplication fee\b/.test(normalized) ||
+    /\bapp fee\b/.test(normalized) ||
+    /\babp application fee\b/.test(normalized) ||
+    /\bnon refundable\b.*\b(app|application)\b.*\bfee\b/.test(normalized) ||
+    /\bnonrefundable\b.*\b(app|application)\b.*\bfee\b/.test(normalized) ||
+    /\bnon refundable\b.*\bfee\b/.test(normalized) ||
+    /\bnonrefundable\b.*\bfee\b/.test(normalized) ||
+    /(10|20)\s*\/\s*kw\s*(ac\s*)?(app|application)/.test(raw) ||
+    /\b(10|20)\s*kw\b.*\b(app|application)\b/.test(normalized) ||
+    /(10|20)\s*\/\s*kw\s*(non refundable|non-refundable)/.test(raw)
   ) {
-    categories.push("transferFee");
+    categories.push("abpApplicationFee");
   }
 
   if (
-    /\bcontract\b.*\b(cancellation|termination)\b/.test(normalized) ||
-    /\b(cancellation|termination)\s*(cost|fee)\b/.test(normalized)
+    /5\s*%\s*(utility held\s*)?(abp\s*)?(collateral|bond)/.test(raw) ||
+    /\b5\b\s*(utility held\s*)?(abp\s*)?(collateral|bond)\b/.test(normalized) ||
+    /\butility held collateral\b/.test(normalized) ||
+    /\b5%?\s*bond\b/.test(normalized)
   ) {
-    categories.push("contractCancellationFee");
-  }
-
-  if (
-    /non connection to internet/.test(normalized) ||
-    (/non connection/.test(normalized) && /internet/.test(normalized))
-  ) {
-    categories.push("nonConnectionToInternetFee");
+    categories.push("utilityHeldCollateral5Percent");
   }
 
   if (
@@ -615,33 +638,6 @@ function detectLineItemCategories(value: string): LineItemCategoryKey[] {
     /\bcredit card fee\b/.test(normalized)
   ) {
     categories.push("ccFee");
-  }
-
-  if (
-    /5\s*%\s*(utility held\s*)?(abp\s*)?collateral/.test(raw) ||
-    /\b5\b\s*(utility held\s*)?(abp\s*)?collateral\b/.test(normalized) ||
-    /\butility held collateral\b/.test(normalized)
-  ) {
-    categories.push("utilityHeldCollateral5Percent");
-  }
-
-  const alreadySpecific =
-    categories.includes("transferFee") ||
-    categories.includes("contractCancellationFee") ||
-    categories.includes("nonConnectionToInternetFee") ||
-    categories.includes("ccFee");
-
-  if (
-    !alreadySpecific &&
-    (/\bapplication fee\b/.test(normalized) ||
-      /\bapp fee\b/.test(normalized) ||
-      /\babp fee\b/.test(normalized) ||
-      /\bnon refundable\b.*\bfee\b/.test(normalized) ||
-      /\bnonrefundable\b.*\bfee\b/.test(normalized) ||
-      /(10|20)\s*\/\s*kw/.test(raw) ||
-      /\b(10|20)\s*kw\b/.test(normalized))
-  ) {
-    categories.push("abpApplicationFee");
   }
 
   return Array.from(new Set(categories));
@@ -1568,14 +1564,18 @@ export default function InvoiceMatchDashboard() {
         length: maxLineItemSlotsPerInvoice[invoiceIndex] ?? 1,
       }).flatMap((__, lineItemIndex) => [
         `Invoice #${invoiceIndex + 1} - Line Item #${lineItemIndex + 1}`,
-        `Invoice #${invoiceIndex + 1} - Line Item Amount #${lineItemIndex + 1}`,
+        `Invoice #${invoiceIndex + 1} - Line Item #${lineItemIndex + 1} - Amount #${lineItemIndex + 1}`,
       ]);
 
       return [
         `Invoice #${invoiceIndex + 1}`,
-        `Invoice Amount #${invoiceIndex + 1}`,
-        `Invoice Status #${invoiceIndex + 1} (QuickBooks)`,
-        `Cash Received #${invoiceIndex + 1}`,
+        `Invoice #${invoiceIndex + 1} Status (QuickBooks)`,
+        `Invoice #${invoiceIndex + 1} Amount`,
+        `Invoice #${invoiceIndex + 1} Cash Received`,
+        `Invoice #${invoiceIndex + 1} Quantity of Line Items`,
+        `Invoice #${invoiceIndex + 1} Application Fee Amount`,
+        `Invoice #${invoiceIndex + 1} 5% Collateral Amount`,
+        `Invoice #${invoiceIndex + 1} CC Fee Amount`,
         ...lineItemHeaders,
       ];
     });
@@ -1616,19 +1616,35 @@ export default function InvoiceMatchDashboard() {
 
       Array.from({ length: maxInvoiceSlots }).forEach((_, index) => {
         const invoice = row.invoices[index];
-        const lineItems = invoice?.quickBooksLineItems ?? [];
+        const lineItems =
+          invoice && invoice.quickBooksLineItems.length === 0 && clean(invoice.lineItem)
+            ? [{ description: clean(invoice.lineItem), amount: invoice.amount }]
+            : invoice?.quickBooksLineItems ?? [];
         const maxLineItemsForInvoice = maxLineItemSlotsPerInvoice[index] ?? 1;
+        const categoryTotals = summarizeInvoiceCategoryTotals(invoice);
 
         record[`Invoice #${index + 1}`] = invoice?.invoiceNumber ?? "";
-        record[`Invoice Amount #${index + 1}`] = formatNumberForCsv(invoice?.amount ?? null);
-        record[`Invoice Status #${index + 1} (QuickBooks)`] = clean(invoice?.status);
-        record[`Cash Received #${index + 1}`] = formatNumberForCsv(invoice?.cashReceived ?? null);
+        record[`Invoice #${index + 1} Status (QuickBooks)`] = clean(invoice?.status);
+        record[`Invoice #${index + 1} Amount`] = formatNumberForCsv(invoice?.amount ?? null);
+        record[`Invoice #${index + 1} Cash Received`] = formatNumberForCsv(invoice?.cashReceived ?? null);
+        record[`Invoice #${index + 1} Quantity of Line Items`] = invoice ? lineItems.length : "";
+        record[`Invoice #${index + 1} Application Fee Amount`] = formatNumberForCsv(
+          categoryTotals.abpApplicationFee > 0 ? categoryTotals.abpApplicationFee : null
+        );
+        record[`Invoice #${index + 1} 5% Collateral Amount`] = formatNumberForCsv(
+          categoryTotals.utilityHeldCollateral5Percent > 0
+            ? categoryTotals.utilityHeldCollateral5Percent
+            : null
+        );
+        record[`Invoice #${index + 1} CC Fee Amount`] = formatNumberForCsv(
+          categoryTotals.ccFee > 0 ? categoryTotals.ccFee : null
+        );
 
         Array.from({ length: maxLineItemsForInvoice }).forEach((__, lineItemIndex) => {
           const lineItem = lineItems[lineItemIndex];
           record[`Invoice #${index + 1} - Line Item #${lineItemIndex + 1}`] =
             lineItem?.description ?? "";
-          record[`Invoice #${index + 1} - Line Item Amount #${lineItemIndex + 1}`] = formatNumberForCsv(
+          record[`Invoice #${index + 1} - Line Item #${lineItemIndex + 1} - Amount #${lineItemIndex + 1}`] = formatNumberForCsv(
             lineItem?.amount ?? null
           );
         });
@@ -2042,7 +2058,16 @@ export default function InvoiceMatchDashboard() {
                             <TableHead className="min-w-[140px]">Amount #{index + 1}</TableHead>
                             <TableHead className="min-w-[150px]">Status #{index + 1}</TableHead>
                             <TableHead className="min-w-[170px]">Cash Received #{index + 1}</TableHead>
-                            <TableHead className="min-w-[260px]">Line Item #{index + 1}</TableHead>
+                            {Array.from({ length: maxLineItemSlotsPerInvoice[index] ?? 1 }).map(
+                              (__, lineItemIndex) => (
+                                <TableHead
+                                  key={`invoice-${index}-line-item-${lineItemIndex}`}
+                                  className="min-w-[260px]"
+                                >
+                                  Invoice #{index + 1} - Line Item #{lineItemIndex + 1}
+                                </TableHead>
+                              )
+                            )}
                           </Fragment>
                         ))}
                         {LINE_ITEM_CATEGORY_DEFINITIONS.map((category) => (
@@ -2077,6 +2102,11 @@ export default function InvoiceMatchDashboard() {
 
                           {Array.from({ length: maxInvoiceSlots }).map((_, index) => {
                             const invoice = row.invoices[index];
+                            const lineItems =
+                              invoice && invoice.quickBooksLineItems.length === 0
+                                ? [{ description: invoice.lineItem || "-", amount: invoice.amount }]
+                                : invoice?.quickBooksLineItems ?? [];
+                            const maxLineItemsForInvoice = maxLineItemSlotsPerInvoice[index] ?? 1;
                             return (
                               <Fragment key={`${row.systemId}-invoice-${index}`}>
                                 <TableCell className="font-medium text-slate-900">
@@ -2091,28 +2121,26 @@ export default function InvoiceMatchDashboard() {
                                   )}
                                 </TableCell>
                                 <TableCell>{invoice ? formatCurrency(invoice.cashReceived) : "-"}</TableCell>
-                                <TableCell className="max-w-[260px] align-top">
-                                  {invoice ? (
-                                    <div className="space-y-1">
-                                      {(invoice.quickBooksLineItems.length
-                                        ? invoice.quickBooksLineItems
-                                        : [{ description: invoice.lineItem || "-", amount: invoice.amount }]
-                                      ).map((lineItem, lineIndex) => (
-                                        <p
-                                          key={`${row.systemId}-invoice-${index}-line-item-${lineIndex}`}
-                                          className="whitespace-pre-wrap break-words text-xs text-slate-700"
-                                        >
-                                          {lineIndex + 1}. {lineItem.description}
+                                {Array.from({ length: maxLineItemsForInvoice }).map((__, lineItemIndex) => {
+                                  const lineItem = lineItems[lineItemIndex];
+                                  return (
+                                    <TableCell
+                                      key={`${row.systemId}-invoice-${index}-line-item-${lineItemIndex}`}
+                                      className="max-w-[260px] align-top"
+                                    >
+                                      {lineItem ? (
+                                        <p className="whitespace-pre-wrap break-words text-xs text-slate-700">
+                                          {lineItem.description}
                                           {lineItem.amount !== null && Number.isFinite(lineItem.amount)
                                             ? ` (${formatCurrency(lineItem.amount)})`
                                             : ""}
                                         </p>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    "-"
-                                  )}
-                                </TableCell>
+                                      ) : (
+                                        "-"
+                                      )}
+                                    </TableCell>
+                                  );
+                                })}
                               </Fragment>
                             );
                           })}
@@ -2241,8 +2269,8 @@ export default function InvoiceMatchDashboard() {
               likely candidates first.
             </p>
             <p>
-              Line items are normalized under fixed headers: Application Fee, 5% Collateral, Transfer Fee,
-              Non-connection to internet fee, CC Fee, and Contract Cancellation Fee.
+              Line items are normalized under fixed headers: Application Fee, 5% Collateral (including 5% bond),
+              and CC Fee.
             </p>
           </CardContent>
         </Card>
