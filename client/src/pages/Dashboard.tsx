@@ -1891,7 +1891,47 @@ export default function Dashboard() {
       visibleHeaderButtons.slice(firstRowSize),
     ] as const;
   }, [visibleHeaderButtons]);
-  
+
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  // Keyboard shortcuts: press 1-6 to jump to sections (when no input is focused)
+  useEffect(() => {
+    const sectionShortcuts: Record<string, string> = {
+      "1": "section-overview",
+      "2": "section-health",
+      "3": "section-tracking",
+      "4": "section-todoist",
+      "5": "section-workspace",
+      "6": "section-chat",
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input, textarea, or contenteditable
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      const sectionId = sectionShortcuts[e.key];
+      if (sectionId) {
+        e.preventDefault();
+        scrollToSection(sectionId);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   if (loading || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -1972,45 +2012,6 @@ export default function Dashboard() {
       { name: "Remaining", value: Math.max(0, total - completed), color: "#cbd5e1" },
     ];
   })();
-  const scrollToSection = (id: string) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
-
-  // Keyboard shortcuts: press 1-6 to jump to sections (when no input is focused)
-  useEffect(() => {
-    const sectionShortcuts: Record<string, string> = {
-      "1": "section-overview",
-      "2": "section-health",
-      "3": "section-tracking",
-      "4": "section-todoist",
-      "5": "section-workspace",
-      "6": "section-chat",
-    };
-
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Skip if user is typing in an input, textarea, or contenteditable
-      const target = e.target as HTMLElement;
-      if (
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.tagName === "SELECT" ||
-        target.isContentEditable
-      ) {
-        return;
-      }
-
-      const sectionId = sectionShortcuts[e.key];
-      if (sectionId) {
-        e.preventDefault();
-        scrollToSection(sectionId);
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
 
   return (
     <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
