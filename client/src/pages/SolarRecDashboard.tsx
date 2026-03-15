@@ -6536,37 +6536,109 @@ export default function SolarRecDashboard() {
   );
 
   const ownershipStackedChartRows = useMemo(() => {
+    const eligiblePart2ApplicationIds = new Set<string>();
+    const eligiblePart2PortalSystemIds = new Set<string>();
+    const eligiblePart2TrackingIds = new Set<string>();
+    part2VerifiedAbpRows.forEach((row) => {
+      const applicationId = clean(row.Application_ID);
+      const portalSystemId = clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
+      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
+      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
+    });
+
+    const scopedPart2Systems = systems.filter((system) => {
+      const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
+      const byApplicationId = system.stateApplicationRefId
+        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
+        : false;
+      const byTrackingId = system.trackingSystemRefId ? eligiblePart2TrackingIds.has(system.trackingSystemRefId) : false;
+      return byPortalSystemId || byApplicationId || byTrackingId;
+    });
+
+    const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByTrackingId = new Map<string, SystemRecord[]>();
+    const systemsByName = new Map<string, SystemRecord[]>();
+
+    const addIndexedSystem = (
+      map: Map<string, SystemRecord[]>,
+      key: string | null | undefined,
+      system: SystemRecord
+    ) => {
+      const normalized = clean(key);
+      if (!normalized) return;
+      const existing = map.get(normalized) ?? [];
+      existing.push(system);
+      map.set(normalized, existing);
+    };
+
+    scopedPart2Systems.forEach((system) => {
+      addIndexedSystem(systemsById, system.systemId, system);
+      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
+      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
+    });
+
     const rows = [
       { label: "Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
       { label: "Not Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
     ];
 
-    part2EligibleSystemsForSizeReporting.forEach((system) => {
-      if (system.isTerminated) return;
+    const uniquePart2Projects = new Set<string>();
 
-      const target = system.isReporting ? rows[0] : rows[1];
-      const normalizedChangeOwnershipStatus = clean(system.changeOwnershipStatus ?? "");
-      const isChangeOwnershipNotTransferred =
-        normalizedChangeOwnershipStatus.startsWith("Change of Ownership - Not Transferred");
+    part2VerifiedAbpRows.forEach((row, index) => {
+      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+      const part2ProjectKey = applicationId
+        ? `id:${applicationId}`
+        : trackingId
+          ? `tracking:${trackingId}`
+          : projectName
+            ? `name:${projectName.toLowerCase()}`
+            : `row:${index}`;
+      if (uniquePart2Projects.has(part2ProjectKey)) return;
+      uniquePart2Projects.add(part2ProjectKey);
 
+      const matchedSystems = new Map<string, SystemRecord>();
+      (systemsById.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+
+      if (matchedSystems.size === 0) {
+        rows[1].notTransferred += 1;
+        return;
+      }
+
+      let isReporting = false;
+      let isTransferred = false;
+      let isTerminated = false;
+      let isChangeOwnershipNotTransferred = false;
+
+      matchedSystems.forEach((system) => {
+        if (system.isReporting) isReporting = true;
+        if (system.isTransferred) isTransferred = true;
+        if (system.isTerminated) isTerminated = true;
+        const normalizedChangeOwnershipStatus = clean(system.changeOwnershipStatus ?? "");
+        if (normalizedChangeOwnershipStatus.startsWith("Change of Ownership - Not Transferred")) {
+          isChangeOwnershipNotTransferred = true;
+        }
+      });
+
+      if (isTerminated) return;
+
+      const target = isReporting ? rows[0] : rows[1];
       if (isChangeOwnershipNotTransferred) {
         target.changeOwnership += 1;
-        return;
-      }
-
-      if (
-        system.isTransferred ||
-        normalizedChangeOwnershipStatus.startsWith("Transferred")
-      ) {
+      } else if (isTransferred) {
         target.transferred += 1;
-        return;
+      } else {
+        target.notTransferred += 1;
       }
-
-      target.notTransferred += 1;
     });
 
     return rows;
-  }, [part2EligibleSystemsForSizeReporting]);
+  }, [part2VerifiedAbpRows, systems]);
 
   const recValueByStatusChartRows = useMemo(() => {
     const groups = new Map<
