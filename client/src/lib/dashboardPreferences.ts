@@ -64,3 +64,57 @@ export function buildDashboardWidgetLayoutWithHiddenButtons(
 
   return JSON.stringify(parsed);
 }
+
+// ── Per-Section Visibility ──────────────────────────────────────────
+
+export type DashboardSectionKey =
+  | "supplements"
+  | "notes"
+  | "workspace"
+  | "chat";
+
+export const DASHBOARD_SECTION_OPTIONS: Array<{
+  key: DashboardSectionKey;
+  label: string;
+}> = [
+  { key: "supplements", label: "Supplements" },
+  { key: "notes", label: "Notes" },
+  { key: "workspace", label: "Workspace" },
+  { key: "chat", label: "Chat" },
+];
+
+const HIDDEN_SECTIONS_FIELD = "dashboardHiddenSections";
+
+export function getHiddenDashboardSections(
+  widgetLayout: string | null | undefined
+): DashboardSectionKey[] {
+  const parsed = parseWidgetLayoutObject(widgetLayout);
+  const candidateValues = parsed[HIDDEN_SECTIONS_FIELD];
+  if (!Array.isArray(candidateValues)) return [];
+
+  const allowed = new Set<DashboardSectionKey>(
+    DASHBOARD_SECTION_OPTIONS.map((o) => o.key)
+  );
+
+  return candidateValues
+    .map((v) => String(v).trim())
+    .filter((v): v is DashboardSectionKey =>
+      allowed.has(v as DashboardSectionKey)
+    );
+}
+
+export function buildWidgetLayoutWithHiddenSections(
+  widgetLayout: string | null | undefined,
+  hiddenSections: DashboardSectionKey[]
+): string {
+  const parsed = parseWidgetLayoutObject(widgetLayout);
+  const unique = Array.from(new Set(hiddenSections));
+
+  if (unique.length === 0) {
+    delete parsed[HIDDEN_SECTIONS_FIELD];
+  } else {
+    parsed[HIDDEN_SECTIONS_FIELD] = unique;
+  }
+
+  return JSON.stringify(parsed);
+}

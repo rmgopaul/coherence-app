@@ -19,7 +19,11 @@ import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import {
   getHiddenDashboardHeaderButtons,
+  getHiddenDashboardSections,
+  buildWidgetLayoutWithHiddenSections,
+  DASHBOARD_SECTION_OPTIONS,
   type DashboardHeaderToolButtonKey,
+  type DashboardSectionKey,
 } from "@/lib/dashboardPreferences";
 import { buildDailyBrief, MOCK_DAILY_BRIEF, withFreshness, type DailyBrief, type DailyBriefAction } from "@/lib/dailyBrief";
 import {
@@ -54,6 +58,7 @@ import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
+import { FocusTimer } from "@/components/FocusTimer";
 import {
   Bar,
   BarChart,
@@ -337,9 +342,7 @@ export default function Dashboard() {
     return map;
   }, [sectionRatings]);
   const isDetailedMode = dashboardViewMode === "detailed";
-  const shouldLoadWorkspaceData = isDetailedMode && workspaceExpanded;
-  const shouldLoadChatData = isDetailedMode && chatExpanded;
-  
+
   const {
     data: integrations,
     isLoading,
@@ -355,7 +358,15 @@ export default function Dashboard() {
     enabled: !!user,
     retry: false,
   });
-  
+
+  const hiddenSections = useMemo(
+    () => new Set(getHiddenDashboardSections(preferences?.widgetLayout)),
+    [preferences?.widgetLayout]
+  );
+  const isSectionVisible = (key: DashboardSectionKey) => !hiddenSections.has(key);
+  const shouldLoadWorkspaceData = isSectionVisible("workspace") && workspaceExpanded;
+  const shouldLoadChatData = isSectionVisible("chat") && chatExpanded;
+
   const hasGoogle = integrations?.some((i) => i.provider === "google");
   const hasTodoist = integrations?.some((i) => i.provider === "todoist");
   const hasOpenAI = integrations?.some((i) => i.provider === "openai");
@@ -625,14 +636,14 @@ export default function Dashboard() {
   const { data: supplementLogs, refetch: refetchSupplementLogs } = trpc.supplements.getLogs.useQuery(
     { dateKey: todayKey, limit: 50 },
     {
-      enabled: !!user && isDetailedMode,
+      enabled: !!user && isSectionVisible("supplements"),
       retry: false,
     }
   );
 
   const { data: supplementDefinitions, refetch: refetchSupplementDefinitions } =
     trpc.supplements.listDefinitions.useQuery(undefined, {
-      enabled: !!user && isDetailedMode,
+      enabled: !!user && isSectionVisible("supplements"),
       retry: false,
     });
 
@@ -660,7 +671,7 @@ export default function Dashboard() {
   const { data: notes, isLoading: notesLoading, refetch: refetchNotes } = trpc.notes.list.useQuery(
     { limit: 300 },
     {
-      enabled: !!user && isDetailedMode,
+      enabled: !!user && isSectionVisible("notes"),
       retry: false,
     }
   );
@@ -1186,6 +1197,24 @@ export default function Dashboard() {
       toast.error(`Failed to save name: ${error.message}`);
     },
   });
+
+  const updateLayoutPreferences = trpc.preferences.update.useMutation({
+    onSuccess: () => {
+      refetchPreferences();
+    },
+  });
+
+  const toggleSectionVisibility = (key: DashboardSectionKey) => {
+    const current = getHiddenDashboardSections(preferences?.widgetLayout);
+    const next = current.includes(key)
+      ? current.filter((k) => k !== key)
+      : [...current, key];
+    const newLayout = buildWidgetLayoutWithHiddenSections(
+      preferences?.widgetLayout,
+      next
+    );
+    updateLayoutPreferences.mutate({ widgetLayout: newLayout });
+  };
 
   const handleAddEmailToTodoist = (message: any, e: React.MouseEvent) => {
     e.preventDefault();
@@ -1878,6 +1907,8 @@ export default function Dashboard() {
     [preferences?.widgetLayout]
   );
 
+
+
   const visibleHeaderButtons = useMemo(
     () => DASHBOARD_HEADER_BUTTONS.filter((button) => !hiddenHeaderButtons.has(button.key)),
     [hiddenHeaderButtons]
@@ -2084,7 +2115,7 @@ export default function Dashboard() {
         <div className="container mx-auto px-4 pt-3">
           <Card className="border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50">
             <CardContent className="py-3">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
                   <p className="text-[11px] uppercase tracking-wide text-slate-500">Current Time</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -2139,6 +2170,8 @@ export default function Dashboard() {
                           : "No upcoming events"}
                   </p>
                 </div>
+
+                <FocusTimer />
               </div>
             </CardContent>
           </Card>
@@ -2183,71 +2216,100 @@ export default function Dashboard() {
                   <CheckSquare className="h-3.5 w-3.5 mr-1.5 text-red-600" />
                   Todoist
                 </Button>
-                {isDetailedMode ? (
-                  <>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
-                      onClick={() => scrollToSection("section-workspace")}
-                    >
-                      <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
-                      Workspace
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
-                      onClick={() => scrollToSection("section-chat")}
-                    >
-                      <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
-                      Chat
-                    </Button>
-                  </>
-                ) : null}
+                {isSectionVisible("workspace") && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
+                    onClick={() => scrollToSection("section-workspace")}
+                  >
+                    <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
+                    Workspace
+                  </Button>
+                )}
+                {isSectionVisible("chat") && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
+                    onClick={() => scrollToSection("section-chat")}
+                  >
+                    <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
+                    Chat
+                  </Button>
+                )}
               </div>
 
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
-                  {isDetailedMode ? (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs border border-emerald-200 bg-white hover:bg-emerald-50"
-                        onClick={() => setWorkspaceExpanded((current) => !current)}
-                      >
-                        {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 text-xs border border-violet-200 bg-white hover:bg-violet-50"
-                        onClick={() => setChatExpanded((current) => !current)}
-                      >
-                        {chatExpanded ? "Hide Chat" : "Show Chat"}
-                      </Button>
-                    </>
-                  ) : null}
+                  {isSectionVisible("workspace") && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs border border-emerald-200 bg-white hover:bg-emerald-50"
+                      onClick={() => setWorkspaceExpanded((current) => !current)}
+                    >
+                      {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
+                    </Button>
+                  )}
+                  {isSectionVisible("chat") && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 text-xs border border-violet-200 bg-white hover:bg-violet-50"
+                      onClick={() => setChatExpanded((current) => !current)}
+                    >
+                      {chatExpanded ? "Hide Chat" : "Show Chat"}
+                    </Button>
+                  )}
                 </div>
 
-                <div className="ml-auto flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
-                  <Button
-                    variant={dashboardViewMode === "essential" ? "default" : "ghost"}
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setDashboardViewMode("essential")}
-                  >
-                    Essential
-                  </Button>
-                  <Button
-                    variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setDashboardViewMode("detailed")}
-                  >
-                    Detailed
-                  </Button>
+                <div className="ml-auto flex items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="sm" className="h-7 text-xs border border-slate-200 bg-white">
+                        Sections
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-44">
+                      {DASHBOARD_SECTION_OPTIONS.map((section) => (
+                        <DropdownMenuItem
+                          key={section.key}
+                          onClick={() => toggleSectionVisibility(section.key)}
+                          className="flex items-center justify-between text-xs"
+                        >
+                          {section.label}
+                          <span className={`h-2 w-2 rounded-full ${isSectionVisible(section.key) ? "bg-emerald-500" : "bg-slate-300"}`} />
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
+                    <Button
+                      variant={dashboardViewMode === "essential" ? "default" : "ghost"}
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setDashboardViewMode("essential");
+                        const newLayout = buildWidgetLayoutWithHiddenSections(preferences?.widgetLayout, ["supplements", "notes", "workspace", "chat"]);
+                        updateLayoutPreferences.mutate({ widgetLayout: newLayout });
+                      }}
+                    >
+                      Essential
+                    </Button>
+                    <Button
+                      variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => {
+                        setDashboardViewMode("detailed");
+                        const newLayout = buildWidgetLayoutWithHiddenSections(preferences?.widgetLayout, []);
+                        updateLayoutPreferences.mutate({ widgetLayout: newLayout });
+                      }}
+                    >
+                      Detailed
+                    </Button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2788,7 +2850,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          {isDetailedMode ? (
+          {isSectionVisible("supplements") ? (
             <Card className="min-w-0 flex flex-col">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <div className="flex items-center gap-2">
@@ -3034,7 +3096,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          {isDetailedMode ? (
+          {isSectionVisible("notes") ? (
             <Card className="min-w-0 flex flex-col">
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <div className="flex items-center gap-2">
@@ -3274,7 +3336,7 @@ export default function Dashboard() {
       </div>
 
       {/* Main Content - Four Column Layout */}
-      {isDetailedMode ? (
+      {isSectionVisible("workspace") ? (
         workspaceExpanded ? (
       <main id="section-workspace" className="container mx-auto px-4 py-6 flex-1 overflow-hidden scroll-mt-40">
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-full">
@@ -3856,7 +3918,7 @@ export default function Dashboard() {
       )}
 
       {/* Chat Panel at Bottom */}
-      {isDetailedMode && chatExpanded ? (
+      {isSectionVisible("chat") && chatExpanded ? (
       <div id="section-chat" className="border-t bg-white dark:bg-slate-900 scroll-mt-40">
         <div className="container mx-auto px-4 py-4">
           <div className="grid grid-cols-12 gap-4 h-80">
@@ -3989,7 +4051,7 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
-      ) : isDetailedMode ? (
+      ) : isSectionVisible("chat") ? (
         <div id="section-chat" className="container mx-auto px-4 pb-6 scroll-mt-40">
           <Card>
             <CardHeader>
