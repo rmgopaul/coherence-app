@@ -3209,13 +3209,134 @@ export default function SolarRecDashboard() {
     });
   }, [ownershipFilter, part2EligibleSystemsForSizeReporting, searchTerm]);
 
-  const changeOwnershipRows = useMemo(
-    () =>
-      part2EligibleSystemsForSizeReporting.filter(
-        (system) => system.hasChangedOwnership && system.changeOwnershipStatus !== null
-      ),
-    [part2EligibleSystemsForSizeReporting]
-  );
+  const changeOwnershipRows = useMemo(() => {
+    const eligiblePart2ApplicationIds = new Set<string>();
+    const eligiblePart2PortalSystemIds = new Set<string>();
+    const eligiblePart2TrackingIds = new Set<string>();
+    part2VerifiedAbpRows.forEach((row) => {
+      const applicationId = clean(row.Application_ID);
+      const portalSystemId = clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
+      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
+      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
+    });
+
+    const scopedPart2Systems = systems.filter((system) => {
+      const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
+      const byApplicationId = system.stateApplicationRefId
+        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
+        : false;
+      const byTrackingId = system.trackingSystemRefId ? eligiblePart2TrackingIds.has(system.trackingSystemRefId) : false;
+      return byPortalSystemId || byApplicationId || byTrackingId;
+    });
+
+    const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByTrackingId = new Map<string, SystemRecord[]>();
+    const systemsByName = new Map<string, SystemRecord[]>();
+
+    const addIndexedSystem = (
+      map: Map<string, SystemRecord[]>,
+      key: string | null | undefined,
+      system: SystemRecord
+    ) => {
+      const normalized = clean(key);
+      if (!normalized) return;
+      const existing = map.get(normalized) ?? [];
+      existing.push(system);
+      map.set(normalized, existing);
+    };
+
+    scopedPart2Systems.forEach((system) => {
+      addIndexedSystem(systemsById, system.systemId, system);
+      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
+      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
+    });
+
+    const uniquePart2Projects = new Set<string>();
+    const rows: SystemRecord[] = [];
+
+    part2VerifiedAbpRows.forEach((row, index) => {
+      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      const projectName = clean(row.Project_Name) || clean(row.system_name);
+      const part2ProjectKey = applicationId
+        ? `id:${applicationId}`
+        : trackingId
+          ? `tracking:${trackingId}`
+          : projectName
+            ? `name:${projectName.toLowerCase()}`
+            : `row:${index}`;
+      if (uniquePart2Projects.has(part2ProjectKey)) return;
+      uniquePart2Projects.add(part2ProjectKey);
+
+      const matchedSystems = new Map<string, SystemRecord>();
+      (systemsById.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+
+      const nonTerminatedSystems = Array.from(matchedSystems.values()).filter((system) => !system.isTerminated);
+      if (nonTerminatedSystems.length === 0) return;
+
+      const hasChangedOwnership = nonTerminatedSystems.some((system) => system.hasChangedOwnership);
+      if (!hasChangedOwnership) return;
+
+      const isReporting = nonTerminatedSystems.some((system) => system.isReporting);
+      const isTransferred = nonTerminatedSystems.some(
+        (system) =>
+          system.isTransferred || clean(system.changeOwnershipStatus ?? "").startsWith("Transferred")
+      );
+      const hasChangeOwnershipNotTransferred = nonTerminatedSystems.some((system) =>
+        clean(system.changeOwnershipStatus ?? "").startsWith("Change of Ownership - Not Transferred")
+      );
+
+      const changeOwnershipStatus: ChangeOwnershipStatus = hasChangeOwnershipNotTransferred
+        ? isReporting
+          ? "Change of Ownership - Not Transferred and Reporting"
+          : "Change of Ownership - Not Transferred and Not Reporting"
+        : isTransferred
+          ? isReporting
+            ? "Transferred and Reporting"
+            : "Transferred and Not Reporting"
+          : isReporting
+            ? "Change of Ownership - Not Transferred and Reporting"
+            : "Change of Ownership - Not Transferred and Not Reporting";
+
+      const representative =
+        nonTerminatedSystems.find((system) => system.changeOwnershipStatus === changeOwnershipStatus) ??
+        nonTerminatedSystems.find(
+          (system) => system.hasChangedOwnership && system.changeOwnershipStatus !== null
+        ) ??
+        nonTerminatedSystems[0];
+
+      const latestReportingDate = nonTerminatedSystems.reduce<Date | null>(
+        (latest, system) => maxDate(latest, system.latestReportingDate),
+        null
+      );
+
+      rows.push({
+        ...representative,
+        key: `coo:${part2ProjectKey}`,
+        latestReportingDate,
+        isReporting,
+        isTerminated: false,
+        isTransferred,
+        ownershipStatus: isTransferred
+          ? isReporting
+            ? "Transferred and Reporting"
+            : "Transferred and Not Reporting"
+          : isReporting
+            ? "Not Transferred and Reporting"
+            : "Not Transferred and Not Reporting",
+        hasChangedOwnership: true,
+        changeOwnershipStatus,
+      });
+    });
+
+    return rows.sort((a, b) =>
+      a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true })
+    );
+  }, [part2VerifiedAbpRows, systems]);
 
   const changeOwnershipSummary = useMemo(() => {
     const total = changeOwnershipRows.length;
