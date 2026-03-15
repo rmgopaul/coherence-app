@@ -6535,26 +6535,38 @@ export default function SolarRecDashboard() {
     [sizeBreakdownRows]
   );
 
-  const ownershipStackedChartRows = useMemo(
-    () => [
-      {
-        label: "Reporting",
-        notTransferred: summary.ownershipOverview.notTransferredReporting,
-        transferred: summary.ownershipOverview.transferredReporting,
-      },
-      {
-        label: "Not Reporting",
-        notTransferred: summary.ownershipOverview.notTransferredNotReporting,
-        transferred: summary.ownershipOverview.transferredNotReporting,
-      },
-      {
-        label: "Terminated",
-        notTransferred: summary.ownershipOverview.terminatedTotal,
-        transferred: 0,
-      },
-    ],
-    [summary.ownershipOverview]
-  );
+  const ownershipStackedChartRows = useMemo(() => {
+    const rows = [
+      { label: "Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
+      { label: "Not Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
+    ];
+
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
+      if (system.isTerminated) return;
+
+      const target = system.isReporting ? rows[0] : rows[1];
+      const normalizedChangeOwnershipStatus = clean(system.changeOwnershipStatus ?? "");
+      const isChangeOwnershipNotTransferred =
+        normalizedChangeOwnershipStatus.startsWith("Change of Ownership - Not Transferred");
+
+      if (isChangeOwnershipNotTransferred) {
+        target.changeOwnership += 1;
+        return;
+      }
+
+      if (
+        system.isTransferred ||
+        normalizedChangeOwnershipStatus.startsWith("Transferred")
+      ) {
+        target.transferred += 1;
+        return;
+      }
+
+      target.notTransferred += 1;
+    });
+
+    return rows;
+  }, [part2EligibleSystemsForSizeReporting]);
 
   const recValueByStatusChartRows = useMemo(() => {
     const groups = new Map<
@@ -6840,7 +6852,9 @@ export default function SolarRecDashboard() {
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Ownership Mix by Reporting State</CardTitle>
-                  <CardDescription>Distribution of transferred vs not transferred systems.</CardDescription>
+                  <CardDescription>
+                    Part II verified, non-terminated systems split into Not Transferred, Transferred, and Change of Ownership.
+                  </CardDescription>
                 </CardHeader>
                 <CardContent>
                   <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
@@ -6853,6 +6867,7 @@ export default function SolarRecDashboard() {
                         <Legend />
                         <Bar dataKey="notTransferred" stackId="ownership" fill="#0ea5e9" name="Not Transferred" />
                         <Bar dataKey="transferred" stackId="ownership" fill="#8b5cf6" name="Transferred" />
+                        <Bar dataKey="changeOwnership" stackId="ownership" fill="#f97316" name="Change of Ownership" />
                       </BarChart>
                     </ResponsiveContainer>
                   </div>
