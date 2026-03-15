@@ -3178,6 +3178,31 @@ export const appRouter = router({
         await deleteNoteLink(ctx.user.id, input.linkId);
         return { success: true };
       }),
+    uploadImage: protectedProcedure
+      .input(
+        z.object({
+          base64Data: z.string().max(10_000_000),
+          contentType: z.enum([
+            "image/png",
+            "image/jpeg",
+            "image/gif",
+            "image/webp",
+            "image/svg+xml",
+          ]),
+          fileName: z.string().max(255).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { nanoid } = await import("nanoid");
+        const { storagePut } = await import("./storage");
+
+        const ext = input.contentType.split("/")[1] ?? "png";
+        const key = `notes/${ctx.user.id}/images/${nanoid()}.${ext}`;
+        const buffer = Buffer.from(input.base64Data, "base64");
+
+        const { url } = await storagePut(key, buffer, input.contentType);
+        return { url };
+      }),
     createFromTodoistTask: protectedProcedure
       .input(
         z.object({

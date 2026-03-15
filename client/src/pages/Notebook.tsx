@@ -244,6 +244,32 @@ export default function Notebook() {
   const updateNoteMutation = trpc.notes.update.useMutation();
   const deleteNoteMutation = trpc.notes.delete.useMutation();
   const removeNoteLinkMutation = trpc.notes.removeLink.useMutation();
+  const uploadImageMutation = trpc.notes.uploadImage.useMutation();
+
+  const handleUploadImage = useCallback(async (file: File): Promise<string | null> => {
+    try {
+      const reader = new FileReader();
+      const base64 = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64Data = result.split(",")[1];
+          resolve(base64Data);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const { url } = await uploadImageMutation.mutateAsync({
+        base64Data: base64,
+        contentType: file.type as "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml",
+        fileName: file.name,
+      });
+      return url;
+    } catch {
+      toast.error("Failed to upload image");
+      return null;
+    }
+  }, [uploadImageMutation]);
 
   const notes = useMemo<NoteRow[]>(() => (notesData ?? []).map((note: any) => ({ ...note })), [notesData]);
 
@@ -1229,6 +1255,7 @@ export default function Notebook() {
                       onSaveShortcut={() => {
                         void runSave("manual");
                       }}
+                      onUploadImage={handleUploadImage}
                       className="h-full"
                     />
                   </Suspense>

@@ -1,27 +1,56 @@
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table } from "@tiptap/extension-table";
+import TableCell from "@tiptap/extension-table-cell";
+import TableHeader from "@tiptap/extension-table-header";
+import TableRow from "@tiptap/extension-table-row";
 import Underline from "@tiptap/extension-underline";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import {
   Bold,
+  Code,
+  Heading1,
+  Heading2,
+  Heading3,
+  Image as ImageIcon,
   Italic,
   Link2,
   List,
   ListOrdered,
+  Minus,
   Redo2,
+  Strikethrough,
+  Table2,
+  TextQuote,
   Underline as UnderlineIcon,
   Undo2,
   Unlink,
 } from "lucide-react";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 type RichTextEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onSaveShortcut?: () => void;
+  onUploadImage?: (file: File) => Promise<string | null>;
   className?: string;
 };
 
@@ -30,34 +59,75 @@ function ToolbarButton({
   disabled,
   onClick,
   title,
+  shortcut,
   children,
 }: {
   active?: boolean;
   disabled?: boolean;
   onClick: () => void;
   title: string;
+  shortcut?: string;
   children: ReactNode;
 }) {
-  return (
+  const button = (
     <Button
       type="button"
       variant="ghost"
       size="icon"
       className={cn(
-        "h-8 w-8",
+        "h-7 w-7",
         active ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200" : "text-slate-700 hover:bg-slate-100"
       )}
       disabled={disabled}
       onClick={onClick}
-      title={title}
       aria-label={title}
     >
       {children}
     </Button>
   );
+
+  if (!shortcut) return button;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{button}</TooltipTrigger>
+      <TooltipContent side="bottom" className="flex items-center gap-1.5 text-xs">
+        <span>{title}</span>
+        <kbd className="rounded border border-slate-600 bg-slate-700 px-1 py-0.5 text-[10px] font-mono text-slate-300">
+          {shortcut}
+        </kbd>
+      </TooltipContent>
+    </Tooltip>
+  );
 }
 
-export default function RichTextEditor({ value, onChange, onSaveShortcut, className }: RichTextEditorProps) {
+function ToolbarSep() {
+  return <div className="mx-0.5 h-5 w-px bg-slate-300" />;
+}
+
+export default function RichTextEditor({ value, onChange, onSaveShortcut, onUploadImage, className }: RichTextEditorProps) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImageUpload = useCallback(
+    async (file: File) => {
+      if (!onUploadImage) return;
+      if (!file.type.startsWith("image/")) {
+        toast.error("Only image files are supported");
+        return;
+      }
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error("Image must be under 5 MB");
+        return;
+      }
+
+      const url = await onUploadImage(file);
+      if (url && editor) {
+        editor.chain().focus().setImage({ src: url, alt: file.name }).run();
+      }
+    },
+    [onUploadImage]
+  );
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -71,6 +141,22 @@ export default function RichTextEditor({ value, onChange, onSaveShortcut, classN
       Placeholder.configure({
         placeholder: "Start typing your notes...",
       }),
+      Image.configure({
+        inline: false,
+        allowBase64: false,
+        HTMLAttributes: {
+          class: "note-image",
+        },
+      }),
+      Table.configure({
+        resizable: true,
+        HTMLAttributes: {
+          class: "note-table",
+        },
+      }),
+      TableRow,
+      TableCell,
+      TableHeader,
     ],
     content: value || "<p></p>",
     editorProps: {
@@ -86,11 +172,32 @@ export default function RichTextEditor({ value, onChange, onSaveShortcut, classN
         }
         return false;
       },
+      handleDrop: (_view, event) => {
+        const file = event.dataTransfer?.files?.[0];
+        if (file?.type.startsWith("image/")) {
+          event.preventDefault();
+          void handleImageUpload(file);
+          return true;
+        }
+        return false;
+      },
+      handlePaste: (_view, event) => {
+        const file = event.clipboardData?.files?.[0];
+        if (file?.type.startsWith("image/")) {
+          event.preventDefault();
+          void handleImageUpload(file);
+          return true;
+        }
+        return false;
+      },
     },
     onUpdate: ({ editor: currentEditor }) => {
       onChange(currentEditor.getHTML());
     },
   });
+
+  // Force re-render after external content sync so word count updates
+  const [, setRenderTick] = useState(0);
 
   useEffect(() => {
     if (!editor) return;
@@ -104,6 +211,8 @@ export default function RichTextEditor({ value, onChange, onSaveShortcut, classN
     const nextFrom = Math.max(0, Math.min(selection.from, size));
     const nextTo = Math.max(0, Math.min(selection.to, size));
     editor.commands.setTextSelection({ from: nextFrom, to: nextTo });
+
+    setRenderTick((c) => c + 1);
   }, [editor, value]);
 
   if (!editor) {
@@ -128,69 +237,242 @@ export default function RichTextEditor({ value, onChange, onSaveShortcut, classN
     editor.chain().focus().extendMarkRange("link").setLink({ href: trimmed }).run();
   };
 
-  return (
-    <div className={cn("flex h-full min-h-0 flex-col", className)}>
-      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 bg-slate-50 px-3 py-2">
-        <ToolbarButton
-          title="Bold"
-          active={editor.isActive("bold")}
-          onClick={() => editor.chain().focus().toggleBold().run()}
-        >
-          <Bold className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton
-          title="Italic"
-          active={editor.isActive("italic")}
-          onClick={() => editor.chain().focus().toggleItalic().run()}
-        >
-          <Italic className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton
-          title="Underline"
-          active={editor.isActive("underline")}
-          onClick={() => editor.chain().focus().toggleUnderline().run()}
-        >
-          <UnderlineIcon className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton
-          title="Bullet list"
-          active={editor.isActive("bulletList")}
-          onClick={() => editor.chain().focus().toggleBulletList().run()}
-        >
-          <List className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton
-          title="Numbered list"
-          active={editor.isActive("orderedList")}
-          onClick={() => editor.chain().focus().toggleOrderedList().run()}
-        >
-          <ListOrdered className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton title="Add link" active={editor.isActive("link")} onClick={setLink}>
-          <Link2 className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton
-          title="Remove link"
-          disabled={!editor.isActive("link")}
-          onClick={() => editor.chain().focus().unsetLink().run()}
-        >
-          <Unlink className="h-4 w-4" />
-        </ToolbarButton>
-        <div className="mx-1 h-5 w-px bg-slate-300" />
-        <ToolbarButton title="Undo" disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()}>
-          <Undo2 className="h-4 w-4" />
-        </ToolbarButton>
-        <ToolbarButton title="Redo" disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()}>
-          <Redo2 className="h-4 w-4" />
-        </ToolbarButton>
-      </div>
+  const text = editor.state.doc.textContent;
+  const wordCount = text.trim() ? text.trim().split(/\s+/).length : 0;
+  const charCount = text.length;
 
-      <div className="min-h-0 flex-1 overflow-y-auto bg-white">
-        <EditorContent
-          editor={editor}
-          className="h-full min-h-[320px] [&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left [&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0 [&_.ProseMirror_p.is-editor-empty:first-child::before]:text-slate-400 [&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]"
+  return (
+    <TooltipProvider delayDuration={400}>
+      <div className={cn("flex h-full min-h-0 flex-col", className)}>
+        {/* Toolbar */}
+        <div className="flex flex-wrap items-center gap-0.5 border-b border-slate-200 bg-slate-50 px-3 py-1.5">
+          {/* Headings */}
+          <ToolbarButton
+            title="Heading 1"
+            shortcut="⌘⌥1"
+            active={editor.isActive("heading", { level: 1 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+          >
+            <Heading1 className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Heading 2"
+            shortcut="⌘⌥2"
+            active={editor.isActive("heading", { level: 2 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+          >
+            <Heading2 className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Heading 3"
+            shortcut="⌘⌥3"
+            active={editor.isActive("heading", { level: 3 })}
+            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+          >
+            <Heading3 className="h-4 w-4" />
+          </ToolbarButton>
+
+          <ToolbarSep />
+
+          {/* Inline formatting */}
+          <ToolbarButton
+            title="Bold"
+            shortcut="⌘B"
+            active={editor.isActive("bold")}
+            onClick={() => editor.chain().focus().toggleBold().run()}
+          >
+            <Bold className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Italic"
+            shortcut="⌘I"
+            active={editor.isActive("italic")}
+            onClick={() => editor.chain().focus().toggleItalic().run()}
+          >
+            <Italic className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Underline"
+            shortcut="⌘U"
+            active={editor.isActive("underline")}
+            onClick={() => editor.chain().focus().toggleUnderline().run()}
+          >
+            <UnderlineIcon className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Strikethrough"
+            shortcut="⌘⇧S"
+            active={editor.isActive("strike")}
+            onClick={() => editor.chain().focus().toggleStrike().run()}
+          >
+            <Strikethrough className="h-4 w-4" />
+          </ToolbarButton>
+
+          <ToolbarSep />
+
+          {/* Lists & blocks */}
+          <ToolbarButton
+            title="Bullet list"
+            shortcut="⌘⇧8"
+            active={editor.isActive("bulletList")}
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+          >
+            <List className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Numbered list"
+            shortcut="⌘⇧7"
+            active={editor.isActive("orderedList")}
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+          >
+            <ListOrdered className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Blockquote"
+            shortcut="⌘⇧B"
+            active={editor.isActive("blockquote")}
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+          >
+            <TextQuote className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Code block"
+            shortcut="⌘⌥C"
+            active={editor.isActive("codeBlock")}
+            onClick={() => editor.chain().focus().toggleCodeBlock().run()}
+          >
+            <Code className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Horizontal rule"
+            onClick={() => editor.chain().focus().setHorizontalRule().run()}
+          >
+            <Minus className="h-4 w-4" />
+          </ToolbarButton>
+
+          <ToolbarSep />
+
+          {/* Links, image, table */}
+          <ToolbarButton title="Add link" active={editor.isActive("link")} onClick={setLink}>
+            <Link2 className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Remove link"
+            disabled={!editor.isActive("link")}
+            onClick={() => editor.chain().focus().unsetLink().run()}
+          >
+            <Unlink className="h-4 w-4" />
+          </ToolbarButton>
+
+          {onUploadImage && (
+            <ToolbarButton
+              title="Insert image"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <ImageIcon className="h-4 w-4" />
+            </ToolbarButton>
+          )}
+
+          {/* Table dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className={cn(
+                  "h-7 w-7",
+                  editor.isActive("table")
+                    ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                    : "text-slate-700 hover:bg-slate-100"
+                )}
+                aria-label="Table"
+              >
+                <Table2 className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuItem
+                onClick={() =>
+                  editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+                }
+              >
+                Insert 3×3 table
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={!editor.can().addColumnAfter()}
+                onClick={() => editor.chain().focus().addColumnAfter().run()}
+              >
+                Add column after
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!editor.can().addRowAfter()}
+                onClick={() => editor.chain().focus().addRowAfter().run()}
+              >
+                Add row after
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={!editor.can().deleteColumn()}
+                onClick={() => editor.chain().focus().deleteColumn().run()}
+              >
+                Delete column
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={!editor.can().deleteRow()}
+                onClick={() => editor.chain().focus().deleteRow().run()}
+              >
+                Delete row
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                disabled={!editor.can().deleteTable()}
+                onClick={() => editor.chain().focus().deleteTable().run()}
+                className="text-red-600"
+              >
+                Delete table
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <ToolbarSep />
+
+          {/* Undo/Redo */}
+          <ToolbarButton title="Undo" shortcut="⌘Z" disabled={!editor.can().undo()} onClick={() => editor.chain().focus().undo().run()}>
+            <Undo2 className="h-4 w-4" />
+          </ToolbarButton>
+          <ToolbarButton title="Redo" shortcut="⌘⇧Z" disabled={!editor.can().redo()} onClick={() => editor.chain().focus().redo().run()}>
+            <Redo2 className="h-4 w-4" />
+          </ToolbarButton>
+        </div>
+
+        {/* Editor content */}
+        <div className="min-h-0 flex-1 overflow-y-auto bg-white">
+          <EditorContent
+            editor={editor}
+            className="h-full min-h-[320px] [&_.ProseMirror_p.is-editor-empty:first-child::before]:pointer-events-none [&_.ProseMirror_p.is-editor-empty:first-child::before]:float-left [&_.ProseMirror_p.is-editor-empty:first-child::before]:h-0 [&_.ProseMirror_p.is-editor-empty:first-child::before]:text-slate-400 [&_.ProseMirror_p.is-editor-empty:first-child::before]:content-[attr(data-placeholder)]"
+          />
+        </div>
+
+        {/* Word/character count footer */}
+        <div className="flex items-center justify-end border-t border-slate-200 bg-slate-50/60 px-4 py-1 text-[11px] text-slate-400">
+          {wordCount} word{wordCount !== 1 ? "s" : ""} &middot; {charCount} char{charCount !== 1 ? "s" : ""}
+        </div>
+
+        {/* Hidden file input for image uploads */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void handleImageUpload(file);
+            e.target.value = "";
+          }}
         />
       </div>
-    </div>
+    </TooltipProvider>
   );
 }
