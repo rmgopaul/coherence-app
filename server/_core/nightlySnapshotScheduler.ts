@@ -29,6 +29,18 @@ async function maybeRunNightlySnapshot() {
   } catch (error) {
     console.error("[Nightly Snapshot] Failed to capture nightly snapshots:", error);
   }
+
+  // Prune engagement data older than 90 days
+  try {
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - 90);
+    const cutoffKey = toDateKey(cutoff);
+    const { pruneSectionEngagement } = await import("../db");
+    await pruneSectionEngagement(cutoffKey);
+    console.log(`[Nightly Snapshot] Pruned engagement data older than ${cutoffKey}`);
+  } catch (error) {
+    console.error("[Nightly Snapshot] Failed to prune engagement data:", error);
+  }
 }
 
 export function startNightlySnapshotScheduler() {

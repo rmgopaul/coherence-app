@@ -5,6 +5,12 @@ import { TodaysPlan } from "@/components/todays-plan/TodaysPlan";
 import { TriageEmail } from "@/components/todays-plan/TriageEmail";
 import { DecisionsWidget } from "@/components/todays-plan/DecisionsWidget";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -39,12 +45,15 @@ import {
   Clock3,
   CloudSun,
   FileSpreadsheet,
+  MoreHorizontal,
   type LucideIcon,
 } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
+import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
+import { SectionRating } from "@/components/SectionRating";
 import {
   Bar,
   BarChart,
@@ -176,30 +185,36 @@ const isSameLocalDay = (dateA: Date, dateB: Date) => {
   );
 };
 
-const HABIT_COLOR_STYLES: Record<string, { active: string; inactive: string }> = {
+const HABIT_COLOR_STYLES: Record<string, { active: string; inactive: string; dot: string }> = {
   slate: {
     active: "bg-slate-900 text-white border-slate-900",
     inactive: "bg-slate-50 text-slate-700 border-slate-200",
+    dot: "bg-slate-600",
   },
   emerald: {
     active: "bg-emerald-600 text-white border-emerald-700",
     inactive: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    dot: "bg-emerald-500",
   },
   blue: {
     active: "bg-emerald-700 text-white border-emerald-800",
     inactive: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    dot: "bg-emerald-500",
   },
   violet: {
     active: "bg-violet-600 text-white border-violet-700",
     inactive: "bg-violet-50 text-violet-700 border-violet-200",
+    dot: "bg-violet-500",
   },
   rose: {
     active: "bg-rose-600 text-white border-rose-700",
     inactive: "bg-rose-50 text-rose-700 border-rose-200",
+    dot: "bg-rose-500",
   },
   amber: {
     active: "bg-amber-500 text-amber-950 border-amber-600",
     inactive: "bg-amber-50 text-amber-800 border-amber-200",
+    dot: "bg-amber-500",
   },
 };
 
@@ -247,13 +262,16 @@ export default function Dashboard() {
     location: string;
     temperatureF: number | null;
     error: string | null;
+    forecast: Array<{ day: string; highF: number; lowF: number; code: number }>;
   }>({
     loading: true,
     summary: "",
     location: "",
     temperatureF: null,
     error: null,
+    forecast: [],
   });
+  const [weatherForecastOpen, setWeatherForecastOpen] = useState(false);
   const [isTodoistDefaultApplied, setIsTodoistDefaultApplied] = useState(false);
   const [markingEmailId, setMarkingEmailId] = useState<string | null>(null);
   const [manualSleepScoreInput, setManualSleepScoreInput] = useState("");
@@ -263,6 +281,7 @@ export default function Dashboard() {
   const [dashboardViewMode, setDashboardViewMode] = useState<"essential" | "detailed">("detailed");
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   const [chatExpanded, setChatExpanded] = useState(false);
+  const [whoopMetricsExpanded, setWhoopMetricsExpanded] = useState(false);
   const [noteTitleInput, setNoteTitleInput] = useState("");
   const [noteContentInput, setNoteContentInput] = useState("");
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
@@ -282,6 +301,41 @@ export default function Dashboard() {
   const lastSamsungSyncSeenRef = useRef<string | null>(null);
   const todayKey = buildLocalDateKey();
   const trpcUtils = trpc.useUtils();
+
+  const TRACKED_SECTIONS = useMemo(
+    () => [
+      "section-overview",
+      "section-health",
+      "section-whoop",
+      "section-dailylog",
+      "section-supplements",
+      "section-tracking",
+      "section-notes",
+      "section-triage",
+      "section-calendar",
+      "section-todoist",
+      "section-emails",
+      "section-drive",
+      "section-workspace",
+      "section-chat",
+    ],
+    []
+  );
+  const { recordInteraction } = useSectionVisibilityTracker(TRACKED_SECTIONS);
+
+  const { data: sectionRatings } = trpc.engagement.getRatings.useQuery(undefined, {
+    enabled: !!user,
+    staleTime: 300_000,
+  });
+  const sectionRatingMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const rating of sectionRatings || []) {
+      if (rating.sectionId && rating.eventValue) {
+        map[rating.sectionId] = rating.eventValue;
+      }
+    }
+    return map;
+  }, [sectionRatings]);
   const isDetailedMode = dashboardViewMode === "detailed";
   const shouldLoadWorkspaceData = isDetailedMode && workspaceExpanded;
   const shouldLoadChatData = isDetailedMode && chatExpanded;
@@ -589,6 +643,19 @@ export default function Dashboard() {
       retry: false,
     }
   );
+
+  const { data: habitStreaks } = trpc.habits.getStreaks.useQuery(undefined, {
+    enabled: !!user,
+    staleTime: 60_000,
+  });
+
+  const habitStreakMap = useMemo(() => {
+    const map: Record<string, { streak: number; calendar: Array<{ dateKey: string; completed: boolean }> }> = {};
+    for (const s of habitStreaks || []) {
+      map[s.habitId] = { streak: s.streak, calendar: s.calendar };
+    }
+    return map;
+  }, [habitStreaks]);
 
   const { data: notes, isLoading: notesLoading, refetch: refetchNotes } = trpc.notes.list.useQuery(
     { limit: 300 },
@@ -1138,6 +1205,7 @@ export default function Dashboard() {
     e.preventDefault();
     e.stopPropagation();
     if (markEmailAsRead.isPending) return;
+    recordInteraction("section-workspace");
     markEmailAsRead.mutate({ messageId });
   };
 
@@ -1147,10 +1215,12 @@ export default function Dashboard() {
 
   const handleTriageMarkRead = (email: { id: string }) => {
     if (markEmailAsRead.isPending) return;
+    recordInteraction("section-overview");
     markEmailAsRead.mutate({ messageId: email.id });
   };
 
   const handleTriageMakeTask = (email: { id: string; subject: string; preview: string }) => {
+    recordInteraction("section-overview");
     createTaskFromEmail.mutate({
       subject: email.subject,
       emailLink: `https://mail.google.com/mail/u/0/#inbox/${encodeURIComponent(email.id)}`,
@@ -1211,6 +1281,7 @@ export default function Dashboard() {
       toast.error("Enter supplement and dose");
       return;
     }
+    recordInteraction("section-tracking");
     addSupplementLog.mutate({
       name: supplementName.trim(),
       dose: supplementDose.trim(),
@@ -1227,6 +1298,7 @@ export default function Dashboard() {
       toast.error("Note title is required");
       return;
     }
+    recordInteraction("section-tracking");
     if (editingNoteId) {
       updateNoteMutation.mutate({
         noteId: editingNoteId,
@@ -1343,6 +1415,7 @@ export default function Dashboard() {
   };
 
   const handleToggleHabit = (habitId: string, completed: boolean) => {
+    recordInteraction("section-tracking");
     setHabitCompletion.mutate({
       habitId,
       completed,
@@ -1504,6 +1577,7 @@ export default function Dashboard() {
         location: "",
         temperatureF: null,
         error: "Geolocation not supported",
+        forecast: [],
       });
       return;
     }
@@ -1513,10 +1587,11 @@ export default function Dashboard() {
         const { latitude, longitude } = position.coords;
         try {
           const weatherResponse = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=auto`
+            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=3`
           );
           const weatherData = await weatherResponse.json();
           const current = weatherData?.current ?? {};
+          const daily = weatherData?.daily ?? {};
 
           let location = "";
           try {
@@ -1533,6 +1608,21 @@ export default function Dashboard() {
             // Location name is optional.
           }
 
+          const forecastDays: Array<{ day: string; highF: number; lowF: number; code: number }> = [];
+          const dailyDates = Array.isArray(daily.time) ? daily.time : [];
+          const dailyMax = Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max : [];
+          const dailyMin = Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min : [];
+          const dailyCodes = Array.isArray(daily.weather_code) ? daily.weather_code : [];
+          for (let i = 0; i < dailyDates.length; i++) {
+            const d = new Date(dailyDates[i] + "T12:00:00");
+            forecastDays.push({
+              day: d.toLocaleDateString("en-US", { weekday: "short" }),
+              highF: typeof dailyMax[i] === "number" ? Math.round(dailyMax[i]) : 0,
+              lowF: typeof dailyMin[i] === "number" ? Math.round(dailyMin[i]) : 0,
+              code: typeof dailyCodes[i] === "number" ? dailyCodes[i] : 0,
+            });
+          }
+
           setWeather({
             loading: false,
             summary: getWeatherLabel(current.weather_code),
@@ -1540,6 +1630,7 @@ export default function Dashboard() {
             temperatureF:
               typeof current.temperature_2m === "number" ? current.temperature_2m : null,
             error: null,
+            forecast: forecastDays,
           });
         } catch (error) {
           setWeather({
@@ -1548,6 +1639,7 @@ export default function Dashboard() {
             location: "",
             temperatureF: null,
             error: (error as Error).message || "Weather fetch failed",
+            forecast: [],
           });
         }
       },
@@ -1558,6 +1650,7 @@ export default function Dashboard() {
           location: "",
           temperatureF: null,
           error: error.message || "Location access denied",
+          forecast: [],
         });
       },
       {
@@ -1625,12 +1718,14 @@ export default function Dashboard() {
   ]);
   
   const handleCompleteTask = (taskId: string) => {
+    recordInteraction("section-todoist");
     completeTask.mutate({ taskId });
   };
 
   const handleQuickAddTodoistTask = () => {
     const content = quickTodoistTaskInput.trim();
     if (!content) return;
+    recordInteraction("section-todoist");
     quickAddTodoistTask.mutate({ content });
   };
   
@@ -1641,6 +1736,7 @@ export default function Dashboard() {
   
   const handleSendMessage = () => {
     if (!chatMessage.trim()) return;
+    recordInteraction("section-chat");
     if (!selectedConversationId) {
       // Create new conversation first
       const title = chatMessage.slice(0, 50);
@@ -1882,6 +1978,40 @@ export default function Dashboard() {
     el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  // Keyboard shortcuts: press 1-6 to jump to sections (when no input is focused)
+  useEffect(() => {
+    const sectionShortcuts: Record<string, string> = {
+      "1": "section-overview",
+      "2": "section-health",
+      "3": "section-tracking",
+      "4": "section-todoist",
+      "5": "section-workspace",
+      "6": "section-chat",
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Skip if user is typing in an input, textarea, or contenteditable
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+
+      const sectionId = sectionShortcuts[e.key];
+      if (sectionId) {
+        e.preventDefault();
+        scrollToSection(sectionId);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
     <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
       {/* Header */}
@@ -1910,7 +2040,7 @@ export default function Dashboard() {
           </div>
           <div className="flex w-full flex-col gap-2 xl:w-auto">
             <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
-              {headerButtonRowOne.map((button) => {
+              {visibleHeaderButtons.slice(0, 4).map((button) => {
                 const Icon = button.icon;
                 return (
                   <Button key={button.key} variant="outline" onClick={() => setLocation(button.route)}>
@@ -1919,21 +2049,27 @@ export default function Dashboard() {
                   </Button>
                 );
               })}
-            </div>
-            {headerButtonRowTwo.length > 0 ? (
-              <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
-                {headerButtonRowTwo.map((button) => {
-                  const Icon = button.icon;
-                  return (
-                    <Button key={button.key} variant="outline" onClick={() => setLocation(button.route)}>
-                      <Icon className="mr-2 h-4 w-4" />
-                      {button.label}
+              {visibleHeaderButtons.length > 4 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline">
+                      <MoreHorizontal className="mr-2 h-4 w-4" />
+                      More
                     </Button>
-                  );
-                })}
-              </div>
-            ) : null}
-            <div className="flex items-center justify-start xl:justify-end">
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    {visibleHeaderButtons.slice(4).map((button) => {
+                      const Icon = button.icon;
+                      return (
+                        <DropdownMenuItem key={button.key} onClick={() => setLocation(button.route)}>
+                          <Icon className="mr-2 h-4 w-4" />
+                          {button.label}
+                        </DropdownMenuItem>
+                      );
+                    })}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               <Button variant="outline" onClick={() => setLocation("/settings")}>
                 <SettingsIcon className="h-4 w-4 mr-2" />
                 Settings
@@ -1955,7 +2091,10 @@ export default function Dashboard() {
                   </p>
                 </div>
 
-                <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
+                <div
+                  className="rounded-md border border-slate-200 bg-white/90 p-2.5 cursor-pointer"
+                  onClick={() => setWeatherForecastOpen((v) => !v)}
+                >
                   <p className="text-[11px] uppercase tracking-wide text-slate-500">Weather</p>
                   <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
                     <CloudSun className="h-4 w-4 text-emerald-600" />
@@ -1965,6 +2104,19 @@ export default function Dashboard() {
                         ? "Unavailable"
                         : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}F` : ""}`}
                   </p>
+                  {weatherForecastOpen && weather.forecast.length > 0 && (
+                    <div className="mt-2 flex gap-2">
+                      {weather.forecast.map((day, i) => (
+                        <div key={i} className="flex-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-center">
+                          <p className="text-[10px] font-semibold text-slate-600">{day.day}</p>
+                          <p className="text-[10px] text-slate-500">{getWeatherLabel(day.code)}</p>
+                          <p className="text-[11px] font-medium text-slate-800">
+                            {day.highF}° / {day.lowF}°
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
@@ -1991,7 +2143,7 @@ export default function Dashboard() {
           </Card>
         </div>
         <div className="container mx-auto px-4 py-2">
-          <div className="rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-red-50 px-3 py-2 shadow-[0_10px_28px_rgba(225,29,72,0.12)]">
+          <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50 px-3 py-2 shadow-[0_10px_28px_rgba(5,150,105,0.10)] dark:border-emerald-800 dark:from-emerald-950/60 dark:via-slate-900 dark:to-slate-950 dark:shadow-[0_10px_28px_rgba(5,150,105,0.06)]">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -2119,8 +2271,9 @@ export default function Dashboard() {
 
             <div className="min-w-0">
               <Card>
-                <CardHeader className="pb-2">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                   <CardTitle className="text-base">Triage Inbox</CardTitle>
+                  <SectionRating sectionId="section-triage" currentRating={sectionRatingMap["section-triage"] as any} />
                 </CardHeader>
                 <CardContent className="space-y-2">
                   <div className="h-32 rounded-md border border-slate-200 bg-white px-2 py-1">
@@ -2173,15 +2326,18 @@ export default function Dashboard() {
                 <Smartphone className="h-4 w-4 text-emerald-700" />
                 <CardTitle className="text-base text-slate-900">Samsung Health</CardTitle>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => refetchIntegrations()}
-                disabled={integrationsFetching}
-                className="h-8 px-2 text-slate-800 hover:text-slate-900 hover:bg-white/60"
-              >
-                <RefreshCw className={`h-4 w-4 ${integrationsFetching ? "animate-spin" : ""}`} />
-              </Button>
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-health" currentRating={sectionRatingMap["section-health"] as any} />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => refetchIntegrations()}
+                  disabled={integrationsFetching}
+                  className="h-8 px-2 text-slate-800 hover:text-slate-900 hover:bg-white/60"
+                >
+                  <RefreshCw className={`h-4 w-4 ${integrationsFetching ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               {!hasSamsungHealth ? (
@@ -2347,19 +2503,22 @@ export default function Dashboard() {
                 <HeartPulse className="h-4 w-4 text-lime-300" />
                 <CardTitle className="text-base text-white">WHOOP</CardTitle>
               </div>
-              {hasWhoop && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => refetchWhoop()}
-                  disabled={whoopLoading || whoopFetching}
-                  className="h-8 px-2 text-zinc-100 hover:text-white hover:bg-zinc-800"
-                >
-                  <RefreshCw
-                    className={`h-4 w-4 ${whoopLoading || whoopFetching ? "animate-spin" : ""}`}
-                  />
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-whoop" currentRating={sectionRatingMap["section-whoop"] as any} />
+                {hasWhoop && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => refetchWhoop()}
+                    disabled={whoopLoading || whoopFetching}
+                    className="h-8 px-2 text-zinc-100 hover:text-white hover:bg-zinc-800"
+                  >
+                    <RefreshCw
+                      className={`h-4 w-4 ${whoopLoading || whoopFetching ? "animate-spin" : ""}`}
+                    />
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               {!hasWhoop ? (
@@ -2383,150 +2542,164 @@ export default function Dashboard() {
                       ? ` ${whoopSummary.profile.firstName} ${whoopSummary.profile.lastName}`.trim()
                       : ""}
                   </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Recovery</p>
-                      <p className="text-sm font-semibold text-lime-300">
+                  {/* Hero metrics */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="rounded-lg border border-lime-300/30 bg-lime-300/10 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-lime-200">Recovery</p>
+                      <p className="text-xl font-bold text-lime-300 mt-1">
                         {toPercent(whoopSummary.recoveryScore)}
                       </p>
                     </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Day Strain</p>
-                      <p className="text-sm font-semibold text-white">
+                    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-zinc-400">Day Strain</p>
+                      <p className="text-xl font-bold text-white mt-1">
                         {toOneDecimal(whoopSummary.dayStrain)}
                       </p>
                     </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Sleep Total</p>
-                      <p className="text-sm font-semibold text-white">
+                    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-zinc-400">Sleep</p>
+                      <p className="text-xl font-bold text-white mt-1">
                         {whoopSummary.sleepHours !== null ? `${whoopSummary.sleepHours}h` : "-"}
                       </p>
                     </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Time In Bed</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.timeInBedHours !== null ? `${whoopSummary.timeInBedHours}h` : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Light Sleep</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.lightSleepHours !== null ? `${whoopSummary.lightSleepHours}h` : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Deep Sleep</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.deepSleepHours !== null ? `${whoopSummary.deepSleepHours}h` : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">REM Sleep</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.remSleepHours !== null ? `${whoopSummary.remSleepHours}h` : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Awake</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.awakeHours !== null ? `${whoopSummary.awakeHours}h` : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Sleep Performance</p>
-                      <p className="text-sm font-semibold text-white">
-                        {toPercent(whoopSummary.sleepPerformance)}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Sleep Efficiency</p>
-                      <p className="text-sm font-semibold text-white">
-                        {toPercent(whoopSummary.sleepEfficiency)}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Sleep Consistency</p>
-                      <p className="text-sm font-semibold text-white">
-                        {toPercent(whoopSummary.sleepConsistency)}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Energy</p>
-                      <p className="text-sm font-semibold text-white">
-                        {kilojouleToCalories(whoopSummary.kilojoule) !== null
-                          ? `${kilojouleToCalories(whoopSummary.kilojoule)} cal`
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Resting HR</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.restingHeartRate !== null
-                          ? `${whoopSummary.restingHeartRate} bpm`
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">HRV (RMSSD)</p>
-                      <p className="text-sm font-semibold text-white">
+                    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-zinc-400">HRV</p>
+                      <p className="text-xl font-bold text-white mt-1">
                         {whoopSummary.hrvRmssdMilli !== null
                           ? `${Math.round(whoopSummary.hrvRmssdMilli)} ms`
                           : "-"}
                       </p>
                     </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Respiratory Rate</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.respiratoryRate !== null
-                          ? `${whoopSummary.respiratoryRate.toFixed(1)} br/min`
-                          : "-"}
-                      </p>
+                  </div>
+                  {/* Expandable detailed metrics */}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full h-7 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+                    onClick={() => setWhoopMetricsExpanded((v) => !v)}
+                  >
+                    {whoopMetricsExpanded ? "Hide details" : "Show all metrics"}
+                  </Button>
+                  {whoopMetricsExpanded && (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Time In Bed</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.timeInBedHours !== null ? `${whoopSummary.timeInBedHours}h` : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Light Sleep</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.lightSleepHours !== null ? `${whoopSummary.lightSleepHours}h` : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Deep Sleep</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.deepSleepHours !== null ? `${whoopSummary.deepSleepHours}h` : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">REM Sleep</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.remSleepHours !== null ? `${whoopSummary.remSleepHours}h` : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Awake</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.awakeHours !== null ? `${whoopSummary.awakeHours}h` : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Sleep Performance</p>
+                        <p className="text-sm font-semibold text-white">
+                          {toPercent(whoopSummary.sleepPerformance)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Sleep Efficiency</p>
+                        <p className="text-sm font-semibold text-white">
+                          {toPercent(whoopSummary.sleepEfficiency)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Sleep Consistency</p>
+                        <p className="text-sm font-semibold text-white">
+                          {toPercent(whoopSummary.sleepConsistency)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Energy</p>
+                        <p className="text-sm font-semibold text-white">
+                          {kilojouleToCalories(whoopSummary.kilojoule) !== null
+                            ? `${kilojouleToCalories(whoopSummary.kilojoule)} cal`
+                            : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Resting HR</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.restingHeartRate !== null
+                            ? `${whoopSummary.restingHeartRate} bpm`
+                            : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Respiratory Rate</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.respiratoryRate !== null
+                            ? `${whoopSummary.respiratoryRate.toFixed(1)} br/min`
+                            : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Skin Temp</p>
+                        <p className="text-sm font-semibold text-white">
+                          {celsiusToFahrenheit(whoopSummary.skinTempCelsius) !== null
+                            ? `${celsiusToFahrenheit(whoopSummary.skinTempCelsius)?.toFixed(1)}F`
+                            : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">SpO2</p>
+                        <p className="text-sm font-semibold text-white">
+                          {toPercent(whoopSummary.spo2Percentage)}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Avg HR</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.averageHeartRate !== null
+                            ? `${Math.round(whoopSummary.averageHeartRate)} bpm`
+                            : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Max HR</p>
+                        <p className="text-sm font-semibold text-white">
+                          {whoopSummary.maxHeartRate !== null
+                            ? `${Math.round(whoopSummary.maxHeartRate)} bpm`
+                            : "-"}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
+                        <p className="text-xs text-zinc-400">Workout Strain</p>
+                        <p className="text-sm font-semibold text-white">
+                          {toOneDecimal(whoopSummary.latestWorkoutStrain)}
+                        </p>
+                      </div>
                     </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Skin Temp</p>
-                      <p className="text-sm font-semibold text-white">
-                        {celsiusToFahrenheit(whoopSummary.skinTempCelsius) !== null
-                          ? `${celsiusToFahrenheit(whoopSummary.skinTempCelsius)?.toFixed(1)}F`
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">SpO2</p>
-                      <p className="text-sm font-semibold text-white">
-                        {toPercent(whoopSummary.spo2Percentage)}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Avg HR</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.averageHeartRate !== null
-                          ? `${Math.round(whoopSummary.averageHeartRate)} bpm`
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Max HR</p>
-                      <p className="text-sm font-semibold text-white">
-                        {whoopSummary.maxHeartRate !== null
-                          ? `${Math.round(whoopSummary.maxHeartRate)} bpm`
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                      <p className="text-xs text-zinc-400">Workout Strain</p>
-                      <p className="text-sm font-semibold text-white">
-                        {toOneDecimal(whoopSummary.latestWorkoutStrain)}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-lime-300 bg-lime-300/10 p-2">
-                      <p className="text-xs text-lime-200">Last Update</p>
-                      <p className="text-xs font-semibold text-lime-100">
-                        {new Date(whoopSummary.updatedAt).toLocaleTimeString("en-US", {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}
-                      </p>
-                    </div>
+                  )}
+                  <div className="rounded-md border border-lime-300 bg-lime-300/10 p-2">
+                    <p className="text-xs text-lime-200">Last Update</p>
+                    <p className="text-xs font-semibold text-lime-100">
+                      {new Date(whoopSummary.updatedAt).toLocaleTimeString("en-US", {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </p>
                   </div>
                 </>
               ) : (
@@ -2553,14 +2726,17 @@ export default function Dashboard() {
                 <BarChart3 className="h-4 w-4 text-emerald-600" />
                 <CardTitle className="text-base">Daily Log Trend</CardTitle>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => captureDailyMetrics.mutate({ dateKey: todayKey })}
-                disabled={captureDailyMetrics.isPending}
-              >
-                <RefreshCw className={`h-4 w-4 ${captureDailyMetrics.isPending ? "animate-spin" : ""}`} />
-              </Button>
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-dailylog" currentRating={sectionRatingMap["section-dailylog"] as any} />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => captureDailyMetrics.mutate({ dateKey: todayKey })}
+                  disabled={captureDailyMetrics.isPending}
+                >
+                  <RefreshCw className={`h-4 w-4 ${captureDailyMetrics.isPending ? "animate-spin" : ""}`} />
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-2">
               <p className="text-xs text-slate-500">
@@ -2618,6 +2794,7 @@ export default function Dashboard() {
                 <Pill className="h-4 w-4 text-emerald-600" />
                 <CardTitle className="text-base">Supplements</CardTitle>
               </div>
+              <SectionRating sectionId="section-supplements" currentRating={sectionRatingMap["section-supplements"] as any} />
             </CardHeader>
             <CardContent className="space-y-3 min-w-0">
               <div className="space-y-2 min-w-0">
@@ -2768,13 +2945,16 @@ export default function Dashboard() {
                 <Target className="h-4 w-4 text-rose-600" />
                 <CardTitle className="text-base">Habits</CardTitle>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => refetchHabitsForToday()}
-              >
-                <RefreshCw className="h-4 w-4" />
-              </Button>
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-tracking" currentRating={sectionRatingMap["section-tracking"] as any} />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => refetchHabitsForToday()}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="mb-3 h-36 rounded-md border border-slate-200 bg-white px-2 py-1">
@@ -2811,6 +2991,7 @@ export default function Dashboard() {
                 <div className="grid grid-cols-2 gap-2">
                   {(habitsForToday || []).map((habit: any) => {
                     const styles = HABIT_COLOR_STYLES[habit.color] ?? HABIT_COLOR_STYLES.slate;
+                    const streakData = habitStreakMap[habit.id];
                     return (
                       <button
                         type="button"
@@ -2821,10 +3002,29 @@ export default function Dashboard() {
                         }`}
                         disabled={setHabitCompletion.isPending}
                       >
-                        <p className="text-xs font-semibold">{habit.name}</p>
-                        <p className="text-[11px] mt-0.5 opacity-80">
-                          {habit.completed ? "Done today" : "Tap to mark done"}
-                        </p>
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs font-semibold">{habit.name}</p>
+                          {streakData && streakData.streak > 0 && (
+                            <span className="text-[10px] font-bold opacity-70">{streakData.streak}d</span>
+                          )}
+                        </div>
+                        {streakData ? (
+                          <div className="flex items-center gap-0.5 mt-1">
+                            {streakData.calendar.map((day) => (
+                              <span
+                                key={day.dateKey}
+                                className={`h-1.5 w-1.5 rounded-full ${
+                                  day.completed ? styles.dot : "bg-black/10"
+                                }`}
+                                title={day.dateKey}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] mt-0.5 opacity-80">
+                            {habit.completed ? "Done today" : "Tap to mark done"}
+                          </p>
+                        )}
                       </button>
                     );
                   })}
@@ -2840,9 +3040,12 @@ export default function Dashboard() {
                   <FileText className="h-4 w-4 text-emerald-600" />
                   <CardTitle className="text-base">Notes</CardTitle>
                 </div>
-                <Button variant="ghost" size="sm" onClick={() => refetchNotes()}>
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
+                <div className="flex items-center gap-1">
+                  <SectionRating sectionId="section-notes" currentRating={sectionRatingMap["section-notes"] as any} />
+                  <Button variant="ghost" size="sm" onClick={() => refetchNotes()}>
+                    <RefreshCw className="h-4 w-4" />
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-3">
               <div className="grid grid-cols-2 gap-2">
@@ -3081,16 +3284,19 @@ export default function Dashboard() {
                 <Calendar className="h-4 w-4 text-emerald-600" />
                 <CardTitle className="text-base">Today's Events</CardTitle>
               </div>
-              {hasGoogle && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => refetchCalendar()}
-                  disabled={calendarLoading}
-                >
-                  <RefreshCw className={`h-4 w-4 ${calendarLoading ? "animate-spin" : ""}`} />
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-calendar" currentRating={sectionRatingMap["section-calendar"] as any} />
+                {hasGoogle && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => refetchCalendar()}
+                    disabled={calendarLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${calendarLoading ? "animate-spin" : ""}`} />
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-2 overflow-y-auto flex-1">
               {!hasGoogle ? (
@@ -3258,6 +3464,7 @@ export default function Dashboard() {
                      "Tasks"}
                   </CardTitle>
                 </div>
+                <SectionRating sectionId="section-todoist" currentRating={sectionRatingMap["section-todoist"] as any} />
                 {hasTodoist && (
                   <Button
                     variant="ghost"
@@ -3413,18 +3620,21 @@ export default function Dashboard() {
                 <Mail className="h-5 w-5 text-purple-600" />
                 <CardTitle className="text-lg">Important &amp; Unread</CardTitle>
               </div>
-              {hasGoogle && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => refetchEmails()}
-                  disabled={emailsLoading || emailsFetching}
-                >
-                  <RefreshCw
-                    className={`h-4 w-4 ${emailsLoading || emailsFetching ? "animate-spin" : ""}`}
-                  />
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-emails" currentRating={sectionRatingMap["section-emails"] as any} />
+                {hasGoogle && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => refetchEmails()}
+                    disabled={emailsLoading || emailsFetching}
+                  >
+                    <RefreshCw
+                      className={`h-4 w-4 ${emailsLoading || emailsFetching ? "animate-spin" : ""}`}
+                    />
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-3 overflow-y-auto flex-1">
               {!hasGoogle ? (
@@ -3506,16 +3716,19 @@ export default function Dashboard() {
                 <FolderOpen className="h-5 w-5 text-green-600" />
                 <CardTitle className="text-lg">Drive Files</CardTitle>
               </div>
-              {hasGoogle && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => refetchDrive()}
-                  disabled={driveLoading}
-                >
-                  <RefreshCw className={`h-4 w-4 ${driveLoading ? "animate-spin" : ""}`} />
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                <SectionRating sectionId="section-drive" currentRating={sectionRatingMap["section-drive"] as any} />
+                {hasGoogle && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => refetchDrive()}
+                    disabled={driveLoading}
+                  >
+                    <RefreshCw className={`h-4 w-4 ${driveLoading ? "animate-spin" : ""}`} />
+                  </Button>
+                )}
+              </div>
             </CardHeader>
             <CardContent className="space-y-3 overflow-y-auto flex-1">
               {hasGoogle && (
@@ -3643,7 +3856,7 @@ export default function Dashboard() {
 
       {/* Chat Panel at Bottom */}
       {isDetailedMode && chatExpanded ? (
-      <div id="section-chat" className="border-t bg-white scroll-mt-40">
+      <div id="section-chat" className="border-t bg-white dark:bg-slate-900 scroll-mt-40">
         <div className="container mx-auto px-4 py-4">
           <div className="grid grid-cols-12 gap-4 h-80">
             {/* Conversation List */}
@@ -3667,7 +3880,7 @@ export default function Dashboard() {
                     <div
                       key={conv.id}
                       className={`p-2 rounded cursor-pointer text-sm flex items-center justify-between group ${
-                        selectedConversationId === conv.id ? "bg-emerald-100" : "hover:bg-gray-100"
+                        selectedConversationId === conv.id ? "bg-emerald-100 dark:bg-emerald-900/40" : "hover:bg-gray-100 dark:hover:bg-slate-800"
                       }`}
                       onClick={() => setSelectedConversationId(conv.id)}
                     >
@@ -3722,7 +3935,7 @@ export default function Dashboard() {
                           className={`max-w-[80%] p-3 rounded-lg ${
                             msg.role === "user"
                               ? "bg-emerald-700 text-white"
-                              : "bg-gray-100 text-gray-900"
+                              : "bg-gray-100 text-gray-900 dark:bg-slate-800 dark:text-slate-100"
                           }`}
                         >
                           {msg.role === "assistant" ? (

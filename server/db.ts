@@ -1,4 +1,4 @@
-import { eq, and, desc, asc, sql } from "drizzle-orm";
+import { eq, and, desc, asc, sql, gte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { createPool, type PoolOptions } from "mysql2";
 import { 
@@ -32,6 +32,8 @@ import {
   InsertNoteLink,
   InsertDailySnapshot,
   InsertSamsungSyncPayload,
+  sectionEngagement,
+  InsertSectionEngagement,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
@@ -1198,6 +1200,35 @@ export async function listHabitCompletions(userId: number, limit = 200) {
   );
 }
 
+/**
+ * Returns habit completion data for the last N days for streak calculation.
+ * Returns rows grouped by habitId + dateKey with completed status.
+ */
+export async function getHabitCompletionsRange(
+  userId: number,
+  sinceDateKey: string
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("get habit completions range", async () =>
+    db
+      .select({
+        habitId: habitCompletions.habitId,
+        dateKey: habitCompletions.dateKey,
+        completed: habitCompletions.completed,
+      })
+      .from(habitCompletions)
+      .where(
+        and(
+          eq(habitCompletions.userId, userId),
+          gte(habitCompletions.dateKey, sinceDateKey),
+          eq(habitCompletions.completed, true)
+        )
+      )
+  );
+}
+
 export async function getDailySnapshotByDate(userId: number, dateKey: string) {
   const db = await getDb();
   if (!db) return null;
@@ -1301,4 +1332,113 @@ export async function getLatestSamsungSyncPayload(userId: number, dateKey?: stri
   });
 
   return result.length > 0 ? result[0] : null;
+}
+
+// ── Section Engagement ──
+
+export async function insertSectionEngagementBatch(
+  rows: Array<Omit<InsertSectionEngagement, "id" | "createdAt">>
+) {
+  const db = await getDb();
+  if (!db || rows.length === 0) return;
+
+  const toInsert = rows.map((row) => ({
+    ...row,
+    id: nanoid(),
+  }));
+
+  await withDbRetry("insert section engagement batch", async () => {
+    await db.insert(sectionEngagement).values(toInsert);
+  });
+}
+
+export async function getSectionEngagementSummary(
+  userId: number,
+  sinceDateKey: string
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("get section engagement summary", async () => {
+    return db
+      .select({
+        sectionId: sectionEngagement.sectionId,
+        eventType: sectionEngagement.eventType,
+        totalDurationMs: sql<number>`COALESCE(SUM(${sectionEngagement.durationMs}), 0)`,
+        eventCount: sql<number>`COUNT(*)`,
+      })
+      .from(sectionEngagement)
+      .where(
+        and(
+          eq(sectionEngagement.userId, userId),
+          sql`${sectionEngagement.sessionDate} >= ${sinceDateKey}`
+        )
+      )
+      .groupBy(sectionEngagement.sectionId, sectionEngagement.eventType);
+  });
+}
+
+export async function getSectionRatings(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("get section ratings", async () => {
+    // Get the most recent rating per section
+    const subquery = db
+      .select({
+        sectionId: sectionEngagement.sectionId,
+        maxCreatedAt: sql<Date>`MAX(${sectionEngagement.createdAt})`.as("maxCreatedAt"),
+      })
+      .from(sectionEngagement)
+      .where(
+        and(
+          eq(sectionEngagement.userId, userId),
+          eq(sectionEngagement.eventType, "rating")
+        )
+      )
+      .groupBy(sectionEngagement.sectionId)
+      .as("latest");
+
+    return db
+      .select({
+        sectionId: sectionEngagement.sectionId,
+        eventValue: sectionEngagement.eventValue,
+      })
+      .from(sectionEngagement)
+      .innerJoin(
+        subquery,
+        and(
+          eq(sectionEngagement.sectionId, subquery.sectionId),
+          eq(sectionEngagement.createdAt, subquery.maxCreatedAt)
+        )
+      )
+      .where(
+        and(
+          eq(sectionEngagement.userId, userId),
+          eq(sectionEngagement.eventType, "rating")
+        )
+      );
+  });
+}
+
+export async function pruneSectionEngagement(olderThanDateKey: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("prune section engagement", async () => {
+    await db
+      .delete(sectionEngagement)
+      .where(sql`${sectionEngagement.sessionDate} < ${olderThanDateKey}`);
+  });
+}
+
+export async function clearSectionEngagement(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("clear section engagement", async () => {
+    await db
+      .delete(sectionEngagement)
+      .where(eq(sectionEngagement.userId, userId));
+  });
 }

@@ -367,3 +367,33 @@ export const solarRecDashboardStorage = mysqlTable(
 
 export type SolarRecDashboardStorage = typeof solarRecDashboardStorage.$inferSelect;
 export type InsertSolarRecDashboardStorage = typeof solarRecDashboardStorage.$inferInsert;
+
+// Section engagement tracking for dashboard utility feedback.
+export const sectionEngagement = mysqlTable(
+  "sectionEngagement",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    sectionId: varchar("sectionId", { length: 48 }).notNull(),
+    eventType: varchar("eventType", { length: 32 }).notNull(), // view, interact, expand, collapse, refresh, rating
+    eventValue: varchar("eventValue", { length: 64 }), // for rating: essential, useful, rarely-use, remove
+    sessionDate: varchar("sessionDate", { length: 10 }).notNull(), // YYYY-MM-DD
+    durationMs: int("durationMs"),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    userSectionDateIdx: index("section_engagement_user_section_date_idx").on(
+      table.userId,
+      table.sectionId,
+      table.sessionDate
+    ),
+    userEventDateIdx: index("section_engagement_user_event_date_idx").on(
+      table.userId,
+      table.eventType,
+      table.sessionDate
+    ),
+  })
+);
+
+export type SectionEngagement = typeof sectionEngagement.$inferSelect;
+export type InsertSectionEngagement = typeof sectionEngagement.$inferInsert;

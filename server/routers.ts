@@ -2983,6 +2983,70 @@ export const appRouter = router({
         await upsertHabitCompletion(ctx.user.id, input.habitId, dateKey, input.completed);
         return { success: true };
       }),
+    getStreaks: protectedProcedure.query(async ({ ctx }) => {
+      const { listHabitDefinitions, getHabitCompletionsRange } = await import("./db");
+      const today = new Date();
+      // Get last 14 days of data for streak calculation (show 7 days, need 14 for streak count)
+      const sinceDate = new Date(today);
+      sinceDate.setDate(sinceDate.getDate() - 13);
+      const sinceDateKey = `${sinceDate.getFullYear()}-${String(sinceDate.getMonth() + 1).padStart(2, "0")}-${String(sinceDate.getDate()).padStart(2, "0")}`;
+
+      const [definitions, completions] = await Promise.all([
+        listHabitDefinitions(ctx.user.id),
+        getHabitCompletionsRange(ctx.user.id, sinceDateKey),
+      ]);
+
+      // Build a map: habitId -> Set of completed dateKeys
+      const completionMap = new Map<string, Set<string>>();
+      for (const c of completions) {
+        if (!completionMap.has(c.habitId)) {
+          completionMap.set(c.habitId, new Set());
+        }
+        completionMap.get(c.habitId)!.add(c.dateKey);
+      }
+
+      // Generate last 7 date keys for the dot calendar
+      const last7Days: string[] = [];
+      for (let i = 6; i >= 0; i--) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        last7Days.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+      }
+
+      return definitions.map((habit) => {
+        const completedDates = completionMap.get(habit.id) ?? new Set();
+
+        // Calculate current streak (consecutive days ending today or yesterday)
+        let streak = 0;
+        for (let i = 0; i < 14; i++) {
+          const d = new Date(today);
+          d.setDate(d.getDate() - i);
+          const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+          if (completedDates.has(key)) {
+            streak++;
+          } else if (i === 0) {
+            // Today not done yet — continue checking from yesterday
+            continue;
+          } else {
+            break;
+          }
+        }
+
+        // Build 7-day calendar
+        const calendar = last7Days.map((dateKey) => ({
+          dateKey,
+          completed: completedDates.has(dateKey),
+        }));
+
+        return {
+          habitId: habit.id,
+          name: habit.name,
+          color: habit.color,
+          streak,
+          calendar,
+        };
+      });
+    }),
   }),
 
   notes: router({
@@ -3745,6 +3809,84 @@ export const appRouter = router({
           return { title: input.source === "gmail" ? "Email" : input.source === "gcal" ? "Calendar Event" : input.source === "gsheet" ? "Spreadsheet" : input.source === "todoist" ? "Task" : input.url };
         }
       }),
+  }),
+
+  engagement: router({
+    recordBatch: protectedProcedure
+      .input(
+        z.object({
+          events: z.array(
+            z.object({
+              sectionId: z.string().max(48),
+              eventType: z.string().max(32),
+              eventValue: z.string().max(64).optional(),
+              sessionDate: z.string().length(10),
+              durationMs: z.number().int().optional(),
+            })
+          ),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (input.events.length === 0) return { ok: true };
+        const { insertSectionEngagementBatch } = await import("./db");
+        await insertSectionEngagementBatch(
+          input.events.map((event) => ({
+            userId: ctx.user.id,
+            sectionId: event.sectionId,
+            eventType: event.eventType,
+            eventValue: event.eventValue ?? null,
+            sessionDate: event.sessionDate,
+            durationMs: event.durationMs ?? null,
+          }))
+        );
+        return { ok: true };
+      }),
+
+    setRating: protectedProcedure
+      .input(
+        z.object({
+          sectionId: z.string().max(48),
+          rating: z.enum(["essential", "useful", "rarely-use", "remove"]),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { insertSectionEngagementBatch } = await import("./db");
+        const now = new Date();
+        const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+        await insertSectionEngagementBatch([
+          {
+            userId: ctx.user.id,
+            sectionId: input.sectionId,
+            eventType: "rating",
+            eventValue: input.rating,
+            sessionDate: dateKey,
+            durationMs: null,
+          },
+        ]);
+        return { ok: true };
+      }),
+
+    getRatings: protectedProcedure.query(async ({ ctx }) => {
+      const { getSectionRatings } = await import("./db");
+      return getSectionRatings(ctx.user.id);
+    }),
+
+    getSummary: protectedProcedure
+      .input(
+        z.object({
+          sinceDateKey: z.string().length(10),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        const { getSectionEngagementSummary } = await import("./db");
+        return getSectionEngagementSummary(ctx.user.id, input.sinceDateKey);
+      }),
+
+    clearAll: protectedProcedure.mutation(async ({ ctx }) => {
+      const { clearSectionEngagement } = await import("./db");
+      await clearSectionEngagement(ctx.user.id);
+      return { ok: true };
+    }),
   }),
 });
 

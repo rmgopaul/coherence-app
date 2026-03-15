@@ -26,9 +26,32 @@ import {
   Smartphone,
   RefreshCw,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
+const SECTION_LABELS: Record<string, string> = {
+  "section-overview": "Today's Plan",
+  "section-health": "Samsung Health",
+  "section-whoop": "WHOOP",
+  "section-dailylog": "Daily Log Trend",
+  "section-supplements": "Supplements",
+  "section-tracking": "Habits",
+  "section-notes": "Notes",
+  "section-triage": "Triage Inbox",
+  "section-calendar": "Calendar",
+  "section-todoist": "Todoist",
+  "section-emails": "Emails",
+  "section-drive": "Drive Files",
+  "section-workspace": "Workspace",
+  "section-chat": "Chat",
+};
+
+const RATING_COLORS: Record<string, string> = {
+  essential: "bg-emerald-100 text-emerald-800",
+  useful: "bg-blue-100 text-blue-800",
+  "rarely-use": "bg-amber-100 text-amber-800",
+  remove: "bg-red-100 text-red-800",
+};
 
 const OPENAI_MODELS = [
   "gpt-5",
@@ -1785,8 +1808,183 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Engagement Insights */}
+          <div>
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">Engagement Insights</h2>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Section Usage</CardTitle>
+                <CardDescription className="text-sm">
+                  See which dashboard sections you view and interact with most, along with your explicit ratings.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <EngagementInsightsPanel />
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </main>
+    </div>
+  );
+}
+
+function EngagementInsightsPanel() {
+  const sinceDate = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, []);
+
+  const { data: summary, isLoading: summaryLoading } = trpc.engagement.getSummary.useQuery(
+    { sinceDateKey: sinceDate },
+    { staleTime: 120_000 }
+  );
+  const { data: ratings } = trpc.engagement.getRatings.useQuery(undefined, {
+    staleTime: 120_000,
+  });
+  const clearAll = trpc.engagement.clearAll.useMutation();
+  const trpcUtils = trpc.useUtils();
+
+  const ratingMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const r of ratings || []) {
+      if (r.sectionId && r.eventValue) map[r.sectionId] = r.eventValue;
+    }
+    return map;
+  }, [ratings]);
+
+  // Aggregate summary data per section
+  const sectionData = useMemo(() => {
+    if (!summary) return [];
+    const map = new Map<string, { views: number; viewDurationMs: number; interactions: number }>();
+    for (const row of summary) {
+      if (!map.has(row.sectionId)) {
+        map.set(row.sectionId, { views: 0, viewDurationMs: 0, interactions: 0 });
+      }
+      const entry = map.get(row.sectionId)!;
+      if (row.eventType === "view") {
+        entry.views += Number(row.eventCount);
+        entry.viewDurationMs += Number(row.totalDurationMs);
+      } else if (row.eventType === "interact") {
+        entry.interactions += Number(row.eventCount);
+      }
+    }
+
+    return Array.from(map.entries())
+      .map(([sectionId, data]) => ({
+        sectionId,
+        label: SECTION_LABELS[sectionId] ?? sectionId,
+        ...data,
+        rating: ratingMap[sectionId] ?? null,
+      }))
+      .sort((a, b) => b.viewDurationMs - a.viewDurationMs);
+  }, [summary, ratingMap]);
+
+  // Generate actionable suggestions
+  const suggestions = useMemo(() => {
+    const tips: string[] = [];
+    for (const s of sectionData) {
+      const rating = ratingMap[s.sectionId];
+      if ((rating === "rarely-use" || rating === "remove") && s.views <= 5) {
+        tips.push(`You rated "${s.label}" as "${rating === "rarely-use" ? "Rarely use" : "Remove"}" and viewed it ${s.views} time${s.views !== 1 ? "s" : ""} in 30 days. Consider hiding it.`);
+      }
+      if (s.interactions > 30 && !rating) {
+        tips.push(`You interact with "${s.label}" frequently (${s.interactions}x in 30 days). Consider rating it.`);
+      }
+      if (s.viewDurationMs > 300_000 && s.interactions === 0 && !rating) {
+        tips.push(`"${s.label}" has high view time but zero interactions — the read-only display seems to be working well.`);
+      }
+    }
+    return tips;
+  }, [sectionData, ratingMap]);
+
+  if (summaryLoading) {
+    return <p className="text-sm text-slate-500">Loading engagement data...</p>;
+  }
+
+  if (sectionData.length === 0) {
+    return (
+      <p className="text-sm text-slate-500">
+        No engagement data yet. Use the dashboard for a few days to see insights here.
+      </p>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Usage Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b text-left text-xs text-slate-500">
+              <th className="pb-2 pr-4 font-medium">Section</th>
+              <th className="pb-2 pr-4 font-medium text-right">Views</th>
+              <th className="pb-2 pr-4 font-medium text-right">View Time</th>
+              <th className="pb-2 pr-4 font-medium text-right">Interactions</th>
+              <th className="pb-2 font-medium">Rating</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sectionData.map((section) => (
+              <tr key={section.sectionId} className="border-b border-slate-100 last:border-0">
+                <td className="py-2 pr-4 font-medium text-slate-900">{section.label}</td>
+                <td className="py-2 pr-4 text-right text-slate-600">{section.views}</td>
+                <td className="py-2 pr-4 text-right text-slate-600">
+                  {section.viewDurationMs > 60_000
+                    ? `${Math.round(section.viewDurationMs / 60_000)}m`
+                    : `${Math.round(section.viewDurationMs / 1_000)}s`}
+                </td>
+                <td className="py-2 pr-4 text-right text-slate-600">{section.interactions}</td>
+                <td className="py-2">
+                  {section.rating ? (
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${RATING_COLORS[section.rating] ?? "bg-slate-100 text-slate-700"}`}>
+                      {section.rating === "rarely-use" ? "Rarely use" : section.rating.charAt(0).toUpperCase() + section.rating.slice(1)}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">—</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Suggestions */}
+      {suggestions.length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 p-3 space-y-1">
+          <p className="text-xs font-semibold text-amber-800 mb-1">Suggestions</p>
+          {suggestions.map((tip, i) => (
+            <p key={i} className="text-xs text-amber-700">{tip}</p>
+          ))}
+        </div>
+      )}
+
+      {/* Clear Data */}
+      <div className="flex items-center justify-between pt-2 border-t">
+        <p className="text-xs text-slate-500">Data from the last 30 days. Older data is pruned automatically.</p>
+        <Button
+          variant="outline"
+          size="sm"
+          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+          onClick={() => {
+            if (window.confirm("Clear all engagement data? This cannot be undone.")) {
+              clearAll.mutate(undefined, {
+                onSuccess: () => {
+                  trpcUtils.engagement.getSummary.invalidate();
+                  trpcUtils.engagement.getRatings.invalidate();
+                  toast.success("Engagement data cleared");
+                },
+              });
+            }
+          }}
+          disabled={clearAll.isPending}
+        >
+          {clearAll.isPending ? "Clearing..." : "Clear All Data"}
+        </Button>
+      </div>
     </div>
   );
 }
