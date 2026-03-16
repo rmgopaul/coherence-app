@@ -7219,6 +7219,48 @@ export default function SolarRecDashboard() {
 
       y = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 28 : y + 140;
 
+      // ── Year-over-Year Comparison Table ──
+      sectionHeading("Year-over-Year Comparison (Trailing 12 Months)");
+
+      const pyTotals = {
+        part1: completed12Month.reduce((s, r) => s + r.prevPart1Count, 0),
+        part2: completed12Month.reduce((s, r) => s + r.prevPart2Count, 0),
+        part1Kw: completed12Month.reduce((s, r) => s + r.prevPart1KwAc, 0),
+        part2Kw: completed12Month.reduce((s, r) => s + r.prevPart2KwAc, 0),
+        ic: completed12Month.reduce((s, r) => s + r.prevInterconnectedCount, 0),
+        icKw: completed12Month.reduce((s, r) => s + r.prevInterconnectedKwAc, 0),
+      };
+      const t12 = summaryTotals.twelveMonth;
+      const pctChg = (cur: number, prev: number) => prev === 0 ? (cur > 0 ? "+∞" : "—") : `${cur >= prev ? "+" : ""}${(((cur - prev) / prev) * 100).toFixed(1)}%`;
+
+      autoTable(doc, {
+        startY: y,
+        margin: { left: ml, right: mr },
+        head: [["Metric", "Current Period", "Prior Year", "Change"]],
+        body: [
+          ["Part I Submitted (Count)", formatNumber(t12.totalPart1), formatNumber(pyTotals.part1), pctChg(t12.totalPart1, pyTotals.part1)],
+          ["Part II Verified (Count)", formatNumber(t12.totalPart2), formatNumber(pyTotals.part2), pctChg(t12.totalPart2, pyTotals.part2)],
+          ["Part I Submitted (kW AC)", formatNumber(t12.totalPart1KwAc, 1), formatNumber(pyTotals.part1Kw, 1), pctChg(t12.totalPart1KwAc, pyTotals.part1Kw)],
+          ["Part II Verified (kW AC)", formatNumber(t12.totalPart2KwAc, 1), formatNumber(pyTotals.part2Kw, 1), pctChg(t12.totalPart2KwAc, pyTotals.part2Kw)],
+          ["Interconnected (Count)", formatNumber(t12.totalInterconnected), formatNumber(pyTotals.ic), pctChg(t12.totalInterconnected, pyTotals.ic)],
+          ["Interconnected (kW AC)", formatNumber(t12.totalInterconnectedKwAc, 1), formatNumber(pyTotals.icKw, 1), pctChg(t12.totalInterconnectedKwAc, pyTotals.icKw)],
+        ],
+        styles: { fontSize: 9, cellPadding: 6, lineColor: slate200, lineWidth: 0.5 },
+        headStyles: { fillColor: navy, textColor: 255, fontStyle: "bold", fontSize: 9 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" } },
+        didParseCell: (data: any) => {
+          // Color the Change column: green for positive, red for negative
+          if (data.section === "body" && data.column.index === 3) {
+            const val = data.cell.raw as string;
+            if (val.startsWith("+")) data.cell.styles.textColor = [22, 163, 74];
+            else if (val.startsWith("-")) data.cell.styles.textColor = [220, 38, 38];
+          }
+        },
+      });
+
+      y = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 28 : y + 140;
+
       // ── Monthly Detail Table ──
       sectionHeading("Monthly Detail (Last 12 Months)");
 

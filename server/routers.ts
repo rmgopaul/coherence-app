@@ -2449,7 +2449,7 @@ export const appRouter = router({
 A 3-4 sentence high-level summary of the pipeline health.
 
 ## Application Volume Trends
-Analysis of Part I submissions and Part II verifications -- monthly patterns, year-over-year changes, seasonality, acceleration or deceleration.
+Analysis of Part I submissions and Part II verifications -- monthly patterns, seasonality, acceleration or deceleration. Use concise prose, not raw data dumps.
 
 ## Capacity Trends (kW AC)
 Analysis of capacity flowing through the pipeline -- average system sizes, capacity growth, and how kW AC trends differ from count trends.
@@ -2458,12 +2458,17 @@ Analysis of capacity flowing through the pipeline -- average system sizes, capac
 Trends in systems going online -- throughput rates, bottlenecks, and how interconnection volume compares to application volume.
 
 ## Year-over-Year Comparison
-Compare current-year metrics against prior-year across all dimensions. Quantify growth or decline percentages.
+Summarize YoY changes in 2-3 concise sentences covering the most significant shifts. Focus on the overall trend direction and magnitude rather than listing every month individually. State the trailing-12-month totals vs. prior-year totals for Part I, Part II, and Interconnected with percentage change. Do NOT list individual monthly comparisons.
 
 ## Key Risks & Opportunities
 2-4 bullet points identifying risks (declining volumes, growing backlogs) and opportunities (capacity growth, improving conversion rates).
 
-Be quantitative -- cite specific numbers and percentages. Keep the total analysis to 400-600 words.`,
+FORMATTING RULES:
+- Write in concise professional prose. Avoid cramming multiple statistics into a single sentence.
+- When citing numbers, round kW values to the nearest whole number or one decimal (e.g. 47.6 MW, not 47600.1 kW).
+- Use "MW" for values above 1,000 kW (divide by 1,000).
+- Do NOT use asterisks for emphasis within numbers or percentages. Use plain text.
+- Keep the total analysis to 400-600 words.`,
         };
 
         const t3 = input.summaryTotals.threeYear;
