@@ -7050,6 +7050,12 @@ export default function SolarRecDashboard() {
     if (pipelineReportLoading) return;
     setPipelineReportLoading(true);
     try {
+      // Exclude the current (incomplete) month — only use fully completed months
+      const now = new Date();
+      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+      const completed3Year = pipelineRows3Year.filter((r) => r.month < currentMonth);
+      const completed12Month = pipelineRows12Month.filter((r) => r.month < currentMonth);
+
       // Compute summary totals
       const sumFields = (rows: PipelineMonthRow[]) => ({
         totalPart1: rows.reduce((s, r) => s + r.part1Count, 0),
@@ -7060,8 +7066,8 @@ export default function SolarRecDashboard() {
         totalInterconnectedKwAc: rows.reduce((s, r) => s + r.interconnectedKwAc, 0),
       });
       const summaryTotals = {
-        threeYear: sumFields(pipelineRows3Year),
-        twelveMonth: sumFields(pipelineRows12Month),
+        threeYear: sumFields(completed3Year),
+        twelveMonth: sumFields(completed12Month),
       };
 
       // Call ChatGPT for analysis
@@ -7069,8 +7075,8 @@ export default function SolarRecDashboard() {
       try {
         result = await generatePipelineReport.mutateAsync({
           generatedAt: new Date().toISOString(),
-          rows3Year: pipelineRows3Year,
-          rows12Month: pipelineRows12Month,
+          rows3Year: completed3Year,
+          rows12Month: completed12Month,
           summaryTotals,
         });
       } catch (apiErr: any) {
@@ -7220,7 +7226,7 @@ export default function SolarRecDashboard() {
         startY: y,
         margin: { left: ml, right: mr },
         head: [["Month", "Part I (#)", "Part II (#)", "Part I (kW)", "Part II (kW)", "Interconn. (#)", "Interconn. (kW)"]],
-        body: pipelineRows12Month.map((r) => [
+        body: completed12Month.map((r) => [
           r.month,
           formatNumber(r.part1Count),
           formatNumber(r.part2Count),
