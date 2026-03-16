@@ -6908,9 +6908,11 @@ export default function SolarRecDashboard() {
         }
       }
 
-      // Interconnected: keyed on Energization_Date, kW from Inverter_Size_kW_AC_Part_2
+      // Interconnected: keyed on interconnection/online date, kW from Inverter_Size_kW_AC_Part_2
       if (!seenInterconnected.has(applicationId)) {
         const energizationDate =
+          parseDate(row.Interconnection_Approval_Date_UTC_Part_2) ??
+          parseDate(row.Project_Online_Date_Part_2) ??
           parseDate(row.Energization_Date) ??
           parseDate(row.energization_date);
         if (energizationDate) {
