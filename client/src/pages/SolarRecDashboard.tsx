@@ -87,6 +87,14 @@ type ContractDeliveryAggregate = {
 
 type TransitionStatus = ChangeOwnershipStatus | "No COO Status";
 
+type PipelineMonthRow = {
+  month: string;        // "YYYY-MM"
+  part1Count: number;
+  part2Count: number;
+  part1KwAc: number;
+  part2KwAc: number;
+};
+
 type AnnualVintageAggregate = {
   deliveryStartDate: Date | null;
   deliveryStartRaw: string;
@@ -2022,6 +2030,8 @@ export default function SolarRecDashboard() {
     }>
   >([]);
   const [activeTab, setActiveTab] = useState("overview");
+  const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
+  const [pipelineKwRange, setPipelineKwRange] = useState<"3year" | "12month">("3year");
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
@@ -6830,6 +6840,81 @@ export default function SolarRecDashboard() {
     [annualVintageRows]
   );
 
+  // ── Application Pipeline: monthly aggregation ──
+  const pipelineMonthlyRows = useMemo<PipelineMonthRow[]>(() => {
+    const buckets = new Map<string, { part1Count: number; part2Count: number; part1KwAc: number; part2KwAc: number }>();
+
+    const ensureBucket = (month: string) => {
+      if (!buckets.has(month)) {
+        buckets.set(month, { part1Count: 0, part2Count: 0, part1KwAc: 0, part2KwAc: 0 });
+      }
+      return buckets.get(month)!;
+    };
+
+    // Part 1: solarApplications rows, deduplicated by system_id / Application_ID
+    const seenPart1 = new Set<string>();
+    (datasets.solarApplications?.rows ?? []).forEach((row) => {
+      const systemId = clean(row.system_id) || clean(row.Application_ID);
+      if (!systemId) return;
+      if (seenPart1.has(systemId)) return;
+      seenPart1.add(systemId);
+
+      const submissionDate =
+        parseDate(row.Part_1_Submission_Date) ??
+        parseDate(row.Part_1_Original_Submission_Date);
+      if (!submissionDate) return;
+
+      const month = `${submissionDate.getFullYear()}-${String(submissionDate.getMonth() + 1).padStart(2, "0")}`;
+      const bucket = ensureBucket(month);
+      bucket.part1Count += 1;
+
+      const acKw = firstNonNull(
+        parseNumber(row.Inverter_Size_kW_AC_Part_1),
+        parseNumber(row.installed_system_size_kw_ac),
+        parseNumber(row.planned_system_size_kw_ac)
+      );
+      if (acKw !== null) bucket.part1KwAc += acKw;
+    });
+
+    // Part 2: abpReport rows (already filtered to verified), deduplicated by Application_ID / system_id
+    const seenPart2 = new Set<string>();
+    part2VerifiedAbpRows.forEach((row) => {
+      const applicationId = clean(row.Application_ID) || clean(row.system_id);
+      if (!applicationId) return;
+      if (seenPart2.has(applicationId)) return;
+      seenPart2.add(applicationId);
+
+      const part2DateRaw =
+        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      const verificationDate = parsePart2VerificationDate(part2DateRaw);
+      if (!verificationDate) return;
+
+      const month = `${verificationDate.getFullYear()}-${String(verificationDate.getMonth() + 1).padStart(2, "0")}`;
+      const bucket = ensureBucket(month);
+      bucket.part2Count += 1;
+
+      const acKw = parseAbpAcSizeKw(row);
+      if (acKw !== null) bucket.part2KwAc += acKw;
+    });
+
+    return Array.from(buckets.entries())
+      .map(([month, data]) => ({ month, ...data }))
+      .sort((a, b) => a.month.localeCompare(b.month));
+  }, [datasets.solarApplications, part2VerifiedAbpRows]);
+
+  const pipelineRows3Year = useMemo(() => {
+    const now = new Date();
+    const cutoff = `${now.getFullYear() - 3}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    return pipelineMonthlyRows.filter((row) => row.month >= cutoff);
+  }, [pipelineMonthlyRows]);
+
+  const pipelineRows12Month = useMemo(() => {
+    const now = new Date();
+    const cutoffDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    const cutoff = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth() + 1).padStart(2, "0")}`;
+    return pipelineMonthlyRows.filter((row) => row.month >= cutoff);
+  }, [pipelineMonthlyRows]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
       <div className="container py-6 space-y-6">
@@ -6970,6 +7055,7 @@ export default function SolarRecDashboard() {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="meter-reads">Meter Reads</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="performance-ratio">Performance Ratio</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="snapshot-log">Snapshot Log</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="app-pipeline">Application Pipeline</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
@@ -9998,6 +10084,162 @@ export default function SolarRecDashboard() {
                     </div>
                   </>
                 )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="app-pipeline" className="space-y-4 mt-4">
+            {/* ====== Application Pipeline (Count) ====== */}
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Application Pipeline (Count)</CardTitle>
+                    <CardDescription>
+                      Monthly count of Part I Submitted and Part II Verified applications, deduplicated by Application ID.
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant={pipelineCountRange === "3year" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineCountRange("3year")}
+                    >
+                      Last 3 Years
+                    </Button>
+                    <Button
+                      variant={pipelineCountRange === "12month" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineCountRange("12month")}
+                    >
+                      Last 12 Months
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month}
+                      margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} angle={-45} textAnchor="end" height={50} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                      <Tooltip />
+                      <Legend />
+                      <Bar dataKey="part1Count" fill="#3b82f6" name="Part I Submitted" />
+                      <Bar dataKey="part2Count" fill="#16a34a" name="Part II Verified" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="overflow-x-auto rounded-md border border-slate-200">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Month</TableHead>
+                        <TableHead className="text-right">Part I Submitted</TableHead>
+                        <TableHead className="text-right">Part II Verified</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month).length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={3} className="py-6 text-center text-slate-500">
+                            No pipeline data available. Upload Solar Applications and ABP Report files.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        (pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => (
+                          <TableRow key={row.month}>
+                            <TableCell className="font-medium">{row.month}</TableCell>
+                            <TableCell className="text-right">{formatNumber(row.part1Count)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(row.part2Count)}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* ====== Application Pipeline (kW AC) ====== */}
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Application Pipeline (kW AC)</CardTitle>
+                    <CardDescription>
+                      Monthly sum of inverter capacity (kW AC) for Part I Submitted and Part II Verified applications.
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant={pipelineKwRange === "3year" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineKwRange("3year")}
+                    >
+                      Last 3 Years
+                    </Button>
+                    <Button
+                      variant={pipelineKwRange === "12month" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineKwRange("12month")}
+                    >
+                      Last 12 Months
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month}
+                      margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} angle={-45} textAnchor="end" height={50} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip formatter={(value: number) => formatNumber(value, 1) + " kW"} />
+                      <Legend />
+                      <Bar dataKey="part1KwAc" fill="#3b82f6" name="Part I kW AC" />
+                      <Bar dataKey="part2KwAc" fill="#16a34a" name="Part II kW AC" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="overflow-x-auto rounded-md border border-slate-200">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Month</TableHead>
+                        <TableHead className="text-right">Part I kW AC</TableHead>
+                        <TableHead className="text-right">Part II kW AC</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month).length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={3} className="py-6 text-center text-slate-500">
+                            No pipeline data available. Upload Solar Applications and ABP Report files.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        (pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => (
+                          <TableRow key={row.month}>
+                            <TableCell className="font-medium">{row.month}</TableCell>
+                            <TableCell className="text-right">{formatNumber(row.part1KwAc, 1)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(row.part2KwAc, 1)}</TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
