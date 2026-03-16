@@ -9,6 +9,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceArea,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -6933,6 +6934,33 @@ export default function SolarRecDashboard() {
     return pipelineMonthlyRows.filter((row) => row.month >= cutoff);
   }, [pipelineMonthlyRows]);
 
+  /** Build alternating 4-month shaded bands for pipeline charts.
+   *  Returns ReferenceArea x1/x2 pairs for every other group of 4. */
+  const pipelineBands = useCallback((rows: PipelineMonthRow[]) => {
+    if (rows.length === 0) return [];
+    const bands: Array<{ x1: string; x2: string }> = [];
+    let i = 0;
+    while (i < rows.length) {
+      // skip 4 (unshaded)
+      i += 4;
+      // shade next 4
+      if (i < rows.length) {
+        const start = rows[i].month;
+        const end = rows[Math.min(i + 3, rows.length - 1)].month;
+        bands.push({ x1: start, x2: end });
+        i += 4;
+      }
+    }
+    return bands;
+  }, []);
+
+  /** Determine which 4-month group index a row belongs to (0-based from the start of the list).
+   *  Even groups = white, odd groups = shaded. */
+  const pipelineRowGroupIndex = useCallback((rows: PipelineMonthRow[], month: string) => {
+    const idx = rows.findIndex((r) => r.month === month);
+    return Math.floor(idx / 4);
+  }, []);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
       <div className="container py-6 space-y-6">
@@ -10143,6 +10171,9 @@ export default function SolarRecDashboard() {
                       margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      {pipelineBands(pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((band) => (
+                        <ReferenceArea key={band.x1} x1={band.x1} x2={band.x2} fill="#f1f5f9" fillOpacity={0.7} ifOverflow="extendDomain" />
+                      ))}
                       <XAxis dataKey="month" tick={{ fontSize: 11 }} angle={-45} textAnchor="end" height={50} />
                       <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
                       <Tooltip />
@@ -10174,15 +10205,20 @@ export default function SolarRecDashboard() {
                           </TableCell>
                         </TableRow>
                       ) : (
-                        (pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => (
-                          <TableRow key={row.month}>
-                            <TableCell className="font-medium">{row.month}</TableCell>
-                            <TableCell className="text-right">{formatNumber(row.part1Count)}</TableCell>
-                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1Count)}</TableCell>
-                            <TableCell className="text-right">{formatNumber(row.part2Count)}</TableCell>
-                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2Count)}</TableCell>
-                          </TableRow>
-                        ))
+                        (pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => {
+                          const rows = pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month;
+                          const groupIdx = pipelineRowGroupIndex(rows, row.month);
+                          const shaded = groupIdx % 2 === 1;
+                          return (
+                            <TableRow key={row.month} className={shaded ? "bg-slate-50" : ""}>
+                              <TableCell className="font-medium">{row.month}</TableCell>
+                              <TableCell className="text-right">{formatNumber(row.part1Count)}</TableCell>
+                              <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1Count)}</TableCell>
+                              <TableCell className="text-right">{formatNumber(row.part2Count)}</TableCell>
+                              <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2Count)}</TableCell>
+                            </TableRow>
+                          );
+                        })
                       )}
                     </TableBody>
                   </Table>
@@ -10226,6 +10262,9 @@ export default function SolarRecDashboard() {
                       margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
                     >
                       <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      {pipelineBands(pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((band) => (
+                        <ReferenceArea key={band.x1} x1={band.x1} x2={band.x2} fill="#f1f5f9" fillOpacity={0.7} ifOverflow="extendDomain" />
+                      ))}
                       <XAxis dataKey="month" tick={{ fontSize: 11 }} angle={-45} textAnchor="end" height={50} />
                       <YAxis tick={{ fontSize: 12 }} />
                       <Tooltip formatter={(value: number) => formatNumber(value, 1) + " kW"} />
@@ -10257,15 +10296,20 @@ export default function SolarRecDashboard() {
                           </TableCell>
                         </TableRow>
                       ) : (
-                        (pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => (
-                          <TableRow key={row.month}>
-                            <TableCell className="font-medium">{row.month}</TableCell>
-                            <TableCell className="text-right">{formatNumber(row.part1KwAc, 1)}</TableCell>
-                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1KwAc, 1)}</TableCell>
-                            <TableCell className="text-right">{formatNumber(row.part2KwAc, 1)}</TableCell>
-                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2KwAc, 1)}</TableCell>
-                          </TableRow>
-                        ))
+                        (pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => {
+                          const rows = pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month;
+                          const groupIdx = pipelineRowGroupIndex(rows, row.month);
+                          const shaded = groupIdx % 2 === 1;
+                          return (
+                            <TableRow key={row.month} className={shaded ? "bg-slate-50" : ""}>
+                              <TableCell className="font-medium">{row.month}</TableCell>
+                              <TableCell className="text-right">{formatNumber(row.part1KwAc, 1)}</TableCell>
+                              <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1KwAc, 1)}</TableCell>
+                              <TableCell className="text-right">{formatNumber(row.part2KwAc, 1)}</TableCell>
+                              <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2KwAc, 1)}</TableCell>
+                            </TableRow>
+                          );
+                        })
                       )}
                     </TableBody>
                   </Table>
