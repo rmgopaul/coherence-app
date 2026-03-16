@@ -95,10 +95,14 @@ type PipelineMonthRow = {
   part2Count: number;
   part1KwAc: number;
   part2KwAc: number;
+  interconnectedCount: number;
+  interconnectedKwAc: number;
   prevPart1Count: number;
   prevPart2Count: number;
   prevPart1KwAc: number;
   prevPart2KwAc: number;
+  prevInterconnectedCount: number;
+  prevInterconnectedKwAc: number;
 };
 
 type AnnualVintageAggregate = {
@@ -2064,6 +2068,7 @@ export default function SolarRecDashboard() {
   const [activeTab, setActiveTab] = useState("overview");
   const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
   const [pipelineKwRange, setPipelineKwRange] = useState<"3year" | "12month">("3year");
+  const [pipelineInterconnectedRange, setPipelineInterconnectedRange] = useState<"3year" | "12month">("3year");
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
@@ -6849,19 +6854,23 @@ export default function SolarRecDashboard() {
 
   // ── Application Pipeline: monthly aggregation from ABP report ──
   const pipelineMonthlyRows = useMemo<PipelineMonthRow[]>(() => {
-    type RawBucket = { part1Count: number; part2Count: number; part1KwAc: number; part2KwAc: number };
+    type RawBucket = {
+      part1Count: number; part2Count: number; part1KwAc: number; part2KwAc: number;
+      interconnectedCount: number; interconnectedKwAc: number;
+    };
     const buckets = new Map<string, RawBucket>();
 
     const ensureBucket = (month: string) => {
       if (!buckets.has(month)) {
-        buckets.set(month, { part1Count: 0, part2Count: 0, part1KwAc: 0, part2KwAc: 0 });
+        buckets.set(month, { part1Count: 0, part2Count: 0, part1KwAc: 0, part2KwAc: 0, interconnectedCount: 0, interconnectedKwAc: 0 });
       }
       return buckets.get(month)!;
     };
 
-    // Both Part 1 and Part 2 come from the ABP report, deduplicated by Application_ID / system_id
+    // All three series come from the ABP report, deduplicated by Application_ID / system_id
     const seenPart1 = new Set<string>();
     const seenPart2 = new Set<string>();
+    const seenInterconnected = new Set<string>();
     (datasets.abpReport?.rows ?? []).forEach((row) => {
       const applicationId = clean(row.Application_ID) || clean(row.system_id);
       if (!applicationId) return;
@@ -6898,6 +6907,22 @@ export default function SolarRecDashboard() {
           if (acKw !== null) bucket.part2KwAc += acKw;
         }
       }
+
+      // Interconnected: keyed on Energization_Date, kW from Inverter_Size_kW_AC_Part_2
+      if (!seenInterconnected.has(applicationId)) {
+        const energizationDate =
+          parseDate(row.Energization_Date) ??
+          parseDate(row.energization_date);
+        if (energizationDate) {
+          seenInterconnected.add(applicationId);
+          const month = `${energizationDate.getFullYear()}-${String(energizationDate.getMonth() + 1).padStart(2, "0")}`;
+          const bucket = ensureBucket(month);
+          bucket.interconnectedCount += 1;
+
+          const acKw = parseAbpAcSizeKw(row);
+          if (acKw !== null) bucket.interconnectedKwAc += acKw;
+        }
+      }
     });
 
     // Build rows with prior-year comparison
@@ -6918,6 +6943,8 @@ export default function SolarRecDashboard() {
         prevPart2Count: prev?.part2Count ?? 0,
         prevPart1KwAc: prev?.part1KwAc ?? 0,
         prevPart2KwAc: prev?.part2KwAc ?? 0,
+        prevInterconnectedCount: prev?.interconnectedCount ?? 0,
+        prevInterconnectedKwAc: prev?.interconnectedKwAc ?? 0,
       };
     });
   }, [datasets.abpReport]);
@@ -10308,6 +10335,95 @@ export default function SolarRecDashboard() {
                               <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1KwAc, 1)}</TableCell>
                               <TableCell className="text-right">{formatNumber(row.part2KwAc, 1)}</TableCell>
                               <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2KwAc, 1)}</TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* ====== Capacity Interconnected (kW AC by Energization_Date) ====== */}
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Capacity Interconnected (kW AC)</CardTitle>
+                    <CardDescription>
+                      Monthly kW AC interconnected based on Energization_Date, using Inverter_Size_kW_AC_Part_2. Prior-year values shown for comparison.
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant={pipelineInterconnectedRange === "3year" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineInterconnectedRange("3year")}
+                    >
+                      Last 3 Years
+                    </Button>
+                    <Button
+                      variant={pipelineInterconnectedRange === "12month" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineInterconnectedRange("12month")}
+                    >
+                      Last 12 Months
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart
+                      data={pipelineInterconnectedRange === "3year" ? pipelineRows3Year : pipelineRows12Month}
+                      margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                      {pipelineBands(pipelineInterconnectedRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((band) => (
+                        <ReferenceArea key={band.x1} x1={band.x1} x2={band.x2} fill="#f1f5f9" fillOpacity={0.7} ifOverflow="extendDomain" />
+                      ))}
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} angle={-45} textAnchor="end" height={50} />
+                      <YAxis tick={{ fontSize: 12 }} />
+                      <Tooltip formatter={(value: number) => formatNumber(value, 1) + " kW"} />
+                      <Legend />
+                      <Bar dataKey="interconnectedKwAc" fill="#8b5cf6" name="Interconnected kW AC" />
+                      <Line type="monotone" dataKey="prevInterconnectedKwAc" stroke="#c4b5fd" strokeDasharray="5 3" strokeWidth={2} dot={false} name="Interconnected kW AC (Prior Year)" />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+
+                <div className="overflow-x-auto rounded-md border border-slate-200">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Month</TableHead>
+                        <TableHead className="text-right">Systems Interconnected</TableHead>
+                        <TableHead className="text-right text-violet-300">Systems (Prior Yr)</TableHead>
+                        <TableHead className="text-right">kW AC Interconnected</TableHead>
+                        <TableHead className="text-right text-violet-300">kW AC (Prior Yr)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {(pipelineInterconnectedRange === "3year" ? pipelineRows3Year : pipelineRows12Month).length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={5} className="py-6 text-center text-slate-500">
+                            No interconnection data available. Upload ABP Report with Energization_Date column.
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        (pipelineInterconnectedRange === "3year" ? pipelineRows3Year : pipelineRows12Month).map((row) => {
+                          const rows = pipelineInterconnectedRange === "3year" ? pipelineRows3Year : pipelineRows12Month;
+                          const groupIdx = pipelineRowGroupIndex(rows, row.month);
+                          const shaded = groupIdx % 2 === 1;
+                          return (
+                            <TableRow key={row.month} className={shaded ? "bg-slate-50" : ""}>
+                              <TableCell className="font-medium">{row.month}</TableCell>
+                              <TableCell className="text-right">{formatNumber(row.interconnectedCount)}</TableCell>
+                              <TableCell className="text-right text-slate-400">{formatNumber(row.prevInterconnectedCount)}</TableCell>
+                              <TableCell className="text-right">{formatNumber(row.interconnectedKwAc, 1)}</TableCell>
+                              <TableCell className="text-right text-slate-400">{formatNumber(row.prevInterconnectedKwAc, 1)}</TableCell>
                             </TableRow>
                           );
                         })
