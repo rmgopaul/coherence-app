@@ -10411,21 +10411,6 @@ export default function SolarRecDashboard() {
           </TabsContent>
 
           <TabsContent value="app-pipeline" className="space-y-4 mt-4">
-            {/* Generate PDF Report button */}
-            <div className="flex justify-end">
-              <button
-                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                disabled={pipelineReportLoading || pipelineMonthlyRows.length === 0}
-                onClick={handleGeneratePipelineReport}
-              >
-                {pipelineReportLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <FileText className="h-4 w-4" />
-                )}
-                {pipelineReportLoading ? "Generating Report…" : "Generate PDF Report"}
-              </button>
-            </div>
             {/* ====== Application Pipeline (Count) ====== */}
             <Card>
               <CardHeader>
@@ -10436,7 +10421,7 @@ export default function SolarRecDashboard() {
                       Monthly count of Part I Submitted and Part II Verified applications, deduplicated by Application ID. Prior-year values shown for comparison.
                     </CardDescription>
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="flex items-center gap-2">
                     <Button
                       variant={pipelineCountRange === "3year" ? "default" : "outline"}
                       size="sm"
@@ -10450,6 +10435,21 @@ export default function SolarRecDashboard() {
                       onClick={() => setPipelineCountRange("12month")}
                     >
                       Last 12 Months
+                    </Button>
+                    <div className="w-px h-6 bg-slate-200 mx-1" />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5 border-blue-200 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
+                      disabled={pipelineReportLoading || pipelineMonthlyRows.length === 0}
+                      onClick={handleGeneratePipelineReport}
+                    >
+                      {pipelineReportLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <FileText className="h-3.5 w-3.5" />
+                      )}
+                      {pipelineReportLoading ? "Generating…" : "PDF Report"}
                     </Button>
                   </div>
                 </div>
