@@ -7229,9 +7229,10 @@ export default function SolarRecDashboard() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Pipeline report error:", err);
-      alert("Failed to generate pipeline report. Please check your OpenAI API key and try again.");
+      const msg = err?.message || err?.data?.message || String(err);
+      alert(`Failed to generate pipeline report:\n\n${msg}`);
     } finally {
       setPipelineReportLoading(false);
     }

@@ -2498,8 +2498,14 @@ Generate the pipeline analysis report now.`,
         });
 
         if (!response.ok) {
-          const error = await response.json().catch(() => ({}));
-          throw new Error((error as any)?.error?.message || "Failed to generate pipeline report");
+          const errorBody = await response.text().catch(() => "");
+          console.error("OpenAI pipeline report error:", response.status, errorBody);
+          let errorMessage = "Failed to generate pipeline report";
+          try {
+            const parsed = JSON.parse(errorBody);
+            errorMessage = parsed?.error?.message || errorMessage;
+          } catch {}
+          throw new Error(`OpenAI API error (${response.status}): ${errorMessage}`);
         }
 
         const data = await response.json();
