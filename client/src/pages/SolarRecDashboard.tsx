@@ -585,6 +585,18 @@ const GENERATION_BASELINE_VALUE_HEADERS = [
 ];
 
 const GENERATION_BASELINE_DATE_HEADERS = ["Last Meter Read Date", "Last Month of Gen", "Effective Date", "Month of Generation"];
+const GENERATOR_DETAILS_AC_SIZE_HEADERS = [
+  "AC Size (kW)",
+  "AC Size kW",
+  "System AC Size (kW)",
+  "System Size (kW AC)",
+  "Inverter Size (kW AC)",
+  "Inverter Size kW AC",
+  "Nameplate Capacity (kW)",
+  "Nameplate Capacity kW",
+  "Rated Capacity (kW)",
+  "Capacity (kW)",
+];
 
 function clean(value: string | null | undefined): string {
   return (value ?? "").trim();
@@ -721,6 +733,30 @@ function parseDateOnlineAsMidMonth(value: string | undefined): Date | null {
 function parseAbpAcSizeKw(row: CsvRow): number | null {
   // Strict rule: ABP AC size may only come from Inverter_Size_kW_AC_Part_2.
   return parseNumber(row.Inverter_Size_kW_AC_Part_2 || getCsvValueByHeader(row, "Inverter_Size_kW_AC_Part_2"));
+}
+
+function parseGeneratorDetailsAcSizeKw(row: CsvRow): number | null {
+  for (const header of GENERATOR_DETAILS_AC_SIZE_HEADERS) {
+    const parsed = parseNumber(row[header] || getCsvValueByHeader(row, header));
+    if (parsed !== null) return parsed;
+  }
+
+  for (const [header, value] of Object.entries(row)) {
+    const normalizedHeader = clean(header).toLowerCase();
+    if (!normalizedHeader.includes("kw")) continue;
+    if (normalizedHeader.includes("dc")) continue;
+    if (
+      normalizedHeader.includes("ac") ||
+      normalizedHeader.includes("capacity") ||
+      normalizedHeader.includes("nameplate") ||
+      normalizedHeader.includes("inverter")
+    ) {
+      const parsed = parseNumber(value);
+      if (parsed !== null) return parsed;
+    }
+  }
+
+  return null;
 }
 
 function resolveLastMeterReadRawValue(row: CsvRow): string {
@@ -6852,7 +6888,7 @@ export default function SolarRecDashboard() {
     [annualVintageRows]
   );
 
-  // ── Application Pipeline: monthly aggregation from ABP report ──
+  // ── Application Pipeline: Part 1 / Part 2 from ABP, Interconnected from Generator Details ──
   const pipelineMonthlyRows = useMemo<PipelineMonthRow[]>(() => {
     type RawBucket = {
       part1Count: number; part2Count: number; part1KwAc: number; part2KwAc: number;
@@ -6867,22 +6903,20 @@ export default function SolarRecDashboard() {
       return buckets.get(month)!;
     };
 
-    // All three series come from the ABP report, deduplicated by Application_ID / system_id
+    // Part 1 and Part 2 come from ABP report rows, deduped by canonical project key.
     const seenPart1 = new Set<string>();
     const seenPart2 = new Set<string>();
-    const seenInterconnected = new Set<string>();
-    (datasets.abpReport?.rows ?? []).forEach((row) => {
-      const applicationId = clean(row.Application_ID) || clean(row.system_id);
-      if (!applicationId) return;
+    (datasets.abpReport?.rows ?? []).forEach((row, index) => {
+      const { dedupeKey } = resolvePart2ProjectIdentity(row, index);
 
       // Part 1: keyed on Part_1_submission_date, kW from Inverter_Size_kW_AC_Part_1
-      if (!seenPart1.has(applicationId)) {
+      if (!seenPart1.has(dedupeKey)) {
         const submissionDate =
           parseDate(row.Part_1_submission_date) ??
           parseDate(row.Part_1_Submission_Date) ??
           parseDate(row.Part_1_Original_Submission_Date);
         if (submissionDate) {
-          seenPart1.add(applicationId);
+          seenPart1.add(dedupeKey);
           const month = `${submissionDate.getFullYear()}-${String(submissionDate.getMonth() + 1).padStart(2, "0")}`;
           const bucket = ensureBucket(month);
           bucket.part1Count += 1;
@@ -6893,12 +6927,12 @@ export default function SolarRecDashboard() {
       }
 
       // Part 2: keyed on Part_2_App_Verification_Date, kW from Inverter_Size_kW_AC_Part_2
-      if (!seenPart2.has(applicationId)) {
+      if (!seenPart2.has(dedupeKey)) {
         const part2DateRaw =
           clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
         const verificationDate = parsePart2VerificationDate(part2DateRaw);
         if (verificationDate) {
-          seenPart2.add(applicationId);
+          seenPart2.add(dedupeKey);
           const month = `${verificationDate.getFullYear()}-${String(verificationDate.getMonth() + 1).padStart(2, "0")}`;
           const bucket = ensureBucket(month);
           bucket.part2Count += 1;
@@ -6907,24 +6941,34 @@ export default function SolarRecDashboard() {
           if (acKw !== null) bucket.part2KwAc += acKw;
         }
       }
+    });
 
-      // Interconnected: keyed on interconnection/online date, kW from Inverter_Size_kW_AC_Part_2
-      if (!seenInterconnected.has(applicationId)) {
-        const energizationDate =
-          parseDate(row.Interconnection_Approval_Date_UTC_Part_2) ??
-          parseDate(row.Project_Online_Date_Part_2) ??
-          parseDate(row.Energization_Date) ??
-          parseDate(row.energization_date);
-        if (energizationDate) {
-          seenInterconnected.add(applicationId);
-          const month = `${energizationDate.getFullYear()}-${String(energizationDate.getMonth() + 1).padStart(2, "0")}`;
-          const bucket = ensureBucket(month);
-          bucket.interconnectedCount += 1;
-
-          const acKw = parseAbpAcSizeKw(row);
-          if (acKw !== null) bucket.interconnectedKwAc += acKw;
-        }
+    // Interconnected comes from GATS Generator Details: Date Online by GATS Unit ID.
+    const fallbackAcKwByTrackingId = new Map<string, number>();
+    systems.forEach((system) => {
+      const trackingId = clean(system.trackingSystemRefId);
+      if (!trackingId || system.installedKwAc === null) return;
+      if (!fallbackAcKwByTrackingId.has(trackingId)) {
+        fallbackAcKwByTrackingId.set(trackingId, system.installedKwAc);
       }
+    });
+
+    const seenInterconnectedTrackingIds = new Set<string>();
+    (datasets.generatorDetails?.rows ?? []).forEach((row) => {
+      const trackingId = clean(row["GATS Unit ID"]) || clean(row.gats_unit_id) || clean(row["Unit ID"]) || clean(row.unit_id);
+      if (!trackingId || seenInterconnectedTrackingIds.has(trackingId)) return;
+
+      const dateOnlineRaw = row["Date Online"] || row.date_online;
+      const onlineDate = parseDateOnlineAsMidMonth(dateOnlineRaw) || parseDate(dateOnlineRaw);
+      if (!onlineDate) return;
+      seenInterconnectedTrackingIds.add(trackingId);
+
+      const month = `${onlineDate.getFullYear()}-${String(onlineDate.getMonth() + 1).padStart(2, "0")}`;
+      const bucket = ensureBucket(month);
+      bucket.interconnectedCount += 1;
+
+      const acKw = parseGeneratorDetailsAcSizeKw(row) ?? fallbackAcKwByTrackingId.get(trackingId) ?? null;
+      if (acKw !== null) bucket.interconnectedKwAc += acKw;
     });
 
     // Build rows with prior-year comparison
@@ -6949,7 +6993,7 @@ export default function SolarRecDashboard() {
         prevInterconnectedKwAc: prev?.interconnectedKwAc ?? 0,
       };
     });
-  }, [datasets.abpReport]);
+  }, [datasets.abpReport, datasets.generatorDetails, systems]);
 
   const pipelineRows3Year = useMemo(() => {
     const now = new Date();
@@ -10354,7 +10398,9 @@ export default function SolarRecDashboard() {
                   <div>
                     <CardTitle className="text-base">Capacity Interconnected (kW AC)</CardTitle>
                     <CardDescription>
-                      Monthly kW AC interconnected based on Energization_Date, using Inverter_Size_kW_AC_Part_2. Prior-year values shown for comparison.
+                      Monthly interconnections from GATS Generator Details (`Date Online` + `GATS Unit ID`). kW AC uses
+                      Generator Details size fields when present, with tracking-ID fallback to portfolio AC size.
+                      Prior-year values shown for comparison.
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-1">
@@ -10411,7 +10457,8 @@ export default function SolarRecDashboard() {
                       {(pipelineInterconnectedRange === "3year" ? pipelineRows3Year : pipelineRows12Month).length === 0 ? (
                         <TableRow>
                           <TableCell colSpan={5} className="py-6 text-center text-slate-500">
-                            No interconnection data available. Upload ABP Report with Energization_Date column.
+                            No interconnection data available. Upload GATS Generator Details with `GATS Unit ID` and
+                            `Date Online`.
                           </TableCell>
                         </TableRow>
                       ) : (
