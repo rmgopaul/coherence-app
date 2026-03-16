@@ -7065,12 +7065,20 @@ export default function SolarRecDashboard() {
       };
 
       // Call ChatGPT for analysis
-      const result = await generatePipelineReport.mutateAsync({
-        generatedAt: new Date().toISOString(),
-        rows3Year: pipelineRows3Year,
-        rows12Month: pipelineRows12Month,
-        summaryTotals,
-      });
+      let result: { analysis: string };
+      try {
+        result = await generatePipelineReport.mutateAsync({
+          generatedAt: new Date().toISOString(),
+          rows3Year: pipelineRows3Year,
+          rows12Month: pipelineRows12Month,
+          summaryTotals,
+        });
+      } catch (apiErr: any) {
+        const apiMsg = apiErr?.message || apiErr?.data?.message || JSON.stringify(apiErr);
+        alert(`ChatGPT API call failed:\n\n${apiMsg}`);
+        setPipelineReportLoading(false);
+        return;
+      }
 
       // Build PDF
       const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
@@ -7189,7 +7197,7 @@ export default function SolarRecDashboard() {
         alternateRowStyles: { fillColor: [245, 247, 250] },
       });
 
-      y = (doc as any).lastAutoTable.finalY + 24;
+      y = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 24 : y + 120;
 
       // 12-Month Detail Table
       if (y > doc.internal.pageSize.getHeight() - 120) {
@@ -7230,9 +7238,9 @@ export default function SolarRecDashboard() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      console.error("Pipeline report error:", err);
-      const msg = err?.message || err?.data?.message || String(err);
-      alert(`Failed to generate pipeline report:\n\n${msg}`);
+      console.error("PDF build error:", err);
+      const msg = err?.message || String(err);
+      alert(`PDF generation failed:\n\n${msg}`);
     } finally {
       setPipelineReportLoading(false);
     }
