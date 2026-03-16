@@ -7083,149 +7083,172 @@ export default function SolarRecDashboard() {
       // Build PDF
       const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
       const pageWidth = doc.internal.pageSize.getWidth();
-      const marginLeft = 40;
-      const marginRight = 40;
-      const contentWidth = pageWidth - marginLeft - marginRight;
-      let y = 50;
+      const pageHeight = doc.internal.pageSize.getHeight();
+      const ml = 48; // margin left
+      const mr = 48;
+      const cw = pageWidth - ml - mr; // content width
+      let y = 0;
 
-      // Title
-      doc.setFontSize(18);
+      const navy: [number, number, number] = [15, 35, 75];
+      const accent: [number, number, number] = [37, 99, 235];
+      const slate500: [number, number, number] = [100, 116, 139];
+      const slate200: [number, number, number] = [226, 232, 240];
+
+      /** Ensure enough room; add page if not. */
+      const ensureSpace = (needed: number) => {
+        if (y + needed > pageHeight - 50) { doc.addPage(); y = 48; }
+      };
+
+      // ── Header banner ──
+      doc.setFillColor(...navy);
+      doc.rect(0, 0, pageWidth, 80, "F");
+      doc.setFontSize(22);
       doc.setFont("helvetica", "bold");
-      doc.text("Application Pipeline Report", marginLeft, y);
-      y += 20;
-      doc.setFontSize(9);
+      doc.setTextColor(255, 255, 255);
+      doc.text("Application Pipeline Report", ml, 42);
+      doc.setFontSize(10);
       doc.setFont("helvetica", "normal");
-      doc.setTextColor(100);
-      doc.text(`Generated ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`, marginLeft, y);
-      doc.setTextColor(0);
-      y += 24;
+      doc.setTextColor(180, 200, 230);
+      doc.text(`Generated ${new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}`, ml, 62);
+      y = 104;
 
-      // AI Analysis section
-      doc.setFontSize(13);
-      doc.setFont("helvetica", "bold");
-      doc.text("AI Analysis", marginLeft, y);
-      y += 16;
+      // ── Helper: section heading with accent line ──
+      const sectionHeading = (title: string) => {
+        ensureSpace(40);
+        doc.setFontSize(14);
+        doc.setFont("helvetica", "bold");
+        doc.setTextColor(...navy);
+        doc.text(title, ml, y);
+        y += 4;
+        doc.setDrawColor(...accent);
+        doc.setLineWidth(2);
+        doc.line(ml, y, ml + 80, y);
+        doc.setDrawColor(0);
+        y += 14;
+      };
 
+      // ── Render markdown analysis ──
+      const bodySize = 10;
+      const lineH = 14;
+      const bulletIndent = 14;
       const analysisLines = result.analysis.split("\n");
-      doc.setFontSize(9);
+
       for (const line of analysisLines) {
-        // Check for page overflow
-        if (y > doc.internal.pageSize.getHeight() - 60) {
-          doc.addPage();
-          y = 40;
-        }
         const trimmed = line.trim();
-        if (!trimmed) {
+        if (!trimmed) { y += 6; continue; }
+
+        // ## Heading → section heading
+        if (trimmed.startsWith("## ") || trimmed.startsWith("# ")) {
           y += 8;
+          const heading = trimmed.replace(/^#+\s+/, "").replace(/\*\*/g, "");
+          sectionHeading(heading);
           continue;
         }
-        // Markdown heading
-        if (trimmed.startsWith("## ")) {
-          y += 6;
-          doc.setFontSize(11);
-          doc.setFont("helvetica", "bold");
-          const heading = trimmed.replace(/^##\s+/, "").replace(/\*\*/g, "");
-          doc.text(heading, marginLeft, y);
-          y += 14;
-          doc.setFontSize(9);
-          doc.setFont("helvetica", "normal");
-          continue;
-        }
-        if (trimmed.startsWith("# ")) {
-          y += 6;
-          doc.setFontSize(12);
-          doc.setFont("helvetica", "bold");
-          const heading = trimmed.replace(/^#\s+/, "").replace(/\*\*/g, "");
-          doc.text(heading, marginLeft, y);
-          y += 16;
-          doc.setFontSize(9);
-          doc.setFont("helvetica", "normal");
-          continue;
-        }
-        // Bold line
+
+        ensureSpace(lineH * 2);
+
+        // Bold-only line
         if (trimmed.startsWith("**") && trimmed.endsWith("**")) {
+          doc.setFontSize(bodySize);
           doc.setFont("helvetica", "bold");
-          const bold = trimmed.replace(/\*\*/g, "");
-          const wrapped = doc.splitTextToSize(bold, contentWidth) as string[];
-          doc.text(wrapped, marginLeft, y);
-          y += wrapped.length * 12;
+          doc.setTextColor(30, 30, 30);
+          const text = trimmed.replace(/\*\*/g, "");
+          const wrapped = doc.splitTextToSize(text, cw) as string[];
+          doc.text(wrapped, ml, y);
+          y += wrapped.length * lineH;
           doc.setFont("helvetica", "normal");
           continue;
         }
-        // Bullet
-        const bulletText = trimmed.startsWith("- ") ? trimmed.slice(2) : trimmed.startsWith("• ") ? trimmed.slice(2) : null;
-        if (bulletText !== null) {
-          const cleanBullet = bulletText.replace(/\*\*/g, "");
-          const wrapped = doc.splitTextToSize(cleanBullet, contentWidth - 16) as string[];
-          doc.text("•", marginLeft + 4, y);
-          doc.text(wrapped, marginLeft + 16, y);
-          y += wrapped.length * 12;
+
+        // Bullet point
+        const isBullet = trimmed.startsWith("- ") || trimmed.startsWith("• ");
+        if (isBullet) {
+          const text = trimmed.slice(2).replace(/\*\*/g, "");
+          doc.setFontSize(bodySize);
+          doc.setFont("helvetica", "normal");
+          doc.setTextColor(50, 50, 50);
+          // Bullet marker
+          doc.setFillColor(...accent);
+          doc.circle(ml + 4, y - 3, 2, "F");
+          const wrapped = doc.splitTextToSize(text, cw - bulletIndent - 4) as string[];
+          doc.text(wrapped, ml + bulletIndent, y);
+          y += wrapped.length * lineH + 2;
           continue;
         }
-        // Regular text
+
+        // Regular paragraph text
+        doc.setFontSize(bodySize);
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(50, 50, 50);
         const cleanText = trimmed.replace(/\*\*/g, "");
-        const wrapped = doc.splitTextToSize(cleanText, contentWidth) as string[];
-        doc.text(wrapped, marginLeft, y);
-        y += wrapped.length * 12;
+        const wrapped = doc.splitTextToSize(cleanText, cw) as string[];
+        for (const wline of wrapped) {
+          ensureSpace(lineH);
+          doc.text(wline, ml, y);
+          y += lineH;
+        }
       }
 
-      // Summary Stats Table
-      y += 20;
-      if (y > doc.internal.pageSize.getHeight() - 120) {
-        doc.addPage();
-        y = 40;
-      }
-      doc.setFontSize(13);
-      doc.setFont("helvetica", "bold");
-      doc.text("Summary Statistics", marginLeft, y);
-      y += 14;
+      // ── Summary Statistics Table ──
+      y += 16;
+      sectionHeading("Summary Statistics");
 
       autoTable(doc, {
         startY: y,
-        margin: { left: marginLeft, right: marginRight },
+        margin: { left: ml, right: mr },
         head: [["Metric", "Last 12 Months", "Last 3 Years"]],
         body: [
           ["Part I Submitted (Count)", formatNumber(summaryTotals.twelveMonth.totalPart1), formatNumber(summaryTotals.threeYear.totalPart1)],
           ["Part II Verified (Count)", formatNumber(summaryTotals.twelveMonth.totalPart2), formatNumber(summaryTotals.threeYear.totalPart2)],
-          ["Part I Submitted (kW AC)", formatNumber(summaryTotals.twelveMonth.totalPart1KwAc), formatNumber(summaryTotals.threeYear.totalPart1KwAc)],
-          ["Part II Verified (kW AC)", formatNumber(summaryTotals.twelveMonth.totalPart2KwAc), formatNumber(summaryTotals.threeYear.totalPart2KwAc)],
+          ["Part I Submitted (kW AC)", formatNumber(summaryTotals.twelveMonth.totalPart1KwAc, 1), formatNumber(summaryTotals.threeYear.totalPart1KwAc, 1)],
+          ["Part II Verified (kW AC)", formatNumber(summaryTotals.twelveMonth.totalPart2KwAc, 1), formatNumber(summaryTotals.threeYear.totalPart2KwAc, 1)],
           ["Interconnected (Count)", formatNumber(summaryTotals.twelveMonth.totalInterconnected), formatNumber(summaryTotals.threeYear.totalInterconnected)],
-          ["Interconnected (kW AC)", formatNumber(summaryTotals.twelveMonth.totalInterconnectedKwAc), formatNumber(summaryTotals.threeYear.totalInterconnectedKwAc)],
+          ["Interconnected (kW AC)", formatNumber(summaryTotals.twelveMonth.totalInterconnectedKwAc, 1), formatNumber(summaryTotals.threeYear.totalInterconnectedKwAc, 1)],
         ],
-        styles: { fontSize: 8, cellPadding: 4 },
-        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: "bold" },
-        alternateRowStyles: { fillColor: [245, 247, 250] },
+        styles: { fontSize: 9, cellPadding: 6, lineColor: slate200, lineWidth: 0.5 },
+        headStyles: { fillColor: navy, textColor: 255, fontStyle: "bold", fontSize: 9 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: { 1: { halign: "right" }, 2: { halign: "right" } },
       });
 
-      y = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 24 : y + 120;
+      y = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 28 : y + 140;
 
-      // 12-Month Detail Table
-      if (y > doc.internal.pageSize.getHeight() - 120) {
-        doc.addPage();
-        y = 40;
-      }
-      doc.setFontSize(13);
-      doc.setFont("helvetica", "bold");
-      doc.text("Monthly Detail (Last 12 Months)", marginLeft, y);
-      y += 14;
+      // ── Monthly Detail Table ──
+      sectionHeading("Monthly Detail (Last 12 Months)");
 
       autoTable(doc, {
         startY: y,
-        margin: { left: marginLeft, right: marginRight },
+        margin: { left: ml, right: mr },
         head: [["Month", "Part I (#)", "Part II (#)", "Part I (kW)", "Part II (kW)", "Interconn. (#)", "Interconn. (kW)"]],
         body: pipelineRows12Month.map((r) => [
           r.month,
           formatNumber(r.part1Count),
           formatNumber(r.part2Count),
-          formatNumber(r.part1KwAc),
-          formatNumber(r.part2KwAc),
+          formatNumber(r.part1KwAc, 1),
+          formatNumber(r.part2KwAc, 1),
           formatNumber(r.interconnectedCount),
-          formatNumber(r.interconnectedKwAc),
+          formatNumber(r.interconnectedKwAc, 1),
         ]),
-        styles: { fontSize: 7, cellPadding: 3 },
-        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: "bold" },
-        alternateRowStyles: { fillColor: [245, 247, 250] },
+        styles: { fontSize: 8, cellPadding: 5, lineColor: slate200, lineWidth: 0.5 },
+        headStyles: { fillColor: navy, textColor: 255, fontStyle: "bold", fontSize: 8 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" } },
       });
+
+      // ── Footer on every page ──
+      const totalPages = doc.getNumberOfPages();
+      for (let p = 1; p <= totalPages; p++) {
+        doc.setPage(p);
+        doc.setFontSize(8);
+        doc.setFont("helvetica", "normal");
+        doc.setTextColor(...slate500);
+        doc.text("Coherence — Application Pipeline Report", ml, pageHeight - 24);
+        doc.text(`Page ${p} of ${totalPages}`, pageWidth - mr, pageHeight - 24, { align: "right" });
+        // thin line above footer
+        doc.setDrawColor(...slate200);
+        doc.setLineWidth(0.5);
+        doc.line(ml, pageHeight - 36, pageWidth - mr, pageHeight - 36);
+      }
 
       // Download
       const pdfBlob = doc.output("blob");
