@@ -6903,6 +6903,9 @@ export default function SolarRecDashboard() {
       return buckets.get(month)!;
     };
 
+    const today = new Date();
+    const isFuture = (d: Date) => d > today;
+
     // Part 1 and Part 2 come from ABP report rows, deduped by canonical project key.
     const seenPart1 = new Set<string>();
     const seenPart2 = new Set<string>();
@@ -6915,7 +6918,7 @@ export default function SolarRecDashboard() {
           parseDate(row.Part_1_submission_date) ??
           parseDate(row.Part_1_Submission_Date) ??
           parseDate(row.Part_1_Original_Submission_Date);
-        if (submissionDate) {
+        if (submissionDate && !isFuture(submissionDate)) {
           seenPart1.add(dedupeKey);
           const month = `${submissionDate.getFullYear()}-${String(submissionDate.getMonth() + 1).padStart(2, "0")}`;
           const bucket = ensureBucket(month);
@@ -6931,7 +6934,7 @@ export default function SolarRecDashboard() {
         const part2DateRaw =
           clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
         const verificationDate = parsePart2VerificationDate(part2DateRaw);
-        if (verificationDate) {
+        if (verificationDate && !isFuture(verificationDate)) {
           seenPart2.add(dedupeKey);
           const month = `${verificationDate.getFullYear()}-${String(verificationDate.getMonth() + 1).padStart(2, "0")}`;
           const bucket = ensureBucket(month);
@@ -6943,7 +6946,7 @@ export default function SolarRecDashboard() {
       }
     });
 
-    // Interconnected comes from GATS Generator Details: Date Online by GATS Unit ID.
+    // Interconnected comes from GATS Generator Details: Date Online / Interconnection date by GATS Unit ID.
     const fallbackAcKwByTrackingId = new Map<string, number>();
     systems.forEach((system) => {
       const trackingId = clean(system.trackingSystemRefId);
@@ -6958,9 +6961,12 @@ export default function SolarRecDashboard() {
       const trackingId = clean(row["GATS Unit ID"]) || clean(row.gats_unit_id) || clean(row["Unit ID"]) || clean(row.unit_id);
       if (!trackingId || seenInterconnectedTrackingIds.has(trackingId)) return;
 
-      const dateOnlineRaw = row["Date Online"] || row.date_online;
-      const onlineDate = parseDateOnlineAsMidMonth(dateOnlineRaw) || parseDate(dateOnlineRaw);
-      if (!onlineDate) return;
+      const onlineDate =
+        parseDateOnlineAsMidMonth(row["Date Online"] ?? row["Date online"] ?? row.date_online ?? row.date_online_month_year) ??
+        parseDate(row.Interconnection_Approval_Date_UTC_Part_2) ??
+        parseDate(row.Project_Online_Date_Part_2) ??
+        parseDate(row["Date Online"] ?? row.date_online);
+      if (!onlineDate || isFuture(onlineDate)) return;
       seenInterconnectedTrackingIds.add(trackingId);
 
       const month = `${onlineDate.getFullYear()}-${String(onlineDate.getMonth() + 1).padStart(2, "0")}`;
