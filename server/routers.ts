@@ -2386,6 +2386,130 @@ export const appRouter = router({
 
         return { overview };
       }),
+    generatePipelineReport: protectedProcedure
+      .input(
+        z.object({
+          generatedAt: z.string(),
+          rows3Year: z.array(
+            z.object({
+              month: z.string(),
+              part1Count: z.number(), part2Count: z.number(),
+              part1KwAc: z.number(), part2KwAc: z.number(),
+              interconnectedCount: z.number(), interconnectedKwAc: z.number(),
+              prevPart1Count: z.number(), prevPart2Count: z.number(),
+              prevPart1KwAc: z.number(), prevPart2KwAc: z.number(),
+              prevInterconnectedCount: z.number(), prevInterconnectedKwAc: z.number(),
+            })
+          ),
+          rows12Month: z.array(
+            z.object({
+              month: z.string(),
+              part1Count: z.number(), part2Count: z.number(),
+              part1KwAc: z.number(), part2KwAc: z.number(),
+              interconnectedCount: z.number(), interconnectedKwAc: z.number(),
+              prevPart1Count: z.number(), prevPart2Count: z.number(),
+              prevPart1KwAc: z.number(), prevPart2KwAc: z.number(),
+              prevInterconnectedCount: z.number(), prevInterconnectedKwAc: z.number(),
+            })
+          ),
+          summaryTotals: z.object({
+            threeYear: z.object({
+              totalPart1: z.number(), totalPart2: z.number(),
+              totalPart1KwAc: z.number(), totalPart2KwAc: z.number(),
+              totalInterconnected: z.number(), totalInterconnectedKwAc: z.number(),
+            }),
+            twelveMonth: z.object({
+              totalPart1: z.number(), totalPart2: z.number(),
+              totalPart1KwAc: z.number(), totalPart2KwAc: z.number(),
+              totalInterconnected: z.number(), totalInterconnectedKwAc: z.number(),
+            }),
+          }),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const integration = await getIntegrationByProvider(ctx.user.id, "openai");
+        if (!integration?.accessToken) {
+          throw new Error("OpenAI not connected. Please add your API key in Settings.");
+        }
+
+        const formatRows = (rows: typeof input.rows3Year) =>
+          rows
+            .map(
+              (r) =>
+                `${r.month}: P1=${r.part1Count} (${r.part1KwAc.toFixed(1)} kW), P2=${r.part2Count} (${r.part2KwAc.toFixed(1)} kW), IC=${r.interconnectedCount} (${r.interconnectedKwAc.toFixed(1)} kW) | PY: P1=${r.prevPart1Count}, P2=${r.prevPart2Count}, IC=${r.prevInterconnectedCount}`
+            )
+            .join("\n");
+
+        const systemMessage = {
+          role: "system" as const,
+          content: `You are a solar energy portfolio analyst generating a professional report on application pipeline trends. Write in clear, professional prose with markdown formatting. Use these exact sections:
+
+## Executive Summary
+A 3-4 sentence high-level summary of the pipeline health.
+
+## Application Volume Trends
+Analysis of Part I submissions and Part II verifications -- monthly patterns, year-over-year changes, seasonality, acceleration or deceleration.
+
+## Capacity Trends (kW AC)
+Analysis of capacity flowing through the pipeline -- average system sizes, capacity growth, and how kW AC trends differ from count trends.
+
+## Interconnection Analysis
+Trends in systems going online -- throughput rates, bottlenecks, and how interconnection volume compares to application volume.
+
+## Year-over-Year Comparison
+Compare current-year metrics against prior-year across all dimensions. Quantify growth or decline percentages.
+
+## Key Risks & Opportunities
+2-4 bullet points identifying risks (declining volumes, growing backlogs) and opportunities (capacity growth, improving conversion rates).
+
+Be quantitative -- cite specific numbers and percentages. Keep the total analysis to 400-600 words.`,
+        };
+
+        const t3 = input.summaryTotals.threeYear;
+        const t12 = input.summaryTotals.twelveMonth;
+        const userMessage = {
+          role: "user" as const,
+          content: `Report generated: ${input.generatedAt}
+
+3-YEAR PIPELINE DATA (monthly):
+${formatRows(input.rows3Year)}
+
+3-Year Totals: Part I: ${t3.totalPart1} apps (${t3.totalPart1KwAc.toFixed(1)} kW), Part II: ${t3.totalPart2} apps (${t3.totalPart2KwAc.toFixed(1)} kW), Interconnected: ${t3.totalInterconnected} (${t3.totalInterconnectedKwAc.toFixed(1)} kW)
+
+12-MONTH PIPELINE DATA (monthly):
+${formatRows(input.rows12Month)}
+
+12-Month Totals: Part I: ${t12.totalPart1} apps (${t12.totalPart1KwAc.toFixed(1)} kW), Part II: ${t12.totalPart2} apps (${t12.totalPart2KwAc.toFixed(1)} kW), Interconnected: ${t12.totalInterconnected} (${t12.totalInterconnectedKwAc.toFixed(1)} kW)
+
+Generate the pipeline analysis report now.`,
+        };
+
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${integration.accessToken}`,
+          },
+          body: JSON.stringify({
+            model: resolveOpenAIModel(integration.metadata),
+            messages: [systemMessage, userMessage],
+          }),
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          throw new Error((error as any)?.error?.message || "Failed to generate pipeline report");
+        }
+
+        const data = await response.json();
+        const analysis = (data as any)?.choices?.[0]?.message?.content;
+        if (!analysis || typeof analysis !== "string") {
+          throw new Error("Invalid response from OpenAI");
+        }
+
+        return { analysis };
+      }),
     chat: protectedProcedure
       .input(z.object({ conversationId: z.string(), message: z.string() }))
       .mutation(async ({ ctx, input }) => {

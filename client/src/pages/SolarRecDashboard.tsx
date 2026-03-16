@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, Trash2, Upload } from "lucide-react";
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
+import jsPDF from "jspdf";
+import "jspdf-autotable";
 import {
   Bar,
   BarChart,
@@ -2105,6 +2107,8 @@ export default function SolarRecDashboard() {
   const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
   const [pipelineKwRange, setPipelineKwRange] = useState<"3year" | "12month">("3year");
   const [pipelineInterconnectedRange, setPipelineInterconnectedRange] = useState<"3year" | "12month">("3year");
+  const [pipelineReportLoading, setPipelineReportLoading] = useState(false);
+  const generatePipelineReport = trpc.openai.generatePipelineReport.useMutation();
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
@@ -7041,6 +7045,198 @@ export default function SolarRecDashboard() {
     return Math.floor(idx / 4);
   }, []);
 
+  /** Generate a PDF pipeline report with ChatGPT analysis + data tables. */
+  const handleGeneratePipelineReport = useCallback(async () => {
+    if (pipelineReportLoading) return;
+    setPipelineReportLoading(true);
+    try {
+      // Compute summary totals
+      const sumFields = (rows: PipelineMonthRow[]) => ({
+        totalPart1: rows.reduce((s, r) => s + r.part1Count, 0),
+        totalPart2: rows.reduce((s, r) => s + r.part2Count, 0),
+        totalPart1KwAc: rows.reduce((s, r) => s + r.part1KwAc, 0),
+        totalPart2KwAc: rows.reduce((s, r) => s + r.part2KwAc, 0),
+        totalInterconnected: rows.reduce((s, r) => s + r.interconnectedCount, 0),
+        totalInterconnectedKwAc: rows.reduce((s, r) => s + r.interconnectedKwAc, 0),
+      });
+      const summaryTotals = {
+        threeYear: sumFields(pipelineRows3Year),
+        twelveMonth: sumFields(pipelineRows12Month),
+      };
+
+      // Call ChatGPT for analysis
+      const result = await generatePipelineReport.mutateAsync({
+        generatedAt: new Date().toISOString(),
+        rows3Year: pipelineRows3Year,
+        rows12Month: pipelineRows12Month,
+        summaryTotals,
+      });
+
+      // Build PDF
+      const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+      const pageWidth = doc.internal.pageSize.getWidth();
+      const marginLeft = 40;
+      const marginRight = 40;
+      const contentWidth = pageWidth - marginLeft - marginRight;
+      let y = 50;
+
+      // Title
+      doc.setFontSize(18);
+      doc.setFont("helvetica", "bold");
+      doc.text("Application Pipeline Report", marginLeft, y);
+      y += 20;
+      doc.setFontSize(9);
+      doc.setFont("helvetica", "normal");
+      doc.setTextColor(100);
+      doc.text(`Generated ${new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`, marginLeft, y);
+      doc.setTextColor(0);
+      y += 24;
+
+      // AI Analysis section
+      doc.setFontSize(13);
+      doc.setFont("helvetica", "bold");
+      doc.text("AI Analysis", marginLeft, y);
+      y += 16;
+
+      const analysisLines = result.analysis.split("\n");
+      doc.setFontSize(9);
+      for (const line of analysisLines) {
+        // Check for page overflow
+        if (y > doc.internal.pageSize.getHeight() - 60) {
+          doc.addPage();
+          y = 40;
+        }
+        const trimmed = line.trim();
+        if (!trimmed) {
+          y += 8;
+          continue;
+        }
+        // Markdown heading
+        if (trimmed.startsWith("## ")) {
+          y += 6;
+          doc.setFontSize(11);
+          doc.setFont("helvetica", "bold");
+          const heading = trimmed.replace(/^##\s+/, "").replace(/\*\*/g, "");
+          doc.text(heading, marginLeft, y);
+          y += 14;
+          doc.setFontSize(9);
+          doc.setFont("helvetica", "normal");
+          continue;
+        }
+        if (trimmed.startsWith("# ")) {
+          y += 6;
+          doc.setFontSize(12);
+          doc.setFont("helvetica", "bold");
+          const heading = trimmed.replace(/^#\s+/, "").replace(/\*\*/g, "");
+          doc.text(heading, marginLeft, y);
+          y += 16;
+          doc.setFontSize(9);
+          doc.setFont("helvetica", "normal");
+          continue;
+        }
+        // Bold line
+        if (trimmed.startsWith("**") && trimmed.endsWith("**")) {
+          doc.setFont("helvetica", "bold");
+          const bold = trimmed.replace(/\*\*/g, "");
+          const wrapped = doc.splitTextToSize(bold, contentWidth) as string[];
+          doc.text(wrapped, marginLeft, y);
+          y += wrapped.length * 12;
+          doc.setFont("helvetica", "normal");
+          continue;
+        }
+        // Bullet
+        const bulletText = trimmed.startsWith("- ") ? trimmed.slice(2) : trimmed.startsWith("• ") ? trimmed.slice(2) : null;
+        if (bulletText !== null) {
+          const cleanBullet = bulletText.replace(/\*\*/g, "");
+          const wrapped = doc.splitTextToSize(cleanBullet, contentWidth - 16) as string[];
+          doc.text("•", marginLeft + 4, y);
+          doc.text(wrapped, marginLeft + 16, y);
+          y += wrapped.length * 12;
+          continue;
+        }
+        // Regular text
+        const cleanText = trimmed.replace(/\*\*/g, "");
+        const wrapped = doc.splitTextToSize(cleanText, contentWidth) as string[];
+        doc.text(wrapped, marginLeft, y);
+        y += wrapped.length * 12;
+      }
+
+      // Summary Stats Table
+      y += 20;
+      if (y > doc.internal.pageSize.getHeight() - 120) {
+        doc.addPage();
+        y = 40;
+      }
+      doc.setFontSize(13);
+      doc.setFont("helvetica", "bold");
+      doc.text("Summary Statistics", marginLeft, y);
+      y += 14;
+
+      (doc as any).autoTable({
+        startY: y,
+        margin: { left: marginLeft, right: marginRight },
+        head: [["Metric", "Last 12 Months", "Last 3 Years"]],
+        body: [
+          ["Part I Submitted (Count)", formatNumber(summaryTotals.twelveMonth.totalPart1), formatNumber(summaryTotals.threeYear.totalPart1)],
+          ["Part II Verified (Count)", formatNumber(summaryTotals.twelveMonth.totalPart2), formatNumber(summaryTotals.threeYear.totalPart2)],
+          ["Part I Submitted (kW AC)", formatNumber(summaryTotals.twelveMonth.totalPart1KwAc), formatNumber(summaryTotals.threeYear.totalPart1KwAc)],
+          ["Part II Verified (kW AC)", formatNumber(summaryTotals.twelveMonth.totalPart2KwAc), formatNumber(summaryTotals.threeYear.totalPart2KwAc)],
+          ["Interconnected (Count)", formatNumber(summaryTotals.twelveMonth.totalInterconnected), formatNumber(summaryTotals.threeYear.totalInterconnected)],
+          ["Interconnected (kW AC)", formatNumber(summaryTotals.twelveMonth.totalInterconnectedKwAc), formatNumber(summaryTotals.threeYear.totalInterconnectedKwAc)],
+        ],
+        styles: { fontSize: 8, cellPadding: 4 },
+        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [245, 247, 250] },
+      });
+
+      y = (doc as any).lastAutoTable.finalY + 24;
+
+      // 12-Month Detail Table
+      if (y > doc.internal.pageSize.getHeight() - 120) {
+        doc.addPage();
+        y = 40;
+      }
+      doc.setFontSize(13);
+      doc.setFont("helvetica", "bold");
+      doc.text("Monthly Detail (Last 12 Months)", marginLeft, y);
+      y += 14;
+
+      (doc as any).autoTable({
+        startY: y,
+        margin: { left: marginLeft, right: marginRight },
+        head: [["Month", "Part I (#)", "Part II (#)", "Part I (kW)", "Part II (kW)", "Interconn. (#)", "Interconn. (kW)"]],
+        body: pipelineRows12Month.map((r) => [
+          r.month,
+          formatNumber(r.part1Count),
+          formatNumber(r.part2Count),
+          formatNumber(r.part1KwAc),
+          formatNumber(r.part2KwAc),
+          formatNumber(r.interconnectedCount),
+          formatNumber(r.interconnectedKwAc),
+        ]),
+        styles: { fontSize: 7, cellPadding: 3 },
+        headStyles: { fillColor: [30, 64, 175], textColor: 255, fontStyle: "bold" },
+        alternateRowStyles: { fillColor: [245, 247, 250] },
+      });
+
+      // Download
+      const pdfBlob = doc.output("blob");
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Pipeline_Report_${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Pipeline report error:", err);
+      alert("Failed to generate pipeline report. Please check your OpenAI API key and try again.");
+    } finally {
+      setPipelineReportLoading(false);
+    }
+  }, [pipelineReportLoading, pipelineRows3Year, pipelineRows12Month, generatePipelineReport]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
       <div className="container py-6 space-y-6">
@@ -10215,6 +10411,21 @@ export default function SolarRecDashboard() {
           </TabsContent>
 
           <TabsContent value="app-pipeline" className="space-y-4 mt-4">
+            {/* Generate PDF Report button */}
+            <div className="flex justify-end">
+              <button
+                className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                disabled={pipelineReportLoading || pipelineMonthlyRows.length === 0}
+                onClick={handleGeneratePipelineReport}
+              >
+                {pipelineReportLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <FileText className="h-4 w-4" />
+                )}
+                {pipelineReportLoading ? "Generating Report…" : "Generate PDF Report"}
+              </button>
+            </div>
             {/* ====== Application Pipeline (Count) ====== */}
             <Card>
               <CardHeader>
