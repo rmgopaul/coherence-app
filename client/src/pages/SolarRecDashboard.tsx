@@ -5,6 +5,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   LineChart,
@@ -93,6 +94,10 @@ type PipelineMonthRow = {
   part2Count: number;
   part1KwAc: number;
   part2KwAc: number;
+  prevPart1Count: number;
+  prevPart2Count: number;
+  prevPart1KwAc: number;
+  prevPart2KwAc: number;
 };
 
 type AnnualVintageAggregate = {
@@ -6840,9 +6845,10 @@ export default function SolarRecDashboard() {
     [annualVintageRows]
   );
 
-  // ── Application Pipeline: monthly aggregation ──
+  // ── Application Pipeline: monthly aggregation from ABP report ──
   const pipelineMonthlyRows = useMemo<PipelineMonthRow[]>(() => {
-    const buckets = new Map<string, { part1Count: number; part2Count: number; part1KwAc: number; part2KwAc: number }>();
+    type RawBucket = { part1Count: number; part2Count: number; part1KwAc: number; part2KwAc: number };
+    const buckets = new Map<string, RawBucket>();
 
     const ensureBucket = (month: string) => {
       if (!buckets.has(month)) {
@@ -6851,56 +6857,68 @@ export default function SolarRecDashboard() {
       return buckets.get(month)!;
     };
 
-    // Part 1: solarApplications rows, deduplicated by system_id / Application_ID
+    // Both Part 1 and Part 2 come from the ABP report, deduplicated by Application_ID / system_id
     const seenPart1 = new Set<string>();
-    (datasets.solarApplications?.rows ?? []).forEach((row) => {
-      const systemId = clean(row.system_id) || clean(row.Application_ID);
-      if (!systemId) return;
-      if (seenPart1.has(systemId)) return;
-      seenPart1.add(systemId);
-
-      const submissionDate =
-        parseDate(row.Part_1_Submission_Date) ??
-        parseDate(row.Part_1_Original_Submission_Date);
-      if (!submissionDate) return;
-
-      const month = `${submissionDate.getFullYear()}-${String(submissionDate.getMonth() + 1).padStart(2, "0")}`;
-      const bucket = ensureBucket(month);
-      bucket.part1Count += 1;
-
-      const acKw = firstNonNull(
-        parseNumber(row.Inverter_Size_kW_AC_Part_1),
-        parseNumber(row.installed_system_size_kw_ac),
-        parseNumber(row.planned_system_size_kw_ac)
-      );
-      if (acKw !== null) bucket.part1KwAc += acKw;
-    });
-
-    // Part 2: abpReport rows (already filtered to verified), deduplicated by Application_ID / system_id
     const seenPart2 = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
+    (datasets.abpReport?.rows ?? []).forEach((row) => {
       const applicationId = clean(row.Application_ID) || clean(row.system_id);
       if (!applicationId) return;
-      if (seenPart2.has(applicationId)) return;
-      seenPart2.add(applicationId);
 
-      const part2DateRaw =
-        clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      const verificationDate = parsePart2VerificationDate(part2DateRaw);
-      if (!verificationDate) return;
+      // Part 1: keyed on Part_1_submission_date, kW from Inverter_Size_kW_AC_Part_1
+      if (!seenPart1.has(applicationId)) {
+        const submissionDate =
+          parseDate(row.Part_1_submission_date) ??
+          parseDate(row.Part_1_Submission_Date) ??
+          parseDate(row.Part_1_Original_Submission_Date);
+        if (submissionDate) {
+          seenPart1.add(applicationId);
+          const month = `${submissionDate.getFullYear()}-${String(submissionDate.getMonth() + 1).padStart(2, "0")}`;
+          const bucket = ensureBucket(month);
+          bucket.part1Count += 1;
 
-      const month = `${verificationDate.getFullYear()}-${String(verificationDate.getMonth() + 1).padStart(2, "0")}`;
-      const bucket = ensureBucket(month);
-      bucket.part2Count += 1;
+          const acKw = parseNumber(row.Inverter_Size_kW_AC_Part_1);
+          if (acKw !== null) bucket.part1KwAc += acKw;
+        }
+      }
 
-      const acKw = parseAbpAcSizeKw(row);
-      if (acKw !== null) bucket.part2KwAc += acKw;
+      // Part 2: keyed on Part_2_App_Verification_Date, kW from Inverter_Size_kW_AC_Part_2
+      if (!seenPart2.has(applicationId)) {
+        const part2DateRaw =
+          clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+        const verificationDate = parsePart2VerificationDate(part2DateRaw);
+        if (verificationDate) {
+          seenPart2.add(applicationId);
+          const month = `${verificationDate.getFullYear()}-${String(verificationDate.getMonth() + 1).padStart(2, "0")}`;
+          const bucket = ensureBucket(month);
+          bucket.part2Count += 1;
+
+          const acKw = parseAbpAcSizeKw(row);
+          if (acKw !== null) bucket.part2KwAc += acKw;
+        }
+      }
     });
 
-    return Array.from(buckets.entries())
+    // Build rows with prior-year comparison
+    const rawRows = Array.from(buckets.entries())
       .map(([month, data]) => ({ month, ...data }))
       .sort((a, b) => a.month.localeCompare(b.month));
-  }, [datasets.solarApplications, part2VerifiedAbpRows]);
+
+    // Index raw data by month for prior-year lookup
+    const byMonth = new Map(rawRows.map((r) => [r.month, r]));
+
+    return rawRows.map((row) => {
+      const [yearStr, monthStr] = row.month.split("-");
+      const prevMonth = `${Number(yearStr) - 1}-${monthStr}`;
+      const prev = byMonth.get(prevMonth);
+      return {
+        ...row,
+        prevPart1Count: prev?.part1Count ?? 0,
+        prevPart2Count: prev?.part2Count ?? 0,
+        prevPart1KwAc: prev?.part1KwAc ?? 0,
+        prevPart2KwAc: prev?.part2KwAc ?? 0,
+      };
+    });
+  }, [datasets.abpReport]);
 
   const pipelineRows3Year = useMemo(() => {
     const now = new Date();
@@ -10096,7 +10114,7 @@ export default function SolarRecDashboard() {
                   <div>
                     <CardTitle className="text-base">Application Pipeline (Count)</CardTitle>
                     <CardDescription>
-                      Monthly count of Part I Submitted and Part II Verified applications, deduplicated by Application ID.
+                      Monthly count of Part I Submitted and Part II Verified applications, deduplicated by Application ID. Prior-year values shown for comparison.
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-1">
@@ -10118,9 +10136,9 @@ export default function SolarRecDashboard() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
+                    <ComposedChart
                       data={pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month}
                       margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
                     >
@@ -10131,7 +10149,9 @@ export default function SolarRecDashboard() {
                       <Legend />
                       <Bar dataKey="part1Count" fill="#3b82f6" name="Part I Submitted" />
                       <Bar dataKey="part2Count" fill="#16a34a" name="Part II Verified" />
-                    </BarChart>
+                      <Line type="monotone" dataKey="prevPart1Count" stroke="#93c5fd" strokeDasharray="5 3" strokeWidth={2} dot={false} name="Part I (Prior Year)" />
+                      <Line type="monotone" dataKey="prevPart2Count" stroke="#86efac" strokeDasharray="5 3" strokeWidth={2} dot={false} name="Part II (Prior Year)" />
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
 
@@ -10141,14 +10161,16 @@ export default function SolarRecDashboard() {
                       <TableRow>
                         <TableHead>Month</TableHead>
                         <TableHead className="text-right">Part I Submitted</TableHead>
+                        <TableHead className="text-right text-blue-300">Part I (Prior Yr)</TableHead>
                         <TableHead className="text-right">Part II Verified</TableHead>
+                        <TableHead className="text-right text-emerald-300">Part II (Prior Yr)</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {(pipelineCountRange === "3year" ? pipelineRows3Year : pipelineRows12Month).length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={3} className="py-6 text-center text-slate-500">
-                            No pipeline data available. Upload Solar Applications and ABP Report files.
+                          <TableCell colSpan={5} className="py-6 text-center text-slate-500">
+                            No pipeline data available. Upload ABP Report files.
                           </TableCell>
                         </TableRow>
                       ) : (
@@ -10156,7 +10178,9 @@ export default function SolarRecDashboard() {
                           <TableRow key={row.month}>
                             <TableCell className="font-medium">{row.month}</TableCell>
                             <TableCell className="text-right">{formatNumber(row.part1Count)}</TableCell>
+                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1Count)}</TableCell>
                             <TableCell className="text-right">{formatNumber(row.part2Count)}</TableCell>
+                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2Count)}</TableCell>
                           </TableRow>
                         ))
                       )}
@@ -10173,7 +10197,7 @@ export default function SolarRecDashboard() {
                   <div>
                     <CardTitle className="text-base">Application Pipeline (kW AC)</CardTitle>
                     <CardDescription>
-                      Monthly sum of inverter capacity (kW AC) for Part I Submitted and Part II Verified applications.
+                      Monthly sum of inverter capacity — Inverter_Size_kW_AC_Part_1 for Part I, Inverter_Size_kW_AC_Part_2 for Part II. Prior-year values shown for comparison.
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-1">
@@ -10195,9 +10219,9 @@ export default function SolarRecDashboard() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
+                    <ComposedChart
                       data={pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month}
                       margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
                     >
@@ -10208,7 +10232,9 @@ export default function SolarRecDashboard() {
                       <Legend />
                       <Bar dataKey="part1KwAc" fill="#3b82f6" name="Part I kW AC" />
                       <Bar dataKey="part2KwAc" fill="#16a34a" name="Part II kW AC" />
-                    </BarChart>
+                      <Line type="monotone" dataKey="prevPart1KwAc" stroke="#93c5fd" strokeDasharray="5 3" strokeWidth={2} dot={false} name="Part I kW AC (Prior Year)" />
+                      <Line type="monotone" dataKey="prevPart2KwAc" stroke="#86efac" strokeDasharray="5 3" strokeWidth={2} dot={false} name="Part II kW AC (Prior Year)" />
+                    </ComposedChart>
                   </ResponsiveContainer>
                 </div>
 
@@ -10218,14 +10244,16 @@ export default function SolarRecDashboard() {
                       <TableRow>
                         <TableHead>Month</TableHead>
                         <TableHead className="text-right">Part I kW AC</TableHead>
+                        <TableHead className="text-right text-blue-300">Part I kW (Prior Yr)</TableHead>
                         <TableHead className="text-right">Part II kW AC</TableHead>
+                        <TableHead className="text-right text-emerald-300">Part II kW (Prior Yr)</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {(pipelineKwRange === "3year" ? pipelineRows3Year : pipelineRows12Month).length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={3} className="py-6 text-center text-slate-500">
-                            No pipeline data available. Upload Solar Applications and ABP Report files.
+                          <TableCell colSpan={5} className="py-6 text-center text-slate-500">
+                            No pipeline data available. Upload ABP Report files.
                           </TableCell>
                         </TableRow>
                       ) : (
@@ -10233,7 +10261,9 @@ export default function SolarRecDashboard() {
                           <TableRow key={row.month}>
                             <TableCell className="font-medium">{row.month}</TableCell>
                             <TableCell className="text-right">{formatNumber(row.part1KwAc, 1)}</TableCell>
+                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart1KwAc, 1)}</TableCell>
                             <TableCell className="text-right">{formatNumber(row.part2KwAc, 1)}</TableCell>
+                            <TableCell className="text-right text-slate-400">{formatNumber(row.prevPart2KwAc, 1)}</TableCell>
                           </TableRow>
                         ))
                       )}
