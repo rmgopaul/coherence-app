@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
 import jsPDF from "jspdf";
-import "jspdf-autotable";
+import autoTable from "jspdf-autotable";
 import {
   Bar,
   BarChart,
@@ -7172,7 +7172,7 @@ export default function SolarRecDashboard() {
       doc.text("Summary Statistics", marginLeft, y);
       y += 14;
 
-      (doc as any).autoTable({
+      autoTable(doc, {
         startY: y,
         margin: { left: marginLeft, right: marginRight },
         head: [["Metric", "Last 12 Months", "Last 3 Years"]],
@@ -7201,7 +7201,7 @@ export default function SolarRecDashboard() {
       doc.text("Monthly Detail (Last 12 Months)", marginLeft, y);
       y += 14;
 
-      (doc as any).autoTable({
+      autoTable(doc, {
         startY: y,
         margin: { left: marginLeft, right: marginRight },
         head: [["Month", "Part I (#)", "Part II (#)", "Part I (kW)", "Part II (kW)", "Interconn. (#)", "Interconn. (kW)"]],
