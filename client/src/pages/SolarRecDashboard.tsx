@@ -586,6 +586,32 @@ function clean(value: string | null | undefined): string {
   return (value ?? "").trim();
 }
 
+function resolvePart2ProjectIdentity(row: CsvRow, index: number) {
+  const applicationId = clean(row.Application_ID) || clean(row.application_id);
+  const portalSystemId = clean(row.system_id);
+  const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+  const projectName = clean(row.Project_Name) || clean(row.system_name);
+  const projectNameKey = projectName.toLowerCase();
+  const dedupeKey = portalSystemId
+    ? `system:${portalSystemId}`
+    : trackingId
+      ? `tracking:${trackingId}`
+      : applicationId
+        ? `application:${applicationId}`
+        : projectName
+          ? `name:${projectNameKey}`
+          : `row:${index}`;
+
+  return {
+    applicationId,
+    portalSystemId,
+    trackingId,
+    projectName,
+    projectNameKey,
+    dedupeKey,
+  };
+}
+
 function parseNumber(value: string | undefined): number | null {
   const cleaned = clean(value).replace(/[$,%\s]/g, "").replaceAll(",", "");
   if (!cleaned) return null;
@@ -2530,18 +2556,8 @@ export default function SolarRecDashboard() {
     const uniqueEligibleKeys = new Set<string>();
 
     part2VerifiedAbpRows.forEach((row, index) => {
-      const systemId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const name = clean(row.Project_Name) || clean(row.system_name);
-
-      const key = systemId
-        ? `id:${systemId}`
-        : trackingId
-          ? `tracking:${trackingId}`
-          : name
-            ? `name:${name.toLowerCase()}`
-            : `row:${index}`;
-      uniqueEligibleKeys.add(key);
+      const { dedupeKey } = resolvePart2ProjectIdentity(row, index);
+      uniqueEligibleKeys.add(dedupeKey);
     });
 
     return uniqueEligibleKeys.size;
@@ -2948,6 +2964,7 @@ export default function SolarRecDashboard() {
     });
 
     const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByApplicationId = new Map<string, SystemRecord[]>();
     const systemsByTrackingId = new Map<string, SystemRecord[]>();
     const systemsByName = new Map<string, SystemRecord[]>();
 
@@ -2965,6 +2982,7 @@ export default function SolarRecDashboard() {
 
     scopedPart2Systems.forEach((system) => {
       addIndexedSystem(systemsById, system.systemId, system);
+      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
       addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
       addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
     });
@@ -2978,23 +2996,16 @@ export default function SolarRecDashboard() {
     const uniquePart2Projects = new Set<string>();
 
     part2VerifiedAbpRows.forEach((row, index) => {
-      const applicationId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
-      const part2ProjectKey = applicationId
-        ? `id:${applicationId}`
-        : trackingId
-          ? `tracking:${trackingId}`
-          : projectName
-            ? `name:${projectName.toLowerCase()}`
-            : `row:${index}`;
-      if (uniquePart2Projects.has(part2ProjectKey)) return;
-      uniquePart2Projects.add(part2ProjectKey);
+      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
+        resolvePart2ProjectIdentity(row, index);
+      if (uniquePart2Projects.has(dedupeKey)) return;
+      uniquePart2Projects.add(dedupeKey);
 
       const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsById.get(portalSystemId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
       (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
 
       if (matchedSystems.size === 0) {
         notTransferredNotReporting += 1;
@@ -3248,6 +3259,7 @@ export default function SolarRecDashboard() {
     });
 
     const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByApplicationId = new Map<string, SystemRecord[]>();
     const systemsByTrackingId = new Map<string, SystemRecord[]>();
     const systemsByName = new Map<string, SystemRecord[]>();
 
@@ -3265,6 +3277,7 @@ export default function SolarRecDashboard() {
 
     scopedPart2Systems.forEach((system) => {
       addIndexedSystem(systemsById, system.systemId, system);
+      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
       addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
       addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
     });
@@ -3273,23 +3286,16 @@ export default function SolarRecDashboard() {
     const rows: SystemRecord[] = [];
 
     part2VerifiedAbpRows.forEach((row, index) => {
-      const applicationId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
-      const part2ProjectKey = applicationId
-        ? `id:${applicationId}`
-        : trackingId
-          ? `tracking:${trackingId}`
-          : projectName
-            ? `name:${projectName.toLowerCase()}`
-            : `row:${index}`;
-      if (uniquePart2Projects.has(part2ProjectKey)) return;
-      uniquePart2Projects.add(part2ProjectKey);
+      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
+        resolvePart2ProjectIdentity(row, index);
+      if (uniquePart2Projects.has(dedupeKey)) return;
+      uniquePart2Projects.add(dedupeKey);
 
       const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsById.get(portalSystemId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
       (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
 
       const nonTerminatedSystems = Array.from(matchedSystems.values()).filter((system) => !system.isTerminated);
       if (nonTerminatedSystems.length === 0) return;
@@ -3332,7 +3338,7 @@ export default function SolarRecDashboard() {
 
       rows.push({
         ...representative,
-        key: `coo:${part2ProjectKey}`,
+        key: `coo:${dedupeKey}`,
         latestReportingDate,
         isReporting,
         isTerminated: false,
@@ -6695,6 +6701,7 @@ export default function SolarRecDashboard() {
     });
 
     const systemsById = new Map<string, SystemRecord[]>();
+    const systemsByApplicationId = new Map<string, SystemRecord[]>();
     const systemsByTrackingId = new Map<string, SystemRecord[]>();
     const systemsByName = new Map<string, SystemRecord[]>();
 
@@ -6712,6 +6719,7 @@ export default function SolarRecDashboard() {
 
     scopedPart2Systems.forEach((system) => {
       addIndexedSystem(systemsById, system.systemId, system);
+      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
       addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
       addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
     });
@@ -6724,23 +6732,16 @@ export default function SolarRecDashboard() {
     const uniquePart2Projects = new Set<string>();
 
     part2VerifiedAbpRows.forEach((row, index) => {
-      const applicationId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const projectName = clean(row.Project_Name) || clean(row.system_name);
-      const part2ProjectKey = applicationId
-        ? `id:${applicationId}`
-        : trackingId
-          ? `tracking:${trackingId}`
-          : projectName
-            ? `name:${projectName.toLowerCase()}`
-            : `row:${index}`;
-      if (uniquePart2Projects.has(part2ProjectKey)) return;
-      uniquePart2Projects.add(part2ProjectKey);
+      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
+        resolvePart2ProjectIdentity(row, index);
+      if (uniquePart2Projects.has(dedupeKey)) return;
+      uniquePart2Projects.add(dedupeKey);
 
       const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsById.get(portalSystemId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
       (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByName.get(projectName.toLowerCase()) ?? []).forEach((system) => matchedSystems.set(system.key, system));
+      (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
 
       if (matchedSystems.size === 0) {
         rows[1].notTransferred += 1;
