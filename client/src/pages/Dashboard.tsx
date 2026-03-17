@@ -2062,130 +2062,87 @@ export default function Dashboard() {
         />
       </div>
 
-      <div className="sticky top-0 z-20 bg-gradient-to-br from-slate-100/95 via-white/95 to-emerald-50/95 dark:from-slate-950/95 dark:via-slate-900/95 dark:to-blue-950/95 backdrop-blur-sm">
-        <div className="container mx-auto px-4 pt-3">
-          <Card className="border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50">
-            <CardContent className="py-3">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Current Time</p>
-                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                    <LiveClockValue />
-                  </p>
-                </div>
-
-                <div
-                  className="rounded-md border border-slate-200 bg-white/90 p-2.5 cursor-pointer"
-                  onClick={() => setWeatherForecastOpen((v) => !v)}
-                >
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Weather</p>
-                  <p className="mt-1 flex items-center gap-2 text-sm font-semibold text-slate-900">
-                    <CloudSun className="h-4 w-4 text-emerald-600" />
-                    {weather.loading
-                      ? "Loading..."
-                      : weather.error
-                        ? "Unavailable"
-                        : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}F` : ""}`}
-                  </p>
-                  {weatherForecastOpen && weather.forecast.length > 0 && (
-                    <div className="mt-2 flex gap-2">
-                      {weather.forecast.map((day, i) => (
-                        <div key={i} className="flex-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-center">
-                          <p className="text-[10px] font-semibold text-slate-600">{day.day}</p>
-                          <p className="text-[10px] text-slate-500">{getWeatherLabel(day.code)}</p>
-                          <p className="text-[11px] font-medium text-slate-800">
-                            {day.highF}° / {day.lowF}°
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
-                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Next Event</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-900">
-                    {!hasGoogle
-                      ? "Connect Google Calendar"
-                      : calendarLoading
-                        ? "Loading..."
-                        : nextCalendarEvent
-                          ? `${nextCalendarEvent.event?.summary || "Untitled event"} · ${
-                              nextCalendarEvent.isAllDay
-                                ? "All day"
-                                : nextCalendarEvent.startDate.toLocaleTimeString("en-US", {
-                                    hour: "numeric",
-                                    minute: "2-digit",
-                                  })
-                            }`
-                          : "No upcoming events"}
-                  </p>
-                </div>
-
-                <FocusTimer />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+      <div className="sticky top-0 z-20 bg-background/95 backdrop-blur-sm border-b">
         <div className="container mx-auto px-4 py-2">
-          <div className="rounded-xl border border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50 px-3 py-2 shadow-[0_10px_28px_rgba(5,150,105,0.10)] dark:border-emerald-800 dark:from-emerald-950/60 dark:via-slate-900 dark:to-slate-950 dark:shadow-[0_10px_28px_rgba(5,150,105,0.06)]">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5 font-medium text-foreground">
+              <LiveClockValue />
+            </span>
+            <span
+              className="flex items-center gap-1.5 cursor-pointer hover:text-foreground transition-colors"
+              onClick={() => setWeatherForecastOpen((v) => !v)}
+            >
+              <CloudSun className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+              {weather.loading
+                ? "Loading..."
+                : weather.error
+                  ? "Unavailable"
+                  : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}°F` : ""}`}
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Calendar className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+              {!hasGoogle
+                ? "Connect Calendar"
+                : calendarLoading
+                  ? "Loading..."
+                  : nextCalendarEvent
+                    ? `${nextCalendarEvent.event?.summary || "Untitled"} · ${
+                        nextCalendarEvent.isAllDay
+                          ? "All day"
+                          : nextCalendarEvent.startDate.toLocaleTimeString("en-US", {
+                              hour: "numeric",
+                              minute: "2-digit",
+                            })
+                      }`
+                    : "No upcoming events"}
+            </span>
+            <span className="ml-auto">
+              <FocusTimer />
+            </span>
+          </div>
+          {weatherForecastOpen && weather.forecast.length > 0 && (
+            <div className="mt-2 flex gap-2 pb-1">
+              {weather.forecast.map((day, i) => (
+                <div key={i} className="flex-1 rounded-md border bg-muted/50 px-2 py-1 text-center">
+                  <p className="text-[10px] font-semibold text-muted-foreground">{day.day}</p>
+                  <p className="text-[10px] text-muted-foreground">{getWeatherLabel(day.code)}</p>
+                  <p className="text-[11px] font-medium text-foreground">
+                    {day.highF}° / {day.lowF}°
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="container mx-auto px-4 py-1.5">
+          <div className="rounded-lg border bg-card px-3 py-2 shadow-sm">
             <div className="space-y-2">
               <div className="flex flex-wrap items-center gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs border border-slate-200 bg-white hover:bg-slate-50"
-                  onClick={() => scrollToSection("section-overview")}
-                >
-                  <FileText className="h-3.5 w-3.5 mr-1.5 text-slate-700" />
-                  Today's Plan
+                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => scrollToSection("section-overview")}>
+                  <FileText className="h-3.5 w-3.5 mr-1.5" />
+                  Plan
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs border border-cyan-200 bg-cyan-50 hover:bg-cyan-100"
-                  onClick={() => scrollToSection("section-health")}
-                >
-                  <HeartPulse className="h-3.5 w-3.5 mr-1.5 text-cyan-700" />
+                <Button variant="outline" size="sm" className="h-7 text-xs text-health" onClick={() => scrollToSection("section-health")}>
+                  <HeartPulse className="h-3.5 w-3.5 mr-1.5" />
                   Health
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
-                  onClick={() => scrollToSection("section-tracking")}
-                >
-                  <BarChart3 className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
+                <Button variant="outline" size="sm" className="h-7 text-xs text-health" onClick={() => scrollToSection("section-tracking")}>
+                  <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
                   Tracking
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-8 text-xs border border-red-200 bg-red-50 hover:bg-red-100"
-                  onClick={() => scrollToSection("section-todoist")}
-                >
-                  <CheckSquare className="h-3.5 w-3.5 mr-1.5 text-red-600" />
-                  Todoist
+                <Button variant="outline" size="sm" className="h-7 text-xs text-productivity" onClick={() => scrollToSection("section-todoist")}>
+                  <CheckSquare className="h-3.5 w-3.5 mr-1.5" />
+                  Tasks
                 </Button>
                 {isSectionVisible("workspace") && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-xs border border-emerald-200 bg-emerald-50 hover:bg-emerald-100"
-                    onClick={() => scrollToSection("section-workspace")}
-                  >
-                    <Calendar className="h-3.5 w-3.5 mr-1.5 text-emerald-700" />
+                  <Button variant="outline" size="sm" className="h-7 text-xs text-productivity" onClick={() => scrollToSection("section-workspace")}>
+                    <Calendar className="h-3.5 w-3.5 mr-1.5" />
                     Workspace
                   </Button>
                 )}
                 {isSectionVisible("chat") && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 text-xs border border-violet-200 bg-violet-50 hover:bg-violet-100"
-                    onClick={() => scrollToSection("section-chat")}
-                  >
-                    <MessageSquare className="h-3.5 w-3.5 mr-1.5 text-violet-700" />
+                  <Button variant="outline" size="sm" className="h-7 text-xs text-ai" onClick={() => scrollToSection("section-chat")}>
+                    <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
                     Chat
                   </Button>
                 )}
@@ -2194,22 +2151,12 @@ export default function Dashboard() {
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   {isSectionVisible("workspace") && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs border border-emerald-200 bg-white hover:bg-emerald-50"
-                      onClick={() => setWorkspaceExpanded((current) => !current)}
-                    >
+                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setWorkspaceExpanded((current) => !current)}>
                       {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
                     </Button>
                   )}
                   {isSectionVisible("chat") && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-8 text-xs border border-violet-200 bg-white hover:bg-violet-50"
-                      onClick={() => setChatExpanded((current) => !current)}
-                    >
+                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setChatExpanded((current) => !current)}>
                       {chatExpanded ? "Hide Chat" : "Show Chat"}
                     </Button>
                   )}
@@ -2218,7 +2165,7 @@ export default function Dashboard() {
                 <div className="ml-auto flex items-center gap-2">
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="sm" className="h-7 text-xs border border-slate-200 bg-white">
+                      <Button variant="outline" size="sm" className="h-7 text-xs">
                         Sections
                       </Button>
                     </DropdownMenuTrigger>
@@ -2235,7 +2182,7 @@ export default function Dashboard() {
                       ))}
                     </DropdownMenuContent>
                   </DropdownMenu>
-                  <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white px-1 py-1">
+                  <div className="flex items-center gap-1 rounded-md border bg-muted/50 px-1 py-1">
                     <Button
                       variant={dashboardViewMode === "essential" ? "default" : "ghost"}
                       size="sm"
