@@ -56,6 +56,7 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
+import { DashboardHero } from "@/components/dashboard/DashboardHero";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -2047,72 +2048,20 @@ export default function Dashboard() {
 
   return (
     <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
-      {/* Header */}
-      <header className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border-b sticky top-0 z-10">
-        <div className="container mx-auto flex flex-col gap-3 px-4 py-4 xl:flex-row xl:items-start xl:justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-slate-100">Coherence</h1>
-            <div className="mt-1 flex items-center gap-2">
-              <Input
-                value={welcomeDisplayNameInput}
-                onChange={(e) => setWelcomeDisplayNameInput(e.target.value)}
-                onBlur={handleSaveWelcomeName}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    (e.currentTarget as HTMLInputElement).blur();
-                  }
-                }}
-                className="h-8 w-64 text-sm bg-white dark:bg-slate-900"
-                maxLength={120}
-                placeholder="Enter display name"
-              />
-              {updatePreferences.isPending && (
-                <span className="text-xs text-slate-500">Saving...</span>
-              )}
-            </div>
-          </div>
-          <div className="flex w-full flex-col gap-2 xl:w-auto">
-            <div className="flex flex-wrap items-center justify-start gap-2 xl:justify-end">
-              {visibleHeaderButtons.slice(0, 4).map((button) => {
-                const Icon = button.icon;
-                return (
-                  <Button key={button.key} variant="outline" onClick={() => setLocation(button.route)}>
-                    <Icon className="mr-2 h-4 w-4" />
-                    {button.label}
-                  </Button>
-                );
-              })}
-              {visibleHeaderButtons.length > 4 && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline">
-                      <MoreHorizontal className="mr-2 h-4 w-4" />
-                      More
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {visibleHeaderButtons.slice(4).map((button) => {
-                      const Icon = button.icon;
-                      return (
-                        <DropdownMenuItem key={button.key} onClick={() => setLocation(button.route)}>
-                          <Icon className="mr-2 h-4 w-4" />
-                          {button.label}
-                        </DropdownMenuItem>
-                      );
-                    })}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-              <Button variant="outline" onClick={() => setLocation("/settings")}>
-                <SettingsIcon className="h-4 w-4 mr-2" />
-                Settings
-              </Button>
-            </div>
-          </div>
-        </div>
-      </header>
+      {/* Hero */}
+      <div className="container mx-auto px-4 pt-4">
+        <DashboardHero
+          userName={preferences?.displayName || user?.name?.split(" ")[0]}
+          stats={[
+            { label: "Tasks", value: (allTodoistTasks || []).filter((t: any) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
+            { label: "Events", value: (calendarEvents || []).length, icon: Calendar },
+            { label: "Recovery", value: whoopSummary?.recovery?.score != null ? `${Math.round(whoopSummary.recovery.score)}%` : "--", icon: HeartPulse },
+            { label: "Completed", value: todoistCompletedToday?.totalCompleted ?? "--", icon: CheckSquare },
+          ]}
+        />
+      </div>
 
-      <div className="sticky top-[76px] z-20 bg-gradient-to-br from-slate-100/95 via-white/95 to-emerald-50/95 dark:from-slate-950/95 dark:via-slate-900/95 dark:to-blue-950/95 backdrop-blur-sm">
+      <div className="sticky top-0 z-20 bg-gradient-to-br from-slate-100/95 via-white/95 to-emerald-50/95 dark:from-slate-950/95 dark:via-slate-900/95 dark:to-blue-950/95 backdrop-blur-sm">
         <div className="container mx-auto px-4 pt-3">
           <Card className="border-emerald-200 bg-gradient-to-r from-emerald-50 via-white to-slate-50">
             <CardContent className="py-3">
