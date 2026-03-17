@@ -2017,8 +2017,9 @@ export default function SolarRecDashboard() {
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
-    retry: 1,
-    refetchOnWindowFocus: false,
+    retry: 3,
+    retryDelay: (attempt) => Math.min(2000 * (attempt + 1), 10_000),
+    refetchOnWindowFocus: true,
   });
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
@@ -5836,9 +5837,9 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       if (remoteDashboardStateQuery.status === "pending") return;
-      if (remoteDashboardStateQuery.status === "error") {
-        if (!cancelled) setRemoteStateHydrated(true);
-        return;
+      const stateRequestErrored = remoteDashboardStateQuery.status === "error";
+      if (stateRequestErrored && !cancelled) {
+        setStorageNotice("Could not load dashboard state metadata from cloud. Trying dataset fallback sync.");
       }
 
       const loadRemoteDatasets = async (keys: DatasetKey[]) => {
@@ -5982,7 +5983,13 @@ export default function SolarRecDashboard() {
           } else if (stateLogs.length > 0) {
             setLogEntries((current) => (current.length >= stateLogs.length ? current : stateLogs));
           }
-          setStorageNotice(null);
+          if (Object.keys(loadedDatasets).length > 0 || loadedCloudLogs.length > 0 || stateLogs.length > 0) {
+            setStorageNotice(null);
+          } else if (stateRequestErrored) {
+            setStorageNotice("Cloud state sync failed on this device. Retrying in the background.");
+          } else {
+            setStorageNotice(null);
+          }
         }
       } catch {
         if (!cancelled) setStorageNotice("Could not parse synced dashboard data.");
@@ -6001,6 +6008,19 @@ export default function SolarRecDashboard() {
     remoteDashboardStateQuery.data,
     remoteDashboardStateQuery.status,
   ]);
+
+  useEffect(() => {
+    if (remoteDashboardStateQuery.status !== "error") return;
+    if (Object.keys(datasets).length > 0) return;
+
+    const timeout = window.setTimeout(() => {
+      void remoteDashboardStateQuery.refetch();
+    }, 15_000);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [datasets, remoteDashboardStateQuery.refetch, remoteDashboardStateQuery.status]);
 
   useEffect(() => {
     const flushLocalPersistence = () => {
