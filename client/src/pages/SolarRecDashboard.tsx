@@ -7368,9 +7368,10 @@ export default function SolarRecDashboard() {
       const slate500: [number, number, number] = [100, 116, 139];
       const slate200: [number, number, number] = [226, 232, 240];
 
-      /** Ensure enough room; add page if not. */
+      /** Ensure enough room; add page if not. Returns true if a new page was added. */
+      const footerReserve = 52; // space for footer line + text
       const ensureSpace = (needed: number) => {
-        if (y + needed > pageHeight - 50) { doc.addPage(); y = 48; }
+        if (y + needed > pageHeight - footerReserve) { doc.addPage(); y = 48; }
       };
 
       // ── Header banner ──
@@ -7405,6 +7406,7 @@ export default function SolarRecDashboard() {
       const bodySize = 10;
       const lineH = 14;
       const bulletIndent = 14;
+      const textWidth = cw - 2; // slight buffer to prevent right-edge truncation
       const analysisLines = result.analysis.split("\n");
 
       for (const line of analysisLines) {
@@ -7427,9 +7429,12 @@ export default function SolarRecDashboard() {
           doc.setFont("helvetica", "bold");
           doc.setTextColor(30, 30, 30);
           const text = trimmed.replace(/\*\*/g, "");
-          const wrapped = doc.splitTextToSize(text, cw) as string[];
-          doc.text(wrapped, ml, y);
-          y += wrapped.length * lineH;
+          const wrapped = doc.splitTextToSize(text, textWidth) as string[];
+          for (const wline of wrapped) {
+            ensureSpace(lineH);
+            doc.text(wline, ml, y);
+            y += lineH;
+          }
           doc.setFont("helvetica", "normal");
           continue;
         }
@@ -7444,18 +7449,23 @@ export default function SolarRecDashboard() {
           // Bullet marker
           doc.setFillColor(...accent);
           doc.circle(ml + 4, y - 3, 2, "F");
-          const wrapped = doc.splitTextToSize(text, cw - bulletIndent - 4) as string[];
-          doc.text(wrapped, ml + bulletIndent, y);
-          y += wrapped.length * lineH + 2;
+          const bulletTextWidth = textWidth - bulletIndent - 4;
+          const wrapped = doc.splitTextToSize(text, bulletTextWidth) as string[];
+          for (const wline of wrapped) {
+            ensureSpace(lineH);
+            doc.text(wline, ml + bulletIndent, y);
+            y += lineH;
+          }
+          y += 2;
           continue;
         }
 
-        // Regular paragraph text
+        // Regular paragraph text — handle inline **bold** segments
         doc.setFontSize(bodySize);
-        doc.setFont("helvetica", "normal");
         doc.setTextColor(50, 50, 50);
         const cleanText = trimmed.replace(/\*\*/g, "");
-        const wrapped = doc.splitTextToSize(cleanText, cw) as string[];
+        doc.setFont("helvetica", "normal");
+        const wrapped = doc.splitTextToSize(cleanText, textWidth) as string[];
         for (const wline of wrapped) {
           ensureSpace(lineH);
           doc.text(wline, ml, y);
