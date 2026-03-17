@@ -8,6 +8,7 @@ import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
 import { useMemo, type ReactNode } from "react";
 import { Search, Moon, Sun } from "lucide-react";
+import { ScrollToTop } from "./ScrollToTop";
 
 interface AppShellProps {
   children: ReactNode;
@@ -92,7 +93,8 @@ export function AppShell({ children }: AppShellProps) {
             </button>
           </div>
         </header>
-        <div key={location} className="flex-1 overflow-auto animate-in fade-in duration-200">{children}</div>
+        <div key={location} data-scroll-container className="flex-1 overflow-auto animate-in fade-in duration-200">{children}</div>
+        <ScrollToTop />
       </SidebarInset>
       <CommandPalette />
       <KeyboardShortcuts />

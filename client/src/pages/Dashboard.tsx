@@ -61,6 +61,7 @@ import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
 import { SamsungHealthCard } from "@/components/dashboard/SamsungHealthCard";
 import { WhoopCard } from "@/components/dashboard/WhoopCard";
 import { HabitsCard } from "@/components/dashboard/HabitsCard";
+import { QuickActionsFab } from "@/components/dashboard/QuickActionsFab";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -3397,6 +3398,21 @@ export default function Dashboard() {
           </Card>
         </div>
       ) : null}
+
+      <QuickActionsFab
+        onAddTask={() => {
+          const input = document.querySelector<HTMLInputElement>('input[placeholder="Quick add a task..."]');
+          if (input) {
+            input.scrollIntoView({ behavior: "smooth", block: "center" });
+            setTimeout(() => input.focus(), 300);
+          } else {
+            setLocation("/widget/todoist");
+          }
+        }}
+        onLogSupplement={() => {
+          document.getElementById("section-tracking")?.scrollIntoView({ behavior: "smooth" });
+        }}
+      />
     </div>
   );
 }
