@@ -313,6 +313,29 @@ type SystemRecord = {
   installerName: string;
 };
 
+type OwnershipOverviewExportRow = {
+  key: string;
+  part2ProjectName: string;
+  part2ApplicationId: string | null;
+  part2SystemId: string | null;
+  part2TrackingId: string | null;
+  source: "Matched System" | "Part II Unmatched";
+  systemName: string;
+  systemId: string | null;
+  stateApplicationRefId: string | null;
+  trackingSystemRefId: string | null;
+  ownershipStatus: OwnershipStatus;
+  isReporting: boolean;
+  isTransferred: boolean;
+  isTerminated: boolean;
+  contractType: string | null;
+  contractStatusText: string;
+  latestReportingDate: Date | null;
+  contractedDate: Date | null;
+  zillowStatus: string | null;
+  zillowSoldDate: Date | null;
+};
+
 type MonitoringDetailsRecord = {
   online_monitoring_access_type: string;
   online_monitoring: string;
@@ -1238,6 +1261,31 @@ function buildCsv(
   const headerLine = headers.map((header) => csvEscape(header)).join(",");
   const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
   return [headerLine, ...bodyLines].join("\n");
+}
+
+function timestampForCsvFileName(): string {
+  return new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+}
+
+function toCsvFileSlug(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .replace(/-+$/, "");
+  return slug || "export";
+}
+
+function triggerCsvDownload(fileName: string, csvText: string): void {
+  const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
 }
 
 function matchesExpectedHeaders(headers: string[], expected: string[]): boolean {
@@ -3042,9 +3090,10 @@ export default function SolarRecDashboard() {
     let terminatedReporting = 0;
     let terminatedNotReporting = 0;
     const uniquePart2Projects = new Set<string>();
+    const ownershipRows: OwnershipOverviewExportRow[] = [];
 
     part2VerifiedAbpRows.forEach((row, index) => {
-      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
+      const { applicationId, portalSystemId, trackingId, projectName, projectNameKey, dedupeKey } =
         resolvePart2ProjectIdentity(row, index);
       if (uniquePart2Projects.has(dedupeKey)) return;
       uniquePart2Projects.add(dedupeKey);
@@ -3057,6 +3106,28 @@ export default function SolarRecDashboard() {
 
       if (matchedSystems.size === 0) {
         notTransferredNotReporting += 1;
+        ownershipRows.push({
+          key: `part2:${dedupeKey}`,
+          part2ProjectName: projectName || "(Unmatched Part II Row)",
+          part2ApplicationId: applicationId || null,
+          part2SystemId: portalSystemId || null,
+          part2TrackingId: trackingId || null,
+          source: "Part II Unmatched",
+          systemName: projectName || "(Unmatched Part II Row)",
+          systemId: portalSystemId || null,
+          stateApplicationRefId: applicationId || null,
+          trackingSystemRefId: trackingId || null,
+          ownershipStatus: "Not Transferred and Not Reporting",
+          isReporting: false,
+          isTransferred: false,
+          isTerminated: false,
+          contractType: null,
+          contractStatusText: "N/A",
+          latestReportingDate: null,
+          contractedDate: null,
+          zillowStatus: null,
+          zillowSoldDate: null,
+        });
         return;
       }
 
@@ -3067,6 +3138,46 @@ export default function SolarRecDashboard() {
         if (system.isReporting) isReporting = true;
         if (system.isTransferred) isTransferred = true;
         if (system.isTerminated) isTerminated = true;
+      });
+
+      const ownershipStatus: OwnershipStatus = isTerminated
+        ? isReporting
+          ? "Terminated and Reporting"
+          : "Terminated and Not Reporting"
+        : isTransferred
+          ? isReporting
+            ? "Transferred and Reporting"
+            : "Transferred and Not Reporting"
+          : isReporting
+            ? "Not Transferred and Reporting"
+            : "Not Transferred and Not Reporting";
+
+      const matchedSystemList = Array.from(matchedSystems.values());
+      const representative =
+        matchedSystemList.find((system) => system.ownershipStatus === ownershipStatus) ??
+        matchedSystemList[0];
+
+      ownershipRows.push({
+        key: `part2:${dedupeKey}`,
+        part2ProjectName: projectName || representative.systemName,
+        part2ApplicationId: applicationId || null,
+        part2SystemId: portalSystemId || null,
+        part2TrackingId: trackingId || null,
+        source: "Matched System",
+        systemName: representative.systemName,
+        systemId: representative.systemId,
+        stateApplicationRefId: representative.stateApplicationRefId,
+        trackingSystemRefId: representative.trackingSystemRefId,
+        ownershipStatus,
+        isReporting,
+        isTransferred,
+        isTerminated,
+        contractType: representative.contractType,
+        contractStatusText: representative.contractStatusText,
+        latestReportingDate: representative.latestReportingDate,
+        contractedDate: representative.contractedDate,
+        zillowStatus: representative.zillowStatus,
+        zillowSoldDate: representative.zillowSoldDate,
       });
 
       if (isTerminated) {
@@ -3124,6 +3235,7 @@ export default function SolarRecDashboard() {
         terminatedNotReporting,
         terminatedTotal,
       },
+      ownershipRows,
       withValueDataCount: withValueData.length,
       totalContractedValue,
       totalDeliveredValue,
@@ -3470,6 +3582,23 @@ export default function SolarRecDashboard() {
       return haystack.includes(normalizedSearch);
     });
   }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
+
+  const ownershipCountTileRows = useMemo(
+    () => ({
+      reporting: summary.ownershipRows.filter(
+        (row) => row.ownershipStatus === "Not Transferred and Reporting" || row.ownershipStatus === "Transferred and Reporting"
+      ),
+      notReporting: summary.ownershipRows.filter(
+        (row) =>
+          row.ownershipStatus === "Not Transferred and Not Reporting" ||
+          row.ownershipStatus === "Transferred and Not Reporting"
+      ),
+      terminated: summary.ownershipRows.filter(
+        (row) => row.ownershipStatus === "Terminated and Reporting" || row.ownershipStatus === "Terminated and Not Reporting"
+      ),
+    }),
+    [summary.ownershipRows]
+  );
 
   const offlineBaseSystems = useMemo(
     () => {
@@ -4766,6 +4895,105 @@ export default function SolarRecDashboard() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const downloadOwnershipCountTileCsv = (tile: "reporting" | "notReporting" | "terminated") => {
+    const tileRows = ownershipCountTileRows[tile]
+      .slice()
+      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
+
+    const headers = [
+      "system_name",
+      "system_id",
+      "tracking_id",
+      "state_application_id",
+      "part2_project_name",
+      "part2_application_id",
+      "part2_system_id",
+      "part2_tracking_id",
+      "source",
+      "status_category",
+      "reporting",
+      "transferred",
+      "terminated",
+      "contract_type",
+      "contract_status",
+      "last_reporting_date",
+      "contract_date",
+      "zillow_status",
+      "zillow_sold_date",
+    ];
+
+    const rows = tileRows.map((row) => ({
+      system_name: row.systemName,
+      system_id: row.systemId ?? "",
+      tracking_id: row.trackingSystemRefId ?? "",
+      state_application_id: row.stateApplicationRefId ?? "",
+      part2_project_name: row.part2ProjectName,
+      part2_application_id: row.part2ApplicationId ?? "",
+      part2_system_id: row.part2SystemId ?? "",
+      part2_tracking_id: row.part2TrackingId ?? "",
+      source: row.source,
+      status_category: row.ownershipStatus,
+      reporting: row.isReporting ? "Yes" : "No",
+      transferred: row.isTransferred ? "Yes" : "No",
+      terminated: row.isTerminated ? "Yes" : "No",
+      contract_type: row.contractType ?? "",
+      contract_status: row.contractStatusText,
+      last_reporting_date: row.latestReportingDate ? row.latestReportingDate.toISOString().slice(0, 10) : "",
+      contract_date: row.contractedDate ? row.contractedDate.toISOString().slice(0, 10) : "",
+      zillow_status: row.zillowStatus ?? "",
+      zillow_sold_date: row.zillowSoldDate ? row.zillowSoldDate.toISOString().slice(0, 10) : "",
+    }));
+
+    const tileLabel = tile === "reporting" ? "Reporting" : tile === "notReporting" ? "Not Reporting" : "Terminated";
+    const csv = buildCsv(headers, rows);
+    const fileName = `ownership-status-${toCsvFileSlug(tileLabel)}-${timestampForCsvFileName()}.csv`;
+    triggerCsvDownload(fileName, csv);
+  };
+
+  const downloadChangeOwnershipCountTileCsv = (status: ChangeOwnershipStatus) => {
+    const rows = changeOwnershipRows
+      .filter((system) => system.changeOwnershipStatus === status)
+      .slice()
+      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }))
+      .map((system) => ({
+        system_name: system.systemName,
+        system_id: system.systemId ?? "",
+        tracking_id: system.trackingSystemRefId ?? "",
+        status_category: system.ownershipStatus,
+        change_ownership_status: system.changeOwnershipStatus ?? "",
+        reporting: system.isReporting ? "Yes" : "No",
+        transferred: system.isTransferred ? "Yes" : "No",
+        terminated: system.isTerminated ? "Yes" : "No",
+        contract_type: system.contractType ?? "",
+        contract_status: system.contractStatusText,
+        contract_date: system.contractedDate ? system.contractedDate.toISOString().slice(0, 10) : "",
+        zillow_status: system.zillowStatus ?? "",
+        zillow_sold_date: system.zillowSoldDate ? system.zillowSoldDate.toISOString().slice(0, 10) : "",
+        last_reporting_date: system.latestReportingDate ? system.latestReportingDate.toISOString().slice(0, 10) : "",
+      }));
+
+    const headers = [
+      "system_name",
+      "system_id",
+      "tracking_id",
+      "status_category",
+      "change_ownership_status",
+      "reporting",
+      "transferred",
+      "terminated",
+      "contract_type",
+      "contract_status",
+      "contract_date",
+      "zillow_status",
+      "zillow_sold_date",
+      "last_reporting_date",
+    ];
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `ownership-change-${toCsvFileSlug(status)}-${timestampForCsvFileName()}.csv`;
+    triggerCsvDownload(fileName, csv);
   };
 
   const zeroReportingInstallerPlatformRows = useMemo(() => {
@@ -7600,29 +7828,41 @@ export default function SolarRecDashboard() {
               <CardHeader>
                 <CardTitle className="text-base">Ownership and Reporting Status Counts</CardTitle>
                 <CardDescription>
-                  Part II verified systems only.
+                  Part II verified systems only. Click any tile to export matching systems to CSV.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-3">
-                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3">
+                  <button
+                    type="button"
+                    onClick={() => downloadOwnershipCountTileCsv("reporting")}
+                    className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-emerald-800">Reporting</p>
                     <p className="text-2xl font-semibold text-emerald-900">
                       {formatNumber(summary.ownershipOverview.reportingOwnershipTotal)}
                     </p>
-                  </div>
-                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadOwnershipCountTileCsv("notReporting")}
+                    className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-amber-800">Not Reporting</p>
                     <p className="text-2xl font-semibold text-amber-900">
                       {formatNumber(summary.ownershipOverview.notReportingOwnershipTotal)}
                     </p>
-                  </div>
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadOwnershipCountTileCsv("terminated")}
+                    className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-slate-700">Terminated</p>
                     <p className="text-2xl font-semibold text-slate-900">
                       {formatNumber(summary.ownershipOverview.terminatedTotal)}
                     </p>
-                  </div>
+                  </button>
                 </div>
 
                 <div>
@@ -7630,7 +7870,11 @@ export default function SolarRecDashboard() {
                 </div>
 
                 <div className="grid gap-3 md:grid-cols-4">
-                  <div className="rounded-lg border border-emerald-300 bg-emerald-100 p-3">
+                  <button
+                    type="button"
+                    onClick={() => downloadChangeOwnershipCountTileCsv("Transferred and Reporting")}
+                    className="rounded-lg border border-emerald-300 bg-emerald-100 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-emerald-900">Ownership Changed, Transferred and Reporting</p>
                     <p className="text-2xl font-semibold text-emerald-950">
                       {formatNumber(
@@ -7638,8 +7882,12 @@ export default function SolarRecDashboard() {
                           ?.count ?? 0
                       )}
                     </p>
-                  </div>
-                  <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadChangeOwnershipCountTileCsv("Change of Ownership - Not Transferred and Reporting")}
+                    className="rounded-lg border border-green-200 bg-green-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-green-800">
                       Change of Ownership - Not Transferred and Reporting
                     </p>
@@ -7650,8 +7898,12 @@ export default function SolarRecDashboard() {
                         )?.count ?? 0
                       )}
                     </p>
-                  </div>
-                  <div className="rounded-lg border border-amber-300 bg-amber-100 p-3">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadChangeOwnershipCountTileCsv("Transferred and Not Reporting")}
+                    className="rounded-lg border border-amber-300 bg-amber-100 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-amber-800">Ownership Changed, Transferred but not Reporting</p>
                     <p className="text-2xl font-semibold text-amber-900">
                       {formatNumber(
@@ -7659,8 +7911,12 @@ export default function SolarRecDashboard() {
                           ?.count ?? 0
                       )}
                     </p>
-                  </div>
-                  <div className="rounded-lg border border-rose-300 bg-rose-100 p-3">
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadChangeOwnershipCountTileCsv("Change of Ownership - Not Transferred and Not Reporting")}
+                    className="rounded-lg border border-rose-300 bg-rose-100 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
+                  >
                     <p className="text-xs font-semibold text-rose-800">
                       Ownership Changed, but not Transferred and not Reporting
                     </p>
@@ -7671,7 +7927,7 @@ export default function SolarRecDashboard() {
                         )?.count ?? 0
                       )}
                     </p>
-                  </div>
+                  </button>
                 </div>
               </CardContent>
             </Card>
