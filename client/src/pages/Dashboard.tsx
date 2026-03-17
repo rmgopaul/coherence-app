@@ -62,6 +62,7 @@ import { SamsungHealthCard } from "@/components/dashboard/SamsungHealthCard";
 import { WhoopCard } from "@/components/dashboard/WhoopCard";
 import { HabitsCard } from "@/components/dashboard/HabitsCard";
 import { QuickActionsFab } from "@/components/dashboard/QuickActionsFab";
+import { DashboardSkeleton } from "@/components/dashboard/DashboardSkeleton";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -1888,11 +1889,7 @@ export default function Dashboard() {
   }, []);
 
   if (loading || isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-emerald-600" />
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
   
   if (!user) {
