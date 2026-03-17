@@ -1,7 +1,7 @@
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { adminProcedure, publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { z } from "zod";
 
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
@@ -713,6 +713,62 @@ export const appRouter = router({
           ...input,
         });
         return { success: true };
+      }),
+  }),
+
+  feedback: router({
+    submit: protectedProcedure
+      .input(
+        z.object({
+          pagePath: z.string().min(1).max(255),
+          sectionId: z.string().max(191).optional(),
+          category: z
+            .enum(["improvement", "bug", "ui", "data", "workflow", "other"])
+            .optional(),
+          note: z.string().min(3).max(4000),
+          contextJson: z.string().max(16000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { submitUserFeedback } = await import("./db");
+        const row = await submitUserFeedback({
+          userId: ctx.user.id,
+          pagePath: input.pagePath.trim(),
+          sectionId: toNonEmptyString(input.sectionId),
+          category: input.category ?? "improvement",
+          note: input.note.trim(),
+          status: "open",
+          contextJson: toNonEmptyString(input.contextJson),
+        });
+
+        return {
+          success: Boolean(row),
+          feedbackId: row?.id ?? null,
+        };
+      }),
+    listMine: protectedProcedure
+      .input(
+        z
+          .object({
+            limit: z.number().int().min(1).max(200).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const { listUserFeedback } = await import("./db");
+        return listUserFeedback(ctx.user.id, input?.limit ?? 25);
+      }),
+    listRecent: adminProcedure
+      .input(
+        z
+          .object({
+            limit: z.number().int().min(1).max(500).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ input }) => {
+        const { listRecentUserFeedback } = await import("./db");
+        return listRecentUserFeedback(input?.limit ?? 200);
       }),
   }),
 

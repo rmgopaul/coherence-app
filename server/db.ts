@@ -19,6 +19,7 @@ import {
   dailySnapshots,
   samsungSyncPayloads,
   solarRecDashboardStorage,
+  userFeedback,
   InsertIntegration,
   InsertUserPreference,
   InsertOAuthCredential,
@@ -34,12 +35,14 @@ import {
   InsertSamsungSyncPayload,
   sectionEngagement,
   InsertSectionEngagement,
+  InsertUserFeedback,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _solarRecDashboardTableEnsured = false;
+let _userFeedbackTableEnsured = false;
 const SOLAR_REC_DB_CHUNK_CHARS = 900_000;
 
 const RETRYABLE_DB_ERROR_CODES = new Set([
@@ -198,6 +201,35 @@ async function ensureSolarRecDashboardStorageTable() {
   });
 
   _solarRecDashboardTableEnsured = true;
+  return true;
+}
+
+async function ensureUserFeedbackTable() {
+  const db = await getDb();
+  if (!db) return false;
+  if (_userFeedbackTableEnsured) return true;
+
+  await withDbRetry("ensure user feedback table", async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS userFeedback (
+        id varchar(64) NOT NULL,
+        userId int NOT NULL,
+        pagePath varchar(255) NOT NULL,
+        sectionId varchar(191) DEFAULT NULL,
+        category varchar(32) NOT NULL DEFAULT 'improvement',
+        note text NOT NULL,
+        status varchar(32) NOT NULL DEFAULT 'open',
+        contextJson text,
+        createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY user_feedback_user_created_idx (userId, createdAt),
+        KEY user_feedback_status_created_idx (status, createdAt)
+      )
+    `);
+  });
+
+  _userFeedbackTableEnsured = true;
   return true;
 }
 
@@ -1441,4 +1473,65 @@ export async function clearSectionEngagement(userId: number) {
       .delete(sectionEngagement)
       .where(eq(sectionEngagement.userId, userId));
   });
+}
+
+// ── User Feedback ──
+
+export async function submitUserFeedback(
+  input: Omit<InsertUserFeedback, "id" | "createdAt" | "updatedAt">
+) {
+  const db = await getDb();
+  if (!db) return null;
+  const ensured = await ensureUserFeedbackTable();
+  if (!ensured) return null;
+
+  const row: InsertUserFeedback = {
+    id: nanoid(),
+    userId: input.userId,
+    pagePath: input.pagePath,
+    sectionId: input.sectionId ?? null,
+    category: input.category ?? "improvement",
+    note: input.note,
+    status: input.status ?? "open",
+    contextJson: input.contextJson ?? null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  await withDbRetry("submit user feedback", async () => {
+    await db.insert(userFeedback).values(row);
+  });
+
+  return row;
+}
+
+export async function listUserFeedback(userId: number, limit = 100) {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureUserFeedbackTable();
+  if (!ensured) return [];
+
+  return withDbRetry("list user feedback", async () =>
+    db
+      .select()
+      .from(userFeedback)
+      .where(eq(userFeedback.userId, userId))
+      .orderBy(desc(userFeedback.createdAt))
+      .limit(Math.max(1, Math.min(500, limit)))
+  );
+}
+
+export async function listRecentUserFeedback(limit = 200) {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureUserFeedbackTable();
+  if (!ensured) return [];
+
+  return withDbRetry("list recent user feedback", async () =>
+    db
+      .select()
+      .from(userFeedback)
+      .orderBy(desc(userFeedback.createdAt))
+      .limit(Math.max(1, Math.min(500, limit)))
+  );
 }

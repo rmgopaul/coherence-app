@@ -397,3 +397,27 @@ export const sectionEngagement = mysqlTable(
 
 export type SectionEngagement = typeof sectionEngagement.$inferSelect;
 export type InsertSectionEngagement = typeof sectionEngagement.$inferInsert;
+
+// Freeform user feedback for product improvements across pages/sections.
+export const userFeedback = mysqlTable(
+  "userFeedback",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    pagePath: varchar("pagePath", { length: 255 }).notNull(),
+    sectionId: varchar("sectionId", { length: 191 }),
+    category: varchar("category", { length: 32 }).default("improvement").notNull(),
+    note: text("note").notNull(),
+    status: varchar("status", { length: 32 }).default("open").notNull(),
+    contextJson: text("contextJson"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userCreatedIdx: index("user_feedback_user_created_idx").on(table.userId, table.createdAt),
+    statusCreatedIdx: index("user_feedback_status_created_idx").on(table.status, table.createdAt),
+  })
+);
+
+export type UserFeedback = typeof userFeedback.$inferSelect;
+export type InsertUserFeedback = typeof userFeedback.$inferInsert;
