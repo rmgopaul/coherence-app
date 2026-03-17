@@ -9,6 +9,7 @@ import { useLocation } from "wouter";
 import { useMemo, type ReactNode } from "react";
 import { Search, Moon, Sun } from "lucide-react";
 import { ScrollToTop } from "./ScrollToTop";
+import { OnlineIndicator } from "./OnlineIndicator";
 
 interface AppShellProps {
   children: ReactNode;
@@ -57,6 +58,7 @@ export function AppShell({ children }: AppShellProps) {
             </>
           )}
           <div className="ml-auto flex items-center gap-1.5">
+            <OnlineIndicator />
             {switchable && toggleTheme && (
               <Button
                 variant="ghost"

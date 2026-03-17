@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useTheme } from "@/contexts/ThemeContext";
+import { toast } from "sonner";
 
 interface ShortcutGroup {
   title: string;
@@ -36,13 +37,13 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
   },
 ];
 
-const NAV_MAP: Record<string, string> = {
-  d: "/dashboard",
-  t: "/widget/todoist",
-  c: "/widget/google-calendar",
-  n: "/notes",
-  a: "/widget/chatgpt",
-  s: "/settings",
+const NAV_MAP: Record<string, { route: string; label: string }> = {
+  d: { route: "/dashboard", label: "Dashboard" },
+  t: { route: "/widget/todoist", label: "Tasks" },
+  c: { route: "/widget/google-calendar", label: "Calendar" },
+  n: { route: "/notes", label: "Notes" },
+  a: { route: "/widget/chatgpt", label: "Chat" },
+  s: { route: "/settings", label: "Settings" },
 };
 
 export function KeyboardShortcuts() {
@@ -85,10 +86,11 @@ export function KeyboardShortcuts() {
       // G + key chord navigation
       if (pendingG) {
         setPendingG(false);
-        const route = NAV_MAP[e.key.toLowerCase()];
-        if (route) {
+        const nav = NAV_MAP[e.key.toLowerCase()];
+        if (nav) {
           e.preventDefault();
-          setLocation(route);
+          setLocation(nav.route);
+          toast(`Navigating to ${nav.label}`, { duration: 1500 });
         }
         return;
       }
