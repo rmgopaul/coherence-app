@@ -60,6 +60,7 @@ import { DashboardHero } from "@/components/dashboard/DashboardHero";
 import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
 import { SamsungHealthCard } from "@/components/dashboard/SamsungHealthCard";
 import { WhoopCard } from "@/components/dashboard/WhoopCard";
+import { HabitsCard } from "@/components/dashboard/HabitsCard";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -195,38 +196,6 @@ const isSameLocalDay = (dateA: Date, dateB: Date) => {
   );
 };
 
-const HABIT_COLOR_STYLES: Record<string, { active: string; inactive: string; dot: string }> = {
-  slate: {
-    active: "bg-slate-900 text-white border-slate-900",
-    inactive: "bg-slate-50 text-slate-700 border-slate-200",
-    dot: "bg-slate-600",
-  },
-  emerald: {
-    active: "bg-emerald-600 text-white border-emerald-700",
-    inactive: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    dot: "bg-emerald-500",
-  },
-  blue: {
-    active: "bg-emerald-700 text-white border-emerald-800",
-    inactive: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    dot: "bg-emerald-500",
-  },
-  violet: {
-    active: "bg-violet-600 text-white border-violet-700",
-    inactive: "bg-violet-50 text-violet-700 border-violet-200",
-    dot: "bg-violet-500",
-  },
-  rose: {
-    active: "bg-rose-600 text-white border-rose-700",
-    inactive: "bg-rose-50 text-rose-700 border-rose-200",
-    dot: "bg-rose-500",
-  },
-  amber: {
-    active: "bg-amber-500 text-amber-950 border-amber-600",
-    inactive: "bg-amber-50 text-amber-800 border-amber-200",
-    dot: "bg-amber-500",
-  },
-};
 
 const SUPPLEMENT_UNITS = ["capsule", "tablet", "mg", "mcg", "g", "ml", "drop", "scoop", "other"] as const;
 
@@ -2448,99 +2417,15 @@ export default function Dashboard() {
             </Card>
           ) : null}
 
-          <Card className="min-w-0 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <Target className="h-4 w-4 text-rose-600" />
-                <CardTitle className="text-base">Habits</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-tracking" currentRating={sectionRatingMap["section-tracking"] as any} />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => refetchHabitsForToday()}
-                >
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="mb-3 h-36 rounded-md border border-slate-200 bg-white px-2 py-1">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Tooltip />
-                    <Pie
-                      data={habitCompletionChartData}
-                      dataKey="value"
-                      nameKey="name"
-                      innerRadius={36}
-                      outerRadius={56}
-                      paddingAngle={2}
-                    >
-                      {habitCompletionChartData.map((entry) => (
-                        <Cell key={entry.name} fill={entry.color} />
-                      ))}
-                    </Pie>
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              {(habitsForToday || []).length === 0 ? (
-                <div className="text-sm text-slate-500">
-                  No habits configured.
-                  <Button
-                    variant="link"
-                    className="px-1 h-auto text-sm"
-                    onClick={() => setLocation("/settings")}
-                  >
-                    Create habits in Settings
-                  </Button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 gap-2">
-                  {(habitsForToday || []).map((habit: any) => {
-                    const styles = HABIT_COLOR_STYLES[habit.color] ?? HABIT_COLOR_STYLES.slate;
-                    const streakData = habitStreakMap[habit.id];
-                    return (
-                      <button
-                        type="button"
-                        key={habit.id}
-                        onClick={() => handleToggleHabit(habit.id, !habit.completed)}
-                        className={`rounded-md border px-2 py-2 text-left transition-colors ${
-                          habit.completed ? styles.active : styles.inactive
-                        }`}
-                        disabled={setHabitCompletion.isPending}
-                      >
-                        <div className="flex items-center justify-between">
-                          <p className="text-xs font-semibold">{habit.name}</p>
-                          {streakData && streakData.streak > 0 && (
-                            <span className="text-[10px] font-bold opacity-70">{streakData.streak}d</span>
-                          )}
-                        </div>
-                        {streakData ? (
-                          <div className="flex items-center gap-0.5 mt-1">
-                            {streakData.calendar.map((day) => (
-                              <span
-                                key={day.dateKey}
-                                className={`h-1.5 w-1.5 rounded-full ${
-                                  day.completed ? styles.dot : "bg-black/10"
-                                }`}
-                                title={day.dateKey}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <p className="text-[11px] mt-0.5 opacity-80">
-                            {habit.completed ? "Done today" : "Tap to mark done"}
-                          </p>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <HabitsCard
+            habits={habitsForToday || []}
+            habitStreakMap={habitStreakMap}
+            completionChartData={habitCompletionChartData}
+            onToggle={handleToggleHabit}
+            isToggling={setHabitCompletion.isPending}
+            onRefresh={() => refetchHabitsForToday()}
+            sectionRating={sectionRatingMap["section-tracking"] as any}
+          />
 
           {isSectionVisible("notes") ? (
             <Card className="min-w-0 flex flex-col">
