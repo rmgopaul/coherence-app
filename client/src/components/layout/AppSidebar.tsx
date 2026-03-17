@@ -37,13 +37,15 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { useState, useEffect } from "react";
-
+import { useState, useEffect, useMemo } from "react";
+import { trpc } from "@/lib/trpc";
+import { SidebarMenuBadge } from "@/components/ui/sidebar";
 
 type NavItem = {
   label: string;
   href: string;
   icon: LucideIcon;
+  badgeKey?: string;
 };
 
 type NavSection = {
@@ -56,8 +58,8 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Personal",
     items: [
       { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-      { label: "Tasks", href: "/widget/todoist", icon: CheckSquare },
-      { label: "Calendar", href: "/widget/google-calendar", icon: Calendar },
+      { label: "Tasks", href: "/widget/todoist", icon: CheckSquare, badgeKey: "tasks" },
+      { label: "Calendar", href: "/widget/google-calendar", icon: Calendar, badgeKey: "events" },
       { label: "Notes", href: "/notes", icon: StickyNote },
       { label: "Chat", href: "/widget/chatgpt", icon: MessageSquare },
     ],
@@ -108,6 +110,29 @@ function storeSections(sections: Record<string, boolean>) {
 
 export function AppSidebar() {
   const [location] = useLocation();
+
+  // Badge counts
+  const { data: todoistTasks } = trpc.todoist.getTasks.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const badges = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const tasksDueToday = (todoistTasks ?? []).filter(
+      (t: any) => t.due?.date && t.due.date <= today
+    ).length;
+    const eventsToday = (calendarEvents ?? []).length;
+    return {
+      tasks: tasksDueToday > 0 ? tasksDueToday : null,
+      events: eventsToday > 0 ? eventsToday : null,
+    } as Record<string, number | null>;
+  }, [todoistTasks, calendarEvents]);
+
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(
     () => {
       const stored = getStoredSections();
@@ -197,6 +222,11 @@ export function AppSidebar() {
                               <span>{item.label}</span>
                             </a>
                           </SidebarMenuButton>
+                          {item.badgeKey && badges[item.badgeKey] != null && (
+                            <SidebarMenuBadge className="text-[10px] font-medium">
+                              {badges[item.badgeKey]}
+                            </SidebarMenuBadge>
+                          )}
                         </SidebarMenuItem>
                       );
                     })}
