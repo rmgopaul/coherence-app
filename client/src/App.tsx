@@ -4,6 +4,7 @@ import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import { Suspense, lazy, type ComponentType } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
+import GlobalClockifyTimer from "./components/GlobalClockifyTimer";
 import PinGate from "./components/PinGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
 
@@ -90,6 +91,7 @@ function App() {
           <Toaster />
           <PinGate>
             <Router />
+            <GlobalClockifyTimer />
           </PinGate>
         </TooltipProvider>
       </ThemeProvider>

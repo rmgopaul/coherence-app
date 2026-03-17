@@ -39,6 +39,7 @@ export default function ClockifyWidget() {
   const utils = trpc.useUtils();
 
   const [description, setDescription] = useState("");
+  const [projectIdInput, setProjectIdInput] = useState("");
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -75,6 +76,7 @@ export default function ClockifyWidget() {
     onSuccess: async () => {
       toast.success("Clockify timer started");
       setDescription("");
+      setProjectIdInput("");
       await Promise.all([
         utils.clockify.getCurrentEntry.invalidate(),
         utils.clockify.getRecentEntries.invalidate(),
@@ -100,6 +102,9 @@ export default function ClockifyWidget() {
 
   const currentEntry = currentEntryQuery.data;
   const isRunning = Boolean(currentEntry?.isRunning);
+  const currentProjectLabel =
+    currentEntry?.projectName?.trim() ||
+    (currentEntry?.projectId ? `Project ${currentEntry.projectId}` : "No project selected");
 
   useEffect(() => {
     if (!isRunning) return;
@@ -131,6 +136,7 @@ export default function ClockifyWidget() {
 
     startTimer.mutate({
       description: trimmedDescription,
+      projectId: projectIdInput.trim() || undefined,
     });
   };
 
@@ -209,13 +215,16 @@ export default function ClockifyWidget() {
                 <CardDescription>
                   {isRunning
                     ? "A timer is currently running"
-                    : "No active timer. Start one with a task description."}
+                    : "No active timer. Start one with a task description and optional project."}
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="rounded-md border border-slate-200 bg-white p-4">
                   <p className="text-sm font-medium text-slate-900">
                     {currentEntry?.description?.trim() || (isRunning ? "Untitled task" : "No running timer")}
+                  </p>
+                  <p className="mt-1 text-xs font-semibold text-blue-700">
+                    Project: {currentProjectLabel}
                   </p>
                   <p className="mt-1 text-xs text-slate-500">
                     Start: {formatTimestamp(currentEntry?.start ?? null)}
@@ -228,7 +237,7 @@ export default function ClockifyWidget() {
                   </p>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
+                <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto_auto] md:items-end">
                   <div className="space-y-2">
                     <Label htmlFor="clockify-description">Task Description</Label>
                     <Input
@@ -236,6 +245,16 @@ export default function ClockifyWidget() {
                       value={description}
                       onChange={(event) => setDescription(event.target.value)}
                       placeholder="Example: Invoice reconciliation"
+                      disabled={isRunning}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="clockify-project-id">Project ID (optional)</Label>
+                    <Input
+                      id="clockify-project-id"
+                      value={projectIdInput}
+                      onChange={(event) => setProjectIdInput(event.target.value)}
+                      placeholder="Example: 6748b91fef191e6f..."
                       disabled={isRunning}
                     />
                   </div>
@@ -307,9 +326,9 @@ export default function ClockifyWidget() {
                         <p className="text-xs text-slate-500">
                           {formatTimestamp(entry.start)} to {entry.isRunning ? "Running" : formatTimestamp(entry.end)}
                         </p>
-                        {entry.projectName ? (
-                          <p className="text-xs text-slate-500">Project: {entry.projectName}</p>
-                        ) : null}
+                        <p className="text-xs text-slate-500">
+                          Project: {entry.projectName || (entry.projectId ? `Project ${entry.projectId}` : "No project selected")}
+                        </p>
                       </div>
                     ))}
                   </div>
