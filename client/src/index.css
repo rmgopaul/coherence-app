@@ -40,6 +40,24 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  /* ── Semantic Category Colors ─────────────────────────────────────── */
+  --color-health: var(--health);
+  --color-health-light: var(--health-light);
+  --color-health-foreground: var(--health-foreground);
+  --color-productivity: var(--productivity);
+  --color-productivity-light: var(--productivity-light);
+  --color-productivity-foreground: var(--productivity-foreground);
+  --color-ai: var(--ai);
+  --color-ai-light: var(--ai-light);
+  --color-ai-foreground: var(--ai-foreground);
+  --color-energy: var(--energy);
+  --color-energy-light: var(--energy-light);
+  --color-energy-foreground: var(--energy-foreground);
+
+  /* ── Spacing Scale ────────────────────────────────────────────────── */
+  --spacing-widget: var(--widget-gap);
+  --spacing-widget-inner: var(--widget-padding);
 }
 
 :root {
@@ -76,6 +94,24 @@
   --sidebar-accent-foreground: oklch(0.25 0.02 152);
   --sidebar-border: oklch(0.9 0.01 150);
   --sidebar-ring: oklch(0.46 0.1 152);
+
+  /* ── Semantic Category Colors ─────────────────────────────────────── */
+  --health: oklch(0.55 0.16 155);
+  --health-light: oklch(0.95 0.04 155);
+  --health-foreground: oklch(0.30 0.08 155);
+  --productivity: oklch(0.55 0.16 250);
+  --productivity-light: oklch(0.95 0.04 250);
+  --productivity-foreground: oklch(0.30 0.08 250);
+  --ai: oklch(0.55 0.18 300);
+  --ai-light: oklch(0.95 0.04 300);
+  --ai-foreground: oklch(0.30 0.10 300);
+  --energy: oklch(0.70 0.16 80);
+  --energy-light: oklch(0.95 0.04 80);
+  --energy-foreground: oklch(0.35 0.10 80);
+
+  /* ── Widget Spacing ────────────────────────────────────────────────── */
+  --widget-gap: 1rem;
+  --widget-padding: 1.25rem;
 }
 
 .dark {
@@ -111,6 +147,25 @@
   --sidebar-accent-foreground: oklch(0.98 0.01 253);
   --sidebar-border: oklch(0.46 0.03 255 / 45%);
   --sidebar-ring: oklch(0.66 0.15 253);
+
+  /* ── Semantic Category Colors (Dark) ──────────────────────────────── */
+  --health: oklch(0.70 0.16 155);
+  --health-light: oklch(0.25 0.06 155);
+  --health-foreground: oklch(0.90 0.06 155);
+  --productivity: oklch(0.70 0.16 250);
+  --productivity-light: oklch(0.25 0.06 250);
+  --productivity-foreground: oklch(0.90 0.06 250);
+  --ai: oklch(0.70 0.18 300);
+  --ai-light: oklch(0.25 0.06 300);
+  --ai-foreground: oklch(0.90 0.06 300);
+  --energy: oklch(0.78 0.14 80);
+  --energy-light: oklch(0.25 0.06 80);
+  --energy-foreground: oklch(0.90 0.06 80);
+
+  /* ── Widget Spacing (Dark) ─────────────────────────────────────────── */
+  --widget-gap: 1rem;
+  --widget-padding: 1.25rem;
+
   color-scheme: dark;
 }
 

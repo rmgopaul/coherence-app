@@ -1,13 +1,14 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
+import { Route, Switch, useLocation } from "wouter";
 import { Suspense, lazy, type ComponentType } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalFeedbackWidget from "./components/GlobalFeedbackWidget";
 import GlobalClockifyTimer from "./components/GlobalClockifyTimer";
 import PinGate from "./components/PinGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { AppShell } from "./components/layout/AppShell";
 
 const Home = lazy(() => import("./pages/Home"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
@@ -30,8 +31,8 @@ const GmailWidget = lazy(() => import("./pages/GmailWidget"));
 
 function RouteFallback() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50">
-      <div className="text-sm text-slate-600">Loading page...</div>
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-sm text-muted-foreground">Loading page...</div>
     </div>
   );
 }
@@ -46,11 +47,10 @@ function withRouteSuspense(Component: ComponentType) {
   };
 }
 
-function Router() {
-  // make sure to consider if you need authentication for certain routes
+/** Routes that live inside the AppShell (sidebar + command palette). */
+function AppRoutes() {
   return (
     <Switch>
-      <Route path={"/"} component={withRouteSuspense(Home)} />
       <Route path={"/dashboard"} component={withRouteSuspense(Dashboard)} />
       <Route path={"/solar-rec-dashboard"} component={withRouteSuspense(SolarRecDashboard)} />
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
@@ -76,10 +76,27 @@ function Router() {
   );
 }
 
-// NOTE: About Theme
-// - First choose a default theme according to your design style (dark or light bg), than change color palette in index.css
-//   to keep consistent foreground/background color across components
-// - If you want to make theme switchable, pass `switchable` ThemeProvider and use `useTheme` hook
+function Router() {
+  const [location] = useLocation();
+
+  // Landing page renders without the app shell
+  if (location === "/") {
+    return (
+      <Suspense fallback={<RouteFallback />}>
+        <Home />
+      </Suspense>
+    );
+  }
+
+  // All other routes render inside the app shell (sidebar + command palette)
+  return (
+    <AppShell>
+      <AppRoutes />
+      <GlobalClockifyTimer />
+      <GlobalFeedbackWidget />
+    </AppShell>
+  );
+}
 
 function App() {
   return (
@@ -92,8 +109,6 @@ function App() {
           <Toaster />
           <PinGate>
             <Router />
-            <GlobalClockifyTimer />
-            <GlobalFeedbackWidget />
           </PinGate>
         </TooltipProvider>
       </ThemeProvider>
