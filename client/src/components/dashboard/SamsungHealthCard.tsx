@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -93,11 +93,11 @@ export function SamsungHealthCard({
   };
 
   return (
-    <Card className="flex flex-col border-emerald-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-slate-100 text-slate-900 shadow-[0_14px_34px_rgba(22,101,52,0.18)]">
+    <Card className="flex flex-col border-emerald-200 dark:border-emerald-800 bg-gradient-to-br from-emerald-50 via-lime-50 to-slate-100 dark:from-emerald-950 dark:via-emerald-950/50 dark:to-slate-900 text-foreground shadow-[0_14px_34px_rgba(22,101,52,0.18)] dark:shadow-[0_14px_34px_rgba(22,101,52,0.08)]">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div className="flex items-center gap-2">
-          <Smartphone className="h-4 w-4 text-emerald-700" />
-          <CardTitle className="text-base text-slate-900">Samsung Health</CardTitle>
+          <Smartphone className="h-4 w-4 text-emerald-700 dark:text-emerald-400" />
+          <CardTitle className="text-base">Samsung Health</CardTitle>
         </div>
         <div className="flex items-center gap-1">
           <SectionRating sectionId="section-health" currentRating={sectionRating as any} />
@@ -106,7 +106,7 @@ export function SamsungHealthCard({
             size="sm"
             onClick={onRefresh}
             disabled={isRefreshing}
-            className="h-8 px-2 text-slate-800 hover:text-slate-900 hover:bg-white/60"
+            className="h-8 px-2"
           >
             <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
           </Button>
@@ -114,21 +114,21 @@ export function SamsungHealthCard({
       </CardHeader>
       <CardContent className="space-y-3">
         {!hasSamsungHealth ? (
-          <div className="text-center py-5 text-slate-700">
+          <div className="text-center py-5 text-muted-foreground">
             <Smartphone className="h-8 w-8 mx-auto mb-2 text-emerald-400" />
             <p className="text-sm">No Samsung Health sync detected yet.</p>
-            <p className="text-xs mt-2 text-slate-600">
+            <p className="text-xs mt-2">
               Run the Android companion and tap Sync Now.
             </p>
           </div>
         ) : !snapshot ? (
-          <div className="text-center py-5 text-slate-700">
-            <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-emerald-600" />
+          <div className="text-center py-5 text-muted-foreground">
+            <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-emerald-600 dark:text-emerald-400" />
             <p className="text-sm">Waiting for Samsung sync payload...</p>
           </div>
         ) : (
           <>
-            <p className="text-[11px] text-slate-700">
+            <p className="text-[11px] text-muted-foreground">
               Source: {snapshot.sourceProvider}.{" "}
               {snapshot.receivedAt
                 ? `Last sync ${new Date(snapshot.receivedAt).toLocaleTimeString("en-US", {
@@ -138,43 +138,15 @@ export function SamsungHealthCard({
                 : "No sync timestamp."}
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                <p className="text-xs text-slate-500">Steps</p>
-                <p className="text-sm font-semibold text-slate-900">
-                  {snapshot.steps !== null
-                    ? Math.round(snapshot.steps).toLocaleString()
-                    : "-"}
-                </p>
-              </div>
-              <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                <p className="text-xs text-slate-500">Sleep</p>
-                <p className="text-sm font-semibold text-slate-900">
-                  {snapshot.sleepTotalMinutes !== null
-                    ? formatHoursAndMinutes(snapshot.sleepTotalMinutes)
-                    : "-"}
-                </p>
-              </div>
-              <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                <p className="text-xs text-slate-500">SpO2 Avg</p>
-                <p className="text-sm font-semibold text-slate-900">
-                  {snapshot.spo2AvgPercent !== null && snapshot.spo2AvgPercent > 0
-                    ? `${snapshot.spo2AvgPercent.toFixed(1)}%`
-                    : "-"}
-                </p>
-              </div>
-              <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                <p className="text-xs text-slate-500">Sleep Sessions</p>
-                <p className="text-sm font-semibold text-slate-900">
-                  {snapshot.sleepSessionsCount !== null
-                    ? Math.round(snapshot.sleepSessionsCount)
-                    : "-"}
-                </p>
-              </div>
+              <MetricTile label="Steps" value={snapshot.steps !== null ? Math.round(snapshot.steps).toLocaleString() : "-"} />
+              <MetricTile label="Sleep" value={snapshot.sleepTotalMinutes !== null ? formatHoursAndMinutes(snapshot.sleepTotalMinutes) : "-"} />
+              <MetricTile label="SpO2 Avg" value={snapshot.spo2AvgPercent !== null && snapshot.spo2AvgPercent > 0 ? `${snapshot.spo2AvgPercent.toFixed(1)}%` : "-"} />
+              <MetricTile label="Sleep Sessions" value={snapshot.sleepSessionsCount !== null ? String(Math.round(snapshot.sleepSessionsCount)) : "-"} />
               <div
-                className="rounded-md border border-emerald-200 bg-white/80 p-2 cursor-pointer"
+                className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-emerald-950/60 p-2 cursor-pointer"
                 onClick={() => setEditingField("sleep")}
               >
-                <p className="text-xs text-slate-500">Sleep Score</p>
+                <p className="text-xs text-muted-foreground">Sleep Score</p>
                 {editingField === "sleep" ? (
                   <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                     <Input
@@ -205,16 +177,16 @@ export function SamsungHealthCard({
                     </Button>
                   </div>
                 ) : (
-                  <p className="text-sm font-semibold text-slate-900">
+                  <p className="text-sm font-semibold">
                     {snapshot.sleepScore ?? "N/A"}
                   </p>
                 )}
               </div>
               <div
-                className="rounded-md border border-emerald-200 bg-white/80 p-2 cursor-pointer"
+                className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-emerald-950/60 p-2 cursor-pointer"
                 onClick={() => setEditingField("energy")}
               >
-                <p className="text-xs text-slate-500">Energy Score</p>
+                <p className="text-xs text-muted-foreground">Energy Score</p>
                 {editingField === "energy" ? (
                   <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                     <Input
@@ -245,19 +217,19 @@ export function SamsungHealthCard({
                     </Button>
                   </div>
                 ) : (
-                  <p className="text-sm font-semibold text-slate-900">
+                  <p className="text-sm font-semibold">
                     {snapshot.energyScore ?? "N/A"}
                   </p>
                 )}
               </div>
             </div>
-            <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-              <p className="text-xs text-slate-500">Sync Health</p>
-              <p className="text-sm font-semibold text-slate-900">
+            <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-emerald-950/60 p-2">
+              <p className="text-xs text-muted-foreground">Sync Health</p>
+              <p className="text-sm font-semibold">
                 {snapshot.permissionsGranted ? "Permissions granted" : "Permissions incomplete"}
               </p>
               {snapshot.warnings.length > 0 && (
-                <p className="text-xs text-amber-700 mt-1">
+                <p className="text-xs text-amber-700 dark:text-amber-400 mt-1">
                   {snapshot.warnings[0]}
                 </p>
               )}
@@ -266,5 +238,14 @@ export function SamsungHealthCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function MetricTile({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-emerald-200 dark:border-emerald-800 bg-white/80 dark:bg-emerald-950/60 p-2">
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="text-sm font-semibold">{value}</p>
+    </div>
   );
 }
