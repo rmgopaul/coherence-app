@@ -91,7 +91,7 @@ export default function GlobalClockifyTimer() {
             {isRunning ? `Elapsed ${formatDuration(durationSeconds)}` : "No timer currently running"}
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={() => setLocation("/widget/clockify")}> 
+        <Button size="sm" variant="outline" onClick={() => setLocation("/widget/clockify")}>
           <PlayCircle className="mr-1.5 h-4 w-4" />
           Open
         </Button>
