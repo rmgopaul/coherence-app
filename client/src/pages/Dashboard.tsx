@@ -58,6 +58,8 @@ import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { DashboardHero } from "@/components/dashboard/DashboardHero";
 import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
+import { SamsungHealthCard } from "@/components/dashboard/SamsungHealthCard";
+import { WhoopCard } from "@/components/dashboard/WhoopCard";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -282,14 +284,10 @@ export default function Dashboard() {
   const [weatherForecastOpen, setWeatherForecastOpen] = useState(false);
   const [isTodoistDefaultApplied, setIsTodoistDefaultApplied] = useState(false);
   const [markingEmailId, setMarkingEmailId] = useState<string | null>(null);
-  const [manualSleepScoreInput, setManualSleepScoreInput] = useState("");
-  const [manualEnergyScoreInput, setManualEnergyScoreInput] = useState("");
-  const [editingSamsungField, setEditingSamsungField] = useState<"sleep" | "energy" | null>(null);
   const [minuteTick, setMinuteTick] = useState(() => new Date());
   const [dashboardViewMode, setDashboardViewMode] = useState<"essential" | "detailed">("detailed");
   const [workspaceExpanded, setWorkspaceExpanded] = useState(false);
   const [chatExpanded, setChatExpanded] = useState(false);
-  const [whoopMetricsExpanded, setWhoopMetricsExpanded] = useState(false);
   const [noteTitleInput, setNoteTitleInput] = useState("");
   const [noteContentInput, setNoteContentInput] = useState("");
   const [noteNotebookInput, setNoteNotebookInput] = useState("General");
@@ -418,16 +416,6 @@ export default function Dashboard() {
     }
   }, [integrations]);
 
-  useEffect(() => {
-    if (!samsungHealthSnapshot) return;
-    if (editingSamsungField) return;
-    setManualSleepScoreInput(
-      samsungHealthSnapshot.sleepScore === null ? "" : String(samsungHealthSnapshot.sleepScore)
-    );
-    setManualEnergyScoreInput(
-      samsungHealthSnapshot.energyScore === null ? "" : String(samsungHealthSnapshot.energyScore)
-    );
-  }, [samsungHealthSnapshot?.sleepScore, samsungHealthSnapshot?.energyScore, editingSamsungField]);
 
   const getEmailHeader = (message: any, headerName: string) => {
     const header = message.payload?.headers?.find((h: any) => h.name === headerName);
@@ -990,15 +978,6 @@ export default function Dashboard() {
     },
   });
 
-  const saveSamsungManualScores = trpc.samsungHealth.saveManualScores.useMutation({
-    onSuccess: () => {
-      toast.success("Samsung scores updated");
-      refetchIntegrations();
-    },
-    onError: (error) => {
-      toast.error(`Failed to save Samsung scores: ${error.message}`);
-    },
-  });
 
   const captureDailyMetrics = trpc.metrics.captureToday.useMutation({
     onSuccess: () => {
@@ -1278,35 +1257,7 @@ export default function Dashboard() {
     });
   };
 
-  const parseScoreInput = (value: string): number | null => {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const numeric = Number(trimmed);
-    if (!Number.isFinite(numeric)) {
-      throw new Error("Scores must be numeric");
-    }
-    if (numeric < 0 || numeric > 100) {
-      throw new Error("Scores must be between 0 and 100");
-    }
-    return Math.round(numeric * 10) / 10;
-  };
 
-  const handleSaveSamsungManualScores = (onSaved?: () => void) => {
-    try {
-      const sleepScore = parseScoreInput(manualSleepScoreInput);
-      const energyScore = parseScoreInput(manualEnergyScoreInput);
-      saveSamsungManualScores.mutate(
-        { sleepScore, energyScore },
-        {
-          onSuccess: () => {
-            onSaved?.();
-          },
-        }
-      );
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
-  };
 
   const handleAddSupplementLog = () => {
     if (!supplementName.trim() || !supplementDose.trim()) {
@@ -1998,24 +1949,6 @@ export default function Dashboard() {
 
   const whoopErrorMessage =
     whoopError && typeof whoopError.message === "string" ? whoopError.message : null;
-  const toPercent = (value: number | null) =>
-    value === null ? "-" : `${Math.round(value)}%`;
-  const toOneDecimal = (value: number | null) =>
-    value === null ? "-" : value.toFixed(1);
-  const toInteger = (value: number | null) =>
-    value === null ? "-" : Math.round(value).toLocaleString("en-US");
-  const celsiusToFahrenheit = (value: number | null) =>
-    value === null ? null : Number(((value * 9) / 5 + 32).toFixed(1));
-  const kilojouleToCalories = (value: number | null) =>
-    value === null ? null : Number((value / 4.184).toFixed(0));
-  const formatHoursAndMinutes = (minutes: number) => {
-    const totalMinutes = Math.max(0, Math.round(minutes));
-    const hours = Math.floor(totalMinutes / 60);
-    const remainder = totalMinutes % 60;
-    if (hours > 0 && remainder > 0) return `${hours}h ${remainder}m`;
-    if (hours > 0) return `${hours}h`;
-    return `${remainder}m`;
-  };
   const recentMetricRows = (metricHistory || []).slice(0, 7);
   const dailyTrendChartData = [...recentMetricRows]
     .reverse()
@@ -2283,400 +2216,22 @@ export default function Dashboard() {
       {/* Health Row */}
       <div id="section-health" className="container mx-auto px-4 pt-4 scroll-mt-40">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card className="flex flex-col border-emerald-200 bg-gradient-to-br from-emerald-50 via-lime-50 to-slate-100 text-slate-900 shadow-[0_14px_34px_rgba(22,101,52,0.18)]">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <Smartphone className="h-4 w-4 text-emerald-700" />
-                <CardTitle className="text-base text-slate-900">Samsung Health</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-health" currentRating={sectionRatingMap["section-health"] as any} />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => refetchIntegrations()}
-                  disabled={integrationsFetching}
-                  className="h-8 px-2 text-slate-800 hover:text-slate-900 hover:bg-white/60"
-                >
-                  <RefreshCw className={`h-4 w-4 ${integrationsFetching ? "animate-spin" : ""}`} />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!hasSamsungHealth ? (
-                <div className="text-center py-5 text-slate-700">
-                  <Smartphone className="h-8 w-8 mx-auto mb-2 text-emerald-400" />
-                  <p className="text-sm">No Samsung Health sync detected yet.</p>
-                  <p className="text-xs mt-2 text-slate-600">
-                    Run the Android companion and tap Sync Now.
-                  </p>
-                </div>
-              ) : !samsungHealthSnapshot ? (
-                <div className="text-center py-5 text-slate-700">
-                  <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2 text-emerald-600" />
-                  <p className="text-sm">Waiting for Samsung sync payload...</p>
-                </div>
-              ) : (
-                <>
-                  <p className="text-[11px] text-slate-700">
-                    Source: {samsungHealthSnapshot.sourceProvider}.{" "}
-                    {samsungHealthSnapshot.receivedAt
-                      ? `Last sync ${new Date(samsungHealthSnapshot.receivedAt).toLocaleTimeString("en-US", {
-                          hour: "numeric",
-                          minute: "2-digit",
-                        })}.`
-                      : "No sync timestamp."}
-                  </p>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                      <p className="text-xs text-slate-500">Steps</p>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {samsungHealthSnapshot.steps !== null
-                          ? Math.round(samsungHealthSnapshot.steps).toLocaleString()
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                      <p className="text-xs text-slate-500">Sleep</p>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {samsungHealthSnapshot.sleepTotalMinutes !== null
-                          ? formatHoursAndMinutes(samsungHealthSnapshot.sleepTotalMinutes)
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                      <p className="text-xs text-slate-500">SpO2 Avg</p>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {samsungHealthSnapshot.spo2AvgPercent !== null && samsungHealthSnapshot.spo2AvgPercent > 0
-                          ? `${samsungHealthSnapshot.spo2AvgPercent.toFixed(1)}%`
-                          : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                      <p className="text-xs text-slate-500">Sleep Sessions</p>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {samsungHealthSnapshot.sleepSessionsCount !== null
-                          ? Math.round(samsungHealthSnapshot.sleepSessionsCount)
-                          : "-"}
-                      </p>
-                    </div>
-                    <div
-                      className="rounded-md border border-emerald-200 bg-white/80 p-2 cursor-pointer"
-                      onClick={() => setEditingSamsungField("sleep")}
-                    >
-                      <p className="text-xs text-slate-500">Sleep Score</p>
-                      {editingSamsungField === "sleep" ? (
-                        <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={100}
-                            step={0.1}
-                            value={manualSleepScoreInput}
-                            autoFocus
-                            onChange={(e) => setManualSleepScoreInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                handleSaveSamsungManualScores(() => setEditingSamsungField(null));
-                              } else if (e.key === "Escape") {
-                                setEditingSamsungField(null);
-                              }
-                            }}
-                            placeholder="82"
-                            className="h-7 text-xs"
-                          />
-                          <Button
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            onClick={() =>
-                              handleSaveSamsungManualScores(() => setEditingSamsungField(null))
-                            }
-                            disabled={saveSamsungManualScores.isPending}
-                          >
-                            Save
-                          </Button>
-                        </div>
-                      ) : (
-                        <p className="text-sm font-semibold text-slate-900">
-                          {samsungHealthSnapshot.sleepScore ?? "N/A"}
-                        </p>
-                      )}
-                    </div>
-                    <div
-                      className="rounded-md border border-emerald-200 bg-white/80 p-2 cursor-pointer"
-                      onClick={() => setEditingSamsungField("energy")}
-                    >
-                      <p className="text-xs text-slate-500">Energy Score</p>
-                      {editingSamsungField === "energy" ? (
-                        <div className="mt-1 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                          <Input
-                            type="number"
-                            min={0}
-                            max={100}
-                            step={0.1}
-                            value={manualEnergyScoreInput}
-                            autoFocus
-                            onChange={(e) => setManualEnergyScoreInput(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Enter") {
-                                handleSaveSamsungManualScores(() => setEditingSamsungField(null));
-                              } else if (e.key === "Escape") {
-                                setEditingSamsungField(null);
-                              }
-                            }}
-                            placeholder="74"
-                            className="h-7 text-xs"
-                          />
-                          <Button
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            onClick={() =>
-                              handleSaveSamsungManualScores(() => setEditingSamsungField(null))
-                            }
-                            disabled={saveSamsungManualScores.isPending}
-                          >
-                            Save
-                          </Button>
-                        </div>
-                      ) : (
-                        <p className="text-sm font-semibold text-slate-900">
-                          {samsungHealthSnapshot.energyScore ?? "N/A"}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="rounded-md border border-emerald-200 bg-white/80 p-2">
-                    <p className="text-xs text-slate-500">Sync Health</p>
-                    <p className="text-sm font-semibold text-slate-900">
-                      {samsungHealthSnapshot.permissionsGranted ? "Permissions granted" : "Permissions incomplete"}
-                    </p>
-                    {samsungHealthSnapshot.warnings.length > 0 && (
-                      <p className="text-xs text-amber-700 mt-1">
-                        {samsungHealthSnapshot.warnings[0]}
-                      </p>
-                    )}
-                  </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-          <Card className="flex flex-col border-zinc-900 bg-zinc-950 text-zinc-100 shadow-[0_16px_40px_rgba(0,0,0,0.45)]">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <HeartPulse className="h-4 w-4 text-lime-300" />
-                <CardTitle className="text-base text-white">WHOOP</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-whoop" currentRating={sectionRatingMap["section-whoop"] as any} />
-                {hasWhoop && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => refetchWhoop()}
-                    disabled={whoopLoading || whoopFetching}
-                    className="h-8 px-2 text-zinc-100 hover:text-white hover:bg-zinc-800"
-                  >
-                    <RefreshCw
-                      className={`h-4 w-4 ${whoopLoading || whoopFetching ? "animate-spin" : ""}`}
-                    />
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!hasWhoop ? (
-                <div className="text-center py-5 text-zinc-300">
-                  <HeartPulse className="h-8 w-8 mx-auto mb-2 text-zinc-500" />
-                  <p className="text-sm">Connect WHOOP in Settings</p>
-                  <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2 text-lime-300">
-                    Go to Settings
-                  </Button>
-                </div>
-              ) : whoopLoading ? (
-                <div className="flex justify-center py-5">
-                  <Loader2 className="h-6 w-6 animate-spin text-lime-300" />
-                </div>
-              ) : whoopSummary ? (
-                <>
-                  <p className="text-[11px] text-zinc-300">
-                    Auto-refresh every 5m.
-                    {whoopSummary.dataDate ? ` Data: ${whoopSummary.dataDate}.` : ""}
-                    {whoopSummary.profile
-                      ? ` ${whoopSummary.profile.firstName} ${whoopSummary.profile.lastName}`.trim()
-                      : ""}
-                  </p>
-                  {/* Hero metrics */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div className="rounded-lg border border-lime-300/30 bg-lime-300/10 p-3">
-                      <p className="text-[11px] uppercase tracking-wide text-lime-200">Recovery</p>
-                      <p className="text-xl font-bold text-lime-300 mt-1">
-                        {toPercent(whoopSummary.recoveryScore)}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                      <p className="text-[11px] uppercase tracking-wide text-zinc-400">Day Strain</p>
-                      <p className="text-xl font-bold text-white mt-1">
-                        {toOneDecimal(whoopSummary.dayStrain)}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                      <p className="text-[11px] uppercase tracking-wide text-zinc-400">Sleep</p>
-                      <p className="text-xl font-bold text-white mt-1">
-                        {whoopSummary.sleepHours !== null ? `${whoopSummary.sleepHours}h` : "-"}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                      <p className="text-[11px] uppercase tracking-wide text-zinc-400">HRV</p>
-                      <p className="text-xl font-bold text-white mt-1">
-                        {whoopSummary.hrvRmssdMilli !== null
-                          ? `${Math.round(whoopSummary.hrvRmssdMilli)} ms`
-                          : "-"}
-                      </p>
-                    </div>
-                  </div>
-                  {/* Expandable detailed metrics */}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full h-7 text-xs text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
-                    onClick={() => setWhoopMetricsExpanded((v) => !v)}
-                  >
-                    {whoopMetricsExpanded ? "Hide details" : "Show all metrics"}
-                  </Button>
-                  {whoopMetricsExpanded && (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Time In Bed</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.timeInBedHours !== null ? `${whoopSummary.timeInBedHours}h` : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Light Sleep</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.lightSleepHours !== null ? `${whoopSummary.lightSleepHours}h` : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Deep Sleep</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.deepSleepHours !== null ? `${whoopSummary.deepSleepHours}h` : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">REM Sleep</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.remSleepHours !== null ? `${whoopSummary.remSleepHours}h` : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Awake</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.awakeHours !== null ? `${whoopSummary.awakeHours}h` : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Sleep Performance</p>
-                        <p className="text-sm font-semibold text-white">
-                          {toPercent(whoopSummary.sleepPerformance)}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Sleep Efficiency</p>
-                        <p className="text-sm font-semibold text-white">
-                          {toPercent(whoopSummary.sleepEfficiency)}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Sleep Consistency</p>
-                        <p className="text-sm font-semibold text-white">
-                          {toPercent(whoopSummary.sleepConsistency)}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Energy</p>
-                        <p className="text-sm font-semibold text-white">
-                          {kilojouleToCalories(whoopSummary.kilojoule) !== null
-                            ? `${kilojouleToCalories(whoopSummary.kilojoule)} cal`
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Resting HR</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.restingHeartRate !== null
-                            ? `${whoopSummary.restingHeartRate} bpm`
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Respiratory Rate</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.respiratoryRate !== null
-                            ? `${whoopSummary.respiratoryRate.toFixed(1)} br/min`
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Skin Temp</p>
-                        <p className="text-sm font-semibold text-white">
-                          {celsiusToFahrenheit(whoopSummary.skinTempCelsius) !== null
-                            ? `${celsiusToFahrenheit(whoopSummary.skinTempCelsius)?.toFixed(1)}F`
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">SpO2</p>
-                        <p className="text-sm font-semibold text-white">
-                          {toPercent(whoopSummary.spo2Percentage)}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Avg HR</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.averageHeartRate !== null
-                            ? `${Math.round(whoopSummary.averageHeartRate)} bpm`
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Max HR</p>
-                        <p className="text-sm font-semibold text-white">
-                          {whoopSummary.maxHeartRate !== null
-                            ? `${Math.round(whoopSummary.maxHeartRate)} bpm`
-                            : "-"}
-                        </p>
-                      </div>
-                      <div className="rounded-md border border-zinc-800 p-2 bg-zinc-900">
-                        <p className="text-xs text-zinc-400">Workout Strain</p>
-                        <p className="text-sm font-semibold text-white">
-                          {toOneDecimal(whoopSummary.latestWorkoutStrain)}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                  <div className="rounded-md border border-lime-300 bg-lime-300/10 p-2">
-                    <p className="text-xs text-lime-200">Last Update</p>
-                    <p className="text-xs font-semibold text-lime-100">
-                      {new Date(whoopSummary.updatedAt).toLocaleTimeString("en-US", {
-                        hour: "numeric",
-                        minute: "2-digit",
-                      })}
-                    </p>
-                  </div>
-                </>
-              ) : (
-                <div className="text-center py-5 text-zinc-300">
-                  <p className="text-sm">Unable to load WHOOP data</p>
-                  {whoopErrorMessage && (
-                    <p className="text-xs text-rose-400 mt-2 break-words">
-                      {whoopErrorMessage}
-                    </p>
-                  )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <SamsungHealthCard
+            snapshot={samsungHealthSnapshot}
+            hasSamsungHealth={hasSamsungHealth}
+            isRefreshing={integrationsFetching}
+            onRefresh={() => refetchIntegrations()}
+            sectionRating={sectionRatingMap["section-health"] as any}
+          />
+          <WhoopCard
+            whoopSummary={whoopSummary}
+            hasWhoop={hasWhoop}
+            isLoading={whoopLoading}
+            isFetching={whoopFetching}
+            errorMessage={whoopErrorMessage}
+            onRefresh={() => refetchWhoop()}
+            sectionRating={sectionRatingMap["section-whoop"] as any}
+          />
         </div>
       </div>
 
