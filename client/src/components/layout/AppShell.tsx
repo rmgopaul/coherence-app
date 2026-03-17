@@ -1,19 +1,77 @@
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
 import { CommandPalette } from "./CommandPalette";
-import type { ReactNode } from "react";
+import { Separator } from "@/components/ui/separator";
+import { useLocation } from "wouter";
+import { useMemo, type ReactNode } from "react";
+import { Search } from "lucide-react";
 
 interface AppShellProps {
   children: ReactNode;
 }
 
+const ROUTE_TITLES: Record<string, string> = {
+  "/dashboard": "Dashboard",
+  "/widget/todoist": "Tasks",
+  "/widget/google-calendar": "Calendar",
+  "/notes": "Notes",
+  "/widget/chatgpt": "Chat",
+  "/widget/clockify": "Clockify",
+  "/widget/gmail": "Drive",
+  "/settings": "Settings",
+  "/solar-rec-dashboard": "Solar REC",
+  "/invoice-match-dashboard": "Invoice Match",
+  "/deep-update-synthesizer": "Deep Update",
+  "/contract-scanner": "Contract Scanner",
+  "/enphase-v4-meter-reads": "Enphase v4",
+  "/solaredge-meter-reads": "SolarEdge",
+  "/tesla-solar-api": "Tesla Solar",
+  "/tesla-powerhub-api": "Tesla Powerhub",
+  "/zendesk-ticket-metrics": "Zendesk",
+};
+
 export function AppShell({ children }: AppShellProps) {
+  const [location] = useLocation();
+  const pageTitle = useMemo(
+    () => ROUTE_TITLES[location] ?? "",
+    [location]
+  );
+
   return (
     <SidebarProvider>
       <AppSidebar />
       <SidebarInset>
-        <header className="flex h-12 items-center gap-2 border-b px-4">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
           <SidebarTrigger className="-ml-1" />
+          {pageTitle && (
+            <>
+              <Separator orientation="vertical" className="mx-1 h-4" />
+              <span className="text-sm font-medium text-foreground">
+                {pageTitle}
+              </span>
+            </>
+          )}
+          <div className="ml-auto flex items-center">
+            <button
+              type="button"
+              onClick={() =>
+                window.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "k",
+                    metaKey: true,
+                    bubbles: true,
+                  })
+                )
+              }
+              className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted"
+            >
+              <Search className="size-3" />
+              <span className="hidden sm:inline">Search</span>
+              <kbd className="pointer-events-none hidden rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium sm:inline">
+                ⌘K
+              </kbd>
+            </button>
+          </div>
         </header>
         <div className="flex-1 overflow-auto">{children}</div>
       </SidebarInset>

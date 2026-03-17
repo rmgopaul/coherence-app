@@ -11,6 +11,10 @@ import {
   Clock,
   FolderOpen,
   ChevronDown,
+  BarChart3,
+  FileText,
+  FileSpreadsheet,
+  Database,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -72,6 +76,20 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Drive", href: "/widget/gmail", icon: FolderOpen },
     ],
   },
+  {
+    title: "Portfolio",
+    items: [
+      { label: "Solar REC", href: "/solar-rec-dashboard", icon: BarChart3 },
+      { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
+      { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
+      { label: "Contract Scanner", href: "/contract-scanner", icon: FileText },
+      { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Database },
+      { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Database },
+      { label: "Tesla Solar", href: "/tesla-solar-api", icon: Database },
+      { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: Database },
+      { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: Database },
+    ],
+  },
 ];
 
 function getStoredSections(): Record<string, boolean> {
@@ -93,9 +111,12 @@ export function AppSidebar() {
     () => {
       const stored = getStoredSections();
       const defaults: Record<string, boolean> = {};
+      const defaultClosed = new Set(["Portfolio"]);
       for (const section of NAV_SECTIONS) {
         defaults[section.title] =
-          stored[section.title] !== undefined ? stored[section.title] : true;
+          stored[section.title] !== undefined
+            ? stored[section.title]
+            : !defaultClosed.has(section.title);
       }
       return defaults;
     }
