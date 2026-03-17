@@ -18,6 +18,7 @@ import {
   Activity,
   Calendar,
   CheckSquare,
+  Clock3,
   MessageSquare,
   Copy,
   Trash2,
@@ -108,6 +109,8 @@ export default function Settings() {
   const [openaiModel, setOpenaiModel] = useState("gpt-4.1");
   const [todoistToken, setTodoistToken] = useState("");
   const [todoistDefaultFilter, setTodoistDefaultFilter] = useState("all");
+  const [clockifyApiKey, setClockifyApiKey] = useState("");
+  const [clockifyWorkspaceId, setClockifyWorkspaceId] = useState("");
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [whoopClientId, setWhoopClientId] = useState("");
@@ -138,7 +141,16 @@ export default function Settings() {
     retry: false,
   });
   const todoistIntegration = integrations?.find((i) => i.provider === "todoist");
+  const clockifyIntegration = integrations?.find((i) => i.provider === "clockify");
   const hasTodoistConnected = Boolean(todoistIntegration);
+  const { data: clockifyStatus, refetch: refetchClockifyStatus } = trpc.clockify.getStatus.useQuery(
+    undefined,
+    {
+      enabled: !!user,
+      retry: false,
+    }
+  );
+  const hasClockifyConnected = Boolean(clockifyStatus?.connected);
 
   const { data: todoistProjects } = trpc.todoist.getProjects.useQuery(undefined, {
     enabled: !!user && hasTodoistConnected,
@@ -200,6 +212,19 @@ export default function Settings() {
       toast.error(`Failed to connect Todoist: ${error.message}`);
     },
   });
+
+  const connectClockify = trpc.clockify.connect.useMutation({
+    onSuccess: (data) => {
+      toast.success("Clockify connected successfully");
+      setClockifyApiKey("");
+      setClockifyWorkspaceId(data.workspaceId || "");
+      refetch();
+      refetchClockifyStatus();
+    },
+    onError: (error) => {
+      toast.error(`Failed to connect Clockify: ${error.message}`);
+    },
+  });
   
   const connectOpenAI = trpc.openai.connect.useMutation({
     onSuccess: () => {
@@ -216,6 +241,7 @@ export default function Settings() {
     onSuccess: () => {
       toast.success("Integration disconnected");
       refetch();
+      refetchClockifyStatus();
     },
   });
   
@@ -341,6 +367,12 @@ export default function Settings() {
       setWhoopClientSecret(whoopCreds.clientSecret || "");
     }
   }, [whoopCreds]);
+
+  useEffect(() => {
+    if (clockifyStatus?.workspaceId) {
+      setClockifyWorkspaceId(clockifyStatus.workspaceId);
+    }
+  }, [clockifyStatus?.workspaceId]);
 
   useEffect(() => {
     setDisplayName(preferences?.displayName || user?.name || "");
@@ -534,6 +566,17 @@ export default function Settings() {
       return;
     }
     connectTodoist.mutate({ apiToken: todoistToken });
+  };
+
+  const handleConnectClockify = () => {
+    if (!clockifyApiKey.trim()) {
+      toast.error("Please enter a Clockify API key");
+      return;
+    }
+    connectClockify.mutate({
+      apiKey: clockifyApiKey.trim(),
+      workspaceId: clockifyWorkspaceId.trim() || undefined,
+    });
   };
 
   const handleSaveTodoistDefault = () => {
@@ -1277,6 +1320,115 @@ export default function Settings() {
                         ? "Saving..."
                         : "Save Default Todoist View"}
                     </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Clockify Integration */}
+          <div>
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">Time Tracking</h2>
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-slate-100 text-blue-600">
+                      <Clock3 className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">Clockify</CardTitle>
+                      <CardDescription className="text-sm">
+                        Track your work time with start/stop timers
+                      </CardDescription>
+                    </div>
+                  </div>
+                  {hasClockifyConnected && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 text-sm text-green-600">
+                        <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+                        Connected
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          if (clockifyIntegration) handleDisconnect(clockifyIntegration.id);
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4 text-red-600" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!hasClockifyConnected && (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="clockify-api-key">API Key</Label>
+                      <Input
+                        id="clockify-api-key"
+                        type="password"
+                        placeholder="Enter your Clockify API key"
+                        value={clockifyApiKey}
+                        onChange={(e) => setClockifyApiKey(e.target.value)}
+                      />
+                      <p className="text-xs text-slate-500">
+                        Get your key from{" "}
+                        <a
+                          href="https://app.clockify.me/user/settings"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline"
+                        >
+                          Clockify User Settings
+                        </a>
+                        .
+                      </p>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="clockify-workspace-id">Workspace ID (optional)</Label>
+                      <Input
+                        id="clockify-workspace-id"
+                        placeholder="Leave blank to use your default workspace"
+                        value={clockifyWorkspaceId}
+                        onChange={(e) => setClockifyWorkspaceId(e.target.value)}
+                      />
+                    </div>
+                    <Button onClick={handleConnectClockify} disabled={connectClockify.isPending}>
+                      {connectClockify.isPending ? "Connecting..." : "Connect Clockify"}
+                    </Button>
+                  </div>
+                )}
+
+                {hasClockifyConnected && (
+                  <div className="space-y-3">
+                    <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-sm font-medium text-slate-900">
+                        Workspace: {clockifyStatus?.workspaceName || clockifyStatus?.workspaceId || "Unknown"}
+                      </p>
+                      <p className="text-xs text-slate-600">
+                        Workspace ID: {clockifyStatus?.workspaceId || "Unknown"}
+                      </p>
+                      <p className="text-xs text-slate-600">
+                        User: {clockifyStatus?.userName || clockifyStatus?.userEmail || "Unknown"}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button variant="outline" onClick={() => setLocation("/widget/clockify")}>
+                        Open Clockify Tracker
+                      </Button>
+                      <Button variant="outline" asChild>
+                        <a
+                          href="https://app.clockify.me/tracker"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open Clockify Web
+                        </a>
+                      </Button>
+                    </div>
                   </div>
                 )}
               </CardContent>

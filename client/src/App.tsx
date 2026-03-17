@@ -21,6 +21,7 @@ const ContractScanner = lazy(() => import("./pages/ContractScanner"));
 const Notebook = lazy(() => import("./pages/Notebook"));
 const Settings = lazy(() => import("./pages/Settings"));
 const TodoistWidget = lazy(() => import("./pages/TodoistWidget"));
+const ClockifyWidget = lazy(() => import("./pages/ClockifyWidget"));
 const ChatGPTWidget = lazy(() => import("./pages/ChatGPTWidget"));
 const GoogleCalendarWidget = lazy(() => import("./pages/GoogleCalendarWidget"));
 const GmailWidget = lazy(() => import("./pages/GmailWidget"));
@@ -62,6 +63,7 @@ function Router() {
       <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
       <Route path={"/settings"} component={withRouteSuspense(Settings)} />
       <Route path={"/widget/todoist"} component={withRouteSuspense(TodoistWidget)} />
+      <Route path={"/widget/clockify"} component={withRouteSuspense(ClockifyWidget)} />
       <Route path={"/widget/chatgpt"} component={withRouteSuspense(ChatGPTWidget)} />
       <Route path={"/widget/google-calendar"} component={withRouteSuspense(GoogleCalendarWidget)} />
       <Route path={"/widget/gmail"} component={withRouteSuspense(GmailWidget)} />

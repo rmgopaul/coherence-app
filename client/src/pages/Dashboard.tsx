@@ -121,6 +121,7 @@ type DashboardHeaderButtonConfig = {
 
 const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
   { key: "notebook", label: "Notebook", route: "/notes", icon: FileText },
+  { key: "clockifyTracker", label: "Clockify", route: "/widget/clockify", icon: Clock3 },
   { key: "solarRec", label: "Solar REC", route: "/solar-rec-dashboard", icon: BarChart3 },
   { key: "invoiceMatch", label: "Invoice Match", route: "/invoice-match-dashboard", icon: FileSpreadsheet },
   { key: "deepUpdate", label: "Deep Update", route: "/deep-update-synthesizer", icon: FileSpreadsheet },
