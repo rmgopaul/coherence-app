@@ -15,6 +15,7 @@ import {
   FileText,
   FileSpreadsheet,
   Database,
+  Settings,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -210,10 +211,34 @@ export function AppSidebar() {
       <SidebarFooter className="group-data-[collapsible=icon]:px-1">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton asChild tooltip="Settings">
-              <a href="/settings" className="text-muted-foreground">
-                <span className="text-xs">Settings</span>
+            <SidebarMenuButton
+              asChild
+              isActive={isActive("/settings")}
+              tooltip="Settings"
+            >
+              <a href="/settings">
+                <Settings className="size-4" />
+                <span>Settings</span>
               </a>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild tooltip="Shortcuts">
+              <button
+                type="button"
+                onClick={() =>
+                  document.dispatchEvent(
+                    new KeyboardEvent("keydown", {
+                      key: "?",
+                      bubbles: true,
+                    })
+                  )
+                }
+                className="text-muted-foreground"
+              >
+                <kbd className="flex size-4 items-center justify-center rounded border bg-muted text-[10px] font-mono">?</kbd>
+                <span>Shortcuts</span>
+              </button>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
