@@ -92,7 +92,7 @@ export function AppShell({ children }: AppShellProps) {
             </button>
           </div>
         </header>
-        <div className="flex-1 overflow-auto">{children}</div>
+        <div key={location} className="flex-1 overflow-auto animate-in fade-in duration-200">{children}</div>
       </SidebarInset>
       <CommandPalette />
       <KeyboardShortcuts />

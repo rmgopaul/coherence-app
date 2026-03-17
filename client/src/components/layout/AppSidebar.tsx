@@ -38,7 +38,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { useState, useEffect } from "react";
-import { APP_TITLE } from "@/const";
+
 
 type NavItem = {
   label: string;
@@ -145,11 +145,11 @@ export function AppSidebar() {
           href="/dashboard"
           className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center"
         >
-          <div className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground text-xs font-bold">
+          <div className="flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-600 to-emerald-800 text-white text-xs font-bold shadow-sm">
             C
           </div>
           <span className="text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
-            {APP_TITLE}
+            Coherence
           </span>
         </a>
       </SidebarHeader>
