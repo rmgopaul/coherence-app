@@ -557,7 +557,8 @@ const IL_ABP_TERMINATED_CONTRACT_TYPE = "il abp - terminated";
 const MAX_REMOTE_STATE_LOG_BYTES = 120_000;
 const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
-const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 1_000_000;
+// Keep chunks comfortably below common API gateway body limits after JSON encoding overhead.
+const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 250_000;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const REMOTE_SNAPSHOT_LOGS_KEY = "snapshot_logs_v1";
