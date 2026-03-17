@@ -559,6 +559,7 @@ const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
 // Keep chunks comfortably below common API gateway body limits after JSON encoding overhead.
 const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 250_000;
+const REMOTE_LOG_SYNC_MAX_CHUNKS = 120;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
 const REMOTE_SNAPSHOT_LOGS_KEY = "snapshot_logs_v1";
@@ -5977,7 +5978,7 @@ export default function SolarRecDashboard() {
           remoteDatasetSignatureRef.current = loadedSignatures;
           remoteDatasetChunkKeysRef.current = loadedChunkKeys;
           if (loadedCloudLogs.length > 0) {
-            setLogEntries(loadedCloudLogs);
+            setLogEntries((current) => (loadedCloudLogs.length >= current.length ? loadedCloudLogs : current));
           } else if (stateLogs.length > 0) {
             setLogEntries((current) => (current.length >= stateLogs.length ? current : stateLogs));
           }
@@ -6231,6 +6232,44 @@ export default function SolarRecDashboard() {
         if (remoteLogsSignatureRef.current === nextSignature) return;
 
         const previousChunkKeys = remoteLogsChunkKeysRef.current ?? [];
+        const syncLogsPayload = async (payload: string) => {
+          const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+          if (chunks.length > REMOTE_LOG_SYNC_MAX_CHUNKS) {
+            throw new Error(`Snapshot log payload too large for cloud sync (${chunks.length} chunks).`);
+          }
+
+          if (chunks.length === 1) {
+            await withRetry(() =>
+              saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload })
+            );
+            for (const chunkKey of previousChunkKeys) {
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+            }
+            return [] as string[];
+          }
+
+          const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(REMOTE_SNAPSHOT_LOGS_KEY, index));
+          for (let index = 0; index < chunks.length; index += 1) {
+            await withRetry(() =>
+              saveRemoteDatasetRef.current.mutateAsync({
+                key: chunkKeys[index],
+                payload: chunks[index],
+              })
+            );
+          }
+          const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
+          for (const staleChunkKey of staleChunkKeys) {
+            await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+          }
+          await withRetry(() =>
+            saveRemoteDatasetRef.current.mutateAsync({
+              key: REMOTE_SNAPSHOT_LOGS_KEY,
+              payload: buildChunkPointerPayload(chunkKeys),
+            })
+          );
+          return chunkKeys;
+        };
+
         if (logEntries.length === 0) {
           try {
             await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload: "" }));
@@ -6246,42 +6285,22 @@ export default function SolarRecDashboard() {
         }
 
         const payload = safeJsonStringify(serializeDashboardLogs(logEntries, { includeSystemName: false })) ?? "[]";
-        const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
 
         try {
-          if (chunks.length === 1) {
-            await withRetry(() =>
-              saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload })
-            );
-            for (const chunkKey of previousChunkKeys) {
-              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
-            }
-            remoteLogsChunkKeysRef.current = [];
-          } else {
-            const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(REMOTE_SNAPSHOT_LOGS_KEY, index));
-            for (let index = 0; index < chunks.length; index += 1) {
-              await withRetry(() =>
-                saveRemoteDatasetRef.current.mutateAsync({
-                  key: chunkKeys[index],
-                  payload: chunks[index],
-                })
-              );
-            }
-            const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
-            for (const staleChunkKey of staleChunkKeys) {
-              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
-            }
-            await withRetry(() =>
-              saveRemoteDatasetRef.current.mutateAsync({
-                key: REMOTE_SNAPSHOT_LOGS_KEY,
-                payload: buildChunkPointerPayload(chunkKeys),
-              })
-            );
-            remoteLogsChunkKeysRef.current = chunkKeys;
-          }
+          remoteLogsChunkKeysRef.current = await syncLogsPayload(payload);
           remoteLogsSignatureRef.current = nextSignature;
         } catch {
-          setStorageNotice("Could not sync snapshot logs to cloud storage.");
+          try {
+            const compactLogs = compactLogsForRemoteSync(logEntries);
+            const compactPayload = safeJsonStringify(compactLogs) ?? "[]";
+            remoteLogsChunkKeysRef.current = await syncLogsPayload(compactPayload);
+            remoteLogsSignatureRef.current = nextSignature;
+            setStorageNotice(
+              "Cloud sync saved compact snapshot logs due size limits. Full history remains on this browser."
+            );
+          } catch {
+            setStorageNotice("Could not sync snapshot logs to cloud storage.");
+          }
         }
       })();
     }, 1200);
