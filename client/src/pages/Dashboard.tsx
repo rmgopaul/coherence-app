@@ -57,6 +57,7 @@ import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { DashboardHero } from "@/components/dashboard/DashboardHero";
+import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -2283,13 +2284,15 @@ export default function Dashboard() {
             />
 
             <div className="min-w-0">
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-base">Triage Inbox</CardTitle>
-                  <SectionRating sectionId="section-triage" currentRating={sectionRatingMap["section-triage"] as any} />
-                </CardHeader>
-                <CardContent className="space-y-2">
-                  <div className="h-32 rounded-md border border-slate-200 bg-white px-2 py-1">
+              <DashboardWidget
+                title="Triage Inbox"
+                icon={Mail}
+                category="productivity"
+                collapsible
+                isLoading={!gmailMessages && integrationsFetching}
+              >
+                <div className="space-y-2">
+                  <div className="h-32 rounded-md border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-2 py-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={emailPriorityChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -2301,7 +2304,7 @@ export default function Dashboard() {
                     </ResponsiveContainer>
                   </div>
                   {triageEmails.length === 0 ? (
-                    <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-sm text-slate-600">
+                    <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 dark:border-slate-700 dark:bg-slate-800 px-3 py-4 text-sm text-slate-600 dark:text-slate-400">
                       No priority emails to triage right now.
                     </p>
                   ) : (
@@ -2317,8 +2320,8 @@ export default function Dashboard() {
                       />
                     ))
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              </DashboardWidget>
             </div>
           </div>
 
@@ -2733,29 +2736,20 @@ export default function Dashboard() {
       {/* Tracking Row */}
       <div id="section-tracking" className="container mx-auto px-4 pt-4 scroll-mt-40">
         <div className="grid min-w-0 grid-cols-1 gap-4 lg:grid-cols-4">
-          <Card className="min-w-0 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <BarChart3 className="h-4 w-4 text-emerald-600" />
-                <CardTitle className="text-base">Daily Log Trend</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-dailylog" currentRating={sectionRatingMap["section-dailylog"] as any} />
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => captureDailyMetrics.mutate({ dateKey: todayKey })}
-                  disabled={captureDailyMetrics.isPending}
-                >
-                  <RefreshCw className={`h-4 w-4 ${captureDailyMetrics.isPending ? "animate-spin" : ""}`} />
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <p className="text-xs text-slate-500">
+          <DashboardWidget
+            title="Daily Log Trend"
+            icon={BarChart3}
+            category="health"
+            collapsible
+            isLoading={captureDailyMetrics.isPending}
+            onRetry={() => captureDailyMetrics.mutate({ dateKey: todayKey })}
+            className="min-w-0"
+          >
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
                 One row per day. Captured every 15m while this dashboard is open, and when you complete a Todoist task.
               </p>
-              <div className="h-40 rounded-md border border-slate-200 bg-white px-2 py-1">
+              <div className="h-40 rounded-md border bg-card px-2 py-1">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={dailyTrendChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -2769,10 +2763,10 @@ export default function Dashboard() {
                 </ResponsiveContainer>
               </div>
               {recentMetricRows.length === 0 ? (
-                <p className="text-sm text-slate-500">No entries yet.</p>
+                <p className="text-sm text-muted-foreground">No entries yet.</p>
               ) : (
                 <div className="space-y-1">
-                  <div className="grid grid-cols-4 gap-2 rounded-md border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                  <div className="grid grid-cols-4 gap-2 rounded-md border bg-muted px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                     <span>Date</span>
                     <span>Recovery %</span>
                     <span>Samsung Steps</span>
@@ -2781,14 +2775,14 @@ export default function Dashboard() {
                   {recentMetricRows.map((row: any) => (
                     <div
                       key={row.id}
-                      className="grid grid-cols-4 gap-2 rounded-md border bg-slate-50 px-2 py-1.5 text-[11px]"
+                      className="grid grid-cols-4 gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-[11px]"
                     >
-                      <span className="font-medium text-slate-700">{row.dateKey}</span>
-                      <span className="text-slate-600">{row.whoopRecoveryScore ?? "-"}</span>
-                      <span className="text-slate-600">
+                      <span className="font-medium text-foreground">{row.dateKey}</span>
+                      <span className="text-muted-foreground">{row.whoopRecoveryScore ?? "-"}</span>
+                      <span className="text-muted-foreground">
                         {row.samsungSteps ? Number(row.samsungSteps).toLocaleString() : "-"}
                       </span>
-                      <span className="text-slate-600">
+                      <span className="text-muted-foreground">
                         {row.dateKey === todayKey && hasTodoist
                           ? (todoistCompletedToday?.count ?? row.todoistCompletedCount ?? "-")
                           : (row.todoistCompletedCount ?? "-")}
@@ -2797,8 +2791,8 @@ export default function Dashboard() {
                   ))}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </DashboardWidget>
 
           {isSectionVisible("supplements") ? (
             <Card className="min-w-0 flex flex-col">

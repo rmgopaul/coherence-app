@@ -2,9 +2,11 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/s
 import { AppSidebar } from "./AppSidebar";
 import { CommandPalette } from "./CommandPalette";
 import { Separator } from "@/components/ui/separator";
+import { Button } from "@/components/ui/button";
+import { useTheme } from "@/contexts/ThemeContext";
 import { useLocation } from "wouter";
 import { useMemo, type ReactNode } from "react";
-import { Search } from "lucide-react";
+import { Search, Moon, Sun } from "lucide-react";
 
 interface AppShellProps {
   children: ReactNode;
@@ -32,6 +34,7 @@ const ROUTE_TITLES: Record<string, string> = {
 
 export function AppShell({ children }: AppShellProps) {
   const [location] = useLocation();
+  const { theme, toggleTheme, switchable } = useTheme();
   const pageTitle = useMemo(
     () => ROUTE_TITLES[location] ?? "",
     [location]
@@ -51,7 +54,22 @@ export function AppShell({ children }: AppShellProps) {
               </span>
             </>
           )}
-          <div className="ml-auto flex items-center">
+          <div className="ml-auto flex items-center gap-1.5">
+            {switchable && toggleTheme && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8"
+                onClick={toggleTheme}
+                aria-label="Toggle theme"
+              >
+                {theme === "dark" ? (
+                  <Sun className="size-4" />
+                ) : (
+                  <Moon className="size-4" />
+                )}
+              </Button>
+            )}
             <button
               type="button"
               onClick={() =>
