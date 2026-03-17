@@ -1,6 +1,7 @@
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "./AppSidebar";
 import { CommandPalette } from "./CommandPalette";
+import { KeyboardShortcuts } from "./KeyboardShortcuts";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -94,6 +95,7 @@ export function AppShell({ children }: AppShellProps) {
         <div className="flex-1 overflow-auto">{children}</div>
       </SidebarInset>
       <CommandPalette />
+      <KeyboardShortcuts />
     </SidebarProvider>
   );
 }
