@@ -9,6 +9,7 @@ import {
   Repeat,
   Pill,
   Clock,
+  Mail,
   FolderOpen,
   ChevronDown,
   BarChart3,
@@ -76,7 +77,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Work",
     items: [
       { label: "Clockify", href: "/widget/clockify", icon: Clock },
-      { label: "Drive", href: "/widget/gmail", icon: FolderOpen },
+      { label: "Gmail", href: "/widget/gmail", icon: Mail },
     ],
   },
   {

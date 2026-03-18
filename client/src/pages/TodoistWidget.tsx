@@ -8,20 +8,51 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, CheckSquare, Loader2, Plus } from "lucide-react";
+import { CheckSquare, Loader2, Plus, RefreshCw } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 
 const TODOIST_PAGE_SIZE = 20;
 
+type ViewFilter = "today" | "all" | "upcoming" | "inbox" | string;
+
+function getApiFilter(viewFilter: ViewFilter): string | undefined {
+  if (viewFilter === "all") return undefined;
+  if (viewFilter === "today") return "today";
+  if (viewFilter === "upcoming") return "7 days";
+  if (viewFilter === "inbox") return "#Inbox";
+  if (viewFilter.startsWith("project_")) {
+    const projectId = viewFilter.replace("project_", "");
+    return `#${projectId}`;
+  }
+  return viewFilter;
+}
+
+function getViewLabel(viewFilter: ViewFilter, projects?: any[]): string {
+  if (viewFilter === "today") return "Today's Tasks";
+  if (viewFilter === "all") return "All Open Tasks";
+  if (viewFilter === "upcoming") return "Upcoming (7 Days)";
+  if (viewFilter === "inbox") return "Inbox";
+  if (viewFilter.startsWith("project_") && projects) {
+    const projectId = viewFilter.replace("project_", "");
+    const project = projects.find((p: any) => p.id === projectId);
+    return project ? project.name : "Project";
+  }
+  return "Tasks";
+}
+
 export default function TodoistWidget() {
   const { user, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
-  const { data: tasks, isLoading, refetch } = trpc.todoist.getTasks.useQuery({ filter: "#Inbox" }, {
-    enabled: !!user,
-    retry: false,
-  });
+  const [viewFilter, setViewFilter] = useState<ViewFilter>("today");
+
+  const apiFilter = useMemo(() => getApiFilter(viewFilter), [viewFilter]);
+
+  const { data: tasks, isLoading, refetch, isFetching } = trpc.todoist.getTasks.useQuery(
+    apiFilter ? { filter: apiFilter } : undefined,
+    { enabled: !!user, retry: false }
+  );
   const { data: projects } = trpc.todoist.getProjects.useQuery(undefined, {
     enabled: !!user,
     retry: false,
@@ -35,7 +66,7 @@ export default function TodoistWidget() {
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"priority_desc" | "priority_asc" | "due_soon" | "content_asc">("priority_desc");
   const [taskPage, setTaskPage] = useState(1);
-  
+
   const completeTask = trpc.todoist.completeTask.useMutation({
     onSuccess: (_data, variables) => {
       toast.success("Task completed!");
@@ -45,7 +76,7 @@ export default function TodoistWidget() {
       toast.error(`Failed to complete task: ${error.message}`);
     },
   });
-  
+
   const createTask = trpc.todoist.createTask.useMutation({
     onSuccess: (createdTask) => {
       toast.success("Task created successfully!");
@@ -60,7 +91,7 @@ export default function TodoistWidget() {
       toast.error(`Failed to create task: ${error.message}`);
     },
   });
-  
+
   const handleCreateTask = () => {
     if (!newTaskContent.trim()) {
       toast.error("Task content is required");
@@ -124,14 +155,14 @@ export default function TodoistWidget() {
 
   useEffect(() => {
     setTaskPage(1);
-  }, [priorityFilter, sortBy, taskSearch]);
+  }, [priorityFilter, sortBy, taskSearch, viewFilter]);
 
   useEffect(() => {
     if (taskPage <= totalTaskPages) return;
     setTaskPage(totalTaskPages);
   }, [taskPage, totalTaskPages]);
 
-  if (authLoading || isLoading) {
+  if (authLoading || (isLoading && !localTasks.length)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-slate-600" />
@@ -143,24 +174,29 @@ export default function TodoistWidget() {
     return null;
   }
 
+  const viewLabel = getViewLabel(viewFilter, projects);
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-red-100 text-red-600">
-                <CheckSquare className="w-6 h-6" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-slate-900">Todoist Inbox</h1>
-                <p className="text-sm text-slate-600">Your inbox tasks (up to 50 most recent)</p>
-              </div>
+    <div className="min-h-screen bg-background">
+      <div className="container max-w-4xl mx-auto px-4 py-6">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-2 rounded-lg bg-red-100 dark:bg-red-950 text-red-600 dark:text-red-400">
+              <CheckSquare className="w-6 h-6" />
             </div>
+            <div>
+              <h1 className="text-2xl font-bold">{viewLabel}</h1>
+              <p className="text-sm text-muted-foreground">
+                {filteredTasks.length} {filteredTasks.length === 1 ? "task" : "tasks"}
+                {isFetching && !isLoading ? " • refreshing..." : ""}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" onClick={() => refetch()} disabled={isFetching}>
+              <RefreshCw className={`w-4 h-4 ${isFetching ? "animate-spin" : ""}`} />
+            </Button>
             <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
               <DialogTrigger asChild>
                 <Button>
@@ -238,99 +274,113 @@ export default function TodoistWidget() {
             </Dialog>
           </div>
         </div>
-      </header>
 
-      <main className="container max-w-4xl mx-auto px-4 py-8">
+        {/* View filter + search controls */}
+        <Card className="mb-4">
+          <CardContent className="pt-4">
+            <div className="grid gap-2 md:grid-cols-5">
+              <Select value={viewFilter} onValueChange={(v) => setViewFilter(v as ViewFilter)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="View" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="today">Today</SelectItem>
+                  <SelectItem value="upcoming">Upcoming (7 Days)</SelectItem>
+                  <SelectItem value="inbox">Inbox</SelectItem>
+                  <SelectItem value="all">All Open Tasks</SelectItem>
+                  {projects && projects.length > 0 && (
+                    <>
+                      <SelectItem value="__separator_projects" disabled>
+                        ── Projects ──
+                      </SelectItem>
+                      {projects.map((project: any) => (
+                        <SelectItem key={project.id} value={`project_${project.id}`}>
+                          {project.name}
+                        </SelectItem>
+                      ))}
+                    </>
+                  )}
+                </SelectContent>
+              </Select>
+              <Input
+                value={taskSearch}
+                onChange={(event) => setTaskSearch(event.target.value)}
+                placeholder="Search tasks..."
+                className="md:col-span-2"
+              />
+              <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Filter priority" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All priorities</SelectItem>
+                  <SelectItem value="4">P1 (Urgent)</SelectItem>
+                  <SelectItem value="3">P2 (High)</SelectItem>
+                  <SelectItem value="2">P3 (Medium)</SelectItem>
+                  <SelectItem value="1">P4 (Low)</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={sortBy} onValueChange={(value) => setSortBy(value as typeof sortBy)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sort by" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="priority_desc">Priority (High → Low)</SelectItem>
+                  <SelectItem value="priority_asc">Priority (Low → High)</SelectItem>
+                  <SelectItem value="due_soon">Due Soon</SelectItem>
+                  <SelectItem value="content_asc">Title A-Z</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Task list */}
         {filteredTasks.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center">
-              <CheckSquare className="w-12 h-12 text-slate-400 mx-auto mb-4" />
-              <h3 className="text-lg font-semibold text-slate-900 mb-2">
-                {localTasks.length === 0 ? "No inbox tasks" : "No tasks match these filters"}
+              <CheckSquare className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+              <h3 className="text-lg font-semibold mb-2">
+                {localTasks.length === 0 ? `No ${viewLabel.toLowerCase()}` : "No tasks match these filters"}
               </h3>
-              <p className="text-slate-600">
+              <p className="text-muted-foreground">
                 {localTasks.length === 0
-                  ? "Your inbox is empty! Create tasks in Todoist and they'll appear here."
+                  ? "Nothing here yet! Create tasks in Todoist and they'll appear here."
                   : "Try clearing search/filters to view more tasks."}
               </p>
             </CardContent>
           </Card>
         ) : (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-900">
-                {filteredTasks.length} {filteredTasks.length === 1 ? "task" : "tasks"}
-              </h2>
-              <Button variant="outline" onClick={() => refetch()}>
-                Refresh
-              </Button>
-            </div>
-
-            <Card>
-              <CardContent className="pt-4">
-                <div className="grid gap-2 md:grid-cols-4">
-                  <Input
-                    value={taskSearch}
-                    onChange={(event) => setTaskSearch(event.target.value)}
-                    placeholder="Search tasks..."
-                    className="md:col-span-2"
-                  />
-                  <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Filter priority" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All priorities</SelectItem>
-                      <SelectItem value="4">P1 (Urgent)</SelectItem>
-                      <SelectItem value="3">P2 (High)</SelectItem>
-                      <SelectItem value="2">P3 (Medium)</SelectItem>
-                      <SelectItem value="1">P4 (Low)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Select value={sortBy} onValueChange={(value) => setSortBy(value as typeof sortBy)}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Sort by" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="priority_desc">Priority (High to Low)</SelectItem>
-                      <SelectItem value="priority_asc">Priority (Low to High)</SelectItem>
-                      <SelectItem value="due_soon">Due Soon</SelectItem>
-                      <SelectItem value="content_asc">Title A-Z</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardContent>
-            </Card>
-
+          <div className="space-y-3">
             {visibleTasks.map((task) => {
               const project = projectMap.get(task.projectId);
               const priorityColor = priorityColors[task.priority as keyof typeof priorityColors] || "text-slate-600";
 
               return (
                 <Card key={task.id} className="hover:shadow-md transition-shadow">
-                  <CardHeader>
+                  <CardHeader className="py-3">
                     <div className="flex items-start gap-3">
                       <Checkbox
                         checked={false}
                         onCheckedChange={() => completeTask.mutate({ taskId: task.id })}
                         className="mt-1"
                       />
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-0">
                         <CardTitle className="text-base">
                           {task.content}
                         </CardTitle>
                         {task.description && (
                           <CardDescription className="mt-1">{task.description}</CardDescription>
                         )}
-                        <div className="flex items-center gap-4 mt-2 text-sm">
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-2 text-sm">
                           {project && (
-                            <span className="text-slate-600">
+                            <span className="text-muted-foreground">
                               <span className="font-medium">Project:</span> {project.name}
                             </span>
                           )}
                           {task.due && (
-                            <span className="text-slate-600">
-                              <span className="font-medium">Due:</span> {task.due.string}
+                            <span className="text-muted-foreground">
+                              <span className="font-medium">Due:</span> {task.due.string || task.due.date}
                             </span>
                           )}
                           <span className={`font-medium ${priorityColor}`}>
@@ -343,35 +393,37 @@ export default function TodoistWidget() {
                 </Card>
               );
             })}
-            <div className="flex items-center justify-between gap-2 text-sm text-slate-600">
-              <span>
-                Showing {visibleTasks.length} of {filteredTasks.length}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTaskPage((page) => Math.max(1, page - 1))}
-                  disabled={currentTaskPage <= 1}
-                >
-                  Previous
-                </Button>
+            {totalTaskPages > 1 && (
+              <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground pt-2">
                 <span>
-                  Page {currentTaskPage} of {totalTaskPages}
+                  Showing {visibleTasks.length} of {filteredTasks.length}
                 </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setTaskPage((page) => Math.min(totalTaskPages, page + 1))}
-                  disabled={currentTaskPage >= totalTaskPages}
-                >
-                  Next
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTaskPage((page) => Math.max(1, page - 1))}
+                    disabled={currentTaskPage <= 1}
+                  >
+                    Previous
+                  </Button>
+                  <span>
+                    Page {currentTaskPage} of {totalTaskPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setTaskPage((page) => Math.min(totalTaskPages, page + 1))}
+                    disabled={currentTaskPage >= totalTaskPages}
+                  >
+                    Next
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
-      </main>
+      </div>
     </div>
   );
 }
