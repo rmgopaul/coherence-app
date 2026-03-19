@@ -1499,6 +1499,7 @@ export const appRouter = router({
             status: notFoundStatus,
             found: false,
             lifetimeKwh: null,
+            hourlyProductionKwh: null,
             monthlyProductionKwh: null,
             weeklyProductionKwh: null,
             dailyProductionKwh: null,

@@ -19,6 +19,7 @@ export type SolarEdgeProductionSnapshot = {
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh: number | null;
+  hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
   weeklyProductionKwh: number | null;
   dailyProductionKwh: number | null;
@@ -118,6 +119,11 @@ type DailyEnergyPoint = {
   kwh: number;
 };
 
+type HourlyEnergyPoint = {
+  timestamp: string;
+  kwh: number;
+};
+
 function extractDailyEnergySeriesKwh(payload: unknown): DailyEnergyPoint[] {
   const root = asRecord(payload);
   const energy = asRecord(root.energy);
@@ -145,6 +151,44 @@ function extractDailyEnergySeriesKwh(payload: unknown): DailyEnergyPoint[] {
       kwh,
     });
   }
+
+  return output;
+}
+
+function extractHourlyEnergySeriesKwh(payload: unknown): HourlyEnergyPoint[] {
+  const root = asRecord(payload);
+  const energy = asRecord(root.energy);
+  const values = Array.isArray(energy.values)
+    ? energy.values
+    : Array.isArray(root.values)
+      ? root.values
+      : [];
+  const unit = toNullableString(energy.unit) ?? toNullableString(root.unit);
+  const output: HourlyEnergyPoint[] = [];
+
+  for (const row of values) {
+    const record = asRecord(row);
+    const timestamp =
+      toNullableString(record.dateTime) ??
+      toNullableString(record.endTime) ??
+      toNullableString(record.startTime) ??
+      toNullableString(record.date);
+    const value = toNullableNumber(record.value ?? record.energy ?? record.production);
+    const kwh = toKwh(value, unit);
+    if (!timestamp || kwh === null) continue;
+    output.push({
+      timestamp,
+      kwh,
+    });
+  }
+
+  output.sort((a, b) => {
+    const aMs = new Date(a.timestamp).getTime();
+    const bMs = new Date(b.timestamp).getTime();
+    const safeA = Number.isFinite(aMs) ? aMs : 0;
+    const safeB = Number.isFinite(bMs) ? bMs : 0;
+    return safeA - safeB;
+  });
 
   return output;
 }
@@ -386,13 +430,16 @@ export async function getSiteProductionSnapshot(
   const weeklyStartDate = shiftIsoDate(anchorDate, -6);
 
   try {
-    const [overviewPayload, energyPayload] = await Promise.all([
+    const [overviewPayload, energyPayload, hourlyPayload] = await Promise.all([
       getSiteOverview(context, siteId),
       getSiteEnergy(context, siteId, monthlyStartDate, anchorDate, "DAY"),
+      getSiteEnergy(context, siteId, anchorDate, anchorDate, "HOUR"),
     ]);
 
     const lifetimeKwh = extractOverviewLifetimeKwh(overviewPayload);
     const dailySeries = extractDailyEnergySeriesKwh(energyPayload);
+    const hourlySeries = extractHourlyEnergySeriesKwh(hourlyPayload);
+    const hourlyProductionKwh = safeRound(hourlySeries.length > 0 ? hourlySeries[hourlySeries.length - 1].kwh : null);
     const monthlyProductionKwh = sumKwh(dailySeries.map((point) => point.kwh));
     const weeklyProductionKwh = sumKwh(
       dailySeries
@@ -410,6 +457,7 @@ export async function getSiteProductionSnapshot(
       status: "Found",
       found: true,
       lifetimeKwh,
+      hourlyProductionKwh,
       monthlyProductionKwh,
       weeklyProductionKwh,
       dailyProductionKwh,
@@ -425,6 +473,7 @@ export async function getSiteProductionSnapshot(
         status: "Not Found",
         found: false,
         lifetimeKwh: null,
+        hourlyProductionKwh: null,
         monthlyProductionKwh: null,
         weeklyProductionKwh: null,
         dailyProductionKwh: null,
@@ -440,6 +489,7 @@ export async function getSiteProductionSnapshot(
       status: "Error",
       found: false,
       lifetimeKwh: null,
+      hourlyProductionKwh: null,
       monthlyProductionKwh: null,
       weeklyProductionKwh: null,
       dailyProductionKwh: null,

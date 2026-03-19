@@ -24,7 +24,7 @@ const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
 type TimeUnit = (typeof TIME_UNIT_OPTIONS)[number];
 type BulkStatusFilter = "All" | "Found" | "Not Found" | "Error";
-type BulkSortKey = "siteId" | "status" | "lifetime" | "monthly" | "weekly" | "daily";
+type BulkSortKey = "siteId" | "status" | "lifetime" | "hourly" | "monthly" | "weekly" | "daily";
 type BulkConnectionScope = "active" | "all";
 
 type BulkSnapshotRow = {
@@ -32,6 +32,7 @@ type BulkSnapshotRow = {
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh: number | null;
+  hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
   weeklyProductionKwh: number | null;
   dailyProductionKwh: number | null;
@@ -527,6 +528,8 @@ export default function SolarEdgeMeterReads() {
           return a.status.localeCompare(b.status);
         case "lifetime":
           return toComparableNumber(b.lifetimeKwh) - toComparableNumber(a.lifetimeKwh);
+        case "hourly":
+          return toComparableNumber(b.hourlyProductionKwh) - toComparableNumber(a.hourlyProductionKwh);
         case "monthly":
           return toComparableNumber(b.monthlyProductionKwh) - toComparableNumber(a.monthlyProductionKwh);
         case "weekly":
@@ -560,6 +563,7 @@ export default function SolarEdgeMeterReads() {
       "status",
       "found",
       "lifetime_kwh",
+      "hourly_production_kwh",
       "monthly_production_kwh",
       "weekly_production_kwh",
       "daily_production_kwh",
@@ -579,6 +583,7 @@ export default function SolarEdgeMeterReads() {
       status: row.status,
       found: row.found ? "Yes" : "No",
       lifetime_kwh: row.lifetimeKwh,
+      hourly_production_kwh: row.hourlyProductionKwh,
       monthly_production_kwh: row.monthlyProductionKwh,
       weekly_production_kwh: row.weeklyProductionKwh,
       daily_production_kwh: row.dailyProductionKwh,
@@ -949,7 +954,7 @@ export default function SolarEdgeMeterReads() {
           <CardHeader>
             <CardTitle>3) Bulk CSV Processing</CardTitle>
             <CardDescription>
-              Upload a CSV of site IDs, process in batches, and review/export found/not-found status with lifetime, monthly, weekly, and daily production.
+              Upload a CSV of site IDs, process in batches, and review/export found/not-found status with lifetime, hourly, monthly, weekly, and daily production.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -1123,6 +1128,7 @@ export default function SolarEdgeMeterReads() {
                     <SelectItem value="siteId">Site ID (A-Z)</SelectItem>
                     <SelectItem value="status">Status</SelectItem>
                     <SelectItem value="lifetime">Lifetime (High-Low)</SelectItem>
+                    <SelectItem value="hourly">Hourly (High-Low)</SelectItem>
                     <SelectItem value="monthly">Monthly (High-Low)</SelectItem>
                     <SelectItem value="weekly">Weekly (High-Low)</SelectItem>
                     <SelectItem value="daily">Daily (High-Low)</SelectItem>
@@ -1148,6 +1154,7 @@ export default function SolarEdgeMeterReads() {
                   <TableHead>Matched API Profile</TableHead>
                   <TableHead>Found In APIs</TableHead>
                   <TableHead>Lifetime (kWh)</TableHead>
+                  <TableHead>Hourly (kWh)</TableHead>
                   <TableHead>Monthly (kWh)</TableHead>
                   <TableHead>Weekly (kWh)</TableHead>
                   <TableHead>Daily (kWh)</TableHead>
@@ -1165,6 +1172,7 @@ export default function SolarEdgeMeterReads() {
                       {NUMBER_FORMATTER.format(row.foundInConnections)} / {NUMBER_FORMATTER.format(row.checkedConnections)}
                     </TableCell>
                     <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
+                    <TableCell>{formatKwh(row.hourlyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
@@ -1174,7 +1182,7 @@ export default function SolarEdgeMeterReads() {
                 ))}
                 {bulkPageRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={11} className="py-6 text-center text-slate-500">
                       No bulk rows to display.
                     </TableCell>
                   </TableRow>
