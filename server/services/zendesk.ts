@@ -29,6 +29,11 @@ type ZendeskTicketMetricsAccumulator = {
   closed: number;
 };
 
+type ZendeskResolverMetricsAccumulator = {
+  solvedActions: number;
+  closedActions: number;
+};
+
 export type ZendeskAssigneeTicketMetrics = {
   userId: number | null;
   name: string;
@@ -43,6 +48,16 @@ export type ZendeskAssigneeTicketMetrics = {
   closed: number;
 };
 
+export type ZendeskResolverTicketMetrics = {
+  userId: number | null;
+  name: string;
+  email: string | null;
+  role: string | null;
+  solvedActions: number;
+  closedActions: number;
+  resolvedActions: number;
+};
+
 export type ZendeskTicketMetricsResult = {
   generatedAt: string;
   maxTickets: number;
@@ -52,6 +67,9 @@ export type ZendeskTicketMetricsResult = {
   periodEndDate: string | null;
   trackedUsers: string[];
   users: ZendeskAssigneeTicketMetrics[];
+  resolverUsers: ZendeskResolverTicketMetrics[];
+  resolverActionCount: number;
+  resolverTruncated: boolean;
   totals: {
     assigned: number;
     new: number;
@@ -61,6 +79,12 @@ export type ZendeskTicketMetricsResult = {
     solved: number;
     closed: number;
     unassigned: number;
+  };
+  resolverTotals: {
+    solvedActions: number;
+    closedActions: number;
+    resolvedActions: number;
+    unassignedActions: number;
   };
 };
 
@@ -187,6 +211,18 @@ function createAccumulator(): ZendeskTicketMetricsAccumulator {
   };
 }
 
+function createResolverAccumulator(): ZendeskResolverMetricsAccumulator {
+  return {
+    solvedActions: 0,
+    closedActions: 0,
+  };
+}
+
+type ZendeskResolverAction = {
+  updaterId: number | null;
+  status: "solved" | "closed";
+};
+
 async function zendeskFetchJson(
   context: ZendeskApiContext,
   urlOrPath: string,
@@ -221,6 +257,107 @@ async function zendeskFetchJson(
   return response.json();
 }
 
+async function fetchResolverActions(
+  context: ZendeskApiContext,
+  maxActions: number,
+  dateRange: { startMs: number | null; endMs: number | null }
+): Promise<{
+  actions: ZendeskResolverAction[];
+  truncated: boolean;
+}> {
+  if (dateRange.startMs === null) {
+    return {
+      actions: [],
+      truncated: false,
+    };
+  }
+
+  const startTimeSeconds = Math.floor(dateRange.startMs / 1000);
+  let nextUrl: string | null = `/api/v2/incremental/ticket_events.json?start_time=${startTimeSeconds}`;
+  const actions: ZendeskResolverAction[] = [];
+  const visitedPageUrls = new Set<string>();
+  const seenActionKeys = new Set<string>();
+  let truncated = false;
+
+  while (nextUrl) {
+    if (visitedPageUrls.has(nextUrl)) break;
+    visitedPageUrls.add(nextUrl);
+
+    const payload = asRecord(await zendeskFetchJson(context, nextUrl));
+    const rows = Array.isArray(payload.ticket_events) ? payload.ticket_events : [];
+
+    for (const row of rows) {
+      const event = asRecord(row);
+      const updaterId = toNullableNumber(event.updater_id);
+      const eventId = toNullableNumber(event.id);
+
+      const eventTimeRaw = toNonEmptyString(event.created_at) ?? toNonEmptyString(event.timestamp);
+      const eventTimeMsRaw = eventTimeRaw ? Date.parse(eventTimeRaw) : NaN;
+      const eventTimeMs = Number.isFinite(eventTimeMsRaw) ? eventTimeMsRaw : null;
+
+      if (eventTimeMs !== null && dateRange.endMs !== null && eventTimeMs > dateRange.endMs) {
+        continue;
+      }
+
+      const childEvents = Array.isArray(event.child_events) ? event.child_events : [];
+      for (let childIndex = 0; childIndex < childEvents.length; childIndex += 1) {
+        const child = asRecord(childEvents[childIndex]);
+        const type = (toNonEmptyString(child.type) ?? "").toLowerCase();
+        if (type !== "change") continue;
+        const fieldName = (toNonEmptyString(child.field_name) ?? "").toLowerCase();
+        if (fieldName !== "status") continue;
+        const status = normalizeZendeskStatus(toNonEmptyString(child.value));
+        if (status !== "solved" && status !== "closed") continue;
+
+        const childId = toNullableNumber(child.id);
+        const actionKey = `${eventId ?? "event"}:${childId ?? `child-${childIndex}`}:${status}`;
+        if (seenActionKeys.has(actionKey)) continue;
+        seenActionKeys.add(actionKey);
+
+        actions.push({
+          updaterId,
+          status,
+        });
+        if (actions.length >= maxActions) {
+          truncated = true;
+          break;
+        }
+      }
+
+      if (truncated) break;
+    }
+
+    if (truncated) break;
+
+    const endTime = toNullableNumber(payload.end_time);
+    if (endTime !== null && dateRange.endMs !== null && endTime * 1000 > dateRange.endMs) {
+      break;
+    }
+
+    const endOfStreamRaw = payload.end_of_stream;
+    const endOfStream = endOfStreamRaw === true || endOfStreamRaw === "true";
+    if (endOfStream) break;
+
+    const cursorNext = toNonEmptyString(payload.next_page);
+    if (cursorNext) {
+      nextUrl = cursorNext;
+      continue;
+    }
+
+    if (endTime !== null) {
+      nextUrl = `/api/v2/incremental/ticket_events.json?start_time=${Math.floor(endTime)}`;
+      continue;
+    }
+
+    nextUrl = null;
+  }
+
+  return {
+    actions,
+    truncated,
+  };
+}
+
 async function fetchTickets(
   context: ZendeskApiContext,
   maxTickets: number,
@@ -229,6 +366,93 @@ async function fetchTickets(
   tickets: ZendeskTicketRecord[];
   truncated: boolean;
 }> {
+  // For historical/custom windows, use incremental export because /tickets excludes archived rows.
+  if (dateRange.startMs !== null) {
+    const startTimeSeconds = Math.floor(dateRange.startMs / 1000);
+    const ticketsById = new Map<number, ZendeskTicketRecord & { updatedMs: number | null }>();
+    let nextUrl: string | null = `/api/v2/incremental/tickets.json?start_time=${startTimeSeconds}`;
+    let truncated = false;
+    const visitedPageUrls = new Set<string>();
+
+    while (nextUrl) {
+      if (visitedPageUrls.has(nextUrl)) break;
+      visitedPageUrls.add(nextUrl);
+
+      const payload = asRecord(await zendeskFetchJson(context, nextUrl));
+      const pageRows = Array.isArray(payload.tickets) ? payload.tickets : [];
+
+      for (const row of pageRows) {
+        const ticket = asRecord(row);
+        const id = toNullableNumber(ticket.id);
+        if (id === null) continue;
+
+        const updatedAt = toNonEmptyString(ticket.updated_at);
+        const updatedMsRaw = updatedAt ? Date.parse(updatedAt) : NaN;
+        const updatedMs = Number.isFinite(updatedMsRaw) ? updatedMsRaw : null;
+
+        if (updatedMs !== null && dateRange.endMs !== null && updatedMs > dateRange.endMs) {
+          continue;
+        }
+
+        const nextRecord: ZendeskTicketRecord & { updatedMs: number | null } = {
+          id,
+          assigneeId: toNullableNumber(ticket.assignee_id),
+          status: toNonEmptyString(ticket.status),
+          createdAt: toNonEmptyString(ticket.created_at),
+          updatedAt,
+          updatedMs,
+        };
+
+        const current = ticketsById.get(id);
+        if (!current || (current.updatedMs ?? Number.NEGATIVE_INFINITY) <= (updatedMs ?? Number.NEGATIVE_INFINITY)) {
+          ticketsById.set(id, nextRecord);
+        }
+
+        if (ticketsById.size >= maxTickets) {
+          truncated = true;
+          break;
+        }
+      }
+
+      if (truncated) break;
+
+      const endTime = toNullableNumber(payload.end_time);
+      if (endTime !== null && dateRange.endMs !== null && endTime * 1000 > dateRange.endMs) {
+        break;
+      }
+
+      const endOfStreamRaw = payload.end_of_stream;
+      const endOfStream = endOfStreamRaw === true || endOfStreamRaw === "true";
+      if (endOfStream) break;
+
+      const cursorNext = toNonEmptyString(payload.next_page);
+      if (cursorNext) {
+        nextUrl = cursorNext;
+        continue;
+      }
+
+      if (endTime !== null) {
+        nextUrl = `/api/v2/incremental/tickets.json?start_time=${Math.floor(endTime)}`;
+        continue;
+      }
+
+      nextUrl = null;
+    }
+
+    const tickets = Array.from(ticketsById.values())
+      .sort((a, b) => {
+        const aTime = a.updatedMs ?? Number.NEGATIVE_INFINITY;
+        const bTime = b.updatedMs ?? Number.NEGATIVE_INFINITY;
+        return bTime - aTime;
+      })
+      .map(({ updatedMs, ...ticket }) => ticket);
+
+    return {
+      tickets,
+      truncated,
+    };
+  }
+
   const tickets: ZendeskTicketRecord[] = [];
   // Cursor pagination avoids Zendesk's offset-depth cap (10,000 rows).
   const ticketCursorBasePath = "/api/v2/tickets.json?page[size]=100&sort_by=updated_at&sort_order=desc";
@@ -365,15 +589,23 @@ export async function getZendeskTicketMetricsByAssignee(
   options?: ZendeskTicketMetricsOptions
 ): Promise<ZendeskTicketMetricsResult> {
   const safeMaxTickets = Math.max(100, Math.min(50000, Math.floor(options?.maxTickets ?? 10000)));
+  const safeMaxResolverActions = Math.max(1000, Math.min(250000, safeMaxTickets * 5));
   const normalizedRange = normalizeDateRange(options?.periodStartDate, options?.periodEndDate);
   const trackedUsers = normalizeTrackedUsers(options?.trackedUsers);
-  const ticketResult = await fetchTickets(context, safeMaxTickets, normalizedRange);
+  const [ticketResult, resolverResult] = await Promise.all([
+    fetchTickets(context, safeMaxTickets, normalizedRange),
+    fetchResolverActions(context, safeMaxResolverActions, normalizedRange),
+  ]);
   const assigneeIds = ticketResult.tickets
     .map((ticket) => ticket.assigneeId)
     .filter((id): id is number => id !== null);
+  const resolverIds = resolverResult.actions
+    .map((action) => action.updaterId)
+    .filter((id): id is number => id !== null);
 
-  const usersById = await fetchUsersByIds(context, assigneeIds);
+  const usersById = await fetchUsersByIds(context, [...assigneeIds, ...resolverIds]);
   const byAssignee = new Map<number | null, ZendeskTicketMetricsAccumulator>();
+  const byResolver = new Map<number | null, ZendeskResolverMetricsAccumulator>();
 
   for (const ticket of ticketResult.tickets) {
     const key = ticket.assigneeId;
@@ -389,6 +621,14 @@ export async function getZendeskTicketMetricsByAssignee(
     else if (normalizedStatus === "closed") current.closed += 1;
 
     byAssignee.set(key, current);
+  }
+
+  for (const action of resolverResult.actions) {
+    const key = action.updaterId;
+    const current = byResolver.get(key) ?? createResolverAccumulator();
+    if (action.status === "solved") current.solvedActions += 1;
+    else if (action.status === "closed") current.closedActions += 1;
+    byResolver.set(key, current);
   }
 
   let users: ZendeskAssigneeTicketMetrics[] = Array.from(byAssignee.entries())
@@ -426,6 +666,36 @@ export async function getZendeskTicketMetricsByAssignee(
     })
     .sort((a, b) => {
       if (b.assigned !== a.assigned) return b.assigned - a.assigned;
+      return a.name.localeCompare(b.name);
+    });
+
+  let resolverUsers: ZendeskResolverTicketMetrics[] = Array.from(byResolver.entries())
+    .map(([userId, metrics]) => {
+      if (userId === null) {
+        return {
+          userId: null,
+          name: "Unknown Agent",
+          email: null,
+          role: null,
+          solvedActions: metrics.solvedActions,
+          closedActions: metrics.closedActions,
+          resolvedActions: metrics.solvedActions + metrics.closedActions,
+        } satisfies ZendeskResolverTicketMetrics;
+      }
+
+      const user = usersById.get(userId);
+      return {
+        userId,
+        name: user?.name ?? `User ${userId}`,
+        email: user?.email ?? null,
+        role: user?.role ?? null,
+        solvedActions: metrics.solvedActions,
+        closedActions: metrics.closedActions,
+        resolvedActions: metrics.solvedActions + metrics.closedActions,
+      } satisfies ZendeskResolverTicketMetrics;
+    })
+    .sort((a, b) => {
+      if (b.resolvedActions !== a.resolvedActions) return b.resolvedActions - a.resolvedActions;
       return a.name.localeCompare(b.name);
     });
 
@@ -490,6 +760,46 @@ export async function getZendeskTicketMetricsByAssignee(
       if (b.assigned !== a.assigned) return b.assigned - a.assigned;
       return a.name.localeCompare(b.name);
     });
+
+    const resolverTrackedKeysMatched = new Set<string>();
+    resolverUsers = resolverUsers.filter((row) => {
+      if (row.userId !== null && trackedByUserId.has(row.userId)) {
+        resolverTrackedKeysMatched.add(String(row.userId));
+        return true;
+      }
+      const rowEmail = row.email?.toLowerCase() ?? "";
+      if (rowEmail && trackedByEmail.has(rowEmail)) {
+        resolverTrackedKeysMatched.add(rowEmail);
+        return true;
+      }
+      const rowName = row.name.toLowerCase();
+      if (trackedByName.has(rowName)) {
+        resolverTrackedKeysMatched.add(rowName);
+        return true;
+      }
+      return false;
+    });
+
+    for (const tracked of trackedUsers) {
+      if (resolverTrackedKeysMatched.has(tracked)) continue;
+      const numeric = Number(tracked);
+      const isNumeric = Number.isFinite(numeric) && String(Math.floor(numeric)) === tracked;
+      const isEmail = tracked.includes("@");
+      resolverUsers.push({
+        userId: isNumeric ? Math.floor(numeric) : null,
+        name: isEmail ? tracked : `User ${tracked}`,
+        email: isEmail ? tracked : null,
+        role: null,
+        solvedActions: 0,
+        closedActions: 0,
+        resolvedActions: 0,
+      });
+    }
+
+    resolverUsers.sort((a, b) => {
+      if (b.resolvedActions !== a.resolvedActions) return b.resolvedActions - a.resolvedActions;
+      return a.name.localeCompare(b.name);
+    });
   }
 
   const totals = users.reduce(
@@ -518,6 +828,24 @@ export async function getZendeskTicketMetricsByAssignee(
     }
   );
 
+  const resolverTotals = resolverUsers.reduce(
+    (acc, row) => {
+      acc.solvedActions += row.solvedActions;
+      acc.closedActions += row.closedActions;
+      acc.resolvedActions += row.resolvedActions;
+      if (row.userId === null) {
+        acc.unassignedActions += row.resolvedActions;
+      }
+      return acc;
+    },
+    {
+      solvedActions: 0,
+      closedActions: 0,
+      resolvedActions: 0,
+      unassignedActions: 0,
+    }
+  );
+
   return {
     generatedAt: new Date().toISOString(),
     maxTickets: safeMaxTickets,
@@ -527,7 +855,11 @@ export async function getZendeskTicketMetricsByAssignee(
     periodEndDate: normalizedRange.endDate,
     trackedUsers,
     users,
+    resolverUsers,
+    resolverActionCount: resolverTotals.resolvedActions,
+    resolverTruncated: resolverResult.truncated,
     totals,
+    resolverTotals,
   };
 }
 

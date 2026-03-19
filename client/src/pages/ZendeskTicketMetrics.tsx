@@ -231,6 +231,16 @@ export default function ZendeskTicketMetrics() {
     });
   }, [metricsMutation.data?.users, search]);
 
+  const filteredResolverUsers = useMemo(() => {
+    const users = metricsMutation.data?.resolverUsers ?? [];
+    const query = search.trim().toLowerCase();
+    if (!query) return users;
+    return users.filter((row) => {
+      const haystack = `${row.name} ${row.email ?? ""} ${row.userId ?? ""}`.toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [metricsMutation.data?.resolverUsers, search]);
+
   const exportUsersCsv = () => {
     const rows = filteredUsers;
     if (rows.length === 0) {
@@ -277,6 +287,26 @@ export default function ZendeskTicketMetrics() {
     downloadTextFile(fileName, lines.join("\n"), "text/csv;charset=utf-8");
   };
 
+  const exportResolverUsersCsv = () => {
+    const rows = filteredResolverUsers;
+    if (rows.length === 0) {
+      toast.error("No resolver rows to export.");
+      return;
+    }
+
+    const headers = ["user_id", "name", "email", "role", "solved_actions", "closed_actions", "resolved_actions"];
+    const lines = [
+      headers.join(","),
+      ...rows.map((row) =>
+        [row.userId, row.name, row.email, row.role, row.solvedActions, row.closedActions, row.resolvedActions]
+          .map((value) => csvEscape(value))
+          .join(",")
+      ),
+    ];
+    const fileName = `zendesk-resolver-actions-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    downloadTextFile(fileName, lines.join("\n"), "text/csv;charset=utf-8");
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -301,7 +331,7 @@ export default function ZendeskTicketMetrics() {
           </Button>
           <h1 className="text-2xl font-bold text-slate-900">Zendesk Ticket Metrics</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Per-user ticket counts by status (assigned, open, pending, hold, solved, closed).
+            Per-user assignee status counts plus true resolver action counts (who changed status to solved/closed).
           </p>
         </div>
       </header>
@@ -418,7 +448,7 @@ export default function ZendeskTicketMetrics() {
           <CardHeader>
             <CardTitle>2) Ticket Metrics by Assignee</CardTitle>
             <CardDescription>
-              Load ticket counts per assigned user and break them down by status.
+              Load assignee status counts and true resolver actions (who changed status to solved/closed).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -497,7 +527,11 @@ export default function ZendeskTicketMetrics() {
                 </Button>
                 <Button variant="outline" onClick={exportUsersCsv} disabled={filteredUsers.length === 0}>
                   <Download className="h-4 w-4 mr-2" />
-                  Export CSV
+                  Export Assignee CSV
+                </Button>
+                <Button variant="outline" onClick={exportResolverUsersCsv} disabled={filteredResolverUsers.length === 0}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Export Resolver CSV
                 </Button>
               </div>
             </div>
@@ -508,7 +542,7 @@ export default function ZendeskTicketMetrics() {
               </div>
             ) : null}
 
-            <div className="grid grid-cols-2 md:grid-cols-8 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-11 gap-3">
               <div className="rounded-lg border bg-white p-3">
                 <p className="text-xs text-slate-500">Assigned (Total)</p>
                 <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(metrics?.totals.assigned ?? 0)}</p>
@@ -548,6 +582,18 @@ export default function ZendeskTicketMetrics() {
                 <p className="text-xs text-slate-500">Unassigned</p>
                 <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(metrics?.totals.unassigned ?? 0)}</p>
               </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs text-slate-500">Solved Actions</p>
+                <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(metrics?.resolverTotals.solvedActions ?? 0)}</p>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs text-slate-500">Closed Actions</p>
+                <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(metrics?.resolverTotals.closedActions ?? 0)}</p>
+              </div>
+              <div className="rounded-lg border bg-white p-3">
+                <p className="text-xs text-slate-500">Resolved Actions</p>
+                <p className="text-xl font-semibold">{NUMBER_FORMATTER.format(metrics?.resolverTotals.resolvedActions ?? 0)}</p>
+              </div>
             </div>
 
             <div className="flex items-center justify-between text-xs text-slate-600">
@@ -562,9 +608,24 @@ export default function ZendeskTicketMetrics() {
               </span>
             </div>
 
+            <div className="flex items-center justify-between text-xs text-slate-600">
+              <span>Resolver actions counted: {NUMBER_FORMATTER.format(metrics?.resolverActionCount ?? 0)}</span>
+              <span>
+                {metrics?.periodStartDate
+                  ? "Resolver actions are based on status-change events in this date window."
+                  : "Resolver actions require a period start date."}
+              </span>
+            </div>
+
             {metrics?.truncated ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                 Result reached max ticket cap. Increase Max Tickets if you need complete historical totals.
+              </div>
+            ) : null}
+
+            {metrics?.resolverTruncated ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                Resolver action result reached scan cap. Increase Max Tickets to allow scanning more events.
               </div>
             ) : null}
 
@@ -607,6 +668,39 @@ export default function ZendeskTicketMetrics() {
                 ) : null}
               </TableBody>
             </Table>
+
+            <div className="pt-2">
+              <h3 className="text-sm font-semibold text-slate-900 mb-2">Resolved By User (Status Change Actions)</h3>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>User</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>Solved Actions</TableHead>
+                    <TableHead>Closed Actions</TableHead>
+                    <TableHead>Resolved Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredResolverUsers.map((row) => (
+                    <TableRow key={`resolver-${row.userId ?? "unknown"}-${row.name}`}>
+                      <TableCell className="font-medium">{row.name}</TableCell>
+                      <TableCell>{row.email ?? "N/A"}</TableCell>
+                      <TableCell>{NUMBER_FORMATTER.format(row.solvedActions)}</TableCell>
+                      <TableCell>{NUMBER_FORMATTER.format(row.closedActions)}</TableCell>
+                      <TableCell>{NUMBER_FORMATTER.format(row.resolvedActions)}</TableCell>
+                    </TableRow>
+                  ))}
+                  {filteredResolverUsers.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="py-6 text-center text-slate-500">
+                        No resolver rows to display.
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       </main>
