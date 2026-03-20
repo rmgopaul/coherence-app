@@ -1033,7 +1033,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           additionalCollateralPaidUpfront: paidAdditionalCollateral,
           ccAuthorizationFormStatus: toCcAuthStatus(terms?.ccAuthorizationCompleted ?? null, terms?.ccCardAsteriskCount ?? null),
           ccAuthIncomplete5PercentAmount: ccIncompleteAmount,
-          firstPaymentFormulaNetAmount,
+          firstPaymentFormulaNetAmount: firstFormulaNetAmount,
           withholdingBalanceSeededForSystem: seededWithholdingThisRow,
           carryforwardIn,
           carryforwardRecoveredThisRow: recovered,

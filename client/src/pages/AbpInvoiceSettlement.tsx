@@ -276,6 +276,7 @@ export default function AbpInvoiceSettlement() {
   const [quickBooksByInvoice, setQuickBooksByInvoice] = useState<Map<string, QuickBooksInvoice>>(new Map());
 
   const [invoiceMapParsed, setInvoiceMapParsed] = useState<ParsedTabularData | null>(null);
+  const [savedInvoiceNumberMapRows, setSavedInvoiceNumberMapRows] = useState<InvoiceNumberMapRow[]>([]);
   const [invoiceMapHeaderSelection, setInvoiceMapHeaderSelection] = useState<{
     csgIdHeader: string | null;
     invoiceNumberHeader: string | null;
@@ -400,7 +401,7 @@ export default function AbpInvoiceSettlement() {
     }));
   }, [invoiceMapHeaderDetection, invoiceMapParsed]);
 
-  const invoiceNumberMapRows = useMemo(() => {
+  const invoiceNumberMapRowsFromParsed = useMemo(() => {
     if (!invoiceMapParsed) return [] as InvoiceNumberMapRow[];
     try {
       return parseInvoiceNumberMap(invoiceMapParsed, {
@@ -411,6 +412,16 @@ export default function AbpInvoiceSettlement() {
       return [];
     }
   }, [invoiceMapHeaderSelection.csgIdHeader, invoiceMapHeaderSelection.invoiceNumberHeader, invoiceMapParsed]);
+
+  const invoiceNumberMapRows = useMemo(() => {
+    if (invoiceMapParsed) return invoiceNumberMapRowsFromParsed;
+    return savedInvoiceNumberMapRows;
+  }, [invoiceMapParsed, invoiceNumberMapRowsFromParsed, savedInvoiceNumberMapRows]);
+
+  useEffect(() => {
+    if (!invoiceMapParsed) return;
+    setSavedInvoiceNumberMapRows(invoiceNumberMapRowsFromParsed);
+  }, [invoiceMapParsed, invoiceNumberMapRowsFromParsed]);
 
   const knownSystemIds = useMemo(() => {
     const set = new Set<string>();
@@ -593,6 +604,16 @@ export default function AbpInvoiceSettlement() {
         csgIdHeader: detection.csgIdHeader,
         invoiceNumberHeader: detection.invoiceNumberHeader,
       });
+      try {
+        setSavedInvoiceNumberMapRows(
+          parseInvoiceNumberMap(parsed, {
+            csgIdHeader: detection.csgIdHeader,
+            invoiceNumberHeader: detection.invoiceNumberHeader,
+          })
+        );
+      } catch {
+        setSavedInvoiceNumberMapRows([]);
+      }
       setRunInputs((current) => ({ ...current, portalInvoiceMapFile: file.name }));
       toast.success(`Loaded portal invoice map file (${parsed.rows.length.toLocaleString("en-US")} rows).`);
     } catch (error) {
@@ -713,6 +734,7 @@ export default function AbpInvoiceSettlement() {
     setQuickBooksByInvoice(deserializeQuickBooksInvoices(payload.quickBooksInvoices ?? []));
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
+    setSavedInvoiceNumberMapRows(payload.invoiceNumberMapRows ?? []);
     setContractTermsByCsgId(new Map((payload.contractTerms ?? []).map((term) => [term.csgId, term])));
     setContractScanRows(
       (payload.contractTerms ?? []).map((term) => ({
@@ -805,6 +827,7 @@ export default function AbpInvoiceSettlement() {
     setQuickBooksByInvoice(new Map());
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
+    setSavedInvoiceNumberMapRows([]);
     setManualOverridesByRowId({});
     setPreviousCarryforwardBySystemId({});
     setContractFetchRows([]);
@@ -1423,9 +1446,14 @@ export default function AbpInvoiceSettlement() {
                             </TableCell>
                             <TableCell className="min-w-[180px]">
                               <Select
-                                value={override.classification ?? ""}
+                                value={override.classification ?? "__auto__"}
                                 onValueChange={(value) => {
-                                  const classification = isClassification(value) ? value : undefined;
+                                  const classification =
+                                    value === "__auto__"
+                                      ? undefined
+                                      : isClassification(value)
+                                        ? value
+                                        : undefined;
                                   updateOverride(row.rowId, { classification });
                                 }}
                               >
@@ -1433,6 +1461,7 @@ export default function AbpInvoiceSettlement() {
                                   <SelectValue placeholder="Auto" />
                                 </SelectTrigger>
                                 <SelectContent>
+                                  <SelectItem value="__auto__">Auto</SelectItem>
                                   <SelectItem value="first_full_upfront">first_full_upfront</SelectItem>
                                   <SelectItem value="first_partial">first_partial</SelectItem>
                                   <SelectItem value="quarterly">quarterly</SelectItem>

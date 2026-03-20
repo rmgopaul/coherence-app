@@ -87,6 +87,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
       { label: "Contract Scanner", href: "/contract-scanner", icon: FileText },
+      { label: "ABP Settlement", href: "/abp-invoice-settlement", icon: FileSpreadsheet },
       { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Database },
       { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Database },
       { label: "Tesla Solar", href: "/tesla-solar-api", icon: Database },
