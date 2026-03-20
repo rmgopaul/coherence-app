@@ -173,6 +173,75 @@ const findLineValueByYOffset = (
   return text || null;
 };
 
+const collectNearbyLineTexts = (
+  page: PdfPageData | null,
+  labelMatcher: RegExp,
+  options?: {
+    xMin?: number;
+    lineTolerance?: number;
+    maxYDistance?: number;
+    preferAbove?: boolean;
+    excludeMatchers?: RegExp[];
+  }
+): string[] => {
+  const label = findItem(page, labelMatcher);
+  if (!page || !label) return [];
+
+  const xMin = options?.xMin ?? 120;
+  const lineTolerance = options?.lineTolerance ?? 10;
+  const maxYDistance = options?.maxYDistance ?? 120;
+  const preferAbove = options?.preferAbove ?? true;
+  const excludeMatchers = options?.excludeMatchers ?? [];
+
+  const lines: Array<{ y: number; items: PositionedText[] }> = [];
+
+  for (const item of page.items) {
+    if (BLANK_RE.test(item.text)) continue;
+    if (item.x < xMin) continue;
+    const existing = lines.find((line) => Math.abs(line.y - item.y) <= lineTolerance);
+    if (existing) {
+      existing.items.push(item);
+    } else {
+      lines.push({ y: item.y, items: [item] });
+    }
+  }
+
+  const candidates = lines
+    .map((line) => {
+      const text = stripLeadingLabelPunctuation(joinTokens(line.items));
+      return {
+        y: line.y,
+        text,
+      };
+    })
+    .filter((line) => {
+      if (!line.text) return false;
+      if (BLANK_RE.test(line.text)) return false;
+      if (Math.abs(line.y - label.y) <= lineTolerance) return false;
+      if (Math.abs(line.y - label.y) > maxYDistance) return false;
+      if (labelMatcher.test(line.text)) return false;
+      if (excludeMatchers.some((matcher) => matcher.test(line.text))) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      const aPreferred = preferAbove ? (a.y > label.y ? 0 : 1) : (a.y < label.y ? 0 : 1);
+      const bPreferred = preferAbove ? (b.y > label.y ? 0 : 1) : (b.y < label.y ? 0 : 1);
+      if (aPreferred !== bPreferred) return aPreferred - bPreferred;
+      return Math.abs(a.y - label.y) - Math.abs(b.y - label.y);
+    });
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const line of candidates) {
+    const key = line.text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(line.text);
+  }
+
+  return deduped;
+};
+
 const detectPaymentMethod = (coverSheetD: PdfPageData | null): string | null => {
   if (!coverSheetD) return null;
 
@@ -217,16 +286,28 @@ const detectAdditionalFivePercentSelected = (creditCardPage: PdfPageData | null)
   });
 };
 
+const sanitizeAddressLine = (value: string | null | undefined): string | null => {
+  const normalized = normalizeText(value ?? "");
+  if (!normalized) return null;
+  const cleaned = normalizeText(
+    normalized
+      .replace(/Payee Name or Company Name/gi, "")
+      .replace(/Payee Mailing Address/gi, "")
+      .replace(/_{2,}/g, " ")
+  );
+  return cleaned || null;
+};
+
 const extractAddressParts = (
   addressLineOneRaw: string | null,
   addressLineTwoRaw: string | null,
   addressLineThreeRaw: string | null
 ): { mailingAddress1: string | null; mailingAddress2: string | null; cityStateZip: string | null } => {
-  let mailingAddress1 = normalizeText(addressLineOneRaw ?? "") || null;
-  let mailingAddress2 = normalizeText(addressLineTwoRaw ?? "") || null;
-  let cityStateZip = normalizeText(addressLineThreeRaw ?? "") || null;
+  let mailingAddress1 = sanitizeAddressLine(addressLineOneRaw);
+  let mailingAddress2 = sanitizeAddressLine(addressLineTwoRaw);
+  let cityStateZip = sanitizeAddressLine(addressLineThreeRaw);
 
-  const cityStateZipRegex = /\b[A-Za-z][A-Za-z .'-]*\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/;
+  const cityStateZipRegex = /\b[A-Za-z][A-Za-z .'-]*,?\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/;
 
   if (!cityStateZip && mailingAddress2) {
     const match = mailingAddress2.match(cityStateZipRegex);
@@ -263,7 +344,9 @@ const countAsterisks = (value: string): number => (value.match(/\*/g) ?? []).len
 
 const ensurePdfWorkerConfigured = () => {
   if (pdfWorkerConfigured) return;
-  GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  if (typeof pdfWorkerUrl === "string" && pdfWorkerUrl.length > 0) {
+    GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+  }
   pdfWorkerConfigured = true;
 };
 
@@ -365,21 +448,59 @@ export async function extractContractDataFromPdf(file: File): Promise<ContractEx
   });
 
   const paymentMethod = detectPaymentMethod(coverSheetD);
-  const payeeName = findTextToRight(coverSheetD, /Payee Name or Company Name/i, {
+  const payeeNameRight = findTextToRight(coverSheetD, /Payee Name or Company Name/i, {
     minXOffset: 120,
     yTolerance: 14,
   });
+  const payeeNameFallback = collectNearbyLineTexts(coverSheetD, /Payee Name or Company Name/i, {
+    xMin: 120,
+    lineTolerance: 10,
+    maxYDistance: 90,
+    preferAbove: true,
+    excludeMatchers: [
+      /Payee Mailing Address/i,
+      /Payee Contact Phone Number/i,
+      /Payee Contact Email Address/i,
+      /PayPal Email Address/i,
+      /^Wire$/i,
+      /Check \(Free\)/i,
+      /PayPal \(3% service fee\)/i,
+    ],
+  })[0];
+  const payeeName = payeeNameRight ?? payeeNameFallback ?? null;
 
   const payeeAddressLabel = findItem(coverSheetD, /Payee Mailing Address/i);
-  const addressLineOneRaw = payeeAddressLabel
-    ? findLineValueByYOffset(coverSheetD, payeeAddressLabel.y + 10, { xMin: 160, yTolerance: 12 })
+  let addressLineOneRaw = payeeAddressLabel
+    ? findLineValueByYOffset(coverSheetD, payeeAddressLabel.y + 10, { xMin: 70, yTolerance: 12 })
     : null;
-  const addressLineTwoRaw = payeeAddressLabel
-    ? findLineValueByYOffset(coverSheetD, payeeAddressLabel.y - 14, { xMin: 160, yTolerance: 10 })
+  let addressLineTwoRaw = payeeAddressLabel
+    ? findLineValueByYOffset(coverSheetD, payeeAddressLabel.y - 14, { xMin: 70, yTolerance: 10 })
     : null;
-  const addressLineThreeRaw = payeeAddressLabel
-    ? findLineValueByYOffset(coverSheetD, payeeAddressLabel.y - 38, { xMin: 160, yTolerance: 10 })
+  let addressLineThreeRaw = payeeAddressLabel
+    ? findLineValueByYOffset(coverSheetD, payeeAddressLabel.y - 38, { xMin: 70, yTolerance: 10 })
     : null;
+
+  if ((!addressLineOneRaw || !addressLineTwoRaw || !addressLineThreeRaw) && payeeAddressLabel) {
+    const fallbackAddressLines = collectNearbyLineTexts(coverSheetD, /Payee Mailing Address/i, {
+      xMin: 70,
+      lineTolerance: 10,
+      maxYDistance: 120,
+      preferAbove: true,
+      excludeMatchers: [
+        /Payee Name or Company Name/i,
+        /Payee Contact Phone Number/i,
+        /Payee Contact Email Address/i,
+        /PayPal Email Address/i,
+        /^Wire$/i,
+        /Check \(Free\)/i,
+        /PayPal \(3% service fee\)/i,
+      ],
+    });
+
+    if (!addressLineOneRaw) addressLineOneRaw = fallbackAddressLines[0] ?? null;
+    if (!addressLineTwoRaw) addressLineTwoRaw = fallbackAddressLines[1] ?? null;
+    if (!addressLineThreeRaw) addressLineThreeRaw = fallbackAddressLines[2] ?? null;
+  }
 
   const { mailingAddress1, mailingAddress2, cityStateZip } = extractAddressParts(
     addressLineOneRaw,
