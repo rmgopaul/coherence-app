@@ -48,6 +48,7 @@ const ZENDESK_PROVIDER = "zendesk";
 const TESLA_SOLAR_PROVIDER = "tesla-solar";
 const TESLA_POWERHUB_PROVIDER = "tesla-powerhub";
 const CLOCKIFY_PROVIDER = "clockify";
+const CSG_PORTAL_PROVIDER = "csg-portal";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -265,6 +266,75 @@ type TeslaPowerhubProductionJob = {
 const TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
 const teslaPowerhubProductionJobs = new Map<string, TeslaPowerhubProductionJob>();
 
+type AbpSettlementContractScanJobStatus = "queued" | "running" | "completed" | "failed";
+
+type AbpSettlementContractScanJobResultRow = {
+  csgId: string;
+  systemPageUrl: string;
+  pdfUrl: string | null;
+  pdfFileName: string | null;
+  scan: {
+    fileName: string;
+    ccAuthorizationCompleted: boolean | null;
+    ccCardAsteriskCount: number | null;
+    additionalFivePercentSelected: boolean | null;
+    additionalCollateralPercent: number | null;
+    vendorFeePercent: number | null;
+    systemName: string | null;
+    paymentMethod: string | null;
+    payeeName: string | null;
+    mailingAddress1: string | null;
+    mailingAddress2: string | null;
+    cityStateZip: string | null;
+    recQuantity: number | null;
+    recPrice: number | null;
+    acSizeKw: number | null;
+    dcSizeKw: number | null;
+  } | null;
+  error: string | null;
+};
+
+type AbpSettlementContractScanJob = {
+  id: string;
+  userId: number;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  status: AbpSettlementContractScanJobStatus;
+  progress: {
+    current: number;
+    total: number;
+    percent: number;
+    message: string;
+    currentCsgId: string | null;
+  };
+  error: string | null;
+  result: {
+    rows: AbpSettlementContractScanJobResultRow[];
+    successCount: number;
+    failureCount: number;
+  } | null;
+};
+
+type AbpSettlementSavedRunSummary = {
+  runId: string;
+  monthKey: string;
+  label: string | null;
+  createdAt: string;
+  updatedAt: string;
+  rowCount: number | null;
+};
+
+type AbpSettlementSavedRun = {
+  summary: AbpSettlementSavedRunSummary;
+  payload: string;
+};
+
+const ABP_SETTLEMENT_JOB_TTL_MS = 24 * 60 * 60 * 1000;
+const abpSettlementJobs = new Map<string, AbpSettlementContractScanJob>();
+const ABP_SETTLEMENT_RUNS_INDEX_DB_KEY = "abpSettlement:runs-index";
+
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
   if (value < 0) return 0;
@@ -285,6 +355,206 @@ function pruneTeslaPowerhubProductionJobs(nowMs: number): void {
       teslaPowerhubProductionJobs.delete(jobId);
     }
   });
+}
+
+function pruneAbpSettlementJobs(nowMs: number): void {
+  Array.from(abpSettlementJobs.entries()).forEach(([jobId, job]) => {
+    const updatedAtMs = Date.parse(job.updatedAt);
+    if (!Number.isFinite(updatedAtMs)) return;
+    if (nowMs - updatedAtMs > ABP_SETTLEMENT_JOB_TTL_MS) {
+      abpSettlementJobs.delete(jobId);
+    }
+  });
+}
+
+function getAbpSettlementRunsIndexObjectKey(userId: number): string {
+  return `abp-settlement/${userId}/runs-index.json`;
+}
+
+function getAbpSettlementRunObjectKey(userId: number, runId: string): string {
+  return `abp-settlement/${userId}/runs/${runId}.json`;
+}
+
+function getAbpSettlementRunDbKey(runId: string): string {
+  return `abpSettlement:run:${runId}`;
+}
+
+function parseAbpSettlementRunsIndex(payload: string | null | undefined): AbpSettlementSavedRunSummary[] {
+  if (!payload) return [];
+  try {
+    const parsed = JSON.parse(payload);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((value) => {
+        const row = value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+        if (!row) return null;
+        const runId = toNonEmptyString(row.runId);
+        const monthKey = toNonEmptyString(row.monthKey);
+        const createdAt = toNonEmptyString(row.createdAt);
+        const updatedAt = toNonEmptyString(row.updatedAt);
+        if (!runId || !monthKey || !createdAt || !updatedAt) return null;
+        const rowCountRaw = row.rowCount;
+        const rowCount = typeof rowCountRaw === "number" && Number.isFinite(rowCountRaw) ? rowCountRaw : null;
+        return {
+          runId,
+          monthKey,
+          label: toNonEmptyString(row.label),
+          createdAt,
+          updatedAt,
+          rowCount,
+        } satisfies AbpSettlementSavedRunSummary;
+      })
+      .filter((row): row is AbpSettlementSavedRunSummary => Boolean(row))
+      .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+  } catch {
+    return [];
+  }
+}
+
+function serializeAbpSettlementRunsIndex(rows: AbpSettlementSavedRunSummary[]): string {
+  return JSON.stringify(rows);
+}
+
+async function readPayloadWithFallback(input: {
+  userId: number;
+  objectKey: string;
+  dbStorageKey: string;
+}): Promise<string | null> {
+  try {
+    const { getSolarRecDashboardPayload } = await import("./db");
+    const payload = await getSolarRecDashboardPayload(input.userId, input.dbStorageKey);
+    if (payload) return payload;
+  } catch {
+    // Fall through to storage.
+  }
+
+  try {
+    const { storageGet } = await import("./storage");
+    const { url } = await storageGet(input.objectKey);
+    const response = await fetch(url);
+    if (!response.ok) return null;
+    const payload = await response.text();
+    return payload || null;
+  } catch {
+    return null;
+  }
+}
+
+async function writePayloadWithFallback(input: {
+  userId: number;
+  objectKey: string;
+  dbStorageKey: string;
+  payload: string;
+}): Promise<{ persistedToDatabase: boolean; storageSynced: boolean }> {
+  let persistedToDatabase = false;
+  try {
+    const { saveSolarRecDashboardPayload } = await import("./db");
+    persistedToDatabase = await saveSolarRecDashboardPayload(
+      input.userId,
+      input.dbStorageKey,
+      input.payload
+    );
+  } catch {
+    persistedToDatabase = false;
+  }
+
+  try {
+    const { storagePut } = await import("./storage");
+    await storagePut(input.objectKey, input.payload, "application/json");
+    return { persistedToDatabase, storageSynced: true };
+  } catch (storageError) {
+    if (persistedToDatabase) {
+      return { persistedToDatabase, storageSynced: false };
+    }
+    throw storageError;
+  }
+}
+
+async function getAbpSettlementRunsIndex(userId: number): Promise<AbpSettlementSavedRunSummary[]> {
+  const payload = await readPayloadWithFallback({
+    userId,
+    objectKey: getAbpSettlementRunsIndexObjectKey(userId),
+    dbStorageKey: ABP_SETTLEMENT_RUNS_INDEX_DB_KEY,
+  });
+  return parseAbpSettlementRunsIndex(payload);
+}
+
+async function saveAbpSettlementRunsIndex(
+  userId: number,
+  rows: AbpSettlementSavedRunSummary[]
+): Promise<{ persistedToDatabase: boolean; storageSynced: boolean }> {
+  const payload = serializeAbpSettlementRunsIndex(rows);
+  return writePayloadWithFallback({
+    userId,
+    objectKey: getAbpSettlementRunsIndexObjectKey(userId),
+    dbStorageKey: ABP_SETTLEMENT_RUNS_INDEX_DB_KEY,
+    payload,
+  });
+}
+
+async function getAbpSettlementRun(userId: number, runId: string): Promise<AbpSettlementSavedRun | null> {
+  const normalizedRunId = runId.trim();
+  if (!normalizedRunId) return null;
+
+  const index = await getAbpSettlementRunsIndex(userId);
+  const summary = index.find((row) => row.runId === normalizedRunId);
+  if (!summary) return null;
+
+  const payload = await readPayloadWithFallback({
+    userId,
+    objectKey: getAbpSettlementRunObjectKey(userId, normalizedRunId),
+    dbStorageKey: getAbpSettlementRunDbKey(normalizedRunId),
+  });
+  if (!payload) return null;
+
+  return {
+    summary,
+    payload,
+  };
+}
+
+async function saveAbpSettlementRun(input: {
+  userId: number;
+  runId: string;
+  monthKey: string;
+  label: string | null;
+  payload: string;
+  rowCount: number | null;
+}): Promise<{
+  summary: AbpSettlementSavedRunSummary;
+  indexWrite: { persistedToDatabase: boolean; storageSynced: boolean };
+  runWrite: { persistedToDatabase: boolean; storageSynced: boolean };
+}> {
+  const nowIso = new Date().toISOString();
+  const index = await getAbpSettlementRunsIndex(input.userId);
+  const existing = index.find((row) => row.runId === input.runId);
+
+  const summary: AbpSettlementSavedRunSummary = {
+    runId: input.runId,
+    monthKey: input.monthKey,
+    label: input.label,
+    createdAt: existing?.createdAt ?? nowIso,
+    updatedAt: nowIso,
+    rowCount: input.rowCount,
+  };
+
+  const nextIndex = [summary, ...index.filter((row) => row.runId !== input.runId)].sort(
+    (left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+  );
+
+  const runWrite = await writePayloadWithFallback({
+    userId: input.userId,
+    objectKey: getAbpSettlementRunObjectKey(input.userId, input.runId),
+    dbStorageKey: getAbpSettlementRunDbKey(input.runId),
+    payload: input.payload,
+  });
+  const indexWrite = await saveAbpSettlementRunsIndex(input.userId, nextIndex);
+
+  return {
+    summary,
+    indexWrite,
+    runWrite,
+  };
 }
 
 async function mapWithConcurrency<TInput, TOutput>(
@@ -396,6 +666,40 @@ function parseClockifyMetadata(metadata: string | null | undefined): {
     userName: toNonEmptyString(parsed.userName),
     userEmail: toNonEmptyString(parsed.userEmail),
   };
+}
+
+function parseCsgPortalMetadata(metadata: string | null | undefined): {
+  email: string | null;
+  baseUrl: string | null;
+  lastTestedAt: string | null;
+  lastTestStatus: "success" | "failure" | null;
+  lastTestMessage: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const testStatus = toNonEmptyString(parsed.lastTestStatus);
+  return {
+    email: toNonEmptyString(parsed.email),
+    baseUrl: toNonEmptyString(parsed.baseUrl),
+    lastTestedAt: toNonEmptyString(parsed.lastTestedAt),
+    lastTestStatus: testStatus === "success" || testStatus === "failure" ? testStatus : null,
+    lastTestMessage: toNonEmptyString(parsed.lastTestMessage),
+  };
+}
+
+function serializeCsgPortalMetadata(metadata: {
+  email: string | null;
+  baseUrl: string | null;
+  lastTestedAt?: string | null;
+  lastTestStatus?: "success" | "failure" | null;
+  lastTestMessage?: string | null;
+}): string {
+  return JSON.stringify({
+    email: metadata.email,
+    baseUrl: metadata.baseUrl,
+    lastTestedAt: metadata.lastTestedAt ?? null,
+    lastTestStatus: metadata.lastTestStatus ?? null,
+    lastTestMessage: metadata.lastTestMessage ?? null,
+  });
 }
 
 function serializeZendeskMetadata(metadata: {
@@ -685,6 +989,27 @@ async function getClockifyContext(userId: number): Promise<{
     clockifyUserId: metadata.userId,
     userName: metadata.userName,
     userEmail: metadata.userEmail,
+  };
+}
+
+async function getCsgPortalContext(userId: number): Promise<{
+  email: string;
+  password: string;
+  baseUrl: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, CSG_PORTAL_PROVIDER);
+  const password = toNonEmptyString(integration?.accessToken);
+  const metadata = parseCsgPortalMetadata(integration?.metadata);
+
+  if (!password || !metadata.email) {
+    throw new Error("CSG portal is not connected. Save portal email/password first.");
+  }
+
+  return {
+    email: metadata.email,
+    password,
+    baseUrl: metadata.baseUrl,
   };
 }
 
@@ -2244,6 +2569,426 @@ export const appRouter = router({
             signal: input.signal,
           }
         );
+      }),
+  }),
+
+  csgPortal: router({
+    status: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
+      const metadata = parseCsgPortalMetadata(integration?.metadata);
+      return {
+        connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.email),
+        email: metadata.email,
+        baseUrl: metadata.baseUrl,
+        hasPassword: Boolean(toNonEmptyString(integration?.accessToken)),
+        lastTestedAt: metadata.lastTestedAt,
+        lastTestStatus: metadata.lastTestStatus,
+        lastTestMessage: metadata.lastTestMessage,
+      };
+    }),
+    saveCredentials: protectedProcedure
+      .input(
+        z.object({
+          email: z.string().email().optional(),
+          password: z.string().min(1).optional(),
+          baseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const existing = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
+        const existingMetadata = parseCsgPortalMetadata(existing?.metadata);
+
+        const resolvedEmail = toNonEmptyString(input.email)?.toLowerCase() ?? existingMetadata.email;
+        const resolvedPassword =
+          toNonEmptyString(input.password) ?? toNonEmptyString(existing?.accessToken);
+        const resolvedBaseUrl = toNonEmptyString(input.baseUrl) ?? existingMetadata.baseUrl;
+
+        if (!resolvedEmail) {
+          throw new Error("Portal email is required.");
+        }
+        if (!resolvedPassword) {
+          throw new Error("Portal password is required.");
+        }
+
+        const metadata = serializeCsgPortalMetadata({
+          email: resolvedEmail,
+          baseUrl: resolvedBaseUrl,
+          lastTestedAt: existingMetadata.lastTestedAt,
+          lastTestStatus: existingMetadata.lastTestStatus,
+          lastTestMessage: existingMetadata.lastTestMessage,
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: CSG_PORTAL_PROVIDER,
+          accessToken: resolvedPassword,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    testConnection: protectedProcedure
+      .input(
+        z
+          .object({
+            email: z.string().email().optional(),
+            password: z.string().min(1).optional(),
+            baseUrl: z.string().optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { testCsgPortalCredentials } = await import("./services/csgPortal");
+
+        const existing = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
+        const existingMetadata = parseCsgPortalMetadata(existing?.metadata);
+        const resolvedEmail = toNonEmptyString(input?.email)?.toLowerCase() ?? existingMetadata.email;
+        const resolvedPassword =
+          toNonEmptyString(input?.password) ?? toNonEmptyString(existing?.accessToken);
+        const resolvedBaseUrl = toNonEmptyString(input?.baseUrl) ?? existingMetadata.baseUrl;
+
+        if (!resolvedEmail || !resolvedPassword) {
+          throw new Error("Missing credentials. Save portal email/password first or provide both for testing.");
+        }
+
+        try {
+          await testCsgPortalCredentials({
+            email: resolvedEmail,
+            password: resolvedPassword,
+            baseUrl: resolvedBaseUrl ?? undefined,
+          });
+
+          const metadata = serializeCsgPortalMetadata({
+            email: resolvedEmail,
+            baseUrl: resolvedBaseUrl,
+            lastTestedAt: new Date().toISOString(),
+            lastTestStatus: "success",
+            lastTestMessage: "Connection successful.",
+          });
+
+          await upsertIntegration({
+            id: nanoid(),
+            userId: ctx.user.id,
+            provider: CSG_PORTAL_PROVIDER,
+            accessToken: resolvedPassword,
+            refreshToken: null,
+            expiresAt: null,
+            scope: null,
+            metadata,
+          });
+
+          return {
+            success: true,
+            message: "Connected successfully.",
+          };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown portal connection error.";
+          if (existing && existingMetadata.email && existing.accessToken) {
+            const metadata = serializeCsgPortalMetadata({
+              email: existingMetadata.email,
+              baseUrl: existingMetadata.baseUrl,
+              lastTestedAt: new Date().toISOString(),
+              lastTestStatus: "failure",
+              lastTestMessage: message,
+            });
+
+            await upsertIntegration({
+              id: nanoid(),
+              userId: ctx.user.id,
+              provider: CSG_PORTAL_PROVIDER,
+              accessToken: existing.accessToken,
+              refreshToken: null,
+              expiresAt: null,
+              scope: null,
+              metadata,
+            });
+          }
+          throw new Error(`Portal connection test failed: ${message}`);
+        }
+      }),
+  }),
+
+  abpSettlement: router({
+    startContractScanJob: protectedProcedure
+      .input(
+        z.object({
+          csgIds: z.array(z.string().min(1).max(64)).min(1).max(1000),
+          email: z.string().email().optional(),
+          password: z.string().min(1).optional(),
+          baseUrl: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { CsgPortalClient } = await import("./services/csgPortal");
+
+        const existing = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
+        const existingMetadata = parseCsgPortalMetadata(existing?.metadata);
+        const resolvedEmail = toNonEmptyString(input.email)?.toLowerCase() ?? existingMetadata.email;
+        const resolvedPassword =
+          toNonEmptyString(input.password) ?? toNonEmptyString(existing?.accessToken);
+        const resolvedBaseUrl = toNonEmptyString(input.baseUrl) ?? existingMetadata.baseUrl;
+        if (!resolvedEmail || !resolvedPassword) {
+          throw new Error("Missing CSG portal credentials. Save portal email/password first.");
+        }
+
+        const uniqueIds = Array.from(new Set(input.csgIds.map((value) => value.trim()).filter(Boolean)));
+        if (uniqueIds.length === 0) {
+          throw new Error("At least one CSG ID is required.");
+        }
+
+        const nowMs = Date.now();
+        const nowIso = new Date(nowMs).toISOString();
+        pruneAbpSettlementJobs(nowMs);
+
+        const jobId = nanoid();
+        abpSettlementJobs.set(jobId, {
+          id: jobId,
+          userId: ctx.user.id,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          startedAt: null,
+          finishedAt: null,
+          status: "queued",
+          progress: {
+            current: 0,
+            total: uniqueIds.length,
+            percent: 0,
+            message: "Queued",
+            currentCsgId: null,
+          },
+          error: null,
+          result: null,
+        });
+
+        void (async () => {
+          const markJob = (updater: (job: AbpSettlementContractScanJob) => AbpSettlementContractScanJob) => {
+            const existingJob = abpSettlementJobs.get(jobId);
+            if (!existingJob) return;
+            abpSettlementJobs.set(jobId, updater(existingJob));
+          };
+
+          markJob((job) => ({
+            ...job,
+            status: "running",
+            startedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            progress: {
+              ...job.progress,
+              message: "Logging into CSG portal...",
+            },
+          }));
+
+          try {
+            const { extractContractDataFromPdfBuffer } = await import("./services/contractScannerServer");
+            const client = new CsgPortalClient({
+              email: resolvedEmail,
+              password: resolvedPassword,
+              baseUrl: resolvedBaseUrl ?? undefined,
+            });
+            await client.login();
+
+            const rows: AbpSettlementContractScanJobResultRow[] = [];
+
+            for (let index = 0; index < uniqueIds.length; index += 1) {
+              const csgId = uniqueIds[index];
+              const startedMessage = `Fetching ${index + 1} of ${uniqueIds.length}`;
+
+              markJob((job) => ({
+                ...job,
+                updatedAt: new Date().toISOString(),
+                progress: {
+                  current: index,
+                  total: uniqueIds.length,
+                  percent: normalizeProgressPercent(index, uniqueIds.length),
+                  message: startedMessage,
+                  currentCsgId: csgId,
+                },
+              }));
+
+              const fetched = await client.fetchRecContractPdf(csgId);
+              let rowError = fetched.error;
+              let scan: AbpSettlementContractScanJobResultRow["scan"] = null;
+
+              if (!rowError && fetched.pdfData && fetched.pdfData.length > 0) {
+                try {
+                  const extraction = await extractContractDataFromPdfBuffer(
+                    fetched.pdfData,
+                    fetched.pdfFileName ?? `contract-${csgId}.pdf`
+                  );
+                  scan = {
+                    fileName: extraction.fileName,
+                    ccAuthorizationCompleted: extraction.ccAuthorizationCompleted,
+                    ccCardAsteriskCount: extraction.ccCardAsteriskCount,
+                    additionalFivePercentSelected: extraction.additionalFivePercentSelected,
+                    additionalCollateralPercent: extraction.additionalCollateralPercent,
+                    vendorFeePercent: extraction.vendorFeePercent,
+                    systemName: extraction.systemName,
+                    paymentMethod: extraction.paymentMethod,
+                    payeeName: extraction.payeeName,
+                    mailingAddress1: extraction.mailingAddress1,
+                    mailingAddress2: extraction.mailingAddress2,
+                    cityStateZip: extraction.cityStateZip,
+                    recQuantity: extraction.recQuantity,
+                    recPrice: extraction.recPrice,
+                    acSizeKw: extraction.acSizeKw,
+                    dcSizeKw: extraction.dcSizeKw,
+                  };
+                } catch (error) {
+                  rowError =
+                    error instanceof Error ? error.message : "Failed to parse downloaded contract PDF.";
+                }
+              }
+
+              rows.push({
+                csgId,
+                systemPageUrl: fetched.systemPageUrl,
+                pdfUrl: fetched.pdfUrl,
+                pdfFileName: fetched.pdfFileName,
+                scan,
+                error: rowError,
+              });
+
+              const current = index + 1;
+              markJob((job) => ({
+                ...job,
+                updatedAt: new Date().toISOString(),
+                progress: {
+                  current,
+                  total: uniqueIds.length,
+                  percent: normalizeProgressPercent(current, uniqueIds.length),
+                  message:
+                    rowError === null
+                      ? `Scanned ${current} of ${uniqueIds.length}`
+                      : `Processed ${current} of ${uniqueIds.length} (with errors)`,
+                  currentCsgId: csgId,
+                },
+              }));
+            }
+
+            const successCount = rows.filter((row) => row.error === null && row.scan).length;
+            const failureCount = rows.length - successCount;
+
+            markJob((job) => ({
+              ...job,
+              status: "completed",
+              updatedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+              error: null,
+              result: {
+                rows,
+                successCount,
+                failureCount,
+              },
+              progress: {
+                current: uniqueIds.length,
+                total: uniqueIds.length,
+                percent: 100,
+                message: "Completed",
+                currentCsgId: null,
+              },
+            }));
+          } catch (error) {
+            markJob((job) => ({
+              ...job,
+              status: "failed",
+              updatedAt: new Date().toISOString(),
+              finishedAt: new Date().toISOString(),
+              error: error instanceof Error ? error.message : "Unknown ABP settlement job error.",
+              result: null,
+              progress: {
+                ...job.progress,
+                message: "Failed",
+                currentCsgId: null,
+              },
+            }));
+          }
+        })();
+
+        return {
+          jobId,
+          status: "queued" as const,
+          total: uniqueIds.length,
+        };
+      }),
+    getJobStatus: protectedProcedure
+      .input(
+        z.object({
+          jobId: z.string().min(1),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        pruneAbpSettlementJobs(Date.now());
+        const job = abpSettlementJobs.get(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("ABP settlement contract scan job not found.");
+        }
+        return job;
+      }),
+    saveRun: protectedProcedure
+      .input(
+        z.object({
+          runId: z.string().min(1).max(128).optional(),
+          monthKey: z.string().regex(/^\d{4}-\d{2}$/),
+          label: z.string().max(200).optional(),
+          payload: z.string().min(1),
+          rowCount: z.number().int().min(0).max(50000).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { nanoid } = await import("nanoid");
+        const runId = toNonEmptyString(input.runId) ?? nanoid();
+        const saved = await saveAbpSettlementRun({
+          userId: ctx.user.id,
+          runId,
+          monthKey: input.monthKey,
+          label: toNonEmptyString(input.label),
+          payload: input.payload,
+          rowCount: input.rowCount ?? null,
+        });
+
+        return {
+          success: true,
+          runId,
+          summary: saved.summary,
+          persistedToDatabase: saved.runWrite.persistedToDatabase || saved.indexWrite.persistedToDatabase,
+          storageSynced: saved.runWrite.storageSynced && saved.indexWrite.storageSynced,
+        };
+      }),
+    getRun: protectedProcedure
+      .input(
+        z.object({
+          runId: z.string().min(1).max(128),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        const run = await getAbpSettlementRun(ctx.user.id, input.runId);
+        if (!run) {
+          throw new Error("ABP settlement run not found.");
+        }
+        return run;
+      }),
+    listRuns: protectedProcedure
+      .input(
+        z
+          .object({
+            limit: z.number().int().min(1).max(250).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const runs = await getAbpSettlementRunsIndex(ctx.user.id);
+        return runs.slice(0, input?.limit ?? 50);
       }),
   }),
 
