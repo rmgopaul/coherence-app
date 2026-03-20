@@ -240,6 +240,15 @@ type RecPerformanceResultRow = {
   drawdownPayment: number;
 };
 
+type RecPerformanceContractYearSummaryRow = {
+  contractId: string;
+  systemsInThreeYearReview: number;
+  totalRecDeliveryObligation: number;
+  totalDeliveriesFromThreeYearReview: number;
+  recDelta: number;
+  totalDrawdownAmount: number;
+};
+
 type OfflineBreakdownRow = {
   key: string;
   label: string;
@@ -5394,6 +5403,112 @@ export default function SolarRecDashboard() {
     performanceSourceRows,
   ]);
 
+  const recPerformanceContractYearSummaryRows = useMemo<RecPerformanceContractYearSummaryRow[]>(() => {
+    if (!isPerformanceEvalTabActive || !performanceSelectedDeliveryYearLabel || performanceSelectedDeliveryYearLabel === "N/A") {
+      return [];
+    }
+
+    type Builder = {
+      contractId: string;
+      systemsInThreeYearReview: number;
+      totalRecDeliveryObligation: number;
+      totalDeliveriesFromThreeYearReview: number;
+      recDelta: number;
+      totalDrawdownAmount: number;
+    };
+
+    const summaryByContract = new Map<string, Builder>();
+
+    const getOrCreate = (contractId: string): Builder => {
+      const existing = summaryByContract.get(contractId);
+      if (existing) return existing;
+      const next: Builder = {
+        contractId,
+        systemsInThreeYearReview: 0,
+        totalRecDeliveryObligation: 0,
+        totalDeliveriesFromThreeYearReview: 0,
+        recDelta: 0,
+        totalDrawdownAmount: 0,
+      };
+      summaryByContract.set(contractId, next);
+      return next;
+    };
+
+    performanceContractOptions.forEach((contractId) => {
+      getOrCreate(contractId);
+    });
+    getOrCreate("846");
+    getOrCreate("918");
+    getOrCreate("Unassigned");
+
+    performanceSourceRows.forEach((row) => {
+      const contractId = clean(row.contractId) || "Unassigned";
+      const targetYearIndex = row.years.findIndex((year) => {
+        const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+        return label === performanceSelectedDeliveryYearLabel;
+      });
+      if (targetYearIndex < 2) return;
+
+      const dyOneYear = row.years[targetYearIndex - 2];
+      const dyTwoYear = row.years[targetYearIndex - 1];
+      const dyThreeYear = row.years[targetYearIndex];
+      if (!dyOneYear || !dyTwoYear || !dyThreeYear) return;
+
+      const values: number[] =
+        targetYearIndex === 2
+          ? [dyOneYear.delivered, dyTwoYear.delivered, dyThreeYear.delivered]
+          : [dyOneYear.required, dyTwoYear.required, dyThreeYear.delivered];
+
+      const rollingAverage = Math.floor((values[0] + values[1] + values[2]) / 3);
+      const expectedRecs = dyThreeYear.required;
+      const recDelta = rollingAverage - expectedRecs;
+      const shortfall = Math.max(0, expectedRecs - rollingAverage);
+      const drawdownAmount = shortfall * (row.recPrice ?? 0);
+
+      const summary = getOrCreate(contractId);
+      summary.systemsInThreeYearReview += 1;
+      summary.totalRecDeliveryObligation += expectedRecs;
+      summary.totalDeliveriesFromThreeYearReview += rollingAverage;
+      summary.recDelta += recDelta;
+      summary.totalDrawdownAmount += drawdownAmount;
+    });
+
+    return Array.from(summaryByContract.values())
+      .map((row) => ({
+        ...row,
+        totalDrawdownAmount: Number(row.totalDrawdownAmount.toFixed(2)),
+      }))
+      .sort((a, b) => a.contractId.localeCompare(b.contractId, undefined, { numeric: true, sensitivity: "base" }));
+  }, [
+    isPerformanceEvalTabActive,
+    performanceContractOptions,
+    performanceSelectedDeliveryYearLabel,
+    performanceSourceRows,
+  ]);
+
+  const recPerformanceContractYearSummaryTotals = useMemo(() => {
+    return recPerformanceContractYearSummaryRows.reduce(
+      (acc, row) => {
+        if (row.systemsInThreeYearReview <= 0) return acc;
+        acc.contractsDueThisYear += 1;
+        acc.totalSystemsInThreeYearReview += row.systemsInThreeYearReview;
+        acc.totalRecDeliveryObligation += row.totalRecDeliveryObligation;
+        acc.totalDeliveriesFromThreeYearReview += row.totalDeliveriesFromThreeYearReview;
+        acc.recDelta += row.recDelta;
+        acc.totalDrawdownAmount += row.totalDrawdownAmount;
+        return acc;
+      },
+      {
+        contractsDueThisYear: 0,
+        totalSystemsInThreeYearReview: 0,
+        totalRecDeliveryObligation: 0,
+        totalDeliveriesFromThreeYearReview: 0,
+        recDelta: 0,
+        totalDrawdownAmount: 0,
+      }
+    );
+  }, [recPerformanceContractYearSummaryRows]);
+
   const recPerformanceSnapshotContracts2025 = useMemo(() => {
     const byContract = new Map<
       string,
@@ -8985,6 +9100,114 @@ export default function SolarRecDashboard() {
                     </CardHeader>
                   </Card>
                 </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base">Current Year 3-Year Rolling Summary by Contract</CardTitle>
+                    <CardDescription>
+                      Delivery Year {performanceSelectedDeliveryYearLabel}. Includes only systems currently in 3-year
+                      rolling review for that year. Contracts 846, 918, and Unassigned are shown even when obligation is 0.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      <Card>
+                        <CardHeader>
+                          <CardDescription>Contracts Due This Year</CardDescription>
+                          <CardTitle className="text-2xl">
+                            {formatNumber(recPerformanceContractYearSummaryTotals.contractsDueThisYear)}
+                          </CardTitle>
+                        </CardHeader>
+                      </Card>
+                      <Card>
+                        <CardHeader>
+                          <CardDescription>Systems in 3-Year Review (Current Year)</CardDescription>
+                          <CardTitle className="text-2xl">
+                            {formatNumber(recPerformanceContractYearSummaryTotals.totalSystemsInThreeYearReview)}
+                          </CardTitle>
+                        </CardHeader>
+                      </Card>
+                      <Card>
+                        <CardHeader>
+                          <CardDescription>Total REC Delivery Obligation (3-Year Rolling)</CardDescription>
+                          <CardTitle className="text-2xl">
+                            {formatNumber(recPerformanceContractYearSummaryTotals.totalRecDeliveryObligation)}
+                          </CardTitle>
+                        </CardHeader>
+                      </Card>
+                      <Card>
+                        <CardHeader>
+                          <CardDescription>Total Deliveries (3-Year Rolling Review Systems)</CardDescription>
+                          <CardTitle className="text-2xl">
+                            {formatNumber(recPerformanceContractYearSummaryTotals.totalDeliveriesFromThreeYearReview)}
+                          </CardTitle>
+                        </CardHeader>
+                      </Card>
+                      <Card>
+                        <CardHeader>
+                          <CardDescription>Delta RECs (Delivered - Obligation)</CardDescription>
+                          <CardTitle
+                            className={`text-2xl ${
+                              recPerformanceContractYearSummaryTotals.recDelta < 0
+                                ? "text-rose-700"
+                                : recPerformanceContractYearSummaryTotals.recDelta > 0
+                                  ? "text-emerald-700"
+                                  : ""
+                            }`}
+                          >
+                            {formatSignedNumber(recPerformanceContractYearSummaryTotals.recDelta)}
+                          </CardTitle>
+                        </CardHeader>
+                      </Card>
+                      <Card>
+                        <CardHeader>
+                          <CardDescription>Total Drawdown Amount</CardDescription>
+                          <CardTitle className="text-2xl">
+                            {formatCurrency(recPerformanceContractYearSummaryTotals.totalDrawdownAmount)}
+                          </CardTitle>
+                        </CardHeader>
+                      </Card>
+                    </div>
+
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Contract ID</TableHead>
+                          <TableHead>Systems in 3-Year Review</TableHead>
+                          <TableHead>3-Year Rolling Obligation (RECs)</TableHead>
+                          <TableHead>Total Deliveries (3-Year Rolling)</TableHead>
+                          <TableHead>Delta RECs</TableHead>
+                          <TableHead>Total Drawdown Amount</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {recPerformanceContractYearSummaryRows.map((row) => (
+                          <TableRow key={`rec-performance-contract-summary-${row.contractId}`}>
+                            <TableCell className="font-medium">{row.contractId}</TableCell>
+                            <TableCell>{formatNumber(row.systemsInThreeYearReview)}</TableCell>
+                            <TableCell>{formatNumber(row.totalRecDeliveryObligation)}</TableCell>
+                            <TableCell>{formatNumber(row.totalDeliveriesFromThreeYearReview)}</TableCell>
+                            <TableCell
+                              className={
+                                row.recDelta < 0 ? "text-rose-700 font-semibold" : row.recDelta > 0 ? "text-emerald-700 font-semibold" : ""
+                              }
+                            >
+                              {formatSignedNumber(row.recDelta)}
+                            </TableCell>
+                            <TableCell>{formatCurrency(row.totalDrawdownAmount)}</TableCell>
+                          </TableRow>
+                        ))}
+                        {recPerformanceContractYearSummaryRows.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={6} className="py-6 text-center text-slate-500">
+                              No contract-level REC performance rows available for this delivery year.
+                            </TableCell>
+                          </TableRow>
+                        ) : null}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
 
                 <Card>
                   <CardHeader>
