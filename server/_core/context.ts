@@ -55,7 +55,18 @@ export async function createContext(
     const cookies = parseCookieHeader(opts.req.headers.cookie ?? "");
     const sessionCookie = cookies[COOKIE_NAME];
     const session = await sdk.verifySession(sessionCookie);
-    twoFactorVerified = session?.twoFactorVerified ?? true;
+
+    if (session?.twoFactorVerified === true) {
+      twoFactorVerified = true;
+    } else if (session?.twoFactorVerified === false) {
+      twoFactorVerified = false;
+    } else {
+      // JWT doesn't contain twoFactorVerified (old session).
+      // Check DB: if user has 2FA enabled, treat as unverified.
+      const { getTotpSecret } = await import("../db");
+      const totp = await getTotpSecret(user.id);
+      twoFactorVerified = !(totp?.verified === true);
+    }
   } catch (error) {
     // Authentication is optional for public procedures.
     user = null;
