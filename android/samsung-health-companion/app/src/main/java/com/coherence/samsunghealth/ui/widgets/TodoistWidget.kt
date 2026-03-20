@@ -51,6 +51,9 @@ fun TodoistWidget(
   tasks: List<TodoistTask>,
   isLoading: Boolean,
   onComplete: (String) -> Unit,
+  error: String? = null,
+  lastUpdatedMillis: Long? = null,
+  onRetry: (() -> Unit)? = null,
   maxItems: Int = 8,
 ) {
   var filter by remember { mutableStateOf(TaskFilter.TODAY) }
@@ -69,7 +72,15 @@ fun TodoistWidget(
     }
   }
 
-  WidgetShell(title = "Tasks", icon = Icons.Default.CheckCircleOutline, category = WidgetCategory.PRODUCTIVITY) {
+  WidgetShell(
+    title = "Tasks",
+    icon = Icons.Default.CheckCircleOutline,
+    category = WidgetCategory.PRODUCTIVITY,
+    isLoading = isLoading && tasks.isEmpty(),
+    error = if (tasks.isEmpty()) error else null,
+    onRetry = if (tasks.isEmpty()) onRetry else null,
+    lastUpdated = lastUpdatedMillis,
+  ) {
     // Filter chips
     Row(
       horizontalArrangement = Arrangement.spacedBy(8.dp),

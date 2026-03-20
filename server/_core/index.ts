@@ -10,6 +10,9 @@ import oauthRouter from "../oauth-routes";
 import { serveStatic, setupVite } from "./vite";
 import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { registerPinGate } from "./pinGate";
+import { registerSecurityMiddleware } from "./security";
+import { registerSolarRecAuth } from "./solarRecAuth";
+import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -35,6 +38,10 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
+
+  // Security middleware (helmet, CORS, rate limiting) — must come first
+  registerSecurityMiddleware(app);
+
   // Keep request body limits bounded to protect 512MB instances from large payload spikes.
   app.use(express.json({ limit: "12mb" }));
   app.use(express.urlencoded({ limit: "12mb", extended: true }));
@@ -43,6 +50,15 @@ async function startServer() {
   registerOAuthRoutes(app);
   // Custom OAuth routes for integrations (Google, Todoist, WHOOP, Samsung webhook)
   app.use("/api", oauthRouter);
+  // Solar REC standalone auth + tRPC (must be before main tRPC)
+  registerSolarRecAuth(app);
+  app.use(
+    "/solar-rec/api/trpc",
+    createExpressMiddleware({
+      router: solarRecAppRouter,
+      createContext: createSolarRecContext,
+    })
+  );
   // tRPC API
   app.use(
     "/api/trpc",

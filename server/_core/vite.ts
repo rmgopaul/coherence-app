@@ -23,20 +23,23 @@ export async function setupVite(app: Express, server: Server) {
   app.use(vite.middlewares);
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
+    const isSolarRec = url.startsWith("/solar-rec") && !url.startsWith("/solar-rec/api/");
 
     try {
+      const htmlFile = isSolarRec ? "solar-rec.html" : "index.html";
+      const scriptSrc = isSolarRec ? `src="/src/solar-rec-main.tsx"` : `src="/src/main.tsx"`;
       const clientTemplate = path.resolve(
         import.meta.dirname,
         "../..",
         "client",
-        "index.html"
+        htmlFile
       );
 
-      // always reload the index.html file from disk incase it changes
+      // always reload the html file from disk incase it changes
       let template = await fs.promises.readFile(clientTemplate, "utf-8");
       template = template.replace(
-        `src="/src/main.tsx"`,
-        `src="/src/main.tsx?v=${nanoid()}"`
+        scriptSrc,
+        `${scriptSrc.slice(0, -1)}?v=${nanoid()}"`
       );
       const page = await vite.transformIndexHtml(url, template);
       res.status(200).set({ "Content-Type": "text/html" }).end(page);
@@ -59,6 +62,16 @@ export function serveStatic(app: Express) {
   }
 
   app.use(express.static(distPath));
+
+  // Solar REC standalone route — serve solar-rec.html
+  app.use("/solar-rec/*", (_req, res) => {
+    const solarRecHtml = path.resolve(distPath, "solar-rec.html");
+    if (fs.existsSync(solarRecHtml)) {
+      res.sendFile(solarRecHtml);
+    } else {
+      res.sendFile(path.resolve(distPath, "index.html"));
+    }
+  });
 
   // fall through to index.html if the file doesn't exist
   app.use("*", (_req, res) => {

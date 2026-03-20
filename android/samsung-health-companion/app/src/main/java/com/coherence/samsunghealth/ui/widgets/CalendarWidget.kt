@@ -25,9 +25,20 @@ import com.coherence.samsunghealth.data.model.CalendarEvent
 fun CalendarWidget(
   events: List<CalendarEvent>,
   isLoading: Boolean,
+  error: String? = null,
+  lastUpdatedMillis: Long? = null,
+  onRetry: (() -> Unit)? = null,
   maxItems: Int = 6,
 ) {
-  WidgetShell(title = "Calendar", icon = Icons.Default.CalendarMonth, category = WidgetCategory.PRODUCTIVITY, isLoading = isLoading && events.isEmpty()) {
+  WidgetShell(
+    title = "Calendar",
+    icon = Icons.Default.CalendarMonth,
+    category = WidgetCategory.PRODUCTIVITY,
+    isLoading = isLoading && events.isEmpty(),
+    error = if (events.isEmpty()) error else null,
+    onRetry = if (events.isEmpty()) onRetry else null,
+    lastUpdated = lastUpdatedMillis,
+  ) {
     if (isLoading && events.isEmpty()) {
       Text(
         "Loading events...",

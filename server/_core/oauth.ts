@@ -36,9 +36,15 @@ export function registerOAuthRoutes(app: Express) {
         lastSignedIn: new Date(),
       });
 
+      // Check if user has 2FA enabled to set twoFactorVerified in the JWT
+      const user = await db.getUserByOpenId(userInfo.openId);
+      const totpSecret = user ? await db.getTotpSecret(user.id) : undefined;
+      const has2FA = totpSecret?.verified === true;
+
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {
         name: userInfo.name || "",
         expiresInMs: ONE_YEAR_MS,
+        twoFactorVerified: !has2FA, // false if 2FA enabled (requires verification)
       });
 
       const cookieOptions = getSessionCookieOptions(req);

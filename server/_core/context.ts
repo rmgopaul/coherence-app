@@ -1,4 +1,6 @@
+import { COOKIE_NAME } from "@shared/const";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
+import { parse as parseCookieHeader } from "cookie";
 import type { User } from "../../drizzle/schema";
 import { sdk } from "./sdk";
 
@@ -27,12 +29,14 @@ export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
   user: User | null;
+  twoFactorVerified: boolean;
 };
 
 export async function createContext(
   opts: CreateExpressContextOptions
 ): Promise<TrpcContext> {
   let user: User | null = null;
+  let twoFactorVerified = true;
 
   if (isAuthBypassEnabled()) {
     user = buildBypassUser();
@@ -40,11 +44,18 @@ export async function createContext(
       req: opts.req,
       res: opts.res,
       user,
+      twoFactorVerified: true,
     };
   }
 
   try {
     user = await sdk.authenticateRequest(opts.req);
+
+    // Extract twoFactorVerified from the JWT payload
+    const cookies = parseCookieHeader(opts.req.headers.cookie ?? "");
+    const sessionCookie = cookies[COOKIE_NAME];
+    const session = await sdk.verifySession(sessionCookie);
+    twoFactorVerified = session?.twoFactorVerified ?? true;
   } catch (error) {
     // Authentication is optional for public procedures.
     user = null;
@@ -54,5 +65,6 @@ export async function createContext(
     req: opts.req,
     res: opts.res,
     user,
+    twoFactorVerified,
   };
 }

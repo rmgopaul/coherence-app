@@ -19,7 +19,10 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -29,29 +32,52 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.coherence.samsunghealth.data.model.AppPreferences
+import com.coherence.samsunghealth.data.model.ThemeMode
 import com.coherence.samsunghealth.data.model.User
 import com.coherence.samsunghealth.ui.LocalApp
+import kotlinx.coroutines.launch
+
+private val DashboardWidgets = listOf(
+  "suggested_actions" to "Suggested Actions",
+  "todays_plan" to "Today's Plan",
+  "health" to "Samsung Health",
+  "whoop" to "WHOOP",
+  "focus_timer" to "Focus Timer",
+  "tasks" to "Tasks",
+  "calendar" to "Calendar",
+  "gmail" to "Gmail",
+  "habits" to "Habits",
+  "supplements" to "Supplements",
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
   val app = LocalApp.current
+  val scope = rememberCoroutineScope()
+  val preferences by app.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
 
   var user by remember { mutableStateOf<User?>(null) }
   var serverReachable by remember { mutableStateOf<Boolean?>(null) }
+  var showSignOutConfirm by remember { mutableStateOf(false) }
 
   LaunchedEffect(Unit) {
     try {
@@ -75,11 +101,90 @@ fun SettingsScreen(onBack: () -> Unit) {
     },
   ) { padding ->
     LazyColumn(
-      modifier = Modifier.fillMaxSize().padding(padding),
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(padding),
       contentPadding = PaddingValues(16.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-      // Account info
+      item {
+        SettingsCard(title = "Appearance", icon = Icons.Default.Palette) {
+          OptionGroup(
+            title = "Theme mode",
+            options = ThemeMode.entries.map { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
+            selectedIndex = ThemeMode.entries.indexOf(preferences.themeMode),
+            onSelected = { index ->
+              scope.launch { app.appPreferencesRepository.setThemeMode(ThemeMode.entries[index]) }
+            },
+          )
+          SettingToggle(
+            title = "Dynamic colors",
+            subtitle = "Use Android dynamic color palette when available",
+            checked = preferences.dynamicColorEnabled,
+            onCheckedChange = { enabled ->
+              scope.launch { app.appPreferencesRepository.setDynamicColorEnabled(enabled) }
+            },
+          )
+          SettingToggle(
+            title = "True black mode",
+            subtitle = "Use OLED-friendly black surfaces in dark mode",
+            checked = preferences.trueBlackEnabled,
+            onCheckedChange = { enabled ->
+              scope.launch { app.appPreferencesRepository.setTrueBlackEnabled(enabled) }
+            },
+          )
+        }
+      }
+
+      item {
+        SettingsCard(title = "Dashboard", icon = Icons.Default.Settings) {
+          Text("Widget visibility", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
+          Spacer(Modifier.height(4.dp))
+          DashboardWidgets.forEach { (widgetId, label) ->
+            SettingToggle(
+              title = label,
+              subtitle = "Show on dashboard",
+              checked = !preferences.hiddenWidgets.contains(widgetId),
+              onCheckedChange = { visible ->
+                scope.launch { app.appPreferencesRepository.setWidgetHidden(widgetId, !visible) }
+              },
+            )
+          }
+        }
+      }
+
+      item {
+        SettingsCard(title = "Productivity", icon = Icons.Default.Sync) {
+          OptionGroup(
+            title = "Focus timer duration",
+            options = listOf("25 minutes", "50 minutes", "90 minutes"),
+            selectedIndex = listOf(25, 50, 90).indexOf(preferences.focusDurationMinutes).coerceAtLeast(0),
+            onSelected = { index ->
+              val minutes = listOf(25, 50, 90)[index]
+              scope.launch { app.appPreferencesRepository.setFocusDurationMinutes(minutes) }
+            },
+          )
+          OptionGroup(
+            title = "Refresh interval",
+            options = listOf("5 min", "15 min", "30 min", "60 min"),
+            selectedIndex = listOf(5, 15, 30, 60).indexOf(preferences.refreshIntervalMinutes).coerceAtLeast(1),
+            onSelected = { index ->
+              val minutes = listOf(5, 15, 30, 60)[index]
+              scope.launch { app.appPreferencesRepository.setRefreshIntervalMinutes(minutes) }
+            },
+          )
+          OptionGroup(
+            title = "Lock timeout",
+            options = listOf("Immediate", "1 min", "5 min", "15 min"),
+            selectedIndex = listOf(0, 1, 5, 15).indexOf(preferences.lockTimeoutMinutes).coerceAtLeast(2),
+            onSelected = { index ->
+              val minutes = listOf(0, 1, 5, 15)[index]
+              scope.launch { app.appPreferencesRepository.setLockTimeoutMinutes(minutes) }
+            },
+          )
+        }
+      }
+
       item {
         Card(
           colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -95,9 +200,6 @@ fun SettingsScreen(onBack: () -> Unit) {
               user?.email?.let { email ->
                 Text(email, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
               }
-              user?.loginMethod?.let { method ->
-                Text("Login: $method", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-              }
             } else {
               Text("Loading...", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -105,7 +207,6 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
       }
 
-      // Server status
       item {
         Card(
           colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -137,17 +238,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
               }
             }
-            Text(
-              "app.coherence-rmg.com",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              modifier = Modifier.padding(top = 4.dp),
-            )
           }
         }
       }
 
-      // App info
       item {
         Card(
           colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -161,41 +255,116 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             Text("Coherence Dashboard", style = MaterialTheme.typography.bodyMedium)
-            Text("Version 0.2.0", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text("Samsung Health Sync + Productivity Hub", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Version 0.2.1", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
           }
         }
       }
 
-      // Health Connect sync info
-      item {
-        Card(
-          colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-          elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        ) {
-          Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-              Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
-              Spacer(Modifier.width(8.dp))
-              Text("Health Connect Sync", style = MaterialTheme.typography.titleMedium)
-            }
-            Spacer(Modifier.height(8.dp))
-            Text("Background sync runs every 15 minutes via WorkManager", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-          }
-        }
-      }
-
-      // Sign out
       item {
         Spacer(Modifier.height(8.dp))
         Button(
-          onClick = { app.authManager.clearSession() },
+          onClick = { showSignOutConfirm = true },
           modifier = Modifier.fillMaxWidth(),
           colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
         ) {
           Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(20.dp))
           Spacer(Modifier.width(8.dp))
           Text("Sign Out")
+        }
+      }
+    }
+  }
+
+  if (showSignOutConfirm) {
+    AlertDialog(
+      onDismissRequest = { showSignOutConfirm = false },
+      title = { Text("Sign out?") },
+      text = { Text("You will need to log in again to continue.") },
+      confirmButton = {
+        Button(
+          onClick = {
+            showSignOutConfirm = false
+            app.authManager.clearSession()
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+        ) {
+          Text("Sign out")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { showSignOutConfirm = false }) {
+          Text("Cancel")
+        }
+      },
+    )
+  }
+}
+
+@Composable
+private fun SettingsCard(
+  title: String,
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  content: @Composable () -> Unit,
+) {
+  Card(
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+  ) {
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(8.dp))
+        Text(title, style = MaterialTheme.typography.titleMedium)
+      }
+      content()
+    }
+  }
+}
+
+@Composable
+private fun SettingToggle(
+  title: String,
+  subtitle: String,
+  checked: Boolean,
+  onCheckedChange: (Boolean) -> Unit,
+) {
+  Row(
+    modifier = Modifier.fillMaxWidth(),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Column(modifier = Modifier.weight(1f)) {
+      Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+      Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    Switch(checked = checked, onCheckedChange = onCheckedChange)
+  }
+}
+
+@Composable
+private fun OptionGroup(
+  title: String,
+  options: List<String>,
+  selectedIndex: Int,
+  onSelected: (Int) -> Unit,
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Medium)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+      options.forEachIndexed { index, label ->
+        val selected = index == selectedIndex
+        Button(
+          onClick = { onSelected(index) },
+          colors = if (selected) {
+            ButtonDefaults.buttonColors()
+          } else {
+            ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.surfaceVariant,
+              contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          },
+          contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+          Text(label)
         }
       }
     }

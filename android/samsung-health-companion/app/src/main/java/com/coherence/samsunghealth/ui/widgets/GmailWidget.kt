@@ -29,9 +29,20 @@ fun GmailWidget(
   messages: List<GmailMessage>,
   isLoading: Boolean,
   onMarkRead: (String) -> Unit,
+  error: String? = null,
+  lastUpdatedMillis: Long? = null,
+  onRetry: (() -> Unit)? = null,
   maxItems: Int = 6,
 ) {
-  WidgetShell(title = "Gmail", icon = Icons.Default.Email, category = WidgetCategory.PRODUCTIVITY, isLoading = isLoading && messages.isEmpty()) {
+  WidgetShell(
+    title = "Gmail",
+    icon = Icons.Default.Email,
+    category = WidgetCategory.PRODUCTIVITY,
+    isLoading = isLoading && messages.isEmpty(),
+    error = if (messages.isEmpty()) error else null,
+    onRetry = if (messages.isEmpty()) onRetry else null,
+    lastUpdated = lastUpdatedMillis,
+  ) {
     if (isLoading && messages.isEmpty()) {
       Text(
         "Loading emails...",

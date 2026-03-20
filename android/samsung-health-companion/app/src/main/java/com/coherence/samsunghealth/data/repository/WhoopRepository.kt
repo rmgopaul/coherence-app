@@ -9,11 +9,7 @@ class WhoopRepository(private val trpc: TrpcClient) {
   private val json = Json { ignoreUnknownKeys = true }
 
   suspend fun getSummary(): WhoopSummary? {
-    return try {
-      val result = trpc.query("whoop.getSummary")
-      json.decodeFromJsonElement(WhoopSummary.serializer(), result)
-    } catch (_: Exception) {
-      null
-    }
+    val result = trpc.query("whoop.getSummary")
+    return json.decodeFromJsonElement(WhoopSummary.serializer(), result)
   }
 }

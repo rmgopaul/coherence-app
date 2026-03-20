@@ -36,6 +36,10 @@ import {
   sectionEngagement,
   InsertSectionEngagement,
   InsertUserFeedback,
+  userTotpSecrets,
+  InsertUserTotpSecret,
+  userRecoveryCodes,
+  InsertUserRecoveryCode,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
@@ -605,8 +609,72 @@ export async function getConversations(userId: number) {
   return withDbRetry("list conversations", async () =>
     db.select().from(conversations)
       .where(eq(conversations.userId, userId))
-      .orderBy(conversations.updatedAt)
+      .orderBy(desc(conversations.updatedAt), desc(conversations.createdAt))
   );
+}
+
+function buildMessagePreview(content: string | null | undefined, maxLength = 140): string {
+  const normalized = String(content ?? "").replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+export async function getConversationSummaries(userId: number, limit = 100) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const cappedLimit = Math.max(1, Math.min(limit, 300));
+  const rows = await withDbRetry("list conversation summaries", async () =>
+    db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.userId, userId))
+      .orderBy(desc(conversations.updatedAt), desc(conversations.createdAt))
+      .limit(cappedLimit)
+  );
+
+  const summaries = await Promise.all(
+    rows.map(async (row) => {
+      const latestMessage = await withDbRetry("load latest conversation message", async () =>
+        db
+          .select({
+            content: messages.content,
+            createdAt: messages.createdAt,
+          })
+          .from(messages)
+          .where(eq(messages.conversationId, row.id))
+          .orderBy(desc(messages.createdAt))
+          .limit(1)
+      );
+
+      const messageCountRows = await withDbRetry("count conversation messages", async () =>
+        db
+          .select({
+            count: sql<number>`count(*)`,
+          })
+          .from(messages)
+          .where(eq(messages.conversationId, row.id))
+      );
+
+      const latest = latestMessage[0];
+      const messageCount = Number(messageCountRows[0]?.count ?? 0);
+
+      return {
+        ...row,
+        lastMessagePreview: buildMessagePreview(latest?.content),
+        lastMessageAt: latest?.createdAt ?? row.updatedAt ?? row.createdAt ?? null,
+        messageCount,
+      };
+    })
+  );
+
+  return summaries.sort((a, b) => {
+    const aMs = a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : 0;
+    const bMs = b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : 0;
+    if (aMs !== bMs) return bMs - aMs;
+    return b.title.localeCompare(a.title);
+  });
 }
 
 export async function createConversation(userId: number, title: string) {
@@ -642,6 +710,10 @@ export async function addMessage(message: InsertMessage) {
   
   await withDbRetry("insert message", async () => {
     await db.insert(messages).values(message);
+    await db
+      .update(conversations)
+      .set({ updatedAt: new Date() })
+      .where(eq(conversations.id, message.conversationId));
   });
 }
 
@@ -1533,5 +1605,118 @@ export async function listRecentUserFeedback(limit = 200) {
       .from(userFeedback)
       .orderBy(desc(userFeedback.createdAt))
       .limit(Math.max(1, Math.min(500, limit)))
+  );
+}
+
+// ── TOTP 2FA functions ──────────────────────────────────────────────
+
+export async function getTotpSecret(userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await withDbRetry("get totp secret", async () =>
+    db.select().from(userTotpSecrets).where(eq(userTotpSecrets.userId, userId)).limit(1)
+  );
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function saveTotpSecret(userId: number, secret: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  // Delete any existing (unverified) secret first
+  await withDbRetry("delete old totp secret", async () =>
+    db.delete(userTotpSecrets).where(eq(userTotpSecrets.userId, userId))
+  );
+
+  await withDbRetry("save totp secret", async () =>
+    db.insert(userTotpSecrets).values({
+      id: nanoid(),
+      userId,
+      secret,
+      verified: false,
+    })
+  );
+}
+
+export async function markTotpVerified(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("mark totp verified", async () =>
+    db.update(userTotpSecrets).set({ verified: true }).where(eq(userTotpSecrets.userId, userId))
+  );
+}
+
+export async function deleteTotpSecret(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("delete totp secret", async () =>
+    db.delete(userTotpSecrets).where(eq(userTotpSecrets.userId, userId))
+  );
+}
+
+export async function saveRecoveryCodes(userId: number, codeHashes: string[]) {
+  const db = await getDb();
+  if (!db) return;
+
+  // Delete existing codes first
+  await withDbRetry("delete old recovery codes", async () =>
+    db.delete(userRecoveryCodes).where(eq(userRecoveryCodes.userId, userId))
+  );
+
+  if (codeHashes.length === 0) return;
+
+  const rows = codeHashes.map((hash) => ({
+    id: nanoid(),
+    userId,
+    codeHash: hash,
+  }));
+
+  await withDbRetry("save recovery codes", async () =>
+    db.insert(userRecoveryCodes).values(rows)
+  );
+}
+
+export async function getUnusedRecoveryCodeCount(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const result = await withDbRetry("count unused recovery codes", async () =>
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(userRecoveryCodes)
+      .where(and(eq(userRecoveryCodes.userId, userId), sql`${userRecoveryCodes.usedAt} IS NULL`))
+  );
+  return result[0]?.count ?? 0;
+}
+
+export async function consumeRecoveryCode(userId: number, codeHash: string): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+
+  const result = await withDbRetry("consume recovery code", async () =>
+    db
+      .update(userRecoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(
+        and(
+          eq(userRecoveryCodes.userId, userId),
+          eq(userRecoveryCodes.codeHash, codeHash),
+          sql`${userRecoveryCodes.usedAt} IS NULL`
+        )
+      )
+  );
+  // MySQL returns affectedRows for updates
+  return (result as any)?.[0]?.affectedRows > 0 || (result as any)?.rowsAffected > 0;
+}
+
+export async function deleteRecoveryCodes(userId: number) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("delete recovery codes", async () =>
+    db.delete(userRecoveryCodes).where(eq(userRecoveryCodes.userId, userId))
   );
 }

@@ -7,6 +7,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalFeedbackWidget from "./components/GlobalFeedbackWidget";
 import GlobalClockifyTimer from "./components/GlobalClockifyTimer";
 import PinGate from "./components/PinGate";
+import TwoFactorGate from "./components/TwoFactorGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { AppShell } from "./components/layout/AppShell";
 
@@ -108,7 +109,9 @@ function App() {
         <TooltipProvider>
           <Toaster />
           <PinGate>
-            <Router />
+            <TwoFactorGate>
+              <Router />
+            </TwoFactorGate>
           </PinGate>
         </TooltipProvider>
       </ThemeProvider>

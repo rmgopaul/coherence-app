@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import TwoFactorSettings from "@/components/TwoFactorSettings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -807,6 +808,8 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+
+          <TwoFactorSettings />
 
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Profile</h2>

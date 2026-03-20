@@ -19,8 +19,19 @@ import com.coherence.samsunghealth.data.model.SamsungHealthDisplay
 fun HealthWidget(
   healthData: SamsungHealthDisplay?,
   isLoading: Boolean,
+  error: String? = null,
+  lastUpdatedMillis: Long? = null,
+  onRetry: (() -> Unit)? = null,
 ) {
-  WidgetShell(title = "Samsung Health", icon = Icons.Default.FavoriteBorder, category = WidgetCategory.HEALTH, isLoading = isLoading && healthData == null) {
+  WidgetShell(
+    title = "Samsung Health",
+    icon = Icons.Default.FavoriteBorder,
+    category = WidgetCategory.HEALTH,
+    isLoading = isLoading && healthData == null,
+    error = if (healthData == null) error else null,
+    onRetry = if (healthData == null) onRetry else null,
+    lastUpdated = lastUpdatedMillis,
+  ) {
     if (isLoading && healthData == null) {
       Text(
         "Loading health data...",

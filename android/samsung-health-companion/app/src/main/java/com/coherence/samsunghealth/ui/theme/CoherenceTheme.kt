@@ -15,6 +15,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.coherence.samsunghealth.data.model.ThemeMode
 
 // ── Semantic category colors ────────────────────────────────────────────────────
 
@@ -129,17 +130,35 @@ private val DarkColorScheme = darkColorScheme(
 
 @Composable
 fun CoherenceTheme(
-  darkTheme: Boolean = isSystemInDarkTheme(),
+  themeMode: ThemeMode = ThemeMode.SYSTEM,
   dynamicColor: Boolean = true,
+  trueBlack: Boolean = false,
   content: @Composable () -> Unit,
 ) {
-  val colorScheme = when {
-    dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+  val systemDark = isSystemInDarkTheme()
+  val darkTheme = when (themeMode) {
+    ThemeMode.SYSTEM -> systemDark
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK -> true
+  }
+
+  val baseColorScheme = when {
+    dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !trueBlack -> {
       val context = LocalContext.current
       if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
     }
     darkTheme -> DarkColorScheme
     else -> LightColorScheme
+  }
+
+  val colorScheme = if (darkTheme && trueBlack) {
+    baseColorScheme.copy(
+      background = Color.Black,
+      surface = Color.Black,
+      surfaceVariant = Color(0xFF121212),
+    )
+  } else {
+    baseColorScheme
   }
 
   val tokens = if (darkTheme) DarkTokens else LightTokens

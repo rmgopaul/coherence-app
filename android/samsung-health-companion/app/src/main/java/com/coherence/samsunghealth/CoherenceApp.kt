@@ -4,6 +4,7 @@ import android.app.Application
 import com.coherence.samsunghealth.auth.AuthManager
 import com.coherence.samsunghealth.data.local.AppDatabase
 import com.coherence.samsunghealth.data.repository.AuthRepository
+import com.coherence.samsunghealth.data.repository.AppPreferencesRepository
 import com.coherence.samsunghealth.data.repository.ChatRepository
 import com.coherence.samsunghealth.data.repository.ClockifyRepository
 import com.coherence.samsunghealth.data.repository.GoogleRepository
@@ -11,6 +12,7 @@ import com.coherence.samsunghealth.data.repository.HabitsRepository
 import com.coherence.samsunghealth.data.repository.MetricsRepository
 import com.coherence.samsunghealth.data.repository.NotesRepository
 import com.coherence.samsunghealth.data.repository.PlanRepository
+import com.coherence.samsunghealth.data.repository.SearchRepository
 import com.coherence.samsunghealth.data.repository.SupplementsRepository
 import com.coherence.samsunghealth.data.repository.TodoistRepository
 import com.coherence.samsunghealth.data.repository.WhoopRepository
@@ -36,6 +38,8 @@ class CoherenceApplication : Application() {
   // Repositories
   lateinit var authRepository: AuthRepository
     private set
+  lateinit var appPreferencesRepository: AppPreferencesRepository
+    private set
   lateinit var todoistRepository: TodoistRepository
     private set
   lateinit var googleRepository: GoogleRepository
@@ -45,6 +49,8 @@ class CoherenceApplication : Application() {
   lateinit var chatRepository: ChatRepository
     private set
   lateinit var planRepository: PlanRepository
+    private set
+  lateinit var searchRepository: SearchRepository
     private set
   lateinit var supplementsRepository: SupplementsRepository
     private set
@@ -65,11 +71,13 @@ class CoherenceApplication : Application() {
     database = AppDatabase.getInstance(this)
 
     authRepository = AuthRepository(trpcClient)
+    appPreferencesRepository = AppPreferencesRepository(this)
     todoistRepository = TodoistRepository(trpcClient)
     googleRepository = GoogleRepository(trpcClient)
     whoopRepository = WhoopRepository(trpcClient)
     chatRepository = ChatRepository(trpcClient)
     planRepository = PlanRepository(trpcClient)
+    searchRepository = SearchRepository(trpcClient)
     supplementsRepository = SupplementsRepository(trpcClient)
     habitsRepository = HabitsRepository(trpcClient)
     notesRepository = NotesRepository(trpcClient)

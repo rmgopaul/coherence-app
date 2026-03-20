@@ -34,6 +34,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.coherence.samsunghealth.data.model.DailyHealthMetric
+import com.coherence.samsunghealth.data.model.TrendSeriesResponse
 import com.coherence.samsunghealth.ui.LocalApp
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,9 +45,18 @@ fun DailyLogScreen(onBack: () -> Unit) {
 
   val metrics = remember { mutableStateListOf<DailyHealthMetric>() }
   var isLoading by remember { mutableStateOf(true) }
+  var loadError by remember { mutableStateOf<String?>(null) }
+  var trendSeries by remember { mutableStateOf<TrendSeriesResponse?>(null) }
 
   LaunchedEffect(Unit) {
-    metrics.addAll(repo.getHistory(30))
+    try {
+      metrics.clear()
+      metrics.addAll(repo.getHistory(30))
+      trendSeries = repo.getTrendSeries(30)
+      loadError = null
+    } catch (error: Exception) {
+      loadError = error.message ?: "Could not load Daily Log data."
+    }
     isLoading = false
   }
 
@@ -69,15 +79,78 @@ fun DailyLogScreen(onBack: () -> Unit) {
     ) {
       if (isLoading) {
         item { Text("Loading metrics...") }
-      } else if (metrics.isEmpty()) {
-        item { Text("No daily log data yet. Metrics are captured from your WHOOP, Samsung Health, and Todoist data.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+      } else if (loadError != null) {
+        item {
+          Text(
+            text = loadError ?: "Could not load Daily Log data.",
+            color = MaterialTheme.colorScheme.error,
+          )
+        }
       } else {
-        items(metrics) { metric ->
-          MetricDayCard(metric)
+        if (trendSeries != null) {
+          item {
+            TrendSummaryCard(trendSeries = trendSeries!!)
+          }
+        }
+        if (metrics.isEmpty()) {
+          item { Text("No daily log data yet. Metrics are captured from your WHOOP, Samsung Health, and Todoist data.", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        } else {
+          items(metrics) { metric ->
+            MetricDayCard(metric)
+          }
         }
       }
     }
   }
+}
+
+@Composable
+private fun TrendSummaryCard(trendSeries: TrendSeriesResponse) {
+  val recoveryVsSleep = trendSeries.correlations.recoveryVsSleep
+  val recoveryVsTasks = trendSeries.correlations.recoveryVsTasksCompleted
+  val recoveryAvg = trendSeries.series.recovery.mapNotNull { it.value }.averageOrNull()
+  val sleepAvg = trendSeries.series.sleepHours.mapNotNull { it.value }.averageOrNull()
+
+  Card(
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+  ) {
+    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+      Text("30-Day Trends", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+      Spacer(Modifier.height(8.dp))
+      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+        MetricValue("Recovery Avg", recoveryAvg?.let { "${it.toInt()}%" } ?: "—")
+        MetricValue("Sleep Avg", sleepAvg?.let { "%.1fh".format(it) } ?: "—")
+      }
+      Spacer(Modifier.height(10.dp))
+      Text(
+        text = "Recovery vs sleep correlation: ${formatCorrelation(recoveryVsSleep)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      Text(
+        text = "Recovery vs tasks correlation: ${formatCorrelation(recoveryVsTasks)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    }
+  }
+}
+
+private fun formatCorrelation(value: Double?): String {
+  return when {
+    value == null -> "not enough data"
+    value >= 0.6 -> "strong positive (${String.format("%.2f", value)})"
+    value >= 0.25 -> "moderate positive (${String.format("%.2f", value)})"
+    value > -0.25 -> "weak / no clear signal (${String.format("%.2f", value)})"
+    value > -0.6 -> "moderate negative (${String.format("%.2f", value)})"
+    else -> "strong negative (${String.format("%.2f", value)})"
+  }
+}
+
+private fun List<Double>.averageOrNull(): Double? {
+  if (isEmpty()) return null
+  return average()
 }
 
 @Composable

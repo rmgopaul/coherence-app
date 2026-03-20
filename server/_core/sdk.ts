@@ -27,6 +27,7 @@ export type SessionPayload = {
   openId: string;
   appId: string;
   name: string;
+  twoFactorVerified?: boolean;
 };
 
 const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
@@ -171,13 +172,14 @@ class SDKServer {
    */
   async createSessionToken(
     openId: string,
-    options: { expiresInMs?: number; name?: string } = {}
+    options: { expiresInMs?: number; name?: string; twoFactorVerified?: boolean } = {}
   ): Promise<string> {
     return this.signSession(
       {
         openId,
         appId: ENV.appId,
         name: options.name || "",
+        twoFactorVerified: options.twoFactorVerified,
       },
       options
     );
@@ -196,6 +198,7 @@ class SDKServer {
       openId: payload.openId,
       appId: payload.appId,
       name: payload.name,
+      twoFactorVerified: payload.twoFactorVerified ?? true,
     })
       .setProtectedHeader({ alg: "HS256", typ: "JWT" })
       .setExpirationTime(expirationSeconds)
@@ -204,7 +207,7 @@ class SDKServer {
 
   async verifySession(
     cookieValue: string | undefined | null
-  ): Promise<{ openId: string; appId: string; name: string } | null> {
+  ): Promise<{ openId: string; appId: string; name: string; twoFactorVerified: boolean } | null> {
     if (!cookieValue) {
       console.warn("[Auth] Missing session cookie");
       return null;
@@ -215,7 +218,7 @@ class SDKServer {
       const { payload } = await jwtVerify(cookieValue, secretKey, {
         algorithms: ["HS256"],
       });
-      const { openId, appId, name } = payload as Record<string, unknown>;
+      const { openId, appId, name, twoFactorVerified } = payload as Record<string, unknown>;
 
       if (
         !isNonEmptyString(openId) ||
@@ -230,6 +233,7 @@ class SDKServer {
         openId,
         appId,
         name,
+        twoFactorVerified: twoFactorVerified === true,
       };
     } catch (error) {
       console.warn("[Auth] Session verification failed", String(error));
@@ -259,6 +263,20 @@ class SDKServer {
       platform: loginMethod,
       loginMethod,
     } as GetUserInfoWithJwtResponse;
+  }
+
+  async reissueSessionWith2FA(
+    cookieValue: string | undefined | null
+  ): Promise<string | null> {
+    const session = await this.verifySession(cookieValue);
+    if (!session) return null;
+
+    return this.signSession({
+      openId: session.openId,
+      appId: session.appId,
+      name: session.name,
+      twoFactorVerified: true,
+    });
   }
 
   async authenticateRequest(req: Request): Promise<User> {

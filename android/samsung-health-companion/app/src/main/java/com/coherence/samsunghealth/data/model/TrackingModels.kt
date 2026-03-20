@@ -105,3 +105,40 @@ data class DailyHealthMetric(
   val samsungEnergyScore: Double? = null,
   val todoistCompletedCount: Int? = null,
 )
+
+@Serializable
+data class TrendSeriesPoint(
+  val dateKey: String,
+  val value: Double? = null,
+)
+
+@Serializable
+data class TrendDateRange(
+  val startDateKey: String? = null,
+  val endDateKey: String? = null,
+)
+
+@Serializable
+data class TrendSeriesCollection(
+  val recovery: List<TrendSeriesPoint> = emptyList(),
+  val sleepHours: List<TrendSeriesPoint> = emptyList(),
+  val strain: List<TrendSeriesPoint> = emptyList(),
+  val hrvMs: List<TrendSeriesPoint> = emptyList(),
+  val steps: List<TrendSeriesPoint> = emptyList(),
+  val tasksCompleted: List<TrendSeriesPoint> = emptyList(),
+)
+
+@Serializable
+data class TrendCorrelations(
+  val recoveryVsSleep: Double? = null,
+  val recoveryVsTasksCompleted: Double? = null,
+)
+
+@Serializable
+data class TrendSeriesResponse(
+  val days: Int = 30,
+  val dateRange: TrendDateRange = TrendDateRange(),
+  val pointCount: Int = 0,
+  val series: TrendSeriesCollection = TrendSeriesCollection(),
+  val correlations: TrendCorrelations = TrendCorrelations(),
+)

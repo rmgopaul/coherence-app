@@ -421,3 +421,40 @@ export const userFeedback = mysqlTable(
 
 export type UserFeedback = typeof userFeedback.$inferSelect;
 export type InsertUserFeedback = typeof userFeedback.$inferInsert;
+
+// TOTP two-factor authentication secrets (one per user).
+export const userTotpSecrets = mysqlTable(
+  "userTotpSecrets",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    secret: varchar("secret", { length: 256 }).notNull(), // base32-encoded TOTP secret
+    verified: boolean("verified").default(false).notNull(), // true once setup confirmed with valid code
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userIdx: uniqueIndex("user_totp_secrets_user_idx").on(table.userId),
+  })
+);
+
+export type UserTotpSecret = typeof userTotpSecrets.$inferSelect;
+export type InsertUserTotpSecret = typeof userTotpSecrets.$inferInsert;
+
+// One-time recovery codes for 2FA backup access.
+export const userRecoveryCodes = mysqlTable(
+  "userRecoveryCodes",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    codeHash: varchar("codeHash", { length: 128 }).notNull(), // SHA-256 hash
+    usedAt: timestamp("usedAt"), // NULL = unused
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    userIdx: index("user_recovery_codes_user_idx").on(table.userId),
+  })
+);
+
+export type UserRecoveryCode = typeof userRecoveryCodes.$inferSelect;
+export type InsertUserRecoveryCode = typeof userRecoveryCodes.$inferInsert;

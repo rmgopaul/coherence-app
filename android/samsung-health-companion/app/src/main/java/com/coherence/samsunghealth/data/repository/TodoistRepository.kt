@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.data.repository
 
+import com.coherence.samsunghealth.data.model.TodoistProject
 import com.coherence.samsunghealth.data.model.TodoistTask
 import com.coherence.samsunghealth.network.TrpcClient
 import kotlinx.serialization.json.Json
@@ -17,11 +18,12 @@ class TodoistRepository(private val trpc: TrpcClient) {
       buildJsonObject { put("filter", it) }
     }
     val result = trpc.query("todoist.getTasks", input)
-    return try {
-      result.jsonArray.map { json.decodeFromJsonElement(TodoistTask.serializer(), it) }
-    } catch (_: Exception) {
-      emptyList()
-    }
+    return result.jsonArray.map { json.decodeFromJsonElement(TodoistTask.serializer(), it) }
+  }
+
+  suspend fun getProjects(): List<TodoistProject> {
+    val result = trpc.query("todoist.getProjects")
+    return result.jsonArray.map { json.decodeFromJsonElement(TodoistProject.serializer(), it) }
   }
 
   suspend fun completeTask(taskId: String): Boolean {
@@ -34,16 +36,27 @@ class TodoistRepository(private val trpc: TrpcClient) {
     }
   }
 
-  suspend fun createTask(content: String, dueString: String? = null): Boolean {
+  suspend fun createTask(
+    content: String,
+    description: String? = null,
+    projectId: String? = null,
+    priority: Int? = null,
+    dueString: String? = null,
+    dueDate: String? = null,
+  ): TodoistTask? {
     return try {
       val input = buildJsonObject {
         put("content", content)
+        description?.takeIf { it.isNotBlank() }?.let { put("description", it) }
+        projectId?.takeIf { it.isNotBlank() }?.let { put("projectId", it) }
+        priority?.let { put("priority", it) }
         dueString?.let { put("dueString", it) }
+        dueDate?.let { put("dueDate", it) }
       }
-      trpc.mutate("todoist.createTask", input)
-      true
+      val result = trpc.mutate("todoist.createTask", input)
+      json.decodeFromJsonElement(TodoistTask.serializer(), result)
     } catch (_: Exception) {
-      false
+      null
     }
   }
 }

@@ -13,23 +13,31 @@ class GoogleRepository(private val trpc: TrpcClient) {
 
   private val json = Json { ignoreUnknownKeys = true }
 
-  suspend fun getCalendarEvents(): List<CalendarEvent> {
-    val result = trpc.query("google.getCalendarEvents")
-    return try {
-      result.jsonArray.map { json.decodeFromJsonElement(CalendarEvent.serializer(), it) }
-    } catch (_: Exception) {
-      emptyList()
+  suspend fun getCalendarEvents(
+    startIso: String? = null,
+    endIso: String? = null,
+    daysAhead: Int? = null,
+    maxResults: Int? = null,
+  ): List<CalendarEvent> {
+    val hasInput = startIso != null || endIso != null || daysAhead != null || maxResults != null
+    val input = if (hasInput) {
+      buildJsonObject {
+        startIso?.let { put("startIso", it) }
+        endIso?.let { put("endIso", it) }
+        daysAhead?.let { put("daysAhead", it) }
+        maxResults?.let { put("maxResults", it) }
+      }
+    } else {
+      null
     }
+    val result = trpc.query("google.getCalendarEvents", input)
+    return result.jsonArray.map { json.decodeFromJsonElement(CalendarEvent.serializer(), it) }
   }
 
   suspend fun getGmailMessages(maxResults: Int = 20): List<GmailMessage> {
     val input = buildJsonObject { put("maxResults", maxResults) }
     val result = trpc.query("google.getGmailMessages", input)
-    return try {
-      result.jsonArray.map { json.decodeFromJsonElement(GmailMessage.serializer(), it) }
-    } catch (_: Exception) {
-      emptyList()
-    }
+    return result.jsonArray.map { json.decodeFromJsonElement(GmailMessage.serializer(), it) }
   }
 
   suspend fun markGmailAsRead(messageId: String): Boolean {
@@ -43,21 +51,13 @@ class GoogleRepository(private val trpc: TrpcClient) {
   }
 
   suspend fun getDriveFiles(): List<DriveFile> {
-    return try {
-      val result = trpc.query("google.getDriveFiles")
-      result.jsonArray.map { json.decodeFromJsonElement(DriveFile.serializer(), it) }
-    } catch (_: Exception) {
-      emptyList()
-    }
+    val result = trpc.query("google.getDriveFiles")
+    return result.jsonArray.map { json.decodeFromJsonElement(DriveFile.serializer(), it) }
   }
 
   suspend fun searchDrive(query: String): List<DriveFile> {
-    return try {
-      val input = buildJsonObject { put("query", query) }
-      val result = trpc.query("google.searchDrive", input)
-      result.jsonArray.map { json.decodeFromJsonElement(DriveFile.serializer(), it) }
-    } catch (_: Exception) {
-      emptyList()
-    }
+    val input = buildJsonObject { put("query", query) }
+    val result = trpc.query("google.searchDrive", input)
+    return result.jsonArray.map { json.decodeFromJsonElement(DriveFile.serializer(), it) }
   }
 }

@@ -12,10 +12,13 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.coherence.samsunghealth.ui.LocalApp
+import com.coherence.samsunghealth.ui.state.dataOrNull
+import com.coherence.samsunghealth.ui.state.errorOrNull
+import com.coherence.samsunghealth.ui.state.isLoading
+import com.coherence.samsunghealth.ui.state.updatedAtOrNull
 import com.coherence.samsunghealth.ui.widgets.HealthWidget
 import com.coherence.samsunghealth.ui.widgets.WhoopWidget
 
@@ -23,13 +26,7 @@ import com.coherence.samsunghealth.ui.widgets.WhoopWidget
 @Composable
 fun HealthScreen() {
   val app = LocalApp.current
-  val viewModel = remember {
-    DashboardViewModel(
-      todoistRepo = app.todoistRepository,
-      googleRepo = app.googleRepository,
-      whoopRepo = app.whoopRepository,
-    )
-  }
+  val viewModel = app.dashboardViewModel
   val state by viewModel.state.collectAsState()
 
   PullToRefreshBox(
@@ -51,14 +48,20 @@ fun HealthScreen() {
       }
       item {
         HealthWidget(
-          healthData = state.health,
-          isLoading = false,
+          healthData = state.healthState.dataOrNull(),
+          isLoading = state.healthState.isLoading(),
+          error = state.healthState.errorOrNull(),
+          lastUpdatedMillis = state.healthState.updatedAtOrNull(),
+          onRetry = { viewModel.retryHealth() },
         )
       }
       item {
         WhoopWidget(
-          summary = state.whoop,
-          isLoading = state.whoopLoading,
+          summary = state.whoopState.dataOrNull(),
+          isLoading = state.whoopState.isLoading(),
+          error = state.whoopState.errorOrNull(),
+          lastUpdatedMillis = state.whoopState.updatedAtOrNull(),
+          onRetry = { viewModel.retryWhoop() },
         )
       }
     }

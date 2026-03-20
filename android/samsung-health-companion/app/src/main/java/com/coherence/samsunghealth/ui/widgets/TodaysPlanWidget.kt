@@ -21,7 +21,14 @@ fun TodaysPlanWidget(
   error: String?,
   onGenerate: () -> Unit,
 ) {
-  WidgetShell(title = "Today's Plan", icon = Icons.Default.AutoAwesome, category = WidgetCategory.AI) {
+  WidgetShell(
+    title = "Today's Plan",
+    icon = Icons.Default.AutoAwesome,
+    category = WidgetCategory.AI,
+    isLoading = isGenerating && overview == null,
+    error = if (overview == null) error else null,
+    onRetry = if (overview == null) onGenerate else null,
+  ) {
     if (overview != null) {
       RichText(
         text = overview,

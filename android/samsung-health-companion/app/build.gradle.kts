@@ -76,6 +76,9 @@ dependencies {
   implementation("androidx.room:room-ktx:2.7.0")
   ksp("androidx.room:room-compiler:2.7.0")
 
+  // DataStore
+  implementation("androidx.datastore:datastore-preferences:1.1.1")
+
   // Auth (CustomTabs)
   implementation("androidx.browser:browser:1.8.0")
   implementation("androidx.security:security-crypto:1.1.0-alpha06")

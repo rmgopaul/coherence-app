@@ -7,6 +7,9 @@ data class Conversation(
   val id: String,
   val userId: Int? = null,
   val title: String,
+  val lastMessagePreview: String? = null,
+  val lastMessageAt: String? = null,
+  val messageCount: Int? = null,
   val createdAt: String? = null,
   val updatedAt: String? = null,
 )

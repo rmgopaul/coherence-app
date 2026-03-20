@@ -1,5 +1,10 @@
 package com.coherence.samsunghealth.ui.screens
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +30,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,6 +42,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -54,6 +61,12 @@ import com.coherence.samsunghealth.data.model.Conversation
 import com.coherence.samsunghealth.data.repository.ChatRepository
 import com.coherence.samsunghealth.ui.LocalApp
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+
+private val MessageTimestampFormatter = DateTimeFormatter.ofPattern("MMM d, h:mm a")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +97,7 @@ private fun ChatListView(
 ) {
   val conversations = remember { mutableStateListOf<Conversation>() }
   var isLoading by remember { mutableStateOf(true) }
+  var conversationToDelete by remember { mutableStateOf<Conversation?>(null) }
   val scope = rememberCoroutineScope()
 
   LaunchedEffect(Unit) {
@@ -138,7 +152,11 @@ private fun ChatListView(
           )
           Spacer(modifier = Modifier.height(8.dp))
           Text("No conversations yet", color = MaterialTheme.colorScheme.onSurfaceVariant)
-          Text("Tap + to start chatting", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          Text(
+            "Tap + to start chatting",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
         }
       }
     } else {
@@ -168,20 +186,26 @@ private fun ChatListView(
                 tint = MaterialTheme.colorScheme.primary,
               )
               Spacer(modifier = Modifier.width(12.dp))
-              Text(
-                text = conversation.title,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.weight(1f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-              )
+              Column(modifier = Modifier.weight(1f)) {
+                Text(
+                  text = conversation.title,
+                  style = MaterialTheme.typography.bodyLarge,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                )
+                val meta = buildConversationMeta(conversation)
+                if (meta.isNotBlank()) {
+                  Text(
+                    text = meta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
+              }
               IconButton(
-                onClick = {
-                  scope.launch {
-                    chatRepo.deleteConversation(conversation.id)
-                    conversations.remove(conversation)
-                  }
-                },
+                onClick = { conversationToDelete = conversation },
                 modifier = Modifier.size(32.dp),
               ) {
                 Icon(
@@ -196,6 +220,33 @@ private fun ChatListView(
         }
       }
     }
+  }
+
+  if (conversationToDelete != null) {
+    val toDelete = conversationToDelete!!
+    AlertDialog(
+      onDismissRequest = { conversationToDelete = null },
+      title = { Text("Delete conversation?") },
+      text = { Text("This permanently removes ${toDelete.title} and all messages.") },
+      confirmButton = {
+        TextButton(
+          onClick = {
+            scope.launch {
+              chatRepo.deleteConversation(toDelete.id)
+              conversations.removeAll { it.id == toDelete.id }
+              conversationToDelete = null
+            }
+          },
+        ) {
+          Text("Delete")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { conversationToDelete = null }) {
+          Text("Cancel")
+        }
+      },
+    )
   }
 }
 
@@ -217,7 +268,6 @@ private fun ChatConversationView(
     messages.addAll(chatRepo.getMessages(conversation.id))
   }
 
-  // Scroll to bottom when new messages arrive
   LaunchedEffect(messages.size) {
     if (messages.isNotEmpty()) {
       listState.animateScrollToItem(messages.size - 1)
@@ -242,7 +292,6 @@ private fun ChatConversationView(
         .padding(padding)
         .imePadding(),
     ) {
-      // Messages list
       LazyColumn(
         modifier = Modifier
           .weight(1f)
@@ -255,18 +304,10 @@ private fun ChatConversationView(
           ChatBubble(message)
         }
         if (isSending) {
-          item {
-            Text(
-              "Thinking...",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              modifier = Modifier.padding(start = 8.dp),
-            )
-          }
+          item { TypingIndicator() }
         }
       }
 
-      // Input bar
       Row(
         modifier = Modifier
           .fillMaxWidth()
@@ -288,13 +329,13 @@ private fun ChatConversationView(
               val text = inputText.trim()
               inputText = ""
               isSending = true
-              // Add user message locally
               messages.add(
                 ChatMessage(
                   id = "local-${System.currentTimeMillis()}",
                   conversationId = conversation.id,
                   role = "user",
                   content = text,
+                  createdAt = Instant.now().toString(),
                 )
               )
               scope.launch {
@@ -306,6 +347,7 @@ private fun ChatConversationView(
                       conversationId = conversation.id,
                       role = "assistant",
                       content = reply,
+                      createdAt = Instant.now().toString(),
                     )
                   )
                 }
@@ -331,28 +373,86 @@ private fun ChatConversationView(
 private fun ChatBubble(message: ChatMessage) {
   val isUser = message.role == "user"
 
-  Row(
+  Column(
     modifier = Modifier.fillMaxWidth(),
-    horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+    horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
   ) {
-    Surface(
-      shape = RoundedCornerShape(
-        topStart = 16.dp,
-        topEnd = 16.dp,
-        bottomStart = if (isUser) 16.dp else 4.dp,
-        bottomEnd = if (isUser) 4.dp else 16.dp,
-      ),
-      color = if (isUser) MaterialTheme.colorScheme.primary
-      else MaterialTheme.colorScheme.surfaceVariant,
-      modifier = Modifier.widthIn(max = 300.dp),
-    ) {
+    Row(horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+      Surface(
+        shape = RoundedCornerShape(
+          topStart = 16.dp,
+          topEnd = 16.dp,
+          bottomStart = if (isUser) 16.dp else 4.dp,
+          bottomEnd = if (isUser) 4.dp else 16.dp,
+        ),
+        color = if (isUser) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.widthIn(max = 300.dp),
+      ) {
+        Text(
+          text = message.content,
+          modifier = Modifier.padding(12.dp),
+          color = if (isUser) MaterialTheme.colorScheme.onPrimary
+          else MaterialTheme.colorScheme.onSurfaceVariant,
+          style = MaterialTheme.typography.bodyMedium,
+        )
+      }
+    }
+    val timestamp = formatMessageTimestamp(message.createdAt)
+    if (timestamp != null) {
       Text(
-        text = message.content,
-        modifier = Modifier.padding(12.dp),
-        color = if (isUser) MaterialTheme.colorScheme.onPrimary
-        else MaterialTheme.colorScheme.onSurfaceVariant,
-        style = MaterialTheme.typography.bodyMedium,
+        text = timestamp,
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
       )
     }
+  }
+}
+
+@Composable
+private fun TypingIndicator() {
+  val transition = rememberInfiniteTransition(label = "typing")
+  val phase by transition.animateFloat(
+    initialValue = 0f,
+    targetValue = 1f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 900, easing = LinearEasing),
+    ),
+    label = "typingPhase",
+  )
+  val dots = when {
+    phase < 0.33f -> "."
+    phase < 0.66f -> ".."
+    else -> "..."
+  }
+  Text(
+    text = "Thinking$dots",
+    style = MaterialTheme.typography.bodySmall,
+    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    modifier = Modifier.padding(start = 8.dp),
+  )
+}
+
+private fun buildConversationMeta(conversation: Conversation): String {
+  val preview = conversation.lastMessagePreview?.trim().orEmpty()
+  val timestamp = formatMessageTimestamp(conversation.lastMessageAt)
+  return when {
+    preview.isNotBlank() && !timestamp.isNullOrBlank() -> "$preview • $timestamp"
+    preview.isNotBlank() -> preview
+    !timestamp.isNullOrBlank() -> timestamp
+    else -> ""
+  }
+}
+
+private fun formatMessageTimestamp(value: String?): String? {
+  if (value.isNullOrBlank()) return null
+  return runCatching {
+    Instant.parse(value).atZone(ZoneId.systemDefault()).format(MessageTimestampFormatter)
+  }.getOrElse {
+    runCatching {
+      val normalized = value.replace(" ", "T")
+      LocalDateTime.parse(normalized).atZone(ZoneId.systemDefault()).format(MessageTimestampFormatter)
+    }.getOrNull()
   }
 }

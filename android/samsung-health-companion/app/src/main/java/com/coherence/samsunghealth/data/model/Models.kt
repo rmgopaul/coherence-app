@@ -44,6 +44,13 @@ data class TodoistTask(
   val due: TodoistDue? = null,
 )
 
+@Serializable
+data class TodoistProject(
+  val id: String,
+  val name: String,
+  val color: String = "",
+)
+
 // ── Google Calendar ──
 
 @Serializable

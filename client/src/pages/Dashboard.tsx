@@ -339,11 +339,11 @@ export default function Dashboard() {
   const shouldLoadWorkspaceData = isSectionVisible("workspace") && workspaceExpanded;
   const shouldLoadChatData = isSectionVisible("chat") && chatExpanded;
 
-  const hasGoogle = integrations?.some((i) => i.provider === "google");
-  const hasTodoist = integrations?.some((i) => i.provider === "todoist");
-  const hasOpenAI = integrations?.some((i) => i.provider === "openai");
-  const hasWhoop = integrations?.some((i) => i.provider === "whoop");
-  const hasSamsungHealth = integrations?.some((i) => i.provider === "samsung-health");
+  const hasGoogle = Boolean(integrations?.some((i) => i.provider === "google"));
+  const hasTodoist = Boolean(integrations?.some((i) => i.provider === "todoist"));
+  const hasOpenAI = Boolean(integrations?.some((i) => i.provider === "openai"));
+  const hasWhoop = Boolean(integrations?.some((i) => i.provider === "whoop"));
+  const hasSamsungHealth = Boolean(integrations?.some((i) => i.provider === "samsung-health"));
   const greetingDisplayName = (preferences?.displayName || user?.name || "User").trim();
 
   const samsungHealthSnapshot = useMemo(() => {
@@ -1956,8 +1956,8 @@ export default function Dashboard() {
           stats={[
             { label: "Tasks", value: (allTodoistTasks || []).filter((t: any) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
             { label: "Events", value: (calendarEvents || []).length, icon: Calendar },
-            { label: "Recovery", value: whoopSummary?.recovery?.score != null ? `${Math.round(whoopSummary.recovery.score)}%` : "--", icon: HeartPulse },
-            { label: "Completed", value: todoistCompletedToday?.totalCompleted ?? "--", icon: CheckSquare },
+            { label: "Recovery", value: whoopSummary?.recoveryScore != null ? `${Math.round(whoopSummary.recoveryScore)}%` : "--", icon: HeartPulse },
+            { label: "Completed", value: todoistCompletedToday?.count ?? "--", icon: CheckSquare },
           ]}
         />
       </div>

@@ -1,7 +1,8 @@
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { adminProcedure, publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { adminProcedure, publicProcedure, protectedProcedure, twoFactorPendingProcedure, router } from "./_core/trpc";
+import { sdk } from "./_core/sdk";
 import { z } from "zod";
 
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
@@ -50,6 +51,65 @@ const CLOCKIFY_PROVIDER = "clockify";
 
 function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return value;
+}
+
+function normalizeSearchQuery(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function truncateText(value: string, maxLength = 180): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1)}…`;
+}
+
+function scoreMatch(haystack: string, query: string): number {
+  const text = normalizeSearchQuery(haystack);
+  if (!text || !query) return 0;
+  if (text === query) return 120;
+  if (text.startsWith(query)) return 90;
+  if (text.includes(query)) return 60;
+  const tokens = query.split(/\s+/).filter(Boolean);
+  if (tokens.length > 1 && tokens.every((token) => text.includes(token))) return 45;
+  return 0;
+}
+
+function safeIso(value: unknown): string | null {
+  if (!value) return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function computePearsonCorrelation(
+  values: Array<{
+    x: number | null;
+    y: number | null;
+  }>
+): number | null {
+  const points = values
+    .filter((value) => value.x !== null && value.y !== null)
+    .map((value) => ({ x: value.x as number, y: value.y as number }));
+  if (points.length < 3) return null;
+
+  const n = points.length;
+  const sumX = points.reduce((acc, point) => acc + point.x, 0);
+  const sumY = points.reduce((acc, point) => acc + point.y, 0);
+  const sumXy = points.reduce((acc, point) => acc + point.x * point.y, 0);
+  const sumX2 = points.reduce((acc, point) => acc + point.x * point.x, 0);
+  const sumY2 = points.reduce((acc, point) => acc + point.y * point.y, 0);
+
+  const numerator = n * sumXy - sumX * sumY;
+  const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+  if (!Number.isFinite(denominator) || denominator <= 0) return null;
+  const correlation = numerator / denominator;
+  if (!Number.isFinite(correlation)) return null;
+  return Math.max(-1, Math.min(1, correlation));
 }
 
 function isValidIpv4(ip: string): boolean {
@@ -632,7 +692,17 @@ export const appRouter = router({
   system: systemRouter,
 
   auth: router({
-    me: publicProcedure.query(opts => opts.ctx.user),
+    me: publicProcedure.query(async (opts) => {
+      if (!opts.ctx.user) return null;
+      const { getTotpSecret } = await import("./db");
+      const totp = await getTotpSecret(opts.ctx.user.id);
+      const has2FA = totp?.verified === true;
+      return {
+        ...opts.ctx.user,
+        twoFactorEnabled: has2FA,
+        twoFactorPending: has2FA && !opts.ctx.twoFactorVerified,
+      };
+    }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
@@ -642,12 +712,140 @@ export const appRouter = router({
     }),
   }),
 
+  twoFactor: router({
+    status: twoFactorPendingProcedure.query(async ({ ctx }) => {
+      const { getTotpSecret, getUnusedRecoveryCodeCount } = await import("./db");
+      const totp = await getTotpSecret(ctx.user.id);
+      const enabled = totp?.verified === true;
+      const recoveryCodesRemaining = enabled ? await getUnusedRecoveryCodeCount(ctx.user.id) : 0;
+      return { enabled, recoveryCodesRemaining };
+    }),
+
+    setup: protectedProcedure.mutation(async ({ ctx }) => {
+      const { generateTotpSecret, generateRecoveryCodes, hashRecoveryCode, generateQrDataUrl } = await import("./_core/totp");
+      const { saveTotpSecret, saveRecoveryCodes } = await import("./db");
+
+      const { secret, otpauthUri } = generateTotpSecret(ctx.user.email || ctx.user.name || "user");
+      const qrDataUrl = await generateQrDataUrl(otpauthUri);
+      const recoveryCodes = generateRecoveryCodes();
+      const codeHashes = recoveryCodes.map(hashRecoveryCode);
+
+      await saveTotpSecret(ctx.user.id, secret);
+      await saveRecoveryCodes(ctx.user.id, codeHashes);
+
+      return { qrDataUrl, secret, recoveryCodes };
+    }),
+
+    confirmSetup: twoFactorPendingProcedure
+      .input(z.object({ code: z.string().length(6) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getTotpSecret, markTotpVerified } = await import("./db");
+        const { verifyTotpCode } = await import("./_core/totp");
+
+        const totp = await getTotpSecret(ctx.user.id);
+        if (!totp || totp.verified) {
+          return { success: false, error: "No pending 2FA setup found" };
+        }
+
+        if (!verifyTotpCode(totp.secret, input.code)) {
+          return { success: false, error: "Invalid code" };
+        }
+
+        await markTotpVerified(ctx.user.id);
+        return { success: true };
+      }),
+
+    verify: twoFactorPendingProcedure
+      .input(z.object({ code: z.string().min(1).max(20) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getTotpSecret, consumeRecoveryCode } = await import("./db");
+        const { verifyTotpCode, hashRecoveryCode } = await import("./_core/totp");
+        const { parse: parseCookieHeader } = await import("cookie");
+
+        const totp = await getTotpSecret(ctx.user.id);
+        if (!totp?.verified) {
+          return { success: false, error: "2FA not enabled" };
+        }
+
+        const code = input.code.trim();
+        let valid = false;
+
+        // Try TOTP code first (6 digits)
+        if (/^\d{6}$/.test(code)) {
+          valid = verifyTotpCode(totp.secret, code);
+        }
+
+        // Try recovery code if TOTP didn't match
+        if (!valid) {
+          const hash = hashRecoveryCode(code);
+          valid = await consumeRecoveryCode(ctx.user.id, hash);
+        }
+
+        if (!valid) {
+          return { success: false, error: "Invalid code" };
+        }
+
+        // Re-sign JWT with twoFactorVerified: true
+        const cookies = parseCookieHeader(ctx.req.headers.cookie ?? "");
+        const sessionCookie = cookies[COOKIE_NAME];
+        const newToken = await sdk.reissueSessionWith2FA(sessionCookie);
+        if (newToken) {
+          const cookieOptions = getSessionCookieOptions(ctx.req);
+          ctx.res.cookie(COOKIE_NAME, newToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+        }
+
+        return { success: true };
+      }),
+
+    disable: protectedProcedure
+      .input(z.object({ code: z.string().min(1).max(20) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getTotpSecret, deleteTotpSecret, deleteRecoveryCodes } = await import("./db");
+        const { verifyTotpCode } = await import("./_core/totp");
+
+        const totp = await getTotpSecret(ctx.user.id);
+        if (!totp?.verified) {
+          return { success: false, error: "2FA not enabled" };
+        }
+
+        if (!verifyTotpCode(totp.secret, input.code.trim())) {
+          return { success: false, error: "Invalid code" };
+        }
+
+        await deleteTotpSecret(ctx.user.id);
+        await deleteRecoveryCodes(ctx.user.id);
+        return { success: true };
+      }),
+
+    regenerateRecoveryCodes: protectedProcedure
+      .input(z.object({ code: z.string().length(6) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getTotpSecret, saveRecoveryCodes } = await import("./db");
+        const { verifyTotpCode, generateRecoveryCodes, hashRecoveryCode } = await import("./_core/totp");
+
+        const totp = await getTotpSecret(ctx.user.id);
+        if (!totp?.verified) {
+          return { success: false, error: "2FA not enabled", recoveryCodes: [] };
+        }
+
+        if (!verifyTotpCode(totp.secret, input.code.trim())) {
+          return { success: false, error: "Invalid code", recoveryCodes: [] };
+        }
+
+        const recoveryCodes = generateRecoveryCodes();
+        const codeHashes = recoveryCodes.map(hashRecoveryCode);
+        await saveRecoveryCodes(ctx.user.id, codeHashes);
+
+        return { success: true, recoveryCodes };
+      }),
+  }),
+
   integrations: router({
     list: protectedProcedure.query(async ({ ctx }) => {
       const { getUserIntegrations } = await import("./db");
       return getUserIntegrations(ctx.user.id);
     }),
-    delete: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ input }) => {
+    delete: protectedProcedure.input(z.object({ id: z.string().max(64) })).mutation(async ({ input }) => {
       const { deleteIntegration } = await import("./db");
       await deleteIntegration(input.id);
       return { success: true };
@@ -656,7 +854,7 @@ export const appRouter = router({
 
   oauthCreds: router({
     get: protectedProcedure
-      .input(z.object({ provider: z.string() }))
+      .input(z.object({ provider: z.string().min(1).max(64) }))
       .query(async ({ ctx, input }) => {
         const { getOAuthCredential } = await import("./db");
         return getOAuthCredential(ctx.user.id, input.provider);
@@ -664,9 +862,9 @@ export const appRouter = router({
     save: protectedProcedure
       .input(
         z.object({
-          provider: z.string(),
-          clientId: z.string(),
-          clientSecret: z.string(),
+          provider: z.string().min(1).max(64),
+          clientId: z.string().min(1).max(512),
+          clientSecret: z.string().min(1).max(512),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -682,7 +880,7 @@ export const appRouter = router({
         return { success: true };
       }),
     delete: protectedProcedure
-      .input(z.object({ provider: z.string() }))
+      .input(z.object({ provider: z.string().min(1).max(64) }))
       .mutation(async ({ ctx, input }) => {
         const { deleteOAuthCredential } = await import("./db");
         await deleteOAuthCredential(ctx.user.id, input.provider);
@@ -2213,7 +2411,7 @@ export const appRouter = router({
 
   todoist: router({
     connect: protectedProcedure
-      .input(z.object({ apiToken: z.string() }))
+      .input(z.object({ apiToken: z.string().min(1).max(512) }))
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
@@ -2233,7 +2431,7 @@ export const appRouter = router({
         return { success: true };
       }),
     getTasks: protectedProcedure
-      .input(z.object({ filter: z.string().optional() }).optional())
+      .input(z.object({ filter: z.string().max(500).optional() }).optional())
       .query(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
         const integration = await getIntegrationByProvider(ctx.user.id, "todoist");
@@ -2344,7 +2542,9 @@ export const appRouter = router({
         content: z.string(),
         description: z.string().optional(),
         projectId: z.string().optional(),
-        priority: z.number().min(1).max(4).optional()
+        priority: z.number().min(1).max(4).optional(),
+        dueString: z.string().optional(),
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       }))
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
@@ -2358,7 +2558,9 @@ export const appRouter = router({
           input.content,
           input.description,
           input.projectId,
-          input.priority
+          input.priority,
+          input.dueString,
+          input.dueDate
         );
       }),
     completeTask: protectedProcedure
@@ -2409,21 +2611,33 @@ export const appRouter = router({
       const { getConversations } = await import("./db");
       return getConversations(ctx.user.id);
     }),
+    listSummaries: protectedProcedure
+      .input(
+        z
+          .object({
+            limit: z.number().int().min(1).max(300).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const { getConversationSummaries } = await import("./db");
+        return getConversationSummaries(ctx.user.id, input?.limit ?? 100);
+      }),
     create: protectedProcedure
-      .input(z.object({ title: z.string() }))
+      .input(z.object({ title: z.string().min(1).max(500) }))
       .mutation(async ({ ctx, input }) => {
         const { createConversation } = await import("./db");
         const id = await createConversation(ctx.user.id, input.title);
         return { id };
       }),
     getMessages: protectedProcedure
-      .input(z.object({ conversationId: z.string() }))
+      .input(z.object({ conversationId: z.string().max(64) }))
       .query(async ({ input }) => {
         const { getConversationMessages } = await import("./db");
         return getConversationMessages(input.conversationId);
       }),
     delete: protectedProcedure
-      .input(z.object({ conversationId: z.string() }))
+      .input(z.object({ conversationId: z.string().max(64) }))
       .mutation(async ({ ctx, input }) => {
         const { deleteConversation } = await import("./db");
         await deleteConversation(input.conversationId, ctx.user.id);
@@ -2435,8 +2649,8 @@ export const appRouter = router({
     connect: protectedProcedure
       .input(
         z.object({
-          apiKey: z.string().optional(),
-          model: z.string().optional(),
+          apiKey: z.string().max(512).optional(),
+          model: z.string().max(64).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -2789,7 +3003,7 @@ Generate the pipeline analysis report now.`,
         return { analysis };
       }),
     chat: protectedProcedure
-      .input(z.object({ conversationId: z.string(), message: z.string() }))
+      .input(z.object({ conversationId: z.string().max(64), message: z.string().min(1).max(32000) }))
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, getConversationMessages, addMessage } = await import("./db");
         const integration = await getIntegrationByProvider(ctx.user.id, "openai");
@@ -2916,19 +3130,35 @@ Generate the pipeline analysis report now.`,
   }),
 
   google: router({
-    getCalendarEvents: protectedProcedure.query(async ({ ctx }) => {
-      try {
-        const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
-        const accessToken = await getValidGoogleToken(ctx.user.id);
-        const { getGoogleCalendarEvents } = await import("./services/google");
-        const events = await getGoogleCalendarEvents(accessToken);
-        console.log(`[Google Calendar] Fetched ${events.length} events`);
-        return events;
-      } catch (error) {
-        console.error("[Google Calendar] Error fetching events:", error);
-        throw error;
-      }
-    }),
+    getCalendarEvents: protectedProcedure
+      .input(
+        z
+          .object({
+            startIso: z.string().datetime().optional(),
+            endIso: z.string().datetime().optional(),
+            daysAhead: z.number().int().min(1).max(365).optional(),
+            maxResults: z.number().int().min(1).max(250).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        try {
+          const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
+          const accessToken = await getValidGoogleToken(ctx.user.id);
+          const { getGoogleCalendarEvents } = await import("./services/google");
+          const events = await getGoogleCalendarEvents(accessToken, {
+            startIso: input?.startIso,
+            endIso: input?.endIso,
+            daysAhead: input?.daysAhead,
+            maxResults: input?.maxResults,
+          });
+          console.log(`[Google Calendar] Fetched ${events.length} events`);
+          return events;
+        } catch (error) {
+          console.error("[Google Calendar] Error fetching events:", error);
+          throw error;
+        }
+      }),
     getGmailMessages: protectedProcedure
       .input(z.object({ maxResults: z.number().int().min(1).max(800).optional() }).optional())
       .query(async ({ ctx, input }) => {
@@ -3092,6 +3322,78 @@ Generate the pipeline analysis report now.`,
         const { getDailyMetricsHistory } = await import("./db");
         return getDailyMetricsHistory(ctx.user.id, input?.limit ?? 30);
       }),
+    getTrendSeries: protectedProcedure
+      .input(
+        z
+          .object({
+            days: z.number().int().min(7).max(365).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const days = input?.days ?? 30;
+        const { getDailyMetricsHistory } = await import("./db");
+        const rows = await getDailyMetricsHistory(ctx.user.id, days);
+        const ordered = [...rows].sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+
+        const makeSeries = (getter: (row: (typeof ordered)[number]) => number | null) =>
+          ordered.map((row) => ({
+            dateKey: row.dateKey,
+            value: getter(row),
+          }));
+
+        const recoverySeries = makeSeries((row) => toFiniteNumber(row.whoopRecoveryScore));
+        const sleepSeries = makeSeries(
+          (row) => toFiniteNumber(row.whoopSleepHours) ?? toFiniteNumber(row.samsungSleepHours)
+        );
+        const strainSeries = makeSeries((row) => toFiniteNumber(row.whoopDayStrain));
+        const hrvSeries = makeSeries((row) => toFiniteNumber(row.whoopHrvMs));
+        const stepsSeries = makeSeries((row) =>
+          row.samsungSteps !== null && row.samsungSteps !== undefined ? Number(row.samsungSteps) : null
+        );
+        const completedTaskSeries = makeSeries((row) =>
+          row.todoistCompletedCount !== null && row.todoistCompletedCount !== undefined
+            ? Number(row.todoistCompletedCount)
+            : null
+        );
+
+        const recoveryVsSleep = computePearsonCorrelation(
+          ordered.map((row) => ({
+            x: toFiniteNumber(row.whoopSleepHours) ?? toFiniteNumber(row.samsungSleepHours),
+            y: toFiniteNumber(row.whoopRecoveryScore),
+          }))
+        );
+        const recoveryVsTasks = computePearsonCorrelation(
+          ordered.map((row) => ({
+            x:
+              row.todoistCompletedCount !== null && row.todoistCompletedCount !== undefined
+                ? Number(row.todoistCompletedCount)
+                : null,
+            y: toFiniteNumber(row.whoopRecoveryScore),
+          }))
+        );
+
+        return {
+          days,
+          dateRange: {
+            startDateKey: ordered[0]?.dateKey ?? null,
+            endDateKey: ordered[ordered.length - 1]?.dateKey ?? null,
+          },
+          pointCount: ordered.length,
+          series: {
+            recovery: recoverySeries,
+            sleepHours: sleepSeries,
+            strain: strainSeries,
+            hrvMs: hrvSeries,
+            steps: stepsSeries,
+            tasksCompleted: completedTaskSeries,
+          },
+          correlations: {
+            recoveryVsSleep,
+            recoveryVsTasksCompleted: recoveryVsTasks,
+          },
+        };
+      }),
     captureToday: protectedProcedure
       .input(
         z
@@ -3106,6 +3408,175 @@ Generate the pipeline analysis report now.`,
         await captureDailySnapshotForUser(ctx.user.id, dateKey);
 
         return { success: true, dateKey };
+      }),
+  }),
+
+  search: router({
+    global: protectedProcedure
+      .input(
+        z.object({
+          query: z.string().min(1).max(200),
+          limit: z.number().int().min(1).max(100).optional(),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        const query = normalizeSearchQuery(input.query);
+        const limit = input.limit ?? 30;
+
+        const {
+          listNotes,
+          getConversationSummaries,
+          getIntegrationByProvider,
+        } = await import("./db");
+
+        const noteRowsPromise = listNotes(ctx.user.id, 300);
+        const conversationRowsPromise = getConversationSummaries(ctx.user.id, 200);
+        const todoistIntegrationPromise = getIntegrationByProvider(ctx.user.id, "todoist");
+        const googleIntegrationPromise = getIntegrationByProvider(ctx.user.id, "google");
+
+        const [noteRows, conversationRows, todoistIntegration, googleIntegration] = await Promise.all([
+          noteRowsPromise,
+          conversationRowsPromise,
+          todoistIntegrationPromise,
+          googleIntegrationPromise,
+        ]);
+
+        let todoistTasks: any[] = [];
+        if (todoistIntegration?.accessToken) {
+          try {
+            const { getTodoistTasks } = await import("./services/todoist");
+            todoistTasks = await getTodoistTasks(todoistIntegration.accessToken);
+          } catch (error) {
+            console.warn("[Search] Failed to load Todoist tasks:", error);
+          }
+        }
+
+        let calendarEvents: any[] = [];
+        let driveFiles: any[] = [];
+        if (googleIntegration) {
+          try {
+            const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
+            const accessToken = await getValidGoogleToken(ctx.user.id);
+            const { getGoogleCalendarEvents, searchGoogleDrive } = await import("./services/google");
+            const [events, files] = await Promise.all([
+              getGoogleCalendarEvents(accessToken, { daysAhead: 120, maxResults: 250 }),
+              searchGoogleDrive(accessToken, input.query),
+            ]);
+            calendarEvents = events;
+            driveFiles = files;
+          } catch (error) {
+            console.warn("[Search] Failed to load Google search sources:", error);
+          }
+        }
+
+        type SearchItem = {
+          id: string;
+          type: "task" | "note" | "calendar_event" | "conversation" | "drive_file";
+          title: string;
+          subtitle: string | null;
+          url: string | null;
+          timestamp: string | null;
+          score: number;
+        };
+
+        const results: SearchItem[] = [];
+
+        noteRows.forEach((note) => {
+          const haystack = `${note.title} ${note.content} ${note.notebook}`;
+          const score = scoreMatch(haystack, query);
+          if (score <= 0) return;
+          results.push({
+            id: note.id,
+            type: "note",
+            title: note.title,
+            subtitle: truncateText(note.content ?? "", 160),
+            url: null,
+            timestamp: safeIso(note.updatedAt ?? note.createdAt),
+            score: score + 8,
+          });
+        });
+
+        conversationRows.forEach((conversation) => {
+          const title = String(conversation.title ?? "Conversation");
+          const preview = String(conversation.lastMessagePreview ?? "");
+          const haystack = `${title} ${preview}`;
+          const score = scoreMatch(haystack, query);
+          if (score <= 0) return;
+          results.push({
+            id: conversation.id,
+            type: "conversation",
+            title,
+            subtitle: truncateText(preview, 160),
+            url: null,
+            timestamp: safeIso(conversation.lastMessageAt ?? conversation.updatedAt ?? conversation.createdAt),
+            score: score + 5,
+          });
+        });
+
+        todoistTasks.forEach((task) => {
+          const content = String(task?.content ?? "");
+          const description = String(task?.description ?? "");
+          const haystack = `${content} ${description}`;
+          const score = scoreMatch(haystack, query);
+          if (score <= 0) return;
+          results.push({
+            id: String(task?.id ?? ""),
+            type: "task",
+            title: content || "(Untitled task)",
+            subtitle: description ? truncateText(description, 160) : null,
+            url: null,
+            timestamp: safeIso(task?.createdAt ?? task?.addedAt ?? task?.due?.date),
+            score: score + 10,
+          });
+        });
+
+        calendarEvents.forEach((event) => {
+          const title = String(event?.summary ?? "");
+          const location = String(event?.location ?? "");
+          const description = String(event?.description ?? "");
+          const haystack = `${title} ${location} ${description}`;
+          const score = scoreMatch(haystack, query);
+          if (score <= 0) return;
+          results.push({
+            id: String(event?.id ?? ""),
+            type: "calendar_event",
+            title: title || "(Untitled event)",
+            subtitle: truncateText([location, description].filter(Boolean).join(" | "), 160) || null,
+            url: toNonEmptyString(event?.htmlLink),
+            timestamp: safeIso(event?.start?.dateTime ?? event?.start?.date),
+            score: score + 7,
+          });
+        });
+
+        driveFiles.forEach((file) => {
+          const name = String(file?.name ?? "");
+          const mimeType = String(file?.mimeType ?? "");
+          const haystack = `${name} ${mimeType}`;
+          const score = scoreMatch(haystack, query);
+          if (score <= 0) return;
+          results.push({
+            id: String(file?.id ?? ""),
+            type: "drive_file",
+            title: name || "(Untitled file)",
+            subtitle: mimeType || null,
+            url: toNonEmptyString(file?.webViewLink),
+            timestamp: safeIso(file?.modifiedTime),
+            score: score + 4,
+          });
+        });
+
+        results.sort((a, b) => {
+          if (a.score !== b.score) return b.score - a.score;
+          const aTs = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const bTs = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return bTs - aTs;
+        });
+
+        return {
+          query: input.query,
+          totalMatched: results.length,
+          items: results.slice(0, limit),
+        };
       }),
   }),
 

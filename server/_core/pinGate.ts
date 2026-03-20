@@ -44,6 +44,7 @@ function isAllowedWithoutPin(path: string): boolean {
   if (path === "/api/pin/logout") return true;
   if (path === "/api/webhooks/samsung-health") return true;
   if (path === "/api/webhooks/whoop") return true;
+  if (path.startsWith("/solar-rec/")) return true; // Solar REC has its own auth
   return false;
 }
 

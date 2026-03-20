@@ -20,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.coherence.samsunghealth.CoherenceApplication
+import com.coherence.samsunghealth.data.model.AppPreferences
 import com.coherence.samsunghealth.ui.navigation.AppNavGraph
 import com.coherence.samsunghealth.ui.screens.LoginScreen
 import com.coherence.samsunghealth.ui.screens.PinScreen
@@ -31,7 +32,13 @@ val LocalApp = compositionLocalOf<CoherenceApplication> {
 
 @Composable
 fun CoherenceAppUi(app: CoherenceApplication) {
-  CoherenceTheme {
+  val preferences by app.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
+
+  CoherenceTheme(
+    themeMode = preferences.themeMode,
+    dynamicColor = preferences.dynamicColorEnabled,
+    trueBlack = preferences.trueBlackEnabled,
+  ) {
     CompositionLocalProvider(LocalApp provides app) {
       val isAuthenticated by app.authManager.isAuthenticated.collectAsState()
       val isPinUnlocked by app.authManager.isPinUnlocked.collectAsState()

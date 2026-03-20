@@ -323,7 +323,9 @@ export async function createTodoistTask(
   content: string,
   description?: string,
   projectId?: string,
-  priority?: number
+  priority?: number,
+  dueString?: string,
+  dueDate?: string
 ): Promise<TodoistTask> {
   const response = await fetch(`${TODOIST_API_BASE}/tasks`, {
     method: "POST",
@@ -336,6 +338,8 @@ export async function createTodoistTask(
       description,
       project_id: projectId,
       priority,
+      due_string: dueString,
+      due_date: dueDate,
     }),
   });
 

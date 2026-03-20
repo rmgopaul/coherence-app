@@ -16,12 +16,43 @@ async function makeGoogleApiCall(url: string, accessToken: string, retries = 3):
   throw new Error("Failed after retries");
 }
 
-export async function getGoogleCalendarEvents(accessToken: string): Promise<any[]> {
-  const timeMin = new Date().toISOString();
-  const timeMax = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
-  
+type CalendarEventsOptions = {
+  startIso?: string;
+  endIso?: string;
+  daysAhead?: number;
+  maxResults?: number;
+};
+
+function parseDateOrFallback(value: string | undefined, fallback: Date): Date {
+  if (!value) return fallback;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+export async function getGoogleCalendarEvents(
+  accessToken: string,
+  options: CalendarEventsOptions = {}
+): Promise<any[]> {
+  const now = new Date();
+  const safeDaysAhead = Math.max(1, Math.min(options.daysAhead ?? 30, 365));
+  const start = parseDateOrFallback(options.startIso, now);
+  const fallbackEnd = new Date(start.getTime() + safeDaysAhead * 24 * 60 * 60 * 1000);
+  const end = parseDateOrFallback(options.endIso, fallbackEnd);
+  const maxResults = Math.max(1, Math.min(options.maxResults ?? 100, 250));
+  const orderedWindow = end.getTime() > start.getTime()
+    ? { timeMin: start.toISOString(), timeMax: end.toISOString() }
+    : { timeMin: start.toISOString(), timeMax: fallbackEnd.toISOString() };
+
+  const params = new URLSearchParams({
+    timeMin: orderedWindow.timeMin,
+    timeMax: orderedWindow.timeMax,
+    singleEvents: "true",
+    orderBy: "startTime",
+    maxResults: String(maxResults),
+  });
+
   const response = await makeGoogleApiCall(
-    `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&timeMax=${timeMax}&singleEvents=true&orderBy=startTime&maxResults=50`,
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events?${params.toString()}`,
     accessToken
   );
 

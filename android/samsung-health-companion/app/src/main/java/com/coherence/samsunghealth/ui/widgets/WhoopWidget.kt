@@ -32,8 +32,19 @@ private fun recoveryColor(score: Double): Color = when {
 fun WhoopWidget(
   summary: WhoopSummary?,
   isLoading: Boolean,
+  error: String? = null,
+  lastUpdatedMillis: Long? = null,
+  onRetry: (() -> Unit)? = null,
 ) {
-  WidgetShell(title = "WHOOP", icon = Icons.Default.MonitorHeart, category = WidgetCategory.HEALTH, isLoading = isLoading && summary == null) {
+  WidgetShell(
+    title = "WHOOP",
+    icon = Icons.Default.MonitorHeart,
+    category = WidgetCategory.HEALTH,
+    isLoading = isLoading && summary == null,
+    error = if (summary == null) error else null,
+    onRetry = if (summary == null) onRetry else null,
+    lastUpdated = lastUpdatedMillis,
+  ) {
     if (isLoading && summary == null) {
       Text(
         "Loading WHOOP data...",

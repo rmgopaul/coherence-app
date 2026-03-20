@@ -28,16 +28,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
-
-private const val FOCUS_DURATION_MS = 25 * 60 * 1000L // 25 minutes
-private const val BREAK_DURATION_MS = 5 * 60 * 1000L  // 5 minutes
+import kotlin.math.max
 
 enum class TimerPhase { IDLE, FOCUS, BREAK }
 
 @Composable
-fun FocusTimerWidget() {
+fun FocusTimerWidget(
+  focusDurationMinutes: Int = 25,
+) {
+  val safeFocusDurationMinutes = focusDurationMinutes.coerceIn(10, 180)
+  val focusDurationMs = safeFocusDurationMinutes * 60 * 1000L
+  val breakDurationMs = max(5, safeFocusDurationMinutes / 5) * 60 * 1000L
   var phase by remember { mutableStateOf(TimerPhase.IDLE) }
-  var remainingMs by remember { mutableLongStateOf(FOCUS_DURATION_MS) }
+  var remainingMs by remember(focusDurationMs) { mutableLongStateOf(focusDurationMs) }
   var isRunning by remember { mutableStateOf(false) }
 
   LaunchedEffect(isRunning) {
@@ -51,11 +54,11 @@ fun FocusTimerWidget() {
       when (phase) {
         TimerPhase.FOCUS -> {
           phase = TimerPhase.BREAK
-          remainingMs = BREAK_DURATION_MS
+          remainingMs = breakDurationMs
         }
         TimerPhase.BREAK -> {
           phase = TimerPhase.IDLE
-          remainingMs = FOCUS_DURATION_MS
+          remainingMs = focusDurationMs
         }
         TimerPhase.IDLE -> {}
       }
@@ -98,7 +101,7 @@ fun FocusTimerWidget() {
           phase == TimerPhase.IDLE -> {
             FilledTonalButton(onClick = {
               phase = TimerPhase.FOCUS
-              remainingMs = FOCUS_DURATION_MS
+              remainingMs = focusDurationMs
               isRunning = true
             }) {
               Icon(Icons.Default.PlayArrow, contentDescription = null)
@@ -114,7 +117,7 @@ fun FocusTimerWidget() {
             }
             IconButton(onClick = {
               phase = TimerPhase.IDLE
-              remainingMs = FOCUS_DURATION_MS
+              remainingMs = focusDurationMs
               isRunning = false
             }) {
               Icon(Icons.Default.RestartAlt, contentDescription = "Reset")

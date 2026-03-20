@@ -1,6 +1,7 @@
 package com.coherence.samsunghealth.data.repository
 
 import com.coherence.samsunghealth.data.model.DailyHealthMetric
+import com.coherence.samsunghealth.data.model.TrendSeriesResponse
 import com.coherence.samsunghealth.network.TrpcClient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -14,9 +15,13 @@ class MetricsRepository(private val trpc: TrpcClient) {
   suspend fun getHistory(limit: Int = 30): List<DailyHealthMetric> {
     val input = buildJsonObject { put("limit", limit) }
     val result = trpc.query("metrics.getHistory", input)
-    return try {
-      result.jsonArray.map { json.decodeFromJsonElement(DailyHealthMetric.serializer(), it) }
-    } catch (_: Exception) { emptyList() }
+    return result.jsonArray.map { json.decodeFromJsonElement(DailyHealthMetric.serializer(), it) }
+  }
+
+  suspend fun getTrendSeries(days: Int = 30): TrendSeriesResponse {
+    val input = buildJsonObject { put("days", days) }
+    val result = trpc.query("metrics.getTrendSeries", input)
+    return json.decodeFromJsonElement(TrendSeriesResponse.serializer(), result)
   }
 
   suspend fun captureToday(): Boolean {

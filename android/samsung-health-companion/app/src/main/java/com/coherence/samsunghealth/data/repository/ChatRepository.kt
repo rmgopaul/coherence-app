@@ -14,12 +14,15 @@ class ChatRepository(private val trpc: TrpcClient) {
 
   private val json = Json { ignoreUnknownKeys = true }
 
-  suspend fun listConversations(): List<Conversation> {
-    val result = trpc.query("conversations.list")
+  suspend fun listConversations(limit: Int = 100): List<Conversation> {
+    val input = buildJsonObject { put("limit", limit) }
     return try {
+      val result = trpc.query("conversations.listSummaries", input)
       result.jsonArray.map { json.decodeFromJsonElement(Conversation.serializer(), it) }
     } catch (_: Exception) {
-      emptyList()
+      // Backward-compatible fallback if the summaries endpoint is unavailable.
+      val result = trpc.query("conversations.list")
+      result.jsonArray.map { json.decodeFromJsonElement(Conversation.serializer(), it) }
     }
   }
 
