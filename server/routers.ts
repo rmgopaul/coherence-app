@@ -2992,6 +2992,126 @@ export const appRouter = router({
         }
         return job;
       }),
+    cleanMailingData: protectedProcedure
+      .input(
+        z.object({
+          rows: z
+            .array(
+              z.object({
+                key: z.string().min(1).max(128),
+                payeeName: z.string().optional(),
+                mailingAddress1: z.string().optional(),
+                mailingAddress2: z.string().optional(),
+                city: z.string().optional(),
+                state: z.string().optional(),
+                zip: z.string().optional(),
+              })
+            )
+            .min(1)
+            .max(150),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const integration = await getIntegrationByProvider(ctx.user.id, "openai");
+        if (!integration?.accessToken) {
+          throw new Error("OpenAI not connected. Add your API key in Settings first.");
+        }
+
+        const sourceRows = input.rows.map((row) => ({
+          key: row.key,
+          payeeName: toNonEmptyString(row.payeeName),
+          mailingAddress1: toNonEmptyString(row.mailingAddress1),
+          mailingAddress2: toNonEmptyString(row.mailingAddress2),
+          city: toNonEmptyString(row.city),
+          state: toNonEmptyString(row.state),
+          zip: toNonEmptyString(row.zip),
+        }));
+
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${integration.accessToken}`,
+          },
+          body: JSON.stringify({
+            model: resolveOpenAIModel(integration.metadata),
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content:
+                  "You clean US mailing address records. Return valid JSON only with shape {\"rows\":[...]} and no prose. Keep each input key exactly as provided. Preserve payee/company names unless obvious OCR corruption. Standardize address casing and abbreviations (St, Ave, Rd, Blvd, Dr, Ln, Ct, Pkwy, Apt, Ste). Keep city/state/zip fields separated. State must be 2-letter uppercase if inferable. Zip should be 5 or ZIP+4 if present. Do not invent missing data.",
+              },
+              {
+                role: "user",
+                content: JSON.stringify({
+                  instructions:
+                    "Clean these records and return one output row per input row in the same order using identical keys.",
+                  rows: sourceRows,
+                }),
+              },
+            ],
+          }),
+        });
+
+        if (!response.ok) {
+          const errorBody = await response.text().catch(() => "");
+          let message = "Failed to clean mailing data";
+          try {
+            const parsed = JSON.parse(errorBody);
+            message = parsed?.error?.message || message;
+          } catch {}
+          throw new Error(`OpenAI API error (${response.status}): ${message}`);
+        }
+
+        const data = await response.json();
+        const content = (data as any)?.choices?.[0]?.message?.content;
+        if (!content || typeof content !== "string") {
+          throw new Error("Invalid response from OpenAI while cleaning mailing data.");
+        }
+
+        let parsedRows: Array<Record<string, unknown>> = [];
+        try {
+          const parsed = JSON.parse(content) as { rows?: Array<Record<string, unknown>> };
+          parsedRows = Array.isArray(parsed?.rows) ? parsed.rows : [];
+        } catch {
+          throw new Error("OpenAI returned non-JSON output for mailing data cleanup.");
+        }
+
+        const parsedByKey = new Map<string, Record<string, unknown>>();
+        parsedRows.forEach((row) => {
+          const key = toNonEmptyString(row?.key);
+          if (!key || parsedByKey.has(key)) return;
+          parsedByKey.set(key, row);
+        });
+
+        const cleanedRows = sourceRows.map((source) => {
+          const candidate = parsedByKey.get(source.key) ?? {};
+          const cleanedStateRaw = toNonEmptyString(candidate.state) ?? source.state ?? null;
+          const cleanedState = cleanedStateRaw
+            ? cleanedStateRaw.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 2) || null
+            : null;
+          const cleanedZipRaw = toNonEmptyString(candidate.zip) ?? source.zip ?? null;
+          const cleanedZipMatch = cleanedZipRaw?.match(/\d{5}(?:-\d{4})?/);
+          const cleanedZip = cleanedZipMatch ? cleanedZipMatch[0] : cleanedZipRaw;
+
+          return {
+            key: source.key,
+            payeeName: toNonEmptyString(candidate.payeeName) ?? source.payeeName,
+            mailingAddress1: toNonEmptyString(candidate.mailingAddress1) ?? source.mailingAddress1,
+            mailingAddress2: toNonEmptyString(candidate.mailingAddress2) ?? source.mailingAddress2,
+            city: toNonEmptyString(candidate.city) ?? source.city,
+            state: cleanedState,
+            zip: cleanedZip,
+          };
+        });
+
+        return {
+          rows: cleanedRows,
+        };
+      }),
     saveRun: protectedProcedure
       .input(
         z.object({

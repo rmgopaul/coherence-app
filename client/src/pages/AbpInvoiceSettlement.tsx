@@ -873,6 +873,7 @@ export default function AbpInvoiceSettlement() {
   const startScanJobMutation = trpc.abpSettlement.startContractScanJob.useMutation();
   const savePortalCredentialsMutation = trpc.csgPortal.saveCredentials.useMutation();
   const testPortalConnectionMutation = trpc.csgPortal.testConnection.useMutation();
+  const cleanMailingDataMutation = trpc.abpSettlement.cleanMailingData.useMutation();
   const saveRunMutation = trpc.abpSettlement.saveRun.useMutation();
   const getUploadStateMutation = trpc.solarRecDashboard.getDataset.useMutation();
   const saveUploadStateMutation = trpc.solarRecDashboard.saveDataset.useMutation();
@@ -1809,6 +1810,145 @@ export default function AbpInvoiceSettlement() {
     const safeMonth = clean(monthKey) || buildMonthKey();
     downloadTextFile(`abp-invoice-settlement-${safeMonth}.csv`, csv, "text/csv;charset=utf-8");
     toast.success("CSV exported.");
+  };
+
+  const handleAiCleanMailingData = async () => {
+    if (!computationResult || computationResult.rows.length === 0) {
+      toast.error("No settlement rows available to clean.");
+      return;
+    }
+
+    const uniqueByCsg = new Map<
+      string,
+      {
+        key: string;
+        payeeName?: string;
+        mailingAddress1?: string;
+        mailingAddress2?: string;
+        city?: string;
+        state?: string;
+        zip?: string;
+      }
+    >();
+
+    computationResult.rows.forEach((row) => {
+      if (!row.csgId || uniqueByCsg.has(row.csgId)) return;
+      uniqueByCsg.set(row.csgId, {
+        key: row.csgId,
+        payeeName: clean(row.payeeName) || undefined,
+        mailingAddress1: clean(row.mailingAddress1) || undefined,
+        mailingAddress2: clean(row.mailingAddress2) || undefined,
+        city: clean(row.city) || undefined,
+        state: clean(row.state) || undefined,
+        zip: clean(row.zip) || undefined,
+      });
+    });
+
+    const candidates = Array.from(uniqueByCsg.values());
+    if (candidates.length === 0) {
+      toast.error("No CSG-linked rows available for address cleanup.");
+      return;
+    }
+
+    const batchSize = 120;
+    const cleanedByCsg = new Map<
+      string,
+      {
+        payeeName: string | null;
+        mailingAddress1: string | null;
+        mailingAddress2: string | null;
+        city: string | null;
+        state: string | null;
+        zip: string | null;
+      }
+    >();
+
+    try {
+      for (let startIndex = 0; startIndex < candidates.length; startIndex += batchSize) {
+        const chunk = candidates.slice(startIndex, startIndex + batchSize);
+        const response = await cleanMailingDataMutation.mutateAsync({
+          rows: chunk,
+        });
+
+        (response.rows ?? []).forEach((row) => {
+          cleanedByCsg.set(row.key, {
+            payeeName: clean(row.payeeName) || null,
+            mailingAddress1: clean(row.mailingAddress1) || null,
+            mailingAddress2: clean(row.mailingAddress2) || null,
+            city: clean(row.city) || null,
+            state: clean(row.state) || null,
+            zip: clean(row.zip) || null,
+          });
+        });
+      }
+
+      if (cleanedByCsg.size === 0) {
+        toast.error("AI cleanup returned no rows.");
+        return;
+      }
+
+      const composeCityStateZip = (
+        city: string | null,
+        state: string | null,
+        zip: string | null,
+        fallback: string | null
+      ): string | null => {
+        const cityValue = clean(city) || null;
+        const stateValue = clean(state) || null;
+        const zipValue = clean(zip) || null;
+        if (!cityValue && !stateValue && !zipValue) return fallback;
+        const stateZip = [stateValue, zipValue].filter(Boolean).join(" ");
+        return [cityValue, stateZip].filter(Boolean).join(", ");
+      };
+
+      setContractTermsByCsgId((current) => {
+        const next = new Map(current);
+        cleanedByCsg.forEach((cleaned, csgId) => {
+          const existing = next.get(csgId);
+          if (!existing) return;
+
+          const city = cleaned.city ?? existing.city;
+          const state = cleaned.state ?? existing.state;
+          const zip = cleaned.zip ?? existing.zip;
+
+          next.set(csgId, {
+            ...existing,
+            payeeName: cleaned.payeeName ?? existing.payeeName,
+            mailingAddress1: cleaned.mailingAddress1 ?? existing.mailingAddress1,
+            mailingAddress2: cleaned.mailingAddress2 ?? existing.mailingAddress2,
+            city,
+            state,
+            zip,
+            cityStateZip: composeCityStateZip(city, state, zip, existing.cityStateZip),
+          });
+        });
+        return next;
+      });
+
+      setContractScanRows((current) =>
+        current.map((row) => {
+          const cleaned = cleanedByCsg.get(row.csgId);
+          if (!cleaned) return row;
+          const city = cleaned.city ?? row.city;
+          const state = cleaned.state ?? row.state;
+          const zip = cleaned.zip ?? row.zip;
+          return {
+            ...row,
+            payeeName: cleaned.payeeName ?? row.payeeName,
+            mailingAddress1: cleaned.mailingAddress1 ?? row.mailingAddress1,
+            mailingAddress2: cleaned.mailingAddress2 ?? row.mailingAddress2,
+            city,
+            state,
+            zip,
+            cityStateZip: composeCityStateZip(city, state, zip, row.cityStateZip),
+          };
+        })
+      );
+
+      toast.success(`AI cleaned mailing fields for ${cleanedByCsg.size.toLocaleString("en-US")} CSG records.`);
+    } catch (error) {
+      toast.error(`AI mailing cleanup failed: ${toErrorMessage(error)}`);
+    }
   };
 
   const handleSaveRun = async () => {
@@ -2787,6 +2927,22 @@ export default function AbpInvoiceSettlement() {
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={handleAiCleanMailingData}
+                disabled={
+                  !computationResult ||
+                  computationResult.rows.length === 0 ||
+                  cleanMailingDataMutation.isPending
+                }
+              >
+                {cleanMailingDataMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                AI Clean Mailing Data
+              </Button>
               <Button variant="outline" onClick={handleExportCsv} disabled={!computationResult || computationResult.rows.length === 0}>
                 <Download className="h-4 w-4 mr-2" />
                 Export CSV
