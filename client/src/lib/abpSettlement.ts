@@ -1314,6 +1314,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         if (csgId && !csgPortalSystemRow) {
           confidenceFlags.push("No CSG portal row found for CSG ID.");
         }
+        if (csgId && !systemAddressFromPortal) {
+          confidenceFlags.push("System address missing in CSG portal data.");
+        }
         if (paidUtilityCollateralReimbursement > 0 || forceCollateralReimbursement) {
           confidenceFlags.push(
             "Utility collateral reimbursement to partner detected; reimbursed amount is excluded from customer upfront credit."
@@ -1387,7 +1390,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           partnerCompanyName,
           customerEmail,
           customerAltEmail,
-          systemAddress: systemAddressFromPortal || clean(row.systemAddress),
+          systemAddress: systemAddressFromPortal,
           appliedInstallerRuleName: clean(appliedInstallerRule?.name),
           withholdingBalanceSeededForSystem: seededWithholdingThisRow,
           carryforwardIn,

@@ -2012,6 +2012,7 @@ export default function AbpInvoiceSettlement() {
         payeeName?: string;
         mailingAddress1?: string;
         mailingAddress2?: string;
+        cityStateZip?: string;
         city?: string;
         state?: string;
         zip?: string;
@@ -2020,11 +2021,13 @@ export default function AbpInvoiceSettlement() {
 
     computationResult.rows.forEach((row) => {
       if (!row.csgId || uniqueByCsg.has(row.csgId)) return;
+      const existingTerms = contractTermsByCsgId.get(row.csgId) ?? null;
       uniqueByCsg.set(row.csgId, {
         key: row.csgId,
         payeeName: clean(row.payeeName) || undefined,
         mailingAddress1: clean(row.mailingAddress1) || undefined,
         mailingAddress2: clean(row.mailingAddress2) || undefined,
+        cityStateZip: clean(existingTerms?.cityStateZip) || undefined,
         city: clean(row.city) || undefined,
         state: clean(row.state) || undefined,
         zip: clean(row.zip) || undefined,
