@@ -59,6 +59,11 @@ type RunInputs = {
   csgPortalDatabaseFile: string | null;
 };
 
+type InvoiceMapHeaderSelectionState = {
+  csgIdHeader: string | null;
+  invoiceNumberHeader: string | null;
+};
+
 type ContractFetchResult = {
   csgId: string;
   systemPageUrl: string;
@@ -110,6 +115,7 @@ type SavedRunPayload = {
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
+  invoiceMapHeaderSelection?: InvoiceMapHeaderSelectionState;
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
   installerRules: InstallerSettlementRule[];
   contractTerms: ContractTerms[];
@@ -130,7 +136,7 @@ type RunSummary = {
 };
 
 type PersistedUploadStatePayload = {
-  version: 1;
+  version: number;
   savedAt: string;
   runInputs: RunInputs;
   utilityRows: UtilityInvoiceRow[];
@@ -140,6 +146,7 @@ type PersistedUploadStatePayload = {
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
   installerRules: InstallerSettlementRule[];
+  invoiceMapHeaderSelection?: InvoiceMapHeaderSelectionState;
 };
 
 const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
@@ -281,7 +288,8 @@ type LinkedCsvDatasetPayload = {
   uploadedAt: string;
   headers: string[];
   csvText: string;
-  rows: Array<Record<string, string>>;
+  rows?: Array<Record<string, string>>;
+  metadata?: Record<string, string>;
 };
 
 function buildLinkedCsvDatasetPayload(input: {
@@ -289,6 +297,7 @@ function buildLinkedCsvDatasetPayload(input: {
   uploadedAt: string;
   headers: string[];
   rows: Array<Record<string, unknown>>;
+  metadata?: Record<string, string>;
 }): string {
   const normalizedHeaders = input.headers.map((header) => clean(header)).filter(Boolean);
   const normalizedRows = input.rows.map((row) => {
@@ -316,7 +325,8 @@ function buildLinkedCsvDatasetPayload(input: {
     uploadedAt: clean(input.uploadedAt) || new Date().toISOString(),
     headers: normalizedHeaders,
     csvText,
-    rows: normalizedRows,
+    rows: normalizedRows.length <= 2000 ? normalizedRows : undefined,
+    metadata: input.metadata,
   };
   return JSON.stringify(payload);
 }
@@ -395,7 +405,7 @@ function parseLinkedCsvDatasetPayload(value: string): LinkedCsvDatasetPayload | 
       });
     };
 
-    const normalizedRows = Array.isArray(parsed.rows)
+    const normalizedRows = Array.isArray(parsed.rows) && parsed.rows.length > 0
       ? parsed.rows.map((row) => {
           const normalized: Record<string, string> = {};
           if (row && typeof row === "object") {
@@ -407,12 +417,20 @@ function parseLinkedCsvDatasetPayload(value: string): LinkedCsvDatasetPayload | 
         })
       : parseRowsFromCsv(clean(parsed.csvText), parsed.headers.map((header) => clean(header)).filter(Boolean));
 
+    const metadata =
+      parsed.metadata && typeof parsed.metadata === "object"
+        ? Object.fromEntries(
+            Object.entries(parsed.metadata).map(([key, value]) => [clean(key), clean(value)])
+          )
+        : undefined;
+
     return {
       fileName: clean(parsed.fileName) || "linked-upload.csv",
       uploadedAt: clean(parsed.uploadedAt) || new Date().toISOString(),
       headers: parsed.headers.map((header) => clean(header)).filter(Boolean),
       csvText: clean(parsed.csvText),
       rows: normalizedRows,
+      metadata,
     };
   } catch {
     return null;
@@ -656,6 +674,37 @@ function normalizeCsgPortalDatabaseRows(rows: unknown[]): CsgPortalDatabaseRow[]
     .filter((row): row is CsgPortalDatabaseRow => Boolean(row));
 }
 
+function normalizeProjectApplicationRows(rows: PersistedProjectApplicationRow[]): PersistedProjectApplicationRow[] {
+  return rows
+    .map((row) => ({
+      applicationId: clean(row.applicationId),
+      part1SubmissionDate: clean(row.part1SubmissionDate) || null,
+      part1OriginalSubmissionDate: clean(row.part1OriginalSubmissionDate) || null,
+      inverterSizeKwAcPart1:
+        typeof row.inverterSizeKwAcPart1 === "number" && Number.isFinite(row.inverterSizeKwAcPart1)
+          ? row.inverterSizeKwAcPart1
+          : null,
+    }))
+    .filter((row) => row.applicationId.length > 0);
+}
+
+function normalizeInvoiceNumberMapRows(rows: unknown[]): InvoiceNumberMapRow[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const source = row as Record<string, unknown>;
+      const csgId = clean(source.csgId);
+      const invoiceNumber = clean(source.invoiceNumber);
+      if (!csgId || !invoiceNumber) return null;
+      return {
+        csgId,
+        invoiceNumber,
+      } satisfies InvoiceNumberMapRow;
+    })
+    .filter((row): row is InvoiceNumberMapRow => Boolean(row));
+}
+
 function serializeProjectApplications(rows: ProjectApplicationLiteRow[]): PersistedProjectApplicationRow[] {
   return rows.map((row) => ({
     applicationId: row.applicationId,
@@ -710,25 +759,30 @@ function buildPersistedUploadStatePayload(input: {
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
   installerRules: InstallerSettlementRule[];
+  invoiceMapHeaderSelection: InvoiceMapHeaderSelectionState;
 }): PersistedUploadStatePayload {
   return {
-    version: 1,
+    version: 2,
     savedAt: new Date().toISOString(),
     runInputs: input.runInputs,
     utilityRows: input.utilityRows,
     csgSystemMappings: input.csgSystemMappings,
     projectApplications: serializeProjectApplications(input.projectApplications),
     quickBooksInvoices: serializeQuickBooksInvoices(input.quickBooksByInvoice),
-    invoiceNumberMapRows: input.invoiceNumberMapRows,
-    csgPortalDatabaseRows: input.csgPortalDatabaseRows,
+    invoiceNumberMapRows: normalizeInvoiceNumberMapRows(input.invoiceNumberMapRows),
+    csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(input.csgPortalDatabaseRows),
     installerRules: normalizeInstallerRules(input.installerRules),
+    invoiceMapHeaderSelection: {
+      csgIdHeader: clean(input.invoiceMapHeaderSelection.csgIdHeader) || null,
+      invoiceNumberHeader: clean(input.invoiceMapHeaderSelection.invoiceNumberHeader) || null,
+    },
   };
 }
 
 function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePayload | null {
   try {
     const parsed = JSON.parse(value) as PersistedUploadStatePayload;
-    if (!parsed || parsed.version !== 1) return null;
+    if (!parsed || typeof parsed.version !== "number" || parsed.version < 1 || parsed.version > 2) return null;
     const runInputsRaw = parsed.runInputs && typeof parsed.runInputs === "object" ? parsed.runInputs : null;
     if (!runInputsRaw) return null;
 
@@ -744,20 +798,28 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
     };
 
     return {
-      version: 1,
+      version: parsed.version,
       savedAt: clean(parsed.savedAt) || new Date().toISOString(),
       runInputs,
       utilityRows: Array.isArray(parsed.utilityRows) ? parsed.utilityRows : [],
       csgSystemMappings: Array.isArray(parsed.csgSystemMappings) ? parsed.csgSystemMappings : [],
-      projectApplications: Array.isArray(parsed.projectApplications) ? parsed.projectApplications : [],
+      projectApplications: normalizeProjectApplicationRows(
+        Array.isArray(parsed.projectApplications) ? parsed.projectApplications : []
+      ),
       quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
-      invoiceNumberMapRows: Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : [],
+      invoiceNumberMapRows: normalizeInvoiceNumberMapRows(
+        Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : []
+      ),
       csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(
         Array.isArray(parsed.csgPortalDatabaseRows) ? parsed.csgPortalDatabaseRows : []
       ),
       installerRules: normalizeInstallerRules(
         Array.isArray(parsed.installerRules) ? parsed.installerRules : DEFAULT_INSTALLER_RULES
       ),
+      invoiceMapHeaderSelection: {
+        csgIdHeader: clean(parsed.invoiceMapHeaderSelection?.csgIdHeader) || null,
+        invoiceNumberHeader: clean(parsed.invoiceMapHeaderSelection?.invoiceNumberHeader) || null,
+      },
     };
   } catch {
     return null;
@@ -935,6 +997,11 @@ export default function AbpInvoiceSettlement() {
       let hydratedProjectApplications: ProjectApplicationLiteRow[] = [];
       let hydratedQuickBooksByInvoice = new Map<string, QuickBooksInvoice>();
       let hydratedInvoiceNumberMapRows: InvoiceNumberMapRow[] = [];
+      let hydratedInvoiceMapParsed: ParsedTabularData | null = null;
+      let hydratedInvoiceMapHeaderSelection: InvoiceMapHeaderSelectionState = {
+        csgIdHeader: null,
+        invoiceNumberHeader: null,
+      };
       let hydratedCsgPortalDatabaseRows: CsgPortalDatabaseRow[] = [];
       let hydratedInstallerRules = normalizeInstallerRules(DEFAULT_INSTALLER_RULES);
 
@@ -953,7 +1020,8 @@ export default function AbpInvoiceSettlement() {
             hydratedCsgSystemMappings = parsed.csgSystemMappings ?? [];
             hydratedProjectApplications = deserializeProjectApplications(parsed.projectApplications ?? []);
             hydratedQuickBooksByInvoice = deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []);
-            hydratedInvoiceNumberMapRows = parsed.invoiceNumberMapRows ?? [];
+            hydratedInvoiceNumberMapRows = normalizeInvoiceNumberMapRows(parsed.invoiceNumberMapRows ?? []);
+            hydratedInvoiceMapHeaderSelection = parsed.invoiceMapHeaderSelection ?? hydratedInvoiceMapHeaderSelection;
             hydratedCsgPortalDatabaseRows = normalizeCsgPortalDatabaseRows(parsed.csgPortalDatabaseRows ?? []);
             hydratedInstallerRules = normalizeInstallerRules(parsed.installerRules);
             lastPersistedUploadPayloadRef.current = stored.payload;
@@ -979,16 +1047,17 @@ export default function AbpInvoiceSettlement() {
           if (!payload) continue;
           lastPersistedSharedPayloadsRef.current[ABP_SHARED_SOLAR_REC_DATASET_KEYS[slot]] = payload;
           const parsed = parseLinkedCsvDatasetPayload(payload);
-          if (!parsed || parsed.rows.length === 0) continue;
+          const linkedRows = parsed?.rows ?? [];
+          if (!parsed || linkedRows.length === 0) continue;
 
           if (slot === "utilityRows" && hydratedUtilityRows.length === 0) {
-            hydratedUtilityRows = linkedRowsToUtilityRows(parsed.rows, parsed.fileName);
+            hydratedUtilityRows = linkedRowsToUtilityRows(linkedRows, parsed.fileName);
             hydratedRunInputs.utilityInvoiceFiles =
               hydratedUtilityRows.length > 0 ? [parsed.fileName] : hydratedRunInputs.utilityInvoiceFiles;
           }
 
           if (slot === "csgSystemMapping" && hydratedCsgSystemMappings.length === 0) {
-            hydratedCsgSystemMappings = parsed.rows
+            hydratedCsgSystemMappings = linkedRows
               .map((row) => ({
                 csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
                 systemId: getRowValueByAliases(row, ["systemId", "System ID", "state_certification_number"]),
@@ -1000,14 +1069,14 @@ export default function AbpInvoiceSettlement() {
           }
 
           if (slot === "quickBooksRows" && hydratedQuickBooksByInvoice.size === 0) {
-            hydratedQuickBooksByInvoice = linkedRowsToQuickBooksInvoices(parsed.rows);
+            hydratedQuickBooksByInvoice = linkedRowsToQuickBooksInvoices(linkedRows);
             if (hydratedQuickBooksByInvoice.size > 0) {
               hydratedRunInputs.quickBooksFile = parsed.fileName;
             }
           }
 
           if (slot === "projectApplications" && hydratedProjectApplications.length === 0) {
-            hydratedProjectApplications = parsed.rows
+            hydratedProjectApplications = linkedRows
               .map((row) => ({
                 applicationId: getRowValueByAliases(row, ["applicationId", "Application_ID"]),
                 part1SubmissionDate: getRowValueByAliases(row, ["part1SubmissionDate", "Part_1_Submission_Date"])
@@ -1034,13 +1103,47 @@ export default function AbpInvoiceSettlement() {
             }
           }
 
-          if (slot === "portalInvoiceMap" && hydratedInvoiceNumberMapRows.length === 0) {
-            hydratedInvoiceNumberMapRows = parsed.rows
-              .map((row) => ({
-                csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
-                invoiceNumber: getRowValueByAliases(row, ["invoiceNumber", "Invoice Number", "Num"]),
-              }))
-              .filter((row) => row.csgId && row.invoiceNumber);
+          if (slot === "portalInvoiceMap") {
+            if (!hydratedInvoiceMapParsed) {
+              hydratedInvoiceMapParsed = {
+                headers: parsed.headers,
+                rows: linkedRows,
+                matrix: [],
+              };
+            }
+
+            const metadataCsgHeader = clean(parsed.metadata?.csgIdHeader) || null;
+            const metadataInvoiceHeader = clean(parsed.metadata?.invoiceNumberHeader) || null;
+            if (!hydratedInvoiceMapHeaderSelection.csgIdHeader && metadataCsgHeader) {
+              hydratedInvoiceMapHeaderSelection = {
+                ...hydratedInvoiceMapHeaderSelection,
+                csgIdHeader: metadataCsgHeader,
+              };
+            }
+            if (!hydratedInvoiceMapHeaderSelection.invoiceNumberHeader && metadataInvoiceHeader) {
+              hydratedInvoiceMapHeaderSelection = {
+                ...hydratedInvoiceMapHeaderSelection,
+                invoiceNumberHeader: metadataInvoiceHeader,
+              };
+            }
+
+            if (hydratedInvoiceNumberMapRows.length === 0) {
+              const parsedInvoiceMap = hydratedInvoiceMapParsed;
+              if (!parsedInvoiceMap) continue;
+              try {
+                hydratedInvoiceNumberMapRows = parseInvoiceNumberMap(
+                  parsedInvoiceMap,
+                  hydratedInvoiceMapHeaderSelection
+                );
+              } catch {
+                hydratedInvoiceNumberMapRows = normalizeInvoiceNumberMapRows(
+                  linkedRows.map((row) => ({
+                    csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
+                    invoiceNumber: getRowValueByAliases(row, ["invoiceNumber", "Invoice Number", "Num"]),
+                  }))
+                );
+              }
+            }
             if (hydratedInvoiceNumberMapRows.length > 0) {
               hydratedRunInputs.portalInvoiceMapFile = parsed.fileName;
             }
@@ -1048,7 +1151,7 @@ export default function AbpInvoiceSettlement() {
 
           if (slot === "csgPortalDatabase" && hydratedCsgPortalDatabaseRows.length === 0) {
             hydratedCsgPortalDatabaseRows = normalizeCsgPortalDatabaseRows(
-              parsed.rows.map((row) => ({
+              linkedRows.map((row) => ({
                 systemId: getRowValueByAliases(
                   row,
                   ["systemId", "System ID", "state_certification_number", "Application_ID"]
@@ -1093,8 +1196,8 @@ export default function AbpInvoiceSettlement() {
         setQuickBooksByInvoice(hydratedQuickBooksByInvoice);
         setCsgPortalDatabaseRows(hydratedCsgPortalDatabaseRows);
         setInstallerRules(hydratedInstallerRules);
-        setInvoiceMapParsed(null);
-        setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
+        setInvoiceMapParsed(hydratedInvoiceMapParsed);
+        setInvoiceMapHeaderSelection(hydratedInvoiceMapHeaderSelection);
         setSavedInvoiceNumberMapRows(hydratedInvoiceNumberMapRows);
       } catch {
         if (!cancelled) {
@@ -1215,6 +1318,7 @@ export default function AbpInvoiceSettlement() {
         invoiceNumberMapRows,
         csgPortalDatabaseRows,
         installerRules,
+        invoiceMapHeaderSelection,
       })
     );
 
@@ -1255,6 +1359,8 @@ export default function AbpInvoiceSettlement() {
     invoiceNumberMapRows,
     csgPortalDatabaseRows,
     installerRules,
+    invoiceMapHeaderSelection.csgIdHeader,
+    invoiceMapHeaderSelection.invoiceNumberHeader,
   ]);
 
   useEffect(() => {
@@ -1348,8 +1454,15 @@ export default function AbpInvoiceSettlement() {
           ? buildLinkedCsvDatasetPayload({
               uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.portalInvoiceMap),
               fileName: runInputs.portalInvoiceMapFile ?? "ABP Portal Invoice Map",
-              headers: ["csgId", "invoiceNumber"],
-              rows: invoiceNumberMapRows.map((row) => ({ csgId: row.csgId, invoiceNumber: row.invoiceNumber })),
+              headers: invoiceMapParsed?.headers?.length ? invoiceMapParsed.headers : ["csgId", "invoiceNumber"],
+              rows:
+                invoiceMapParsed?.rows?.length
+                  ? invoiceMapParsed.rows
+                  : invoiceNumberMapRows.map((row) => ({ csgId: row.csgId, invoiceNumber: row.invoiceNumber })),
+              metadata: {
+                csgIdHeader: invoiceMapHeaderSelection.csgIdHeader ?? "",
+                invoiceNumberHeader: invoiceMapHeaderSelection.invoiceNumberHeader ?? "",
+              },
             })
           : "",
       [ABP_SHARED_SOLAR_REC_DATASET_KEYS.csgPortalDatabase]:
@@ -1427,6 +1540,9 @@ export default function AbpInvoiceSettlement() {
     quickBooksByInvoice,
     projectApplications,
     invoiceNumberMapRows,
+    invoiceMapParsed,
+    invoiceMapHeaderSelection.csgIdHeader,
+    invoiceMapHeaderSelection.invoiceNumberHeader,
     csgPortalDatabaseRows,
   ]);
 
@@ -1968,6 +2084,7 @@ export default function AbpInvoiceSettlement() {
       projectApplications: serializeProjectApplications(projectApplications),
       quickBooksInvoices: serializeQuickBooksInvoices(quickBooksByInvoice),
       invoiceNumberMapRows,
+      invoiceMapHeaderSelection,
       csgPortalDatabaseRows,
       installerRules: normalizeInstallerRules(installerRules),
       contractTerms: Array.from(contractTermsByCsgId.values()),
@@ -2007,11 +2124,16 @@ export default function AbpInvoiceSettlement() {
     });
     setUtilityRows(payload.utilityRows ?? []);
     setCsgSystemMappings(payload.csgSystemMappings ?? []);
-    setProjectApplications(deserializeProjectApplications(payload.projectApplications ?? []));
+    setProjectApplications(
+      deserializeProjectApplications(normalizeProjectApplicationRows(payload.projectApplications ?? []))
+    );
     setQuickBooksByInvoice(deserializeQuickBooksInvoices(payload.quickBooksInvoices ?? []));
     setInvoiceMapParsed(null);
-    setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
-    setSavedInvoiceNumberMapRows(payload.invoiceNumberMapRows ?? []);
+    setInvoiceMapHeaderSelection({
+      csgIdHeader: clean(payload.invoiceMapHeaderSelection?.csgIdHeader) || null,
+      invoiceNumberHeader: clean(payload.invoiceMapHeaderSelection?.invoiceNumberHeader) || null,
+    });
+    setSavedInvoiceNumberMapRows(normalizeInvoiceNumberMapRows(payload.invoiceNumberMapRows ?? []));
     setCsgPortalDatabaseRows(normalizeCsgPortalDatabaseRows(payload.csgPortalDatabaseRows ?? []));
     setInstallerRules(normalizeInstallerRules(payload.installerRules));
     setContractTermsByCsgId(new Map((payload.contractTerms ?? []).map((term) => [term.csgId, term])));

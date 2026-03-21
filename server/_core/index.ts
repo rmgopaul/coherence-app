@@ -42,9 +42,9 @@ async function startServer() {
   // Security middleware (helmet, CORS, rate limiting) — must come first
   registerSecurityMiddleware(app);
 
-  // Keep request body limits bounded to protect 512MB instances from large payload spikes.
-  app.use(express.json({ limit: "12mb" }));
-  app.use(express.urlencoded({ limit: "12mb", extended: true }));
+  // Allow larger dashboard dataset payloads (large CSV-derived uploads) while still bounded.
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerPinGate(app);
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);
