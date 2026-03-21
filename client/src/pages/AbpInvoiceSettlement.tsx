@@ -46,7 +46,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -914,6 +914,7 @@ export default function AbpInvoiceSettlement() {
   const [isUploadingProjectApps, setIsUploadingProjectApps] = useState(false);
   const [isUploadingInvoiceMap, setIsUploadingInvoiceMap] = useState(false);
   const [isUploadingCsgPortalDatabase, setIsUploadingCsgPortalDatabase] = useState(false);
+  const [isSavingUploadsNow, setIsSavingUploadsNow] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [uploadsHydrated, setUploadsHydrated] = useState(false);
   const [uploadPersistenceNotice, setUploadPersistenceNotice] = useState<string | null>(null);
@@ -1300,72 +1301,7 @@ export default function AbpInvoiceSettlement() {
     return savedInvoiceNumberMapRows;
   }, [invoiceMapParsed, invoiceNumberMapRowsFromParsed, savedInvoiceNumberMapRows]);
 
-  useEffect(() => {
-    if (!invoiceMapParsed) return;
-    setSavedInvoiceNumberMapRows(invoiceNumberMapRowsFromParsed);
-  }, [invoiceMapParsed, invoiceNumberMapRowsFromParsed]);
-
-  useEffect(() => {
-    if (authLoading || !user || !uploadsHydrated) return;
-
-    const payload = JSON.stringify(
-      buildPersistedUploadStatePayload({
-        runInputs,
-        utilityRows,
-        csgSystemMappings,
-        projectApplications,
-        quickBooksByInvoice,
-        invoiceNumberMapRows,
-        csgPortalDatabaseRows,
-        installerRules,
-        invoiceMapHeaderSelection,
-      })
-    );
-
-    if (payload === lastPersistedUploadPayloadRef.current) return;
-
-    let cancelled = false;
-    const timeout = window.setTimeout(() => {
-      void (async () => {
-        try {
-          await saveUploadStateMutationRef.current.mutateAsync({
-            key: ABP_UPLOAD_STATE_DATASET_KEY,
-            payload,
-          });
-          if (cancelled) return;
-          lastPersistedUploadPayloadRef.current = payload;
-          setUploadPersistenceNotice(null);
-        } catch {
-          if (!cancelled) {
-            setUploadPersistenceNotice("Could not persist uploaded files right now.");
-          }
-        }
-      })();
-    }, 900);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeout);
-    };
-  }, [
-    authLoading,
-    user,
-    uploadsHydrated,
-    runInputs,
-    utilityRows,
-    csgSystemMappings,
-    projectApplications,
-    quickBooksByInvoice,
-    invoiceNumberMapRows,
-    csgPortalDatabaseRows,
-    installerRules,
-    invoiceMapHeaderSelection.csgIdHeader,
-    invoiceMapHeaderSelection.invoiceNumberHeader,
-  ]);
-
-  useEffect(() => {
-    if (authLoading || !user || !uploadsHydrated) return;
-
+  const buildSharedUploadPayloadByKey = useCallback((): Record<string, string> => {
     const resolveUploadedAtForKey = (datasetKey: string): string => {
       const previousPayload = lastPersistedSharedPayloadsRef.current[datasetKey];
       if (!previousPayload) return new Date().toISOString();
@@ -1373,7 +1309,7 @@ export default function AbpInvoiceSettlement() {
       return previousParsed?.uploadedAt ?? new Date().toISOString();
     };
 
-    const nextPayloadByKey: Record<string, string> = {
+    return {
       [ABP_SHARED_SOLAR_REC_DATASET_KEYS.utilityRows]:
         utilityRows.length > 0
           ? buildLinkedCsvDatasetPayload({
@@ -1450,7 +1386,7 @@ export default function AbpInvoiceSettlement() {
             })
           : "",
       [ABP_SHARED_SOLAR_REC_DATASET_KEYS.portalInvoiceMap]:
-        invoiceNumberMapRows.length > 0
+        (invoiceMapParsed?.rows?.length ?? 0) > 0 || invoiceNumberMapRows.length > 0
           ? buildLinkedCsvDatasetPayload({
               uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.portalInvoiceMap),
               fileName: runInputs.portalInvoiceMapFile ?? "ABP Portal Invoice Map",
@@ -1494,13 +1430,161 @@ export default function AbpInvoiceSettlement() {
             })
           : "",
     };
+  }, [
+    csgPortalDatabaseRows,
+    csgSystemMappings,
+    invoiceMapHeaderSelection.csgIdHeader,
+    invoiceMapHeaderSelection.invoiceNumberHeader,
+    invoiceMapParsed,
+    invoiceNumberMapRows,
+    projectApplications,
+    quickBooksByInvoice,
+    runInputs.csgPortalDatabaseFile,
+    runInputs.csgSystemMappingFile,
+    runInputs.portalInvoiceMapFile,
+    runInputs.projectApplicationFile,
+    runInputs.quickBooksFile,
+    runInputs.utilityInvoiceFiles,
+    utilityRows,
+  ]);
+
+  const handleSaveUploadsNow = useCallback(async () => {
+    if (authLoading || !user || !uploadsHydrated) {
+      toast.error("Please wait for uploads to finish restoring before saving.");
+      return;
+    }
+
+    setIsSavingUploadsNow(true);
+    try {
+      const uploadStatePayload = JSON.stringify(
+        buildPersistedUploadStatePayload({
+          runInputs,
+          utilityRows,
+          csgSystemMappings,
+          projectApplications,
+          quickBooksByInvoice,
+          invoiceNumberMapRows,
+          csgPortalDatabaseRows,
+          installerRules,
+          invoiceMapHeaderSelection,
+        })
+      );
+
+      await saveUploadStateMutationRef.current.mutateAsync({
+        key: ABP_UPLOAD_STATE_DATASET_KEY,
+        payload: uploadStatePayload,
+      });
+      lastPersistedUploadPayloadRef.current = uploadStatePayload;
+
+      const sharedPayloadByKey = buildSharedUploadPayloadByKey();
+      for (const [datasetKey, payload] of Object.entries(sharedPayloadByKey)) {
+        await saveUploadStateMutationRef.current.mutateAsync({
+          key: datasetKey,
+          payload,
+        });
+        lastPersistedSharedPayloadsRef.current[datasetKey] = payload;
+      }
+
+      setUploadPersistenceNotice(null);
+      toast.success("Uploads saved.");
+    } catch (error) {
+      const message = toErrorMessage(error);
+      setUploadPersistenceNotice(`Could not persist uploaded files right now: ${message}`);
+      toast.error(`Could not save uploads right now: ${message}`);
+    } finally {
+      setIsSavingUploadsNow(false);
+    }
+  }, [
+    authLoading,
+    buildSharedUploadPayloadByKey,
+    csgPortalDatabaseRows,
+    csgSystemMappings,
+    installerRules,
+    invoiceMapHeaderSelection,
+    invoiceNumberMapRows,
+    projectApplications,
+    quickBooksByInvoice,
+    runInputs,
+    uploadsHydrated,
+    user,
+    utilityRows,
+  ]);
+
+  useEffect(() => {
+    if (!invoiceMapParsed) return;
+    setSavedInvoiceNumberMapRows(invoiceNumberMapRowsFromParsed);
+  }, [invoiceMapParsed, invoiceNumberMapRowsFromParsed]);
+
+  useEffect(() => {
+    if (authLoading || !user || !uploadsHydrated) return;
+
+    const payload = JSON.stringify(
+      buildPersistedUploadStatePayload({
+        runInputs,
+        utilityRows,
+        csgSystemMappings,
+        projectApplications,
+        quickBooksByInvoice,
+        invoiceNumberMapRows,
+        csgPortalDatabaseRows,
+        installerRules,
+        invoiceMapHeaderSelection,
+      })
+    );
+
+    if (payload === lastPersistedUploadPayloadRef.current) return;
+
+    let shouldUpdateUi = true;
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await saveUploadStateMutationRef.current.mutateAsync({
+            key: ABP_UPLOAD_STATE_DATASET_KEY,
+            payload,
+          });
+          lastPersistedUploadPayloadRef.current = payload;
+          if (shouldUpdateUi) {
+            setUploadPersistenceNotice(null);
+          }
+        } catch {
+          if (shouldUpdateUi) {
+            setUploadPersistenceNotice("Could not persist uploaded files right now.");
+          }
+        }
+      })();
+    }, 450);
+
+    return () => {
+      shouldUpdateUi = false;
+      window.clearTimeout(timeout);
+    };
+  }, [
+    authLoading,
+    user,
+    uploadsHydrated,
+    runInputs,
+    utilityRows,
+    csgSystemMappings,
+    projectApplications,
+    quickBooksByInvoice,
+    invoiceNumberMapRows,
+    csgPortalDatabaseRows,
+    installerRules,
+    invoiceMapHeaderSelection.csgIdHeader,
+    invoiceMapHeaderSelection.invoiceNumberHeader,
+  ]);
+
+  useEffect(() => {
+    if (authLoading || !user || !uploadsHydrated) return;
+
+    const nextPayloadByKey = buildSharedUploadPayloadByKey();
 
     const changedEntries = Object.entries(nextPayloadByKey).filter(
       ([key, payload]) => lastPersistedSharedPayloadsRef.current[key] !== payload
     );
     if (changedEntries.length === 0) return;
 
-    let cancelled = false;
+    let shouldUpdateUi = true;
     const timeout = window.setTimeout(() => {
       void (async () => {
         try {
@@ -1509,41 +1593,28 @@ export default function AbpInvoiceSettlement() {
               key: datasetKey,
               payload,
             });
-            if (cancelled) return;
             lastPersistedSharedPayloadsRef.current[datasetKey] = payload;
           }
-          setUploadPersistenceNotice(null);
+          if (shouldUpdateUi) {
+            setUploadPersistenceNotice(null);
+          }
         } catch {
-          if (!cancelled) {
+          if (shouldUpdateUi) {
             setUploadPersistenceNotice("Could not sync linked uploads to Solar REC dashboard.");
           }
         }
       })();
-    }, 1100);
+    }, 600);
 
     return () => {
-      cancelled = true;
+      shouldUpdateUi = false;
       window.clearTimeout(timeout);
     };
   }, [
     authLoading,
+    buildSharedUploadPayloadByKey,
     user,
     uploadsHydrated,
-    runInputs.utilityInvoiceFiles,
-    runInputs.csgSystemMappingFile,
-    runInputs.quickBooksFile,
-    runInputs.projectApplicationFile,
-    runInputs.portalInvoiceMapFile,
-    runInputs.csgPortalDatabaseFile,
-    utilityRows,
-    csgSystemMappings,
-    quickBooksByInvoice,
-    projectApplications,
-    invoiceNumberMapRows,
-    invoiceMapParsed,
-    invoiceMapHeaderSelection.csgIdHeader,
-    invoiceMapHeaderSelection.invoiceNumberHeader,
-    csgPortalDatabaseRows,
   ]);
 
   const knownSystemIds = useMemo(() => {
@@ -2427,6 +2498,18 @@ export default function AbpInvoiceSettlement() {
                 {uploadPersistenceNotice}
               </div>
             ) : null}
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleSaveUploadsNow()}
+                disabled={authLoading || !user || !uploadsHydrated || isSavingUploadsNow}
+              >
+                {isSavingUploadsNow ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Save className="h-3.5 w-3.5 mr-1" />}
+                Save Uploads Now
+              </Button>
+            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="utility-upload">Utility Invoice Workbooks (.xlsx/.csv, multi-file)</Label>
