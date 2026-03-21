@@ -989,7 +989,7 @@ export default function AbpInvoiceSettlement() {
           if (slot === "csgSystemMapping" && hydratedCsgSystemMappings.length === 0) {
             hydratedCsgSystemMappings = parsed.rows
               .map((row) => ({
-                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
                 systemId: getRowValueByAliases(row, ["systemId", "System ID", "state_certification_number"]),
               }))
               .filter((row) => row.csgId && row.systemId);
@@ -1036,7 +1036,7 @@ export default function AbpInvoiceSettlement() {
           if (slot === "portalInvoiceMap" && hydratedInvoiceNumberMapRows.length === 0) {
             hydratedInvoiceNumberMapRows = parsed.rows
               .map((row) => ({
-                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
                 invoiceNumber: getRowValueByAliases(row, ["invoiceNumber", "Invoice Number", "Num"]),
               }))
               .filter((row) => row.csgId && row.invoiceNumber);
@@ -1052,7 +1052,7 @@ export default function AbpInvoiceSettlement() {
                   row,
                   ["systemId", "System ID", "state_certification_number", "Application_ID"]
                 ),
-                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
                 installerName: getRowValueByAliases(row, ["installerName", "Installer", "Installer Company"]),
                 partnerCompanyName: getRowValueByAliases(row, [
                   "partnerCompanyName",
