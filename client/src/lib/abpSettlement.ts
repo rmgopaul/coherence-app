@@ -1032,6 +1032,17 @@ function classifyPaymentTypeByPercent(percentOfGross: number | null): PaymentCla
   return "unknown";
 }
 
+function inferFirstPaymentPercent(percentOfGross: number | null): number | null {
+  if (percentOfGross === null || !Number.isFinite(percentOfGross)) return null;
+
+  const isNear = (target: number) => Math.abs(percentOfGross - target) <= PERCENT_CLASSIFICATION_TOLERANCE;
+
+  if (isNear(100)) return 100;
+  if (isNear(20) || isNear(5)) return 20;
+  if (isNear(15) || isNear(3.54)) return 15;
+  return null;
+}
+
 function computeApplicationFee(input: {
   part1SubmissionDate: Date | null;
   part1OriginalSubmissionDate: Date | null;
@@ -1265,8 +1276,13 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           roundMoney(additionalCollateralAmount - paidAdditionalCollateral)
         );
 
+        const inferredFirstPaymentPercent = inferFirstPaymentPercent(paymentPercent);
+        const firstPaymentGrossBasis = roundMoney(
+          grossContractValue * ((inferredFirstPaymentPercent ?? 100) / 100)
+        );
+
         const firstFormulaNetAmount = roundMoney(
-          grossContractValue -
+          firstPaymentGrossBasis -
             utilityOutstanding -
             vendorFeeAmount -
             additionalOutstanding -

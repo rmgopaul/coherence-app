@@ -391,6 +391,46 @@ describe("ABP formula and carryforward", () => {
     expect(row.firstPaymentFormulaNetAmount).toBe(870);
   });
 
+  it("infers first-payment basis from quarterly percentages for first formula net", () => {
+    const result = computeSettlementRows({
+      utilityRows: [
+        baseUtilityRow({ rowId: "q5", systemId: "1001", paymentNumber: 2, invoiceAmount: 50 }),
+        baseUtilityRow({ rowId: "q354", systemId: "1002", paymentNumber: 2, invoiceAmount: 35.4 }),
+      ],
+      csgSystemMappings: [
+        { csgId: "2001", systemId: "1001" },
+        { csgId: "2002", systemId: "1002" },
+      ],
+      projectApplications: [
+        {
+          applicationId: "1001",
+          part1SubmissionDate: new Date("2024-05-01T00:00:00.000Z"),
+          part1OriginalSubmissionDate: null,
+          inverterSizeKwAcPart1: 0,
+        },
+        {
+          applicationId: "1002",
+          part1SubmissionDate: new Date("2024-05-01T00:00:00.000Z"),
+          part1OriginalSubmissionDate: null,
+          inverterSizeKwAcPart1: 0,
+        },
+      ],
+      quickBooksPaidUpfrontLedger: { bySystemId: new Map(), unmatchedLines: [] },
+      contractTermsByCsgId: new Map([
+        ["2001", baseContractTerms("2001", { vendorFeePercent: 10, additionalCollateralPercent: 0 })],
+        ["2002", baseContractTerms("2002", { vendorFeePercent: 10, additionalCollateralPercent: 0 })],
+      ]),
+    });
+
+    const row5 = result.rows.find((row) => row.rowId === "q5");
+    const row354 = result.rows.find((row) => row.rowId === "q354");
+
+    // gross=1000, inferred first-payment basis=200 (from 5% quarterly), withholdings=150 => net=50
+    expect(row5?.firstPaymentFormulaNetAmount).toBe(50);
+    // gross=1000, inferred first-payment basis=150 (from 3.54% quarterly), withholdings=150 => net=0
+    expect(row354?.firstPaymentFormulaNetAmount).toBe(0);
+  });
+
   it("does not credit customer collateral upfront when reimbursement to partner is detected", () => {
     const result = computeSettlementRows({
       utilityRows: [baseUtilityRow({ rowId: "r2", systemId: "1001", paymentNumber: 1, invoiceAmount: 1000 })],
