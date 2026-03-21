@@ -34,6 +34,27 @@ export type ProjectApplicationLiteRow = {
   inverterSizeKwAcPart1: number | null;
 };
 
+export type CsgPortalDatabaseRow = {
+  systemId: string;
+  csgId: string | null;
+  installerName: string | null;
+  partnerCompanyName: string | null;
+  collateralReimbursedToPartner: boolean | null;
+};
+
+export type InstallerRuleMatchField = "installerName" | "partnerCompanyName";
+
+export type InstallerSettlementRule = {
+  id: string;
+  name: string;
+  active: boolean;
+  matchField: InstallerRuleMatchField;
+  matchValue: string;
+  forceUtilityCollateralReimbursement: boolean;
+  referralFeePercent: number;
+  notes: string;
+};
+
 export type QuickBooksLineCategory =
   | "applicationFee"
   | "utilityCollateral"
@@ -163,6 +184,8 @@ export type PaymentComputationRow = {
   utilityHeldCollateral5PercentAmount: number;
   utilityHeldCollateralPaidUpfront: number;
   collateralReimbursementToPartnerCompanyAmount: number;
+  referralFeePercent: number;
+  referralFeeAmount: number;
   applicationFeeAmount: number;
   applicationFeePaidUpfront: number;
   additionalCollateralPercent: number;
@@ -178,6 +201,9 @@ export type PaymentComputationRow = {
   city: string;
   state: string;
   zip: string;
+  installerName: string;
+  partnerCompanyName: string;
+  appliedInstallerRuleName: string;
   withholdingBalanceSeededForSystem: number;
   carryforwardIn: number;
   carryforwardRecoveredThisRow: number;
@@ -200,6 +226,8 @@ export type SettlementComputationInput = {
   projectApplications: ProjectApplicationLiteRow[];
   quickBooksPaidUpfrontLedger: QuickBooksPaidUpfrontLedger;
   contractTermsByCsgId: Map<string, ContractTerms>;
+  csgPortalDatabaseRows?: CsgPortalDatabaseRow[];
+  installerRules?: InstallerSettlementRule[];
   previousCarryforwardBySystemId?: Record<string, number>;
   manualOverridesByRowId?: Record<string, ManualOverride>;
 };
@@ -516,6 +544,103 @@ export function parseProjectApplications(parsed: ParsedTabularData): ProjectAppl
       inverterSizeKwAcPart1: parseNumber(row[acSizeHeader]),
     }))
     .filter((row) => row.applicationId.length > 0);
+}
+
+function findHeaderByKeywords(headers: string[], requiredKeywords: string[]): string | null {
+  for (const header of headers) {
+    const normalized = normalizeHeader(header);
+    const matchesAll = requiredKeywords.every((keyword) => normalized.includes(normalizeHeader(keyword)));
+    if (matchesAll) return header;
+  }
+  return null;
+}
+
+function parseBooleanLike(value: unknown): boolean | null {
+  const normalized = clean(value).toLowerCase();
+  if (!normalized) return null;
+
+  if (
+    normalized === "yes" ||
+    normalized === "y" ||
+    normalized === "true" ||
+    normalized === "1" ||
+    normalized.includes("reimbursed") ||
+    normalized.includes("reimbursement") ||
+    normalized.includes("returned")
+  ) {
+    return true;
+  }
+
+  if (
+    normalized === "no" ||
+    normalized === "n" ||
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized.includes("not reimbursed") ||
+    normalized.includes("no reimbursement")
+  ) {
+    return false;
+  }
+
+  return null;
+}
+
+export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalDatabaseRow[] {
+  const systemHeader =
+    parsed.headers.find((header) => {
+      const normalized = normalizeHeader(header);
+      return (
+        normalized.includes("systemid") ||
+        normalized.includes("statecertificationnumber") ||
+        normalized === "applicationid"
+      );
+    }) ?? null;
+
+  const csgHeader =
+    parsed.headers.find((header) => {
+      const normalized = normalizeHeader(header);
+      return normalized.includes("csgid");
+    }) ?? null;
+
+  const installerHeader =
+    findHeaderByKeywords(parsed.headers, ["installer"]) ??
+    parsed.headers.find((header) => {
+      const normalized = normalizeHeader(header);
+      return normalized.includes("installercompany") || normalized.includes("installingcompany");
+    }) ??
+    null;
+
+  const partnerHeader =
+    findHeaderByKeywords(parsed.headers, ["partner", "company"]) ??
+    findHeaderByKeywords(parsed.headers, ["developer"]) ??
+    null;
+
+  const collateralReimbursedHeader =
+    findHeaderByKeywords(parsed.headers, ["collateral", "reimburs"]) ??
+    findHeaderByKeywords(parsed.headers, ["reimburs"]) ??
+    null;
+
+  if (!systemHeader) {
+    throw new Error(
+      "CSG portal database file must include a System ID (or state certification number) column."
+    );
+  }
+
+  return parsed.rows
+    .map((row) => {
+      const systemId = clean(row[systemHeader]);
+      if (!systemId) return null;
+      return {
+        systemId,
+        csgId: csgHeader ? clean(row[csgHeader]) || null : null,
+        installerName: installerHeader ? clean(row[installerHeader]) || null : null,
+        partnerCompanyName: partnerHeader ? clean(row[partnerHeader]) || null : null,
+        collateralReimbursedToPartner: collateralReimbursedHeader
+          ? parseBooleanLike(row[collateralReimbursedHeader])
+          : null,
+      } satisfies CsgPortalDatabaseRow;
+    })
+    .filter((row): row is CsgPortalDatabaseRow => Boolean(row));
 }
 
 export function parseQuickBooksDetailedReport(parsed: ParsedTabularData): Map<string, QuickBooksInvoice> {
@@ -919,6 +1044,41 @@ function buildProjectAppMap(rows: ProjectApplicationLiteRow[]): Map<string, Proj
   return map;
 }
 
+function buildCsgPortalSystemMap(rows: CsgPortalDatabaseRow[]): Map<string, CsgPortalDatabaseRow> {
+  const map = new Map<string, CsgPortalDatabaseRow>();
+  rows.forEach((row) => {
+    if (!row.systemId) return;
+    if (!map.has(row.systemId)) {
+      map.set(row.systemId, row);
+    }
+  });
+  return map;
+}
+
+function findInstallerRuleForSystem(
+  systemRow: CsgPortalDatabaseRow | null,
+  rules: InstallerSettlementRule[]
+): InstallerSettlementRule | null {
+  if (!systemRow) return null;
+
+  const installerNameNormalized = clean(systemRow.installerName).toLowerCase();
+  const partnerCompanyNormalized = clean(systemRow.partnerCompanyName).toLowerCase();
+
+  for (const rule of rules) {
+    if (!rule.active) continue;
+    const matchValue = clean(rule.matchValue).toLowerCase();
+    if (!matchValue) continue;
+
+    const haystack =
+      rule.matchField === "partnerCompanyName" ? partnerCompanyNormalized : installerNameNormalized;
+
+    if (!haystack) continue;
+    if (haystack.includes(matchValue)) return rule;
+  }
+
+  return null;
+}
+
 function safeMoney(value: number | null | undefined): number {
   return value !== null && value !== undefined && Number.isFinite(value) ? roundMoney(value) : 0;
 }
@@ -927,6 +1087,8 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
   const warnings: string[] = [];
   const systemToCsg = buildSystemToCsgMap(input.csgSystemMappings);
   const projectAppById = buildProjectAppMap(input.projectApplications);
+  const csgPortalBySystemId = buildCsgPortalSystemMap(input.csgPortalDatabaseRows ?? []);
+  const installerRules = input.installerRules ?? [];
   const previousCarryforward = input.previousCarryforwardBySystemId ?? {};
   const overridesByRowId = input.manualOverridesByRowId ?? {};
 
@@ -957,6 +1119,10 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const terms = csgId ? input.contractTermsByCsgId.get(csgId) ?? null : null;
       const ledger = input.quickBooksPaidUpfrontLedger.bySystemId.get(systemId);
       const projectApp = projectAppById.get(systemId) ?? null;
+      const csgPortalSystemRow = csgPortalBySystemId.get(systemId) ?? null;
+      const appliedInstallerRule = findInstallerRuleForSystem(csgPortalSystemRow, installerRules);
+      const installerName = clean(csgPortalSystemRow?.installerName);
+      const partnerCompanyName = clean(csgPortalSystemRow?.partnerCompanyName);
 
       const paidApplicationFee = safeMoney(ledger?.applicationFeePaidUpfront);
       const paidUtilityCollateral = safeMoney(ledger?.utilityCollateralPaidUpfront);
@@ -1012,9 +1178,23 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         const state = clean(terms?.state) || clean(cityStateZipParts.state);
         const zip = clean(terms?.zip) || clean(cityStateZipParts.zip);
 
+        const forceCollateralReimbursement =
+          csgPortalSystemRow?.collateralReimbursedToPartner === true ||
+          Boolean(appliedInstallerRule?.forceUtilityCollateralReimbursement);
+        const effectiveUtilityCollateralPaidUpfront = forceCollateralReimbursement
+          ? 0
+          : paidUtilityCollateral;
+        const forcedReimbursementAmount = forceCollateralReimbursement ? paidUtilityCollateral : 0;
+        const reimbursementToPartnerCompanyAmount = roundMoney(
+          paidUtilityCollateralReimbursement + forcedReimbursementAmount
+        );
+
+        const referralFeePercent = safeMoney(appliedInstallerRule?.referralFeePercent ?? 0);
+        const referralFeeAmount = roundMoney((grossContractValue * referralFeePercent) / 100);
+
         const utilityOutstanding = Math.max(
           0,
-          roundMoney(utilityHeldCollateral5PercentAmount - paidUtilityCollateral)
+          roundMoney(utilityHeldCollateral5PercentAmount - effectiveUtilityCollateralPaidUpfront)
         );
         const applicationOutstanding = Math.max(0, roundMoney(applicationFeeAmount - paidApplicationFee));
         const additionalOutstanding = Math.max(
@@ -1052,9 +1232,19 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         if (!terms) confidenceFlags.push("Missing scanned contract terms for CSG ID.");
         if (!projectApp) confidenceFlags.push("Missing ProjectApplication row for System/Application ID.");
         if (classification === "unknown") confidenceFlags.push("Payment classification is outside tolerance; review override.");
-        if (paidUtilityCollateralReimbursement > 0) {
+        if (paidUtilityCollateralReimbursement > 0 || forceCollateralReimbursement) {
           confidenceFlags.push(
             "Utility collateral reimbursement to partner detected; reimbursed amount is excluded from customer upfront credit."
+          );
+        }
+        if (forceCollateralReimbursement && paidUtilityCollateral > 0) {
+          confidenceFlags.push(
+            "Installer rule (or CSG portal reimbursement flag) forced utility collateral upfront credit to $0."
+          );
+        }
+        if (referralFeePercent > 0) {
+          confidenceFlags.push(
+            `Referral fee applied (${referralFeePercent.toFixed(2)}% of gross contract value).`
           );
         }
 
@@ -1092,8 +1282,10 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           vendorFeePercent,
           vendorFeeAmount,
           utilityHeldCollateral5PercentAmount,
-          utilityHeldCollateralPaidUpfront: paidUtilityCollateral,
-          collateralReimbursementToPartnerCompanyAmount: paidUtilityCollateralReimbursement,
+          utilityHeldCollateralPaidUpfront: effectiveUtilityCollateralPaidUpfront,
+          collateralReimbursementToPartnerCompanyAmount: reimbursementToPartnerCompanyAmount,
+          referralFeePercent,
+          referralFeeAmount,
           applicationFeeAmount,
           applicationFeePaidUpfront: paidApplicationFee,
           additionalCollateralPercent,
@@ -1109,6 +1301,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           city,
           state,
           zip,
+          installerName,
+          partnerCompanyName,
+          appliedInstallerRuleName: clean(appliedInstallerRule?.name),
           withholdingBalanceSeededForSystem: seededWithholdingThisRow,
           carryforwardIn,
           carryforwardRecoveredThisRow: recovered,
@@ -1160,6 +1355,8 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Utility Held Collateral 5% Amount",
     "Utility Held Collateral Paid Upfront",
     "Collateral Reimbursement to the Partner Company",
+    "Referral Fee %",
+    "Referral Fee Amount",
     "Application Fee Amount",
     "Application Fee Paid Upfront",
     "Additional Collateral %",
@@ -1175,6 +1372,9 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "City",
     "State",
     "Zip",
+    "Installer Name",
+    "Partner Company Name",
+    "Applied Installer Rule",
     "Carryforward In",
     "Carryforward Recovered This Row",
     "Carryforward Out",
@@ -1203,6 +1403,8 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.utilityHeldCollateral5PercentAmount.toFixed(2),
       row.utilityHeldCollateralPaidUpfront.toFixed(2),
       row.collateralReimbursementToPartnerCompanyAmount.toFixed(2),
+      row.referralFeePercent,
+      row.referralFeeAmount.toFixed(2),
       row.applicationFeeAmount.toFixed(2),
       row.applicationFeePaidUpfront.toFixed(2),
       row.additionalCollateralPercent,
@@ -1218,6 +1420,9 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.city,
       row.state,
       row.zip,
+      row.installerName,
+      row.partnerCompanyName,
+      row.appliedInstallerRuleName,
       row.carryforwardIn.toFixed(2),
       row.carryforwardRecoveredThisRow.toFixed(2),
       row.carryforwardOut.toFixed(2),

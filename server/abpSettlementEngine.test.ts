@@ -3,10 +3,12 @@ import {
   buildQuickBooksPaidUpfrontLedger,
   buildSettlementCsv,
   computeSettlementRows,
+  parseCsgPortalDatabase,
   parseProjectApplications,
   parseQuickBooksDetailedReport,
   parseUtilityInvoiceMatrix,
   type ContractTerms,
+  type InstallerSettlementRule,
   type CsgSystemIdMappingRow,
   type ProjectApplicationLiteRow,
   type QuickBooksPaidUpfrontLedger,
@@ -212,6 +214,27 @@ describe("ABP parser coverage", () => {
     expect(rows[0].inverterSizeKwAcPart1).toBe(11.2);
     expect(rows[0].part1SubmissionDate?.toISOString().slice(0, 10)).toBe("2024-05-15");
   });
+
+  it("parses CSG portal database rows with installer and reimbursement flag", () => {
+    const rows = parseCsgPortalDatabase({
+      headers: ["System ID", "CSG ID", "Installer Company", "Partner Company", "Collateral Reimbursed"],
+      rows: [
+        {
+          "System ID": "1001",
+          "CSG ID": "2001",
+          "Installer Company": "ADT Solar",
+          "Partner Company": "Partner Alpha",
+          "Collateral Reimbursed": "Yes",
+        },
+      ],
+      matrix: [],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].systemId).toBe("1001");
+    expect(rows[0].installerName).toBe("ADT Solar");
+    expect(rows[0].collateralReimbursedToPartner).toBe(true);
+  });
 });
 
 describe("ABP formula and carryforward", () => {
@@ -314,6 +337,58 @@ describe("ABP formula and carryforward", () => {
     expect(row.utilityHeldCollateralPaidUpfront).toBe(0);
     expect(row.collateralReimbursementToPartnerCompanyAmount).toBe(50);
     expect(row.firstPaymentFormulaNetAmount).toBe(850);
+  });
+
+  it("applies installer rules for forced collateral reimbursement and referral fee", () => {
+    const installerRules: InstallerSettlementRule[] = [
+      {
+        id: "adt-rule",
+        name: "ADT Rule",
+        active: true,
+        matchField: "installerName",
+        matchValue: "ADT Solar",
+        forceUtilityCollateralReimbursement: true,
+        referralFeePercent: 5,
+        notes: "",
+      },
+    ];
+
+    const result = computeSettlementRows({
+      utilityRows: [baseUtilityRow({ rowId: "r3", systemId: "1001", paymentNumber: 1, invoiceAmount: 1000 })],
+      csgSystemMappings: [{ csgId: "2001", systemId: "1001" }],
+      projectApplications: [
+        {
+          applicationId: "1001",
+          part1SubmissionDate: new Date("2024-05-01T00:00:00.000Z"),
+          part1OriginalSubmissionDate: null,
+          inverterSizeKwAcPart1: 10,
+        },
+      ],
+      quickBooksPaidUpfrontLedger: createLedgerBySystem({
+        systemId: "1001",
+        utilityCollateral: 50,
+      }),
+      csgPortalDatabaseRows: [
+        {
+          systemId: "1001",
+          csgId: "2001",
+          installerName: "ADT Solar",
+          partnerCompanyName: "PartnerCo",
+          collateralReimbursedToPartner: null,
+        },
+      ],
+      installerRules,
+      contractTermsByCsgId: new Map([
+        ["2001", baseContractTerms("2001", { vendorFeePercent: 0, additionalCollateralPercent: 0 })],
+      ]),
+    });
+
+    const row = result.rows[0];
+    expect(row.utilityHeldCollateralPaidUpfront).toBe(0);
+    expect(row.collateralReimbursementToPartnerCompanyAmount).toBe(50);
+    expect(row.referralFeePercent).toBe(5);
+    expect(row.referralFeeAmount).toBe(50);
+    expect(row.appliedInstallerRuleName).toBe("ADT Rule");
   });
 
   it("flags unknown classification when outside tolerance", () => {

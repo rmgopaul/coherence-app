@@ -39,7 +39,13 @@ type DatasetKey =
   | "contractedDate"
   | "convertedReads"
   | "annualProductionEstimates"
-  | "generatorDetails";
+  | "generatorDetails"
+  | "abpUtilityInvoiceRows"
+  | "abpCsgSystemMapping"
+  | "abpQuickBooksRows"
+  | "abpProjectApplicationRows"
+  | "abpPortalInvoiceMapRows"
+  | "abpCsgPortalDatabaseRows";
 
 type OwnershipStatus =
   | "Transferred and Reporting"
@@ -519,6 +525,42 @@ const DATASET_DEFINITIONS: Record<
     description:
       "Optional fallback for performance ratio baseline when no GATS baseline exists (uses Date Online at day 15, meter starts at 0).",
     requiredHeaderSets: [["GATS Unit ID", "Date Online"], ["gats_unit_id", "date_online"]],
+  },
+  abpUtilityInvoiceRows: {
+    label: "ABP Utility Invoice Rows",
+    description:
+      "Linked ABP settlement upload. Shared with ABP Monthly Invoice Settlement so both pages show the same utility invoice rows.",
+    requiredHeaderSets: [["systemId", "paymentNumber", "recQuantity", "recPrice", "invoiceAmount"]],
+  },
+  abpCsgSystemMapping: {
+    label: "ABP CSG-System Mapping",
+    description:
+      "Linked ABP settlement mapping upload (CSG ID to System ID). Shared with ABP Monthly Invoice Settlement.",
+    requiredHeaderSets: [["csgId", "systemId"]],
+  },
+  abpQuickBooksRows: {
+    label: "ABP QuickBooks Rows",
+    description:
+      "Linked ABP settlement QuickBooks detail rows. Shared with ABP Monthly Invoice Settlement.",
+    requiredHeaderSets: [["invoiceNumber", "lineAmount", "description"]],
+  },
+  abpProjectApplicationRows: {
+    label: "ABP ProjectApplication Rows",
+    description:
+      "Linked ABP settlement ProjectApplication rows. Shared with ABP Monthly Invoice Settlement.",
+    requiredHeaderSets: [["applicationId", "inverterSizeKwAcPart1"]],
+  },
+  abpPortalInvoiceMapRows: {
+    label: "ABP Portal Invoice Map Rows",
+    description:
+      "Linked ABP settlement portal invoice map (CSG ID to invoice number). Shared with ABP Monthly Invoice Settlement.",
+    requiredHeaderSets: [["csgId", "invoiceNumber"]],
+  },
+  abpCsgPortalDatabaseRows: {
+    label: "ABP CSG Portal Database Rows",
+    description:
+      "Linked ABP settlement CSG portal database rows for installer/company attributes and collateral reimbursement flags.",
+    requiredHeaderSets: [["systemId", "installerName"]],
   },
 };
 
@@ -6251,6 +6293,10 @@ export default function SolarRecDashboard() {
         Object.keys(manifest).forEach((rawKey) => {
           if (!isDatasetKey(rawKey)) return;
           keysToLoad.add(rawKey);
+        });
+
+        (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+          keysToLoad.add(key);
         });
 
         if (keysToLoad.size === 0) {

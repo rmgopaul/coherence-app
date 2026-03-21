@@ -16,12 +16,15 @@ import {
   computeSettlementRows,
   detectInvoiceNumberMapHeaders,
   parseCsgSystemMapping,
+  parseCsgPortalDatabase,
   parseInvoiceNumberMap,
   parseProjectApplications,
   parseQuickBooksDetailedReport,
   parseTabularFile,
   parseUtilityInvoiceFile,
   type ContractTerms,
+  type CsgPortalDatabaseRow,
+  type InstallerSettlementRule,
   type ManualOverride,
   type PaymentClassification,
   type PaymentComputationRow,
@@ -36,6 +39,7 @@ import {
   ArrowLeft,
   Download,
   Loader2,
+  Plus,
   Play,
   RefreshCw,
   Save,
@@ -52,6 +56,7 @@ type RunInputs = {
   quickBooksFile: string | null;
   projectApplicationFile: string | null;
   portalInvoiceMapFile: string | null;
+  csgPortalDatabaseFile: string | null;
 };
 
 type ContractFetchResult = {
@@ -105,6 +110,8 @@ type SavedRunPayload = {
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
+  csgPortalDatabaseRows: CsgPortalDatabaseRow[];
+  installerRules: InstallerSettlementRule[];
   contractTerms: ContractTerms[];
   manualOverridesByRowId: Record<string, ManualOverride>;
   previousCarryforwardBySystemId: Record<string, number>;
@@ -131,6 +138,8 @@ type PersistedUploadStatePayload = {
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
+  csgPortalDatabaseRows: CsgPortalDatabaseRow[];
+  installerRules: InstallerSettlementRule[];
 };
 
 const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
@@ -139,6 +148,37 @@ const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 2,
 });
 const ABP_UPLOAD_STATE_DATASET_KEY = "abp_settlement_upload_state_v1";
+const ABP_SHARED_SOLAR_REC_DATASET_KEYS = {
+  utilityRows: "abpUtilityInvoiceRows",
+  csgSystemMapping: "abpCsgSystemMapping",
+  quickBooksRows: "abpQuickBooksRows",
+  projectApplications: "abpProjectApplicationRows",
+  portalInvoiceMap: "abpPortalInvoiceMapRows",
+  csgPortalDatabase: "abpCsgPortalDatabaseRows",
+} as const;
+
+const DEFAULT_INSTALLER_RULES: InstallerSettlementRule[] = [
+  {
+    id: "rule-adt-solar-collateral",
+    name: "ADT Solar Collateral Reimbursement",
+    active: true,
+    matchField: "installerName",
+    matchValue: "ADT Solar",
+    forceUtilityCollateralReimbursement: true,
+    referralFeePercent: 0,
+    notes: "Treat utility collateral paid upfront as reimbursed to partner for ADT Solar systems.",
+  },
+  {
+    id: "rule-ion-solar-referral",
+    name: "ION Solar Referral Fee",
+    active: true,
+    matchField: "installerName",
+    matchValue: "ION Solar",
+    forceUtilityCollateralReimbursement: false,
+    referralFeePercent: 5,
+    notes: "Apply a 5% referral fee on gross contract value.",
+  },
+];
 
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -223,6 +263,305 @@ function splitCityStateZip(rawValue: string | null | undefined): {
   };
 }
 
+type LinkedCsvDatasetPayload = {
+  fileName: string;
+  uploadedAt: string;
+  headers: string[];
+  csvText: string;
+  rows: Array<Record<string, string>>;
+};
+
+function buildLinkedCsvDatasetPayload(input: {
+  fileName: string;
+  uploadedAt: string;
+  headers: string[];
+  rows: Array<Record<string, unknown>>;
+}): string {
+  const normalizedHeaders = input.headers.map((header) => clean(header)).filter(Boolean);
+  const normalizedRows = input.rows.map((row) => {
+    const normalized: Record<string, string> = {};
+    Object.entries(row).forEach(([key, value]) => {
+      normalized[key] = value === null || value === undefined ? "" : String(value);
+    });
+    return normalized;
+  });
+
+  const csvEscape = (value: string): string => {
+    if (/[",\n]/.test(value)) {
+      return `"${value.replaceAll('"', '""')}"`;
+    }
+    return value;
+  };
+
+  const csvText = [
+    normalizedHeaders.map(csvEscape).join(","),
+    ...normalizedRows.map((row) => normalizedHeaders.map((header) => csvEscape(clean(row[header]))).join(",")),
+  ].join("\n");
+
+  const payload: LinkedCsvDatasetPayload = {
+    fileName: clean(input.fileName) || "linked-upload.csv",
+    uploadedAt: clean(input.uploadedAt) || new Date().toISOString(),
+    headers: normalizedHeaders,
+    csvText,
+    rows: normalizedRows,
+  };
+  return JSON.stringify(payload);
+}
+
+function parseLinkedCsvDatasetPayload(value: string): LinkedCsvDatasetPayload | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<LinkedCsvDatasetPayload>;
+    if (!parsed || typeof parsed !== "object") return null;
+    if (!Array.isArray(parsed.headers)) return null;
+
+    const parseCsvMatrix = (csvInput: string): string[][] => {
+      const source = csvInput.replace(/^\uFEFF/, "");
+      const matrix: string[][] = [];
+      let row: string[] = [];
+      let cell = "";
+      let inQuotes = false;
+
+      for (let index = 0; index < source.length; index += 1) {
+        const character = source[index];
+
+        if (character === '"') {
+          const next = source[index + 1];
+          if (inQuotes && next === '"') {
+            cell += '"';
+            index += 1;
+          } else {
+            inQuotes = !inQuotes;
+          }
+          continue;
+        }
+
+        if (!inQuotes && character === ",") {
+          row.push(cell);
+          cell = "";
+          continue;
+        }
+
+        if (!inQuotes && (character === "\n" || character === "\r")) {
+          if (character === "\r" && source[index + 1] === "\n") index += 1;
+          row.push(cell);
+          cell = "";
+          if (row.some((entry) => clean(entry).length > 0)) {
+            matrix.push(row);
+          }
+          row = [];
+          continue;
+        }
+
+        cell += character;
+      }
+
+      row.push(cell);
+      if (row.some((entry) => clean(entry).length > 0)) {
+        matrix.push(row);
+      }
+
+      return matrix;
+    };
+
+    const parseRowsFromCsv = (csvText: string, headers: string[]): Array<Record<string, string>> => {
+      const matrix = parseCsvMatrix(csvText);
+      const firstRow = matrix[0] ?? [];
+      const headerRow =
+        firstRow.length === headers.length &&
+        firstRow.every((entry, index) => clean(entry) === headers[index])
+          ? firstRow
+          : headers;
+
+      const bodyRows = matrix.length > 0 && headerRow === firstRow ? matrix.slice(1) : matrix;
+      return bodyRows.map((cells) => {
+        const record: Record<string, string> = {};
+        headers.forEach((header, index) => {
+          record[header] = clean(cells[index]);
+        });
+        return record;
+      });
+    };
+
+    const normalizedRows = Array.isArray(parsed.rows)
+      ? parsed.rows.map((row) => {
+          const normalized: Record<string, string> = {};
+          if (row && typeof row === "object") {
+            Object.entries(row).forEach(([key, cell]) => {
+              normalized[key] = cell === null || cell === undefined ? "" : String(cell);
+            });
+          }
+          return normalized;
+        })
+      : parseRowsFromCsv(clean(parsed.csvText), parsed.headers.map((header) => clean(header)).filter(Boolean));
+
+    return {
+      fileName: clean(parsed.fileName) || "linked-upload.csv",
+      uploadedAt: clean(parsed.uploadedAt) || new Date().toISOString(),
+      headers: parsed.headers.map((header) => clean(header)).filter(Boolean),
+      csvText: clean(parsed.csvText),
+      rows: normalizedRows,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function toNumericCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  const normalized = clean(value);
+  return normalized;
+}
+
+function parseNumericCell(value: unknown): number | null {
+  const normalized = clean(value).replace(/,/g, "").replace(/[$%]/g, "");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function utilityRowsToLinkedRows(rows: UtilityInvoiceRow[]): Array<Record<string, unknown>> {
+  return rows.map((row) => ({
+    rowId: row.rowId,
+    sourceFile: row.sourceFile,
+    sourceSheet: row.sourceSheet,
+    contractId: row.contractId ?? "",
+    utilityName: row.utilityName ?? "",
+    systemId: row.systemId,
+    paymentNumber: toNumericCell(row.paymentNumber),
+    recQuantity: toNumericCell(row.recQuantity),
+    recPrice: toNumericCell(row.recPrice),
+    invoiceAmount: toNumericCell(row.invoiceAmount),
+    systemAddress: row.systemAddress,
+  }));
+}
+
+function linkedRowsToUtilityRows(rows: Array<Record<string, string>>, fallbackFileName: string): UtilityInvoiceRow[] {
+  return rows
+    .map((row, index) => {
+      const systemId = clean(row.systemId);
+      if (!systemId) return null;
+      const sourceFile = clean(row.sourceFile) || fallbackFileName;
+      const rowId = clean(row.rowId) || `${sourceFile}:${index + 2}:${systemId}`;
+      return {
+        rowId,
+        sourceFile,
+        sourceSheet: clean(row.sourceSheet) || "linked",
+        contractId: clean(row.contractId) || null,
+        utilityName: clean(row.utilityName) || null,
+        systemId,
+        paymentNumber: parseNumericCell(row.paymentNumber),
+        recQuantity: parseNumericCell(row.recQuantity),
+        recPrice: parseNumericCell(row.recPrice),
+        invoiceAmount: parseNumericCell(row.invoiceAmount),
+        systemAddress: clean(row.systemAddress),
+      } satisfies UtilityInvoiceRow;
+    })
+    .filter((row): row is UtilityInvoiceRow => Boolean(row));
+}
+
+function quickBooksInvoicesToLinkedRows(
+  invoices: Map<string, QuickBooksInvoice>
+): Array<Record<string, unknown>> {
+  const rows: Array<Record<string, unknown>> = [];
+
+  Array.from(invoices.values()).forEach((invoice) => {
+    const invoiceDate = invoice.date ? invoice.date.toISOString().slice(0, 10) : "";
+    const lineItems = invoice.lineItems.length > 0 ? invoice.lineItems : [{ lineOrder: null, description: "", productService: "", amount: null }];
+    lineItems.forEach((lineItem, index) => {
+      rows.push({
+        invoiceNumber: invoice.invoiceNumber,
+        date: invoiceDate,
+        customer: invoice.customer,
+        amount: toNumericCell(invoice.amount),
+        openBalance: toNumericCell(invoice.openBalance),
+        cashReceived: toNumericCell(invoice.cashReceived),
+        paymentStatus: invoice.paymentStatus,
+        voided: invoice.voided,
+        lineOrder: toNumericCell(lineItem.lineOrder ?? index + 1),
+        description: lineItem.description,
+        productService: lineItem.productService,
+        lineAmount: toNumericCell(lineItem.amount),
+      });
+    });
+  });
+
+  return rows;
+}
+
+function linkedRowsToQuickBooksInvoices(rows: Array<Record<string, string>>): Map<string, QuickBooksInvoice> {
+  const grouped = new Map<string, QuickBooksInvoice>();
+
+  rows.forEach((row) => {
+    const invoiceNumber = clean(row.invoiceNumber);
+    if (!invoiceNumber) return;
+
+    const existing =
+      grouped.get(invoiceNumber) ??
+      ({
+        invoiceNumber,
+        amount: parseNumericCell(row.amount),
+        openBalance: parseNumericCell(row.openBalance),
+        cashReceived: parseNumericCell(row.cashReceived),
+        paymentStatus: clean(row.paymentStatus),
+        voided: clean(row.voided),
+        customer: clean(row.customer) || "Unknown",
+        date: clean(row.date) ? new Date(clean(row.date)) : null,
+        lineItems: [],
+      } satisfies QuickBooksInvoice);
+
+    if (existing.amount === null) existing.amount = parseNumericCell(row.amount);
+    if (existing.openBalance === null) existing.openBalance = parseNumericCell(row.openBalance);
+    if (existing.cashReceived === null) existing.cashReceived = parseNumericCell(row.cashReceived);
+    if (!existing.paymentStatus) existing.paymentStatus = clean(row.paymentStatus);
+    if (!existing.voided) existing.voided = clean(row.voided);
+    if (!existing.customer) existing.customer = clean(row.customer) || "Unknown";
+    if (!existing.date && clean(row.date)) {
+      const parsedDate = new Date(clean(row.date));
+      existing.date = Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
+    }
+
+    const description = clean(row.description);
+    const productService = clean(row.productService);
+    const lineAmount = parseNumericCell(row.lineAmount);
+    if (description || productService || lineAmount !== null) {
+      existing.lineItems.push({
+        lineOrder: parseNumericCell(row.lineOrder),
+        description,
+        productService,
+        amount: lineAmount,
+      });
+    }
+
+    grouped.set(invoiceNumber, existing);
+  });
+
+  grouped.forEach((invoice) => {
+    invoice.lineItems.sort((left, right) => {
+      const leftOrder = left.lineOrder ?? Number.MAX_SAFE_INTEGER;
+      const rightOrder = right.lineOrder ?? Number.MAX_SAFE_INTEGER;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      return left.description.localeCompare(right.description);
+    });
+  });
+
+  return grouped;
+}
+
+function normalizeInstallerRules(rules: InstallerSettlementRule[] | null | undefined): InstallerSettlementRule[] {
+  const source = Array.isArray(rules) ? rules : DEFAULT_INSTALLER_RULES;
+  return source.map((rule, index) => ({
+    id: clean(rule.id) || `installer-rule-${index + 1}`,
+    name: clean(rule.name) || `Installer Rule ${index + 1}`,
+    active: rule.active !== false,
+    matchField: rule.matchField === "partnerCompanyName" ? "partnerCompanyName" : "installerName",
+    matchValue: clean(rule.matchValue),
+    forceUtilityCollateralReimbursement: Boolean(rule.forceUtilityCollateralReimbursement),
+    referralFeePercent: parseNumericCell(rule.referralFeePercent) ?? 0,
+    notes: clean(rule.notes),
+  }));
+}
+
 function serializeProjectApplications(rows: ProjectApplicationLiteRow[]): PersistedProjectApplicationRow[] {
   return rows.map((row) => ({
     applicationId: row.applicationId,
@@ -275,6 +614,8 @@ function buildPersistedUploadStatePayload(input: {
   projectApplications: ProjectApplicationLiteRow[];
   quickBooksByInvoice: Map<string, QuickBooksInvoice>;
   invoiceNumberMapRows: InvoiceNumberMapRow[];
+  csgPortalDatabaseRows: CsgPortalDatabaseRow[];
+  installerRules: InstallerSettlementRule[];
 }): PersistedUploadStatePayload {
   return {
     version: 1,
@@ -285,6 +626,8 @@ function buildPersistedUploadStatePayload(input: {
     projectApplications: serializeProjectApplications(input.projectApplications),
     quickBooksInvoices: serializeQuickBooksInvoices(input.quickBooksByInvoice),
     invoiceNumberMapRows: input.invoiceNumberMapRows,
+    csgPortalDatabaseRows: input.csgPortalDatabaseRows,
+    installerRules: normalizeInstallerRules(input.installerRules),
   };
 }
 
@@ -303,6 +646,7 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
       quickBooksFile: clean(runInputsRaw.quickBooksFile) || null,
       projectApplicationFile: clean(runInputsRaw.projectApplicationFile) || null,
       portalInvoiceMapFile: clean(runInputsRaw.portalInvoiceMapFile) || null,
+      csgPortalDatabaseFile: clean(runInputsRaw.csgPortalDatabaseFile) || null,
     };
 
     return {
@@ -314,6 +658,10 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
       projectApplications: Array.isArray(parsed.projectApplications) ? parsed.projectApplications : [],
       quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
       invoiceNumberMapRows: Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : [],
+      csgPortalDatabaseRows: Array.isArray(parsed.csgPortalDatabaseRows) ? parsed.csgPortalDatabaseRows : [],
+      installerRules: normalizeInstallerRules(
+        Array.isArray(parsed.installerRules) ? parsed.installerRules : DEFAULT_INSTALLER_RULES
+      ),
     };
   } catch {
     return null;
@@ -369,12 +717,15 @@ export default function AbpInvoiceSettlement() {
     quickBooksFile: null,
     projectApplicationFile: null,
     portalInvoiceMapFile: null,
+    csgPortalDatabaseFile: null,
   });
 
   const [utilityRows, setUtilityRows] = useState<UtilityInvoiceRow[]>([]);
   const [csgSystemMappings, setCsgSystemMappings] = useState<CsgSystemIdMappingRow[]>([]);
   const [projectApplications, setProjectApplications] = useState<ProjectApplicationLiteRow[]>([]);
   const [quickBooksByInvoice, setQuickBooksByInvoice] = useState<Map<string, QuickBooksInvoice>>(new Map());
+  const [csgPortalDatabaseRows, setCsgPortalDatabaseRows] = useState<CsgPortalDatabaseRow[]>([]);
+  const [installerRules, setInstallerRules] = useState<InstallerSettlementRule[]>(DEFAULT_INSTALLER_RULES);
 
   const [invoiceMapParsed, setInvoiceMapParsed] = useState<ParsedTabularData | null>(null);
   const [savedInvoiceNumberMapRows, setSavedInvoiceNumberMapRows] = useState<InvoiceNumberMapRow[]>([]);
@@ -403,6 +754,7 @@ export default function AbpInvoiceSettlement() {
   const [isUploadingQuickBooks, setIsUploadingQuickBooks] = useState(false);
   const [isUploadingProjectApps, setIsUploadingProjectApps] = useState(false);
   const [isUploadingInvoiceMap, setIsUploadingInvoiceMap] = useState(false);
+  const [isUploadingCsgPortalDatabase, setIsUploadingCsgPortalDatabase] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [uploadsHydrated, setUploadsHydrated] = useState(false);
   const [uploadPersistenceNotice, setUploadPersistenceNotice] = useState<string | null>(null);
@@ -432,6 +784,7 @@ export default function AbpInvoiceSettlement() {
   const saveUploadStateMutationRef = useRef(saveUploadStateMutation);
   saveUploadStateMutationRef.current = saveUploadStateMutation;
   const lastPersistedUploadPayloadRef = useRef<string>("");
+  const lastPersistedSharedPayloadsRef = useRef<Record<string, string>>({});
 
   const scanJobQuery = trpc.abpSettlement.getJobStatus.useQuery(
     { jobId: activeScanJobId ?? "__none__" },
@@ -460,32 +813,150 @@ export default function AbpInvoiceSettlement() {
     let cancelled = false;
 
     void (async () => {
+      let hydratedRunInputs: RunInputs = {
+        utilityInvoiceFiles: [],
+        csgSystemMappingFile: null,
+        quickBooksFile: null,
+        projectApplicationFile: null,
+        portalInvoiceMapFile: null,
+        csgPortalDatabaseFile: null,
+      };
+      let hydratedUtilityRows: UtilityInvoiceRow[] = [];
+      let hydratedCsgSystemMappings: CsgSystemIdMappingRow[] = [];
+      let hydratedProjectApplications: ProjectApplicationLiteRow[] = [];
+      let hydratedQuickBooksByInvoice = new Map<string, QuickBooksInvoice>();
+      let hydratedInvoiceNumberMapRows: InvoiceNumberMapRow[] = [];
+      let hydratedCsgPortalDatabaseRows: CsgPortalDatabaseRow[] = [];
+      let hydratedInstallerRules = normalizeInstallerRules(DEFAULT_INSTALLER_RULES);
+
       try {
         const stored = await getUploadStateMutationRef.current.mutateAsync({
           key: ABP_UPLOAD_STATE_DATASET_KEY,
         });
 
         if (cancelled) return;
-        if (!stored?.payload) {
-          setUploadsHydrated(true);
-          return;
+
+        if (stored?.payload) {
+          const parsed = parsePersistedUploadStatePayload(stored.payload);
+          if (parsed) {
+            hydratedRunInputs = parsed.runInputs;
+            hydratedUtilityRows = parsed.utilityRows ?? [];
+            hydratedCsgSystemMappings = parsed.csgSystemMappings ?? [];
+            hydratedProjectApplications = deserializeProjectApplications(parsed.projectApplications ?? []);
+            hydratedQuickBooksByInvoice = deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []);
+            hydratedInvoiceNumberMapRows = parsed.invoiceNumberMapRows ?? [];
+            hydratedCsgPortalDatabaseRows = parsed.csgPortalDatabaseRows ?? [];
+            hydratedInstallerRules = normalizeInstallerRules(parsed.installerRules);
+            lastPersistedUploadPayloadRef.current = stored.payload;
+          }
         }
 
-        const parsed = parsePersistedUploadStatePayload(stored.payload);
-        if (!parsed) {
-          setUploadsHydrated(true);
-          return;
+        const sharedEntries = Object.entries(ABP_SHARED_SOLAR_REC_DATASET_KEYS) as Array<
+          [keyof typeof ABP_SHARED_SOLAR_REC_DATASET_KEYS, string]
+        >;
+
+        const sharedResults = await Promise.all(
+          sharedEntries.map(async ([slot, datasetKey]) => {
+            try {
+              const result = await getUploadStateMutationRef.current.mutateAsync({ key: datasetKey });
+              return [slot, result?.payload ?? null] as const;
+            } catch {
+              return [slot, null] as const;
+            }
+          })
+        );
+
+        for (const [slot, payload] of sharedResults) {
+          if (!payload) continue;
+          lastPersistedSharedPayloadsRef.current[ABP_SHARED_SOLAR_REC_DATASET_KEYS[slot]] = payload;
+          const parsed = parseLinkedCsvDatasetPayload(payload);
+          if (!parsed || parsed.rows.length === 0) continue;
+
+          if (slot === "utilityRows" && hydratedUtilityRows.length === 0) {
+            hydratedUtilityRows = linkedRowsToUtilityRows(parsed.rows, parsed.fileName);
+            hydratedRunInputs.utilityInvoiceFiles =
+              hydratedUtilityRows.length > 0 ? [parsed.fileName] : hydratedRunInputs.utilityInvoiceFiles;
+          }
+
+          if (slot === "csgSystemMapping" && hydratedCsgSystemMappings.length === 0) {
+            hydratedCsgSystemMappings = parsed.rows
+              .map((row) => ({
+                csgId: clean(row.csgId),
+                systemId: clean(row.systemId),
+              }))
+              .filter((row) => row.csgId && row.systemId);
+            if (hydratedCsgSystemMappings.length > 0) {
+              hydratedRunInputs.csgSystemMappingFile = parsed.fileName;
+            }
+          }
+
+          if (slot === "quickBooksRows" && hydratedQuickBooksByInvoice.size === 0) {
+            hydratedQuickBooksByInvoice = linkedRowsToQuickBooksInvoices(parsed.rows);
+            if (hydratedQuickBooksByInvoice.size > 0) {
+              hydratedRunInputs.quickBooksFile = parsed.fileName;
+            }
+          }
+
+          if (slot === "projectApplications" && hydratedProjectApplications.length === 0) {
+            hydratedProjectApplications = parsed.rows
+              .map((row) => ({
+                applicationId: clean(row.applicationId),
+                part1SubmissionDate: clean(row.part1SubmissionDate) ? new Date(clean(row.part1SubmissionDate)) : null,
+                part1OriginalSubmissionDate: clean(row.part1OriginalSubmissionDate)
+                  ? new Date(clean(row.part1OriginalSubmissionDate))
+                  : null,
+                inverterSizeKwAcPart1: parseNumericCell(row.inverterSizeKwAcPart1),
+              }))
+              .filter((row) => row.applicationId);
+            if (hydratedProjectApplications.length > 0) {
+              hydratedRunInputs.projectApplicationFile = parsed.fileName;
+            }
+          }
+
+          if (slot === "portalInvoiceMap" && hydratedInvoiceNumberMapRows.length === 0) {
+            hydratedInvoiceNumberMapRows = parsed.rows
+              .map((row) => ({
+                csgId: clean(row.csgId),
+                invoiceNumber: clean(row.invoiceNumber),
+              }))
+              .filter((row) => row.csgId && row.invoiceNumber);
+            if (hydratedInvoiceNumberMapRows.length > 0) {
+              hydratedRunInputs.portalInvoiceMapFile = parsed.fileName;
+            }
+          }
+
+          if (slot === "csgPortalDatabase" && hydratedCsgPortalDatabaseRows.length === 0) {
+            hydratedCsgPortalDatabaseRows = parsed.rows
+              .map((row) => ({
+                systemId: clean(row.systemId),
+                csgId: clean(row.csgId) || null,
+                installerName: clean(row.installerName) || null,
+                partnerCompanyName: clean(row.partnerCompanyName) || null,
+                collateralReimbursedToPartner:
+                  clean(row.collateralReimbursedToPartner).toLowerCase() === "true"
+                    ? true
+                    : clean(row.collateralReimbursedToPartner).toLowerCase() === "false"
+                      ? false
+                      : null,
+              }))
+              .filter((row) => row.systemId);
+            if (hydratedCsgPortalDatabaseRows.length > 0) {
+              hydratedRunInputs.csgPortalDatabaseFile = parsed.fileName;
+            }
+          }
         }
 
-        setRunInputs(parsed.runInputs);
-        setUtilityRows(parsed.utilityRows ?? []);
-        setCsgSystemMappings(parsed.csgSystemMappings ?? []);
-        setProjectApplications(deserializeProjectApplications(parsed.projectApplications ?? []));
-        setQuickBooksByInvoice(deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []));
+        if (cancelled) return;
+        setRunInputs(hydratedRunInputs);
+        setUtilityRows(hydratedUtilityRows);
+        setCsgSystemMappings(hydratedCsgSystemMappings);
+        setProjectApplications(hydratedProjectApplications);
+        setQuickBooksByInvoice(hydratedQuickBooksByInvoice);
+        setCsgPortalDatabaseRows(hydratedCsgPortalDatabaseRows);
+        setInstallerRules(hydratedInstallerRules);
         setInvoiceMapParsed(null);
         setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
-        setSavedInvoiceNumberMapRows(parsed.invoiceNumberMapRows ?? []);
-        lastPersistedUploadPayloadRef.current = stored.payload;
+        setSavedInvoiceNumberMapRows(hydratedInvoiceNumberMapRows);
       } catch {
         if (!cancelled) {
           setUploadPersistenceNotice("Could not restore previously uploaded files.");
@@ -602,6 +1073,8 @@ export default function AbpInvoiceSettlement() {
         projectApplications,
         quickBooksByInvoice,
         invoiceNumberMapRows,
+        csgPortalDatabaseRows,
+        installerRules,
       })
     );
 
@@ -640,6 +1113,175 @@ export default function AbpInvoiceSettlement() {
     projectApplications,
     quickBooksByInvoice,
     invoiceNumberMapRows,
+    csgPortalDatabaseRows,
+    installerRules,
+  ]);
+
+  useEffect(() => {
+    if (authLoading || !user || !uploadsHydrated) return;
+
+    const resolveUploadedAtForKey = (datasetKey: string): string => {
+      const previousPayload = lastPersistedSharedPayloadsRef.current[datasetKey];
+      if (!previousPayload) return new Date().toISOString();
+      const previousParsed = parseLinkedCsvDatasetPayload(previousPayload);
+      return previousParsed?.uploadedAt ?? new Date().toISOString();
+    };
+
+    const nextPayloadByKey: Record<string, string> = {
+      [ABP_SHARED_SOLAR_REC_DATASET_KEYS.utilityRows]:
+        utilityRows.length > 0
+          ? buildLinkedCsvDatasetPayload({
+              uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.utilityRows),
+              fileName:
+                runInputs.utilityInvoiceFiles[0] ??
+                (runInputs.utilityInvoiceFiles.length > 1
+                  ? `${runInputs.utilityInvoiceFiles.length} utility files`
+                  : "ABP Utility Invoices"),
+              headers: [
+                "rowId",
+                "sourceFile",
+                "sourceSheet",
+                "contractId",
+                "utilityName",
+                "systemId",
+                "paymentNumber",
+                "recQuantity",
+                "recPrice",
+                "invoiceAmount",
+                "systemAddress",
+              ],
+              rows: utilityRowsToLinkedRows(utilityRows),
+            })
+          : "",
+      [ABP_SHARED_SOLAR_REC_DATASET_KEYS.csgSystemMapping]:
+        csgSystemMappings.length > 0
+          ? buildLinkedCsvDatasetPayload({
+              uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.csgSystemMapping),
+              fileName: runInputs.csgSystemMappingFile ?? "ABP CSG-System Mapping",
+              headers: ["csgId", "systemId"],
+              rows: csgSystemMappings.map((row) => ({ csgId: row.csgId, systemId: row.systemId })),
+            })
+          : "",
+      [ABP_SHARED_SOLAR_REC_DATASET_KEYS.quickBooksRows]:
+        quickBooksByInvoice.size > 0
+          ? buildLinkedCsvDatasetPayload({
+              uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.quickBooksRows),
+              fileName: runInputs.quickBooksFile ?? "ABP QuickBooks Detail",
+              headers: [
+                "invoiceNumber",
+                "date",
+                "customer",
+                "amount",
+                "openBalance",
+                "cashReceived",
+                "paymentStatus",
+                "voided",
+                "lineOrder",
+                "description",
+                "productService",
+                "lineAmount",
+              ],
+              rows: quickBooksInvoicesToLinkedRows(quickBooksByInvoice),
+            })
+          : "",
+      [ABP_SHARED_SOLAR_REC_DATASET_KEYS.projectApplications]:
+        projectApplications.length > 0
+          ? buildLinkedCsvDatasetPayload({
+              uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.projectApplications),
+              fileName: runInputs.projectApplicationFile ?? "ABP ProjectApplication",
+              headers: [
+                "applicationId",
+                "part1SubmissionDate",
+                "part1OriginalSubmissionDate",
+                "inverterSizeKwAcPart1",
+              ],
+              rows: projectApplications.map((row) => ({
+                applicationId: row.applicationId,
+                part1SubmissionDate: row.part1SubmissionDate?.toISOString() ?? "",
+                part1OriginalSubmissionDate: row.part1OriginalSubmissionDate?.toISOString() ?? "",
+                inverterSizeKwAcPart1: toNumericCell(row.inverterSizeKwAcPart1),
+              })),
+            })
+          : "",
+      [ABP_SHARED_SOLAR_REC_DATASET_KEYS.portalInvoiceMap]:
+        invoiceNumberMapRows.length > 0
+          ? buildLinkedCsvDatasetPayload({
+              uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.portalInvoiceMap),
+              fileName: runInputs.portalInvoiceMapFile ?? "ABP Portal Invoice Map",
+              headers: ["csgId", "invoiceNumber"],
+              rows: invoiceNumberMapRows.map((row) => ({ csgId: row.csgId, invoiceNumber: row.invoiceNumber })),
+            })
+          : "",
+      [ABP_SHARED_SOLAR_REC_DATASET_KEYS.csgPortalDatabase]:
+        csgPortalDatabaseRows.length > 0
+          ? buildLinkedCsvDatasetPayload({
+              uploadedAt: resolveUploadedAtForKey(ABP_SHARED_SOLAR_REC_DATASET_KEYS.csgPortalDatabase),
+              fileName: runInputs.csgPortalDatabaseFile ?? "ABP CSG Portal Database",
+              headers: [
+                "systemId",
+                "csgId",
+                "installerName",
+                "partnerCompanyName",
+                "collateralReimbursedToPartner",
+              ],
+              rows: csgPortalDatabaseRows.map((row) => ({
+                systemId: row.systemId,
+                csgId: row.csgId ?? "",
+                installerName: row.installerName ?? "",
+                partnerCompanyName: row.partnerCompanyName ?? "",
+                collateralReimbursedToPartner:
+                  row.collateralReimbursedToPartner === null ? "" : String(row.collateralReimbursedToPartner),
+              })),
+            })
+          : "",
+    };
+
+    const changedEntries = Object.entries(nextPayloadByKey).filter(
+      ([key, payload]) => lastPersistedSharedPayloadsRef.current[key] !== payload
+    );
+    if (changedEntries.length === 0) return;
+
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          for (const [datasetKey, payload] of changedEntries) {
+            await saveUploadStateMutationRef.current.mutateAsync({
+              key: datasetKey,
+              payload,
+            });
+            if (cancelled) return;
+            lastPersistedSharedPayloadsRef.current[datasetKey] = payload;
+          }
+          setUploadPersistenceNotice(null);
+        } catch {
+          if (!cancelled) {
+            setUploadPersistenceNotice("Could not sync linked uploads to Solar REC dashboard.");
+          }
+        }
+      })();
+    }, 1100);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [
+    authLoading,
+    user,
+    uploadsHydrated,
+    runInputs.utilityInvoiceFiles,
+    runInputs.csgSystemMappingFile,
+    runInputs.quickBooksFile,
+    runInputs.projectApplicationFile,
+    runInputs.portalInvoiceMapFile,
+    runInputs.csgPortalDatabaseFile,
+    utilityRows,
+    csgSystemMappings,
+    quickBooksByInvoice,
+    projectApplications,
+    invoiceNumberMapRows,
+    csgPortalDatabaseRows,
   ]);
 
   const knownSystemIds = useMemo(() => {
@@ -710,6 +1352,8 @@ export default function AbpInvoiceSettlement() {
       projectApplications,
       quickBooksPaidUpfrontLedger: quickBooksLedger,
       contractTermsByCsgId,
+      csgPortalDatabaseRows,
+      installerRules,
       previousCarryforwardBySystemId,
       manualOverridesByRowId,
     });
@@ -719,6 +1363,8 @@ export default function AbpInvoiceSettlement() {
     projectApplications,
     quickBooksLedger,
     contractTermsByCsgId,
+    csgPortalDatabaseRows,
+    installerRules,
     previousCarryforwardBySystemId,
     manualOverridesByRowId,
   ]);
@@ -842,6 +1488,60 @@ export default function AbpInvoiceSettlement() {
     }
   };
 
+  const handleCsgPortalDatabaseUpload = async (fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    setIsUploadingCsgPortalDatabase(true);
+
+    try {
+      const parsed = await parseTabularFile(file);
+      const rows = parseCsgPortalDatabase(parsed);
+      setCsgPortalDatabaseRows(rows);
+      setRunInputs((current) => ({
+        ...current,
+        csgPortalDatabaseFile: file.name,
+      }));
+      toast.success(`Loaded ${rows.length.toLocaleString("en-US")} CSG portal system rows.`);
+    } catch (error) {
+      toast.error(`Failed to parse CSG portal database file: ${toErrorMessage(error)}`);
+    } finally {
+      setIsUploadingCsgPortalDatabase(false);
+    }
+  };
+
+  const handleAddInstallerRule = () => {
+    const nextIndex = installerRules.length + 1;
+    setInstallerRules((current) => [
+      ...current,
+      {
+        id: `installer-rule-${Date.now()}-${nextIndex}`,
+        name: `Installer Rule ${nextIndex}`,
+        active: true,
+        matchField: "installerName",
+        matchValue: "",
+        forceUtilityCollateralReimbursement: false,
+        referralFeePercent: 0,
+        notes: "",
+      },
+    ]);
+  };
+
+  const handleUpdateInstallerRule = (
+    ruleId: string,
+    patch: Partial<InstallerSettlementRule>
+  ) => {
+    setInstallerRules((current) =>
+      current.map((rule) => (rule.id === ruleId ? { ...rule, ...patch } : rule))
+    );
+  };
+
+  const handleDeleteInstallerRule = (ruleId: string) => {
+    setInstallerRules((current) => {
+      const next = current.filter((rule) => rule.id !== ruleId);
+      return next.length > 0 ? next : normalizeInstallerRules(DEFAULT_INSTALLER_RULES);
+    });
+  };
+
   const handleDeleteUtilityFiles = () => {
     setUtilityRows([]);
     setRunInputs((current) => ({
@@ -890,6 +1590,15 @@ export default function AbpInvoiceSettlement() {
       portalInvoiceMapFile: null,
     }));
     toast.success("Optional portal invoice map deleted.");
+  };
+
+  const handleDeleteCsgPortalDatabaseFile = () => {
+    setCsgPortalDatabaseRows([]);
+    setRunInputs((current) => ({
+      ...current,
+      csgPortalDatabaseFile: null,
+    }));
+    toast.success("CSG portal database file deleted.");
   };
 
   const handleSavePortalCredentials = async () => {
@@ -971,6 +1680,8 @@ export default function AbpInvoiceSettlement() {
       projectApplications: serializeProjectApplications(projectApplications),
       quickBooksInvoices: serializeQuickBooksInvoices(quickBooksByInvoice),
       invoiceNumberMapRows,
+      csgPortalDatabaseRows,
+      installerRules: normalizeInstallerRules(installerRules),
       contractTerms: Array.from(contractTermsByCsgId.values()),
       manualOverridesByRowId,
       previousCarryforwardBySystemId,
@@ -996,7 +1707,16 @@ export default function AbpInvoiceSettlement() {
   const applyLoadedRun = (payload: SavedRunPayload) => {
     setMonthKey(payload.monthKey || buildMonthKey());
     setRunLabel(payload.label ?? "");
-    setRunInputs(payload.runInputs);
+    setRunInputs({
+      utilityInvoiceFiles: Array.isArray(payload.runInputs?.utilityInvoiceFiles)
+        ? payload.runInputs.utilityInvoiceFiles
+        : [],
+      csgSystemMappingFile: payload.runInputs?.csgSystemMappingFile ?? null,
+      quickBooksFile: payload.runInputs?.quickBooksFile ?? null,
+      projectApplicationFile: payload.runInputs?.projectApplicationFile ?? null,
+      portalInvoiceMapFile: payload.runInputs?.portalInvoiceMapFile ?? null,
+      csgPortalDatabaseFile: payload.runInputs?.csgPortalDatabaseFile ?? null,
+    });
     setUtilityRows(payload.utilityRows ?? []);
     setCsgSystemMappings(payload.csgSystemMappings ?? []);
     setProjectApplications(deserializeProjectApplications(payload.projectApplications ?? []));
@@ -1004,6 +1724,8 @@ export default function AbpInvoiceSettlement() {
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
     setSavedInvoiceNumberMapRows(payload.invoiceNumberMapRows ?? []);
+    setCsgPortalDatabaseRows(payload.csgPortalDatabaseRows ?? []);
+    setInstallerRules(normalizeInstallerRules(payload.installerRules));
     setContractTermsByCsgId(new Map((payload.contractTerms ?? []).map((term) => [term.csgId, term])));
     setContractScanRows(
       (payload.contractTerms ?? []).map((term) => ({
@@ -1097,11 +1819,14 @@ export default function AbpInvoiceSettlement() {
       quickBooksFile: null,
       projectApplicationFile: null,
       portalInvoiceMapFile: null,
+      csgPortalDatabaseFile: null,
     });
     setUtilityRows([]);
     setCsgSystemMappings([]);
     setProjectApplications([]);
     setQuickBooksByInvoice(new Map());
+    setCsgPortalDatabaseRows([]);
+    setInstallerRules(normalizeInstallerRules(DEFAULT_INSTALLER_RULES));
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
     setSavedInvoiceNumberMapRows([]);
@@ -1260,7 +1985,7 @@ export default function AbpInvoiceSettlement() {
           <CardHeader>
             <CardTitle>2) Upload Inputs</CardTitle>
             <CardDescription>
-              Required: utility invoices, CSG/System mapping, QuickBooks report, and ProjectApplication file. Optional: portal invoice map.
+              Required: utility invoices, CSG/System mapping, QuickBooks report, and ProjectApplication file. Optional: portal invoice map and CSG portal database. Linked uploads sync with Solar REC dashboard slots.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -1425,6 +2150,40 @@ export default function AbpInvoiceSettlement() {
                   </Button>
                 </div>
               </div>
+
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="csg-portal-db-upload">
+                  Optional CSG Portal Database (.csv/.xlsx)
+                </Label>
+                <Input
+                  id="csg-portal-db-upload"
+                  type="file"
+                  accept=".xlsx,.xls,.xlsm,.xlsb,.csv,text/csv"
+                  onChange={(event) => {
+                    void handleCsgPortalDatabaseUpload(event.currentTarget.files);
+                    event.currentTarget.value = "";
+                  }}
+                  disabled={isUploadingCsgPortalDatabase}
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.csgPortalDatabaseFile ?? "No CSG portal database loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteCsgPortalDatabaseFile}
+                    disabled={
+                      isUploadingCsgPortalDatabase ||
+                      (!runInputs.csgPortalDatabaseFile && csgPortalDatabaseRows.length === 0)
+                    }
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
+                </div>
+              </div>
             </div>
 
             {invoiceMapParsed ? (
@@ -1493,6 +2252,8 @@ export default function AbpInvoiceSettlement() {
                 <div>QuickBooks invoices: {quickBooksByInvoice.size.toLocaleString("en-US")}</div>
                 <div>ProjectApplication rows: {projectApplications.length.toLocaleString("en-US")}</div>
                 <div>Invoice map rows: {invoiceNumberMapRows.length.toLocaleString("en-US")}</div>
+                <div>CSG portal database rows: {csgPortalDatabaseRows.length.toLocaleString("en-US")}</div>
+                <div>Installer-specific rules: {installerRules.length.toLocaleString("en-US")}</div>
               </div>
               <div className="rounded-md border p-3 text-sm">
                 <div className="font-medium mb-1">QuickBooks Allocation</div>
@@ -1526,7 +2287,137 @@ export default function AbpInvoiceSettlement() {
 
         <Card>
           <CardHeader>
-            <CardTitle>3) CSG Portal Contract Scan</CardTitle>
+            <CardTitle>3) Installer-Specific Rules</CardTitle>
+            <CardDescription>
+              Rules are editable on this page and persisted with uploads. Use these to force collateral reimbursement behavior and apply referral fees by installer/partner match.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={handleAddInstallerRule}>
+                <Plus className="h-4 w-4 mr-2" />
+                Add Rule
+              </Button>
+              <Badge variant="secondary">{installerRules.length.toLocaleString("en-US")} rule(s)</Badge>
+            </div>
+            <div className="rounded-md border">
+              <div className="max-h-[40vh] overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Active</TableHead>
+                      <TableHead>Rule Name</TableHead>
+                      <TableHead>Match Field</TableHead>
+                      <TableHead>Match Text</TableHead>
+                      <TableHead>Force Collateral Reimbursed</TableHead>
+                      <TableHead>Referral Fee %</TableHead>
+                      <TableHead>Notes</TableHead>
+                      <TableHead>Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {installerRules.map((rule) => (
+                      <TableRow key={rule.id}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={rule.active}
+                            onChange={(event) =>
+                              handleUpdateInstallerRule(rule.id, { active: event.target.checked })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="min-w-[180px]">
+                          <Input
+                            value={rule.name}
+                            onChange={(event) =>
+                              handleUpdateInstallerRule(rule.id, { name: event.target.value })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="min-w-[170px]">
+                          <Select
+                            value={rule.matchField}
+                            onValueChange={(value) =>
+                              handleUpdateInstallerRule(rule.id, {
+                                matchField:
+                                  value === "partnerCompanyName" ? "partnerCompanyName" : "installerName",
+                              })
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="installerName">Installer Name</SelectItem>
+                              <SelectItem value="partnerCompanyName">Partner Company Name</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="min-w-[180px]">
+                          <Input
+                            value={rule.matchValue}
+                            onChange={(event) =>
+                              handleUpdateInstallerRule(rule.id, { matchValue: event.target.value })
+                            }
+                            placeholder="e.g., ADT Solar"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            checked={rule.forceUtilityCollateralReimbursement}
+                            onChange={(event) =>
+                              handleUpdateInstallerRule(rule.id, {
+                                forceUtilityCollateralReimbursement: event.target.checked,
+                              })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="min-w-[120px]">
+                          <Input
+                            type="number"
+                            step="0.01"
+                            value={rule.referralFeePercent}
+                            onChange={(event) =>
+                              handleUpdateInstallerRule(rule.id, {
+                                referralFeePercent: parseNumberInput(event.target.value) ?? 0,
+                              })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="min-w-[220px]">
+                          <Textarea
+                            value={rule.notes}
+                            onChange={(event) =>
+                              handleUpdateInstallerRule(rule.id, { notes: event.target.value })
+                            }
+                            rows={2}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleDeleteInstallerRule(rule.id)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5 mr-1" />
+                            Delete
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>4) CSG Portal Contract Scan</CardTitle>
             <CardDescription>
               Save/test portal credentials, then scan the top Rec Contract PDF for each CSG ID.
             </CardDescription>
@@ -1687,7 +2578,7 @@ export default function AbpInvoiceSettlement() {
         <Card>
           <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <CardTitle>4) Settlement Output</CardTitle>
+              <CardTitle>5) Settlement Output</CardTitle>
               <CardDescription>
                 Includes first/only-payment formula columns plus classification, carryforward, confidence flags, and override notes.
               </CardDescription>
@@ -1754,6 +2645,8 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>Utility Held Collateral 5% Amount</TableHead>
                         <TableHead>Utility Held Collateral Paid Upfront</TableHead>
                         <TableHead>Collateral Reimbursement to the Partner Company</TableHead>
+                        <TableHead>Referral Fee %</TableHead>
+                        <TableHead>Referral Fee Amount</TableHead>
                         <TableHead>Application Fee Amount</TableHead>
                         <TableHead>Application Fee Paid Upfront</TableHead>
                         <TableHead>Additional Collateral %</TableHead>
@@ -1768,6 +2661,9 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>City</TableHead>
                         <TableHead>State</TableHead>
                         <TableHead>Zip</TableHead>
+                        <TableHead>Installer Name</TableHead>
+                        <TableHead>Partner Company Name</TableHead>
+                        <TableHead>Applied Installer Rule</TableHead>
                         <TableHead>Classification</TableHead>
                         <TableHead>Carryforward In</TableHead>
                         <TableHead>Carryforward Out</TableHead>
@@ -1797,6 +2693,8 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{formatCurrency(row.utilityHeldCollateral5PercentAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.utilityHeldCollateralPaidUpfront)}</TableCell>
                             <TableCell>{formatCurrency(row.collateralReimbursementToPartnerCompanyAmount)}</TableCell>
+                            <TableCell>{formatPercent(row.referralFeePercent)}</TableCell>
+                            <TableCell>{formatCurrency(row.referralFeeAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.applicationFeeAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.applicationFeePaidUpfront)}</TableCell>
                             <TableCell>{formatPercent(row.additionalCollateralPercent)}</TableCell>
@@ -1811,6 +2709,9 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.city}</TableCell>
                             <TableCell>{row.state}</TableCell>
                             <TableCell>{row.zip}</TableCell>
+                            <TableCell>{row.installerName}</TableCell>
+                            <TableCell>{row.partnerCompanyName}</TableCell>
+                            <TableCell>{row.appliedInstallerRuleName}</TableCell>
                             <TableCell>{row.classification}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardIn)}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardOut)}</TableCell>
