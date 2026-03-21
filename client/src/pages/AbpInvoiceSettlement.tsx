@@ -185,6 +185,43 @@ const ABP_SHARED_SOLAR_REC_DATASET_KEYS = {
   csgPortalDatabase: "abpCsgPortalDatabaseRows",
 } as const;
 
+const YAMM_PAYMENT_EMAIL_HEADERS = [
+  "Recipient",
+  "Recipient Alt",
+  "system_owner_payment_address_name",
+  "This Payment",
+  "Payment Method",
+  "system_owner_payment_address",
+  "system_owner_payment_address2",
+  "system_owner_payment_city",
+  "system_owner_payment_state",
+  "system_owner_payment_zip",
+  "ID",
+  "Inverter_Size_kW_AC_Part_2",
+  "System_Name",
+  "system_address",
+  "system_city",
+  "system_zip",
+  "SRECs",
+  "REC Price",
+  "Total Payment",
+  "CSG Fee %",
+  "Fee Amount",
+  "Additional Fee",
+  "ADfee",
+  "Additional Percent",
+  "Additional",
+  "CC Auth AdCo",
+  "CC Auth AdCo Amount",
+  "Five",
+  "Five if Paid",
+  "Payment Notes",
+  "Payment Number",
+  "Contract ID",
+  "Payment Send By Date",
+  "Update Request Deadline",
+] as const;
+
 const DEFAULT_INSTALLER_RULES: InstallerSettlementRule[] = [
   {
     id: "rule-adt-solar-collateral",
@@ -259,6 +296,43 @@ function downloadTextFile(fileName: string, content: string, mimeType: string): 
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+}
+
+function toYammCsv(rows: Array<Record<string, string>>): string {
+  const escape = (value: string): string => {
+    if (/[",\n]/.test(value)) return `"${value.replaceAll('"', '""')}"`;
+    return value;
+  };
+  const lines = [
+    YAMM_PAYMENT_EMAIL_HEADERS.map((header) => escape(header)).join(","),
+    ...rows.map((row) =>
+      YAMM_PAYMENT_EMAIL_HEADERS.map((header) => escape(clean(row[header]))).join(",")
+    ),
+  ];
+  return lines.join("\n");
+}
+
+function buildUpcomingTuesdayLabel(date = new Date()): string {
+  const local = new Date(date);
+  const day = local.getDay();
+  const daysUntilTuesday = (2 - day + 7) % 7 || 7;
+  local.setDate(local.getDate() + daysUntilTuesday);
+  return local.toLocaleDateString("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function splitSystemAddressLocation(systemAddress: string): { city: string; zip: string } {
+  const raw = clean(systemAddress);
+  if (!raw) return { city: "", zip: "" };
+  const match = raw.match(/,\s*([^,]+),\s*[A-Za-z]{2}\s+(\d{5}(?:-\d{4})?)\s*$/);
+  if (!match) return { city: "", zip: "" };
+  return {
+    city: clean(match[1]),
+    zip: clean(match[2]),
+  };
 }
 
 function buildMonthKey(date = new Date()): string {
@@ -996,6 +1070,10 @@ export default function AbpInvoiceSettlement() {
 
   const [monthKey, setMonthKey] = useState(buildMonthKey());
   const [runLabel, setRunLabel] = useState("");
+  const [emailSendByDateText, setEmailSendByDateText] = useState(() => buildUpcomingTuesdayLabel());
+  const [emailUpdateDeadlineText, setEmailUpdateDeadlineText] = useState(
+    () => `1pm ${buildUpcomingTuesdayLabel()}`
+  );
   const [runInputs, setRunInputs] = useState<RunInputs>({
     utilityInvoiceFiles: [],
     csgSystemMappingFile: null,
@@ -1888,6 +1966,65 @@ export default function AbpInvoiceSettlement() {
     latestPayeeUpdateResult.warnings,
   ]);
 
+  const yammEmailRows = useMemo(() => {
+    if (!computationResult) return [] as Array<Record<string, string>>;
+    return computationResult.rows.map((row) => {
+      const systemLocation = splitSystemAddressLocation(row.systemAddress);
+      const recipient = clean(row.customerEmail) || clean(row.customerAltEmail);
+      return {
+        Recipient: recipient,
+        "Recipient Alt": clean(row.customerAltEmail),
+        system_owner_payment_address_name: clean(row.payeeName),
+        "This Payment": formatCurrency(row.netPayoutThisRow),
+        "Payment Method": clean(row.paymentMethod),
+        system_owner_payment_address: clean(row.mailingAddress1),
+        system_owner_payment_address2: clean(row.mailingAddress2),
+        system_owner_payment_city: clean(row.city),
+        system_owner_payment_state: clean(row.state) || "IL",
+        system_owner_payment_zip: clean(row.zip),
+        ID: clean(row.csgId),
+        Inverter_Size_kW_AC_Part_2: "",
+        System_Name: "",
+        system_address: clean(row.systemAddress),
+        system_city: systemLocation.city,
+        system_zip: systemLocation.zip,
+        SRECs: String(row.recQuantity),
+        "REC Price": formatCurrency(row.recPrice),
+        "Total Payment": formatCurrency(row.grossContractValue),
+        "CSG Fee %": formatPercent(row.vendorFeePercent),
+        "Fee Amount": formatCurrency(row.vendorFeeAmount),
+        "Additional Fee": row.additionalCollateralAmount > 0 ? "Additional collateral" : "",
+        ADfee: formatCurrency(row.additionalCollateralAmount),
+        "Additional Percent": formatPercent(row.additionalCollateralPercent),
+        Additional: formatCurrency(row.additionalCollateralAmount),
+        "CC Auth AdCo": row.ccAuthIncomplete5PercentAmount > 0 ? "5.00%" : "",
+        "CC Auth AdCo Amount": formatCurrency(row.ccAuthIncomplete5PercentAmount),
+        Five: formatCurrency(row.utilityHeldCollateral5PercentAmount),
+        "Five if Paid": formatCurrency(row.utilityHeldCollateralPaidUpfront),
+        "Payment Notes": clean(row.paymentNotes),
+        "Payment Number": row.paymentNumber === null ? "" : String(row.paymentNumber),
+        "Contract ID": clean(row.contractId),
+        "Payment Send By Date": clean(emailSendByDateText),
+        "Update Request Deadline": clean(emailUpdateDeadlineText),
+      };
+    });
+  }, [computationResult, emailSendByDateText, emailUpdateDeadlineText]);
+
+  const yammMissingRecipientCount = useMemo(
+    () => yammEmailRows.filter((row) => !clean(row.Recipient)).length,
+    [yammEmailRows]
+  );
+
+  const yammDuplicateRecipientCount = useMemo(() => {
+    const counts = new Map<string, number>();
+    yammEmailRows.forEach((row) => {
+      const recipient = clean(row.Recipient).toLowerCase();
+      if (!recipient) return;
+      counts.set(recipient, (counts.get(recipient) ?? 0) + 1);
+    });
+    return Array.from(counts.values()).filter((count) => count > 1).length;
+  }, [yammEmailRows]);
+
   const savedRuns = (savedRunsQuery.data ?? []) as RunSummary[];
 
   const missingRequiredInputs = useMemo(() => {
@@ -2239,6 +2376,20 @@ export default function AbpInvoiceSettlement() {
     const safeMonth = clean(monthKey) || buildMonthKey();
     downloadTextFile(`abp-invoice-settlement-${safeMonth}.csv`, csv, "text/csv;charset=utf-8");
     toast.success("CSV exported.");
+  };
+
+  const handleExportYammCsv = () => {
+    if (!computationResult || yammEmailRows.length === 0) {
+      toast.error("No computed rows are available for email merge export.");
+      return;
+    }
+    const safeMonth = clean(monthKey) || buildMonthKey();
+    downloadTextFile(
+      `abp-yamm-payment-emails-${safeMonth}.csv`,
+      toYammCsv(yammEmailRows),
+      "text/csv;charset=utf-8"
+    );
+    toast.success("YAMM email CSV exported.");
   };
 
   const handleAiCleanMailingData = async () => {
@@ -3731,6 +3882,103 @@ export default function AbpInvoiceSettlement() {
                 </div>
               </div>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle>6) YAMM Email Merge</CardTitle>
+              <CardDescription>
+                Build a Yet Another Mail Merge CSV for monthly payment emails and run basic send-readiness checks before blast day.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleExportYammCsv}
+              disabled={!computationResult || yammEmailRows.length === 0}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export YAMM CSV
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="email-send-by-date">Payment Send By Date Text</Label>
+                <Input
+                  id="email-send-by-date"
+                  value={emailSendByDateText}
+                  onChange={(event) => setEmailSendByDateText(event.target.value)}
+                  placeholder="Tuesday, March 24"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="email-update-deadline">Update Request Deadline Text</Label>
+                <Input
+                  id="email-update-deadline"
+                  value={emailUpdateDeadlineText}
+                  onChange={(event) => setEmailUpdateDeadlineText(event.target.value)}
+                  placeholder="1pm Tuesday, March 24"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-md border p-3 text-sm">
+                <div className="text-slate-500">Merge Rows</div>
+                <div className="text-lg font-semibold">{yammEmailRows.length.toLocaleString("en-US")}</div>
+              </div>
+              <div className="rounded-md border p-3 text-sm">
+                <div className="text-slate-500">Missing Recipient Email</div>
+                <div className="text-lg font-semibold">{yammMissingRecipientCount.toLocaleString("en-US")}</div>
+              </div>
+              <div className="rounded-md border p-3 text-sm">
+                <div className="text-slate-500">Duplicate Recipients</div>
+                <div className="text-lg font-semibold">{yammDuplicateRecipientCount.toLocaleString("en-US")}</div>
+              </div>
+            </div>
+
+            <div className="rounded-md border">
+              <div className="max-h-56 overflow-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Recipient</TableHead>
+                      <TableHead>CSG ID</TableHead>
+                      <TableHead>Payment #</TableHead>
+                      <TableHead>This Payment</TableHead>
+                      <TableHead>Payee</TableHead>
+                      <TableHead>Method</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {yammEmailRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-sm text-slate-500 text-center py-6">
+                          Compute settlement rows first to build email merge data.
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      yammEmailRows.slice(0, 100).map((row, index) => (
+                        <TableRow key={`${clean(row.ID)}:${clean(row["Payment Number"])}:${index}`}>
+                          <TableCell>{row.Recipient}</TableCell>
+                          <TableCell>{row.ID}</TableCell>
+                          <TableCell>{row["Payment Number"]}</TableCell>
+                          <TableCell>{row["This Payment"]}</TableCell>
+                          <TableCell>{row.system_owner_payment_address_name}</TableCell>
+                          <TableCell>{row["Payment Method"]}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div className="text-xs text-slate-500">
+              Export includes all placeholders used in your template (for example: {"<<"}This Payment{">>"}, {"<<"}ID{">>"}, {"<<"}Payment Method{">>"}) plus
+              {" "}Recipient for YAMM.
+            </div>
           </CardContent>
         </Card>
 
