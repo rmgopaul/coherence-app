@@ -268,6 +268,23 @@ describe("ABP parser coverage", () => {
     expect(rows[0].installerName).toBe("ADT Solar");
   });
 
+  it("parses CSG portal database rows when CSG ID header is named system_id", () => {
+    const rows = parseCsgPortalDatabase({
+      headers: ["system_id", "Installer Company"],
+      rows: [
+        {
+          system_id: "2002",
+          "Installer Company": "Installer B",
+        },
+      ],
+      matrix: [],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].csgId).toBe("2002");
+    expect(rows[0].installerName).toBe("Installer B");
+  });
+
   it("throws when CSG portal database is missing the CSG ID column", () => {
     expect(() =>
       parseCsgPortalDatabase({

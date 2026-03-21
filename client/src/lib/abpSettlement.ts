@@ -609,7 +609,13 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     }) ??
     parsed.headers.find((header) => {
       const normalized = normalizeHeader(header);
-      return normalized === "id" || normalized === "portalid" || normalized === "csgportalid";
+      const rawLower = clean(header).toLowerCase();
+      return (
+        normalized === "id" ||
+        normalized === "portalid" ||
+        normalized === "csgportalid" ||
+        rawLower === "system_id"
+      );
     }) ??
     null;
 
@@ -649,7 +655,9 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     null;
 
   if (!csgHeader) {
-    throw new Error("CSG portal database file must include a CSG ID column (for example: CSG ID or ID).");
+    throw new Error(
+      "CSG portal database file must include a CSG ID column (for example: CSG ID, ID, or system_id)."
+    );
   }
 
   const missingCsgIdRows: number[] = [];

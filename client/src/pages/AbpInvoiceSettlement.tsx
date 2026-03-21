@@ -1052,7 +1052,7 @@ export default function AbpInvoiceSettlement() {
                   row,
                   ["systemId", "System ID", "state_certification_number", "Application_ID"]
                 ),
-                csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id"]),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID", "ID", "id", "system_id", "System_ID"]),
                 installerName: getRowValueByAliases(row, ["installerName", "Installer", "Installer Company"]),
                 partnerCompanyName: getRowValueByAliases(row, [
                   "partnerCompanyName",
