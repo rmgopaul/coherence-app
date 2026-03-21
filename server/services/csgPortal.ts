@@ -20,6 +20,13 @@ type RequestResult = {
   headers: Headers;
 };
 
+type BinaryRequestResult = {
+  status: number;
+  url: string;
+  data: Uint8Array;
+  headers: Headers;
+};
+
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
   return String(value).trim();
@@ -103,6 +110,29 @@ function findHrefCandidates(html: string): string[] {
   return candidates;
 }
 
+function findUrlCandidates(html: string): string[] {
+  const candidates = new Set<string>();
+  const attributeRegex = /(href|src|data)=["']([^"']+)["']/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = attributeRegex.exec(html)) !== null) {
+    const value = clean(match[2]);
+    if (!value) continue;
+    candidates.add(value);
+  }
+
+  return Array.from(candidates);
+}
+
+function extractAnyPdfLikeUrl(baseUrl: string, html: string): string | null {
+  const candidates = findUrlCandidates(html);
+  const explicitPdf = candidates.find((candidate) => /\.pdf($|[?#])/i.test(candidate));
+  if (explicitPdf) return resolveUrl(baseUrl, explicitPdf);
+
+  const fallback = candidates.find((candidate) => /download|file|upload|contract/i.test(candidate));
+  return fallback ? resolveUrl(baseUrl, fallback) : null;
+}
+
 function extractRecContractPdfUrl(baseUrl: string, html: string): string | null {
   const lower = html.toLowerCase();
   const anchor = lower.indexOf("rec contract (pdf)");
@@ -145,6 +175,62 @@ function containsCredentialFailureMessage(html: string): boolean {
 
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+function looksLikePdfBinary(data: Uint8Array): boolean {
+  // Some portals return application/octet-stream without a .pdf URL, so inspect bytes directly.
+  const signature = [0x25, 0x50, 0x44, 0x46, 0x2d]; // %PDF-
+  const limit = Math.min(data.length - signature.length + 1, 2048);
+  for (let index = 0; index < limit; index += 1) {
+    let matches = true;
+    for (let offset = 0; offset < signature.length; offset += 1) {
+      if (data[index + offset] !== signature[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+function decodeBinaryAsText(data: Uint8Array): string {
+  try {
+    return new TextDecoder("utf-8").decode(data);
+  } catch {
+    return "";
+  }
+}
+
+function looksLikeHtmlText(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized.startsWith("<!doctype html") ||
+    normalized.startsWith("<html") ||
+    normalized.includes("<html") ||
+    normalized.includes("<body") ||
+    normalized.includes("<head")
+  );
+}
+
+function derivePdfFileName(input: {
+  responseUrl: string;
+  contentDisposition: string | null;
+  fallbackBaseName: string;
+}): string {
+  const fromHeader = extractFileNameFromContentDisposition(input.contentDisposition);
+  if (fromHeader) return fromHeader.toLowerCase().endsWith(".pdf") ? fromHeader : `${fromHeader}.pdf`;
+
+  try {
+    const pathname = new URL(input.responseUrl).pathname;
+    const base = pathname.split("/").filter(Boolean).pop() ?? input.fallbackBaseName;
+    return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
+  } catch {
+    return input.fallbackBaseName.toLowerCase().endsWith(".pdf")
+      ? input.fallbackBaseName
+      : `${input.fallbackBaseName}.pdf`;
+  }
 }
 
 export class CsgPortalClient {
@@ -230,12 +316,7 @@ export class CsgPortalClient {
     }
   }
 
-  private async requestBinary(pathOrUrl: string, init?: RequestInit): Promise<{
-    status: number;
-    url: string;
-    data: Uint8Array;
-    headers: Headers;
-  }> {
+  private async requestBinary(pathOrUrl: string, init?: RequestInit): Promise<BinaryRequestResult> {
     const maxRedirects = 10;
     let currentUrl = resolveUrl(this.baseUrl, pathOrUrl);
     let redirectCount = 0;
@@ -368,7 +449,10 @@ export class CsgPortalClient {
   }
 
   async fetchRecContractPdf(csgId: string): Promise<CsgPortalFetchResult> {
-    const systemPageUrl = resolveUrl(this.baseUrl, `/admin/solar_panel_system/${encodeURIComponent(csgId)}?step=1.6`);
+    const systemPageUrl = resolveUrl(
+      this.baseUrl,
+      `/admin/solar_panel_system/${encodeURIComponent(csgId)}/edit?step=2.4`
+    );
 
     try {
       let page = await this.request(systemPageUrl, {
@@ -420,52 +504,130 @@ export class CsgPortalClient {
         };
       }
 
-      const pdf = await this.requestBinary(pdfUrl, {
-        headers: {
-          Referer: systemPageUrl,
-        },
-      });
+      const downloadAndValidatePdf = async (
+        candidateUrl: string,
+        referer: string
+      ): Promise<
+        | {
+            ok: true;
+            finalUrl: string;
+            fileName: string;
+            data: Uint8Array;
+          }
+        | {
+            ok: false;
+            error: string;
+          }
+      > => {
+        const download = await this.requestBinary(candidateUrl, {
+          headers: {
+            Referer: referer,
+          },
+        });
 
-      if (pdf.status >= 400) {
-        return {
-          csgId,
-          systemPageUrl,
-          pdfUrl,
-          pdfFileName: null,
-          pdfData: null,
-          error: `PDF download failed (${pdf.status}).`,
-        };
-      }
-
-      const contentType = clean(pdf.headers.get("content-type")).toLowerCase();
-      if (!contentType.includes("pdf") && !pdfUrl.toLowerCase().includes(".pdf")) {
-        return {
-          csgId,
-          systemPageUrl,
-          pdfUrl,
-          pdfFileName: null,
-          pdfData: null,
-          error: "Downloaded file is not a PDF.",
-        };
-      }
-
-      const fileNameFromHeader = extractFileNameFromContentDisposition(pdf.headers.get("content-disposition"));
-      const fallbackFileName = (() => {
-        try {
-          const pathname = new URL(pdf.url).pathname;
-          const base = pathname.split("/").filter(Boolean).pop() ?? "contract.pdf";
-          return base.toLowerCase().endsWith(".pdf") ? base : `${base}.pdf`;
-        } catch {
-          return `contract-${csgId}.pdf`;
+        if (download.status >= 400) {
+          return {
+            ok: false,
+            error: `PDF download failed (${download.status}).`,
+          };
         }
-      })();
+
+        const contentType = clean(download.headers.get("content-type")).toLowerCase();
+        const contentDisposition = download.headers.get("content-disposition");
+        const fileName = derivePdfFileName({
+          responseUrl: download.url,
+          contentDisposition,
+          fallbackBaseName: `contract-${csgId}.pdf`,
+        });
+        const explicitPdf =
+          contentType.includes("pdf") ||
+          candidateUrl.toLowerCase().includes(".pdf") ||
+          fileName.toLowerCase().endsWith(".pdf");
+        const binaryPdf = looksLikePdfBinary(download.data);
+
+        if (explicitPdf || binaryPdf) {
+          return {
+            ok: true,
+            finalUrl: candidateUrl,
+            fileName,
+            data: download.data,
+          };
+        }
+
+        const asText = decodeBinaryAsText(download.data);
+        if (asText && looksLikeHtmlText(asText)) {
+          if (looksLikeLoginPage(download.url, asText)) {
+            await this.login();
+            const retry = await this.requestBinary(candidateUrl, {
+              headers: {
+                Referer: referer,
+              },
+            });
+            const retryContentType = clean(retry.headers.get("content-type")).toLowerCase();
+            if (retry.status < 400 && (retryContentType.includes("pdf") || looksLikePdfBinary(retry.data))) {
+              const retryFileName = derivePdfFileName({
+                responseUrl: retry.url,
+                contentDisposition: retry.headers.get("content-disposition"),
+                fallbackBaseName: `contract-${csgId}.pdf`,
+              });
+              return {
+                ok: true,
+                finalUrl: candidateUrl,
+                fileName: retryFileName,
+                data: retry.data,
+              };
+            }
+          }
+
+          const nestedPdfUrl = extractAnyPdfLikeUrl(this.baseUrl, asText);
+          if (nestedPdfUrl && nestedPdfUrl !== candidateUrl) {
+            const nested = await this.requestBinary(nestedPdfUrl, {
+              headers: {
+                Referer: candidateUrl,
+              },
+            });
+            const nestedContentType = clean(nested.headers.get("content-type")).toLowerCase();
+            if (nested.status < 400 && (nestedContentType.includes("pdf") || looksLikePdfBinary(nested.data))) {
+              const nestedFileName = derivePdfFileName({
+                responseUrl: nested.url,
+                contentDisposition: nested.headers.get("content-disposition"),
+                fallbackBaseName: `contract-${csgId}.pdf`,
+              });
+              return {
+                ok: true,
+                finalUrl: nestedPdfUrl,
+                fileName: nestedFileName,
+                data: nested.data,
+              };
+            }
+          }
+        }
+
+        return {
+          ok: false,
+          error: `Downloaded file is not a PDF (content-type: ${contentType || "unknown"}).`,
+        };
+      };
+
+      const pdfResult = await downloadAndValidatePdf(pdfUrl, systemPageUrl);
+
+      if (!pdfResult.ok) {
+        return {
+          csgId,
+          systemPageUrl,
+          pdfUrl,
+          pdfFileName: null,
+          pdfData: null,
+          error: pdfResult.error,
+        };
+      }
 
       return {
         csgId,
         systemPageUrl,
-        pdfUrl,
-        pdfFileName: fileNameFromHeader || fallbackFileName,
-        pdfData: pdf.data,
+        pdfUrl: pdfResult.finalUrl,
+        pdfFileName: pdfResult.fileName,
+        pdfData: pdfResult.data,
         error: null,
       };
     } catch (error) {
