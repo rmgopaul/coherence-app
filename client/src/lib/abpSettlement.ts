@@ -42,6 +42,9 @@ export type CsgPortalDatabaseRow = {
   customerEmail: string | null;
   customerAltEmail: string | null;
   systemAddress: string | null;
+  systemCity: string | null;
+  systemState: string | null;
+  systemZip: string | null;
   paymentNotes: string | null;
   collateralReimbursedToPartner: boolean | null;
 };
@@ -259,6 +262,9 @@ export type PaymentComputationRow = {
   customerEmail: string;
   customerAltEmail: string;
   systemAddress: string;
+  systemCity: string;
+  systemState: string;
+  systemZip: string;
   paymentNotes: string;
   appliedInstallerRuleName: string;
   paymentReportCheckStatus: string;
@@ -1057,7 +1063,24 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
   const systemAddressHeader =
     findHeaderByKeywords(parsed.headers, ["system", "address"]) ??
     findHeaderByKeywords(parsed.headers, ["site", "address"]) ??
-    findHeaderByKeywords(parsed.headers, ["address"]) ??
+    findHeaderByAliases(parsed.headers, ["PV System Address", "Project Address", "Installation Address"]) ??
+    null;
+
+  const systemCityHeader =
+    findHeaderByKeywords(parsed.headers, ["system", "city"]) ??
+    findHeaderByKeywords(parsed.headers, ["site", "city"]) ??
+    null;
+
+  const systemStateHeader =
+    findHeaderByKeywords(parsed.headers, ["system", "state"]) ??
+    findHeaderByKeywords(parsed.headers, ["site", "state"]) ??
+    null;
+
+  const systemZipHeader =
+    findHeaderByKeywords(parsed.headers, ["system", "zip"]) ??
+    findHeaderByKeywords(parsed.headers, ["site", "zip"]) ??
+    findHeaderByKeywords(parsed.headers, ["system", "postal"]) ??
+    findHeaderByKeywords(parsed.headers, ["site", "postal"]) ??
     null;
 
   const paymentNotesHeader =
@@ -1100,6 +1123,9 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       customerEmail: customerEmailHeader ? clean(row[customerEmailHeader]) || null : null,
       customerAltEmail: customerAltEmailHeader ? clean(row[customerAltEmailHeader]) || null : null,
       systemAddress: systemAddressHeader ? clean(row[systemAddressHeader]) || null : null,
+      systemCity: systemCityHeader ? clean(row[systemCityHeader]) || null : null,
+      systemState: systemStateHeader ? clean(row[systemStateHeader]).toUpperCase() || null : null,
+      systemZip: systemZipHeader ? clean(row[systemZipHeader]) || null : null,
       paymentNotes: paymentNotesHeader ? clean(row[paymentNotesHeader]) || null : null,
       collateralReimbursedToPartner: collateralReimbursedHeader
         ? parseBooleanLike(row[collateralReimbursedHeader])
@@ -1707,6 +1733,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const customerEmail = clean(csgPortalSystemRow?.customerEmail);
       const customerAltEmail = clean(csgPortalSystemRow?.customerAltEmail);
       const systemAddressFromPortal = clean(csgPortalSystemRow?.systemAddress);
+      const systemCityFromPortal = clean(csgPortalSystemRow?.systemCity);
+      const systemStateFromPortal = clean(csgPortalSystemRow?.systemState);
+      const systemZipFromPortal = clean(csgPortalSystemRow?.systemZip);
       const paymentNotesFromPortal = clean(csgPortalSystemRow?.paymentNotes);
 
       const paidApplicationFee = safeMoney(ledger?.applicationFeePaidUpfront);
@@ -1961,6 +1990,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           customerEmail,
           customerAltEmail,
           systemAddress: systemAddressFromPortal,
+          systemCity: systemCityFromPortal,
+          systemState: systemStateFromPortal,
+          systemZip: systemZipFromPortal,
           paymentNotes: paymentNotesFromPortal,
           appliedInstallerRuleName: clean(appliedInstallerRule?.name),
           paymentReportCheckStatus,
@@ -2045,6 +2077,9 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Customer Email",
     "Customer Alt Email",
     "System Address",
+    "System City",
+    "System State",
+    "System Zip",
     "Payment Notes",
     "Applied Installer Rule",
     "Payment Report Check Status",
@@ -2106,6 +2141,9 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.customerEmail,
       row.customerAltEmail,
       row.systemAddress,
+      row.systemCity,
+      row.systemState,
+      row.systemZip,
       row.paymentNotes,
       row.appliedInstallerRuleName,
       row.paymentReportCheckStatus,

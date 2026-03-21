@@ -201,6 +201,7 @@ const YAMM_PAYMENT_EMAIL_HEADERS = [
   "System_Name",
   "system_address",
   "system_city",
+  "system_state",
   "system_zip",
   "SRECs",
   "REC Price",
@@ -322,17 +323,6 @@ function buildUpcomingTuesdayLabel(date = new Date()): string {
     month: "long",
     day: "numeric",
   });
-}
-
-function splitSystemAddressLocation(systemAddress: string): { city: string; zip: string } {
-  const raw = clean(systemAddress);
-  if (!raw) return { city: "", zip: "" };
-  const match = raw.match(/,\s*([^,]+),\s*[A-Za-z]{2}\s+(\d{5}(?:-\d{4})?)\s*$/);
-  if (!match) return { city: "", zip: "" };
-  return {
-    city: clean(match[1]),
-    zip: clean(match[2]),
-  };
 }
 
 function buildMonthKey(date = new Date()): string {
@@ -763,6 +753,9 @@ function normalizeCsgPortalDatabaseRows(rows: unknown[]): CsgPortalDatabaseRow[]
         customerEmail: clean(source.customerEmail) || null,
         customerAltEmail: clean(source.customerAltEmail) || null,
         systemAddress: clean(source.systemAddress) || null,
+        systemCity: clean(source.systemCity) || null,
+        systemState: clean(source.systemState).toUpperCase() || null,
+        systemZip: clean(source.systemZip) || null,
         paymentNotes: clean(source.paymentNotes) || null,
         collateralReimbursedToPartner: parseBooleanText(source.collateralReimbursedToPartner),
       } satisfies CsgPortalDatabaseRow;
@@ -1397,6 +1390,15 @@ export default function AbpInvoiceSettlement() {
                   "Site Address",
                   "Address",
                 ]),
+                systemCity: getRowValueByAliases(row, ["systemCity", "System City", "Site City"]),
+                systemState: getRowValueByAliases(row, ["systemState", "System State", "Site State"]),
+                systemZip: getRowValueByAliases(row, [
+                  "systemZip",
+                  "System Zip",
+                  "Site Zip",
+                  "System Postal Code",
+                  "Site Postal Code",
+                ]),
                 paymentNotes: getRowValueByAliases(row, [
                   "paymentNotes",
                   "Payment Notes",
@@ -1642,6 +1644,9 @@ export default function AbpInvoiceSettlement() {
                 "customerEmail",
                 "customerAltEmail",
                 "systemAddress",
+                "systemCity",
+                "systemState",
+                "systemZip",
                 "paymentNotes",
                 "collateralReimbursedToPartner",
               ],
@@ -1653,6 +1658,9 @@ export default function AbpInvoiceSettlement() {
                 customerEmail: row.customerEmail ?? "",
                 customerAltEmail: row.customerAltEmail ?? "",
                 systemAddress: row.systemAddress ?? "",
+                systemCity: row.systemCity ?? "",
+                systemState: row.systemState ?? "",
+                systemZip: row.systemZip ?? "",
                 paymentNotes: row.paymentNotes ?? "",
                 collateralReimbursedToPartner:
                   row.collateralReimbursedToPartner === null ? "" : String(row.collateralReimbursedToPartner),
@@ -1969,7 +1977,6 @@ export default function AbpInvoiceSettlement() {
   const yammEmailRows = useMemo(() => {
     if (!computationResult) return [] as Array<Record<string, string>>;
     return computationResult.rows.map((row) => {
-      const systemLocation = splitSystemAddressLocation(row.systemAddress);
       const recipient = clean(row.customerEmail) || clean(row.customerAltEmail);
       return {
         Recipient: recipient,
@@ -1986,8 +1993,9 @@ export default function AbpInvoiceSettlement() {
         Inverter_Size_kW_AC_Part_2: "",
         System_Name: "",
         system_address: clean(row.systemAddress),
-        system_city: systemLocation.city,
-        system_zip: systemLocation.zip,
+        system_city: clean(row.systemCity),
+        system_state: clean(row.systemState),
+        system_zip: clean(row.systemZip),
         SRECs: String(row.recQuantity),
         "REC Price": formatCurrency(row.recPrice),
         "Total Payment": formatCurrency(row.grossContractValue),
@@ -3712,6 +3720,9 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>Customer Email</TableHead>
                         <TableHead>Customer Alt Email</TableHead>
                         <TableHead>System Address</TableHead>
+                        <TableHead>System City</TableHead>
+                        <TableHead>System State</TableHead>
+                        <TableHead>System Zip</TableHead>
                         <TableHead>Payment Notes</TableHead>
                         <TableHead>Applied Installer Rule</TableHead>
                         <TableHead>Payment Report Status</TableHead>
@@ -3772,6 +3783,9 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.customerEmail}</TableCell>
                             <TableCell>{row.customerAltEmail}</TableCell>
                             <TableCell>{row.systemAddress}</TableCell>
+                            <TableCell>{row.systemCity}</TableCell>
+                            <TableCell>{row.systemState}</TableCell>
+                            <TableCell>{row.systemZip}</TableCell>
                             <TableCell>{row.paymentNotes}</TableCell>
                             <TableCell>{row.appliedInstallerRuleName}</TableCell>
                             <TableCell>{row.paymentReportCheckStatus}</TableCell>

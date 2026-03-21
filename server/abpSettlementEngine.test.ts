@@ -229,6 +229,9 @@ describe("ABP parser coverage", () => {
         "Customer Email",
         "Alt Email",
         "System Address",
+        "System City",
+        "System State",
+        "System Zip",
         "Payment Notes",
         "Collateral Reimbursed",
       ],
@@ -241,6 +244,9 @@ describe("ABP parser coverage", () => {
           "Customer Email": "customer@example.com",
           "Alt Email": "customer+alt@example.com",
           "System Address": "123 Main St",
+          "System City": "Chicago",
+          "System State": "il",
+          "System Zip": "60601",
           "Payment Notes": "Hold for ACH update",
           "Collateral Reimbursed": "Yes",
         },
@@ -254,6 +260,9 @@ describe("ABP parser coverage", () => {
     expect(rows[0].customerEmail).toBe("customer@example.com");
     expect(rows[0].customerAltEmail).toBe("customer+alt@example.com");
     expect(rows[0].systemAddress).toBe("123 Main St");
+    expect(rows[0].systemCity).toBe("Chicago");
+    expect(rows[0].systemState).toBe("IL");
+    expect(rows[0].systemZip).toBe("60601");
     expect(rows[0].paymentNotes).toBe("Hold for ACH update");
     expect(rows[0].collateralReimbursedToPartner).toBe(true);
   });
@@ -412,6 +421,9 @@ describe("ABP parser coverage", () => {
           customerEmail: "alpha@example.com",
           customerAltEmail: null,
           systemAddress: null,
+          systemCity: null,
+          systemState: null,
+          systemZip: null,
           paymentNotes: null,
           collateralReimbursedToPartner: null,
         },
@@ -423,6 +435,9 @@ describe("ABP parser coverage", () => {
           customerEmail: "beta@example.com",
           customerAltEmail: "beta-alt@example.com",
           systemAddress: null,
+          systemCity: null,
+          systemState: null,
+          systemZip: null,
           paymentNotes: null,
           collateralReimbursedToPartner: null,
         },
@@ -708,6 +723,9 @@ describe("ABP formula and carryforward", () => {
           customerEmail: null,
           customerAltEmail: null,
           systemAddress: null,
+          systemCity: null,
+          systemState: null,
+          systemZip: null,
           paymentNotes: null,
           collateralReimbursedToPartner: null,
         },
