@@ -143,6 +143,10 @@ function containsCredentialFailureMessage(html: string): boolean {
   );
 }
 
+function isRedirectStatus(status: number): boolean {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
 export class CsgPortalClient {
   private readonly baseUrl: string;
   private readonly cookies = new Map<string, string>();
@@ -265,30 +269,46 @@ export class CsgPortalClient {
       method: "POST",
       headers,
       body: form.toString(),
+      redirect: "manual",
     });
 
     if (loginAttempt.status === 419) {
       throw new Error("Portal login failed with HTTP 419 (CSRF/session mismatch). Please retry.");
     }
 
-    if (looksLikeLoginPage(loginAttempt.url, loginAttempt.text) && containsCredentialFailureMessage(loginAttempt.text)) {
-      throw new Error("Portal login failed. Please verify portal email/password.");
-    }
+    if (isRedirectStatus(loginAttempt.status)) {
+      const redirectLocation = clean(loginAttempt.headers.get("location"));
+      if (!redirectLocation) {
+        throw new Error(`Portal login returned redirect ${loginAttempt.status} without a location header.`);
+      }
 
-    // Validate session against the same protected area we later use for contract fetch.
-    // A 404 is acceptable here (unknown ID), but a login page means auth session failed.
-    const sessionCheck = await this.request("/admin/solar_panel_system/1?step=1.6", {
-      headers: {
-        Referer: `${this.baseUrl}/admin/login`,
-      },
-    });
-    if (looksLikeLoginPage(sessionCheck.url, sessionCheck.text)) {
-      if (containsCredentialFailureMessage(sessionCheck.text)) {
+      const resolvedRedirect = resolveUrl(this.baseUrl, redirectLocation);
+      if (/\/admin\/login\b/i.test(resolvedRedirect)) {
         throw new Error("Portal login failed. Please verify portal email/password.");
       }
-      throw new Error(
-        "Portal login did not establish an authenticated session (cookie/session mismatch). Please retry."
-      );
+
+      const landingPage = await this.request(resolvedRedirect, {
+        method: "GET",
+        headers: {
+          Referer: `${this.baseUrl}/admin/login`,
+        },
+      });
+
+      if (looksLikeLoginPage(landingPage.url, landingPage.text)) {
+        if (containsCredentialFailureMessage(landingPage.text)) {
+          throw new Error("Portal login failed. Please verify portal email/password.");
+        }
+        throw new Error("Portal login did not establish an authenticated session. Please retry.");
+      }
+
+      return;
+    }
+
+    if (looksLikeLoginPage(loginAttempt.url, loginAttempt.text)) {
+      if (containsCredentialFailureMessage(loginAttempt.text)) {
+        throw new Error("Portal login failed. Please verify portal email/password.");
+      }
+      throw new Error("Portal login did not complete. Please retry.");
     }
   }
 
@@ -296,21 +316,30 @@ export class CsgPortalClient {
     const systemPageUrl = resolveUrl(this.baseUrl, `/admin/solar_panel_system/${encodeURIComponent(csgId)}?step=1.6`);
 
     try {
-      const page = await this.request(systemPageUrl, {
+      let page = await this.request(systemPageUrl, {
         headers: {
           Referer: `${this.baseUrl}/admin`,
         },
       });
 
       if (looksLikeLoginPage(page.url, page.text)) {
-        return {
-          csgId,
-          systemPageUrl,
-          pdfUrl: null,
-          pdfFileName: null,
-          pdfData: null,
-          error: "Session is not authenticated while fetching system page.",
-        };
+        // Retry once by re-authenticating in case session cookies rotated/expired.
+        await this.login();
+        page = await this.request(systemPageUrl, {
+          headers: {
+            Referer: `${this.baseUrl}/admin`,
+          },
+        });
+        if (looksLikeLoginPage(page.url, page.text)) {
+          return {
+            csgId,
+            systemPageUrl,
+            pdfUrl: null,
+            pdfFileName: null,
+            pdfData: null,
+            error: "Session is not authenticated while fetching system page.",
+          };
+        }
       }
 
       if (page.status >= 400) {
