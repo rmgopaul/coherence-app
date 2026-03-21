@@ -40,7 +40,7 @@ describe("CSG portal login and contract fetch", () => {
       if (url.endsWith("/admin/login") && method === "POST") {
         return htmlResponse("<html>logged in</html>");
       }
-      if (url.endsWith("/admin") && method === "GET") {
+      if (url.includes("/admin/solar_panel_system/1?step=1.6") && method === "GET") {
         return dashboardResponse();
       }
 
@@ -64,7 +64,7 @@ describe("CSG portal login and contract fetch", () => {
     expect(String(postCall?.[1]?.body ?? "")).toContain("_token=csrf123");
   });
 
-  it("returns unauthorized error when admin check lands on login page", async () => {
+  it("returns unauthorized error when login response includes credential failure", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const method = (init?.method ?? "GET").toUpperCase();
@@ -73,10 +73,9 @@ describe("CSG portal login and contract fetch", () => {
         return loginPageResponse();
       }
       if (url.endsWith("/admin/login") && method === "POST") {
-        return htmlResponse("<html>posted</html>");
-      }
-      if (url.endsWith("/admin") && method === "GET") {
-        return htmlResponse('<form action="/admin/login"><input name="password"></form>');
+        return htmlResponse(
+          '<form action="/admin/login"><input name="password"><div>These credentials do not match our records.</div></form>'
+        );
       }
 
       return new Response("Not Found", { status: 404 });
@@ -99,7 +98,7 @@ describe("CSG portal login and contract fetch", () => {
 
       if (url.endsWith("/admin/login") && method === "GET") return loginPageResponse();
       if (url.endsWith("/admin/login") && method === "POST") return htmlResponse("ok");
-      if (url.endsWith("/admin") && method === "GET") return dashboardResponse();
+      if (url.includes("/admin/solar_panel_system/1?step=1.6") && method === "GET") return dashboardResponse();
       if (url.includes("/admin/solar_panel_system/177418") && method === "GET") {
         return htmlResponse("<html><body>No file links here</body></html>");
       }
@@ -130,7 +129,7 @@ describe("CSG portal login and contract fetch", () => {
 
       if (url.endsWith("/admin/login") && method === "GET") return loginPageResponse();
       if (url.endsWith("/admin/login") && method === "POST") return htmlResponse("ok");
-      if (url.endsWith("/admin") && method === "GET") return dashboardResponse();
+      if (url.includes("/admin/solar_panel_system/1?step=1.6") && method === "GET") return dashboardResponse();
       if (url.includes("/admin/solar_panel_system/177418") && method === "GET") {
         return htmlResponse(
           '<html><body><div>Rec Contract (PDF)</div><a href="/uploads/contract-177418.pdf">Download</a></body></html>'

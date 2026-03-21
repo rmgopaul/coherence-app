@@ -46,7 +46,11 @@ function getSetCookieValues(headers: Headers): string[] {
   }
 
   const single = headers.get("set-cookie");
-  return single ? [single] : [];
+  if (!single) return [];
+
+  // Some fetch implementations collapse multiple Set-Cookie values into one header string.
+  // Split on commas that look like cookie boundaries, while preserving commas in Expires.
+  return single.split(/,(?=\s*[A-Za-z0-9_.-]+=)/g).map((value) => clean(value)).filter(Boolean);
 }
 
 function parseCookiePair(setCookieHeader: string): { name: string; value: string } | null {
@@ -60,8 +64,13 @@ function parseCookiePair(setCookieHeader: string): { name: string; value: string
 }
 
 function parseCsrfToken(html: string): string | null {
-  const match = html.match(/name="_token"\s+value="([^"]+)"/i);
-  return match ? clean(match[1]) : null;
+  const inputMatch =
+    html.match(/name=["']_token["'][^>]*value=["']([^"']+)["']/i) ??
+    html.match(/value=["']([^"']+)["'][^>]*name=["']_token["']/i);
+  if (inputMatch) return clean(inputMatch[1]);
+
+  const metaMatch = html.match(/<meta[^>]*name=["']csrf-token["'][^>]*content=["']([^"']+)["']/i);
+  return metaMatch ? clean(metaMatch[1]) : null;
 }
 
 function extractFileNameFromContentDisposition(headerValue: string | null): string | null {
@@ -120,7 +129,18 @@ function extractRecContractPdfUrl(baseUrl: string, html: string): string | null 
 function looksLikeLoginPage(url: string, html: string): boolean {
   const normalizedUrl = url.toLowerCase();
   if (normalizedUrl.includes("/admin/login")) return true;
-  return /action="[^"]*\/admin\/login"/i.test(html) && /name="password"/i.test(html);
+  return /action=["'][^"']*\/admin\/login["']/i.test(html) && /name=["']password["']/i.test(html);
+}
+
+function containsCredentialFailureMessage(html: string): boolean {
+  const normalized = html.toLowerCase();
+  return (
+    normalized.includes("credentials do not match") ||
+    normalized.includes("provided credentials are incorrect") ||
+    normalized.includes("invalid credentials") ||
+    normalized.includes("incorrect password") ||
+    normalized.includes("login failed")
+  );
 }
 
 export class CsgPortalClient {
@@ -251,9 +271,24 @@ export class CsgPortalClient {
       throw new Error("Portal login failed with HTTP 419 (CSRF/session mismatch). Please retry.");
     }
 
-    const adminCheck = await this.request("/admin");
-    if (looksLikeLoginPage(adminCheck.url, adminCheck.text)) {
+    if (looksLikeLoginPage(loginAttempt.url, loginAttempt.text) && containsCredentialFailureMessage(loginAttempt.text)) {
       throw new Error("Portal login failed. Please verify portal email/password.");
+    }
+
+    // Validate session against the same protected area we later use for contract fetch.
+    // A 404 is acceptable here (unknown ID), but a login page means auth session failed.
+    const sessionCheck = await this.request("/admin/solar_panel_system/1?step=1.6", {
+      headers: {
+        Referer: `${this.baseUrl}/admin/login`,
+      },
+    });
+    if (looksLikeLoginPage(sessionCheck.url, sessionCheck.text)) {
+      if (containsCredentialFailureMessage(sessionCheck.text)) {
+        throw new Error("Portal login failed. Please verify portal email/password.");
+      }
+      throw new Error(
+        "Portal login did not establish an authenticated session (cookie/session mismatch). Please retry."
+      );
     }
   }
 
