@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildQuickBooksPaidUpfrontLedger,
   buildSettlementCsv,
   computeSettlementRows,
   parseProjectApplications,
@@ -16,6 +17,7 @@ function createLedgerBySystem(input: {
   systemId: string;
   applicationFee?: number;
   utilityCollateral?: number;
+  utilityCollateralReimbursement?: number;
   additionalCollateral?: number;
   ccFee?: number;
   vendorFee?: number;
@@ -26,6 +28,8 @@ function createLedgerBySystem(input: {
       {
         applicationFeePaidUpfront: input.applicationFee ?? 0,
         utilityCollateralPaidUpfront: input.utilityCollateral ?? 0,
+        utilityCollateralReimbursementToPartnerCompanyAmount:
+          input.utilityCollateralReimbursement ?? 0,
         additionalCollateralPaidUpfront: input.additionalCollateral ?? 0,
         ccFeePaidUpfront: input.ccFee ?? 0,
         vendorFeePaidUpfront: input.vendorFee ?? 0,
@@ -73,6 +77,14 @@ function baseContractTerms(csgId: string, overrides?: Partial<ContractTerms>): C
     ccCardAsteriskCount: 4,
     recQuantity: null,
     recPrice: null,
+    paymentMethod: "Check",
+    payeeName: "Test Payee",
+    mailingAddress1: "123 Main St",
+    mailingAddress2: null,
+    cityStateZip: "Chicago, IL 60601",
+    city: "Chicago",
+    state: "IL",
+    zip: "60601",
     ...overrides,
   };
 }
@@ -135,6 +147,45 @@ describe("ABP parser coverage", () => {
     expect(inv1?.cashReceived).toBe(100);
     expect(inv1?.lineItems[0].lineOrder).toBe(1);
     expect(inv2?.cashReceived).toBe(150);
+  });
+
+  it("triages reimbursed utility collateral into partner reimbursement bucket", () => {
+    const ledger = buildQuickBooksPaidUpfrontLedger({
+      knownSystemIds: new Set(["1001"]),
+      quickBooksByInvoice: new Map([
+        [
+          "INV-9",
+          {
+            invoiceNumber: "INV-9",
+            amount: 100,
+            openBalance: 0,
+            cashReceived: 100,
+            paymentStatus: "Paid",
+            voided: "",
+            customer: "Partner Company",
+            date: new Date("2026-03-01T00:00:00.000Z"),
+            lineItems: [
+              {
+                lineOrder: 1,
+                description: "5% ABP collateral reimbursed to installer 1001",
+                productService: "",
+                amount: 50,
+              },
+              {
+                lineOrder: 2,
+                description: "5% ABP collateral 1001",
+                productService: "",
+                amount: 50,
+              },
+            ],
+          },
+        ],
+      ]),
+    });
+
+    const system = ledger.bySystemId.get("1001");
+    expect(system?.utilityCollateralReimbursementToPartnerCompanyAmount).toBe(50);
+    expect(system?.utilityCollateralPaidUpfront).toBe(50);
   });
 
   it("parses ProjectApplication rows by Application_ID", () => {
@@ -235,6 +286,34 @@ describe("ABP formula and carryforward", () => {
     // gross 1000, utility outstanding 0 (overpaid), app outstanding 80, addl outstanding 50.
     // first net = 1000 - 0 - 0 - 50 - 80 - 0 = 870.
     expect(row.firstPaymentFormulaNetAmount).toBe(870);
+  });
+
+  it("does not credit customer collateral upfront when reimbursement to partner is detected", () => {
+    const result = computeSettlementRows({
+      utilityRows: [baseUtilityRow({ rowId: "r2", systemId: "1001", paymentNumber: 1, invoiceAmount: 1000 })],
+      csgSystemMappings: [{ csgId: "2001", systemId: "1001" }],
+      projectApplications: [
+        {
+          applicationId: "1001",
+          part1SubmissionDate: new Date("2024-05-01T00:00:00.000Z"),
+          part1OriginalSubmissionDate: null,
+          inverterSizeKwAcPart1: 10,
+        },
+      ],
+      quickBooksPaidUpfrontLedger: createLedgerBySystem({
+        systemId: "1001",
+        utilityCollateral: 0,
+        utilityCollateralReimbursement: 50,
+      }),
+      contractTermsByCsgId: new Map([
+        ["2001", baseContractTerms("2001", { vendorFeePercent: 0, additionalCollateralPercent: 0 })],
+      ]),
+    });
+
+    const row = result.rows[0];
+    expect(row.utilityHeldCollateralPaidUpfront).toBe(0);
+    expect(row.collateralReimbursementToPartnerCompanyAmount).toBe(50);
+    expect(row.firstPaymentFormulaNetAmount).toBe(850);
   });
 
   it("flags unknown classification when outside tolerance", () => {

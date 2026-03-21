@@ -71,6 +71,14 @@ type ContractScanResult = {
   vendorFeePercent: number | null;
   recQuantity: number | null;
   recPrice: number | null;
+  paymentMethod: string | null;
+  payeeName: string | null;
+  mailingAddress1: string | null;
+  mailingAddress2: string | null;
+  cityStateZip: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
   error: string | null;
 };
 
@@ -183,6 +191,25 @@ function parseNumberInput(value: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function splitCityStateZip(rawValue: string | null | undefined): {
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+} {
+  const raw = clean(rawValue);
+  if (!raw) return { city: null, state: null, zip: null };
+
+  const normalized = raw.replace(/\s+/g, " ");
+  const match = normalized.match(/^(.+?)[,\s]+([A-Za-z]{2,})\s+(\d{5}(?:-\d{4})?)$/);
+  if (!match) return { city: normalized || null, state: null, zip: null };
+
+  return {
+    city: clean(match[1]) || null,
+    state: clean(match[2]).toUpperCase() || null,
+    zip: clean(match[3]) || null,
+  };
+}
+
 function serializeProjectApplications(rows: ProjectApplicationLiteRow[]): PersistedProjectApplicationRow[] {
   return rows.map((row) => ({
     applicationId: row.applicationId,
@@ -232,6 +259,7 @@ function toContractTermsFromScan(rows: ContractScanResult[]): Map<string, Contra
   const map = new Map<string, ContractTerms>();
   rows.forEach((row) => {
     if (!row.csgId || row.error) return;
+    const cityStateZipParts = splitCityStateZip(row.cityStateZip);
     map.set(row.csgId, {
       csgId: row.csgId,
       fileName: row.fileName,
@@ -241,6 +269,14 @@ function toContractTermsFromScan(rows: ContractScanResult[]): Map<string, Contra
       ccCardAsteriskCount: row.ccCardAsteriskCount,
       recQuantity: row.recQuantity,
       recPrice: row.recPrice,
+      paymentMethod: row.paymentMethod,
+      payeeName: row.payeeName,
+      mailingAddress1: row.mailingAddress1,
+      mailingAddress2: row.mailingAddress2,
+      cityStateZip: row.cityStateZip,
+      city: row.city ?? cityStateZipParts.city,
+      state: row.state ?? cityStateZipParts.state,
+      zip: row.zip ?? cityStateZipParts.zip,
     });
   });
   return map;
@@ -359,18 +395,29 @@ export default function AbpInvoiceSettlement() {
         pdfFileName: row.pdfFileName,
         error: row.error,
       }));
-      const scannedRows: ContractScanResult[] = rows.map((row) => ({
-        csgId: row.csgId,
-        fileName: row.scan?.fileName ?? row.pdfFileName ?? `contract-${row.csgId}.pdf`,
-        ccAuthorizationCompleted: row.scan?.ccAuthorizationCompleted ?? null,
-        ccCardAsteriskCount: row.scan?.ccCardAsteriskCount ?? null,
-        additionalFivePercentSelected: row.scan?.additionalFivePercentSelected ?? null,
-        additionalCollateralPercent: row.scan?.additionalCollateralPercent ?? null,
-        vendorFeePercent: row.scan?.vendorFeePercent ?? null,
-        recQuantity: row.scan?.recQuantity ?? null,
-        recPrice: row.scan?.recPrice ?? null,
-        error: row.error,
-      }));
+      const scannedRows: ContractScanResult[] = rows.map((row) => {
+        const cityStateZipParts = splitCityStateZip(row.scan?.cityStateZip ?? null);
+        return {
+          csgId: row.csgId,
+          fileName: row.scan?.fileName ?? row.pdfFileName ?? `contract-${row.csgId}.pdf`,
+          ccAuthorizationCompleted: row.scan?.ccAuthorizationCompleted ?? null,
+          ccCardAsteriskCount: row.scan?.ccCardAsteriskCount ?? null,
+          additionalFivePercentSelected: row.scan?.additionalFivePercentSelected ?? null,
+          additionalCollateralPercent: row.scan?.additionalCollateralPercent ?? null,
+          vendorFeePercent: row.scan?.vendorFeePercent ?? null,
+          recQuantity: row.scan?.recQuantity ?? null,
+          recPrice: row.scan?.recPrice ?? null,
+          paymentMethod: row.scan?.paymentMethod ?? null,
+          payeeName: row.scan?.payeeName ?? null,
+          mailingAddress1: row.scan?.mailingAddress1 ?? null,
+          mailingAddress2: row.scan?.mailingAddress2 ?? null,
+          cityStateZip: row.scan?.cityStateZip ?? null,
+          city: cityStateZipParts.city,
+          state: cityStateZipParts.state,
+          zip: cityStateZipParts.zip,
+          error: row.error,
+        };
+      });
 
       setContractFetchRows(fetchedRows);
       setContractScanRows(scannedRows);
@@ -747,6 +794,14 @@ export default function AbpInvoiceSettlement() {
         vendorFeePercent: term.vendorFeePercent,
         recQuantity: term.recQuantity,
         recPrice: term.recPrice,
+        paymentMethod: term.paymentMethod ?? null,
+        payeeName: term.payeeName ?? null,
+        mailingAddress1: term.mailingAddress1 ?? null,
+        mailingAddress2: term.mailingAddress2 ?? null,
+        cityStateZip: term.cityStateZip ?? null,
+        city: term.city ?? null,
+        state: term.state ?? null,
+        zip: term.zip ?? null,
         error: null,
       }))
     );
@@ -1152,6 +1207,15 @@ export default function AbpInvoiceSettlement() {
                     .toLocaleString("en-US")}
                 </div>
                 <div>
+                  Collateral reimbursement to partner company: {formatCurrency(
+                    Array.from(quickBooksLedger.bySystemId.values()).reduce(
+                      (acc, row) =>
+                        acc + (row.utilityCollateralReimbursementToPartnerCompanyAmount ?? 0),
+                      0
+                    )
+                  )}
+                </div>
+                <div>
                   Unmatched category lines: {quickBooksLedger.unmatchedLines.length.toLocaleString("en-US")}
                 </div>
               </div>
@@ -1394,6 +1458,7 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>Vendor Fee Amount</TableHead>
                         <TableHead>Utility Held Collateral 5% Amount</TableHead>
                         <TableHead>Utility Held Collateral Paid Upfront</TableHead>
+                        <TableHead>Collateral Reimbursement to the Partner Company</TableHead>
                         <TableHead>Application Fee Amount</TableHead>
                         <TableHead>Application Fee Paid Upfront</TableHead>
                         <TableHead>Additional Collateral %</TableHead>
@@ -1401,6 +1466,13 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>CC Authorization Form Status</TableHead>
                         <TableHead>CC Incomplete 5% Required</TableHead>
                         <TableHead>First Payment Formula Net</TableHead>
+                        <TableHead>Payment Method</TableHead>
+                        <TableHead>Payee Name</TableHead>
+                        <TableHead>Mailing Address 1</TableHead>
+                        <TableHead>Mailing Address 2</TableHead>
+                        <TableHead>City</TableHead>
+                        <TableHead>State</TableHead>
+                        <TableHead>Zip</TableHead>
                         <TableHead>Classification</TableHead>
                         <TableHead>Carryforward In</TableHead>
                         <TableHead>Carryforward Out</TableHead>
@@ -1429,6 +1501,7 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{formatCurrency(row.vendorFeeAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.utilityHeldCollateral5PercentAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.utilityHeldCollateralPaidUpfront)}</TableCell>
+                            <TableCell>{formatCurrency(row.collateralReimbursementToPartnerCompanyAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.applicationFeeAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.applicationFeePaidUpfront)}</TableCell>
                             <TableCell>{formatPercent(row.additionalCollateralPercent)}</TableCell>
@@ -1436,6 +1509,13 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.ccAuthorizationFormStatus}</TableCell>
                             <TableCell>{formatCurrency(row.ccAuthIncomplete5PercentAmount)}</TableCell>
                             <TableCell>{formatCurrency(row.firstPaymentFormulaNetAmount)}</TableCell>
+                            <TableCell>{row.paymentMethod}</TableCell>
+                            <TableCell>{row.payeeName}</TableCell>
+                            <TableCell>{row.mailingAddress1}</TableCell>
+                            <TableCell>{row.mailingAddress2}</TableCell>
+                            <TableCell>{row.city}</TableCell>
+                            <TableCell>{row.state}</TableCell>
+                            <TableCell>{row.zip}</TableCell>
                             <TableCell>{row.classification}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardIn)}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardOut)}</TableCell>

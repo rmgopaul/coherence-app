@@ -23,6 +23,12 @@ function dashboardResponse(): Response {
   return htmlResponse("<html><body>Dashboard</body></html>");
 }
 
+function loginSuccessResponse(): Response {
+  const headers = new Headers({ location: "/admin" });
+  headers.append("set-cookie", "laravel_session=session456; Path=/");
+  return new Response(null, { status: 302, headers });
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -38,9 +44,9 @@ describe("CSG portal login and contract fetch", () => {
         return loginPageResponse();
       }
       if (url.endsWith("/admin/login") && method === "POST") {
-        return htmlResponse("<html>logged in</html>");
+        return loginSuccessResponse();
       }
-      if (url.includes("/admin/solar_panel_system/1?step=1.6") && method === "GET") {
+      if (url.endsWith("/admin") && method === "GET") {
         return dashboardResponse();
       }
 
@@ -97,8 +103,8 @@ describe("CSG portal login and contract fetch", () => {
       const method = (init?.method ?? "GET").toUpperCase();
 
       if (url.endsWith("/admin/login") && method === "GET") return loginPageResponse();
-      if (url.endsWith("/admin/login") && method === "POST") return htmlResponse("ok");
-      if (url.includes("/admin/solar_panel_system/1?step=1.6") && method === "GET") return dashboardResponse();
+      if (url.endsWith("/admin/login") && method === "POST") return loginSuccessResponse();
+      if (url.endsWith("/admin") && method === "GET") return dashboardResponse();
       if (url.includes("/admin/solar_panel_system/177418") && method === "GET") {
         return htmlResponse("<html><body>No file links here</body></html>");
       }
@@ -128,8 +134,8 @@ describe("CSG portal login and contract fetch", () => {
       const method = (init?.method ?? "GET").toUpperCase();
 
       if (url.endsWith("/admin/login") && method === "GET") return loginPageResponse();
-      if (url.endsWith("/admin/login") && method === "POST") return htmlResponse("ok");
-      if (url.includes("/admin/solar_panel_system/1?step=1.6") && method === "GET") return dashboardResponse();
+      if (url.endsWith("/admin/login") && method === "POST") return loginSuccessResponse();
+      if (url.endsWith("/admin") && method === "GET") return dashboardResponse();
       if (url.includes("/admin/solar_panel_system/177418") && method === "GET") {
         return htmlResponse(
           '<html><body><div>Rec Contract (PDF)</div><a href="/uploads/contract-177418.pdf">Download</a></body></html>'

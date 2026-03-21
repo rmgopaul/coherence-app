@@ -37,6 +37,7 @@ export type ProjectApplicationLiteRow = {
 export type QuickBooksLineCategory =
   | "applicationFee"
   | "utilityCollateral"
+  | "utilityCollateralReimbursement"
   | "additionalCollateral"
   | "ccFee"
   | "vendorFee"
@@ -79,6 +80,7 @@ export type QuickBooksPaidUpfrontLedger = {
     {
       applicationFeePaidUpfront: number;
       utilityCollateralPaidUpfront: number;
+      utilityCollateralReimbursementToPartnerCompanyAmount: number;
       additionalCollateralPaidUpfront: number;
       ccFeePaidUpfront: number;
       vendorFeePaidUpfront: number;
@@ -105,6 +107,14 @@ export type ContractTerms = {
   ccCardAsteriskCount: number | null;
   recQuantity: number | null;
   recPrice: number | null;
+  paymentMethod: string | null;
+  payeeName: string | null;
+  mailingAddress1: string | null;
+  mailingAddress2: string | null;
+  cityStateZip: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
 };
 
 export type InvoiceNumberMapRow = {
@@ -152,6 +162,7 @@ export type PaymentComputationRow = {
   vendorFeeAmount: number;
   utilityHeldCollateral5PercentAmount: number;
   utilityHeldCollateralPaidUpfront: number;
+  collateralReimbursementToPartnerCompanyAmount: number;
   applicationFeeAmount: number;
   applicationFeePaidUpfront: number;
   additionalCollateralPercent: number;
@@ -160,6 +171,13 @@ export type PaymentComputationRow = {
   ccAuthorizationFormStatus: string;
   ccAuthIncomplete5PercentAmount: number;
   firstPaymentFormulaNetAmount: number;
+  paymentMethod: string;
+  payeeName: string;
+  mailingAddress1: string;
+  mailingAddress2: string;
+  city: string;
+  state: string;
+  zip: string;
   withholdingBalanceSeededForSystem: number;
   carryforwardIn: number;
   carryforwardRecoveredThisRow: number;
@@ -660,6 +678,9 @@ export function parseInvoiceNumberMap(
 
 function classifyQuickBooksLineItem(description: string, productService: string): QuickBooksLineCategory {
   const normalized = `${description} ${productService}`.toLowerCase();
+  const hasReimbursementMarker =
+    /reimburs(?:e|ed|ement|ing)?/.test(normalized) || /reimbursed/.test(normalized);
+  const hasPartnerMarker = /(installer|partner|developer|partner company|installer company)/.test(normalized);
 
   if (
     /application fee/.test(normalized) ||
@@ -676,6 +697,9 @@ function classifyQuickBooksLineItem(description: string, productService: string)
     /5\s*%\s*(utility|abp)?\s*(collateral|bond)/.test(normalized) ||
     /5\s*%\s*abp\s*collateral/.test(normalized)
   ) {
+    if (hasReimbursementMarker && (hasPartnerMarker || /company/.test(normalized))) {
+      return "utilityCollateralReimbursement";
+    }
     return "utilityCollateral";
   }
 
@@ -716,6 +740,7 @@ export function buildQuickBooksPaidUpfrontLedger(input: {
     {
       applicationFeePaidUpfront: number;
       utilityCollateralPaidUpfront: number;
+      utilityCollateralReimbursementToPartnerCompanyAmount: number;
       additionalCollateralPaidUpfront: number;
       ccFeePaidUpfront: number;
       vendorFeePaidUpfront: number;
@@ -775,6 +800,7 @@ export function buildQuickBooksPaidUpfrontLedger(input: {
         bySystemId.get(systemId) ?? {
           applicationFeePaidUpfront: 0,
           utilityCollateralPaidUpfront: 0,
+          utilityCollateralReimbursementToPartnerCompanyAmount: 0,
           additionalCollateralPaidUpfront: 0,
           ccFeePaidUpfront: 0,
           vendorFeePaidUpfront: 0,
@@ -784,6 +810,9 @@ export function buildQuickBooksPaidUpfrontLedger(input: {
       const roundedPaid = roundMoney(allocatedPaid);
       if (category === "applicationFee") existing.applicationFeePaidUpfront += roundedPaid;
       if (category === "utilityCollateral") existing.utilityCollateralPaidUpfront += roundedPaid;
+      if (category === "utilityCollateralReimbursement") {
+        existing.utilityCollateralReimbursementToPartnerCompanyAmount += roundedPaid;
+      }
       if (category === "additionalCollateral") existing.additionalCollateralPaidUpfront += roundedPaid;
       if (category === "ccFee") existing.ccFeePaidUpfront += roundedPaid;
       if (category === "vendorFee") existing.vendorFeePaidUpfront += roundedPaid;
@@ -845,6 +874,27 @@ function toCcAuthStatus(completed: boolean | null, asterisks: number | null): st
   if (!completed) return "Incomplete";
   const digits = asterisks ?? 0;
   return digits > 0 ? `Completed (${digits} digits)` : "Completed";
+}
+
+function splitCityStateZip(rawValue: string | null | undefined): {
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+} {
+  const raw = clean(rawValue);
+  if (!raw) return { city: null, state: null, zip: null };
+
+  const normalized = raw.replace(/\s+/g, " ");
+  const match = normalized.match(/^(.+?)[,\s]+([A-Za-z]{2,})\s+(\d{5}(?:-\d{4})?)$/);
+  if (!match) {
+    return { city: normalized || null, state: null, zip: null };
+  }
+
+  return {
+    city: clean(match[1]) || null,
+    state: clean(match[2]).toUpperCase() || null,
+    zip: clean(match[3]) || null,
+  };
 }
 
 function buildSystemToCsgMap(mappings: CsgSystemIdMappingRow[]): Map<string, string> {
@@ -910,6 +960,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
 
       const paidApplicationFee = safeMoney(ledger?.applicationFeePaidUpfront);
       const paidUtilityCollateral = safeMoney(ledger?.utilityCollateralPaidUpfront);
+      const paidUtilityCollateralReimbursement = safeMoney(
+        ledger?.utilityCollateralReimbursementToPartnerCompanyAmount
+      );
       const paidAdditionalCollateral = safeMoney(ledger?.additionalCollateralPaidUpfront);
       const paidCcFee = safeMoney(ledger?.ccFeePaidUpfront);
 
@@ -949,6 +1002,15 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         const ccAuthorizationCompleted = terms?.ccAuthorizationCompleted ?? null;
         const ccIncompleteAmount = ccAuthorizationCompleted === false ? roundMoney(grossContractValue * 0.05) : 0;
         const ccIncompleteOutstanding = Math.max(0, roundMoney(ccIncompleteAmount - paidCcFee));
+
+        const cityStateZipParts = splitCityStateZip(terms?.cityStateZip);
+        const paymentMethod = clean(terms?.paymentMethod);
+        const payeeName = clean(terms?.payeeName);
+        const mailingAddress1 = clean(terms?.mailingAddress1);
+        const mailingAddress2 = clean(terms?.mailingAddress2);
+        const city = clean(terms?.city) || clean(cityStateZipParts.city);
+        const state = clean(terms?.state) || clean(cityStateZipParts.state);
+        const zip = clean(terms?.zip) || clean(cityStateZipParts.zip);
 
         const utilityOutstanding = Math.max(
           0,
@@ -990,6 +1052,11 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         if (!terms) confidenceFlags.push("Missing scanned contract terms for CSG ID.");
         if (!projectApp) confidenceFlags.push("Missing ProjectApplication row for System/Application ID.");
         if (classification === "unknown") confidenceFlags.push("Payment classification is outside tolerance; review override.");
+        if (paidUtilityCollateralReimbursement > 0) {
+          confidenceFlags.push(
+            "Utility collateral reimbursement to partner detected; reimbursed amount is excluded from customer upfront credit."
+          );
+        }
 
         if (!seededFromFirst && !previousCarryKnown && (row.paymentNumber ?? 0) > 1) {
           confidenceFlags.push("No prior carryforward history found for payment number > 1.");
@@ -1026,6 +1093,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           vendorFeeAmount,
           utilityHeldCollateral5PercentAmount,
           utilityHeldCollateralPaidUpfront: paidUtilityCollateral,
+          collateralReimbursementToPartnerCompanyAmount: paidUtilityCollateralReimbursement,
           applicationFeeAmount,
           applicationFeePaidUpfront: paidApplicationFee,
           additionalCollateralPercent,
@@ -1034,6 +1102,13 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           ccAuthorizationFormStatus: toCcAuthStatus(terms?.ccAuthorizationCompleted ?? null, terms?.ccCardAsteriskCount ?? null),
           ccAuthIncomplete5PercentAmount: ccIncompleteAmount,
           firstPaymentFormulaNetAmount: firstFormulaNetAmount,
+          paymentMethod,
+          payeeName,
+          mailingAddress1,
+          mailingAddress2,
+          city,
+          state,
+          zip,
           withholdingBalanceSeededForSystem: seededWithholdingThisRow,
           carryforwardIn,
           carryforwardRecoveredThisRow: recovered,
@@ -1084,6 +1159,7 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Vendor Fee Amount",
     "Utility Held Collateral 5% Amount",
     "Utility Held Collateral Paid Upfront",
+    "Collateral Reimbursement to the Partner Company",
     "Application Fee Amount",
     "Application Fee Paid Upfront",
     "Additional Collateral %",
@@ -1092,6 +1168,13 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "CC Authorization Form Status",
     "CC Auth Incomplete 5% Amount",
     "First Payment Formula Net Amount",
+    "Payment Method",
+    "Payee Name",
+    "Mailing Address 1",
+    "Mailing Address 2",
+    "City",
+    "State",
+    "Zip",
     "Carryforward In",
     "Carryforward Recovered This Row",
     "Carryforward Out",
@@ -1119,6 +1202,7 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.vendorFeeAmount.toFixed(2),
       row.utilityHeldCollateral5PercentAmount.toFixed(2),
       row.utilityHeldCollateralPaidUpfront.toFixed(2),
+      row.collateralReimbursementToPartnerCompanyAmount.toFixed(2),
       row.applicationFeeAmount.toFixed(2),
       row.applicationFeePaidUpfront.toFixed(2),
       row.additionalCollateralPercent,
@@ -1127,6 +1211,13 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.ccAuthorizationFormStatus,
       row.ccAuthIncomplete5PercentAmount.toFixed(2),
       row.firstPaymentFormulaNetAmount.toFixed(2),
+      row.paymentMethod,
+      row.payeeName,
+      row.mailingAddress1,
+      row.mailingAddress2,
+      row.city,
+      row.state,
+      row.zip,
       row.carryforwardIn.toFixed(2),
       row.carryforwardRecoveredThisRow.toFixed(2),
       row.carryforwardOut.toFixed(2),
