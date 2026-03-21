@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyPayeeMailingUpdatesToContractTerms,
+  buildLatestPayeeMailingUpdates,
   buildQuickBooksPaidUpfrontLedger,
   buildSettlementCsv,
   computeSettlementRows,
   parseCsgPortalDatabase,
+  parsePayeeMailingUpdateRequests,
   parseProjectApplications,
   parseQuickBooksDetailedReport,
   parseUtilityInvoiceMatrix,
@@ -314,6 +317,166 @@ describe("ABP parser coverage", () => {
         matrix: [],
       })
     ).toThrow(/missing CSG ID values/i);
+  });
+
+  it("parses payee update requests and keeps address/payment fields", () => {
+    const rows = parsePayeeMailingUpdateRequests({
+      headers: [
+        "Date",
+        "Responder Email",
+        "CSG ID",
+        "Payment Method",
+        "Payee Name",
+        "Mailing Address 1",
+        "Mailing Address 2",
+        "City",
+        "State",
+        "Zip",
+      ],
+      rows: [
+        {
+          Date: "2026-03-14",
+          "Responder Email": "Customer@Example.com",
+          "CSG ID": "2001",
+          "Payment Method": "ACH",
+          "Payee Name": "Jane Doe",
+          "Mailing Address 1": "123 Main St",
+          "Mailing Address 2": "Apt 4",
+          City: "Chicago",
+          State: "il",
+          Zip: "60601",
+        },
+      ],
+      matrix: [],
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].enteredCsgId).toBe("2001");
+    expect(rows[0].responderEmail).toBe("customer@example.com");
+    expect(rows[0].paymentMethod).toBe("ACH");
+    expect(rows[0].mailingAddress1).toBe("123 Main St");
+    expect(rows[0].state).toBe("IL");
+  });
+
+  it("resolves payee updates by most recent date and email-based CSG correction", () => {
+    const updates = parsePayeeMailingUpdateRequests({
+      headers: [
+        "Date",
+        "Responder Email",
+        "CSG ID",
+        "Payment Method",
+        "Payee Name",
+        "Mailing Address 1",
+      ],
+      rows: [
+        {
+          Date: "2026-03-01",
+          "Responder Email": "alpha@example.com",
+          "CSG ID": "9999",
+          "Payment Method": "ACH",
+          "Payee Name": "Alpha Old",
+          "Mailing Address 1": "1 Old St",
+        },
+        {
+          Date: "2026-03-10",
+          "Responder Email": "alpha@example.com",
+          "CSG ID": "2001",
+          "Payment Method": "Check",
+          "Payee Name": "Alpha New",
+          "Mailing Address 1": "10 New St",
+        },
+        {
+          Date: "2026-03-08",
+          "Responder Email": "beta-alt@example.com",
+          "CSG ID": "",
+          "Payment Method": "Wire",
+          "Payee Name": "Beta Payee",
+          "Mailing Address 1": "22 Beta Ave",
+        },
+      ],
+      matrix: [],
+    });
+
+    const resolved = buildLatestPayeeMailingUpdates({
+      updates,
+      csgPortalDatabaseRows: [
+        {
+          systemId: "1001",
+          csgId: "2001",
+          installerName: null,
+          partnerCompanyName: null,
+          customerEmail: "alpha@example.com",
+          customerAltEmail: null,
+          systemAddress: null,
+          collateralReimbursedToPartner: null,
+        },
+        {
+          systemId: "1002",
+          csgId: "2002",
+          installerName: null,
+          partnerCompanyName: null,
+          customerEmail: "beta@example.com",
+          customerAltEmail: "beta-alt@example.com",
+          systemAddress: null,
+          collateralReimbursedToPartner: null,
+        },
+      ],
+    });
+
+    expect(resolved.byCsgId.size).toBe(2);
+    expect(resolved.byCsgId.get("2001")?.payeeName).toBe("Alpha New");
+    expect(resolved.byCsgId.get("2001")?.resolutionReason).toBe("entered_csg_id_verified_by_email");
+    expect(resolved.byCsgId.get("2002")?.resolutionReason).toBe("resolved_by_email");
+    expect(resolved.warnings.join(" ")).toMatch(/responder email/i);
+  });
+
+  it("applies resolved payee updates over scanned contract terms", () => {
+    const resolved = buildLatestPayeeMailingUpdates({
+      updates: [
+        {
+          rowId: "payee-update:2",
+          sourceRowNumber: 2,
+          requestDate: new Date("2026-03-12T00:00:00.000Z"),
+          requestDateRaw: "2026-03-12",
+          responderEmail: "customer@example.com",
+          enteredCsgId: "2001",
+          paymentMethod: "Wire",
+          payeeName: "Updated Payee",
+          mailingAddress1: "500 Updated Blvd",
+          mailingAddress2: "Suite 9",
+          city: "Aurora",
+          state: "IL",
+          zip: "60505",
+          cityStateZip: null,
+        },
+      ],
+      csgPortalDatabaseRows: [],
+    });
+
+    const merged = applyPayeeMailingUpdatesToContractTerms({
+      contractTermsByCsgId: new Map([
+        [
+          "2001",
+          baseContractTerms("2001", {
+            paymentMethod: "Check",
+            payeeName: "Original Payee",
+            mailingAddress1: "1 Original St",
+            city: "Chicago",
+            state: "IL",
+            zip: "60601",
+          }),
+        ],
+      ]),
+      latestUpdatesByCsgId: resolved.byCsgId,
+    });
+
+    const updated = merged.get("2001");
+    expect(updated?.paymentMethod).toBe("Wire");
+    expect(updated?.payeeName).toBe("Updated Payee");
+    expect(updated?.mailingAddress1).toBe("500 Updated Blvd");
+    expect(updated?.mailingAddress2).toBe("Suite 9");
+    expect(updated?.city).toBe("Aurora");
+    expect(updated?.zip).toBe("60505");
   });
 });
 

@@ -10,6 +10,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import {
+  applyPayeeMailingUpdatesToContractTerms,
+  buildLatestPayeeMailingUpdates,
   buildInvoiceNumberToSystemIdMap,
   buildQuickBooksPaidUpfrontLedger,
   buildSettlementCsv,
@@ -18,6 +20,7 @@ import {
   parseCsgSystemMapping,
   parseCsgPortalDatabase,
   parseInvoiceNumberMap,
+  parsePayeeMailingUpdateRequests,
   parseProjectApplications,
   parseQuickBooksDetailedReport,
   parseTabularFile,
@@ -28,6 +31,7 @@ import {
   type ManualOverride,
   type PaymentClassification,
   type PaymentComputationRow,
+  type PayeeMailingUpdateRow,
   type ProjectApplicationLiteRow,
   type QuickBooksInvoice,
   type UtilityInvoiceRow,
@@ -57,6 +61,7 @@ type RunInputs = {
   projectApplicationFile: string | null;
   portalInvoiceMapFile: string | null;
   csgPortalDatabaseFile: string | null;
+  payeeUpdateFile: string | null;
 };
 
 type InvoiceMapHeaderSelectionState = {
@@ -104,6 +109,10 @@ type PersistedQuickBooksInvoice = Omit<QuickBooksInvoice, "date"> & {
   date: string | null;
 };
 
+type PersistedPayeeUpdateRow = Omit<PayeeMailingUpdateRow, "requestDate"> & {
+  requestDate: string | null;
+};
+
 type SavedRunPayload = {
   version: 1;
   monthKey: string;
@@ -114,6 +123,7 @@ type SavedRunPayload = {
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
+  payeeUpdateRows: PersistedPayeeUpdateRow[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   invoiceMapHeaderSelection?: InvoiceMapHeaderSelectionState;
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
@@ -144,6 +154,7 @@ type PersistedUploadStatePayload = {
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
+  payeeUpdateRows: PersistedPayeeUpdateRow[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
   installerRules: InstallerSettlementRule[];
@@ -751,6 +762,52 @@ function deserializeQuickBooksInvoices(invoices: PersistedQuickBooksInvoice[]): 
   return map;
 }
 
+function normalizePayeeUpdateRows(rows: unknown[]): PersistedPayeeUpdateRow[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const source = row as Record<string, unknown>;
+      const rowId = clean(source.rowId);
+      if (!rowId) return null;
+      const sourceRowNumber = parseNumericCell(source.sourceRowNumber);
+      return {
+        rowId,
+        sourceRowNumber:
+          sourceRowNumber !== null && Number.isFinite(sourceRowNumber)
+            ? Math.max(1, Math.floor(sourceRowNumber))
+            : 1,
+        requestDate: clean(source.requestDate) || null,
+        requestDateRaw: clean(source.requestDateRaw) || null,
+        responderEmail: clean(source.responderEmail).toLowerCase() || null,
+        enteredCsgId: clean(source.enteredCsgId) || null,
+        paymentMethod: clean(source.paymentMethod) || null,
+        payeeName: clean(source.payeeName) || null,
+        mailingAddress1: clean(source.mailingAddress1) || null,
+        mailingAddress2: clean(source.mailingAddress2) || null,
+        city: clean(source.city) || null,
+        state: clean(source.state).toUpperCase() || null,
+        zip: clean(source.zip) || null,
+        cityStateZip: clean(source.cityStateZip) || null,
+      } satisfies PersistedPayeeUpdateRow;
+    })
+    .filter((row): row is PersistedPayeeUpdateRow => Boolean(row));
+}
+
+function serializePayeeUpdateRows(rows: PayeeMailingUpdateRow[]): PersistedPayeeUpdateRow[] {
+  return rows.map((row) => ({
+    ...row,
+    requestDate: row.requestDate ? row.requestDate.toISOString() : null,
+  }));
+}
+
+function deserializePayeeUpdateRows(rows: PersistedPayeeUpdateRow[]): PayeeMailingUpdateRow[] {
+  return rows.map((row) => ({
+    ...row,
+    requestDate: row.requestDate ? new Date(row.requestDate) : null,
+  }));
+}
+
 function buildPersistedUploadStatePayload(input: {
   runInputs: RunInputs;
   activeScanJobId: string | null;
@@ -758,13 +815,14 @@ function buildPersistedUploadStatePayload(input: {
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: ProjectApplicationLiteRow[];
   quickBooksByInvoice: Map<string, QuickBooksInvoice>;
+  payeeUpdateRows: PayeeMailingUpdateRow[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
   installerRules: InstallerSettlementRule[];
   invoiceMapHeaderSelection: InvoiceMapHeaderSelectionState;
 }): PersistedUploadStatePayload {
   return {
-    version: 2,
+    version: 3,
     savedAt: new Date().toISOString(),
     runInputs: input.runInputs,
     activeScanJobId: clean(input.activeScanJobId) || null,
@@ -772,6 +830,7 @@ function buildPersistedUploadStatePayload(input: {
     csgSystemMappings: input.csgSystemMappings,
     projectApplications: serializeProjectApplications(input.projectApplications),
     quickBooksInvoices: serializeQuickBooksInvoices(input.quickBooksByInvoice),
+    payeeUpdateRows: serializePayeeUpdateRows(input.payeeUpdateRows),
     invoiceNumberMapRows: normalizeInvoiceNumberMapRows(input.invoiceNumberMapRows),
     csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(input.csgPortalDatabaseRows),
     installerRules: normalizeInstallerRules(input.installerRules),
@@ -785,7 +844,7 @@ function buildPersistedUploadStatePayload(input: {
 function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePayload | null {
   try {
     const parsed = JSON.parse(value) as PersistedUploadStatePayload;
-    if (!parsed || typeof parsed.version !== "number" || parsed.version < 1 || parsed.version > 2) return null;
+    if (!parsed || typeof parsed.version !== "number" || parsed.version < 1 || parsed.version > 3) return null;
     const runInputsRaw = parsed.runInputs && typeof parsed.runInputs === "object" ? parsed.runInputs : null;
     if (!runInputsRaw) return null;
 
@@ -798,6 +857,7 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
       projectApplicationFile: clean(runInputsRaw.projectApplicationFile) || null,
       portalInvoiceMapFile: clean(runInputsRaw.portalInvoiceMapFile) || null,
       csgPortalDatabaseFile: clean(runInputsRaw.csgPortalDatabaseFile) || null,
+      payeeUpdateFile: clean(runInputsRaw.payeeUpdateFile) || null,
     };
 
     return {
@@ -811,6 +871,7 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
         Array.isArray(parsed.projectApplications) ? parsed.projectApplications : []
       ),
       quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
+      payeeUpdateRows: normalizePayeeUpdateRows(Array.isArray(parsed.payeeUpdateRows) ? parsed.payeeUpdateRows : []),
       invoiceNumberMapRows: normalizeInvoiceNumberMapRows(
         Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : []
       ),
@@ -880,6 +941,7 @@ export default function AbpInvoiceSettlement() {
     projectApplicationFile: null,
     portalInvoiceMapFile: null,
     csgPortalDatabaseFile: null,
+    payeeUpdateFile: null,
   });
 
   const [utilityRows, setUtilityRows] = useState<UtilityInvoiceRow[]>([]);
@@ -887,6 +949,7 @@ export default function AbpInvoiceSettlement() {
   const [projectApplications, setProjectApplications] = useState<ProjectApplicationLiteRow[]>([]);
   const [quickBooksByInvoice, setQuickBooksByInvoice] = useState<Map<string, QuickBooksInvoice>>(new Map());
   const [csgPortalDatabaseRows, setCsgPortalDatabaseRows] = useState<CsgPortalDatabaseRow[]>([]);
+  const [payeeUpdateRows, setPayeeUpdateRows] = useState<PayeeMailingUpdateRow[]>([]);
   const [installerRules, setInstallerRules] = useState<InstallerSettlementRule[]>(DEFAULT_INSTALLER_RULES);
 
   const [invoiceMapParsed, setInvoiceMapParsed] = useState<ParsedTabularData | null>(null);
@@ -918,6 +981,7 @@ export default function AbpInvoiceSettlement() {
   const [isUploadingProjectApps, setIsUploadingProjectApps] = useState(false);
   const [isUploadingInvoiceMap, setIsUploadingInvoiceMap] = useState(false);
   const [isUploadingCsgPortalDatabase, setIsUploadingCsgPortalDatabase] = useState(false);
+  const [isUploadingPayeeUpdates, setIsUploadingPayeeUpdates] = useState(false);
   const [isSavingUploadsNow, setIsSavingUploadsNow] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [uploadsHydrated, setUploadsHydrated] = useState(false);
@@ -996,11 +1060,13 @@ export default function AbpInvoiceSettlement() {
         projectApplicationFile: null,
         portalInvoiceMapFile: null,
         csgPortalDatabaseFile: null,
+        payeeUpdateFile: null,
       };
       let hydratedUtilityRows: UtilityInvoiceRow[] = [];
       let hydratedCsgSystemMappings: CsgSystemIdMappingRow[] = [];
       let hydratedProjectApplications: ProjectApplicationLiteRow[] = [];
       let hydratedQuickBooksByInvoice = new Map<string, QuickBooksInvoice>();
+      let hydratedPayeeUpdateRows: PayeeMailingUpdateRow[] = [];
       let hydratedInvoiceNumberMapRows: InvoiceNumberMapRow[] = [];
       let hydratedInvoiceMapParsed: ParsedTabularData | null = null;
       let hydratedInvoiceMapHeaderSelection: InvoiceMapHeaderSelectionState = {
@@ -1026,6 +1092,7 @@ export default function AbpInvoiceSettlement() {
             hydratedCsgSystemMappings = parsed.csgSystemMappings ?? [];
             hydratedProjectApplications = deserializeProjectApplications(parsed.projectApplications ?? []);
             hydratedQuickBooksByInvoice = deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []);
+            hydratedPayeeUpdateRows = deserializePayeeUpdateRows(parsed.payeeUpdateRows ?? []);
             hydratedInvoiceNumberMapRows = normalizeInvoiceNumberMapRows(parsed.invoiceNumberMapRows ?? []);
             hydratedInvoiceMapHeaderSelection = parsed.invoiceMapHeaderSelection ?? hydratedInvoiceMapHeaderSelection;
             hydratedActiveScanJobId = parsed.activeScanJobId ?? null;
@@ -1201,6 +1268,7 @@ export default function AbpInvoiceSettlement() {
         setCsgSystemMappings(hydratedCsgSystemMappings);
         setProjectApplications(hydratedProjectApplications);
         setQuickBooksByInvoice(hydratedQuickBooksByInvoice);
+        setPayeeUpdateRows(hydratedPayeeUpdateRows);
         setCsgPortalDatabaseRows(hydratedCsgPortalDatabaseRows);
         setInstallerRules(hydratedInstallerRules);
         setInvoiceMapParsed(hydratedInvoiceMapParsed);
@@ -1471,6 +1539,7 @@ export default function AbpInvoiceSettlement() {
           csgSystemMappings,
           projectApplications,
           quickBooksByInvoice,
+          payeeUpdateRows,
           invoiceNumberMapRows,
           csgPortalDatabaseRows,
           installerRules,
@@ -1511,6 +1580,7 @@ export default function AbpInvoiceSettlement() {
     installerRules,
     invoiceMapHeaderSelection,
     invoiceNumberMapRows,
+    payeeUpdateRows,
     projectApplications,
     quickBooksByInvoice,
     runInputs,
@@ -1535,6 +1605,7 @@ export default function AbpInvoiceSettlement() {
         csgSystemMappings,
         projectApplications,
         quickBooksByInvoice,
+        payeeUpdateRows,
         invoiceNumberMapRows,
         csgPortalDatabaseRows,
         installerRules,
@@ -1578,6 +1649,7 @@ export default function AbpInvoiceSettlement() {
     csgSystemMappings,
     projectApplications,
     quickBooksByInvoice,
+    payeeUpdateRows,
     invoiceNumberMapRows,
     csgPortalDatabaseRows,
     installerRules,
@@ -1685,32 +1757,52 @@ export default function AbpInvoiceSettlement() {
     return manual.length > 0 ? manual : derivedScanIds;
   }, [manualScanIdInput, derivedScanIds]);
 
+  const latestPayeeUpdateResult = useMemo(() => {
+    return buildLatestPayeeMailingUpdates({
+      updates: payeeUpdateRows,
+      csgPortalDatabaseRows,
+    });
+  }, [payeeUpdateRows, csgPortalDatabaseRows]);
+
+  const contractTermsWithPayeeUpdates = useMemo(() => {
+    return applyPayeeMailingUpdatesToContractTerms({
+      contractTermsByCsgId,
+      latestUpdatesByCsgId: latestPayeeUpdateResult.byCsgId,
+    });
+  }, [contractTermsByCsgId, latestPayeeUpdateResult.byCsgId]);
+
   const computationResult = useMemo(() => {
     if (utilityRows.length === 0 || csgSystemMappings.length === 0 || projectApplications.length === 0) {
       return null;
     }
 
-    return computeSettlementRows({
+    const baseResult = computeSettlementRows({
       utilityRows,
       csgSystemMappings,
       projectApplications,
       quickBooksPaidUpfrontLedger: quickBooksLedger,
-      contractTermsByCsgId,
+      contractTermsByCsgId: contractTermsWithPayeeUpdates,
       csgPortalDatabaseRows,
       installerRules,
       previousCarryforwardBySystemId,
       manualOverridesByRowId,
     });
+
+    return {
+      ...baseResult,
+      warnings: [...baseResult.warnings, ...latestPayeeUpdateResult.warnings],
+    };
   }, [
     utilityRows,
     csgSystemMappings,
     projectApplications,
     quickBooksLedger,
-    contractTermsByCsgId,
+    contractTermsWithPayeeUpdates,
     csgPortalDatabaseRows,
     installerRules,
     previousCarryforwardBySystemId,
     manualOverridesByRowId,
+    latestPayeeUpdateResult.warnings,
   ]);
 
   const savedRuns = (savedRunsQuery.data ?? []) as RunSummary[];
@@ -1853,6 +1945,27 @@ export default function AbpInvoiceSettlement() {
     }
   };
 
+  const handlePayeeUpdateUpload = async (fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    setIsUploadingPayeeUpdates(true);
+
+    try {
+      const parsed = await parseTabularFile(file);
+      const rows = parsePayeeMailingUpdateRequests(parsed);
+      setPayeeUpdateRows(rows);
+      setRunInputs((current) => ({
+        ...current,
+        payeeUpdateFile: file.name,
+      }));
+      toast.success(`Loaded ${rows.length.toLocaleString("en-US")} customer payee/mailing update row(s).`);
+    } catch (error) {
+      toast.error(`Failed to parse payee update file: ${toErrorMessage(error)}`);
+    } finally {
+      setIsUploadingPayeeUpdates(false);
+    }
+  };
+
   const handleAddInstallerRule = () => {
     const nextIndex = installerRules.length + 1;
     setInstallerRules((current) => [
@@ -1943,6 +2056,15 @@ export default function AbpInvoiceSettlement() {
       csgPortalDatabaseFile: null,
     }));
     toast.success("CSG portal database file deleted.");
+  };
+
+  const handleDeletePayeeUpdateFile = () => {
+    setPayeeUpdateRows([]);
+    setRunInputs((current) => ({
+      ...current,
+      payeeUpdateFile: null,
+    }));
+    toast.success("Payee update file deleted.");
   };
 
   const handleSavePortalCredentials = async () => {
@@ -2168,6 +2290,7 @@ export default function AbpInvoiceSettlement() {
       csgSystemMappings,
       projectApplications: serializeProjectApplications(projectApplications),
       quickBooksInvoices: serializeQuickBooksInvoices(quickBooksByInvoice),
+      payeeUpdateRows: serializePayeeUpdateRows(payeeUpdateRows),
       invoiceNumberMapRows,
       invoiceMapHeaderSelection,
       csgPortalDatabaseRows,
@@ -2207,6 +2330,7 @@ export default function AbpInvoiceSettlement() {
       projectApplicationFile: payload.runInputs?.projectApplicationFile ?? null,
       portalInvoiceMapFile: payload.runInputs?.portalInvoiceMapFile ?? null,
       csgPortalDatabaseFile: payload.runInputs?.csgPortalDatabaseFile ?? null,
+      payeeUpdateFile: payload.runInputs?.payeeUpdateFile ?? null,
     });
     setUtilityRows(payload.utilityRows ?? []);
     setCsgSystemMappings(payload.csgSystemMappings ?? []);
@@ -2214,6 +2338,7 @@ export default function AbpInvoiceSettlement() {
       deserializeProjectApplications(normalizeProjectApplicationRows(payload.projectApplications ?? []))
     );
     setQuickBooksByInvoice(deserializeQuickBooksInvoices(payload.quickBooksInvoices ?? []));
+    setPayeeUpdateRows(deserializePayeeUpdateRows(normalizePayeeUpdateRows(payload.payeeUpdateRows ?? [])));
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({
       csgIdHeader: clean(payload.invoiceMapHeaderSelection?.csgIdHeader) || null,
@@ -2316,11 +2441,13 @@ export default function AbpInvoiceSettlement() {
       projectApplicationFile: null,
       portalInvoiceMapFile: null,
       csgPortalDatabaseFile: null,
+      payeeUpdateFile: null,
     });
     setUtilityRows([]);
     setCsgSystemMappings([]);
     setProjectApplications([]);
     setQuickBooksByInvoice(new Map());
+    setPayeeUpdateRows([]);
     setCsgPortalDatabaseRows([]);
     setInstallerRules(normalizeInstallerRules(DEFAULT_INSTALLER_RULES));
     setInvoiceMapParsed(null);
@@ -2499,7 +2626,7 @@ export default function AbpInvoiceSettlement() {
           <CardHeader>
             <CardTitle>2) Upload Inputs</CardTitle>
             <CardDescription>
-              Required: utility invoices, CSG/System mapping, QuickBooks report, and ProjectApplication file. Optional: portal invoice map and CSG portal database. Linked uploads sync with Solar REC dashboard slots.
+              Required: utility invoices, CSG/System mapping, QuickBooks report, and ProjectApplication file. Optional: portal invoice map, CSG portal database, and customer payee/mailing update file. Linked uploads sync with Solar REC dashboard slots.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -2710,6 +2837,40 @@ export default function AbpInvoiceSettlement() {
                   </Button>
                 </div>
               </div>
+
+              <div className="space-y-2 md:col-span-2">
+                <Label htmlFor="payee-update-upload">
+                  Optional Customer Payee/Mailing Update File (.csv/.xlsx)
+                </Label>
+                <Input
+                  id="payee-update-upload"
+                  type="file"
+                  accept=".xlsx,.xls,.xlsm,.xlsb,.csv,text/csv"
+                  onChange={(event) => {
+                    void handlePayeeUpdateUpload(event.currentTarget.files);
+                    event.currentTarget.value = "";
+                  }}
+                  disabled={isUploadingPayeeUpdates}
+                />
+                <div className="text-xs text-slate-500">
+                  Uses the most recent request date per CSG ID. If CSG ID is wrong, responder email is used to match CSG portal email/alt email when possible.
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.payeeUpdateFile ?? "No payee update file loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeletePayeeUpdateFile}
+                    disabled={isUploadingPayeeUpdates || (!runInputs.payeeUpdateFile && payeeUpdateRows.length === 0)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
+                </div>
+              </div>
             </div>
 
             {invoiceMapParsed ? (
@@ -2779,6 +2940,11 @@ export default function AbpInvoiceSettlement() {
                 <div>ProjectApplication rows: {projectApplications.length.toLocaleString("en-US")}</div>
                 <div>Invoice map rows: {invoiceNumberMapRows.length.toLocaleString("en-US")}</div>
                 <div>CSG portal database rows: {csgPortalDatabaseRows.length.toLocaleString("en-US")}</div>
+                <div>Payee update request rows: {payeeUpdateRows.length.toLocaleString("en-US")}</div>
+                <div>Latest payee updates applied: {latestPayeeUpdateResult.byCsgId.size.toLocaleString("en-US")}</div>
+                <div>
+                  Unmatched payee updates: {latestPayeeUpdateResult.unresolvedRows.length.toLocaleString("en-US")}
+                </div>
                 <div>Installer-specific rules: {installerRules.length.toLocaleString("en-US")}</div>
               </div>
               <div className="rounded-md border p-3 text-sm">
@@ -3191,7 +3357,7 @@ export default function AbpInvoiceSettlement() {
               </div>
               <div className="rounded-md border p-3 text-sm">
                 <div className="text-slate-500">Contract Terms Loaded</div>
-                <div className="text-lg font-semibold">{contractTermsByCsgId.size}</div>
+                <div className="text-lg font-semibold">{contractTermsWithPayeeUpdates.size}</div>
               </div>
               <div className="rounded-md border p-3 text-sm">
                 <div className="text-slate-500">Carryforward Systems</div>

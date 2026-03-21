@@ -45,6 +45,43 @@ export type CsgPortalDatabaseRow = {
   collateralReimbursedToPartner: boolean | null;
 };
 
+export type PayeeMailingUpdateRow = {
+  rowId: string;
+  sourceRowNumber: number;
+  requestDate: Date | null;
+  requestDateRaw: string | null;
+  responderEmail: string | null;
+  enteredCsgId: string | null;
+  paymentMethod: string | null;
+  payeeName: string | null;
+  mailingAddress1: string | null;
+  mailingAddress2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+  cityStateZip: string | null;
+};
+
+export type PayeeMailingUpdateResolutionReason =
+  | "entered_csg_id"
+  | "entered_csg_id_verified_by_email"
+  | "resolved_by_email"
+  | "entered_csg_id_conflicts_with_email"
+  | "ambiguous_email"
+  | "missing_csg_and_email";
+
+export type ResolvedPayeeMailingUpdateRow = PayeeMailingUpdateRow & {
+  resolvedCsgId: string | null;
+  emailMatchedCsgIds: string[];
+  resolutionReason: PayeeMailingUpdateResolutionReason;
+};
+
+export type LatestPayeeMailingUpdateResult = {
+  byCsgId: Map<string, ResolvedPayeeMailingUpdateRow>;
+  unresolvedRows: ResolvedPayeeMailingUpdateRow[];
+  warnings: string[];
+};
+
 export type InstallerRuleMatchField = "installerName" | "partnerCompanyName";
 
 export type InstallerSettlementRule = {
@@ -244,6 +281,18 @@ const PERCENT_CLASSIFICATION_TOLERANCE = 0.25;
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
   return String(value).trim();
+}
+
+function normalizeEmail(value: unknown): string {
+  return clean(value).toLowerCase();
+}
+
+function normalizeCsgId(value: unknown): string {
+  const raw = clean(value);
+  if (!raw) return "";
+  const numericWithTrailingDecimals = raw.match(/^(\d+)\.0+$/);
+  if (numericWithTrailingDecimals) return numericWithTrailingDecimals[1];
+  return raw;
 }
 
 function normalizeHeader(value: string): string {
@@ -559,6 +608,282 @@ function findHeaderByKeywords(headers: string[], requiredKeywords: string[]): st
     if (matchesAll) return header;
   }
   return null;
+}
+
+function findHeaderByAliases(headers: string[], aliases: string[]): string | null {
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeHeader(alias);
+    const exact = headers.find((header) => normalizeHeader(header) === normalizedAlias);
+    if (exact) return exact;
+  }
+
+  for (const alias of aliases) {
+    const normalizedAlias = normalizeHeader(alias);
+    const fuzzy = headers.find((header) => normalizeHeader(header).includes(normalizedAlias));
+    if (fuzzy) return fuzzy;
+  }
+
+  return null;
+}
+
+export function parsePayeeMailingUpdateRequests(parsed: ParsedTabularData): PayeeMailingUpdateRow[] {
+  if (!Array.isArray(parsed.headers) || parsed.headers.length === 0) {
+    throw new Error("Payee update file must include a header row.");
+  }
+
+  const dateHeader =
+    findHeaderByAliases(parsed.headers, ["Date", "Timestamp", "Submitted At", "Submission Date", "Created At"]) ??
+    parsed.headers[0] ??
+    null;
+  const emailHeader =
+    findHeaderByAliases(parsed.headers, [
+      "Responder Email",
+      "Customer Email",
+      "Email",
+      "Email Address",
+      "Responders Email",
+    ]) ??
+    parsed.headers[1] ??
+    null;
+  const csgHeader =
+    findHeaderByAliases(parsed.headers, ["CSG ID", "CSGID", "CSG Portal ID", "Portal ID"]) ??
+    parsed.headers.find((header) => normalizeHeader(header) === "systemid") ??
+    parsed.headers[2] ??
+    null;
+
+  const paymentMethodHeader =
+    findHeaderByKeywords(parsed.headers, ["payment", "method"]) ??
+    findHeaderByAliases(parsed.headers, ["Method of Payment", "Preferred Payment Method"]) ??
+    null;
+
+  const payeeNameHeader =
+    findHeaderByKeywords(parsed.headers, ["payee"]) ??
+    findHeaderByAliases(parsed.headers, ["Payee Name", "Name on Check", "Check Payee"]) ??
+    null;
+
+  const mailingAddress1Header =
+    findHeaderByAliases(parsed.headers, [
+      "Mailing Address 1",
+      "Mailing Address",
+      "Address Line 1",
+      "Street Address",
+      "Mailing Street Address",
+    ]) ??
+    findHeaderByKeywords(parsed.headers, ["mailing", "address"]) ??
+    null;
+
+  let mailingAddress2Header =
+    findHeaderByAliases(parsed.headers, [
+      "Mailing Address 2",
+      "Address Line 2",
+      "Apt/Suite",
+      "Apt Suite",
+      "Unit",
+    ]) ?? null;
+
+  if (mailingAddress2Header && mailingAddress2Header === mailingAddress1Header) {
+    mailingAddress2Header = null;
+  }
+
+  const cityHeader =
+    findHeaderByAliases(parsed.headers, ["Mailing City", "City"]) ??
+    findHeaderByKeywords(parsed.headers, ["city"]) ??
+    null;
+  const stateHeader =
+    findHeaderByAliases(parsed.headers, ["Mailing State", "State"]) ??
+    findHeaderByKeywords(parsed.headers, ["state"]) ??
+    null;
+  const zipHeader =
+    findHeaderByAliases(parsed.headers, ["Mailing Zip", "Zip", "Zip Code", "Postal Code"]) ??
+    findHeaderByKeywords(parsed.headers, ["zip"]) ??
+    null;
+  const cityStateZipHeader =
+    findHeaderByAliases(parsed.headers, [
+      "City State Zip",
+      "City/State/Zip",
+      "City, State, Zip",
+      "Mailing City State Zip",
+      "City State ZIP",
+    ]) ?? null;
+
+  const rows: PayeeMailingUpdateRow[] = [];
+  parsed.rows.forEach((row, index) => {
+    const sourceRowNumber = index + 2;
+    const hasAnyValue = parsed.headers.some((header) => clean(row[header]).length > 0);
+    if (!hasAnyValue) return;
+
+    const responderEmail = emailHeader ? normalizeEmail(row[emailHeader]) || null : null;
+    const enteredCsgId = csgHeader ? normalizeCsgId(row[csgHeader]) || null : null;
+    const paymentMethod = paymentMethodHeader ? clean(row[paymentMethodHeader]) || null : null;
+    const payeeName = payeeNameHeader ? clean(row[payeeNameHeader]) || null : null;
+    const mailingAddress1 = mailingAddress1Header ? clean(row[mailingAddress1Header]) || null : null;
+    const mailingAddress2 = mailingAddress2Header ? clean(row[mailingAddress2Header]) || null : null;
+    const city = cityHeader ? clean(row[cityHeader]) || null : null;
+    const state = stateHeader ? clean(row[stateHeader]).toUpperCase() || null : null;
+    const zip = zipHeader ? clean(row[zipHeader]) || null : null;
+    const cityStateZip = cityStateZipHeader ? clean(row[cityStateZipHeader]) || null : null;
+
+    const hasUpdatePayload = Boolean(
+      paymentMethod ||
+        payeeName ||
+        mailingAddress1 ||
+        mailingAddress2 ||
+        city ||
+        state ||
+        zip ||
+        cityStateZip
+    );
+    if (!hasUpdatePayload) return;
+    if (!responderEmail && !enteredCsgId) return;
+
+    const requestDateRaw = dateHeader ? clean(row[dateHeader]) : "";
+    rows.push({
+      rowId: `payee-update:${sourceRowNumber}`,
+      sourceRowNumber,
+      requestDate: parseDate(requestDateRaw),
+      requestDateRaw: requestDateRaw || null,
+      responderEmail,
+      enteredCsgId,
+      paymentMethod,
+      payeeName,
+      mailingAddress1,
+      mailingAddress2,
+      city,
+      state,
+      zip,
+      cityStateZip,
+    });
+  });
+
+  return rows;
+}
+
+function chooseNewerPayeeUpdate(
+  existing: ResolvedPayeeMailingUpdateRow | undefined,
+  candidate: ResolvedPayeeMailingUpdateRow
+): ResolvedPayeeMailingUpdateRow {
+  if (!existing) return candidate;
+
+  const existingTime = existing.requestDate?.getTime();
+  const candidateTime = candidate.requestDate?.getTime();
+  const existingHasTime = Number.isFinite(existingTime);
+  const candidateHasTime = Number.isFinite(candidateTime);
+
+  if (candidateHasTime && !existingHasTime) return candidate;
+  if (candidateHasTime && existingHasTime && (candidateTime as number) > (existingTime as number)) {
+    return candidate;
+  }
+  if (candidateHasTime && existingHasTime && (candidateTime as number) === (existingTime as number)) {
+    return candidate.sourceRowNumber > existing.sourceRowNumber ? candidate : existing;
+  }
+  if (!candidateHasTime && !existingHasTime && candidate.sourceRowNumber > existing.sourceRowNumber) {
+    return candidate;
+  }
+  return existing;
+}
+
+export function buildLatestPayeeMailingUpdates(input: {
+  updates: PayeeMailingUpdateRow[];
+  csgPortalDatabaseRows?: CsgPortalDatabaseRow[];
+}): LatestPayeeMailingUpdateResult {
+  const byCsgId = new Map<string, ResolvedPayeeMailingUpdateRow>();
+  const unresolvedRows: ResolvedPayeeMailingUpdateRow[] = [];
+  const warnings: string[] = [];
+
+  const emailToCsgIds = new Map<string, Set<string>>();
+  (input.csgPortalDatabaseRows ?? []).forEach((row) => {
+    const csgId = normalizeCsgId(row.csgId);
+    if (!csgId) return;
+
+    [row.customerEmail, row.customerAltEmail].forEach((rawEmail) => {
+      const email = normalizeEmail(rawEmail);
+      if (!email) return;
+      const existing = emailToCsgIds.get(email) ?? new Set<string>();
+      existing.add(csgId);
+      emailToCsgIds.set(email, existing);
+    });
+  });
+
+  let correctedByEmailCount = 0;
+  let ambiguousEmailCount = 0;
+
+  input.updates.forEach((update) => {
+    const enteredCsgId = normalizeCsgId(update.enteredCsgId);
+    const responderEmail = normalizeEmail(update.responderEmail);
+    const emailMatchedCsgIds = responderEmail
+      ? Array.from(emailToCsgIds.get(responderEmail) ?? []).sort((left, right) =>
+          left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" })
+        )
+      : [];
+
+    let resolvedCsgId: string | null = null;
+    let resolutionReason: PayeeMailingUpdateResolutionReason;
+
+    if (enteredCsgId && emailMatchedCsgIds.length > 0) {
+      if (emailMatchedCsgIds.includes(enteredCsgId)) {
+        resolvedCsgId = enteredCsgId;
+        resolutionReason = "entered_csg_id_verified_by_email";
+      } else if (emailMatchedCsgIds.length === 1) {
+        resolvedCsgId = emailMatchedCsgIds[0];
+        resolutionReason = "resolved_by_email";
+        correctedByEmailCount += 1;
+      } else {
+        resolvedCsgId = enteredCsgId;
+        resolutionReason = "entered_csg_id_conflicts_with_email";
+        ambiguousEmailCount += 1;
+      }
+    } else if (enteredCsgId) {
+      resolvedCsgId = enteredCsgId;
+      resolutionReason = "entered_csg_id";
+    } else if (emailMatchedCsgIds.length === 1) {
+      resolvedCsgId = emailMatchedCsgIds[0];
+      resolutionReason = "resolved_by_email";
+      correctedByEmailCount += 1;
+    } else if (emailMatchedCsgIds.length > 1) {
+      resolutionReason = "ambiguous_email";
+      ambiguousEmailCount += 1;
+    } else {
+      resolutionReason = "missing_csg_and_email";
+    }
+
+    const resolvedRow: ResolvedPayeeMailingUpdateRow = {
+      ...update,
+      enteredCsgId: enteredCsgId || null,
+      responderEmail: responderEmail || null,
+      resolvedCsgId,
+      emailMatchedCsgIds,
+      resolutionReason,
+    };
+
+    if (resolvedCsgId) {
+      const existing = byCsgId.get(resolvedCsgId);
+      byCsgId.set(resolvedCsgId, chooseNewerPayeeUpdate(existing, resolvedRow));
+    } else {
+      unresolvedRows.push(resolvedRow);
+    }
+  });
+
+  if (correctedByEmailCount > 0) {
+    warnings.push(
+      `${correctedByEmailCount.toLocaleString("en-US")} payee update row(s) used responder email to resolve the CSG ID.`
+    );
+  }
+  if (ambiguousEmailCount > 0) {
+    warnings.push(
+      `${ambiguousEmailCount.toLocaleString("en-US")} payee update row(s) had CSG/email conflicts or ambiguous email matches; review those records.`
+    );
+  }
+  if (unresolvedRows.length > 0) {
+    warnings.push(
+      `${unresolvedRows.length.toLocaleString("en-US")} payee update row(s) could not be matched to a CSG ID and were not applied.`
+    );
+  }
+
+  return {
+    byCsgId,
+    unresolvedRows,
+    warnings,
+  };
 }
 
 function parseBooleanLike(value: unknown): boolean | null {
@@ -1088,6 +1413,73 @@ function splitCityStateZip(rawValue: string | null | undefined): {
     state: clean(match[2]).toUpperCase() || null,
     zip: clean(match[3]) || null,
   };
+}
+
+function composeCityStateZip(city: string | null, state: string | null, zip: string | null): string | null {
+  const cityValue = clean(city) || null;
+  const stateValue = clean(state) || null;
+  const zipValue = clean(zip) || null;
+  if (!cityValue && !stateValue && !zipValue) return null;
+  const stateZip = [stateValue, zipValue].filter(Boolean).join(" ");
+  return [cityValue, stateZip].filter(Boolean).join(", ");
+}
+
+export function applyPayeeMailingUpdatesToContractTerms(input: {
+  contractTermsByCsgId: Map<string, ContractTerms>;
+  latestUpdatesByCsgId: Map<string, ResolvedPayeeMailingUpdateRow>;
+}): Map<string, ContractTerms> {
+  const merged = new Map<string, ContractTerms>(input.contractTermsByCsgId);
+
+  input.latestUpdatesByCsgId.forEach((update, csgId) => {
+    const existing = merged.get(csgId);
+    const defaultTerms: ContractTerms = {
+      csgId,
+      fileName: `payee-update-${csgId}.csv`,
+      vendorFeePercent: null,
+      additionalCollateralPercent: null,
+      ccAuthorizationCompleted: null,
+      ccCardAsteriskCount: null,
+      recQuantity: null,
+      recPrice: null,
+      paymentMethod: null,
+      payeeName: null,
+      mailingAddress1: null,
+      mailingAddress2: null,
+      cityStateZip: null,
+      city: null,
+      state: null,
+      zip: null,
+    };
+
+    const base = existing ?? defaultTerms;
+    const updateCityStateZipParts = splitCityStateZip(update.cityStateZip);
+    const city = clean(update.city) || updateCityStateZipParts.city || clean(base.city) || null;
+    const state =
+      clean(update.state).toUpperCase() ||
+      (updateCityStateZipParts.state ? updateCityStateZipParts.state.toUpperCase() : "") ||
+      clean(base.state).toUpperCase() ||
+      null;
+    const zip = clean(update.zip) || updateCityStateZipParts.zip || clean(base.zip) || null;
+
+    merged.set(csgId, {
+      ...base,
+      csgId,
+      paymentMethod: clean(update.paymentMethod) || base.paymentMethod || null,
+      payeeName: clean(update.payeeName) || base.payeeName || null,
+      mailingAddress1: clean(update.mailingAddress1) || base.mailingAddress1 || null,
+      mailingAddress2: clean(update.mailingAddress2) || base.mailingAddress2 || null,
+      city,
+      state,
+      zip,
+      cityStateZip:
+        clean(update.cityStateZip) ||
+        composeCityStateZip(city, state, zip) ||
+        clean(base.cityStateZip) ||
+        null,
+    });
+  });
+
+  return merged;
 }
 
 function buildSystemToCsgMap(mappings: CsgSystemIdMappingRow[]): Map<string, string> {
