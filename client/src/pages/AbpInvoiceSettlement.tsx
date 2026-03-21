@@ -139,6 +139,7 @@ type PersistedUploadStatePayload = {
   version: number;
   savedAt: string;
   runInputs: RunInputs;
+  activeScanJobId: string | null;
   utilityRows: UtilityInvoiceRow[];
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: PersistedProjectApplicationRow[];
@@ -752,6 +753,7 @@ function deserializeQuickBooksInvoices(invoices: PersistedQuickBooksInvoice[]): 
 
 function buildPersistedUploadStatePayload(input: {
   runInputs: RunInputs;
+  activeScanJobId: string | null;
   utilityRows: UtilityInvoiceRow[];
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: ProjectApplicationLiteRow[];
@@ -765,6 +767,7 @@ function buildPersistedUploadStatePayload(input: {
     version: 2,
     savedAt: new Date().toISOString(),
     runInputs: input.runInputs,
+    activeScanJobId: clean(input.activeScanJobId) || null,
     utilityRows: input.utilityRows,
     csgSystemMappings: input.csgSystemMappings,
     projectApplications: serializeProjectApplications(input.projectApplications),
@@ -801,6 +804,7 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
       version: parsed.version,
       savedAt: clean(parsed.savedAt) || new Date().toISOString(),
       runInputs,
+      activeScanJobId: clean(parsed.activeScanJobId) || null,
       utilityRows: Array.isArray(parsed.utilityRows) ? parsed.utilityRows : [],
       csgSystemMappings: Array.isArray(parsed.csgSystemMappings) ? parsed.csgSystemMappings : [],
       projectApplications: normalizeProjectApplicationRows(
@@ -1003,6 +1007,7 @@ export default function AbpInvoiceSettlement() {
         csgIdHeader: null,
         invoiceNumberHeader: null,
       };
+      let hydratedActiveScanJobId: string | null = null;
       let hydratedCsgPortalDatabaseRows: CsgPortalDatabaseRow[] = [];
       let hydratedInstallerRules = normalizeInstallerRules(DEFAULT_INSTALLER_RULES);
 
@@ -1023,6 +1028,7 @@ export default function AbpInvoiceSettlement() {
             hydratedQuickBooksByInvoice = deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []);
             hydratedInvoiceNumberMapRows = normalizeInvoiceNumberMapRows(parsed.invoiceNumberMapRows ?? []);
             hydratedInvoiceMapHeaderSelection = parsed.invoiceMapHeaderSelection ?? hydratedInvoiceMapHeaderSelection;
+            hydratedActiveScanJobId = parsed.activeScanJobId ?? null;
             hydratedCsgPortalDatabaseRows = normalizeCsgPortalDatabaseRows(parsed.csgPortalDatabaseRows ?? []);
             hydratedInstallerRules = normalizeInstallerRules(parsed.installerRules);
             lastPersistedUploadPayloadRef.current = stored.payload;
@@ -1200,6 +1206,7 @@ export default function AbpInvoiceSettlement() {
         setInvoiceMapParsed(hydratedInvoiceMapParsed);
         setInvoiceMapHeaderSelection(hydratedInvoiceMapHeaderSelection);
         setSavedInvoiceNumberMapRows(hydratedInvoiceNumberMapRows);
+        setActiveScanJobId(hydratedActiveScanJobId);
       } catch {
         if (!cancelled) {
           setUploadPersistenceNotice("Could not restore previously uploaded files.");
@@ -1459,6 +1466,7 @@ export default function AbpInvoiceSettlement() {
       const uploadStatePayload = JSON.stringify(
         buildPersistedUploadStatePayload({
           runInputs,
+          activeScanJobId,
           utilityRows,
           csgSystemMappings,
           projectApplications,
@@ -1495,6 +1503,7 @@ export default function AbpInvoiceSettlement() {
       setIsSavingUploadsNow(false);
     }
   }, [
+    activeScanJobId,
     authLoading,
     buildSharedUploadPayloadByKey,
     csgPortalDatabaseRows,
@@ -1521,6 +1530,7 @@ export default function AbpInvoiceSettlement() {
     const payload = JSON.stringify(
       buildPersistedUploadStatePayload({
         runInputs,
+        activeScanJobId,
         utilityRows,
         csgSystemMappings,
         projectApplications,
@@ -1559,6 +1569,7 @@ export default function AbpInvoiceSettlement() {
       window.clearTimeout(timeout);
     };
   }, [
+    activeScanJobId,
     authLoading,
     user,
     uploadsHydrated,
@@ -2184,6 +2195,7 @@ export default function AbpInvoiceSettlement() {
   };
 
   const applyLoadedRun = (payload: SavedRunPayload) => {
+    setActiveScanJobId(null);
     setMonthKey(payload.monthKey || buildMonthKey());
     setRunLabel(payload.label ?? "");
     setRunInputs({
@@ -2933,7 +2945,7 @@ export default function AbpInvoiceSettlement() {
           <CardHeader>
             <CardTitle>4) CSG Portal Contract Scan</CardTitle>
             <CardDescription>
-              Save/test portal credentials, then scan the top Rec Contract PDF for each CSG ID.
+              Save/test portal credentials, then scan the top Rec Contract PDF for each CSG ID. Scan progress now persists and resumes from where it left off after page reloads.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

@@ -519,6 +519,11 @@ type AbpSettlementContractScanJobResultRow = {
 type AbpSettlementContractScanJob = {
   id: string;
   userId: number;
+  scanConfig: {
+    csgIds: string[];
+    portalEmail: string;
+    portalBaseUrl: string | null;
+  };
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -556,6 +561,7 @@ type AbpSettlementSavedRun = {
 const ABP_SETTLEMENT_JOB_TTL_MS = 24 * 60 * 60 * 1000;
 const ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL = 40;
 const abpSettlementJobs = new Map<string, AbpSettlementContractScanJob>();
+const abpSettlementActiveScanRunners = new Set<string>();
 const ABP_SETTLEMENT_RUNS_INDEX_DB_KEY = "abpSettlement:runs-index";
 
 function clampPercent(value: number): number {
@@ -600,6 +606,14 @@ function getAbpSettlementRunObjectKey(userId: number, runId: string): string {
 
 function getAbpSettlementRunDbKey(runId: string): string {
   return `abpSettlement:run:${runId}`;
+}
+
+function getAbpSettlementScanJobObjectKey(userId: number, jobId: string): string {
+  return `abp-settlement/${userId}/scan-jobs/${jobId}.json`;
+}
+
+function getAbpSettlementScanJobDbKey(jobId: string): string {
+  return `abpSettlement:scanJob:${jobId}`;
 }
 
 function parseAbpSettlementRunsIndex(payload: string | null | undefined): AbpSettlementSavedRunSummary[] {
@@ -778,6 +792,392 @@ async function saveAbpSettlementRun(input: {
     indexWrite,
     runWrite,
   };
+}
+
+function parseAbpSettlementScanJobSnapshot(
+  payload: string | null | undefined
+): AbpSettlementContractScanJob | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as Partial<AbpSettlementContractScanJob>;
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const id = toNonEmptyString(parsed.id);
+    const status = toNonEmptyString(parsed.status) as AbpSettlementContractScanJobStatus | null;
+    const createdAt = toNonEmptyString(parsed.createdAt);
+    const updatedAt = toNonEmptyString(parsed.updatedAt);
+    const scanConfig =
+      parsed.scanConfig && typeof parsed.scanConfig === "object"
+        ? (parsed.scanConfig as Record<string, unknown>)
+        : null;
+    const userId = typeof parsed.userId === "number" && Number.isFinite(parsed.userId) ? parsed.userId : null;
+
+    if (!id || !status || !createdAt || !updatedAt || !scanConfig || userId === null) return null;
+
+    const csgIds = Array.isArray(scanConfig.csgIds)
+      ? scanConfig.csgIds.map((value) => toNonEmptyString(value)).filter((value): value is string => Boolean(value))
+      : [];
+    const portalEmail = toNonEmptyString(scanConfig.portalEmail);
+    if (csgIds.length === 0 || !portalEmail) return null;
+
+    const progress =
+      parsed.progress && typeof parsed.progress === "object"
+        ? (parsed.progress as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+    const result =
+      parsed.result && typeof parsed.result === "object"
+        ? (parsed.result as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+    const rawRows = Array.isArray(result.rows) ? result.rows : [];
+    const rows = rawRows.filter(
+      (value: unknown): value is AbpSettlementContractScanJobResultRow =>
+        Boolean(
+          value &&
+            typeof value === "object" &&
+            toNonEmptyString((value as Record<string, unknown>).csgId) &&
+            toNonEmptyString((value as Record<string, unknown>).systemPageUrl)
+        )
+    );
+
+    return {
+      id,
+      userId,
+      scanConfig: {
+        csgIds,
+        portalEmail,
+        portalBaseUrl: toNonEmptyString(scanConfig.portalBaseUrl),
+      },
+      createdAt,
+      updatedAt,
+      startedAt: toNonEmptyString(parsed.startedAt),
+      finishedAt: toNonEmptyString(parsed.finishedAt),
+      status,
+      progress: {
+        current:
+          typeof progress.current === "number" && Number.isFinite(progress.current)
+            ? Math.max(0, Math.floor(progress.current))
+            : 0,
+        total:
+          typeof progress.total === "number" && Number.isFinite(progress.total)
+            ? Math.max(1, Math.floor(progress.total))
+            : Math.max(1, csgIds.length),
+        percent:
+          typeof progress.percent === "number" && Number.isFinite(progress.percent)
+            ? clampPercent(progress.percent)
+            : 0,
+        message: toNonEmptyString(progress.message) ?? "Queued",
+        currentCsgId: toNonEmptyString(progress.currentCsgId),
+      },
+      error: toNonEmptyString(parsed.error),
+      result: {
+        rows,
+        successCount:
+          typeof result.successCount === "number" && Number.isFinite(result.successCount)
+            ? Math.max(0, Math.floor(result.successCount))
+            : rows.filter((row) => !row.error && row.scan).length,
+        failureCount:
+          typeof result.failureCount === "number" && Number.isFinite(result.failureCount)
+            ? Math.max(0, Math.floor(result.failureCount))
+            : rows.filter((row) => Boolean(row.error) || !row.scan).length,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function saveAbpSettlementScanJobSnapshot(job: AbpSettlementContractScanJob): Promise<void> {
+  const payload = JSON.stringify(job);
+  await writePayloadWithFallback({
+    userId: job.userId,
+    objectKey: getAbpSettlementScanJobObjectKey(job.userId, job.id),
+    dbStorageKey: getAbpSettlementScanJobDbKey(job.id),
+    payload,
+  });
+}
+
+async function loadAbpSettlementScanJobSnapshot(
+  userId: number,
+  jobId: string
+): Promise<AbpSettlementContractScanJob | null> {
+  const normalizedJobId = jobId.trim();
+  if (!normalizedJobId) return null;
+  const payload = await readPayloadWithFallback({
+    userId,
+    objectKey: getAbpSettlementScanJobObjectKey(userId, normalizedJobId),
+    dbStorageKey: getAbpSettlementScanJobDbKey(normalizedJobId),
+  });
+  const parsed = parseAbpSettlementScanJobSnapshot(payload);
+  if (!parsed || parsed.userId !== userId) return null;
+  return parsed;
+}
+
+async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
+  const normalizedJobId = jobId.trim();
+  if (!normalizedJobId || abpSettlementActiveScanRunners.has(normalizedJobId)) return;
+
+  const initialJob = abpSettlementJobs.get(normalizedJobId);
+  if (!initialJob) return;
+  if (initialJob.status === "completed" || initialJob.status === "failed") return;
+
+  abpSettlementActiveScanRunners.add(normalizedJobId);
+
+  const markJob = async (
+    updater: (job: AbpSettlementContractScanJob) => AbpSettlementContractScanJob,
+    options?: { persist?: boolean }
+  ): Promise<AbpSettlementContractScanJob | null> => {
+    const existingJob = abpSettlementJobs.get(normalizedJobId);
+    if (!existingJob) return null;
+    const nextJob = updater(existingJob);
+    abpSettlementJobs.set(normalizedJobId, nextJob);
+    if (options?.persist) {
+      try {
+        await saveAbpSettlementScanJobSnapshot(nextJob);
+      } catch {
+        // Best effort: keep in-memory job even if snapshot write fails.
+      }
+    }
+    return nextJob;
+  };
+
+  try {
+    const currentJob = abpSettlementJobs.get(normalizedJobId);
+    if (!currentJob) return;
+
+    const { getIntegrationByProvider } = await import("./db");
+    const integration = await getIntegrationByProvider(currentJob.userId, CSG_PORTAL_PROVIDER);
+    const metadata = parseCsgPortalMetadata(integration?.metadata);
+    const resolvedEmail = currentJob.scanConfig.portalEmail || metadata.email;
+    const resolvedPassword = toNonEmptyString(integration?.accessToken);
+    const resolvedBaseUrl = currentJob.scanConfig.portalBaseUrl ?? metadata.baseUrl;
+
+    if (!resolvedEmail || !resolvedPassword) {
+      await markJob(
+        (job) => ({
+          ...job,
+          status: "failed",
+          updatedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          error: "Missing CSG portal credentials. Save portal email/password and retry.",
+          progress: {
+            ...job.progress,
+            message: "Failed",
+            currentCsgId: null,
+          },
+        }),
+        { persist: true }
+      );
+      return;
+    }
+
+    await markJob(
+      (job) => ({
+        ...job,
+        status: "running",
+        startedAt: job.startedAt ?? new Date().toISOString(),
+        finishedAt: null,
+        updatedAt: new Date().toISOString(),
+        error: null,
+        progress: {
+          ...job.progress,
+          total: Math.max(1, job.scanConfig.csgIds.length),
+          message: "Logging into CSG portal...",
+        },
+      }),
+      { persist: true }
+    );
+
+    const { extractContractDataFromPdfBuffer } = await import("./services/contractScannerServer");
+    const { CsgPortalClient } = await import("./services/csgPortal");
+    const client = new CsgPortalClient({
+      email: resolvedEmail,
+      password: resolvedPassword,
+      baseUrl: resolvedBaseUrl ?? undefined,
+    });
+    await client.login();
+
+    const activeJob = abpSettlementJobs.get(normalizedJobId);
+    if (!activeJob) return;
+
+    const allIds = activeJob.scanConfig.csgIds;
+    const rows = [...activeJob.result.rows];
+    let successCount = Math.max(0, activeJob.result.successCount);
+    let failureCount = Math.max(0, activeJob.result.failureCount);
+    const processedIds = new Set(rows.map((row) => row.csgId));
+    const pendingIds = allIds.filter((id) => !processedIds.has(id));
+
+    for (let pendingIndex = 0; pendingIndex < pendingIds.length; pendingIndex += 1) {
+      const csgId = pendingIds[pendingIndex];
+      const currentCompleted = rows.length;
+
+      if (currentCompleted > 0 && currentCompleted % ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL === 0) {
+        await markJob((job) => ({
+          ...job,
+          updatedAt: new Date().toISOString(),
+          progress: {
+            current: currentCompleted,
+            total: allIds.length,
+            percent: normalizeProgressPercent(currentCompleted, allIds.length),
+            message: `Refreshing portal session before ${currentCompleted + 1} of ${allIds.length}...`,
+            currentCsgId: csgId,
+          },
+        }));
+        await client.login();
+      }
+
+      await markJob((job) => ({
+        ...job,
+        updatedAt: new Date().toISOString(),
+        progress: {
+          current: currentCompleted,
+          total: allIds.length,
+          percent: normalizeProgressPercent(currentCompleted, allIds.length),
+          message: `Fetching ${currentCompleted + 1} of ${allIds.length}`,
+          currentCsgId: csgId,
+        },
+      }));
+
+      let fetched = await client.fetchRecContractPdf(csgId);
+      const fetchError = (fetched.error ?? "").toLowerCase();
+      const shouldRetryAfterRefresh =
+        Boolean(fetchError) &&
+        (fetchError.includes("timed out") ||
+          fetchError.includes("session is not authenticated") ||
+          fetchError.includes("portal login"));
+
+      if (shouldRetryAfterRefresh) {
+        await markJob((job) => ({
+          ...job,
+          updatedAt: new Date().toISOString(),
+          progress: {
+            current: currentCompleted,
+            total: allIds.length,
+            percent: normalizeProgressPercent(currentCompleted, allIds.length),
+            message: `Retrying ${currentCompleted + 1} of ${allIds.length} after session refresh...`,
+            currentCsgId: csgId,
+          },
+        }));
+        try {
+          await client.login();
+        } catch {
+          // Keep original error if session refresh fails.
+        }
+        fetched = await client.fetchRecContractPdf(csgId);
+      }
+
+      let rowError = fetched.error;
+      let scan: AbpSettlementContractScanJobResultRow["scan"] = null;
+
+      if (!rowError && fetched.pdfData && fetched.pdfData.length > 0) {
+        try {
+          const extraction = await extractContractDataFromPdfBuffer(
+            fetched.pdfData,
+            fetched.pdfFileName ?? `contract-${csgId}.pdf`
+          );
+          scan = {
+            fileName: extraction.fileName,
+            ccAuthorizationCompleted: extraction.ccAuthorizationCompleted,
+            ccCardAsteriskCount: extraction.ccCardAsteriskCount,
+            additionalFivePercentSelected: extraction.additionalFivePercentSelected,
+            additionalCollateralPercent: extraction.additionalCollateralPercent,
+            vendorFeePercent: extraction.vendorFeePercent,
+            systemName: extraction.systemName,
+            paymentMethod: extraction.paymentMethod,
+            payeeName: extraction.payeeName,
+            mailingAddress1: extraction.mailingAddress1,
+            mailingAddress2: extraction.mailingAddress2,
+            cityStateZip: extraction.cityStateZip,
+            recQuantity: extraction.recQuantity,
+            recPrice: extraction.recPrice,
+            acSizeKw: extraction.acSizeKw,
+            dcSizeKw: extraction.dcSizeKw,
+          };
+        } catch (error) {
+          rowError = error instanceof Error ? error.message : "Failed to parse downloaded contract PDF.";
+        }
+      }
+
+      rows.push({
+        csgId,
+        systemPageUrl: fetched.systemPageUrl,
+        pdfUrl: fetched.pdfUrl,
+        pdfFileName: fetched.pdfFileName,
+        scan,
+        error: rowError,
+      });
+
+      if (rowError === null && scan) {
+        successCount += 1;
+      } else {
+        failureCount += 1;
+      }
+
+      const current = rows.length;
+      await markJob(
+        (job) => ({
+          ...job,
+          updatedAt: new Date().toISOString(),
+          result: {
+            rows: [...rows],
+            successCount,
+            failureCount,
+          },
+          progress: {
+            current,
+            total: allIds.length,
+            percent: normalizeProgressPercent(current, allIds.length),
+            message:
+              rowError === null
+                ? `Scanned ${current} of ${allIds.length}`
+                : `Processed ${current} of ${allIds.length} (with errors)`,
+            currentCsgId: csgId,
+          },
+        }),
+        { persist: true }
+      );
+    }
+
+    await markJob(
+      (job) => ({
+        ...job,
+        status: "completed",
+        updatedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        error: null,
+        result: {
+          rows: [...rows],
+          successCount,
+          failureCount,
+        },
+        progress: {
+          current: allIds.length,
+          total: allIds.length,
+          percent: 100,
+          message: "Completed",
+          currentCsgId: null,
+        },
+      }),
+      { persist: true }
+    );
+  } catch (error) {
+    await markJob(
+      (job) => ({
+        ...job,
+        status: "failed",
+        updatedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : "Unknown ABP settlement job error.",
+        progress: {
+          ...job.progress,
+          message: "Failed",
+          currentCsgId: null,
+        },
+      }),
+      { persist: true }
+    );
+  } finally {
+    abpSettlementActiveScanRunners.delete(normalizedJobId);
+  }
 }
 
 async function mapWithConcurrency<TInput, TOutput>(
@@ -2953,7 +3353,6 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { CsgPortalClient } = await import("./services/csgPortal");
 
         const existing = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
         const existingMetadata = parseCsgPortalMetadata(existing?.metadata);
@@ -2975,9 +3374,14 @@ export const appRouter = router({
         pruneAbpSettlementJobs(nowMs);
 
         const jobId = nanoid();
-        abpSettlementJobs.set(jobId, {
+        const job: AbpSettlementContractScanJob = {
           id: jobId,
           userId: ctx.user.id,
+          scanConfig: {
+            csgIds: uniqueIds,
+            portalEmail: resolvedEmail,
+            portalBaseUrl: resolvedBaseUrl ?? null,
+          },
           createdAt: nowIso,
           updatedAt: nowIso,
           startedAt: null,
@@ -2996,203 +3400,14 @@ export const appRouter = router({
             successCount: 0,
             failureCount: 0,
           },
-        });
-
-        void (async () => {
-          const markJob = (updater: (job: AbpSettlementContractScanJob) => AbpSettlementContractScanJob) => {
-            const existingJob = abpSettlementJobs.get(jobId);
-            if (!existingJob) return;
-            abpSettlementJobs.set(jobId, updater(existingJob));
-          };
-
-          markJob((job) => ({
-            ...job,
-            status: "running",
-            startedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            progress: {
-              ...job.progress,
-              message: "Logging into CSG portal...",
-            },
-          }));
-
-          try {
-            const { extractContractDataFromPdfBuffer } = await import("./services/contractScannerServer");
-            const client = new CsgPortalClient({
-              email: resolvedEmail,
-              password: resolvedPassword,
-              baseUrl: resolvedBaseUrl ?? undefined,
-            });
-            await client.login();
-
-            const rows: AbpSettlementContractScanJobResultRow[] = [];
-            let successCount = 0;
-            let failureCount = 0;
-
-            for (let index = 0; index < uniqueIds.length; index += 1) {
-              const csgId = uniqueIds[index];
-
-              if (index > 0 && index % ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL === 0) {
-                markJob((job) => ({
-                  ...job,
-                  updatedAt: new Date().toISOString(),
-                  progress: {
-                    current: index,
-                    total: uniqueIds.length,
-                    percent: normalizeProgressPercent(index, uniqueIds.length),
-                    message: `Refreshing portal session before ${index + 1} of ${uniqueIds.length}...`,
-                    currentCsgId: csgId,
-                  },
-                }));
-                await client.login();
-              }
-
-              const startedMessage = `Fetching ${index + 1} of ${uniqueIds.length}`;
-
-              markJob((job) => ({
-                ...job,
-                updatedAt: new Date().toISOString(),
-                progress: {
-                  current: index,
-                  total: uniqueIds.length,
-                  percent: normalizeProgressPercent(index, uniqueIds.length),
-                  message: startedMessage,
-                  currentCsgId: csgId,
-                },
-              }));
-
-              let fetched = await client.fetchRecContractPdf(csgId);
-              const fetchError = (fetched.error ?? "").toLowerCase();
-              const shouldRetryAfterRefresh =
-                Boolean(fetchError) &&
-                (fetchError.includes("timed out") ||
-                  fetchError.includes("session is not authenticated") ||
-                  fetchError.includes("portal login"));
-
-              if (shouldRetryAfterRefresh) {
-                markJob((job) => ({
-                  ...job,
-                  updatedAt: new Date().toISOString(),
-                  progress: {
-                    current: index,
-                    total: uniqueIds.length,
-                    percent: normalizeProgressPercent(index, uniqueIds.length),
-                    message: `Retrying ${index + 1} of ${uniqueIds.length} after session refresh...`,
-                    currentCsgId: csgId,
-                  },
-                }));
-                try {
-                  await client.login();
-                } catch {
-                  // Keep the original fetch error if session refresh fails.
-                }
-                fetched = await client.fetchRecContractPdf(csgId);
-              }
-              let rowError = fetched.error;
-              let scan: AbpSettlementContractScanJobResultRow["scan"] = null;
-
-              if (!rowError && fetched.pdfData && fetched.pdfData.length > 0) {
-                try {
-                  const extraction = await extractContractDataFromPdfBuffer(
-                    fetched.pdfData,
-                    fetched.pdfFileName ?? `contract-${csgId}.pdf`
-                  );
-                  scan = {
-                    fileName: extraction.fileName,
-                    ccAuthorizationCompleted: extraction.ccAuthorizationCompleted,
-                    ccCardAsteriskCount: extraction.ccCardAsteriskCount,
-                    additionalFivePercentSelected: extraction.additionalFivePercentSelected,
-                    additionalCollateralPercent: extraction.additionalCollateralPercent,
-                    vendorFeePercent: extraction.vendorFeePercent,
-                    systemName: extraction.systemName,
-                    paymentMethod: extraction.paymentMethod,
-                    payeeName: extraction.payeeName,
-                    mailingAddress1: extraction.mailingAddress1,
-                    mailingAddress2: extraction.mailingAddress2,
-                    cityStateZip: extraction.cityStateZip,
-                    recQuantity: extraction.recQuantity,
-                    recPrice: extraction.recPrice,
-                    acSizeKw: extraction.acSizeKw,
-                    dcSizeKw: extraction.dcSizeKw,
-                  };
-                } catch (error) {
-                  rowError =
-                    error instanceof Error ? error.message : "Failed to parse downloaded contract PDF.";
-                }
-              }
-
-              rows.push({
-                csgId,
-                systemPageUrl: fetched.systemPageUrl,
-                pdfUrl: fetched.pdfUrl,
-                pdfFileName: fetched.pdfFileName,
-                scan,
-                error: rowError,
-              });
-
-              if (rowError === null && scan) {
-                successCount += 1;
-              } else {
-                failureCount += 1;
-              }
-
-              const current = index + 1;
-              markJob((job) => ({
-                ...job,
-                updatedAt: new Date().toISOString(),
-                result: {
-                  rows: [...rows],
-                  successCount,
-                  failureCount,
-                },
-                progress: {
-                  current,
-                  total: uniqueIds.length,
-                  percent: normalizeProgressPercent(current, uniqueIds.length),
-                  message:
-                    rowError === null
-                      ? `Scanned ${current} of ${uniqueIds.length}`
-                      : `Processed ${current} of ${uniqueIds.length} (with errors)`,
-                  currentCsgId: csgId,
-                },
-              }));
-            }
-
-            markJob((job) => ({
-              ...job,
-              status: "completed",
-              updatedAt: new Date().toISOString(),
-              finishedAt: new Date().toISOString(),
-              error: null,
-              result: {
-                rows,
-                successCount,
-                failureCount,
-              },
-              progress: {
-                current: uniqueIds.length,
-                total: uniqueIds.length,
-                percent: 100,
-                message: "Completed",
-                currentCsgId: null,
-              },
-            }));
-          } catch (error) {
-            markJob((job) => ({
-              ...job,
-              status: "failed",
-              updatedAt: new Date().toISOString(),
-              finishedAt: new Date().toISOString(),
-              error: error instanceof Error ? error.message : "Unknown ABP settlement job error.",
-              result: job.result,
-              progress: {
-                ...job.progress,
-                message: "Failed",
-                currentCsgId: null,
-              },
-            }));
-          }
-        })();
+        };
+        abpSettlementJobs.set(jobId, job);
+        try {
+          await saveAbpSettlementScanJobSnapshot(job);
+        } catch {
+          // Best effort: continue even if snapshot write fails.
+        }
+        void runAbpSettlementContractScanJob(jobId);
 
         return {
           jobId,
@@ -3208,10 +3423,23 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         pruneAbpSettlementJobs(Date.now());
-        const job = abpSettlementJobs.get(input.jobId.trim());
+        const normalizedJobId = input.jobId.trim();
+        let job = abpSettlementJobs.get(normalizedJobId);
+        if (!job) {
+          const restored = await loadAbpSettlementScanJobSnapshot(ctx.user.id, normalizedJobId);
+          if (restored) {
+            abpSettlementJobs.set(normalizedJobId, restored);
+            job = restored;
+          }
+        }
         if (!job || job.userId !== ctx.user.id) {
           throw new Error("ABP settlement contract scan job not found.");
         }
+
+        if ((job.status === "queued" || job.status === "running") && !abpSettlementActiveScanRunners.has(job.id)) {
+          void runAbpSettlementContractScanJob(job.id);
+        }
+
         return job;
       }),
     cleanMailingData: protectedProcedure
