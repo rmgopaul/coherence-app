@@ -171,34 +171,63 @@ export class CsgPortalClient {
   }
 
   private async request(pathOrUrl: string, init?: RequestInit): Promise<RequestResult> {
-    const url = resolveUrl(this.baseUrl, pathOrUrl);
-    const headers = new Headers(init?.headers ?? {});
-    if (!headers.has("Accept")) {
-      headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    const maxRedirects = 10;
+    let currentUrl = resolveUrl(this.baseUrl, pathOrUrl);
+    let redirectCount = 0;
+    const useManualRedirects = (init?.redirect ?? "follow") === "follow";
+
+    while (true) {
+      const headers = new Headers(init?.headers ?? {});
+      if (!headers.has("Accept")) {
+        headers.set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+      }
+      if (!headers.has("User-Agent")) {
+        headers.set("User-Agent", "Mozilla/5.0 (Codex ABP Settlement Bot)");
+      }
+
+      const cookieHeader = this.buildCookieHeader();
+      if (cookieHeader) {
+        headers.set("Cookie", cookieHeader);
+      }
+
+      const response = await fetch(currentUrl, {
+        ...init,
+        headers,
+        redirect: "manual",
+      });
+
+      this.storeCookiesFromResponse(response);
+
+      // If caller wants manual redirect handling, or this isn't a redirect, return as-is
+      if (!useManualRedirects || !isRedirectStatus(response.status)) {
+        return {
+          status: response.status,
+          url: currentUrl,
+          text: await response.text(),
+          headers: response.headers,
+        };
+      }
+
+      // Follow redirect manually to preserve cookies
+      const location = clean(response.headers.get("location"));
+      if (!location) {
+        return {
+          status: response.status,
+          url: currentUrl,
+          text: await response.text(),
+          headers: response.headers,
+        };
+      }
+
+      redirectCount += 1;
+      if (redirectCount > maxRedirects) {
+        throw new Error(`Too many redirects (>${maxRedirects}) while requesting ${pathOrUrl}`);
+      }
+
+      currentUrl = resolveUrl(this.baseUrl, location);
+      // Follow redirects as GET
+      init = { ...init, method: "GET", body: undefined };
     }
-    if (!headers.has("User-Agent")) {
-      headers.set("User-Agent", "Mozilla/5.0 (Codex ABP Settlement Bot)");
-    }
-
-    const cookieHeader = this.buildCookieHeader();
-    if (cookieHeader) {
-      headers.set("Cookie", cookieHeader);
-    }
-
-    const response = await fetch(url, {
-      ...init,
-      headers,
-      redirect: init?.redirect ?? "follow",
-    });
-
-    this.storeCookiesFromResponse(response);
-
-    return {
-      status: response.status,
-      url: response.url,
-      text: await response.text(),
-      headers: response.headers,
-    };
   }
 
   private async requestBinary(pathOrUrl: string, init?: RequestInit): Promise<{
@@ -207,35 +236,61 @@ export class CsgPortalClient {
     data: Uint8Array;
     headers: Headers;
   }> {
-    const url = resolveUrl(this.baseUrl, pathOrUrl);
-    const headers = new Headers(init?.headers ?? {});
-    if (!headers.has("Accept")) {
-      headers.set("Accept", "application/pdf,*/*");
+    const maxRedirects = 10;
+    let currentUrl = resolveUrl(this.baseUrl, pathOrUrl);
+    let redirectCount = 0;
+
+    while (true) {
+      const headers = new Headers(init?.headers ?? {});
+      if (!headers.has("Accept")) {
+        headers.set("Accept", "application/pdf,*/*");
+      }
+      if (!headers.has("User-Agent")) {
+        headers.set("User-Agent", "Mozilla/5.0 (Codex ABP Settlement Bot)");
+      }
+
+      const cookieHeader = this.buildCookieHeader();
+      if (cookieHeader) {
+        headers.set("Cookie", cookieHeader);
+      }
+
+      const response = await fetch(currentUrl, {
+        ...init,
+        headers,
+        redirect: "manual",
+      });
+
+      this.storeCookiesFromResponse(response);
+
+      if (!isRedirectStatus(response.status)) {
+        const buffer = new Uint8Array(await response.arrayBuffer());
+        return {
+          status: response.status,
+          url: currentUrl,
+          data: buffer,
+          headers: response.headers,
+        };
+      }
+
+      const location = clean(response.headers.get("location"));
+      if (!location) {
+        const buffer = new Uint8Array(await response.arrayBuffer());
+        return {
+          status: response.status,
+          url: currentUrl,
+          data: buffer,
+          headers: response.headers,
+        };
+      }
+
+      redirectCount += 1;
+      if (redirectCount > maxRedirects) {
+        throw new Error(`Too many redirects (>${maxRedirects}) while requesting ${pathOrUrl}`);
+      }
+
+      currentUrl = resolveUrl(this.baseUrl, location);
+      init = { ...init, method: "GET", body: undefined };
     }
-    if (!headers.has("User-Agent")) {
-      headers.set("User-Agent", "Mozilla/5.0 (Codex ABP Settlement Bot)");
-    }
-
-    const cookieHeader = this.buildCookieHeader();
-    if (cookieHeader) {
-      headers.set("Cookie", cookieHeader);
-    }
-
-    const response = await fetch(url, {
-      ...init,
-      headers,
-      redirect: init?.redirect ?? "follow",
-    });
-
-    this.storeCookiesFromResponse(response);
-
-    const buffer = new Uint8Array(await response.arrayBuffer());
-    return {
-      status: response.status,
-      url: response.url,
-      data: buffer,
-      headers: response.headers,
-    };
   }
 
   async login(): Promise<void> {
