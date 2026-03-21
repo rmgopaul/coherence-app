@@ -27,6 +27,8 @@ type BinaryRequestResult = {
   headers: Headers;
 };
 
+const CSG_PORTAL_REQUEST_TIMEOUT_MS = 45_000;
+
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
   return String(value).trim();
@@ -256,6 +258,45 @@ export class CsgPortalClient {
     });
   }
 
+  private async fetchWithTimeout(
+    currentUrl: string,
+    init: RequestInit,
+    requestLabel: string
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, CSG_PORTAL_REQUEST_TIMEOUT_MS);
+
+    const upstreamSignal = init.signal;
+    if (upstreamSignal) {
+      if (upstreamSignal.aborted) {
+        controller.abort();
+      } else {
+        upstreamSignal.addEventListener("abort", () => controller.abort(), { once: true });
+      }
+    }
+
+    try {
+      return await fetch(currentUrl, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (
+        (error instanceof Error && error.name === "AbortError") ||
+        String(error).toLowerCase().includes("aborted")
+      ) {
+        throw new Error(
+          `Portal request timed out after ${Math.round(CSG_PORTAL_REQUEST_TIMEOUT_MS / 1000)}s while requesting ${requestLabel}.`
+        );
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
   private async request(pathOrUrl: string, init?: RequestInit): Promise<RequestResult> {
     const maxRedirects = 10;
     let currentUrl = resolveUrl(this.baseUrl, pathOrUrl);
@@ -276,11 +317,15 @@ export class CsgPortalClient {
         headers.set("Cookie", cookieHeader);
       }
 
-      const response = await fetch(currentUrl, {
-        ...init,
-        headers,
-        redirect: "manual",
-      });
+      const response = await this.fetchWithTimeout(
+        currentUrl,
+        {
+          ...init,
+          headers,
+          redirect: "manual",
+        },
+        pathOrUrl
+      );
 
       this.storeCookiesFromResponse(response);
 
@@ -335,11 +380,15 @@ export class CsgPortalClient {
         headers.set("Cookie", cookieHeader);
       }
 
-      const response = await fetch(currentUrl, {
-        ...init,
-        headers,
-        redirect: "manual",
-      });
+      const response = await this.fetchWithTimeout(
+        currentUrl,
+        {
+          ...init,
+          headers,
+          redirect: "manual",
+        },
+        pathOrUrl
+      );
 
       this.storeCookiesFromResponse(response);
 

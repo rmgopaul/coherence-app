@@ -332,6 +332,7 @@ type AbpSettlementSavedRun = {
 };
 
 const ABP_SETTLEMENT_JOB_TTL_MS = 24 * 60 * 60 * 1000;
+const ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL = 40;
 const abpSettlementJobs = new Map<string, AbpSettlementContractScanJob>();
 const ABP_SETTLEMENT_RUNS_INDEX_DB_KEY = "abpSettlement:runs-index";
 
@@ -2808,6 +2809,22 @@ export const appRouter = router({
 
             for (let index = 0; index < uniqueIds.length; index += 1) {
               const csgId = uniqueIds[index];
+
+              if (index > 0 && index % ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL === 0) {
+                markJob((job) => ({
+                  ...job,
+                  updatedAt: new Date().toISOString(),
+                  progress: {
+                    current: index,
+                    total: uniqueIds.length,
+                    percent: normalizeProgressPercent(index, uniqueIds.length),
+                    message: `Refreshing portal session before ${index + 1} of ${uniqueIds.length}...`,
+                    currentCsgId: csgId,
+                  },
+                }));
+                await client.login();
+              }
+
               const startedMessage = `Fetching ${index + 1} of ${uniqueIds.length}`;
 
               markJob((job) => ({
@@ -2822,7 +2839,33 @@ export const appRouter = router({
                 },
               }));
 
-              const fetched = await client.fetchRecContractPdf(csgId);
+              let fetched = await client.fetchRecContractPdf(csgId);
+              const fetchError = (fetched.error ?? "").toLowerCase();
+              const shouldRetryAfterRefresh =
+                Boolean(fetchError) &&
+                (fetchError.includes("timed out") ||
+                  fetchError.includes("session is not authenticated") ||
+                  fetchError.includes("portal login"));
+
+              if (shouldRetryAfterRefresh) {
+                markJob((job) => ({
+                  ...job,
+                  updatedAt: new Date().toISOString(),
+                  progress: {
+                    current: index,
+                    total: uniqueIds.length,
+                    percent: normalizeProgressPercent(index, uniqueIds.length),
+                    message: `Retrying ${index + 1} of ${uniqueIds.length} after session refresh...`,
+                    currentCsgId: csgId,
+                  },
+                }));
+                try {
+                  await client.login();
+                } catch {
+                  // Keep the original fetch error if session refresh fails.
+                }
+                fetched = await client.fetchRecContractPdf(csgId);
+              }
               let rowError = fetched.error;
               let scan: AbpSettlementContractScanJobResultRow["scan"] = null;
 
