@@ -530,37 +530,46 @@ const DATASET_DEFINITIONS: Record<
     label: "ABP Utility Invoice Rows",
     description:
       "Linked ABP settlement upload. Shared with ABP Monthly Invoice Settlement so both pages show the same utility invoice rows.",
-    requiredHeaderSets: [["systemId", "paymentNumber", "recQuantity", "recPrice", "invoiceAmount"]],
+    requiredHeaderSets: [
+      ["systemId", "paymentNumber", "recQuantity", "recPrice", "invoiceAmount"],
+      ["System ID", "Payment Number", "Total RECS", "REC Price", "Invoice Amount ($)"],
+    ],
   },
   abpCsgSystemMapping: {
     label: "ABP CSG-System Mapping",
     description:
       "Linked ABP settlement mapping upload (CSG ID to System ID). Shared with ABP Monthly Invoice Settlement.",
-    requiredHeaderSets: [["csgId", "systemId"]],
+    requiredHeaderSets: [["csgId", "systemId"], ["CSG ID", "System ID"]],
   },
   abpQuickBooksRows: {
     label: "ABP QuickBooks Rows",
     description:
       "Linked ABP settlement QuickBooks detail rows. Shared with ABP Monthly Invoice Settlement.",
-    requiredHeaderSets: [["invoiceNumber", "lineAmount", "description"]],
+    requiredHeaderSets: [
+      ["invoiceNumber", "lineAmount", "description"],
+      ["Date", "Num", "Customer", "Product/service description"],
+    ],
   },
   abpProjectApplicationRows: {
     label: "ABP ProjectApplication Rows",
     description:
       "Linked ABP settlement ProjectApplication rows. Shared with ABP Monthly Invoice Settlement.",
-    requiredHeaderSets: [["applicationId", "inverterSizeKwAcPart1"]],
+    requiredHeaderSets: [
+      ["applicationId", "inverterSizeKwAcPart1"],
+      ["Application_ID", "Inverter_Size_kW_AC_Part_1"],
+    ],
   },
   abpPortalInvoiceMapRows: {
     label: "ABP Portal Invoice Map Rows",
     description:
       "Linked ABP settlement portal invoice map (CSG ID to invoice number). Shared with ABP Monthly Invoice Settlement.",
-    requiredHeaderSets: [["csgId", "invoiceNumber"]],
+    requiredHeaderSets: [["csgId", "invoiceNumber"], ["CSG ID", "Invoice Number"]],
   },
   abpCsgPortalDatabaseRows: {
     label: "ABP CSG Portal Database Rows",
     description:
       "Linked ABP settlement CSG portal database rows for installer/company attributes and collateral reimbursement flags.",
-    requiredHeaderSets: [["systemId", "installerName"]],
+    requiredHeaderSets: [["systemId", "installerName"], ["System ID", "Installer"]],
   },
 };
 

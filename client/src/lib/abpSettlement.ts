@@ -39,6 +39,9 @@ export type CsgPortalDatabaseRow = {
   csgId: string | null;
   installerName: string | null;
   partnerCompanyName: string | null;
+  customerEmail: string | null;
+  customerAltEmail: string | null;
+  systemAddress: string | null;
   collateralReimbursedToPartner: boolean | null;
 };
 
@@ -203,6 +206,9 @@ export type PaymentComputationRow = {
   zip: string;
   installerName: string;
   partnerCompanyName: string;
+  customerEmail: string;
+  customerAltEmail: string;
+  systemAddress: string;
   appliedInstallerRuleName: string;
   withholdingBalanceSeededForSystem: number;
   carryforwardIn: number;
@@ -615,6 +621,23 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     findHeaderByKeywords(parsed.headers, ["developer"]) ??
     null;
 
+  const customerEmailHeader =
+    findHeaderByKeywords(parsed.headers, ["customer", "email"]) ??
+    findHeaderByKeywords(parsed.headers, ["email"]) ??
+    null;
+
+  const customerAltEmailHeader =
+    findHeaderByKeywords(parsed.headers, ["alternate", "email"]) ??
+    findHeaderByKeywords(parsed.headers, ["alt", "email"]) ??
+    findHeaderByKeywords(parsed.headers, ["secondary", "email"]) ??
+    null;
+
+  const systemAddressHeader =
+    findHeaderByKeywords(parsed.headers, ["system", "address"]) ??
+    findHeaderByKeywords(parsed.headers, ["site", "address"]) ??
+    findHeaderByKeywords(parsed.headers, ["address"]) ??
+    null;
+
   const collateralReimbursedHeader =
     findHeaderByKeywords(parsed.headers, ["collateral", "reimburs"]) ??
     findHeaderByKeywords(parsed.headers, ["reimburs"]) ??
@@ -635,6 +658,9 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
         csgId: csgHeader ? clean(row[csgHeader]) || null : null,
         installerName: installerHeader ? clean(row[installerHeader]) || null : null,
         partnerCompanyName: partnerHeader ? clean(row[partnerHeader]) || null : null,
+        customerEmail: customerEmailHeader ? clean(row[customerEmailHeader]) || null : null,
+        customerAltEmail: customerAltEmailHeader ? clean(row[customerAltEmailHeader]) || null : null,
+        systemAddress: systemAddressHeader ? clean(row[systemAddressHeader]) || null : null,
         collateralReimbursedToPartner: collateralReimbursedHeader
           ? parseBooleanLike(row[collateralReimbursedHeader])
           : null,
@@ -1123,6 +1149,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const appliedInstallerRule = findInstallerRuleForSystem(csgPortalSystemRow, installerRules);
       const installerName = clean(csgPortalSystemRow?.installerName);
       const partnerCompanyName = clean(csgPortalSystemRow?.partnerCompanyName);
+      const customerEmail = clean(csgPortalSystemRow?.customerEmail);
+      const customerAltEmail = clean(csgPortalSystemRow?.customerAltEmail);
+      const systemAddressFromPortal = clean(csgPortalSystemRow?.systemAddress);
 
       const paidApplicationFee = safeMoney(ledger?.applicationFeePaidUpfront);
       const paidUtilityCollateral = safeMoney(ledger?.utilityCollateralPaidUpfront);
@@ -1303,6 +1332,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           zip,
           installerName,
           partnerCompanyName,
+          customerEmail,
+          customerAltEmail,
+          systemAddress: systemAddressFromPortal || clean(row.systemAddress),
           appliedInstallerRuleName: clean(appliedInstallerRule?.name),
           withholdingBalanceSeededForSystem: seededWithholdingThisRow,
           carryforwardIn,
@@ -1374,6 +1406,9 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Zip",
     "Installer Name",
     "Partner Company Name",
+    "Customer Email",
+    "Customer Alt Email",
+    "System Address",
     "Applied Installer Rule",
     "Carryforward In",
     "Carryforward Recovered This Row",
@@ -1422,6 +1457,9 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.zip,
       row.installerName,
       row.partnerCompanyName,
+      row.customerEmail,
+      row.customerAltEmail,
+      row.systemAddress,
       row.appliedInstallerRuleName,
       row.carryforwardIn.toFixed(2),
       row.carryforwardRecoveredThisRow.toFixed(2),

@@ -217,13 +217,25 @@ describe("ABP parser coverage", () => {
 
   it("parses CSG portal database rows with installer and reimbursement flag", () => {
     const rows = parseCsgPortalDatabase({
-      headers: ["System ID", "CSG ID", "Installer Company", "Partner Company", "Collateral Reimbursed"],
+      headers: [
+        "System ID",
+        "CSG ID",
+        "Installer Company",
+        "Partner Company",
+        "Customer Email",
+        "Alt Email",
+        "System Address",
+        "Collateral Reimbursed",
+      ],
       rows: [
         {
           "System ID": "1001",
           "CSG ID": "2001",
           "Installer Company": "ADT Solar",
           "Partner Company": "Partner Alpha",
+          "Customer Email": "customer@example.com",
+          "Alt Email": "customer+alt@example.com",
+          "System Address": "123 Main St",
           "Collateral Reimbursed": "Yes",
         },
       ],
@@ -233,6 +245,9 @@ describe("ABP parser coverage", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].systemId).toBe("1001");
     expect(rows[0].installerName).toBe("ADT Solar");
+    expect(rows[0].customerEmail).toBe("customer@example.com");
+    expect(rows[0].customerAltEmail).toBe("customer+alt@example.com");
+    expect(rows[0].systemAddress).toBe("123 Main St");
     expect(rows[0].collateralReimbursedToPartner).toBe(true);
   });
 });
@@ -374,6 +389,9 @@ describe("ABP formula and carryforward", () => {
           csgId: "2001",
           installerName: "ADT Solar",
           partnerCompanyName: "PartnerCo",
+          customerEmail: null,
+          customerAltEmail: null,
+          systemAddress: null,
           collateralReimbursedToPartner: null,
         },
       ],

@@ -420,6 +420,42 @@ function parseNumericCell(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseBooleanText(value: unknown): boolean | null {
+  const normalized = clean(value).toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "y" ||
+    normalized === "1" ||
+    normalized.includes("reimburs") ||
+    normalized.includes("returned")
+  ) {
+    return true;
+  }
+  if (normalized === "false" || normalized === "no" || normalized === "n" || normalized === "0") {
+    return false;
+  }
+  return null;
+}
+
+function normalizeAlias(value: string): string {
+  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function getRowValueByAliases(row: Record<string, string>, aliases: string[]): string {
+  if (!row || typeof row !== "object") return "";
+  const entries = Object.entries(row);
+  for (const alias of aliases) {
+    const target = normalizeAlias(alias);
+    const found = entries.find(([key]) => normalizeAlias(key) === target);
+    if (!found) continue;
+    const value = clean(found[1]);
+    if (value) return value;
+  }
+  return "";
+}
+
 function utilityRowsToLinkedRows(rows: UtilityInvoiceRow[]): Array<Record<string, unknown>> {
   return rows.map((row) => ({
     rowId: row.rowId,
@@ -439,22 +475,24 @@ function utilityRowsToLinkedRows(rows: UtilityInvoiceRow[]): Array<Record<string
 function linkedRowsToUtilityRows(rows: Array<Record<string, string>>, fallbackFileName: string): UtilityInvoiceRow[] {
   return rows
     .map((row, index) => {
-      const systemId = clean(row.systemId);
+      const systemId = getRowValueByAliases(row, ["systemId", "System ID", "state_certification_number"]);
       if (!systemId) return null;
-      const sourceFile = clean(row.sourceFile) || fallbackFileName;
-      const rowId = clean(row.rowId) || `${sourceFile}:${index + 2}:${systemId}`;
+      const sourceFile = getRowValueByAliases(row, ["sourceFile", "Source File"]) || fallbackFileName;
+      const rowId = getRowValueByAliases(row, ["rowId", "Row ID"]) || `${sourceFile}:${index + 2}:${systemId}`;
       return {
         rowId,
         sourceFile,
-        sourceSheet: clean(row.sourceSheet) || "linked",
-        contractId: clean(row.contractId) || null,
-        utilityName: clean(row.utilityName) || null,
+        sourceSheet: getRowValueByAliases(row, ["sourceSheet", "Source Sheet"]) || "linked",
+        contractId: getRowValueByAliases(row, ["contractId", "Contract ID"]) || null,
+        utilityName: getRowValueByAliases(row, ["utilityName", "Utility"]) || null,
         systemId,
-        paymentNumber: parseNumericCell(row.paymentNumber),
-        recQuantity: parseNumericCell(row.recQuantity),
-        recPrice: parseNumericCell(row.recPrice),
-        invoiceAmount: parseNumericCell(row.invoiceAmount),
-        systemAddress: clean(row.systemAddress),
+        paymentNumber: parseNumericCell(getRowValueByAliases(row, ["paymentNumber", "Payment Number"])),
+        recQuantity: parseNumericCell(getRowValueByAliases(row, ["recQuantity", "Total RECS", "REC Quantity"])),
+        recPrice: parseNumericCell(getRowValueByAliases(row, ["recPrice", "REC Price"])),
+        invoiceAmount: parseNumericCell(
+          getRowValueByAliases(row, ["invoiceAmount", "Invoice Amount", "Invoice Amount ($)"])
+        ),
+        systemAddress: getRowValueByAliases(row, ["systemAddress", "System Address"]),
       } satisfies UtilityInvoiceRow;
     })
     .filter((row): row is UtilityInvoiceRow => Boolean(row));
@@ -493,40 +531,59 @@ function linkedRowsToQuickBooksInvoices(rows: Array<Record<string, string>>): Ma
   const grouped = new Map<string, QuickBooksInvoice>();
 
   rows.forEach((row) => {
-    const invoiceNumber = clean(row.invoiceNumber);
+    const invoiceNumber = getRowValueByAliases(row, ["invoiceNumber", "Num", "Invoice Number", "Invoice #"]);
     if (!invoiceNumber) return;
 
     const existing =
       grouped.get(invoiceNumber) ??
       ({
         invoiceNumber,
-        amount: parseNumericCell(row.amount),
-        openBalance: parseNumericCell(row.openBalance),
-        cashReceived: parseNumericCell(row.cashReceived),
-        paymentStatus: clean(row.paymentStatus),
-        voided: clean(row.voided),
-        customer: clean(row.customer) || "Unknown",
-        date: clean(row.date) ? new Date(clean(row.date)) : null,
+        amount: parseNumericCell(getRowValueByAliases(row, ["amount", "Amount", "Total"])),
+        openBalance: parseNumericCell(getRowValueByAliases(row, ["openBalance", "Open balance", "Open Balance"])),
+        cashReceived: parseNumericCell(getRowValueByAliases(row, ["cashReceived", "Cash Received"])),
+        paymentStatus: getRowValueByAliases(row, ["paymentStatus", "Payment status", "Payment Status"]),
+        voided: getRowValueByAliases(row, ["voided", "Voided"]),
+        customer: getRowValueByAliases(row, ["customer", "Customer", "Customer full name", "Customer Full Name"]) || "Unknown",
+        date: getRowValueByAliases(row, ["date", "Date"])
+          ? new Date(getRowValueByAliases(row, ["date", "Date"]))
+          : null,
         lineItems: [],
       } satisfies QuickBooksInvoice);
 
-    if (existing.amount === null) existing.amount = parseNumericCell(row.amount);
-    if (existing.openBalance === null) existing.openBalance = parseNumericCell(row.openBalance);
-    if (existing.cashReceived === null) existing.cashReceived = parseNumericCell(row.cashReceived);
-    if (!existing.paymentStatus) existing.paymentStatus = clean(row.paymentStatus);
-    if (!existing.voided) existing.voided = clean(row.voided);
-    if (!existing.customer) existing.customer = clean(row.customer) || "Unknown";
-    if (!existing.date && clean(row.date)) {
-      const parsedDate = new Date(clean(row.date));
+    if (existing.amount === null) {
+      existing.amount = parseNumericCell(getRowValueByAliases(row, ["amount", "Amount", "Total"]));
+    }
+    if (existing.openBalance === null) {
+      existing.openBalance = parseNumericCell(getRowValueByAliases(row, ["openBalance", "Open balance", "Open Balance"]));
+    }
+    if (existing.cashReceived === null) {
+      existing.cashReceived = parseNumericCell(getRowValueByAliases(row, ["cashReceived", "Cash Received"]));
+    }
+    if (!existing.paymentStatus) {
+      existing.paymentStatus = getRowValueByAliases(row, ["paymentStatus", "Payment status", "Payment Status"]);
+    }
+    if (!existing.voided) {
+      existing.voided = getRowValueByAliases(row, ["voided", "Voided"]);
+    }
+    if (!existing.customer) {
+      existing.customer =
+        getRowValueByAliases(row, ["customer", "Customer", "Customer full name", "Customer Full Name"]) ||
+        "Unknown";
+    }
+    const rowDate = getRowValueByAliases(row, ["date", "Date"]);
+    if (!existing.date && rowDate) {
+      const parsedDate = new Date(rowDate);
       existing.date = Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
     }
 
-    const description = clean(row.description);
-    const productService = clean(row.productService);
-    const lineAmount = parseNumericCell(row.lineAmount);
+    const description = getRowValueByAliases(row, ["description", "Product/service description", "Description"]);
+    const productService = getRowValueByAliases(row, ["productService", "Product/Service", "Product Service"]);
+    const lineAmount = parseNumericCell(
+      getRowValueByAliases(row, ["lineAmount", "Product/service amount line", "Line Amount"])
+    );
     if (description || productService || lineAmount !== null) {
       existing.lineItems.push({
-        lineOrder: parseNumericCell(row.lineOrder),
+        lineOrder: parseNumericCell(getRowValueByAliases(row, ["lineOrder", "Line order", "Line Order"])),
         description,
         productService,
         amount: lineAmount,
@@ -881,8 +938,8 @@ export default function AbpInvoiceSettlement() {
           if (slot === "csgSystemMapping" && hydratedCsgSystemMappings.length === 0) {
             hydratedCsgSystemMappings = parsed.rows
               .map((row) => ({
-                csgId: clean(row.csgId),
-                systemId: clean(row.systemId),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]),
+                systemId: getRowValueByAliases(row, ["systemId", "System ID", "state_certification_number"]),
               }))
               .filter((row) => row.csgId && row.systemId);
             if (hydratedCsgSystemMappings.length > 0) {
@@ -900,12 +957,24 @@ export default function AbpInvoiceSettlement() {
           if (slot === "projectApplications" && hydratedProjectApplications.length === 0) {
             hydratedProjectApplications = parsed.rows
               .map((row) => ({
-                applicationId: clean(row.applicationId),
-                part1SubmissionDate: clean(row.part1SubmissionDate) ? new Date(clean(row.part1SubmissionDate)) : null,
-                part1OriginalSubmissionDate: clean(row.part1OriginalSubmissionDate)
-                  ? new Date(clean(row.part1OriginalSubmissionDate))
+                applicationId: getRowValueByAliases(row, ["applicationId", "Application_ID"]),
+                part1SubmissionDate: getRowValueByAliases(row, ["part1SubmissionDate", "Part_1_Submission_Date"])
+                  ? new Date(getRowValueByAliases(row, ["part1SubmissionDate", "Part_1_Submission_Date"]))
                   : null,
-                inverterSizeKwAcPart1: parseNumericCell(row.inverterSizeKwAcPart1),
+                part1OriginalSubmissionDate: getRowValueByAliases(
+                  row,
+                  ["part1OriginalSubmissionDate", "Part_1_Original_Submission_Date"]
+                )
+                  ? new Date(
+                      getRowValueByAliases(
+                        row,
+                        ["part1OriginalSubmissionDate", "Part_1_Original_Submission_Date"]
+                      )
+                    )
+                  : null,
+                inverterSizeKwAcPart1: parseNumericCell(
+                  getRowValueByAliases(row, ["inverterSizeKwAcPart1", "Inverter_Size_kW_AC_Part_1"])
+                ),
               }))
               .filter((row) => row.applicationId);
             if (hydratedProjectApplications.length > 0) {
@@ -916,8 +985,8 @@ export default function AbpInvoiceSettlement() {
           if (slot === "portalInvoiceMap" && hydratedInvoiceNumberMapRows.length === 0) {
             hydratedInvoiceNumberMapRows = parsed.rows
               .map((row) => ({
-                csgId: clean(row.csgId),
-                invoiceNumber: clean(row.invoiceNumber),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]),
+                invoiceNumber: getRowValueByAliases(row, ["invoiceNumber", "Invoice Number", "Num"]),
               }))
               .filter((row) => row.csgId && row.invoiceNumber);
             if (hydratedInvoiceNumberMapRows.length > 0) {
@@ -928,16 +997,26 @@ export default function AbpInvoiceSettlement() {
           if (slot === "csgPortalDatabase" && hydratedCsgPortalDatabaseRows.length === 0) {
             hydratedCsgPortalDatabaseRows = parsed.rows
               .map((row) => ({
-                systemId: clean(row.systemId),
-                csgId: clean(row.csgId) || null,
-                installerName: clean(row.installerName) || null,
-                partnerCompanyName: clean(row.partnerCompanyName) || null,
-                collateralReimbursedToPartner:
-                  clean(row.collateralReimbursedToPartner).toLowerCase() === "true"
-                    ? true
-                    : clean(row.collateralReimbursedToPartner).toLowerCase() === "false"
-                      ? false
-                      : null,
+                systemId: getRowValueByAliases(
+                  row,
+                  ["systemId", "System ID", "state_certification_number", "Application_ID"]
+                ),
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]) || null,
+                installerName: getRowValueByAliases(row, ["installerName", "Installer", "Installer Company"]) || null,
+                partnerCompanyName:
+                  getRowValueByAliases(row, ["partnerCompanyName", "Partner Company", "Developer"]) || null,
+                customerEmail:
+                  getRowValueByAliases(row, ["customerEmail", "Customer Email", "Email"]) || null,
+                customerAltEmail:
+                  getRowValueByAliases(
+                    row,
+                    ["customerAltEmail", "Customer Alt Email", "Alternate Email", "Alt Email", "Secondary Email"]
+                  ) || null,
+                systemAddress:
+                  getRowValueByAliases(row, ["systemAddress", "System Address", "Site Address", "Address"]) || null,
+                collateralReimbursedToPartner: parseBooleanText(
+                  getRowValueByAliases(row, ["collateralReimbursedToPartner", "Collateral Reimbursed"])
+                ),
               }))
               .filter((row) => row.systemId);
             if (hydratedCsgPortalDatabaseRows.length > 0) {
@@ -1222,6 +1301,9 @@ export default function AbpInvoiceSettlement() {
                 "csgId",
                 "installerName",
                 "partnerCompanyName",
+                "customerEmail",
+                "customerAltEmail",
+                "systemAddress",
                 "collateralReimbursedToPartner",
               ],
               rows: csgPortalDatabaseRows.map((row) => ({
@@ -1229,6 +1311,9 @@ export default function AbpInvoiceSettlement() {
                 csgId: row.csgId ?? "",
                 installerName: row.installerName ?? "",
                 partnerCompanyName: row.partnerCompanyName ?? "",
+                customerEmail: row.customerEmail ?? "",
+                customerAltEmail: row.customerAltEmail ?? "",
+                systemAddress: row.systemAddress ?? "",
                 collateralReimbursedToPartner:
                   row.collateralReimbursedToPartner === null ? "" : String(row.collateralReimbursedToPartner),
               })),
@@ -2663,6 +2748,9 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>Zip</TableHead>
                         <TableHead>Installer Name</TableHead>
                         <TableHead>Partner Company Name</TableHead>
+                        <TableHead>Customer Email</TableHead>
+                        <TableHead>Customer Alt Email</TableHead>
+                        <TableHead>System Address</TableHead>
                         <TableHead>Applied Installer Rule</TableHead>
                         <TableHead>Classification</TableHead>
                         <TableHead>Carryforward In</TableHead>
@@ -2711,6 +2799,9 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.zip}</TableCell>
                             <TableCell>{row.installerName}</TableCell>
                             <TableCell>{row.partnerCompanyName}</TableCell>
+                            <TableCell>{row.customerEmail}</TableCell>
+                            <TableCell>{row.customerAltEmail}</TableCell>
+                            <TableCell>{row.systemAddress}</TableCell>
                             <TableCell>{row.appliedInstallerRuleName}</TableCell>
                             <TableCell>{row.classification}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardIn)}</TableCell>
