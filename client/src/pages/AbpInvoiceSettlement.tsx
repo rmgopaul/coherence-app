@@ -20,6 +20,7 @@ import {
   parseCsgSystemMapping,
   parseCsgPortalDatabase,
   parseInvoiceNumberMap,
+  parsePaymentsReport,
   parsePayeeMailingUpdateRequests,
   parseProjectApplications,
   parseQuickBooksDetailedReport,
@@ -32,6 +33,7 @@ import {
   type PaymentClassification,
   type PaymentComputationRow,
   type PayeeMailingUpdateRow,
+  type PaymentsReportRow,
   type ProjectApplicationLiteRow,
   type QuickBooksInvoice,
   type UtilityInvoiceRow,
@@ -58,6 +60,7 @@ type RunInputs = {
   utilityInvoiceFiles: string[];
   csgSystemMappingFile: string | null;
   quickBooksFile: string | null;
+  paymentsReportFile: string | null;
   projectApplicationFile: string | null;
   portalInvoiceMapFile: string | null;
   csgPortalDatabaseFile: string | null;
@@ -109,6 +112,10 @@ type PersistedQuickBooksInvoice = Omit<QuickBooksInvoice, "date"> & {
   date: string | null;
 };
 
+type PersistedPaymentsReportRow = Omit<PaymentsReportRow, "paymentDate"> & {
+  paymentDate: string | null;
+};
+
 type PersistedPayeeUpdateRow = Omit<PayeeMailingUpdateRow, "requestDate"> & {
   requestDate: string | null;
 };
@@ -123,6 +130,7 @@ type SavedRunPayload = {
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
+  paymentsReportRows: PersistedPaymentsReportRow[];
   payeeUpdateRows: PersistedPayeeUpdateRow[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   invoiceMapHeaderSelection?: InvoiceMapHeaderSelectionState;
@@ -154,6 +162,7 @@ type PersistedUploadStatePayload = {
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: PersistedProjectApplicationRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
+  paymentsReportRows: PersistedPaymentsReportRow[];
   payeeUpdateRows: PersistedPayeeUpdateRow[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
@@ -762,6 +771,52 @@ function deserializeQuickBooksInvoices(invoices: PersistedQuickBooksInvoice[]): 
   return map;
 }
 
+function normalizePaymentsReportRows(rows: unknown[]): PersistedPaymentsReportRow[] {
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const source = row as Record<string, unknown>;
+      const rowId = clean(source.rowId);
+      if (!rowId) return null;
+      const sourceRowNumber = parseNumericCell(source.sourceRowNumber);
+      return {
+        rowId,
+        sourceRowNumber:
+          sourceRowNumber !== null && Number.isFinite(sourceRowNumber)
+            ? Math.max(1, Math.floor(sourceRowNumber))
+            : 1,
+        systemId: clean(source.systemId),
+        csgId: clean(source.csgId),
+        paymentNumber: parseNumericCell(source.paymentNumber),
+        paymentType: clean(source.paymentType),
+        paymentDate: clean(source.paymentDate) || null,
+        amount: parseNumericCell(source.amount),
+        appliesToContract:
+          source.appliesToContract === true || source.appliesToContract === "true"
+            ? true
+            : source.appliesToContract === false || source.appliesToContract === "false"
+              ? false
+              : null,
+      } satisfies PersistedPaymentsReportRow;
+    })
+    .filter((row): row is PersistedPaymentsReportRow => Boolean(row));
+}
+
+function serializePaymentsReportRows(rows: PaymentsReportRow[]): PersistedPaymentsReportRow[] {
+  return rows.map((row) => ({
+    ...row,
+    paymentDate: row.paymentDate ? row.paymentDate.toISOString() : null,
+  }));
+}
+
+function deserializePaymentsReportRows(rows: PersistedPaymentsReportRow[]): PaymentsReportRow[] {
+  return rows.map((row) => ({
+    ...row,
+    paymentDate: row.paymentDate ? new Date(row.paymentDate) : null,
+  }));
+}
+
 function normalizePayeeUpdateRows(rows: unknown[]): PersistedPayeeUpdateRow[] {
   if (!Array.isArray(rows)) return [];
   return rows
@@ -815,6 +870,7 @@ function buildPersistedUploadStatePayload(input: {
   csgSystemMappings: CsgSystemIdMappingRow[];
   projectApplications: ProjectApplicationLiteRow[];
   quickBooksByInvoice: Map<string, QuickBooksInvoice>;
+  paymentsReportRows: PaymentsReportRow[];
   payeeUpdateRows: PayeeMailingUpdateRow[];
   invoiceNumberMapRows: InvoiceNumberMapRow[];
   csgPortalDatabaseRows: CsgPortalDatabaseRow[];
@@ -830,6 +886,7 @@ function buildPersistedUploadStatePayload(input: {
     csgSystemMappings: input.csgSystemMappings,
     projectApplications: serializeProjectApplications(input.projectApplications),
     quickBooksInvoices: serializeQuickBooksInvoices(input.quickBooksByInvoice),
+    paymentsReportRows: serializePaymentsReportRows(input.paymentsReportRows),
     payeeUpdateRows: serializePayeeUpdateRows(input.payeeUpdateRows),
     invoiceNumberMapRows: normalizeInvoiceNumberMapRows(input.invoiceNumberMapRows),
     csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(input.csgPortalDatabaseRows),
@@ -854,6 +911,7 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
         : [],
       csgSystemMappingFile: clean(runInputsRaw.csgSystemMappingFile) || null,
       quickBooksFile: clean(runInputsRaw.quickBooksFile) || null,
+      paymentsReportFile: clean(runInputsRaw.paymentsReportFile) || null,
       projectApplicationFile: clean(runInputsRaw.projectApplicationFile) || null,
       portalInvoiceMapFile: clean(runInputsRaw.portalInvoiceMapFile) || null,
       csgPortalDatabaseFile: clean(runInputsRaw.csgPortalDatabaseFile) || null,
@@ -871,6 +929,9 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
         Array.isArray(parsed.projectApplications) ? parsed.projectApplications : []
       ),
       quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
+      paymentsReportRows: normalizePaymentsReportRows(
+        Array.isArray(parsed.paymentsReportRows) ? parsed.paymentsReportRows : []
+      ),
       payeeUpdateRows: normalizePayeeUpdateRows(Array.isArray(parsed.payeeUpdateRows) ? parsed.payeeUpdateRows : []),
       invoiceNumberMapRows: normalizeInvoiceNumberMapRows(
         Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : []
@@ -938,6 +999,7 @@ export default function AbpInvoiceSettlement() {
     utilityInvoiceFiles: [],
     csgSystemMappingFile: null,
     quickBooksFile: null,
+    paymentsReportFile: null,
     projectApplicationFile: null,
     portalInvoiceMapFile: null,
     csgPortalDatabaseFile: null,
@@ -948,6 +1010,7 @@ export default function AbpInvoiceSettlement() {
   const [csgSystemMappings, setCsgSystemMappings] = useState<CsgSystemIdMappingRow[]>([]);
   const [projectApplications, setProjectApplications] = useState<ProjectApplicationLiteRow[]>([]);
   const [quickBooksByInvoice, setQuickBooksByInvoice] = useState<Map<string, QuickBooksInvoice>>(new Map());
+  const [paymentsReportRows, setPaymentsReportRows] = useState<PaymentsReportRow[]>([]);
   const [csgPortalDatabaseRows, setCsgPortalDatabaseRows] = useState<CsgPortalDatabaseRow[]>([]);
   const [payeeUpdateRows, setPayeeUpdateRows] = useState<PayeeMailingUpdateRow[]>([]);
   const [installerRules, setInstallerRules] = useState<InstallerSettlementRule[]>(DEFAULT_INSTALLER_RULES);
@@ -978,6 +1041,7 @@ export default function AbpInvoiceSettlement() {
   const [isUploadingUtility, setIsUploadingUtility] = useState(false);
   const [isUploadingMapping, setIsUploadingMapping] = useState(false);
   const [isUploadingQuickBooks, setIsUploadingQuickBooks] = useState(false);
+  const [isUploadingPaymentsReport, setIsUploadingPaymentsReport] = useState(false);
   const [isUploadingProjectApps, setIsUploadingProjectApps] = useState(false);
   const [isUploadingInvoiceMap, setIsUploadingInvoiceMap] = useState(false);
   const [isUploadingCsgPortalDatabase, setIsUploadingCsgPortalDatabase] = useState(false);
@@ -1057,6 +1121,7 @@ export default function AbpInvoiceSettlement() {
         utilityInvoiceFiles: [],
         csgSystemMappingFile: null,
         quickBooksFile: null,
+        paymentsReportFile: null,
         projectApplicationFile: null,
         portalInvoiceMapFile: null,
         csgPortalDatabaseFile: null,
@@ -1066,6 +1131,7 @@ export default function AbpInvoiceSettlement() {
       let hydratedCsgSystemMappings: CsgSystemIdMappingRow[] = [];
       let hydratedProjectApplications: ProjectApplicationLiteRow[] = [];
       let hydratedQuickBooksByInvoice = new Map<string, QuickBooksInvoice>();
+      let hydratedPaymentsReportRows: PaymentsReportRow[] = [];
       let hydratedPayeeUpdateRows: PayeeMailingUpdateRow[] = [];
       let hydratedInvoiceNumberMapRows: InvoiceNumberMapRow[] = [];
       let hydratedInvoiceMapParsed: ParsedTabularData | null = null;
@@ -1092,6 +1158,7 @@ export default function AbpInvoiceSettlement() {
             hydratedCsgSystemMappings = parsed.csgSystemMappings ?? [];
             hydratedProjectApplications = deserializeProjectApplications(parsed.projectApplications ?? []);
             hydratedQuickBooksByInvoice = deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []);
+            hydratedPaymentsReportRows = deserializePaymentsReportRows(parsed.paymentsReportRows ?? []);
             hydratedPayeeUpdateRows = deserializePayeeUpdateRows(parsed.payeeUpdateRows ?? []);
             hydratedInvoiceNumberMapRows = normalizeInvoiceNumberMapRows(parsed.invoiceNumberMapRows ?? []);
             hydratedInvoiceMapHeaderSelection = parsed.invoiceMapHeaderSelection ?? hydratedInvoiceMapHeaderSelection;
@@ -1268,6 +1335,7 @@ export default function AbpInvoiceSettlement() {
         setCsgSystemMappings(hydratedCsgSystemMappings);
         setProjectApplications(hydratedProjectApplications);
         setQuickBooksByInvoice(hydratedQuickBooksByInvoice);
+        setPaymentsReportRows(hydratedPaymentsReportRows);
         setPayeeUpdateRows(hydratedPayeeUpdateRows);
         setCsgPortalDatabaseRows(hydratedCsgPortalDatabaseRows);
         setInstallerRules(hydratedInstallerRules);
@@ -1539,6 +1607,7 @@ export default function AbpInvoiceSettlement() {
           csgSystemMappings,
           projectApplications,
           quickBooksByInvoice,
+          paymentsReportRows,
           payeeUpdateRows,
           invoiceNumberMapRows,
           csgPortalDatabaseRows,
@@ -1580,6 +1649,7 @@ export default function AbpInvoiceSettlement() {
     installerRules,
     invoiceMapHeaderSelection,
     invoiceNumberMapRows,
+    paymentsReportRows,
     payeeUpdateRows,
     projectApplications,
     quickBooksByInvoice,
@@ -1605,6 +1675,7 @@ export default function AbpInvoiceSettlement() {
         csgSystemMappings,
         projectApplications,
         quickBooksByInvoice,
+        paymentsReportRows,
         payeeUpdateRows,
         invoiceNumberMapRows,
         csgPortalDatabaseRows,
@@ -1649,6 +1720,7 @@ export default function AbpInvoiceSettlement() {
     csgSystemMappings,
     projectApplications,
     quickBooksByInvoice,
+    paymentsReportRows,
     payeeUpdateRows,
     invoiceNumberMapRows,
     csgPortalDatabaseRows,
@@ -1784,6 +1856,7 @@ export default function AbpInvoiceSettlement() {
       contractTermsByCsgId: contractTermsWithPayeeUpdates,
       csgPortalDatabaseRows,
       installerRules,
+      paymentsReportRows,
       previousCarryforwardBySystemId,
       manualOverridesByRowId,
     });
@@ -1800,6 +1873,7 @@ export default function AbpInvoiceSettlement() {
     contractTermsWithPayeeUpdates,
     csgPortalDatabaseRows,
     installerRules,
+    paymentsReportRows,
     previousCarryforwardBySystemId,
     manualOverridesByRowId,
     latestPayeeUpdateResult.warnings,
@@ -1873,6 +1947,23 @@ export default function AbpInvoiceSettlement() {
       toast.error(`Failed to parse QuickBooks report: ${toErrorMessage(error)}`);
     } finally {
       setIsUploadingQuickBooks(false);
+    }
+  };
+
+  const handlePaymentsReportUpload = async (fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    setIsUploadingPaymentsReport(true);
+    try {
+      const parsed = await parseTabularFile(file);
+      const rows = parsePaymentsReport(parsed);
+      setPaymentsReportRows(rows);
+      setRunInputs((current) => ({ ...current, paymentsReportFile: file.name }));
+      toast.success(`Loaded ${rows.length.toLocaleString("en-US")} payment report row(s).`);
+    } catch (error) {
+      toast.error(`Failed to parse payment report file: ${toErrorMessage(error)}`);
+    } finally {
+      setIsUploadingPaymentsReport(false);
     }
   };
 
@@ -2024,6 +2115,15 @@ export default function AbpInvoiceSettlement() {
       quickBooksFile: null,
     }));
     toast.success("QuickBooks file deleted.");
+  };
+
+  const handleDeletePaymentsReportFile = () => {
+    setPaymentsReportRows([]);
+    setRunInputs((current) => ({
+      ...current,
+      paymentsReportFile: null,
+    }));
+    toast.success("Payment report file deleted.");
   };
 
   const handleDeleteProjectApplicationFile = () => {
@@ -2290,6 +2390,7 @@ export default function AbpInvoiceSettlement() {
       csgSystemMappings,
       projectApplications: serializeProjectApplications(projectApplications),
       quickBooksInvoices: serializeQuickBooksInvoices(quickBooksByInvoice),
+      paymentsReportRows: serializePaymentsReportRows(paymentsReportRows),
       payeeUpdateRows: serializePayeeUpdateRows(payeeUpdateRows),
       invoiceNumberMapRows,
       invoiceMapHeaderSelection,
@@ -2327,6 +2428,7 @@ export default function AbpInvoiceSettlement() {
         : [],
       csgSystemMappingFile: payload.runInputs?.csgSystemMappingFile ?? null,
       quickBooksFile: payload.runInputs?.quickBooksFile ?? null,
+      paymentsReportFile: payload.runInputs?.paymentsReportFile ?? null,
       projectApplicationFile: payload.runInputs?.projectApplicationFile ?? null,
       portalInvoiceMapFile: payload.runInputs?.portalInvoiceMapFile ?? null,
       csgPortalDatabaseFile: payload.runInputs?.csgPortalDatabaseFile ?? null,
@@ -2338,6 +2440,9 @@ export default function AbpInvoiceSettlement() {
       deserializeProjectApplications(normalizeProjectApplicationRows(payload.projectApplications ?? []))
     );
     setQuickBooksByInvoice(deserializeQuickBooksInvoices(payload.quickBooksInvoices ?? []));
+    setPaymentsReportRows(
+      deserializePaymentsReportRows(normalizePaymentsReportRows(payload.paymentsReportRows ?? []))
+    );
     setPayeeUpdateRows(deserializePayeeUpdateRows(normalizePayeeUpdateRows(payload.payeeUpdateRows ?? [])));
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({
@@ -2438,6 +2543,7 @@ export default function AbpInvoiceSettlement() {
       utilityInvoiceFiles: [],
       csgSystemMappingFile: null,
       quickBooksFile: null,
+      paymentsReportFile: null,
       projectApplicationFile: null,
       portalInvoiceMapFile: null,
       csgPortalDatabaseFile: null,
@@ -2447,6 +2553,7 @@ export default function AbpInvoiceSettlement() {
     setCsgSystemMappings([]);
     setProjectApplications([]);
     setQuickBooksByInvoice(new Map());
+    setPaymentsReportRows([]);
     setPayeeUpdateRows([]);
     setCsgPortalDatabaseRows([]);
     setInstallerRules(normalizeInstallerRules(DEFAULT_INSTALLER_RULES));
@@ -2626,7 +2733,7 @@ export default function AbpInvoiceSettlement() {
           <CardHeader>
             <CardTitle>2) Upload Inputs</CardTitle>
             <CardDescription>
-              Required: utility invoices, CSG/System mapping, QuickBooks report, and ProjectApplication file. Optional: portal invoice map, CSG portal database, and customer payee/mailing update file. Linked uploads sync with Solar REC dashboard slots.
+              Required: utility invoices, CSG/System mapping, QuickBooks report, and ProjectApplication file. Optional: payment report checker file, portal invoice map, CSG portal database, and customer payee/mailing update file. Linked uploads sync with Solar REC dashboard slots.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
@@ -2736,6 +2843,39 @@ export default function AbpInvoiceSettlement() {
                     size="sm"
                     onClick={handleDeleteQuickBooksFile}
                     disabled={isUploadingQuickBooks || (!runInputs.quickBooksFile && quickBooksByInvoice.size === 0)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="payments-report-upload">Optional Payments Report Checker (payments-report.csv)</Label>
+                <Input
+                  id="payments-report-upload"
+                  type="file"
+                  accept=".xlsx,.xls,.xlsm,.xlsb,.csv,text/csv"
+                  onChange={(event) => {
+                    void handlePaymentsReportUpload(event.currentTarget.files);
+                    event.currentTarget.value = "";
+                  }}
+                  disabled={isUploadingPaymentsReport}
+                />
+                <div className="text-xs text-slate-500">
+                  Uses `State Certification Number` (ABP ID), `System Id` (CSG ID), `Payment Number`, and `Type`.
+                  Only `ABP SREC Payment` counts toward contract payments. `Reissue` is excluded.
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.paymentsReportFile ?? "No payment report file loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeletePaymentsReportFile}
+                    disabled={isUploadingPaymentsReport || (!runInputs.paymentsReportFile && paymentsReportRows.length === 0)}
                   >
                     <Trash2 className="h-3.5 w-3.5 mr-1" />
                     Delete
@@ -2937,6 +3077,7 @@ export default function AbpInvoiceSettlement() {
                 <div>Utility rows: {utilityRows.length.toLocaleString("en-US")}</div>
                 <div>CSG/System mappings: {csgSystemMappings.length.toLocaleString("en-US")}</div>
                 <div>QuickBooks invoices: {quickBooksByInvoice.size.toLocaleString("en-US")}</div>
+                <div>Payment report rows: {paymentsReportRows.length.toLocaleString("en-US")}</div>
                 <div>ProjectApplication rows: {projectApplications.length.toLocaleString("en-US")}</div>
                 <div>Invoice map rows: {invoiceNumberMapRows.length.toLocaleString("en-US")}</div>
                 <div>CSG portal database rows: {csgPortalDatabaseRows.length.toLocaleString("en-US")}</div>
@@ -3412,6 +3553,14 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>Customer Alt Email</TableHead>
                         <TableHead>System Address</TableHead>
                         <TableHead>Applied Installer Rule</TableHead>
+                        <TableHead>Payment Report Status</TableHead>
+                        <TableHead>Payment Report #</TableHead>
+                        <TableHead>Payment Report Applied Count</TableHead>
+                        <TableHead>Payment Report Applied Amount</TableHead>
+                        <TableHead>Payment Report Reissue Count</TableHead>
+                        <TableHead>Payment Report Reissue Amount</TableHead>
+                        <TableHead>Payment Report Last Type</TableHead>
+                        <TableHead>Payment Report Last Date</TableHead>
                         <TableHead>Classification</TableHead>
                         <TableHead>Carryforward In</TableHead>
                         <TableHead>Carryforward Out</TableHead>
@@ -3463,6 +3612,14 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.customerAltEmail}</TableCell>
                             <TableCell>{row.systemAddress}</TableCell>
                             <TableCell>{row.appliedInstallerRuleName}</TableCell>
+                            <TableCell>{row.paymentReportCheckStatus}</TableCell>
+                            <TableCell>{row.paymentReportMatchedPaymentNumber ?? ""}</TableCell>
+                            <TableCell>{row.paymentReportAppliedCount}</TableCell>
+                            <TableCell>{formatCurrency(row.paymentReportAppliedAmount)}</TableCell>
+                            <TableCell>{row.paymentReportReissueCount}</TableCell>
+                            <TableCell>{formatCurrency(row.paymentReportReissueAmount)}</TableCell>
+                            <TableCell>{row.paymentReportLastType}</TableCell>
+                            <TableCell>{row.paymentReportLastPaymentDate}</TableCell>
                             <TableCell>{row.classification}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardIn)}</TableCell>
                             <TableCell>{formatCurrency(row.carryforwardOut)}</TableCell>

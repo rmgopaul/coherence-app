@@ -6,6 +6,7 @@ import {
   buildSettlementCsv,
   computeSettlementRows,
   parseCsgPortalDatabase,
+  parsePaymentsReport,
   parsePayeeMailingUpdateRequests,
   parseProjectApplications,
   parseQuickBooksDetailedReport,
@@ -478,6 +479,48 @@ describe("ABP parser coverage", () => {
     expect(updated?.city).toBe("Aurora");
     expect(updated?.zip).toBe("60505");
   });
+
+  it("parses payments report and classifies ABP payment vs reissue", () => {
+    const rows = parsePaymentsReport({
+      headers: [
+        "ID",
+        "Payment Number",
+        "State Certification Number",
+        "System Id",
+        "Type",
+        "Amount",
+        "Payment Date",
+      ],
+      rows: [
+        {
+          ID: "1",
+          "Payment Number": "1",
+          "State Certification Number": "166160",
+          "System Id": "158332",
+          Type: "ABP SREC Payment",
+          Amount: "17199.74",
+          "Payment Date": "2026-03-20",
+        },
+        {
+          ID: "2",
+          "Payment Number": "1",
+          "State Certification Number": "166160",
+          "System Id": "158332",
+          Type: "Reissue",
+          Amount: "17199.74",
+          "Payment Date": "2026-03-25",
+        },
+      ],
+      matrix: [],
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0].systemId).toBe("166160");
+    expect(rows[0].csgId).toBe("158332");
+    expect(rows[0].paymentNumber).toBe(1);
+    expect(rows[0].appliesToContract).toBe(true);
+    expect(rows[1].appliesToContract).toBe(false);
+  });
 });
 
 describe("ABP formula and carryforward", () => {
@@ -749,6 +792,54 @@ describe("ABP formula and carryforward", () => {
     expect(result.rows[0].carryforwardIn).toBe(40);
     expect(result.rows[0].carryforwardOut).toBe(0);
     expect(result.rows[0].netPayoutThisRow).toBe(10);
+  });
+
+  it("applies payment report checker rules per site/payment number", () => {
+    const result = computeSettlementRows({
+      utilityRows: [
+        baseUtilityRow({ rowId: "p1", systemId: "1001", paymentNumber: 1, invoiceAmount: 200 }),
+        baseUtilityRow({ rowId: "p2", systemId: "1001", paymentNumber: 2, invoiceAmount: 50 }),
+      ],
+      csgSystemMappings: [{ csgId: "2001", systemId: "1001" }],
+      projectApplications: [],
+      quickBooksPaidUpfrontLedger: { bySystemId: new Map(), unmatchedLines: [] },
+      contractTermsByCsgId: new Map([["2001", baseContractTerms("2001")]]),
+      paymentsReportRows: [
+        {
+          rowId: "pay-1",
+          sourceRowNumber: 2,
+          systemId: "1001",
+          csgId: "2001",
+          paymentNumber: 1,
+          paymentType: "ABP SREC Payment",
+          paymentDate: new Date("2026-03-20T00:00:00.000Z"),
+          amount: 200,
+          appliesToContract: true,
+        },
+        {
+          rowId: "pay-2",
+          sourceRowNumber: 3,
+          systemId: "1001",
+          csgId: "2001",
+          paymentNumber: 2,
+          paymentType: "Reissue",
+          paymentDate: new Date("2026-03-21T00:00:00.000Z"),
+          amount: 50,
+          appliesToContract: false,
+        },
+      ],
+    });
+
+    const row1 = result.rows.find((row) => row.rowId === "p1");
+    const row2 = result.rows.find((row) => row.rowId === "p2");
+
+    expect(row1?.paymentReportAppliedCount).toBe(1);
+    expect(row1?.paymentReportReissueCount).toBe(0);
+    expect(row1?.paymentReportCheckStatus).toContain("ABP SREC payment");
+
+    expect(row2?.paymentReportAppliedCount).toBe(0);
+    expect(row2?.paymentReportReissueCount).toBe(1);
+    expect(row2?.paymentReportCheckStatus).toContain("reissue");
   });
 
   it("produces deterministic CSV for end-to-end fixture", () => {

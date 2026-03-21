@@ -62,6 +62,18 @@ export type PayeeMailingUpdateRow = {
   cityStateZip: string | null;
 };
 
+export type PaymentsReportRow = {
+  rowId: string;
+  sourceRowNumber: number;
+  systemId: string;
+  csgId: string;
+  paymentNumber: number | null;
+  paymentType: string;
+  paymentDate: Date | null;
+  amount: number | null;
+  appliesToContract: boolean | null;
+};
+
 export type PayeeMailingUpdateResolutionReason =
   | "entered_csg_id"
   | "entered_csg_id_verified_by_email"
@@ -247,6 +259,15 @@ export type PaymentComputationRow = {
   customerAltEmail: string;
   systemAddress: string;
   appliedInstallerRuleName: string;
+  paymentReportCheckStatus: string;
+  paymentReportMatchedPaymentNumber: number | null;
+  paymentReportAppliedCount: number;
+  paymentReportAppliedAmount: number;
+  paymentReportReissueCount: number;
+  paymentReportReissueAmount: number;
+  paymentReportOtherTypeCount: number;
+  paymentReportLastType: string;
+  paymentReportLastPaymentDate: string;
   withholdingBalanceSeededForSystem: number;
   carryforwardIn: number;
   carryforwardRecoveredThisRow: number;
@@ -271,6 +292,7 @@ export type SettlementComputationInput = {
   contractTermsByCsgId: Map<string, ContractTerms>;
   csgPortalDatabaseRows?: CsgPortalDatabaseRow[];
   installerRules?: InstallerSettlementRule[];
+  paymentsReportRows?: PaymentsReportRow[];
   previousCarryforwardBySystemId?: Record<string, number>;
   manualOverridesByRowId?: Record<string, ManualOverride>;
 };
@@ -752,6 +774,68 @@ export function parsePayeeMailingUpdateRequests(parsed: ParsedTabularData): Paye
       state,
       zip,
       cityStateZip,
+    });
+  });
+
+  return rows;
+}
+
+export function parsePaymentsReport(parsed: ParsedTabularData): PaymentsReportRow[] {
+  if (!Array.isArray(parsed.headers) || parsed.headers.length === 0) {
+    throw new Error("Payments report must include a header row.");
+  }
+
+  const systemHeader =
+    findHeaderByAliases(parsed.headers, [
+      "State Certification Number",
+      "State_Certification_Number",
+      "ABP ID",
+      "System ID (ABP)",
+    ]) ??
+    findHeaderByAliases(parsed.headers, ["Application_ID"]) ??
+    null;
+
+  const csgHeader =
+    findHeaderByAliases(parsed.headers, ["System Id", "System ID", "CSG ID", "CSGID", "Portal ID"]) ?? null;
+
+  const paymentTypeHeader = findHeaderByAliases(parsed.headers, ["Type", "Payment Type"]) ?? null;
+  const paymentNumberHeader = findHeaderByAliases(parsed.headers, ["Payment Number", "Payment #"]) ?? null;
+  const paymentDateHeader = findHeaderByAliases(parsed.headers, ["Payment Date", "Date"]) ?? null;
+  const amountHeader = findHeaderByAliases(parsed.headers, ["Amount", "Payment Amount"]) ?? null;
+
+  if (!systemHeader || !csgHeader || !paymentTypeHeader) {
+    throw new Error(
+      "Payments report must include State Certification Number, System Id, and Type columns."
+    );
+  }
+
+  const rows: PaymentsReportRow[] = [];
+  parsed.rows.forEach((row, index) => {
+    const sourceRowNumber = index + 2;
+    const systemId = normalizeCsgId(row[systemHeader]);
+    const csgId = normalizeCsgId(row[csgHeader]);
+    const paymentType = clean(row[paymentTypeHeader]);
+    if (!systemId && !csgId) return;
+    if (!paymentType) return;
+
+    const normalizedType = normalizeHeader(paymentType);
+    let appliesToContract: boolean | null = null;
+    if (normalizedType.includes("reissue")) {
+      appliesToContract = false;
+    } else if (normalizedType.includes("abpsrecpayment")) {
+      appliesToContract = true;
+    }
+
+    rows.push({
+      rowId: `payments-report:${sourceRowNumber}`,
+      sourceRowNumber,
+      systemId,
+      csgId,
+      paymentNumber: paymentNumberHeader ? parseNumber(row[paymentNumberHeader]) : null,
+      paymentType,
+      paymentDate: paymentDateHeader ? parseDate(row[paymentDateHeader]) : null,
+      amount: amountHeader ? parseNumber(row[amountHeader]) : null,
+      appliesToContract,
     });
   });
 
@@ -1545,6 +1629,29 @@ function safeMoney(value: number | null | undefined): number {
   return value !== null && value !== undefined && Number.isFinite(value) ? roundMoney(value) : 0;
 }
 
+function buildPaymentsReportLookup(
+  rows: PaymentsReportRow[]
+): Map<string, PaymentsReportRow[]> {
+  const bySystemId = new Map<string, PaymentsReportRow[]>();
+  rows.forEach((row) => {
+    const systemId = clean(row.systemId);
+    if (!systemId) return;
+    const existing = bySystemId.get(systemId);
+    if (existing) {
+      existing.push(row);
+    } else {
+      bySystemId.set(systemId, [row]);
+    }
+  });
+  return bySystemId;
+}
+
+function toPaymentReportDateText(value: Date | null): string {
+  if (!value) return "";
+  if (Number.isNaN(value.getTime())) return "";
+  return value.toISOString().slice(0, 10);
+}
+
 export function computeSettlementRows(input: SettlementComputationInput): SettlementComputationResult {
   const warnings: string[] = [];
   const systemToCsg = buildSystemToCsgMap(input.csgSystemMappings);
@@ -1553,6 +1660,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
   const installerRules = input.installerRules ?? [];
   const previousCarryforward = input.previousCarryforwardBySystemId ?? {};
   const overridesByRowId = input.manualOverridesByRowId ?? {};
+  const paymentsReportBySystemId = buildPaymentsReportLookup(input.paymentsReportRows ?? []);
 
   const rowsBySystem = new Map<string, UtilityInvoiceRow[]>();
   input.utilityRows.forEach((row) => {
@@ -1584,6 +1692,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const csgPortalByCsgId = csgId ? csgPortalLookup.get(csgId) ?? null : null;
       const csgPortalSystemRow = csgPortalByCsgId;
       const appliedInstallerRule = findInstallerRuleForSystem(csgPortalSystemRow, installerRules);
+      const paymentsForSystem = paymentsReportBySystemId.get(systemId) ?? [];
       const installerName = clean(csgPortalSystemRow?.installerName);
       const partnerCompanyName = clean(csgPortalSystemRow?.partnerCompanyName);
       const customerEmail = clean(csgPortalSystemRow?.customerEmail);
@@ -1658,6 +1767,50 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         const referralFeePercent = safeMoney(appliedInstallerRule?.referralFeePercent ?? 0);
         const referralFeeAmount = roundMoney((grossContractValue * referralFeePercent) / 100);
 
+        const paymentNumberForMatch = row.paymentNumber ?? null;
+        const paymentMatches =
+          paymentNumberForMatch === null
+            ? paymentsForSystem
+            : paymentsForSystem.filter(
+                (payment) =>
+                  payment.paymentNumber !== null &&
+                  Math.floor(payment.paymentNumber) === Math.floor(paymentNumberForMatch)
+              );
+        const appliedMatches = paymentMatches.filter((payment) => payment.appliesToContract === true);
+        const reissueMatches = paymentMatches.filter((payment) => payment.appliesToContract === false);
+        const otherTypeMatches = paymentMatches.filter((payment) => payment.appliesToContract === null);
+        const mismatchedCsgCount =
+          csgId && csgId.length > 0
+            ? paymentMatches.filter((payment) => clean(payment.csgId) && clean(payment.csgId) !== csgId).length
+            : 0;
+        const appliedAmount = roundMoney(
+          appliedMatches.reduce((sum, payment) => sum + safeMoney(payment.amount), 0)
+        );
+        const reissueAmount = roundMoney(
+          reissueMatches.reduce((sum, payment) => sum + safeMoney(payment.amount), 0)
+        );
+
+        const sortedForLatest = [...paymentMatches].sort((left, right) => {
+          const leftTime = left.paymentDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+          const rightTime = right.paymentDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+          if (leftTime !== rightTime) return rightTime - leftTime;
+          return right.sourceRowNumber - left.sourceRowNumber;
+        });
+        const latestPayment = sortedForLatest[0] ?? null;
+        const paymentReportLastType = clean(latestPayment?.paymentType);
+        const paymentReportLastPaymentDate = toPaymentReportDateText(latestPayment?.paymentDate ?? null);
+
+        let paymentReportCheckStatus = "No payment report record for this site.";
+        if (paymentsForSystem.length > 0 && paymentMatches.length === 0 && paymentNumberForMatch !== null) {
+          paymentReportCheckStatus = `Site has payments, but none for payment #${paymentNumberForMatch}.`;
+        } else if (appliedMatches.length > 0) {
+          paymentReportCheckStatus = "ABP SREC payment recorded for this contract payment.";
+        } else if (reissueMatches.length > 0 && otherTypeMatches.length === 0) {
+          paymentReportCheckStatus = "Only reissue record(s) found; excluded from contract payment count.";
+        } else if (otherTypeMatches.length > 0) {
+          paymentReportCheckStatus = "Unknown payment type(s) found; review payment report type field.";
+        }
+
         const utilityOutstanding = Math.max(
           0,
           roundMoney(utilityHeldCollateral5PercentAmount - effectiveUtilityCollateralPaidUpfront)
@@ -1724,6 +1877,21 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
             `Referral fee applied (${referralFeePercent.toFixed(2)}% of gross contract value).`
           );
         }
+        if (otherTypeMatches.length > 0) {
+          confidenceFlags.push(
+            "Payment report has unknown type rows for this site/payment number. Only ABP SREC Payment counts; Reissue is excluded."
+          );
+        }
+        if (reissueMatches.length > 0 && appliedMatches.length === 0) {
+          confidenceFlags.push(
+            "Payment report has reissue rows but no ABP SREC payment row for this site/payment number."
+          );
+        }
+        if (mismatchedCsgCount > 0) {
+          confidenceFlags.push(
+            "Payment report contains CSG ID mismatch against mapping for this ABP ID; review System Id vs State Certification Number."
+          );
+        }
 
         if (!seededFromFirst && !previousCarryKnown && (row.paymentNumber ?? 0) > 1) {
           confidenceFlags.push("No prior carryforward history found for payment number > 1.");
@@ -1784,6 +1952,15 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           customerAltEmail,
           systemAddress: systemAddressFromPortal,
           appliedInstallerRuleName: clean(appliedInstallerRule?.name),
+          paymentReportCheckStatus,
+          paymentReportMatchedPaymentNumber: paymentNumberForMatch,
+          paymentReportAppliedCount: appliedMatches.length,
+          paymentReportAppliedAmount: appliedAmount,
+          paymentReportReissueCount: reissueMatches.length,
+          paymentReportReissueAmount: reissueAmount,
+          paymentReportOtherTypeCount: otherTypeMatches.length,
+          paymentReportLastType,
+          paymentReportLastPaymentDate,
           withholdingBalanceSeededForSystem: seededWithholdingThisRow,
           carryforwardIn,
           carryforwardRecoveredThisRow: recovered,
@@ -1858,6 +2035,15 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Customer Alt Email",
     "System Address",
     "Applied Installer Rule",
+    "Payment Report Check Status",
+    "Payment Report Payment Number",
+    "Payment Report Applied Count",
+    "Payment Report Applied Amount",
+    "Payment Report Reissue Count",
+    "Payment Report Reissue Amount",
+    "Payment Report Other Type Count",
+    "Payment Report Last Type",
+    "Payment Report Last Payment Date",
     "Carryforward In",
     "Carryforward Recovered This Row",
     "Carryforward Out",
@@ -1909,6 +2095,15 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.customerAltEmail,
       row.systemAddress,
       row.appliedInstallerRuleName,
+      row.paymentReportCheckStatus,
+      row.paymentReportMatchedPaymentNumber ?? "",
+      row.paymentReportAppliedCount,
+      row.paymentReportAppliedAmount.toFixed(2),
+      row.paymentReportReissueCount,
+      row.paymentReportReissueAmount.toFixed(2),
+      row.paymentReportOtherTypeCount,
+      row.paymentReportLastType,
+      row.paymentReportLastPaymentDate,
       row.carryforwardIn.toFixed(2),
       row.carryforwardRecoveredThisRow.toFixed(2),
       row.carryforwardOut.toFixed(2),
