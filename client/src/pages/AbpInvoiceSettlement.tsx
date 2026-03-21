@@ -208,6 +208,19 @@ function formatDateTime(iso: string | null | undefined): string {
   return date.toLocaleString("en-US");
 }
 
+function formatDuration(valueMs: number | null | undefined): string {
+  if (valueMs === null || valueMs === undefined || !Number.isFinite(valueMs) || valueMs < 0) {
+    return "-";
+  }
+
+  const totalSeconds = Math.floor(valueMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 function downloadTextFile(fileName: string, content: string, mimeType: string): void {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -827,6 +840,7 @@ export default function AbpInvoiceSettlement() {
 
   const [manualScanIdInput, setManualScanIdInput] = useState("");
   const [activeScanJobId, setActiveScanJobId] = useState<string | null>(null);
+  const [scanClockNow, setScanClockNow] = useState<number>(() => Date.now());
 
   const [portalEmail, setPortalEmail] = useState("");
   const [portalPassword, setPortalPassword] = useState("");
@@ -884,6 +898,17 @@ export default function AbpInvoiceSettlement() {
       setLocation("/");
     }
   }, [authLoading, setLocation, user]);
+
+  useEffect(() => {
+    if (!activeScanJobId) return;
+    setScanClockNow(Date.now());
+    const timerId = window.setInterval(() => {
+      setScanClockNow(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [activeScanJobId]);
 
   useEffect(() => {
     if (!csgPortalStatusQuery.data) return;
@@ -1090,44 +1115,45 @@ export default function AbpInvoiceSettlement() {
     const snapshot = scanJobQuery.data;
     if (!snapshot || !activeScanJobId) return;
 
+    const rows = snapshot.result?.rows ?? [];
+    const fetchedRows: ContractFetchResult[] = rows.map((row) => ({
+      csgId: row.csgId,
+      systemPageUrl: row.systemPageUrl,
+      pdfUrl: row.pdfUrl,
+      pdfFileName: row.pdfFileName,
+      error: row.error,
+    }));
+    const scannedRows: ContractScanResult[] = rows.map((row) => {
+      const cityStateZipParts = splitCityStateZip(row.scan?.cityStateZip ?? null);
+      return {
+        csgId: row.csgId,
+        fileName: row.scan?.fileName ?? row.pdfFileName ?? `contract-${row.csgId}.pdf`,
+        ccAuthorizationCompleted: row.scan?.ccAuthorizationCompleted ?? null,
+        ccCardAsteriskCount: row.scan?.ccCardAsteriskCount ?? null,
+        additionalFivePercentSelected: row.scan?.additionalFivePercentSelected ?? null,
+        additionalCollateralPercent: row.scan?.additionalCollateralPercent ?? null,
+        vendorFeePercent: row.scan?.vendorFeePercent ?? null,
+        recQuantity: row.scan?.recQuantity ?? null,
+        recPrice: row.scan?.recPrice ?? null,
+        paymentMethod: row.scan?.paymentMethod ?? null,
+        payeeName: row.scan?.payeeName ?? null,
+        mailingAddress1: row.scan?.mailingAddress1 ?? null,
+        mailingAddress2: row.scan?.mailingAddress2 ?? null,
+        cityStateZip: row.scan?.cityStateZip ?? null,
+        city: cityStateZipParts.city,
+        state: cityStateZipParts.state,
+        zip: cityStateZipParts.zip,
+        error: row.error,
+      };
+    });
+
+    // Stream rows as each CSG ID finishes.
+    setContractFetchRows(fetchedRows);
+    setContractScanRows(scannedRows);
+    setContractTermsByCsgId(toContractTermsFromScan(scannedRows));
+
     if (snapshot.status === "completed") {
       setActiveScanJobId(null);
-      const rows = snapshot.result?.rows ?? [];
-      const fetchedRows: ContractFetchResult[] = rows.map((row) => ({
-        csgId: row.csgId,
-        systemPageUrl: row.systemPageUrl,
-        pdfUrl: row.pdfUrl,
-        pdfFileName: row.pdfFileName,
-        error: row.error,
-      }));
-      const scannedRows: ContractScanResult[] = rows.map((row) => {
-        const cityStateZipParts = splitCityStateZip(row.scan?.cityStateZip ?? null);
-        return {
-          csgId: row.csgId,
-          fileName: row.scan?.fileName ?? row.pdfFileName ?? `contract-${row.csgId}.pdf`,
-          ccAuthorizationCompleted: row.scan?.ccAuthorizationCompleted ?? null,
-          ccCardAsteriskCount: row.scan?.ccCardAsteriskCount ?? null,
-          additionalFivePercentSelected: row.scan?.additionalFivePercentSelected ?? null,
-          additionalCollateralPercent: row.scan?.additionalCollateralPercent ?? null,
-          vendorFeePercent: row.scan?.vendorFeePercent ?? null,
-          recQuantity: row.scan?.recQuantity ?? null,
-          recPrice: row.scan?.recPrice ?? null,
-          paymentMethod: row.scan?.paymentMethod ?? null,
-          payeeName: row.scan?.payeeName ?? null,
-          mailingAddress1: row.scan?.mailingAddress1 ?? null,
-          mailingAddress2: row.scan?.mailingAddress2 ?? null,
-          cityStateZip: row.scan?.cityStateZip ?? null,
-          city: cityStateZipParts.city,
-          state: cityStateZipParts.state,
-          zip: cityStateZipParts.zip,
-          error: row.error,
-        };
-      });
-
-      setContractFetchRows(fetchedRows);
-      setContractScanRows(scannedRows);
-      setContractTermsByCsgId(toContractTermsFromScan(scannedRows));
-
       toast.success(
         `Contract scan completed. ${snapshot.result?.successCount ?? 0} success, ${snapshot.result?.failureCount ?? 0} failed.`
       );
@@ -1763,6 +1789,9 @@ export default function AbpInvoiceSettlement() {
         password: clean(portalPassword) || undefined,
         baseUrl: clean(portalBaseUrl) || undefined,
       });
+      setContractFetchRows([]);
+      setContractScanRows([]);
+      setContractTermsByCsgId(new Map());
       setActiveScanJobId(started.jobId);
       toast.success(`Started contract scan for ${selectedScanIds.length.toLocaleString("en-US")} CSG IDs.`);
     } catch (error) {
@@ -1970,6 +1999,24 @@ export default function AbpInvoiceSettlement() {
 
   const scanProgress = scanJobQuery.data?.progress;
   const scanInFlight = Boolean(activeScanJobId);
+  const scanStartedAtMs = scanJobQuery.data?.startedAt
+    ? Date.parse(scanJobQuery.data.startedAt)
+    : Number.NaN;
+  const scanElapsedMs =
+    scanInFlight && Number.isFinite(scanStartedAtMs)
+      ? Math.max(0, scanClockNow - scanStartedAtMs)
+      : null;
+  const scanRemainingMs = (() => {
+    if (!scanInFlight || !scanProgress || scanElapsedMs === null) return null;
+    const current = scanProgress.current;
+    const total = scanProgress.total;
+    if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) return null;
+    if (current >= total) return 0;
+    if (current <= 0) return null;
+    const averageMsPerRecord = scanElapsedMs / current;
+    if (!Number.isFinite(averageMsPerRecord) || averageMsPerRecord <= 0) return null;
+    return Math.max(0, Math.round(averageMsPerRecord * (total - current)));
+  })();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
@@ -2643,7 +2690,14 @@ export default function AbpInvoiceSettlement() {
                   </span>
                 </div>
                 <Progress value={scanProgress.percent} />
-                <div className="text-xs text-slate-500">Current CSG ID: {scanProgress.currentCsgId ?? "-"}</div>
+                <div className="grid gap-1 text-xs text-slate-500 sm:grid-cols-3">
+                  <div>Current CSG ID: {scanProgress.currentCsgId ?? "-"}</div>
+                  <div>Time elapsed: {formatDuration(scanElapsedMs)}</div>
+                  <div>
+                    Time remaining estimate:{" "}
+                    {scanRemainingMs === null ? "Calculating..." : formatDuration(scanRemainingMs)}
+                  </div>
+                </div>
               </div>
             ) : null}
 

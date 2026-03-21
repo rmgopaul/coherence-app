@@ -314,7 +314,7 @@ type AbpSettlementContractScanJob = {
     rows: AbpSettlementContractScanJobResultRow[];
     successCount: number;
     failureCount: number;
-  } | null;
+  };
 };
 
 type AbpSettlementSavedRunSummary = {
@@ -2768,7 +2768,11 @@ export const appRouter = router({
             currentCsgId: null,
           },
           error: null,
-          result: null,
+          result: {
+            rows: [],
+            successCount: 0,
+            failureCount: 0,
+          },
         });
 
         void (async () => {
@@ -2799,6 +2803,8 @@ export const appRouter = router({
             await client.login();
 
             const rows: AbpSettlementContractScanJobResultRow[] = [];
+            let successCount = 0;
+            let failureCount = 0;
 
             for (let index = 0; index < uniqueIds.length; index += 1) {
               const csgId = uniqueIds[index];
@@ -2859,10 +2865,21 @@ export const appRouter = router({
                 error: rowError,
               });
 
+              if (rowError === null && scan) {
+                successCount += 1;
+              } else {
+                failureCount += 1;
+              }
+
               const current = index + 1;
               markJob((job) => ({
                 ...job,
                 updatedAt: new Date().toISOString(),
+                result: {
+                  rows: [...rows],
+                  successCount,
+                  failureCount,
+                },
                 progress: {
                   current,
                   total: uniqueIds.length,
@@ -2875,9 +2892,6 @@ export const appRouter = router({
                 },
               }));
             }
-
-            const successCount = rows.filter((row) => row.error === null && row.scan).length;
-            const failureCount = rows.length - successCount;
 
             markJob((job) => ({
               ...job,
@@ -2905,7 +2919,7 @@ export const appRouter = router({
               updatedAt: new Date().toISOString(),
               finishedAt: new Date().toISOString(),
               error: error instanceof Error ? error.message : "Unknown ABP settlement job error.",
-              result: null,
+              result: job.result,
               progress: {
                 ...job.progress,
                 message: "Failed",
