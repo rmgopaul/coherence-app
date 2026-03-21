@@ -39,9 +39,10 @@ import {
   Play,
   RefreshCw,
   Save,
+  Trash2,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
@@ -121,11 +122,23 @@ type RunSummary = {
   rowCount: number | null;
 };
 
+type PersistedUploadStatePayload = {
+  version: 1;
+  savedAt: string;
+  runInputs: RunInputs;
+  utilityRows: UtilityInvoiceRow[];
+  csgSystemMappings: CsgSystemIdMappingRow[];
+  projectApplications: PersistedProjectApplicationRow[];
+  quickBooksInvoices: PersistedQuickBooksInvoice[];
+  invoiceNumberMapRows: InvoiceNumberMapRow[];
+};
+
 const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
   maximumFractionDigits: 2,
 });
+const ABP_UPLOAD_STATE_DATASET_KEY = "abp_settlement_upload_state_v1";
 
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -255,6 +268,58 @@ function deserializeQuickBooksInvoices(invoices: PersistedQuickBooksInvoice[]): 
   return map;
 }
 
+function buildPersistedUploadStatePayload(input: {
+  runInputs: RunInputs;
+  utilityRows: UtilityInvoiceRow[];
+  csgSystemMappings: CsgSystemIdMappingRow[];
+  projectApplications: ProjectApplicationLiteRow[];
+  quickBooksByInvoice: Map<string, QuickBooksInvoice>;
+  invoiceNumberMapRows: InvoiceNumberMapRow[];
+}): PersistedUploadStatePayload {
+  return {
+    version: 1,
+    savedAt: new Date().toISOString(),
+    runInputs: input.runInputs,
+    utilityRows: input.utilityRows,
+    csgSystemMappings: input.csgSystemMappings,
+    projectApplications: serializeProjectApplications(input.projectApplications),
+    quickBooksInvoices: serializeQuickBooksInvoices(input.quickBooksByInvoice),
+    invoiceNumberMapRows: input.invoiceNumberMapRows,
+  };
+}
+
+function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePayload | null {
+  try {
+    const parsed = JSON.parse(value) as PersistedUploadStatePayload;
+    if (!parsed || parsed.version !== 1) return null;
+    const runInputsRaw = parsed.runInputs && typeof parsed.runInputs === "object" ? parsed.runInputs : null;
+    if (!runInputsRaw) return null;
+
+    const runInputs: RunInputs = {
+      utilityInvoiceFiles: Array.isArray(runInputsRaw.utilityInvoiceFiles)
+        ? runInputsRaw.utilityInvoiceFiles.map((value) => clean(value)).filter(Boolean)
+        : [],
+      csgSystemMappingFile: clean(runInputsRaw.csgSystemMappingFile) || null,
+      quickBooksFile: clean(runInputsRaw.quickBooksFile) || null,
+      projectApplicationFile: clean(runInputsRaw.projectApplicationFile) || null,
+      portalInvoiceMapFile: clean(runInputsRaw.portalInvoiceMapFile) || null,
+    };
+
+    return {
+      version: 1,
+      savedAt: clean(parsed.savedAt) || new Date().toISOString(),
+      runInputs,
+      utilityRows: Array.isArray(parsed.utilityRows) ? parsed.utilityRows : [],
+      csgSystemMappings: Array.isArray(parsed.csgSystemMappings) ? parsed.csgSystemMappings : [],
+      projectApplications: Array.isArray(parsed.projectApplications) ? parsed.projectApplications : [],
+      quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
+      invoiceNumberMapRows: Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 function toContractTermsFromScan(rows: ContractScanResult[]): Map<string, ContractTerms> {
   const map = new Map<string, ContractTerms>();
   rows.forEach((row) => {
@@ -339,6 +404,8 @@ export default function AbpInvoiceSettlement() {
   const [isUploadingProjectApps, setIsUploadingProjectApps] = useState(false);
   const [isUploadingInvoiceMap, setIsUploadingInvoiceMap] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
+  const [uploadsHydrated, setUploadsHydrated] = useState(false);
+  const [uploadPersistenceNotice, setUploadPersistenceNotice] = useState<string | null>(null);
 
   const csgPortalStatusQuery = trpc.csgPortal.status.useQuery(undefined, {
     enabled: !!user,
@@ -358,6 +425,13 @@ export default function AbpInvoiceSettlement() {
   const savePortalCredentialsMutation = trpc.csgPortal.saveCredentials.useMutation();
   const testPortalConnectionMutation = trpc.csgPortal.testConnection.useMutation();
   const saveRunMutation = trpc.abpSettlement.saveRun.useMutation();
+  const getUploadStateMutation = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveUploadStateMutation = trpc.solarRecDashboard.saveDataset.useMutation();
+  const getUploadStateMutationRef = useRef(getUploadStateMutation);
+  getUploadStateMutationRef.current = getUploadStateMutation;
+  const saveUploadStateMutationRef = useRef(saveUploadStateMutation);
+  saveUploadStateMutationRef.current = saveUploadStateMutation;
+  const lastPersistedUploadPayloadRef = useRef<string>("");
 
   const scanJobQuery = trpc.abpSettlement.getJobStatus.useQuery(
     { jobId: activeScanJobId ?? "__none__" },
@@ -380,6 +454,53 @@ export default function AbpInvoiceSettlement() {
     if (csgPortalStatusQuery.data.email) setPortalEmail(csgPortalStatusQuery.data.email);
     if (csgPortalStatusQuery.data.baseUrl) setPortalBaseUrl(csgPortalStatusQuery.data.baseUrl);
   }, [csgPortalStatusQuery.data]);
+
+  useEffect(() => {
+    if (authLoading || !user) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const stored = await getUploadStateMutationRef.current.mutateAsync({
+          key: ABP_UPLOAD_STATE_DATASET_KEY,
+        });
+
+        if (cancelled) return;
+        if (!stored?.payload) {
+          setUploadsHydrated(true);
+          return;
+        }
+
+        const parsed = parsePersistedUploadStatePayload(stored.payload);
+        if (!parsed) {
+          setUploadsHydrated(true);
+          return;
+        }
+
+        setRunInputs(parsed.runInputs);
+        setUtilityRows(parsed.utilityRows ?? []);
+        setCsgSystemMappings(parsed.csgSystemMappings ?? []);
+        setProjectApplications(deserializeProjectApplications(parsed.projectApplications ?? []));
+        setQuickBooksByInvoice(deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []));
+        setInvoiceMapParsed(null);
+        setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
+        setSavedInvoiceNumberMapRows(parsed.invoiceNumberMapRows ?? []);
+        lastPersistedUploadPayloadRef.current = stored.payload;
+      } catch {
+        if (!cancelled) {
+          setUploadPersistenceNotice("Could not restore previously uploaded files.");
+        }
+      } finally {
+        if (!cancelled) {
+          setUploadsHydrated(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authLoading, user]);
 
   useEffect(() => {
     const snapshot = scanJobQuery.data;
@@ -469,6 +590,57 @@ export default function AbpInvoiceSettlement() {
     if (!invoiceMapParsed) return;
     setSavedInvoiceNumberMapRows(invoiceNumberMapRowsFromParsed);
   }, [invoiceMapParsed, invoiceNumberMapRowsFromParsed]);
+
+  useEffect(() => {
+    if (authLoading || !user || !uploadsHydrated) return;
+
+    const payload = JSON.stringify(
+      buildPersistedUploadStatePayload({
+        runInputs,
+        utilityRows,
+        csgSystemMappings,
+        projectApplications,
+        quickBooksByInvoice,
+        invoiceNumberMapRows,
+      })
+    );
+
+    if (payload === lastPersistedUploadPayloadRef.current) return;
+
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await saveUploadStateMutationRef.current.mutateAsync({
+            key: ABP_UPLOAD_STATE_DATASET_KEY,
+            payload,
+          });
+          if (cancelled) return;
+          lastPersistedUploadPayloadRef.current = payload;
+          setUploadPersistenceNotice(null);
+        } catch {
+          if (!cancelled) {
+            setUploadPersistenceNotice("Could not persist uploaded files right now.");
+          }
+        }
+      })();
+    }, 900);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [
+    authLoading,
+    user,
+    uploadsHydrated,
+    runInputs,
+    utilityRows,
+    csgSystemMappings,
+    projectApplications,
+    quickBooksByInvoice,
+    invoiceNumberMapRows,
+  ]);
 
   const knownSystemIds = useMemo(() => {
     const set = new Set<string>();
@@ -668,6 +840,56 @@ export default function AbpInvoiceSettlement() {
     } finally {
       setIsUploadingInvoiceMap(false);
     }
+  };
+
+  const handleDeleteUtilityFiles = () => {
+    setUtilityRows([]);
+    setRunInputs((current) => ({
+      ...current,
+      utilityInvoiceFiles: [],
+    }));
+    toast.success("Utility invoice files deleted.");
+  };
+
+  const handleDeleteMappingFile = () => {
+    setCsgSystemMappings([]);
+    setRunInputs((current) => ({
+      ...current,
+      csgSystemMappingFile: null,
+    }));
+    toast.success("CSG/System mapping file deleted.");
+  };
+
+  const handleDeleteQuickBooksFile = () => {
+    setQuickBooksByInvoice(new Map());
+    setRunInputs((current) => ({
+      ...current,
+      quickBooksFile: null,
+    }));
+    toast.success("QuickBooks file deleted.");
+  };
+
+  const handleDeleteProjectApplicationFile = () => {
+    setProjectApplications([]);
+    setRunInputs((current) => ({
+      ...current,
+      projectApplicationFile: null,
+    }));
+    toast.success("ProjectApplication file deleted.");
+  };
+
+  const handleDeleteInvoiceMapFile = () => {
+    setInvoiceMapParsed(null);
+    setSavedInvoiceNumberMapRows([]);
+    setInvoiceMapHeaderSelection({
+      csgIdHeader: null,
+      invoiceNumberHeader: null,
+    });
+    setRunInputs((current) => ({
+      ...current,
+      portalInvoiceMapFile: null,
+    }));
+    toast.success("Optional portal invoice map deleted.");
   };
 
   const handleSavePortalCredentials = async () => {
@@ -1042,6 +1264,16 @@ export default function AbpInvoiceSettlement() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+              {uploadsHydrated
+                ? "Uploads persist automatically and stay loaded until you replace or delete them."
+                : "Restoring previously uploaded files..."}
+            </div>
+            {uploadPersistenceNotice ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                {uploadPersistenceNotice}
+              </div>
+            ) : null}
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="utility-upload">Utility Invoice Workbooks (.xlsx/.csv, multi-file)</Label>
@@ -1056,10 +1288,22 @@ export default function AbpInvoiceSettlement() {
                   }}
                   disabled={isUploadingUtility}
                 />
-                <div className="text-xs text-slate-600">
-                  {runInputs.utilityInvoiceFiles.length > 0
-                    ? `${runInputs.utilityInvoiceFiles.length} file(s) loaded.`
-                    : "No utility files loaded."}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.utilityInvoiceFiles.length > 0
+                      ? `${runInputs.utilityInvoiceFiles.length} file(s) loaded.`
+                      : "No utility files loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteUtilityFiles}
+                    disabled={isUploadingUtility || (runInputs.utilityInvoiceFiles.length === 0 && utilityRows.length === 0)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
                 </div>
               </div>
 
@@ -1075,8 +1319,20 @@ export default function AbpInvoiceSettlement() {
                   }}
                   disabled={isUploadingMapping}
                 />
-                <div className="text-xs text-slate-600">
-                  {runInputs.csgSystemMappingFile ?? "No mapping file loaded."}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.csgSystemMappingFile ?? "No mapping file loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteMappingFile}
+                    disabled={isUploadingMapping || (!runInputs.csgSystemMappingFile && csgSystemMappings.length === 0)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
                 </div>
               </div>
 
@@ -1092,8 +1348,20 @@ export default function AbpInvoiceSettlement() {
                   }}
                   disabled={isUploadingQuickBooks}
                 />
-                <div className="text-xs text-slate-600">
-                  {runInputs.quickBooksFile ?? "No QuickBooks file loaded."}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.quickBooksFile ?? "No QuickBooks file loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteQuickBooksFile}
+                    disabled={isUploadingQuickBooks || (!runInputs.quickBooksFile && quickBooksByInvoice.size === 0)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
                 </div>
               </div>
 
@@ -1109,8 +1377,20 @@ export default function AbpInvoiceSettlement() {
                   }}
                   disabled={isUploadingProjectApps}
                 />
-                <div className="text-xs text-slate-600">
-                  {runInputs.projectApplicationFile ?? "No ProjectApplication file loaded."}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.projectApplicationFile ?? "No ProjectApplication file loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteProjectApplicationFile}
+                    disabled={isUploadingProjectApps || (!runInputs.projectApplicationFile && projectApplications.length === 0)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
                 </div>
               </div>
 
@@ -1126,8 +1406,23 @@ export default function AbpInvoiceSettlement() {
                   }}
                   disabled={isUploadingInvoiceMap}
                 />
-                <div className="text-xs text-slate-600">
-                  {runInputs.portalInvoiceMapFile ?? "No optional invoice map loaded."}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs text-slate-600">
+                    {runInputs.portalInvoiceMapFile ?? "No optional invoice map loaded."}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDeleteInvoiceMapFile}
+                    disabled={
+                      isUploadingInvoiceMap ||
+                      (!runInputs.portalInvoiceMapFile && !invoiceMapParsed && invoiceNumberMapRows.length === 0)
+                    }
+                  >
+                    <Trash2 className="h-3.5 w-3.5 mr-1" />
+                    Delete
+                  </Button>
                 </div>
               </div>
             </div>
