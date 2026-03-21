@@ -42,6 +42,7 @@ export type CsgPortalDatabaseRow = {
   customerEmail: string | null;
   customerAltEmail: string | null;
   systemAddress: string | null;
+  paymentNotes: string | null;
   collateralReimbursedToPartner: boolean | null;
 };
 
@@ -258,6 +259,7 @@ export type PaymentComputationRow = {
   customerEmail: string;
   customerAltEmail: string;
   systemAddress: string;
+  paymentNotes: string;
   appliedInstallerRuleName: string;
   paymentReportCheckStatus: string;
   paymentReportMatchedPaymentNumber: number | null;
@@ -1058,6 +1060,12 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     findHeaderByKeywords(parsed.headers, ["address"]) ??
     null;
 
+  const paymentNotesHeader =
+    findHeaderByKeywords(parsed.headers, ["payment", "notes"]) ??
+    findHeaderByKeywords(parsed.headers, ["payment", "note"]) ??
+    findHeaderByKeywords(parsed.headers, ["pay", "notes"]) ??
+    null;
+
   const collateralReimbursedHeader =
     findHeaderByKeywords(parsed.headers, ["collateral", "reimburs"]) ??
     findHeaderByKeywords(parsed.headers, ["reimburs"]) ??
@@ -1092,6 +1100,7 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       customerEmail: customerEmailHeader ? clean(row[customerEmailHeader]) || null : null,
       customerAltEmail: customerAltEmailHeader ? clean(row[customerAltEmailHeader]) || null : null,
       systemAddress: systemAddressHeader ? clean(row[systemAddressHeader]) || null : null,
+      paymentNotes: paymentNotesHeader ? clean(row[paymentNotesHeader]) || null : null,
       collateralReimbursedToPartner: collateralReimbursedHeader
         ? parseBooleanLike(row[collateralReimbursedHeader])
         : null,
@@ -1698,6 +1707,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const customerEmail = clean(csgPortalSystemRow?.customerEmail);
       const customerAltEmail = clean(csgPortalSystemRow?.customerAltEmail);
       const systemAddressFromPortal = clean(csgPortalSystemRow?.systemAddress);
+      const paymentNotesFromPortal = clean(csgPortalSystemRow?.paymentNotes);
 
       const paidApplicationFee = safeMoney(ledger?.applicationFeePaidUpfront);
       const paidUtilityCollateral = safeMoney(ledger?.utilityCollateralPaidUpfront);
@@ -1951,6 +1961,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           customerEmail,
           customerAltEmail,
           systemAddress: systemAddressFromPortal,
+          paymentNotes: paymentNotesFromPortal,
           appliedInstallerRuleName: clean(appliedInstallerRule?.name),
           paymentReportCheckStatus,
           paymentReportMatchedPaymentNumber: paymentNumberForMatch,
@@ -2034,6 +2045,7 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Customer Email",
     "Customer Alt Email",
     "System Address",
+    "Payment Notes",
     "Applied Installer Rule",
     "Payment Report Check Status",
     "Payment Report Payment Number",
@@ -2094,6 +2106,7 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.customerEmail,
       row.customerAltEmail,
       row.systemAddress,
+      row.paymentNotes,
       row.appliedInstallerRuleName,
       row.paymentReportCheckStatus,
       row.paymentReportMatchedPaymentNumber ?? "",

@@ -689,6 +689,7 @@ function normalizeCsgPortalDatabaseRows(rows: unknown[]): CsgPortalDatabaseRow[]
         customerEmail: clean(source.customerEmail) || null,
         customerAltEmail: clean(source.customerAltEmail) || null,
         systemAddress: clean(source.systemAddress) || null,
+        paymentNotes: clean(source.paymentNotes) || null,
         collateralReimbursedToPartner: parseBooleanText(source.collateralReimbursedToPartner),
       } satisfies CsgPortalDatabaseRow;
     })
@@ -1318,6 +1319,12 @@ export default function AbpInvoiceSettlement() {
                   "Site Address",
                   "Address",
                 ]),
+                paymentNotes: getRowValueByAliases(row, [
+                  "paymentNotes",
+                  "Payment Notes",
+                  "Payment Note",
+                  "Notes",
+                ]),
                 collateralReimbursedToPartner: parseBooleanText(
                   getRowValueByAliases(row, ["collateralReimbursedToPartner", "Collateral Reimbursed"])
                 ),
@@ -1557,6 +1564,7 @@ export default function AbpInvoiceSettlement() {
                 "customerEmail",
                 "customerAltEmail",
                 "systemAddress",
+                "paymentNotes",
                 "collateralReimbursedToPartner",
               ],
               rows: csgPortalDatabaseRows.map((row) => ({
@@ -1567,6 +1575,7 @@ export default function AbpInvoiceSettlement() {
                 customerEmail: row.customerEmail ?? "",
                 customerAltEmail: row.customerAltEmail ?? "",
                 systemAddress: row.systemAddress ?? "",
+                paymentNotes: row.paymentNotes ?? "",
                 collateralReimbursedToPartner:
                   row.collateralReimbursedToPartner === null ? "" : String(row.collateralReimbursedToPartner),
               })),
@@ -3552,6 +3561,7 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>Customer Email</TableHead>
                         <TableHead>Customer Alt Email</TableHead>
                         <TableHead>System Address</TableHead>
+                        <TableHead>Payment Notes</TableHead>
                         <TableHead>Applied Installer Rule</TableHead>
                         <TableHead>Payment Report Status</TableHead>
                         <TableHead>Payment Report #</TableHead>
@@ -3611,6 +3621,7 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.customerEmail}</TableCell>
                             <TableCell>{row.customerAltEmail}</TableCell>
                             <TableCell>{row.systemAddress}</TableCell>
+                            <TableCell>{row.paymentNotes}</TableCell>
                             <TableCell>{row.appliedInstallerRuleName}</TableCell>
                             <TableCell>{row.paymentReportCheckStatus}</TableCell>
                             <TableCell>{row.paymentReportMatchedPaymentNumber ?? ""}</TableCell>
