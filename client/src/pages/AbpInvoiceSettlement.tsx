@@ -2710,14 +2710,26 @@ export default function AbpInvoiceSettlement() {
                       <TableHead>PDF</TableHead>
                       <TableHead>Vendor Fee %</TableHead>
                       <TableHead>Additional Collateral %</TableHead>
-                      <TableHead>CC Auth</TableHead>
+                      <TableHead>Additional 5% Selected</TableHead>
+                      <TableHead>CC Auth Completed</TableHead>
+                      <TableHead>CC Auth Digits</TableHead>
+                      <TableHead>Payment Method</TableHead>
+                      <TableHead>Payee Name</TableHead>
+                      <TableHead>Mailing Address 1</TableHead>
+                      <TableHead>Mailing Address 2</TableHead>
+                      <TableHead>City/State/Zip (Raw)</TableHead>
+                      <TableHead>City</TableHead>
+                      <TableHead>State</TableHead>
+                      <TableHead>Zip</TableHead>
+                      <TableHead>REC Quantity</TableHead>
+                      <TableHead>REC Price</TableHead>
                       <TableHead>Error</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {contractScanRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-sm text-slate-500 text-center py-6">
+                        <TableCell colSpan={18} className="text-sm text-slate-500 text-center py-6">
                           No scan rows yet.
                         </TableCell>
                       </TableRow>
@@ -2731,12 +2743,30 @@ export default function AbpInvoiceSettlement() {
                           <TableCell>{formatPercent(row.vendorFeePercent)}</TableCell>
                           <TableCell>{formatPercent(row.additionalCollateralPercent)}</TableCell>
                           <TableCell>
+                            {row.additionalFivePercentSelected === null
+                              ? "Unknown"
+                              : row.additionalFivePercentSelected
+                                ? "Yes"
+                                : "No"}
+                          </TableCell>
+                          <TableCell>
                             {row.ccAuthorizationCompleted === null
                               ? "Unknown"
                               : row.ccAuthorizationCompleted
-                                ? `Completed${row.ccCardAsteriskCount ? ` (${row.ccCardAsteriskCount})` : ""}`
+                                ? "Completed"
                                 : "Incomplete"}
                           </TableCell>
+                          <TableCell>{row.ccCardAsteriskCount ?? ""}</TableCell>
+                          <TableCell>{row.paymentMethod ?? ""}</TableCell>
+                          <TableCell>{row.payeeName ?? ""}</TableCell>
+                          <TableCell>{row.mailingAddress1 ?? ""}</TableCell>
+                          <TableCell>{row.mailingAddress2 ?? ""}</TableCell>
+                          <TableCell>{row.cityStateZip ?? ""}</TableCell>
+                          <TableCell>{row.city ?? ""}</TableCell>
+                          <TableCell>{row.state ?? ""}</TableCell>
+                          <TableCell>{row.zip ?? ""}</TableCell>
+                          <TableCell>{row.recQuantity ?? ""}</TableCell>
+                          <TableCell>{row.recPrice === null ? "" : formatCurrency(row.recPrice)}</TableCell>
                           <TableCell className="text-red-600">{row.error ?? ""}</TableCell>
                         </TableRow>
                       ))
