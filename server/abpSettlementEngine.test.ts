@@ -250,6 +250,37 @@ describe("ABP parser coverage", () => {
     expect(rows[0].systemAddress).toBe("123 Main St");
     expect(rows[0].collateralReimbursedToPartner).toBe(true);
   });
+
+  it("throws when CSG portal database is missing the CSG ID column", () => {
+    expect(() =>
+      parseCsgPortalDatabase({
+        headers: ["System ID", "Installer Company"],
+        rows: [
+          {
+            "System ID": "1001",
+            "Installer Company": "Installer X",
+          },
+        ],
+        matrix: [],
+      })
+    ).toThrow(/CSG ID column/i);
+  });
+
+  it("throws when a non-empty CSG portal database row is missing CSG ID value", () => {
+    expect(() =>
+      parseCsgPortalDatabase({
+        headers: ["CSG ID", "System ID", "Installer Company"],
+        rows: [
+          {
+            "CSG ID": "",
+            "System ID": "1001",
+            "Installer Company": "Installer X",
+          },
+        ],
+        matrix: [],
+      })
+    ).toThrow(/missing CSG ID values/i);
+  });
 });
 
 describe("ABP formula and carryforward", () => {

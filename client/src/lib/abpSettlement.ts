@@ -36,7 +36,7 @@ export type ProjectApplicationLiteRow = {
 
 export type CsgPortalDatabaseRow = {
   systemId: string;
-  csgId: string | null;
+  csgId: string;
   installerName: string | null;
   partnerCompanyName: string | null;
   customerEmail: string | null;
@@ -643,30 +643,48 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     findHeaderByKeywords(parsed.headers, ["reimburs"]) ??
     null;
 
-  if (!systemHeader) {
+  if (!csgHeader) {
+    throw new Error("CSG portal database file must include a CSG ID column.");
+  }
+
+  const missingCsgIdRows: number[] = [];
+  const outputRows: CsgPortalDatabaseRow[] = [];
+
+  parsed.rows.forEach((row, index) => {
+    const hasAnyValue = parsed.headers.some((header) => clean(row[header]).length > 0);
+    if (!hasAnyValue) return;
+
+    const csgId = clean(row[csgHeader]);
+    if (!csgId) {
+      // Report spreadsheet-style row numbers so user can quickly locate invalid rows.
+      missingCsgIdRows.push(index + 2);
+      return;
+    }
+
+    const systemId = systemHeader ? clean(row[systemHeader]) : "";
+    outputRows.push({
+      systemId,
+      csgId,
+      installerName: installerHeader ? clean(row[installerHeader]) || null : null,
+      partnerCompanyName: partnerHeader ? clean(row[partnerHeader]) || null : null,
+      customerEmail: customerEmailHeader ? clean(row[customerEmailHeader]) || null : null,
+      customerAltEmail: customerAltEmailHeader ? clean(row[customerAltEmailHeader]) || null : null,
+      systemAddress: systemAddressHeader ? clean(row[systemAddressHeader]) || null : null,
+      collateralReimbursedToPartner: collateralReimbursedHeader
+        ? parseBooleanLike(row[collateralReimbursedHeader])
+        : null,
+    });
+  });
+
+  if (missingCsgIdRows.length > 0) {
+    const preview = missingCsgIdRows.slice(0, 10).join(", ");
+    const moreCount = missingCsgIdRows.length - 10;
     throw new Error(
-      "CSG portal database file must include a System ID (or state certification number) column."
+      `CSG portal database rows are missing CSG ID values. Row(s): ${preview}${moreCount > 0 ? ` (+${moreCount} more)` : ""}.`
     );
   }
 
-  return parsed.rows
-    .map((row) => {
-      const systemId = clean(row[systemHeader]);
-      if (!systemId) return null;
-      return {
-        systemId,
-        csgId: csgHeader ? clean(row[csgHeader]) || null : null,
-        installerName: installerHeader ? clean(row[installerHeader]) || null : null,
-        partnerCompanyName: partnerHeader ? clean(row[partnerHeader]) || null : null,
-        customerEmail: customerEmailHeader ? clean(row[customerEmailHeader]) || null : null,
-        customerAltEmail: customerAltEmailHeader ? clean(row[customerAltEmailHeader]) || null : null,
-        systemAddress: systemAddressHeader ? clean(row[systemAddressHeader]) || null : null,
-        collateralReimbursedToPartner: collateralReimbursedHeader
-          ? parseBooleanLike(row[collateralReimbursedHeader])
-          : null,
-      } satisfies CsgPortalDatabaseRow;
-    })
-    .filter((row): row is CsgPortalDatabaseRow => Boolean(row));
+  return outputRows;
 }
 
 export function parseQuickBooksDetailedReport(parsed: ParsedTabularData): Map<string, QuickBooksInvoice> {
@@ -1070,15 +1088,17 @@ function buildProjectAppMap(rows: ProjectApplicationLiteRow[]): Map<string, Proj
   return map;
 }
 
-function buildCsgPortalSystemMap(rows: CsgPortalDatabaseRow[]): Map<string, CsgPortalDatabaseRow> {
-  const map = new Map<string, CsgPortalDatabaseRow>();
+function buildCsgPortalLookup(rows: CsgPortalDatabaseRow[]): Map<string, CsgPortalDatabaseRow> {
+  const byCsgId = new Map<string, CsgPortalDatabaseRow>();
+
   rows.forEach((row) => {
-    if (!row.systemId) return;
-    if (!map.has(row.systemId)) {
-      map.set(row.systemId, row);
+    const csgId = clean(row.csgId);
+    if (csgId && !byCsgId.has(csgId)) {
+      byCsgId.set(csgId, row);
     }
   });
-  return map;
+
+  return byCsgId;
 }
 
 function findInstallerRuleForSystem(
@@ -1113,7 +1133,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
   const warnings: string[] = [];
   const systemToCsg = buildSystemToCsgMap(input.csgSystemMappings);
   const projectAppById = buildProjectAppMap(input.projectApplications);
-  const csgPortalBySystemId = buildCsgPortalSystemMap(input.csgPortalDatabaseRows ?? []);
+  const csgPortalLookup = buildCsgPortalLookup(input.csgPortalDatabaseRows ?? []);
   const installerRules = input.installerRules ?? [];
   const previousCarryforward = input.previousCarryforwardBySystemId ?? {};
   const overridesByRowId = input.manualOverridesByRowId ?? {};
@@ -1145,7 +1165,8 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const terms = csgId ? input.contractTermsByCsgId.get(csgId) ?? null : null;
       const ledger = input.quickBooksPaidUpfrontLedger.bySystemId.get(systemId);
       const projectApp = projectAppById.get(systemId) ?? null;
-      const csgPortalSystemRow = csgPortalBySystemId.get(systemId) ?? null;
+      const csgPortalByCsgId = csgId ? csgPortalLookup.get(csgId) ?? null : null;
+      const csgPortalSystemRow = csgPortalByCsgId;
       const appliedInstallerRule = findInstallerRuleForSystem(csgPortalSystemRow, installerRules);
       const installerName = clean(csgPortalSystemRow?.installerName);
       const partnerCompanyName = clean(csgPortalSystemRow?.partnerCompanyName);
@@ -1261,6 +1282,9 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         if (!terms) confidenceFlags.push("Missing scanned contract terms for CSG ID.");
         if (!projectApp) confidenceFlags.push("Missing ProjectApplication row for System/Application ID.");
         if (classification === "unknown") confidenceFlags.push("Payment classification is outside tolerance; review override.");
+        if (csgId && !csgPortalSystemRow) {
+          confidenceFlags.push("No CSG portal row found for CSG ID.");
+        }
         if (paidUtilityCollateralReimbursement > 0 || forceCollateralReimbursement) {
           confidenceFlags.push(
             "Utility collateral reimbursement to partner detected; reimbursed amount is excluded from customer upfront credit."

@@ -619,6 +619,30 @@ function normalizeInstallerRules(rules: InstallerSettlementRule[] | null | undef
   }));
 }
 
+function normalizeCsgPortalDatabaseRows(rows: unknown[]): CsgPortalDatabaseRow[] {
+  if (!Array.isArray(rows)) return [];
+
+  return rows
+    .map((row) => {
+      if (!row || typeof row !== "object") return null;
+      const source = row as Record<string, unknown>;
+      const csgId = clean(source.csgId);
+      if (!csgId) return null;
+
+      return {
+        systemId: clean(source.systemId),
+        csgId,
+        installerName: clean(source.installerName) || null,
+        partnerCompanyName: clean(source.partnerCompanyName) || null,
+        customerEmail: clean(source.customerEmail) || null,
+        customerAltEmail: clean(source.customerAltEmail) || null,
+        systemAddress: clean(source.systemAddress) || null,
+        collateralReimbursedToPartner: parseBooleanText(source.collateralReimbursedToPartner),
+      } satisfies CsgPortalDatabaseRow;
+    })
+    .filter((row): row is CsgPortalDatabaseRow => Boolean(row));
+}
+
 function serializeProjectApplications(rows: ProjectApplicationLiteRow[]): PersistedProjectApplicationRow[] {
   return rows.map((row) => ({
     applicationId: row.applicationId,
@@ -715,7 +739,9 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
       projectApplications: Array.isArray(parsed.projectApplications) ? parsed.projectApplications : [],
       quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
       invoiceNumberMapRows: Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : [],
-      csgPortalDatabaseRows: Array.isArray(parsed.csgPortalDatabaseRows) ? parsed.csgPortalDatabaseRows : [],
+      csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(
+        Array.isArray(parsed.csgPortalDatabaseRows) ? parsed.csgPortalDatabaseRows : []
+      ),
       installerRules: normalizeInstallerRules(
         Array.isArray(parsed.installerRules) ? parsed.installerRules : DEFAULT_INSTALLER_RULES
       ),
@@ -902,7 +928,7 @@ export default function AbpInvoiceSettlement() {
             hydratedProjectApplications = deserializeProjectApplications(parsed.projectApplications ?? []);
             hydratedQuickBooksByInvoice = deserializeQuickBooksInvoices(parsed.quickBooksInvoices ?? []);
             hydratedInvoiceNumberMapRows = parsed.invoiceNumberMapRows ?? [];
-            hydratedCsgPortalDatabaseRows = parsed.csgPortalDatabaseRows ?? [];
+            hydratedCsgPortalDatabaseRows = normalizeCsgPortalDatabaseRows(parsed.csgPortalDatabaseRows ?? []);
             hydratedInstallerRules = normalizeInstallerRules(parsed.installerRules);
             lastPersistedUploadPayloadRef.current = stored.payload;
           }
@@ -995,30 +1021,38 @@ export default function AbpInvoiceSettlement() {
           }
 
           if (slot === "csgPortalDatabase" && hydratedCsgPortalDatabaseRows.length === 0) {
-            hydratedCsgPortalDatabaseRows = parsed.rows
-              .map((row) => ({
+            hydratedCsgPortalDatabaseRows = normalizeCsgPortalDatabaseRows(
+              parsed.rows.map((row) => ({
                 systemId: getRowValueByAliases(
                   row,
                   ["systemId", "System ID", "state_certification_number", "Application_ID"]
                 ),
-                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]) || null,
-                installerName: getRowValueByAliases(row, ["installerName", "Installer", "Installer Company"]) || null,
-                partnerCompanyName:
-                  getRowValueByAliases(row, ["partnerCompanyName", "Partner Company", "Developer"]) || null,
-                customerEmail:
-                  getRowValueByAliases(row, ["customerEmail", "Customer Email", "Email"]) || null,
-                customerAltEmail:
-                  getRowValueByAliases(
-                    row,
-                    ["customerAltEmail", "Customer Alt Email", "Alternate Email", "Alt Email", "Secondary Email"]
-                  ) || null,
-                systemAddress:
-                  getRowValueByAliases(row, ["systemAddress", "System Address", "Site Address", "Address"]) || null,
+                csgId: getRowValueByAliases(row, ["csgId", "CSG ID"]),
+                installerName: getRowValueByAliases(row, ["installerName", "Installer", "Installer Company"]),
+                partnerCompanyName: getRowValueByAliases(row, [
+                  "partnerCompanyName",
+                  "Partner Company",
+                  "Developer",
+                ]),
+                customerEmail: getRowValueByAliases(row, ["customerEmail", "Customer Email", "Email"]),
+                customerAltEmail: getRowValueByAliases(row, [
+                  "customerAltEmail",
+                  "Customer Alt Email",
+                  "Alternate Email",
+                  "Alt Email",
+                  "Secondary Email",
+                ]),
+                systemAddress: getRowValueByAliases(row, [
+                  "systemAddress",
+                  "System Address",
+                  "Site Address",
+                  "Address",
+                ]),
                 collateralReimbursedToPartner: parseBooleanText(
                   getRowValueByAliases(row, ["collateralReimbursedToPartner", "Collateral Reimbursed"])
                 ),
               }))
-              .filter((row) => row.systemId);
+            );
             if (hydratedCsgPortalDatabaseRows.length > 0) {
               hydratedRunInputs.csgPortalDatabaseFile = parsed.fileName;
             }
@@ -1308,7 +1342,7 @@ export default function AbpInvoiceSettlement() {
               ],
               rows: csgPortalDatabaseRows.map((row) => ({
                 systemId: row.systemId,
-                csgId: row.csgId ?? "",
+                csgId: row.csgId,
                 installerName: row.installerName ?? "",
                 partnerCompanyName: row.partnerCompanyName ?? "",
                 customerEmail: row.customerEmail ?? "",
@@ -1809,7 +1843,7 @@ export default function AbpInvoiceSettlement() {
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
     setSavedInvoiceNumberMapRows(payload.invoiceNumberMapRows ?? []);
-    setCsgPortalDatabaseRows(payload.csgPortalDatabaseRows ?? []);
+    setCsgPortalDatabaseRows(normalizeCsgPortalDatabaseRows(payload.csgPortalDatabaseRows ?? []));
     setInstallerRules(normalizeInstallerRules(payload.installerRules));
     setContractTermsByCsgId(new Map((payload.contractTerms ?? []).map((term) => [term.csgId, term])));
     setContractScanRows(
