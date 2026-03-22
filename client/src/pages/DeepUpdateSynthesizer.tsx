@@ -254,12 +254,6 @@ const REPORTS: Array<{ key: DeepUpdateReportKey; label: string; required: boolea
     description: "ABP export containing Part_1/Part_2 statuses, batch, trade date, and contract IDs.",
   },
   {
-    key: "sd",
-    label: "SD",
-    required: true,
-    description: "SD export used for fallback status by FormID.",
-  },
-  {
     key: "iccReport1",
     label: "ICC Report 1",
     required: false,
@@ -284,6 +278,18 @@ const REPORTS: Array<{ key: DeepUpdateReportKey; label: string; required: boolea
     description: "Recommended if you want payment-based steps (Step 4.2 / 4.3) resolved.",
   },
 ];
+const ACTIVE_REPORT_KEY_SET = new Set<DeepUpdateReportKey>(REPORTS.map((report) => report.key));
+
+function filterReportsToActive(
+  reports: Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>>
+): Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>> {
+  const filtered: Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>> = {};
+  REPORTS.forEach((report) => {
+    const value = reports[report.key];
+    if (value) filtered[report.key] = value;
+  });
+  return filtered;
+}
 
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
@@ -346,7 +352,7 @@ export default function DeepUpdateSynthesizer() {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const storedReports = await loadDeepUpdateReportsFromStorage();
+      const storedReports = filterReportsToActive(await loadDeepUpdateReportsFromStorage());
       if (cancelled) return;
       if (Object.keys(storedReports).length > 0) {
         setReports(storedReports);
@@ -391,6 +397,7 @@ export default function DeepUpdateSynthesizer() {
 
         for (const key of reportKeys) {
           if (cancelled) break;
+          if (!ACTIVE_REPORT_KEY_SET.has(key)) continue;
           const storageKey = reportStorageKey(key);
           const response = await getRemoteDatasetRef.current.mutateAsync({ key: storageKey });
           if (!response?.payload) continue;
@@ -426,7 +433,7 @@ export default function DeepUpdateSynthesizer() {
                 merged[key as DeepUpdateReportKey] = value;
               }
             }
-            return merged;
+            return filterReportsToActive(merged);
           });
         }
         remoteReportSignaturesRef.current = signatures;

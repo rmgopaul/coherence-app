@@ -411,14 +411,12 @@ function assertRequiredReports(
 ): asserts reports is Partial<Record<DeepUpdateReportKey, DeepUpdateReportData>> & {
   portal: DeepUpdateReportData;
   abpReport: DeepUpdateReportData;
-  sd: DeepUpdateReportData;
   iccReport2: DeepUpdateReportData;
   iccReport3: DeepUpdateReportData;
 } {
   const missing: string[] = [];
   if (!reports.portal) missing.push("Portal");
   if (!reports.abpReport) missing.push("ABP Report");
-  if (!reports.sd) missing.push("SD");
   if (!reports.iccReport2) missing.push("ICC Report 2");
   if (!reports.iccReport3) missing.push("ICC Report 3");
   if (missing.length > 0) {
@@ -450,13 +448,17 @@ export function synthesizeDeepUpdate(
     }
   });
 
-  reports.sd.rows.forEach((row) => {
-    const formId = pickByHeaders(row, ["FormID", "Form Id", "form_id"]);
-    const status = pickByHeaders(row, ["Status", "status"]);
-    if (formId && status) {
-      sdStatusByFormId.set(formId, status);
-    }
-  });
+  if (reports.sd) {
+    reports.sd.rows.forEach((row) => {
+      const formId = pickByHeaders(row, ["FormID", "Form Id", "form_id"]);
+      const status = pickByHeaders(row, ["Status", "status"]);
+      if (formId && status) {
+        sdStatusByFormId.set(formId, status);
+      }
+    });
+  } else {
+    warnings.push("SD upload not provided; using portal sd_status only.");
+  }
 
   reports.iccReport2.rows.forEach((row) => {
     const applicationId = pickByHeaders(row, ["Application ID", "Application_ID", "application_id"]);
