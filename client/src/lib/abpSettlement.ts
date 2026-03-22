@@ -643,6 +643,23 @@ function findHeaderByKeywords(headers: string[], requiredKeywords: string[]): st
   return null;
 }
 
+function findHeaderByKeywordsExcluding(
+  headers: string[],
+  requiredKeywords: string[],
+  excludedKeywords: string[]
+): string | null {
+  const normalizedExcluded = excludedKeywords.map((keyword) => normalizeHeader(keyword));
+  for (const header of headers) {
+    const normalized = normalizeHeader(header);
+    const matchesAll = requiredKeywords.every((keyword) => normalized.includes(normalizeHeader(keyword)));
+    if (!matchesAll) continue;
+    const hasExcluded = normalizedExcluded.some((keyword) => normalized.includes(keyword));
+    if (hasExcluded) continue;
+    return header;
+  }
+  return null;
+}
+
 function findHeaderByAliases(headers: string[], aliases: string[]): string | null {
   for (const alias of aliases) {
     const normalizedAlias = normalizeHeader(alias);
@@ -1064,23 +1081,81 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     null;
 
   const systemAddressHeader =
-    findHeaderByKeywords(parsed.headers, ["system", "address"]) ??
+    findHeaderByAliases(parsed.headers, [
+      "system_owner_system_address",
+      "system owner system address",
+      "system_owner_site_address",
+      "system owner site address",
+      "system_address",
+      "site_address",
+    ]) ??
+    findHeaderByKeywordsExcluding(parsed.headers, ["system", "address"], [
+      "payment",
+      "mailing",
+      "payee",
+      "check",
+      "remit",
+    ]) ??
     findHeaderByKeywords(parsed.headers, ["site", "address"]) ??
     findHeaderByAliases(parsed.headers, ["PV System Address", "Project Address", "Installation Address"]) ??
     null;
 
   const systemCityHeader =
-    findHeaderByKeywords(parsed.headers, ["system", "city"]) ??
+    findHeaderByAliases(parsed.headers, [
+      "system_owner_system_city",
+      "system owner system city",
+      "system_owner_site_city",
+      "system owner site city",
+      "system_city",
+      "site_city",
+    ]) ??
+    findHeaderByKeywordsExcluding(parsed.headers, ["system", "city"], [
+      "payment",
+      "mailing",
+      "payee",
+      "check",
+      "remit",
+    ]) ??
     findHeaderByKeywords(parsed.headers, ["site", "city"]) ??
     null;
 
   const systemStateHeader =
-    findHeaderByKeywords(parsed.headers, ["system", "state"]) ??
+    findHeaderByAliases(parsed.headers, [
+      "system_owner_system_state",
+      "system owner system state",
+      "system_owner_site_state",
+      "system owner site state",
+      "system_state",
+      "site_state",
+    ]) ??
+    findHeaderByKeywordsExcluding(parsed.headers, ["system", "state"], [
+      "payment",
+      "mailing",
+      "payee",
+      "check",
+      "remit",
+    ]) ??
     findHeaderByKeywords(parsed.headers, ["site", "state"]) ??
     null;
 
   const systemZipHeader =
-    findHeaderByKeywords(parsed.headers, ["system", "zip"]) ??
+    findHeaderByAliases(parsed.headers, [
+      "system_owner_system_zip",
+      "system owner system zip",
+      "system_owner_site_zip",
+      "system owner site zip",
+      "system_zip",
+      "site_zip",
+      "system_owner_system_postal_code",
+      "system owner system postal code",
+    ]) ??
+    findHeaderByKeywordsExcluding(parsed.headers, ["system", "zip"], [
+      "payment",
+      "mailing",
+      "payee",
+      "check",
+      "remit",
+    ]) ??
     findHeaderByKeywords(parsed.headers, ["site", "zip"]) ??
     findHeaderByKeywords(parsed.headers, ["system", "postal"]) ??
     findHeaderByKeywords(parsed.headers, ["site", "postal"]) ??
