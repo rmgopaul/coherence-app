@@ -41,14 +41,21 @@ import {
   type InvoiceNumberMapRow,
   type ParsedTabularData,
 } from "@/lib/abpSettlement";
+import { AbpPaymentEmailPreviewDialog } from "@/components/AbpPaymentEmailPreview";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
+  AlertTriangle,
   ArrowLeft,
+  ChevronDown,
   Download,
+  Eye,
   Loader2,
+  Mail,
   Plus,
   Play,
   RefreshCw,
   Save,
+  Search,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -70,6 +77,12 @@ type RunInputs = {
 type InvoiceMapHeaderSelectionState = {
   csgIdHeader: string | null;
   invoiceNumberHeader: string | null;
+};
+
+type AiMailingCleanupProgress = {
+  processed: number;
+  total: number;
+  message: string;
 };
 
 type ContractFetchResult = {
@@ -142,6 +155,7 @@ type SavedRunPayload = {
   computedRows: PaymentComputationRow[];
   warnings: string[];
   carryforwardBySystemId: Record<string, number>;
+  aiMailingModifiedFieldsByCsgId?: Record<string, string[]>;
 };
 
 type RunSummary = {
@@ -254,6 +268,13 @@ function clean(value: unknown): string {
 function toErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   return "Unknown error.";
+}
+
+function parseCurrencyToNumber(value: string | null | undefined): number {
+  if (!value) return 0;
+  const cleaned = String(value).replace(/[^0-9.\-]/g, "");
+  const num = Number.parseFloat(cleaned);
+  return Number.isFinite(num) ? num : 0;
 }
 
 function formatCurrency(value: number | null | undefined): string {
@@ -931,6 +952,22 @@ function deserializePayeeUpdateRows(rows: PersistedPayeeUpdateRow[]): PayeeMaili
   }));
 }
 
+function normalizeAiMailingModifiedFieldsByCsgId(
+  value: Record<string, string[]> | null | undefined
+): Record<string, string[]> {
+  if (!value || typeof value !== "object") return {};
+
+  const normalized: Record<string, string[]> = {};
+  Object.entries(value).forEach(([rawCsgId, rawFields]) => {
+    const csgId = clean(rawCsgId);
+    if (!csgId || !Array.isArray(rawFields)) return;
+    const fields = Array.from(new Set(rawFields.map((entry) => clean(entry)).filter(Boolean)));
+    if (fields.length > 0) normalized[csgId] = fields;
+  });
+
+  return normalized;
+}
+
 function buildPersistedUploadStatePayload(input: {
   runInputs: RunInputs;
   activeScanJobId: string | null;
@@ -1101,6 +1138,10 @@ export default function AbpInvoiceSettlement() {
   const [contractFetchRows, setContractFetchRows] = useState<ContractFetchResult[]>([]);
   const [contractScanRows, setContractScanRows] = useState<ContractScanResult[]>([]);
   const [contractTermsByCsgId, setContractTermsByCsgId] = useState<Map<string, ContractTerms>>(new Map());
+  const [aiMailingCleanupProgress, setAiMailingCleanupProgress] = useState<AiMailingCleanupProgress | null>(null);
+  const [aiMailingModifiedFieldsByCsgId, setAiMailingModifiedFieldsByCsgId] = useState<
+    Record<string, string[]>
+  >({});
 
   const [manualScanIdInput, setManualScanIdInput] = useState("");
   const [activeScanJobId, setActiveScanJobId] = useState<string | null>(null);
@@ -1486,6 +1527,7 @@ export default function AbpInvoiceSettlement() {
     setContractFetchRows(fetchedRows);
     setContractScanRows(scannedRows);
     setContractTermsByCsgId(toContractTermsFromScan(scannedRows));
+    setAiMailingModifiedFieldsByCsgId({});
 
     if (snapshot.status === "completed") {
       setActiveScanJobId(null);
@@ -1954,6 +1996,7 @@ export default function AbpInvoiceSettlement() {
       paymentsReportRows,
       previousCarryforwardBySystemId,
       manualOverridesByRowId,
+      aiMailingModifiedFieldsByCsgId,
     });
 
     return {
@@ -1971,13 +2014,24 @@ export default function AbpInvoiceSettlement() {
     paymentsReportRows,
     previousCarryforwardBySystemId,
     manualOverridesByRowId,
+    aiMailingModifiedFieldsByCsgId,
     latestPayeeUpdateResult.warnings,
   ]);
+
+  const projectAppBySystemId = useMemo(() => {
+    const map = new Map<string, ProjectApplicationLiteRow>();
+    projectApplications.forEach((app) => {
+      if (app.applicationId && !map.has(app.applicationId)) map.set(app.applicationId, app);
+    });
+    return map;
+  }, [projectApplications]);
 
   const yammEmailRows = useMemo(() => {
     if (!computationResult) return [] as Array<Record<string, string>>;
     return computationResult.rows.map((row) => {
       const recipient = clean(row.customerEmail) || clean(row.customerAltEmail);
+      const projApp = row.systemId ? projectAppBySystemId.get(row.systemId) : undefined;
+      const inverterSize = projApp?.inverterSizeKwAcPart1;
       return {
         Recipient: recipient,
         "Recipient Alt": clean(row.customerAltEmail),
@@ -1990,8 +2044,8 @@ export default function AbpInvoiceSettlement() {
         system_owner_payment_state: clean(row.state) || "IL",
         system_owner_payment_zip: clean(row.zip),
         ID: clean(row.csgId),
-        Inverter_Size_kW_AC_Part_2: "",
-        System_Name: "",
+        Inverter_Size_kW_AC_Part_2: inverterSize != null ? String(inverterSize) : "",
+        System_Name: clean(row.systemId),
         system_address: clean(row.systemAddress),
         system_city: clean(row.systemCity),
         system_state: clean(row.systemState),
@@ -2016,7 +2070,7 @@ export default function AbpInvoiceSettlement() {
         "Update Request Deadline": clean(emailUpdateDeadlineText),
       };
     });
-  }, [computationResult, emailSendByDateText, emailUpdateDeadlineText]);
+  }, [computationResult, emailSendByDateText, emailUpdateDeadlineText, projectAppBySystemId]);
 
   const yammMissingRecipientCount = useMemo(
     () => yammEmailRows.filter((row) => !clean(row.Recipient)).length,
@@ -2032,6 +2086,110 @@ export default function AbpInvoiceSettlement() {
     });
     return Array.from(counts.values()).filter((count) => count > 1).length;
   }, [yammEmailRows]);
+
+  // --- YAMM Step 6 enhanced validation ---
+  type YammRowIssue = "missing_email" | "missing_payee" | "missing_address" | "zero_payment" | "missing_method" | "duplicate";
+  const yammDuplicateEmails = useMemo(() => {
+    const counts = new Map<string, number>();
+    yammEmailRows.forEach((row) => {
+      const r = clean(row.Recipient).toLowerCase();
+      if (r) counts.set(r, (counts.get(r) ?? 0) + 1);
+    });
+    return new Set(Array.from(counts.entries()).filter(([, c]) => c > 1).map(([e]) => e));
+  }, [yammEmailRows]);
+
+  const yammRowIssues = useMemo(() => {
+    return yammEmailRows.map((row) => {
+      const issues: YammRowIssue[] = [];
+      if (!clean(row.Recipient)) issues.push("missing_email");
+      if (!clean(row.system_owner_payment_address_name)) issues.push("missing_payee");
+      if (!clean(row.system_owner_payment_address) || !clean(row.system_owner_payment_city) || !clean(row.system_owner_payment_zip))
+        issues.push("missing_address");
+      if (clean(row["This Payment"]) === "$0.00" || !clean(row["This Payment"])) issues.push("zero_payment");
+      if (!clean(row["Payment Method"])) issues.push("missing_method");
+      if (yammDuplicateEmails.has(clean(row.Recipient).toLowerCase())) issues.push("duplicate");
+      return issues;
+    });
+  }, [yammEmailRows, yammDuplicateEmails]);
+
+  const yammIssueCounts = useMemo(() => {
+    const counts: Record<YammRowIssue, number> = {
+      missing_email: 0, missing_payee: 0, missing_address: 0, zero_payment: 0, missing_method: 0, duplicate: 0,
+    };
+    yammRowIssues.forEach((issues) => issues.forEach((i) => counts[i]++));
+    return counts;
+  }, [yammRowIssues]);
+
+  const yammRowsWithIssueCount = useMemo(
+    () => yammRowIssues.filter((issues) => issues.length > 0).length,
+    [yammRowIssues]
+  );
+
+  // --- YAMM Step 6 search & filter ---
+  const [yammSearch, setYammSearch] = useState("");
+  const [yammFilter, setYammFilter] = useState<"all" | "has_issues" | YammRowIssue>("all");
+  const [yammPage, setYammPage] = useState(0);
+  const YAMM_PAGE_SIZE = 50;
+
+  const yammFilteredRows = useMemo(() => {
+    const searchLower = yammSearch.toLowerCase().trim();
+    return yammEmailRows
+      .map((row, index) => ({ row, index, issues: yammRowIssues[index] ?? [] }))
+      .filter(({ row, issues }) => {
+        if (yammFilter === "has_issues" && issues.length === 0) return false;
+        if (yammFilter !== "all" && yammFilter !== "has_issues" && !issues.includes(yammFilter)) return false;
+        if (searchLower) {
+          const haystack = [
+            row.Recipient, row.ID, row.system_owner_payment_address_name,
+            row.system_address, row["Payment Number"], row["This Payment"],
+          ].join(" ").toLowerCase();
+          if (!haystack.includes(searchLower)) return false;
+        }
+        return true;
+      });
+  }, [yammEmailRows, yammRowIssues, yammSearch, yammFilter]);
+
+  const yammPagedRows = useMemo(
+    () => yammFilteredRows.slice(yammPage * YAMM_PAGE_SIZE, (yammPage + 1) * YAMM_PAGE_SIZE),
+    [yammFilteredRows, yammPage]
+  );
+  const yammTotalPages = Math.max(1, Math.ceil(yammFilteredRows.length / YAMM_PAGE_SIZE));
+
+  // Reset page when filter/search changes
+  useEffect(() => { setYammPage(0); }, [yammSearch, yammFilter]);
+
+  // --- YAMM Step 6 batch summary ---
+  const yammBatchSummary = useMemo(() => {
+    if (yammEmailRows.length === 0) return null;
+    let totalPayout = 0;
+    let totalContractValue = 0;
+    let totalFees = 0;
+    const methodCounts: Record<string, number> = {};
+
+    yammEmailRows.forEach((row) => {
+      const payout = parseCurrencyToNumber(row["This Payment"]);
+      const contractVal = parseCurrencyToNumber(row["Total Payment"]);
+      const fee = parseCurrencyToNumber(row["Fee Amount"]);
+      totalPayout += payout;
+      totalContractValue += contractVal;
+      totalFees += fee;
+      const method = clean(row["Payment Method"]) || "Unknown";
+      methodCounts[method] = (methodCounts[method] ?? 0) + 1;
+    });
+
+    return {
+      totalPayout,
+      totalContractValue,
+      totalFees,
+      avgPayout: totalPayout / yammEmailRows.length,
+      methodCounts,
+      rowCount: yammEmailRows.length,
+    };
+  }, [yammEmailRows]);
+
+  // --- YAMM email preview dialog ---
+  const [yammPreviewOpen, setYammPreviewOpen] = useState(false);
+  const [yammPreviewIndex, setYammPreviewIndex] = useState(0);
 
   const savedRuns = (savedRunsQuery.data ?? []) as RunSummary[];
 
@@ -2367,6 +2525,8 @@ export default function AbpInvoiceSettlement() {
       setContractFetchRows([]);
       setContractScanRows([]);
       setContractTermsByCsgId(new Map());
+      setAiMailingModifiedFieldsByCsgId({});
+      setAiMailingCleanupProgress(null);
       setActiveScanJobId(started.jobId);
       toast.success(`Started contract scan for ${selectedScanIds.length.toLocaleString("en-US")} CSG IDs.`);
     } catch (error) {
@@ -2453,23 +2613,74 @@ export default function AbpInvoiceSettlement() {
         zip: string | null;
       }
     >();
+    const modifiedFieldsByCsg = new Map<string, string[]>();
+    const baselineByCsg = new Map(candidates.map((candidate) => [candidate.key, candidate]));
+    const total = candidates.length;
+
+    const toNullableText = (value: unknown): string | null => {
+      const normalized = clean(value);
+      return normalized.length > 0 ? normalized : null;
+    };
+
+    const hasMeaningfulChange = (before: unknown, after: string | null): boolean => {
+      if (after === null) return false;
+      return clean(before) !== clean(after);
+    };
 
     try {
+      setAiMailingCleanupProgress({
+        processed: 0,
+        total,
+        message: `Cleaning ${total.toLocaleString("en-US")} records...`,
+      });
+
       for (let startIndex = 0; startIndex < candidates.length; startIndex += batchSize) {
         const chunk = candidates.slice(startIndex, startIndex + batchSize);
+        const chunkEnd = Math.min(total, startIndex + chunk.length);
+        setAiMailingCleanupProgress({
+          processed: startIndex,
+          total,
+          message: `Cleaning records ${startIndex + 1}-${chunkEnd} of ${total}...`,
+        });
+
         const response = await cleanMailingDataMutation.mutateAsync({
           rows: chunk,
         });
 
         (response.rows ?? []).forEach((row) => {
-          cleanedByCsg.set(row.key, {
-            payeeName: clean(row.payeeName) || null,
-            mailingAddress1: clean(row.mailingAddress1) || null,
-            mailingAddress2: clean(row.mailingAddress2) || null,
-            city: clean(row.city) || null,
-            state: clean(row.state) || null,
-            zip: clean(row.zip) || null,
-          });
+          const cleaned = {
+            payeeName: toNullableText(row.payeeName),
+            mailingAddress1: toNullableText(row.mailingAddress1),
+            mailingAddress2: toNullableText(row.mailingAddress2),
+            city: toNullableText(row.city),
+            state: toNullableText(row.state),
+            zip: toNullableText(row.zip),
+          };
+          cleanedByCsg.set(row.key, cleaned);
+
+          const baseline = baselineByCsg.get(row.key);
+          if (!baseline) return;
+
+          const changedFields: string[] = [];
+          if (hasMeaningfulChange(baseline.payeeName, cleaned.payeeName)) changedFields.push("Payee Name");
+          if (hasMeaningfulChange(baseline.mailingAddress1, cleaned.mailingAddress1)) {
+            changedFields.push("Mailing Address 1");
+          }
+          if (hasMeaningfulChange(baseline.mailingAddress2, cleaned.mailingAddress2)) {
+            changedFields.push("Mailing Address 2");
+          }
+          if (hasMeaningfulChange(baseline.city, cleaned.city)) changedFields.push("City");
+          if (hasMeaningfulChange(baseline.state, cleaned.state)) changedFields.push("State");
+          if (hasMeaningfulChange(baseline.zip, cleaned.zip)) changedFields.push("Zip");
+          if (changedFields.length > 0) {
+            modifiedFieldsByCsg.set(row.key, changedFields);
+          }
+        });
+
+        setAiMailingCleanupProgress({
+          processed: chunkEnd,
+          total,
+          message: `Processed ${chunkEnd.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} records...`,
         });
       }
 
@@ -2536,9 +2747,23 @@ export default function AbpInvoiceSettlement() {
         })
       );
 
-      toast.success(`AI cleaned mailing fields for ${cleanedByCsg.size.toLocaleString("en-US")} CSG records.`);
+      setAiMailingModifiedFieldsByCsgId((current) => {
+        const next = { ...current };
+        modifiedFieldsByCsg.forEach((fields, csgId) => {
+          const merged = [...(next[csgId] ?? []), ...fields];
+          next[csgId] = Array.from(new Set(merged.map((entry) => clean(entry)).filter(Boolean)));
+        });
+        return next;
+      });
+
+      toast.success(
+        `AI cleaned ${cleanedByCsg.size.toLocaleString("en-US")} CSG records. ` +
+          `${modifiedFieldsByCsg.size.toLocaleString("en-US")} had payee/mailing field changes.`
+      );
     } catch (error) {
       toast.error(`AI mailing cleanup failed: ${toErrorMessage(error)}`);
+    } finally {
+      setAiMailingCleanupProgress(null);
     }
   };
 
@@ -2570,6 +2795,7 @@ export default function AbpInvoiceSettlement() {
       computedRows: computationResult.rows,
       warnings: computationResult.warnings,
       carryforwardBySystemId: computationResult.carryforwardBySystemId,
+      aiMailingModifiedFieldsByCsgId,
     };
 
     try {
@@ -2645,6 +2871,10 @@ export default function AbpInvoiceSettlement() {
     );
     setManualOverridesByRowId(payload.manualOverridesByRowId ?? {});
     setPreviousCarryforwardBySystemId(payload.carryforwardBySystemId ?? payload.previousCarryforwardBySystemId ?? {});
+    setAiMailingModifiedFieldsByCsgId(
+      normalizeAiMailingModifiedFieldsByCsgId(payload.aiMailingModifiedFieldsByCsgId)
+    );
+    setAiMailingCleanupProgress(null);
   };
 
   const handleLoadRun = async (runId: string) => {
@@ -2733,6 +2963,8 @@ export default function AbpInvoiceSettlement() {
     setContractFetchRows([]);
     setContractScanRows([]);
     setContractTermsByCsgId(new Map());
+    setAiMailingModifiedFieldsByCsgId({});
+    setAiMailingCleanupProgress(null);
     setManualScanIdInput("");
     setActiveScanJobId(null);
   };
@@ -2767,6 +2999,11 @@ export default function AbpInvoiceSettlement() {
     if (!Number.isFinite(averageMsPerRecord) || averageMsPerRecord <= 0) return null;
     return Math.max(0, Math.round(averageMsPerRecord * (total - current)));
   })();
+  const aiMailingProgressPercent = aiMailingCleanupProgress
+    ? aiMailingCleanupProgress.total > 0
+      ? Math.min(100, Math.round((aiMailingCleanupProgress.processed / aiMailingCleanupProgress.total) * 100))
+      : 0
+    : 0;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
@@ -3653,6 +3890,19 @@ export default function AbpInvoiceSettlement() {
               </div>
             ) : null}
 
+            {aiMailingCleanupProgress ? (
+              <div className="rounded-md border p-3 space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span>{aiMailingCleanupProgress.message}</span>
+                  <span>
+                    {aiMailingCleanupProgress.processed}/{aiMailingCleanupProgress.total}
+                  </span>
+                </div>
+                <Progress value={aiMailingProgressPercent} />
+                <div className="text-xs text-slate-500">{aiMailingProgressPercent}% complete</div>
+              </div>
+            ) : null}
+
             <div className="grid gap-3 md:grid-cols-4">
               <div className="rounded-md border p-3 text-sm">
                 <div className="text-slate-500">Rows</div>
@@ -3715,6 +3965,8 @@ export default function AbpInvoiceSettlement() {
                         <TableHead>City</TableHead>
                         <TableHead>State</TableHead>
                         <TableHead>Zip</TableHead>
+                        <TableHead>AI Mailing Modified</TableHead>
+                        <TableHead>AI Mailing Fields Modified</TableHead>
                         <TableHead>Installer Name</TableHead>
                         <TableHead>Partner Company Name</TableHead>
                         <TableHead>Customer Email</TableHead>
@@ -3778,6 +4030,10 @@ export default function AbpInvoiceSettlement() {
                             <TableCell>{row.city}</TableCell>
                             <TableCell>{row.state}</TableCell>
                             <TableCell>{row.zip}</TableCell>
+                            <TableCell>{row.aiMailingModified ? "Yes" : "No"}</TableCell>
+                            <TableCell className="max-w-[220px]">
+                              <div className="text-xs whitespace-pre-wrap">{row.aiMailingModifiedFields}</div>
+                            </TableCell>
                             <TableCell>{row.installerName}</TableCell>
                             <TableCell>{row.partnerCompanyName}</TableCell>
                             <TableCell>{row.customerEmail}</TableCell>
@@ -3902,21 +4158,36 @@ export default function AbpInvoiceSettlement() {
         <Card>
           <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <CardTitle>6) YAMM Email Merge</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <Mail className="h-5 w-5" />
+                6) YAMM Email Merge
+              </CardTitle>
               <CardDescription>
-                Build a Yet Another Mail Merge CSV for monthly payment emails and run basic send-readiness checks before blast day.
+                Build a Yet Another Mail Merge CSV for monthly payment emails, preview the branded email template, and run send-readiness checks before blast day.
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              onClick={handleExportYammCsv}
-              disabled={!computationResult || yammEmailRows.length === 0}
-            >
-              <Download className="h-4 w-4 mr-2" />
-              Export YAMM CSV
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => { setYammPreviewIndex(0); setYammPreviewOpen(true); }}
+                disabled={yammEmailRows.length === 0}
+              >
+                <Eye className="h-4 w-4 mr-1.5" />
+                Preview Email
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleExportYammCsv}
+                disabled={!computationResult || yammEmailRows.length === 0}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Export YAMM CSV
+              </Button>
+            </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-5">
+            {/* Date inputs */}
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label htmlFor="email-send-by-date">Payment Send By Date Text</Label>
@@ -3938,50 +4209,179 @@ export default function AbpInvoiceSettlement() {
               </div>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="rounded-md border p-3 text-sm">
-                <div className="text-slate-500">Merge Rows</div>
-                <div className="text-lg font-semibold">{yammEmailRows.length.toLocaleString("en-US")}</div>
+            {/* Batch Summary */}
+            {yammBatchSummary && (
+              <Collapsible defaultOpen>
+                <CollapsibleTrigger className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200 hover:text-slate-900 transition-colors">
+                  <ChevronDown className="h-4 w-4 transition-transform [[data-state=closed]>&]:rotate-[-90deg]" />
+                  Batch Summary
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 mt-3">
+                    <div className="rounded-lg border bg-gradient-to-br from-blue-50 to-white dark:from-blue-950/20 dark:to-background p-4">
+                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Payout</div>
+                      <div className="text-xl font-bold text-blue-700 dark:text-blue-400 mt-1">{formatCurrency(yammBatchSummary.totalPayout)}</div>
+                      <div className="text-xs text-slate-400 mt-1">{yammBatchSummary.rowCount.toLocaleString("en-US")} rows &middot; avg {formatCurrency(yammBatchSummary.avgPayout)}</div>
+                    </div>
+                    <div className="rounded-lg border bg-gradient-to-br from-emerald-50 to-white dark:from-emerald-950/20 dark:to-background p-4">
+                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Contract Value</div>
+                      <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400 mt-1">{formatCurrency(yammBatchSummary.totalContractValue)}</div>
+                    </div>
+                    <div className="rounded-lg border bg-gradient-to-br from-amber-50 to-white dark:from-amber-950/20 dark:to-background p-4">
+                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400">Total Fees Withheld</div>
+                      <div className="text-xl font-bold text-amber-700 dark:text-amber-400 mt-1">{formatCurrency(yammBatchSummary.totalFees)}</div>
+                    </div>
+                    <div className="rounded-lg border p-4">
+                      <div className="text-xs font-medium text-slate-500 dark:text-slate-400">By Payment Method</div>
+                      <div className="mt-1.5 space-y-1">
+                        {Object.entries(yammBatchSummary.methodCounts)
+                          .sort(([, a], [, b]) => b - a)
+                          .map(([method, count]) => (
+                            <div key={method} className="flex items-center justify-between text-sm">
+                              <span className="text-slate-600 dark:text-slate-300">{method}</span>
+                              <Badge variant="secondary" className="text-xs tabular-nums">{count}</Badge>
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+
+            {/* Validation badges */}
+            {yammEmailRows.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={yammRowsWithIssueCount === 0 ? "default" : "destructive"} className="text-xs">
+                  {yammRowsWithIssueCount === 0 ? "All rows clean" : `${yammRowsWithIssueCount} rows with issues`}
+                </Badge>
+                {yammIssueCounts.missing_email > 0 && (
+                  <Badge variant="destructive" className="text-xs cursor-pointer" onClick={() => setYammFilter("missing_email")}>
+                    <AlertTriangle className="h-3 w-3 mr-1" />
+                    {yammIssueCounts.missing_email} missing email
+                  </Badge>
+                )}
+                {yammIssueCounts.missing_payee > 0 && (
+                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("missing_payee")}>
+                    {yammIssueCounts.missing_payee} missing payee
+                  </Badge>
+                )}
+                {yammIssueCounts.missing_address > 0 && (
+                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("missing_address")}>
+                    {yammIssueCounts.missing_address} incomplete address
+                  </Badge>
+                )}
+                {yammIssueCounts.zero_payment > 0 && (
+                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("zero_payment")}>
+                    {yammIssueCounts.zero_payment} $0 payment
+                  </Badge>
+                )}
+                {yammIssueCounts.missing_method > 0 && (
+                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("missing_method")}>
+                    {yammIssueCounts.missing_method} no method
+                  </Badge>
+                )}
+                {yammIssueCounts.duplicate > 0 && (
+                  <Badge variant="outline" className="text-xs border-orange-400 text-orange-700 dark:text-orange-400 cursor-pointer" onClick={() => setYammFilter("duplicate")}>
+                    {yammDuplicateRecipientCount} duplicate recipients
+                  </Badge>
+                )}
+                {yammFilter !== "all" && (
+                  <Badge variant="secondary" className="text-xs cursor-pointer" onClick={() => setYammFilter("all")}>
+                    Clear filter &times;
+                  </Badge>
+                )}
               </div>
-              <div className="rounded-md border p-3 text-sm">
-                <div className="text-slate-500">Missing Recipient Email</div>
-                <div className="text-lg font-semibold">{yammMissingRecipientCount.toLocaleString("en-US")}</div>
+            )}
+
+            {/* Search & filter */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                <Input
+                  className="pl-9"
+                  placeholder="Search by email, CSG ID, payee, address, amount..."
+                  value={yammSearch}
+                  onChange={(event) => setYammSearch(event.target.value)}
+                />
               </div>
-              <div className="rounded-md border p-3 text-sm">
-                <div className="text-slate-500">Duplicate Recipients</div>
-                <div className="text-lg font-semibold">{yammDuplicateRecipientCount.toLocaleString("en-US")}</div>
-              </div>
+              <Select value={yammFilter} onValueChange={(value) => setYammFilter(value as typeof yammFilter)}>
+                <SelectTrigger className="w-[200px]">
+                  <SelectValue placeholder="Filter" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All rows</SelectItem>
+                  <SelectItem value="has_issues">Has issues</SelectItem>
+                  <SelectItem value="missing_email">Missing email</SelectItem>
+                  <SelectItem value="missing_payee">Missing payee</SelectItem>
+                  <SelectItem value="missing_address">Incomplete address</SelectItem>
+                  <SelectItem value="zero_payment">$0 payment</SelectItem>
+                  <SelectItem value="missing_method">No method</SelectItem>
+                  <SelectItem value="duplicate">Duplicate recipient</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
 
+            {/* Row count */}
+            <div className="text-sm text-slate-500">
+              {yammFilteredRows.length === yammEmailRows.length
+                ? `${yammEmailRows.length.toLocaleString("en-US")} rows`
+                : `${yammFilteredRows.length.toLocaleString("en-US")} of ${yammEmailRows.length.toLocaleString("en-US")} rows`}
+              {yammTotalPages > 1 && ` \u00b7 Page ${yammPage + 1} of ${yammTotalPages}`}
+            </div>
+
+            {/* Table */}
             <div className="rounded-md border">
-              <div className="max-h-56 overflow-auto">
+              <div className="max-h-[420px] overflow-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-8"></TableHead>
                       <TableHead>Recipient</TableHead>
                       <TableHead>CSG ID</TableHead>
                       <TableHead>Payment #</TableHead>
                       <TableHead>This Payment</TableHead>
                       <TableHead>Payee</TableHead>
                       <TableHead>Method</TableHead>
+                      <TableHead className="w-10">Issues</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {yammEmailRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-sm text-slate-500 text-center py-6">
+                        <TableCell colSpan={8} className="text-sm text-slate-500 text-center py-6">
                           Compute settlement rows first to build email merge data.
                         </TableCell>
                       </TableRow>
+                    ) : yammFilteredRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={8} className="text-sm text-slate-500 text-center py-6">
+                          No rows match the current filter.
+                        </TableCell>
+                      </TableRow>
                     ) : (
-                      yammEmailRows.slice(0, 100).map((row, index) => (
-                        <TableRow key={`${clean(row.ID)}:${clean(row["Payment Number"])}:${index}`}>
-                          <TableCell>{row.Recipient}</TableCell>
+                      yammPagedRows.map(({ row, index, issues }) => (
+                        <TableRow
+                          key={`${clean(row.ID)}:${clean(row["Payment Number"])}:${index}`}
+                          className={`cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 ${issues.length > 0 ? "bg-amber-50/50 dark:bg-amber-950/10" : ""}`}
+                          onClick={() => { setYammPreviewIndex(index); setYammPreviewOpen(true); }}
+                        >
+                          <TableCell className="text-center">
+                            <Eye className="h-3.5 w-3.5 text-slate-400 mx-auto" />
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">{row.Recipient || <span className="text-red-500 italic">missing</span>}</TableCell>
                           <TableCell>{row.ID}</TableCell>
                           <TableCell>{row["Payment Number"]}</TableCell>
-                          <TableCell>{row["This Payment"]}</TableCell>
-                          <TableCell>{row.system_owner_payment_address_name}</TableCell>
+                          <TableCell className="tabular-nums">{row["This Payment"]}</TableCell>
+                          <TableCell className="max-w-[160px] truncate">{row.system_owner_payment_address_name}</TableCell>
                           <TableCell>{row["Payment Method"]}</TableCell>
+                          <TableCell className="text-center">
+                            {issues.length > 0 && (
+                              <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+                                {issues.length}
+                              </Badge>
+                            )}
+                          </TableCell>
                         </TableRow>
                       ))
                     )}
@@ -3989,12 +4389,35 @@ export default function AbpInvoiceSettlement() {
                 </Table>
               </div>
             </div>
+
+            {/* Pagination */}
+            {yammTotalPages > 1 && (
+              <div className="flex items-center justify-center gap-2">
+                <Button variant="outline" size="sm" disabled={yammPage === 0} onClick={() => setYammPage((p) => p - 1)}>
+                  Previous
+                </Button>
+                <span className="text-sm text-slate-500 tabular-nums">
+                  {yammPage + 1} / {yammTotalPages}
+                </span>
+                <Button variant="outline" size="sm" disabled={yammPage >= yammTotalPages - 1} onClick={() => setYammPage((p) => p + 1)}>
+                  Next
+                </Button>
+              </div>
+            )}
+
             <div className="text-xs text-slate-500">
-              Export includes all placeholders used in your template (for example: {"<<"}This Payment{">>"}, {"<<"}ID{">>"}, {"<<"}Payment Method{">>"}) plus
-              {" "}Recipient for YAMM.
+              Click any row to preview the full branded email with that row&apos;s data. Export includes all {"<<"}placeholder{">>"} fields plus Recipient for YAMM.
             </div>
           </CardContent>
         </Card>
+
+        {/* Email preview dialog */}
+        <AbpPaymentEmailPreviewDialog
+          open={yammPreviewOpen}
+          onOpenChange={setYammPreviewOpen}
+          rows={yammEmailRows}
+          initialIndex={yammPreviewIndex}
+        />
 
         {contractFetchRows.length > 0 ? (
           <Card>

@@ -257,6 +257,8 @@ export type PaymentComputationRow = {
   city: string;
   state: string;
   zip: string;
+  aiMailingModified: boolean;
+  aiMailingModifiedFields: string;
   installerName: string;
   partnerCompanyName: string;
   customerEmail: string;
@@ -303,6 +305,7 @@ export type SettlementComputationInput = {
   paymentsReportRows?: PaymentsReportRow[];
   previousCarryforwardBySystemId?: Record<string, number>;
   manualOverridesByRowId?: Record<string, ManualOverride>;
+  aiMailingModifiedFieldsByCsgId?: Record<string, string[]>;
 };
 
 const APPLICATION_FEE_CUTOFF = new Date("2024-06-01T00:00:00.000Z");
@@ -1696,6 +1699,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
   const previousCarryforward = input.previousCarryforwardBySystemId ?? {};
   const overridesByRowId = input.manualOverridesByRowId ?? {};
   const paymentsReportBySystemId = buildPaymentsReportLookup(input.paymentsReportRows ?? []);
+  const aiMailingModifiedFieldsByCsgId = input.aiMailingModifiedFieldsByCsgId ?? {};
 
   const rowsBySystem = new Map<string, UtilityInvoiceRow[]>();
   input.utilityRows.forEach((row) => {
@@ -1791,6 +1795,16 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         const city = clean(terms?.city) || clean(cityStateZipParts.city);
         const state = clean(terms?.state) || clean(cityStateZipParts.state);
         const zip = clean(terms?.zip) || clean(cityStateZipParts.zip);
+        const aiModifiedFields = csgId
+          ? Array.from(
+              new Set(
+                (aiMailingModifiedFieldsByCsgId[csgId] ?? [])
+                  .map((value) => clean(value))
+                  .filter((value) => value.length > 0)
+              )
+            )
+          : [];
+        const aiMailingModified = aiModifiedFields.length > 0;
 
         const forceCollateralReimbursement =
           csgPortalSystemRow?.collateralReimbursedToPartner === true ||
@@ -1985,6 +1999,8 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           city,
           state,
           zip,
+          aiMailingModified,
+          aiMailingModifiedFields: aiModifiedFields.join(" | "),
           installerName,
           partnerCompanyName,
           customerEmail,
@@ -2072,6 +2088,8 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "City",
     "State",
     "Zip",
+    "AI Mailing Modified",
+    "AI Mailing Fields Modified",
     "Installer Name",
     "Partner Company Name",
     "Customer Email",
@@ -2136,6 +2154,8 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.city,
       row.state,
       row.zip,
+      row.aiMailingModified ? "Yes" : "No",
+      row.aiMailingModifiedFields,
       row.installerName,
       row.partnerCompanyName,
       row.customerEmail,
