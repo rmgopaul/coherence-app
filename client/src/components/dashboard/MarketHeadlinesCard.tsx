@@ -152,8 +152,8 @@ export default function MarketHeadlinesCard() {
   const { data, isLoading, error, refetch } = trpc.marketDashboard.getMarketData.useQuery(
     undefined,
     {
-      staleTime: 4 * 60_000,
-      refetchInterval: 5 * 60_000,
+      staleTime: 10 * 60_000,
+      refetchInterval: 15 * 60_000,
       retry: 1,
     }
   );
@@ -179,6 +179,7 @@ export default function MarketHeadlinesCard() {
   );
 
   const fetchedAt = data?.fetchedAt ? new Date(data.fetchedAt) : null;
+  const marketRateLimited = Boolean((data as any)?.marketRateLimited);
 
   const stocksOverallChange = useMemo(() => {
     if (stocks.length === 0) return null;
@@ -246,7 +247,9 @@ export default function MarketHeadlinesCard() {
 
           {!isLoading && stocks.length === 0 && crypto.length === 0 && (
             <p className="text-sm text-slate-400 text-center py-4">
-              No market data available.
+              {marketRateLimited
+                ? "Market provider temporarily rate-limited requests (HTTP 429). Try again in 15-60 minutes."
+                : "No market data available."}
             </p>
           )}
         </div>

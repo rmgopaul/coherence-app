@@ -16,6 +16,15 @@ export interface MarketQuote {
   marketState: string;
 }
 
+export class MarketRateLimitError extends Error {
+  code = "RATE_LIMIT" as const;
+
+  constructor(message = "Market data provider rate limited requests.") {
+    super(message);
+    this.name = "MarketRateLimitError";
+  }
+}
+
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -72,6 +81,9 @@ async function fetchQuotesBatch(symbols: string[]): Promise<MarketQuote[]> {
         signal: AbortSignal.timeout(7000),
       });
 
+      if (response.status === 429) {
+        throw new MarketRateLimitError("Yahoo quote API returned HTTP 429.");
+      }
       if (!response.ok) {
         throw new Error(`Yahoo quote endpoint returned HTTP ${response.status}`);
       }
@@ -100,6 +112,7 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
       `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`,
     ];
 
+    let sawRateLimit = false;
     for (const url of urls) {
       const response = await fetch(url, {
         headers: {
@@ -109,6 +122,10 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
         signal: AbortSignal.timeout(7000),
       });
 
+      if (response.status === 429) {
+        sawRateLimit = true;
+        continue;
+      }
       if (!response.ok) continue;
       const json = (await response.json()) as any;
       const result = json?.chart?.result?.[0];
@@ -145,8 +162,14 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
         marketState: meta.marketState ?? "CLOSED",
       };
     }
+    if (sawRateLimit) {
+      throw new MarketRateLimitError(`Yahoo chart endpoint returned HTTP 429 for ${symbol}.`);
+    }
     return null;
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketRateLimitError) {
+      throw error;
+    }
     return null;
   }
 }
@@ -166,6 +189,9 @@ async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
       signal: AbortSignal.timeout(7000),
     });
 
+    if (response.status === 429) {
+      throw new MarketRateLimitError(`Yahoo quote page returned HTTP 429 for ${symbol}.`);
+    }
     if (!response.ok) return null;
     const html = await response.text();
 
@@ -198,12 +224,17 @@ async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
       currency: currencyMatch?.[1] ?? "USD",
       marketState: stateMatch?.[1] ?? "CLOSED",
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketRateLimitError) {
+      throw error;
+    }
     return null;
   }
 }
 
 export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[]> {
+  let sawRateLimit = false;
+
   // Try batch API first
   try {
     const results = await fetchQuotesBatch(symbols);
@@ -212,20 +243,42 @@ export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[
       return results;
     }
   } catch (error) {
+    if (error instanceof MarketRateLimitError) {
+      sawRateLimit = true;
+    }
     console.warn("[MarketData] Batch quote API failed, falling back to chart endpoint:", error);
   }
 
   // Fallback: fetch individual chart endpoints in parallel to avoid long sequential delays.
-  const chartResults = await Promise.all(symbols.map((symbol) => fetchQuoteFromChart(symbol)));
-  const chartQuotes = chartResults.filter((quote): quote is MarketQuote => Boolean(quote));
+  const chartSettled = await Promise.allSettled(symbols.map((symbol) => fetchQuoteFromChart(symbol)));
+  const chartQuotes = chartSettled
+    .filter((result): result is PromiseFulfilledResult<MarketQuote | null> => result.status === "fulfilled")
+    .map((result) => result.value)
+    .filter((quote): quote is MarketQuote => Boolean(quote));
+  chartSettled.forEach((result) => {
+    if (result.status === "rejected" && result.reason instanceof MarketRateLimitError) {
+      sawRateLimit = true;
+    }
+  });
   if (chartQuotes.length > 0) {
     console.log(`[MarketData] Chart fallback fetched ${chartQuotes.length} quotes.`);
     return chartQuotes;
   }
 
   // Final fallback: finance.yahoo.com HTML quote pages.
-  const pageResults = await Promise.all(symbols.map((symbol) => fetchQuoteFromPage(symbol)));
-  const pageQuotes = pageResults.filter((quote): quote is MarketQuote => Boolean(quote));
+  const pageSettled = await Promise.allSettled(symbols.map((symbol) => fetchQuoteFromPage(symbol)));
+  const pageQuotes = pageSettled
+    .filter((result): result is PromiseFulfilledResult<MarketQuote | null> => result.status === "fulfilled")
+    .map((result) => result.value)
+    .filter((quote): quote is MarketQuote => Boolean(quote));
+  pageSettled.forEach((result) => {
+    if (result.status === "rejected" && result.reason instanceof MarketRateLimitError) {
+      sawRateLimit = true;
+    }
+  });
   console.log(`[MarketData] Page fallback fetched ${pageQuotes.length} quotes.`);
+  if (pageQuotes.length === 0 && sawRateLimit) {
+    throw new MarketRateLimitError("Yahoo rate limited market data requests.");
+  }
   return pageQuotes;
 }

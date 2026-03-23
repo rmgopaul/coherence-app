@@ -1889,6 +1889,11 @@ export const appRouter = router({
 
           const quotes = quotesResult.status === "fulfilled" ? quotesResult.value : [];
           const headlines = headlinesResult.status === "fulfilled" ? headlinesResult.value : [];
+          const quotesError =
+            quotesResult.status === "rejected" ? String((quotesResult.reason as any)?.message ?? quotesResult.reason ?? "") : "";
+          const marketRateLimited =
+            quotesResult.status === "rejected" &&
+            /429|rate limit|too many requests/i.test(quotesError);
 
           if (quotesResult.status === "rejected") {
             console.warn("[MarketDashboard] Market quotes fetch failed:", quotesResult.reason);
@@ -1897,7 +1902,7 @@ export const appRouter = router({
             console.warn("[MarketDashboard] Headlines fetch failed:", headlinesResult.reason);
           }
 
-          const freshData = { quotes, headlines, fetchedAt: new Date().toISOString() };
+          const freshData = { quotes, headlines, fetchedAt: new Date().toISOString(), marketRateLimited };
           // Only update cache if we got meaningful data
           if (quotes.length > 0 || headlines.length > 0) {
             cachedData = freshData;
