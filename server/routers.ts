@@ -3596,7 +3596,7 @@ export const appRouter = router({
                       "- mailingAddress1: street address ONLY (e.g. '123 Main St'). Never a person name, phone, city, or state.",
                       "- mailingAddress2: ONLY a secondary unit (Apt, Ste, Unit, PO Box continuation). If there is no true secondary unit, set to empty string.",
                       "- city: city name ONLY. Never a zip, phone, state name, 'IL', 'USA', 'United States', or 'PO BOX'.",
-                      "- state: 2-letter uppercase abbreviation (e.g. 'IL'). Never 'Illinois', 'DR', 'ST', or any non-state value. All records are in Illinois — default to 'IL' if blank or unresolvable.",
+                      "- state: 2-letter uppercase abbreviation (e.g. 'IL'). Never 'Illinois', 'DR', 'ST', or any non-state value. Do NOT default to 'IL' — the mailing address may be in any US state. Only set a state if it is explicitly present in the data.",
                       "- zip: 5-digit or ZIP+4 format ONLY. Never in city field.",
                       "",
                       "COMMON ERROR PATTERNS TO FIX:",
