@@ -270,9 +270,9 @@ async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote
 
   // Stooq expects symbols joined with "+" (not commas).
   const stooqSymbols = stockSymbols.map((symbol) => `${symbol.toLowerCase()}.us`);
-  const url =
-    `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSymbols.join("+"))}` +
-    "&f=sd2t2ohlcvn&e=csv";
+  // IMPORTANT: Stooq expects literal "+" delimiters in `s=`.
+  // If "+" is URL-encoded to "%2B", Stooq treats it as a single symbol and returns N/D.
+  const url = `https://stooq.com/q/l/?s=${stooqSymbols.join("+")}&f=sd2t2ohlcvn&e=csv`;
 
   try {
     const response = await fetch(url, {
