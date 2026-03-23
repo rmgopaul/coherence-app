@@ -58,6 +58,7 @@ import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { DashboardHero } from "@/components/dashboard/DashboardHero";
 import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
+import MarketHeadlinesCard from "@/components/dashboard/MarketHeadlinesCard";
 import { SamsungHealthCard } from "@/components/dashboard/SamsungHealthCard";
 import { WhoopCard } from "@/components/dashboard/WhoopCard";
 import { HabitsCard } from "@/components/dashboard/HabitsCard";
@@ -281,6 +282,7 @@ export default function Dashboard() {
 
   const TRACKED_SECTIONS = useMemo(
     () => [
+      "section-headlines",
       "section-overview",
       "section-health",
       "section-whoop",
@@ -2114,6 +2116,13 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Headlines & Markets */}
+      {isSectionVisible("headlines") && (
+        <div id="section-headlines" className="container mx-auto px-4 pt-4 scroll-mt-40">
+          <MarketHeadlinesCard />
+        </div>
+      )}
 
       {/* Today's Plan */}
       <div id="section-overview" className="container mx-auto px-4 pt-4 scroll-mt-40">

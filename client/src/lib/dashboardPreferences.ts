@@ -69,6 +69,7 @@ export function buildDashboardWidgetLayoutWithHiddenButtons(
 // ── Per-Section Visibility ──────────────────────────────────────────
 
 export type DashboardSectionKey =
+  | "headlines"
   | "supplements"
   | "notes"
   | "workspace"
@@ -78,6 +79,7 @@ export const DASHBOARD_SECTION_OPTIONS: Array<{
   key: DashboardSectionKey;
   label: string;
 }> = [
+  { key: "headlines", label: "Headlines & Markets" },
   { key: "supplements", label: "Supplements" },
   { key: "notes", label: "Notes" },
   { key: "workspace", label: "Workspace" },

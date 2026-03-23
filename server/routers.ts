@@ -1862,6 +1862,37 @@ export const appRouter = router({
       }),
   }),
 
+  marketDashboard: (() => {
+    // In-memory cache with 5-minute TTL
+    let cachedData: { quotes: any[]; headlines: any[]; fetchedAt: string } | null = null;
+    let cacheExpiry = 0;
+    const CACHE_TTL_MS = 5 * 60 * 1000;
+
+    return router({
+      getMarketData: protectedProcedure.query(async () => {
+        const now = Date.now();
+        if (cachedData && now < cacheExpiry) {
+          return cachedData;
+        }
+
+        const { fetchMarketQuotes } = await import("./services/marketData");
+        const { fetchNewsHeadlines } = await import("./services/newsHeadlines");
+
+        const [quotes, headlines] = await Promise.all([
+          fetchMarketQuotes([
+            "GEVO", "MNTK", "PLUG", "ALTO", "REX",
+            "BTC-USD", "ETH-USD",
+          ]),
+          fetchNewsHeadlines(),
+        ]);
+
+        cachedData = { quotes, headlines, fetchedAt: new Date().toISOString() };
+        cacheExpiry = now + CACHE_TTL_MS;
+        return cachedData;
+      }),
+    });
+  })(),
+
   feedback: router({
     submit: protectedProcedure
       .input(
