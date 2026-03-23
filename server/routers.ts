@@ -3534,90 +3534,311 @@ export const appRouter = router({
           };
         });
 
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${integration.accessToken}`,
-          },
-          body: JSON.stringify({
-            model: resolveOpenAIModel(integration.metadata),
-            response_format: { type: "json_object" },
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You clean US mailing address records. Return valid JSON only with shape {\"rows\":[...]} and no prose. Keep each input key exactly as provided. Preserve payee/company names unless obvious OCR corruption. Standardize address casing and abbreviations (St, Ave, Rd, Blvd, Dr, Ln, Ct, Pkwy, Apt, Ste). Keep city/state/zip fields separated. State must be 2-letter uppercase if inferable. Zip should be 5 or ZIP+4 if present. Mailing Address 2 must contain only a true secondary line (Apt/Ste/Unit/etc). Never put city/state/zip, phone numbers, or duplicated payee/address text in Mailing Address 2. If a value is not reliable, leave it blank. Do not invent missing data.",
-              },
-              {
-                role: "user",
-                content: JSON.stringify({
-                  instructions:
-                    "Clean these records and return one output row per input row in the same order using identical keys. Use cityStateZip as fallback context if provided.",
-                  rows: sourceRows,
-                }),
-              },
-            ],
-          }),
-        });
+        const sourceKeys = new Set(sourceRows.map((row) => row.key));
 
-        if (!response.ok) {
-          const errorBody = await response.text().catch(() => "");
-          let message = "Failed to clean mailing data";
+        // ── Retry wrapper with exponential backoff ──────────────────
+        const MAX_RETRIES = 3;
+        let lastError: Error | null = null;
+
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
           try {
-            const parsed = JSON.parse(errorBody);
-            message = parsed?.error?.message || message;
-          } catch {}
-          throw new Error(`OpenAI API error (${response.status}): ${message}`);
+            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${integration.accessToken}`,
+              },
+              signal: AbortSignal.timeout(60_000),
+              body: JSON.stringify({
+                model: resolveOpenAIModel(integration.metadata),
+                response_format: { type: "json_object" },
+                temperature: 0,
+                messages: [
+                  {
+                    role: "system",
+                    content: [
+                      "You clean US mailing address records. Return valid JSON only with shape {\"rows\":[...]} and no prose.",
+                      "CRITICAL RULES:",
+                      "1. Return EXACTLY the same number of rows as the input, in the SAME order, with the SAME keys.",
+                      "2. Every input key must appear exactly once in the output.",
+                      "3. Keep each input key exactly as provided (case-sensitive).",
+                      "4. Preserve payee/company names unless obvious OCR corruption.",
+                      "5. Standardize address casing and abbreviations (St, Ave, Rd, Blvd, Dr, Ln, Ct, Pkwy, Apt, Ste).",
+                      "6. Keep city/state/zip as separate fields. State must be 2-letter uppercase if inferable. Zip should be 5 or ZIP+4 if present.",
+                      "7. Mailing Address 2 must contain only a true secondary line (Apt/Ste/Unit/etc). Never put city/state/zip, phone numbers, or duplicated payee/address text in Mailing Address 2.",
+                      "8. If a value is not reliable, return it as an empty string. Do not invent missing data.",
+                      "9. Do not merge, split, or reorder rows.",
+                    ].join("\n"),
+                  },
+                  {
+                    role: "user",
+                    content: JSON.stringify({
+                      instructions:
+                        `Clean these ${sourceRows.length} records and return EXACTLY ${sourceRows.length} output rows in the same order using identical keys. Use cityStateZip as fallback context when city/state/zip fields are empty.`,
+                      rows: sourceRows,
+                    }),
+                  },
+                ],
+              }),
+            });
+
+            if (!response.ok) {
+              const errorBody = await response.text().catch(() => "");
+              let message = "Failed to clean mailing data";
+              try {
+                const parsed = JSON.parse(errorBody);
+                message = parsed?.error?.message || message;
+              } catch {}
+
+              // Retry on rate limit (429) or server errors (5xx)
+              if ((response.status === 429 || response.status >= 500) && attempt < MAX_RETRIES) {
+                const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 16000);
+                console.warn(`[AI Cleaning] Attempt ${attempt}/${MAX_RETRIES} got HTTP ${response.status}, retrying in ${delayMs}ms...`);
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                lastError = new Error(`OpenAI API error (${response.status}): ${message}`);
+                continue;
+              }
+
+              throw new Error(`OpenAI API error (${response.status}): ${message}`);
+            }
+
+            const data = await response.json();
+            const content = (data as any)?.choices?.[0]?.message?.content;
+            if (!content || typeof content !== "string") {
+              throw new Error("Invalid response from OpenAI: missing message content.");
+            }
+
+            // ── Response size guard ─────────────────────────────────
+            if (content.length > 2_000_000) {
+              throw new Error(`OpenAI response suspiciously large (${(content.length / 1_000_000).toFixed(1)}MB). Aborting.`);
+            }
+
+            // ── Parse JSON ──────────────────────────────────────────
+            let parsedRows: Array<Record<string, unknown>> = [];
+            try {
+              const parsed = JSON.parse(content) as { rows?: unknown };
+              if (!Array.isArray(parsed?.rows)) {
+                throw new Error("Response JSON missing 'rows' array.");
+              }
+              parsedRows = parsed.rows;
+            } catch (parseError) {
+              if (parseError instanceof Error && parseError.message.includes("rows")) throw parseError;
+              throw new Error("OpenAI returned non-JSON output for mailing data cleanup.");
+            }
+
+            // ── Validate row count ──────────────────────────────────
+            if (parsedRows.length !== sourceRows.length) {
+              console.error(
+                `[AI Cleaning] Row count mismatch: sent ${sourceRows.length}, received ${parsedRows.length}. ` +
+                  `Attempt ${attempt}/${MAX_RETRIES}.`
+              );
+              if (attempt < MAX_RETRIES) {
+                const delayMs = 1000 * attempt;
+                console.warn(`[AI Cleaning] Retrying in ${delayMs}ms due to row count mismatch...`);
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                lastError = new Error(
+                  `AI returned ${parsedRows.length} rows but expected ${sourceRows.length}. Retrying...`
+                );
+                continue;
+              }
+              // On final attempt, warn but don't hard-fail — fall through with key matching
+              console.error(
+                `[AI Cleaning] Row count mismatch persisted after ${MAX_RETRIES} attempts. Proceeding with key-based matching.`
+              );
+            }
+
+            // ── Validate each row has a key field ───────────────────
+            const parsedByKey = new Map<string, Record<string, unknown>>();
+            const duplicateKeys: string[] = [];
+            const invalidRows: number[] = [];
+
+            parsedRows.forEach((row, index) => {
+              if (!row || typeof row !== "object") {
+                invalidRows.push(index);
+                return;
+              }
+              const key = toNonEmptyString(row.key);
+              if (!key) {
+                invalidRows.push(index);
+                return;
+              }
+              if (parsedByKey.has(key)) {
+                duplicateKeys.push(key);
+                return;
+              }
+              parsedByKey.set(key, row);
+            });
+
+            if (invalidRows.length > 0) {
+              console.warn(`[AI Cleaning] ${invalidRows.length} rows had missing/invalid key field at indices: ${invalidRows.slice(0, 10).join(", ")}`);
+            }
+            if (duplicateKeys.length > 0) {
+              console.warn(`[AI Cleaning] Duplicate keys detected: ${duplicateKeys.slice(0, 10).join(", ")}`);
+            }
+
+            // ── Validate all source keys are present ────────────────
+            const missingKeys: string[] = [];
+            const unexpectedKeys: string[] = [];
+            for (const key of sourceKeys) {
+              if (!parsedByKey.has(key)) missingKeys.push(key);
+            }
+            for (const key of parsedByKey.keys()) {
+              if (!sourceKeys.has(key)) unexpectedKeys.push(key);
+            }
+
+            if (missingKeys.length > 0) {
+              console.warn(
+                `[AI Cleaning] ${missingKeys.length} source keys missing from AI response: ${missingKeys.slice(0, 10).join(", ")}` +
+                  (missingKeys.length > 10 ? ` (+${missingKeys.length - 10} more)` : "")
+              );
+            }
+            if (unexpectedKeys.length > 0) {
+              console.warn(
+                `[AI Cleaning] ${unexpectedKeys.length} unexpected keys in AI response: ${unexpectedKeys.slice(0, 10).join(", ")}`
+              );
+            }
+
+            // ── Field-level validation + merge ──────────────────────
+            const fieldWarnings: string[] = [];
+
+            const cleanedRows = sourceRows.map((source) => {
+              const candidate = parsedByKey.get(source.key);
+              const wasMissing = !candidate;
+
+              // If AI didn't return this key, preserve original data entirely
+              if (wasMissing) {
+                const merged = sanitizeMailingFields({
+                  payeeName: source.payeeName,
+                  mailingAddress1: source.mailingAddress1,
+                  mailingAddress2: source.mailingAddress2,
+                  cityStateZip: source.cityStateZip ?? null,
+                  city: source.city,
+                  state: source.state,
+                  zip: source.zip,
+                });
+                return {
+                  key: source.key,
+                  payeeName: merged.payeeName,
+                  mailingAddress1: merged.mailingAddress1,
+                  mailingAddress2: merged.mailingAddress2,
+                  city: merged.city,
+                  state: merged.state,
+                  zip: merged.zip,
+                  _aiMissing: true as const,
+                };
+              }
+
+              // Field-level validation on AI output
+              const candidateState = toNonEmptyString(candidate.state);
+              if (candidateState && !/^[A-Za-z]{2}$/.test(candidateState)) {
+                fieldWarnings.push(`${source.key}: state "${candidateState}" is not a 2-letter code`);
+              }
+              const candidateZip = toNonEmptyString(candidate.zip);
+              if (candidateZip && !/^\d{5}(-\d{4})?$/.test(candidateZip)) {
+                fieldWarnings.push(`${source.key}: zip "${candidateZip}" is not valid 5 or ZIP+4 format`);
+              }
+
+              // Ensure AI didn't swap this record's data with another record
+              const candidateKey = toNonEmptyString(candidate.key);
+              if (candidateKey && candidateKey !== source.key) {
+                fieldWarnings.push(`${source.key}: AI returned key "${candidateKey}" instead of "${source.key}"`);
+                // Use source data — don't trust mismatched record
+                const merged = sanitizeMailingFields({
+                  payeeName: source.payeeName,
+                  mailingAddress1: source.mailingAddress1,
+                  mailingAddress2: source.mailingAddress2,
+                  cityStateZip: source.cityStateZip ?? null,
+                  city: source.city,
+                  state: source.state,
+                  zip: source.zip,
+                });
+                return {
+                  key: source.key,
+                  payeeName: merged.payeeName,
+                  mailingAddress1: merged.mailingAddress1,
+                  mailingAddress2: merged.mailingAddress2,
+                  city: merged.city,
+                  state: merged.state,
+                  zip: merged.zip,
+                  _aiMissing: true as const,
+                };
+              }
+
+              const merged = sanitizeMailingFields({
+                payeeName: toNonEmptyString(candidate.payeeName) ?? source.payeeName,
+                mailingAddress1: toNonEmptyString(candidate.mailingAddress1) ?? source.mailingAddress1,
+                mailingAddress2: toNonEmptyString(candidate.mailingAddress2) ?? source.mailingAddress2,
+                cityStateZip: source.cityStateZip ?? null,
+                city: toNonEmptyString(candidate.city) ?? source.city,
+                state: toNonEmptyString(candidate.state) ?? source.state,
+                zip: toNonEmptyString(candidate.zip) ?? source.zip,
+              });
+
+              return {
+                key: source.key,
+                payeeName: merged.payeeName,
+                mailingAddress1: merged.mailingAddress1,
+                mailingAddress2: merged.mailingAddress2,
+                city: merged.city,
+                state: merged.state,
+                zip: merged.zip,
+                _aiMissing: false as const,
+              };
+            });
+
+            if (fieldWarnings.length > 0) {
+              console.warn(`[AI Cleaning] Field validation warnings (${fieldWarnings.length}):\n  ${fieldWarnings.slice(0, 20).join("\n  ")}`);
+            }
+
+            const aiMissingCount = cleanedRows.filter((row) => row._aiMissing).length;
+
+            console.log(
+              `[AI Cleaning] Completed: ${sourceRows.length} sent, ${parsedByKey.size} returned by AI, ` +
+                `${missingKeys.length} missing, ${duplicateKeys.length} duplicates, ${invalidRows.length} invalid, ` +
+                `${fieldWarnings.length} field warnings.`
+            );
+
+            return {
+              rows: cleanedRows.map(({ _aiMissing, ...row }) => row),
+              warnings: [
+                ...(missingKeys.length > 0
+                  ? [`${missingKeys.length} record(s) were not returned by AI and kept their original data: ${missingKeys.slice(0, 5).join(", ")}${missingKeys.length > 5 ? ` (+${missingKeys.length - 5} more)` : ""}`]
+                  : []),
+                ...(parsedRows.length !== sourceRows.length
+                  ? [`AI returned ${parsedRows.length} rows but expected ${sourceRows.length}. Key-based matching was used.`]
+                  : []),
+                ...(duplicateKeys.length > 0
+                  ? [`${duplicateKeys.length} duplicate key(s) in AI response (first occurrence used).`]
+                  : []),
+                ...(fieldWarnings.length > 0
+                  ? [`${fieldWarnings.length} field-level validation warning(s). Check server logs for details.`]
+                  : []),
+              ],
+              stats: {
+                sent: sourceRows.length,
+                returnedByAi: parsedByKey.size,
+                missing: missingKeys.length,
+                duplicates: duplicateKeys.length,
+                invalidRows: invalidRows.length,
+                fieldWarnings: fieldWarnings.length,
+                keptOriginal: aiMissingCount,
+              },
+            };
+          } catch (fetchError) {
+            // If this is a retriable network error and not the last attempt, retry
+            if (attempt < MAX_RETRIES && fetchError instanceof Error && /fetch|timeout|ECONNRESET|ETIMEDOUT/i.test(fetchError.message)) {
+              const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 16000);
+              console.warn(`[AI Cleaning] Attempt ${attempt}/${MAX_RETRIES} network error: ${fetchError.message}. Retrying in ${delayMs}ms...`);
+              await new Promise((resolve) => setTimeout(resolve, delayMs));
+              lastError = fetchError;
+              continue;
+            }
+            throw fetchError;
+          }
         }
 
-        const data = await response.json();
-        const content = (data as any)?.choices?.[0]?.message?.content;
-        if (!content || typeof content !== "string") {
-          throw new Error("Invalid response from OpenAI while cleaning mailing data.");
-        }
-
-        let parsedRows: Array<Record<string, unknown>> = [];
-        try {
-          const parsed = JSON.parse(content) as { rows?: Array<Record<string, unknown>> };
-          parsedRows = Array.isArray(parsed?.rows) ? parsed.rows : [];
-        } catch {
-          throw new Error("OpenAI returned non-JSON output for mailing data cleanup.");
-        }
-
-        const parsedByKey = new Map<string, Record<string, unknown>>();
-        parsedRows.forEach((row) => {
-          const key = toNonEmptyString(row?.key);
-          if (!key || parsedByKey.has(key)) return;
-          parsedByKey.set(key, row);
-        });
-
-        const cleanedRows = sourceRows.map((source) => {
-          const candidate = parsedByKey.get(source.key) ?? {};
-          const merged = sanitizeMailingFields({
-            payeeName: toNonEmptyString(candidate.payeeName) ?? source.payeeName,
-            mailingAddress1: toNonEmptyString(candidate.mailingAddress1) ?? source.mailingAddress1,
-            mailingAddress2: toNonEmptyString(candidate.mailingAddress2) ?? source.mailingAddress2,
-            cityStateZip: toNonEmptyString(candidate.cityStateZip) ?? source.cityStateZip ?? null,
-            city: toNonEmptyString(candidate.city) ?? source.city,
-            state: toNonEmptyString(candidate.state) ?? source.state,
-            zip: toNonEmptyString(candidate.zip) ?? source.zip,
-          });
-
-          return {
-            key: source.key,
-            payeeName: merged.payeeName,
-            mailingAddress1: merged.mailingAddress1,
-            mailingAddress2: merged.mailingAddress2,
-            city: merged.city,
-            state: merged.state,
-            zip: merged.zip,
-          };
-        });
-
-        return {
-          rows: cleanedRows,
-        };
+        // Should not reach here, but safety net
+        throw lastError ?? new Error("AI cleaning failed after all retry attempts.");
       }),
     saveRun: protectedProcedure
       .input(

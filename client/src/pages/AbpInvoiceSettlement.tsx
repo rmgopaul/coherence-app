@@ -2673,6 +2673,10 @@ export default function AbpInvoiceSettlement() {
     };
 
     try {
+      const allWarnings: string[] = [];
+      let totalAiMissing = 0;
+      let totalFieldWarnings = 0;
+
       setAiMailingCleanupProgress({
         processed: 0,
         total,
@@ -2691,6 +2695,21 @@ export default function AbpInvoiceSettlement() {
         const response = await cleanMailingDataMutation.mutateAsync({
           rows: chunk,
         });
+
+        // Surface any warnings from the server
+        const serverWarnings: string[] = (response as any).warnings ?? [];
+        const serverStats = (response as any).stats as
+          | { sent: number; returnedByAi: number; missing: number; keptOriginal: number; fieldWarnings: number }
+          | undefined;
+
+        if (serverWarnings.length > 0) {
+          allWarnings.push(...serverWarnings.map((warning: string) => `Batch ${Math.ceil((startIndex + 1) / batchSize)}: ${warning}`));
+        }
+
+        if (serverStats) {
+          totalAiMissing += serverStats.missing;
+          totalFieldWarnings += serverStats.fieldWarnings;
+        }
 
         (response.rows ?? []).forEach((row) => {
           const cleaned = {
@@ -2730,7 +2749,7 @@ export default function AbpInvoiceSettlement() {
       }
 
       if (cleanedByCsg.size === 0) {
-        toast.error("AI cleanup returned no rows.");
+        toast.error("AI cleanup returned no rows. Check your OpenAI API key in Settings.");
         return;
       }
 
@@ -2801,10 +2820,25 @@ export default function AbpInvoiceSettlement() {
         return next;
       });
 
-      toast.success(
-        `AI cleaned ${cleanedByCsg.size.toLocaleString("en-US")} CSG records. ` +
-          `${modifiedFieldsByCsg.size.toLocaleString("en-US")} had payee/mailing field changes.`
-      );
+      // Show warnings if any records had issues
+      if (allWarnings.length > 0) {
+        toast.warning(
+          `AI cleaning completed with warnings:\n${allWarnings.join("\n")}`,
+          { duration: 15000 }
+        );
+      }
+
+      const summaryParts = [
+        `AI cleaned ${cleanedByCsg.size.toLocaleString("en-US")} CSG records.`,
+        `${modifiedFieldsByCsg.size.toLocaleString("en-US")} had payee/mailing field changes.`,
+      ];
+      if (totalAiMissing > 0) {
+        summaryParts.push(`${totalAiMissing} kept original data (AI did not return them).`);
+      }
+      if (totalFieldWarnings > 0) {
+        summaryParts.push(`${totalFieldWarnings} field-level validation warnings.`);
+      }
+      toast.success(summaryParts.join(" "));
     } catch (error) {
       toast.error(`AI mailing cleanup failed: ${toErrorMessage(error)}`);
     } finally {
