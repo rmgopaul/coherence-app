@@ -1080,8 +1080,10 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     findHeaderByKeywords(parsed.headers, ["secondary", "email"]) ??
     null;
 
-  const systemAddressHeader =
-    findHeaderByAliases(parsed.headers, [
+  // IMPORTANT: system_owner_address must NOT fuzzy-match system_owner_payment_address.
+  // Use exact-only alias matching first, then fall back to keyword exclusion.
+  const systemAddressHeader = (() => {
+    const exactAliases = [
       "system_owner_address",
       "system owner address",
       "system_owner_system_address",
@@ -1090,20 +1092,30 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       "system owner site address",
       "system_address",
       "site_address",
-    ]) ??
-    findHeaderByKeywordsExcluding(parsed.headers, ["system", "address"], [
-      "payment",
-      "mailing",
-      "payee",
-      "check",
-      "remit",
-    ]) ??
-    findHeaderByKeywords(parsed.headers, ["site", "address"]) ??
-    findHeaderByAliases(parsed.headers, ["PV System Address", "Project Address", "Installation Address"]) ??
-    null;
+    ];
+    // Exact normalized match only — no fuzzy .includes()
+    for (const alias of exactAliases) {
+      const normalizedAlias = normalizeHeader(alias);
+      const exact = parsed.headers.find((h) => normalizeHeader(h) === normalizedAlias);
+      if (exact) return exact;
+    }
+    return (
+      findHeaderByKeywordsExcluding(parsed.headers, ["system", "address"], [
+        "payment",
+        "mailing",
+        "payee",
+        "check",
+        "remit",
+      ]) ??
+      findHeaderByKeywords(parsed.headers, ["site", "address"]) ??
+      findHeaderByAliases(parsed.headers, ["PV System Address", "Project Address", "Installation Address"]) ??
+      null
+    );
+  })();
 
-  const systemCityHeader =
-    findHeaderByAliases(parsed.headers, [
+  // Same exact-only strategy to avoid matching payment_ columns
+  const systemCityHeader = (() => {
+    const exactAliases = [
       "system_owner_city",
       "system owner city",
       "system_owner_system_city",
@@ -1112,19 +1124,27 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       "system owner site city",
       "system_city",
       "site_city",
-    ]) ??
-    findHeaderByKeywordsExcluding(parsed.headers, ["system", "city"], [
-      "payment",
-      "mailing",
-      "payee",
-      "check",
-      "remit",
-    ]) ??
-    findHeaderByKeywords(parsed.headers, ["site", "city"]) ??
-    null;
+    ];
+    for (const alias of exactAliases) {
+      const normalizedAlias = normalizeHeader(alias);
+      const exact = parsed.headers.find((h) => normalizeHeader(h) === normalizedAlias);
+      if (exact) return exact;
+    }
+    return (
+      findHeaderByKeywordsExcluding(parsed.headers, ["system", "city"], [
+        "payment",
+        "mailing",
+        "payee",
+        "check",
+        "remit",
+      ]) ??
+      findHeaderByKeywords(parsed.headers, ["site", "city"]) ??
+      null
+    );
+  })();
 
-  const systemStateHeader =
-    findHeaderByAliases(parsed.headers, [
+  const systemStateHeader = (() => {
+    const exactAliases = [
       "system_owner_state",
       "system owner state",
       "system_owner_system_state",
@@ -1133,19 +1153,27 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       "system owner site state",
       "system_state",
       "site_state",
-    ]) ??
-    findHeaderByKeywordsExcluding(parsed.headers, ["system", "state"], [
-      "payment",
-      "mailing",
-      "payee",
-      "check",
-      "remit",
-    ]) ??
-    findHeaderByKeywords(parsed.headers, ["site", "state"]) ??
-    null;
+    ];
+    for (const alias of exactAliases) {
+      const normalizedAlias = normalizeHeader(alias);
+      const exact = parsed.headers.find((h) => normalizeHeader(h) === normalizedAlias);
+      if (exact) return exact;
+    }
+    return (
+      findHeaderByKeywordsExcluding(parsed.headers, ["system", "state"], [
+        "payment",
+        "mailing",
+        "payee",
+        "check",
+        "remit",
+      ]) ??
+      findHeaderByKeywords(parsed.headers, ["site", "state"]) ??
+      null
+    );
+  })();
 
-  const systemZipHeader =
-    findHeaderByAliases(parsed.headers, [
+  const systemZipHeader = (() => {
+    const exactAliases = [
       "system_owner_zip",
       "system owner zip",
       "system_owner_system_zip",
@@ -1156,18 +1184,26 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       "site_zip",
       "system_owner_system_postal_code",
       "system owner system postal code",
-    ]) ??
-    findHeaderByKeywordsExcluding(parsed.headers, ["system", "zip"], [
-      "payment",
-      "mailing",
-      "payee",
-      "check",
-      "remit",
-    ]) ??
-    findHeaderByKeywords(parsed.headers, ["site", "zip"]) ??
-    findHeaderByKeywords(parsed.headers, ["system", "postal"]) ??
-    findHeaderByKeywords(parsed.headers, ["site", "postal"]) ??
-    null;
+    ];
+    for (const alias of exactAliases) {
+      const normalizedAlias = normalizeHeader(alias);
+      const exact = parsed.headers.find((h) => normalizeHeader(h) === normalizedAlias);
+      if (exact) return exact;
+    }
+    return (
+      findHeaderByKeywordsExcluding(parsed.headers, ["system", "zip"], [
+        "payment",
+        "mailing",
+        "payee",
+        "check",
+        "remit",
+      ]) ??
+      findHeaderByKeywords(parsed.headers, ["site", "zip"]) ??
+      findHeaderByKeywords(parsed.headers, ["system", "postal"]) ??
+      findHeaderByKeywords(parsed.headers, ["site", "postal"]) ??
+      null
+    );
+  })();
 
   const paymentNotesHeader =
     findHeaderByKeywords(parsed.headers, ["payment", "notes"]) ??
@@ -1179,6 +1215,26 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
     findHeaderByKeywords(parsed.headers, ["collateral", "reimburs"]) ??
     findHeaderByKeywords(parsed.headers, ["reimburs"]) ??
     null;
+
+  // Diagnostic: log which headers were resolved for debugging column mapping issues.
+  console.info(
+    "[parseCsgPortalDatabase] Header mapping:",
+    JSON.stringify({
+      allHeaders: parsed.headers,
+      systemId: systemHeader,
+      csgId: csgHeader,
+      installer: installerHeader,
+      partner: partnerHeader,
+      customerEmail: customerEmailHeader,
+      customerAltEmail: customerAltEmailHeader,
+      systemAddress: systemAddressHeader,
+      systemCity: systemCityHeader,
+      systemState: systemStateHeader,
+      systemZip: systemZipHeader,
+      paymentNotes: paymentNotesHeader,
+      collateralReimbursed: collateralReimbursedHeader,
+    })
+  );
 
   if (!csgHeader) {
     throw new Error(
