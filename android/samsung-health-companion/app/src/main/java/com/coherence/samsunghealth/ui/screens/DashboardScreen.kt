@@ -78,7 +78,10 @@ fun DashboardScreen() {
   val heroStats = remember(tasks, events, whoop) {
     HeroStats(
       tasksDueToday = tasks.count { it.due?.date != null && it.due.date <= today },
-      eventsToday = events.size,
+      eventsToday = events.count { event ->
+        val startDate = event.start?.dateTime?.take(10) ?: event.start?.date
+        startDate != null && startDate == today
+      },
       recoveryPercent = whoop?.recoveryScore?.toInt(),
     )
   }
