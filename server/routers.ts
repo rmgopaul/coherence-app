@@ -1879,13 +1879,23 @@ export const appRouter = router({
         const { fetchNewsHeadlines } = await import("./services/newsHeadlines");
 
         try {
-          const [quotes, headlines] = await Promise.all([
+          const [quotesResult, headlinesResult] = await Promise.allSettled([
             fetchMarketQuotes([
               "GEVO", "MNTK", "PLUG", "ALTO", "REX",
               "BTC-USD", "ETH-USD",
             ]),
             fetchNewsHeadlines(),
           ]);
+
+          const quotes = quotesResult.status === "fulfilled" ? quotesResult.value : [];
+          const headlines = headlinesResult.status === "fulfilled" ? headlinesResult.value : [];
+
+          if (quotesResult.status === "rejected") {
+            console.warn("[MarketDashboard] Market quotes fetch failed:", quotesResult.reason);
+          }
+          if (headlinesResult.status === "rejected") {
+            console.warn("[MarketDashboard] Headlines fetch failed:", headlinesResult.reason);
+          }
 
           const freshData = { quotes, headlines, fetchedAt: new Date().toISOString() };
           // Only update cache if we got meaningful data
