@@ -2677,111 +2677,35 @@ export default function AbpInvoiceSettlement() {
       return clean(before) !== clean(after);
     };
 
-    try {
-      const allWarnings: string[] = [];
-      let totalAiMissing = 0;
-      let totalFieldWarnings = 0;
+    const composeCityStateZip = (
+      city: string | null,
+      state: string | null,
+      zip: string | null,
+      fallback: string | null
+    ): string | null => {
+      const cityValue = clean(city) || null;
+      const stateValue = clean(state) || null;
+      const zipValue = clean(zip) || null;
+      if (!cityValue && !stateValue && !zipValue) return fallback;
+      const stateZip = [stateValue, zipValue].filter(Boolean).join(" ");
+      return [cityValue, stateZip].filter(Boolean).join(", ");
+    };
 
-      setAiMailingCleanupProgress({
-        processed: 0,
-        total,
-        message: `Cleaning ${total.toLocaleString("en-US")} records...`,
-      });
-
-      for (let startIndex = 0; startIndex < candidates.length; startIndex += batchSize) {
-        const chunk = candidates.slice(startIndex, startIndex + batchSize);
-        const chunkEnd = Math.min(total, startIndex + chunk.length);
-        setAiMailingCleanupProgress({
-          processed: startIndex,
-          total,
-          message: `Cleaning records ${startIndex + 1}-${chunkEnd} of ${total}...`,
-        });
-
-        const response = await cleanMailingDataMutation.mutateAsync({
-          rows: chunk,
-        });
-
-        // Surface any warnings from the server
-        const serverWarnings: string[] = (response as any).warnings ?? [];
-        const serverStats = (response as any).stats as
-          | { sent: number; returnedByAi: number; missing: number; keptOriginal: number; fieldWarnings: number }
-          | undefined;
-
-        if (serverWarnings.length > 0) {
-          allWarnings.push(...serverWarnings.map((warning: string) => `Batch ${Math.ceil((startIndex + 1) / batchSize)}: ${warning}`));
-        }
-
-        if (serverStats) {
-          totalAiMissing += serverStats.missing;
-          totalFieldWarnings += serverStats.fieldWarnings;
-        }
-
-        (response.rows ?? []).forEach((row) => {
-          const cleaned = {
-            payeeName: toNullableText(row.payeeName),
-            mailingAddress1: toNullableText(row.mailingAddress1),
-            mailingAddress2: toNullableText(row.mailingAddress2),
-            city: toNullableText(row.city),
-            state: toNullableText(row.state),
-            zip: toNullableText(row.zip),
-          };
-          cleanedByCsg.set(row.key, cleaned);
-
-          const baseline = baselineByCsg.get(row.key);
-          if (!baseline) return;
-
-          const changedFields: string[] = [];
-          if (hasMeaningfulChange(baseline.payeeName, cleaned.payeeName)) changedFields.push("Payee Name");
-          if (hasMeaningfulChange(baseline.mailingAddress1, cleaned.mailingAddress1)) {
-            changedFields.push("Mailing Address 1");
-          }
-          if (hasMeaningfulChange(baseline.mailingAddress2, cleaned.mailingAddress2)) {
-            changedFields.push("Mailing Address 2");
-          }
-          if (hasMeaningfulChange(baseline.city, cleaned.city)) changedFields.push("City");
-          if (hasMeaningfulChange(baseline.state, cleaned.state)) changedFields.push("State");
-          if (hasMeaningfulChange(baseline.zip, cleaned.zip)) changedFields.push("Zip");
-          if (changedFields.length > 0) {
-            modifiedFieldsByCsg.set(row.key, changedFields);
-          }
-        });
-
-        setAiMailingCleanupProgress({
-          processed: chunkEnd,
-          total,
-          message: `Processed ${chunkEnd.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} records...`,
-        });
-      }
-
-      if (cleanedByCsg.size === 0) {
-        toast.error("AI cleanup returned no rows. Check your OpenAI API key in Settings.");
-        return;
-      }
-
-      const composeCityStateZip = (
-        city: string | null,
-        state: string | null,
-        zip: string | null,
-        fallback: string | null
-      ): string | null => {
-        const cityValue = clean(city) || null;
-        const stateValue = clean(state) || null;
-        const zipValue = clean(zip) || null;
-        if (!cityValue && !stateValue && !zipValue) return fallback;
-        const stateZip = [stateValue, zipValue].filter(Boolean).join(" ");
-        return [cityValue, stateZip].filter(Boolean).join(", ");
-      };
+    /** Apply a single batch of cleaned rows to all relevant state immediately. */
+    const applyBatchResults = (
+      batchCleaned: Map<string, { payeeName: string | null; mailingAddress1: string | null; mailingAddress2: string | null; city: string | null; state: string | null; zip: string | null }>,
+      batchModified: Map<string, string[]>,
+    ) => {
+      if (batchCleaned.size === 0) return;
 
       setContractTermsByCsgId((current) => {
         const next = new Map(current);
-        cleanedByCsg.forEach((cleaned, csgId) => {
+        batchCleaned.forEach((cleaned, csgId) => {
           const existing = next.get(csgId);
           if (!existing) return;
-
           const city = cleaned.city ?? existing.city;
           const state = cleaned.state ?? existing.state;
           const zip = cleaned.zip ?? existing.zip;
-
           next.set(csgId, {
             ...existing,
             payeeName: cleaned.payeeName ?? existing.payeeName,
@@ -2798,7 +2722,7 @@ export default function AbpInvoiceSettlement() {
 
       setContractScanRows((current) =>
         current.map((row) => {
-          const cleaned = cleanedByCsg.get(row.csgId);
+          const cleaned = batchCleaned.get(row.csgId);
           if (!cleaned) return row;
           const city = cleaned.city ?? row.city;
           const state = cleaned.state ?? row.state;
@@ -2816,38 +2740,134 @@ export default function AbpInvoiceSettlement() {
         })
       );
 
-      setAiMailingModifiedFieldsByCsgId((current) => {
-        const next = { ...current };
-        modifiedFieldsByCsg.forEach((fields, csgId) => {
-          const merged = [...(next[csgId] ?? []), ...fields];
-          next[csgId] = Array.from(new Set(merged.map((entry) => clean(entry)).filter(Boolean)));
+      if (batchModified.size > 0) {
+        setAiMailingModifiedFieldsByCsgId((current) => {
+          const next = { ...current };
+          batchModified.forEach((fields, csgId) => {
+            const merged = [...(next[csgId] ?? []), ...fields];
+            next[csgId] = Array.from(new Set(merged.map((entry) => clean(entry)).filter(Boolean)));
+          });
+          return next;
         });
-        return next;
+      }
+    };
+
+    const allWarnings: string[] = [];
+    let totalAiMissing = 0;
+    let totalFieldWarnings = 0;
+    let totalCleaned = 0;
+    let totalModified = 0;
+    let failedBatches = 0;
+
+    setAiMailingCleanupProgress({
+      processed: 0,
+      total,
+      message: `Cleaning ${total.toLocaleString("en-US")} records...`,
+    });
+
+    for (let startIndex = 0; startIndex < candidates.length; startIndex += batchSize) {
+      const chunk = candidates.slice(startIndex, startIndex + batchSize);
+      const chunkEnd = Math.min(total, startIndex + chunk.length);
+      const batchNum = Math.ceil((startIndex + 1) / batchSize);
+
+      setAiMailingCleanupProgress({
+        processed: startIndex,
+        total,
+        message: `Cleaning records ${startIndex + 1}-${chunkEnd} of ${total}...`,
       });
 
-      // Show warnings if any records had issues
-      if (allWarnings.length > 0) {
-        toast.warning(
-          `AI cleaning completed with warnings:\n${allWarnings.join("\n")}`,
-          { duration: 15000 }
-        );
+      try {
+        const response = await cleanMailingDataMutation.mutateAsync({
+          rows: chunk,
+        });
+
+        const serverWarnings: string[] = (response as any).warnings ?? [];
+        const serverStats = (response as any).stats as
+          | { sent: number; returnedByAi: number; missing: number; keptOriginal: number; fieldWarnings: number }
+          | undefined;
+
+        if (serverWarnings.length > 0) {
+          allWarnings.push(...serverWarnings.map((w: string) => `Batch ${batchNum}: ${w}`));
+        }
+        if (serverStats) {
+          totalAiMissing += serverStats.missing;
+          totalFieldWarnings += serverStats.fieldWarnings;
+        }
+
+        // Build this batch's cleaned + modified maps
+        const batchCleaned = new Map<string, { payeeName: string | null; mailingAddress1: string | null; mailingAddress2: string | null; city: string | null; state: string | null; zip: string | null }>();
+        const batchModified = new Map<string, string[]>();
+
+        (response.rows ?? []).forEach((row) => {
+          const cleaned = {
+            payeeName: toNullableText(row.payeeName),
+            mailingAddress1: toNullableText(row.mailingAddress1),
+            mailingAddress2: toNullableText(row.mailingAddress2),
+            city: toNullableText(row.city),
+            state: toNullableText(row.state),
+            zip: toNullableText(row.zip),
+          };
+          batchCleaned.set(row.key, cleaned);
+          cleanedByCsg.set(row.key, cleaned);
+
+          const baseline = baselineByCsg.get(row.key);
+          if (!baseline) return;
+
+          const changedFields: string[] = [];
+          if (hasMeaningfulChange(baseline.payeeName, cleaned.payeeName)) changedFields.push("Payee Name");
+          if (hasMeaningfulChange(baseline.mailingAddress1, cleaned.mailingAddress1)) changedFields.push("Mailing Address 1");
+          if (hasMeaningfulChange(baseline.mailingAddress2, cleaned.mailingAddress2)) changedFields.push("Mailing Address 2");
+          if (hasMeaningfulChange(baseline.city, cleaned.city)) changedFields.push("City");
+          if (hasMeaningfulChange(baseline.state, cleaned.state)) changedFields.push("State");
+          if (hasMeaningfulChange(baseline.zip, cleaned.zip)) changedFields.push("Zip");
+          if (changedFields.length > 0) {
+            batchModified.set(row.key, changedFields);
+            modifiedFieldsByCsg.set(row.key, changedFields);
+          }
+        });
+
+        // Apply this batch immediately — settlement recomputes via useMemo
+        applyBatchResults(batchCleaned, batchModified);
+        totalCleaned += batchCleaned.size;
+        totalModified += batchModified.size;
+      } catch (batchError) {
+        failedBatches++;
+        const msg = toErrorMessage(batchError);
+        allWarnings.push(`Batch ${batchNum} failed: ${msg}`);
+        toast.warning(`Batch ${batchNum} failed (records ${startIndex + 1}-${chunkEnd}): ${msg}. Continuing with remaining batches...`);
       }
 
-      const summaryParts = [
-        `AI cleaned ${cleanedByCsg.size.toLocaleString("en-US")} CSG records.`,
-        `${modifiedFieldsByCsg.size.toLocaleString("en-US")} had payee/mailing field changes.`,
-      ];
-      if (totalAiMissing > 0) {
-        summaryParts.push(`${totalAiMissing} kept original data (AI did not return them).`);
-      }
-      if (totalFieldWarnings > 0) {
-        summaryParts.push(`${totalFieldWarnings} field-level validation warnings.`);
-      }
+      setAiMailingCleanupProgress({
+        processed: chunkEnd,
+        total,
+        message: `Processed ${chunkEnd.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} records${failedBatches > 0 ? ` (${failedBatches} batch${failedBatches > 1 ? "es" : ""} failed)` : ""}...`,
+      });
+    }
+
+    setAiMailingCleanupProgress(null);
+
+    if (allWarnings.length > 0) {
+      toast.warning(
+        `AI cleaning completed with warnings:\n${allWarnings.slice(0, 10).join("\n")}${allWarnings.length > 10 ? `\n...and ${allWarnings.length - 10} more` : ""}`,
+        { duration: 15000 }
+      );
+    }
+
+    const summaryParts: string[] = [];
+    if (totalCleaned > 0) {
+      summaryParts.push(`AI cleaned ${totalCleaned.toLocaleString("en-US")} CSG records.`);
+      summaryParts.push(`${totalModified.toLocaleString("en-US")} had payee/mailing field changes.`);
+    }
+    if (totalAiMissing > 0) {
+      summaryParts.push(`${totalAiMissing} kept original data (AI did not return them).`);
+    }
+    if (failedBatches > 0) {
+      summaryParts.push(`${failedBatches} batch(es) failed — retry to clean remaining records.`);
+    }
+    if (summaryParts.length > 0) {
       toast.success(summaryParts.join(" "));
-    } catch (error) {
-      toast.error(`AI mailing cleanup failed: ${toErrorMessage(error)}`);
-    } finally {
-      setAiMailingCleanupProgress(null);
+    } else {
+      toast.error("AI cleanup returned no rows. Check your OpenAI API key in Settings.");
     }
   };
 
