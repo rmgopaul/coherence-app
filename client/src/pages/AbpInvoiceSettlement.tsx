@@ -1063,11 +1063,16 @@ function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePa
 function toContractTermsFromScan(rows: ContractScanResult[]): Map<string, ContractTerms> {
   const map = new Map<string, ContractTerms>();
   rows.forEach((row) => {
-    if (!row.csgId || row.error) return;
+    if (!row.csgId) return;
+    // Include rows even if they had scan errors — they may still have partial
+    // data (payee name, mailing address from portal) that is useful for AI
+    // cleaning and settlement. Previously errored rows were silently dropped,
+    // causing "Contract Terms Loaded" to show far fewer than expected.
+    if (map.has(row.csgId)) return; // keep first occurrence per CSG ID
     const cityStateZipParts = splitCityStateZip(row.cityStateZip);
     map.set(row.csgId, {
       csgId: row.csgId,
-      fileName: row.fileName,
+      fileName: row.fileName ?? "",
       vendorFeePercent: row.vendorFeePercent,
       additionalCollateralPercent: row.additionalCollateralPercent,
       ccAuthorizationCompleted: row.ccAuthorizationCompleted,
