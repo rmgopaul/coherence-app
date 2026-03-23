@@ -1902,6 +1902,19 @@ export const appRouter = router({
             console.warn("[MarketDashboard] Headlines fetch failed:", headlinesResult.reason);
           }
 
+          // If Yahoo is rate-limited, prefer serving the last good cached quotes
+          // instead of returning an empty market section.
+          if (marketRateLimited && cachedData?.quotes?.length) {
+            const staleSafeData = {
+              ...cachedData,
+              headlines: headlines.length > 0 ? headlines : cachedData.headlines,
+              marketRateLimited: true,
+              usingStaleQuotes: true,
+            };
+            cacheExpiry = now + CACHE_TTL_MS;
+            return staleSafeData;
+          }
+
           const freshData = { quotes, headlines, fetchedAt: new Date().toISOString(), marketRateLimited };
           // Only update cache if we got meaningful data
           if (quotes.length > 0 || headlines.length > 0) {

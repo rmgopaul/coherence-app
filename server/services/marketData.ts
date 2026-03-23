@@ -27,6 +27,10 @@ export class MarketRateLimitError extends Error {
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const CRYPTO_TO_COINGECKO_ID: Record<string, string> = {
+  "BTC-USD": "bitcoin",
+  "ETH-USD": "ethereum",
+};
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -55,6 +59,34 @@ function normalizeQuoteFromApi(q: any): MarketQuote {
     currency: q.currency ?? "USD",
     marketState: q.marketState ?? "CLOSED",
   };
+}
+
+function splitCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    if (char === '"') {
+      const next = line[i + 1];
+      if (inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (char === "," && !inQuotes) {
+      cells.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current);
+  return cells;
 }
 
 /**
@@ -232,6 +264,143 @@ async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
   }
 }
 
+async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote[]> {
+  const stockSymbols = symbols.filter((symbol) => !symbol.endsWith("-USD"));
+  if (stockSymbols.length === 0) return [];
+
+  const stooqSymbols = stockSymbols.map((symbol) => `${symbol.toLowerCase()}.us`);
+  const url =
+    `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSymbols.join(","))}` +
+    "&f=sd2t2ohlcvn&e=csv";
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/csv,text/plain,*/*",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!response.ok) return [];
+    const csvText = await response.text();
+    const lines = csvText
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length < 2) return [];
+
+    const headers = splitCsvLine(lines[0]).map((header) => header.trim().toLowerCase());
+    const idx = (name: string) => headers.indexOf(name.toLowerCase());
+    const symbolIdx = idx("symbol");
+    const closeIdx = idx("close");
+    const openIdx = idx("open");
+    const nameIdx = idx("name");
+
+    if (symbolIdx < 0 || closeIdx < 0) return [];
+
+    const quotes: MarketQuote[] = [];
+    for (const line of lines.slice(1)) {
+      const cells = splitCsvLine(line);
+      const symbolRaw = (cells[symbolIdx] ?? "").trim().toUpperCase();
+      const close = toFiniteNumber(cells[closeIdx], Number.NaN);
+      if (!symbolRaw || !Number.isFinite(close) || close <= 0) continue;
+
+      const normalizedSymbol = symbolRaw.replace(".US", "");
+      const previousCloseGuess = toFiniteNumber(cells[openIdx], close);
+      const change = close - previousCloseGuess;
+      const changePercent =
+        previousCloseGuess > 0 ? (change / previousCloseGuess) * 100 : 0;
+
+      quotes.push({
+        symbol: normalizedSymbol,
+        shortName: (cells[nameIdx] ?? normalizedSymbol).trim() || normalizedSymbol,
+        price: close,
+        previousClose: previousCloseGuess,
+        change,
+        changePercent,
+        currency: "USD",
+        marketState: "CLOSED",
+      });
+    }
+
+    return quotes;
+  } catch {
+    return [];
+  }
+}
+
+async function fetchCryptoQuotesFromCoinGecko(symbols: string[]): Promise<MarketQuote[]> {
+  const cryptoSymbols = symbols.filter((symbol) => CRYPTO_TO_COINGECKO_ID[symbol]);
+  if (cryptoSymbols.length === 0) return [];
+
+  const ids = Array.from(new Set(cryptoSymbols.map((symbol) => CRYPTO_TO_COINGECKO_ID[symbol])));
+  const url =
+    `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(ids.join(","))}` +
+    "&vs_currencies=usd&include_24hr_change=true";
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (!response.ok) return [];
+
+    const json = (await response.json()) as Record<
+      string,
+      { usd?: number; usd_24h_change?: number }
+    >;
+
+    const quotes: MarketQuote[] = [];
+    for (const symbol of cryptoSymbols) {
+      const id = CRYPTO_TO_COINGECKO_ID[symbol];
+      const payload = json?.[id];
+      const price = toFiniteNumber(payload?.usd, Number.NaN);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      const changePercent = toFiniteNumber(payload?.usd_24h_change, 0);
+      const previousClose =
+        Number.isFinite(changePercent) && Math.abs(changePercent) < 99.9
+          ? price / (1 + changePercent / 100)
+          : price;
+      const change = price - previousClose;
+
+      quotes.push({
+        symbol,
+        shortName: symbol.replace("-USD", ""),
+        price,
+        previousClose,
+        change,
+        changePercent,
+        currency: "USD",
+        marketState: "CLOSED",
+      });
+    }
+    return quotes;
+  } catch {
+    return [];
+  }
+}
+
+async function fetchQuotesFromSecondaryProviders(symbols: string[]): Promise<MarketQuote[]> {
+  const [stocksResult, cryptoResult] = await Promise.allSettled([
+    fetchStockQuotesFromStooq(symbols),
+    fetchCryptoQuotesFromCoinGecko(symbols),
+  ]);
+
+  const stocks = stocksResult.status === "fulfilled" ? stocksResult.value : [];
+  const crypto = cryptoResult.status === "fulfilled" ? cryptoResult.value : [];
+
+  const deduped = new Map<string, MarketQuote>();
+  [...stocks, ...crypto].forEach((quote) => {
+    if (!quote.symbol) return;
+    if (!deduped.has(quote.symbol)) deduped.set(quote.symbol, quote);
+  });
+  return Array.from(deduped.values());
+}
+
 export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[]> {
   let sawRateLimit = false;
 
@@ -263,6 +432,13 @@ export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[
   if (chartQuotes.length > 0) {
     console.log(`[MarketData] Chart fallback fetched ${chartQuotes.length} quotes.`);
     return chartQuotes;
+  }
+
+  // Secondary providers (no Yahoo): Stooq for stocks + CoinGecko for crypto.
+  const secondaryQuotes = await fetchQuotesFromSecondaryProviders(symbols);
+  if (secondaryQuotes.length > 0) {
+    console.log(`[MarketData] Secondary providers fetched ${secondaryQuotes.length} quotes.`);
+    return secondaryQuotes;
   }
 
   // Final fallback: finance.yahoo.com HTML quote pages.
