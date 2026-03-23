@@ -151,6 +151,58 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
   }
 }
 
+/**
+ * Last-resort fallback: scrape Yahoo quote page for a single symbol.
+ * Useful when query1/query2 subdomains are blocked but finance.yahoo.com works.
+ */
+async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
+  try {
+    const url = `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/`;
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+
+    if (!response.ok) return null;
+    const html = await response.text();
+
+    const pageSymbolMatch = html.match(/"symbol":\s*"([^"]+)"/);
+    const pageSymbol = pageSymbolMatch?.[1] ?? "";
+    if (pageSymbol && pageSymbol.toUpperCase() !== symbol.toUpperCase()) {
+      return null;
+    }
+
+    const priceMatch = html.match(/"regularMarketPrice":\s*\{[^}]*"raw":\s*([\d.]+)/);
+    const prevCloseMatch = html.match(/"regularMarketPreviousClose":\s*\{[^}]*"raw":\s*([\d.]+)/);
+    const nameMatch = html.match(/"shortName":\s*"([^"]+)"/);
+    const currencyMatch = html.match(/"currency":\s*"([^"]+)"/);
+    const stateMatch = html.match(/"marketState":\s*"([^"]+)"/);
+
+    const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
+    const previousClose = prevCloseMatch ? parseFloat(prevCloseMatch[1]) : price;
+    if (!Number.isFinite(price) || price <= 0) return null;
+
+    const change = price - previousClose;
+    const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
+
+    return {
+      symbol,
+      shortName: nameMatch?.[1] ?? symbol,
+      price,
+      previousClose,
+      change,
+      changePercent,
+      currency: currencyMatch?.[1] ?? "USD",
+      marketState: stateMatch?.[1] ?? "CLOSED",
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[]> {
   // Try batch API first
   try {
@@ -165,7 +217,15 @@ export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[
 
   // Fallback: fetch individual chart endpoints in parallel to avoid long sequential delays.
   const chartResults = await Promise.all(symbols.map((symbol) => fetchQuoteFromChart(symbol)));
-  const results = chartResults.filter((quote): quote is MarketQuote => Boolean(quote));
-  console.log(`[MarketData] Chart fallback fetched ${results.length} quotes.`);
-  return results;
+  const chartQuotes = chartResults.filter((quote): quote is MarketQuote => Boolean(quote));
+  if (chartQuotes.length > 0) {
+    console.log(`[MarketData] Chart fallback fetched ${chartQuotes.length} quotes.`);
+    return chartQuotes;
+  }
+
+  // Final fallback: finance.yahoo.com HTML quote pages.
+  const pageResults = await Promise.all(symbols.map((symbol) => fetchQuoteFromPage(symbol)));
+  const pageQuotes = pageResults.filter((quote): quote is MarketQuote => Boolean(quote));
+  console.log(`[MarketData] Page fallback fetched ${pageQuotes.length} quotes.`);
+  return pageQuotes;
 }
