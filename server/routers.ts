@@ -3552,7 +3552,6 @@ export const appRouter = router({
               body: JSON.stringify({
                 model: resolveOpenAIModel(integration.metadata),
                 response_format: { type: "json_object" },
-                temperature: 0,
                 messages: [
                   {
                     role: "system",
