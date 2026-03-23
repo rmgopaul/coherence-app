@@ -775,6 +775,15 @@ export default function Dashboard() {
       }));
   }, [calendarEvents]);
 
+  const todayEventCount = useMemo(() => {
+    const now = new Date();
+    return (calendarEvents || []).filter((event: any) => {
+      const startTime = event.start?.dateTime || event.start?.date;
+      if (!startTime) return false;
+      return isSameLocalDay(new Date(startTime), now);
+    }).length;
+  }, [calendarEvents]);
+
   useEffect(() => {
     const timer = window.setInterval(() => {
       setMinuteTick(new Date());
@@ -1957,7 +1966,7 @@ export default function Dashboard() {
           userName={preferences?.displayName || user?.name?.split(" ")[0]}
           stats={[
             { label: "Tasks", value: (allTodoistTasks || []).filter((t: any) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
-            { label: "Events", value: (calendarEvents || []).length, icon: Calendar },
+            { label: "Events", value: todayEventCount, icon: Calendar },
             { label: "Recovery", value: whoopSummary?.recoveryScore != null ? `${Math.round(whoopSummary.recoveryScore)}%` : "--", icon: HeartPulse },
             { label: "Completed", value: todoistCompletedToday?.count ?? "--", icon: CheckSquare },
           ]}

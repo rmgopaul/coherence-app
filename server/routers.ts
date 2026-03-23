@@ -1863,7 +1863,7 @@ export const appRouter = router({
   }),
 
   marketDashboard: (() => {
-    // In-memory cache with 5-minute TTL
+    // In-memory cache with 5-minute TTL; stale data served if fresh fetch fails
     let cachedData: { quotes: any[]; headlines: any[]; fetchedAt: string } | null = null;
     let cacheExpiry = 0;
     const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -1878,17 +1878,28 @@ export const appRouter = router({
         const { fetchMarketQuotes } = await import("./services/marketData");
         const { fetchNewsHeadlines } = await import("./services/newsHeadlines");
 
-        const [quotes, headlines] = await Promise.all([
-          fetchMarketQuotes([
-            "GEVO", "MNTK", "PLUG", "ALTO", "REX",
-            "BTC-USD", "ETH-USD",
-          ]),
-          fetchNewsHeadlines(),
-        ]);
+        try {
+          const [quotes, headlines] = await Promise.all([
+            fetchMarketQuotes([
+              "GEVO", "MNTK", "PLUG", "ALTO", "REX",
+              "BTC-USD", "ETH-USD",
+            ]),
+            fetchNewsHeadlines(),
+          ]);
 
-        cachedData = { quotes, headlines, fetchedAt: new Date().toISOString() };
-        cacheExpiry = now + CACHE_TTL_MS;
-        return cachedData;
+          const freshData = { quotes, headlines, fetchedAt: new Date().toISOString() };
+          // Only update cache if we got meaningful data
+          if (quotes.length > 0 || headlines.length > 0) {
+            cachedData = freshData;
+            cacheExpiry = now + CACHE_TTL_MS;
+          }
+          return freshData;
+        } catch (error) {
+          console.warn("[MarketDashboard] Fetch failed, returning stale cache if available:", error);
+          // Return stale data rather than nothing
+          if (cachedData) return cachedData;
+          return { quotes: [], headlines: [], fetchedAt: new Date().toISOString() };
+        }
       }),
     });
   })(),
