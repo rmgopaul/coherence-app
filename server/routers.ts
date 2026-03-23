@@ -3688,12 +3688,12 @@ export const appRouter = router({
             // ── Validate all source keys are present ────────────────
             const missingKeys: string[] = [];
             const unexpectedKeys: string[] = [];
-            for (const key of sourceKeys) {
+            Array.from(sourceKeys).forEach((key) => {
               if (!parsedByKey.has(key)) missingKeys.push(key);
-            }
-            for (const key of parsedByKey.keys()) {
+            });
+            Array.from(parsedByKey.keys()).forEach((key) => {
               if (!sourceKeys.has(key)) unexpectedKeys.push(key);
-            }
+            });
 
             if (missingKeys.length > 0) {
               console.warn(
