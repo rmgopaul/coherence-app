@@ -1082,6 +1082,8 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   const systemAddressHeader =
     findHeaderByAliases(parsed.headers, [
+      "system_owner_address",
+      "system owner address",
       "system_owner_system_address",
       "system owner system address",
       "system_owner_site_address",
@@ -1102,6 +1104,8 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   const systemCityHeader =
     findHeaderByAliases(parsed.headers, [
+      "system_owner_city",
+      "system owner city",
       "system_owner_system_city",
       "system owner system city",
       "system_owner_site_city",
@@ -1121,6 +1125,8 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   const systemStateHeader =
     findHeaderByAliases(parsed.headers, [
+      "system_owner_state",
+      "system owner state",
       "system_owner_system_state",
       "system owner system state",
       "system_owner_site_state",
@@ -1140,6 +1146,8 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   const systemZipHeader =
     findHeaderByAliases(parsed.headers, [
+      "system_owner_zip",
+      "system owner zip",
       "system_owner_system_zip",
       "system owner system zip",
       "system_owner_site_zip",
