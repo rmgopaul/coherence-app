@@ -268,9 +268,10 @@ async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote
   const stockSymbols = symbols.filter((symbol) => !symbol.endsWith("-USD"));
   if (stockSymbols.length === 0) return [];
 
+  // Stooq expects symbols joined with "+" (not commas).
   const stooqSymbols = stockSymbols.map((symbol) => `${symbol.toLowerCase()}.us`);
   const url =
-    `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSymbols.join(","))}` +
+    `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSymbols.join("+"))}` +
     "&f=sd2t2ohlcvn&e=csv";
 
   try {
@@ -288,33 +289,29 @@ async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean);
-    if (lines.length < 2) return [];
-
-    const headers = splitCsvLine(lines[0]).map((header) => header.trim().toLowerCase());
-    const idx = (name: string) => headers.indexOf(name.toLowerCase());
-    const symbolIdx = idx("symbol");
-    const closeIdx = idx("close");
-    const openIdx = idx("open");
-    const nameIdx = idx("name");
-
-    if (symbolIdx < 0 || closeIdx < 0) return [];
+    if (lines.length === 0) return [];
 
     const quotes: MarketQuote[] = [];
-    for (const line of lines.slice(1)) {
+    for (const line of lines) {
       const cells = splitCsvLine(line);
-      const symbolRaw = (cells[symbolIdx] ?? "").trim().toUpperCase();
-      const close = toFiniteNumber(cells[closeIdx], Number.NaN);
+      // Stooq rows with f=sd2t2ohlcvn are:
+      // 0:symbol, 1:date, 2:time, 3:open, 4:high, 5:low, 6:close, 7:volume, 8:name
+      const symbolRaw = (cells[0] ?? "").trim().toUpperCase();
+      const close = toFiniteNumber(cells[6], Number.NaN);
       if (!symbolRaw || !Number.isFinite(close) || close <= 0) continue;
 
+      // Guard against malformed aggregate rows containing commas in symbol field.
+      if (symbolRaw.includes(",")) continue;
+
       const normalizedSymbol = symbolRaw.replace(".US", "");
-      const previousCloseGuess = toFiniteNumber(cells[openIdx], close);
+      const previousCloseGuess = toFiniteNumber(cells[3], close);
       const change = close - previousCloseGuess;
       const changePercent =
         previousCloseGuess > 0 ? (change / previousCloseGuess) * 100 : 0;
 
       quotes.push({
         symbol: normalizedSymbol,
-        shortName: (cells[nameIdx] ?? normalizedSymbol).trim() || normalizedSymbol,
+        shortName: (cells[8] ?? normalizedSymbol).trim() || normalizedSymbol,
         price: close,
         previousClose: previousCloseGuess,
         change,
