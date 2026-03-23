@@ -1836,6 +1836,21 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         const recPrice = safeMoney(row.recPrice);
         const grossContractValue = roundMoney(recQuantity * recPrice);
 
+        // Fallback: parse city/state/zip from the utility invoice system address when CSG portal doesn't provide them.
+        // Typical format: "123 Main St, Chicago, IL 60601" or "123 Main St, Chicago, Illinois 60601-1234"
+        let parsedUtilitySystemCity = "";
+        let parsedUtilitySystemState = "";
+        let parsedUtilitySystemZip = "";
+        if (!systemCityFromPortal || !systemStateFromPortal || !systemZipFromPortal) {
+          const utilAddr = clean(row.systemAddress);
+          const addrMatch = utilAddr.match(/,\s*([^,]+),\s*([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
+          if (addrMatch) {
+            parsedUtilitySystemCity = clean(addrMatch[1]);
+            parsedUtilitySystemState = clean(addrMatch[2]).toUpperCase();
+            parsedUtilitySystemZip = clean(addrMatch[3]);
+          }
+        }
+
         const paymentPercent =
           grossContractValue > 0 ? roundMoney((invoiceAmount / grossContractValue) * 100) : null;
         const classificationAuto = classifyPaymentTypeByPercent(paymentPercent);
@@ -2080,10 +2095,10 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           partnerCompanyName,
           customerEmail,
           customerAltEmail,
-          systemAddress: systemAddressFromPortal,
-          systemCity: systemCityFromPortal,
-          systemState: systemStateFromPortal,
-          systemZip: systemZipFromPortal,
+          systemAddress: systemAddressFromPortal || clean(row.systemAddress),
+          systemCity: systemCityFromPortal || parsedUtilitySystemCity,
+          systemState: systemStateFromPortal || parsedUtilitySystemState,
+          systemZip: systemZipFromPortal || parsedUtilitySystemZip,
           paymentNotes: paymentNotesFromPortal,
           appliedInstallerRuleName: clean(appliedInstallerRule?.name),
           paymentReportCheckStatus,
