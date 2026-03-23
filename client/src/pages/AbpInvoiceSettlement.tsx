@@ -2651,7 +2651,7 @@ export default function AbpInvoiceSettlement() {
       return;
     }
 
-    const batchSize = 120;
+    const batchSize = 50;
     const cleanedByCsg = new Map<
       string,
       {

@@ -3548,7 +3548,7 @@ export const appRouter = router({
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${integration.accessToken}`,
               },
-              signal: AbortSignal.timeout(60_000),
+              signal: AbortSignal.timeout(180_000),
               body: JSON.stringify({
                 model: resolveOpenAIModel(integration.metadata),
                 response_format: { type: "json_object" },
