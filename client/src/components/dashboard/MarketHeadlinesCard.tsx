@@ -42,18 +42,15 @@ interface NewsHeadline {
 /*  Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
-function formatPrice(value: number, currency: string): string {
-  if (currency === "USD") {
-    return value >= 1000
-      ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-      : `$${value.toFixed(2)}`;
-  }
-  return `${value.toFixed(2)} ${currency}`;
+function formatPrice(value: number): string {
+  return value >= 1000
+    ? `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `$${value.toFixed(2)}`;
 }
 
-function formatChange(change: number, percent: number): string {
-  const sign = change >= 0 ? "+" : "";
-  return `${sign}${change.toFixed(2)} (${sign}${percent.toFixed(2)}%)`;
+function formatChangePercent(percent: number): string {
+  const sign = percent >= 0 ? "+" : "";
+  return `${sign}${percent.toFixed(2)}%`;
 }
 
 function relativeTime(dateStr: string): string {
@@ -98,7 +95,7 @@ function QuoteCard({ quote }: { quote: MarketQuote }) {
       </div>
       <div className="text-right ml-3 shrink-0">
         <div className="text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-          {formatPrice(quote.price, quote.currency)}
+          {formatPrice(quote.price)}
         </div>
         <div
           className={cn(
@@ -111,7 +108,7 @@ function QuoteCard({ quote }: { quote: MarketQuote }) {
           ) : (
             <ArrowDownRight className="h-3 w-3" />
           )}
-          {formatChange(quote.change, quote.changePercent)}
+          {formatChangePercent(quote.changePercent)}
         </div>
       </div>
     </div>
