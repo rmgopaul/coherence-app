@@ -1082,6 +1082,7 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   // IMPORTANT: system_owner_address must NOT fuzzy-match system_owner_payment_address.
   // Use exact-only alias matching first, then fall back to keyword exclusion.
+  // Also try raw case-insensitive .trim() match for portal exports that may have odd encoding.
   const systemAddressHeader = (() => {
     const exactAliases = [
       "system_owner_address",
@@ -1098,6 +1099,15 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       const normalizedAlias = normalizeHeader(alias);
       const exact = parsed.headers.find((h) => normalizeHeader(h) === normalizedAlias);
       if (exact) return exact;
+    }
+    // Raw case-insensitive match as fallback (handles BOM, non-breaking spaces, etc.)
+    for (const alias of exactAliases) {
+      const lowerAlias = alias.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const raw = parsed.headers.find((h) => {
+        const lowerH = clean(h).toLowerCase().replace(/[^a-z0-9]/g, "");
+        return lowerH === lowerAlias;
+      });
+      if (raw) return raw;
     }
     return (
       findHeaderByKeywordsExcluding(parsed.headers, ["system", "address"], [
@@ -1235,6 +1245,14 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
       collateralReimbursed: collateralReimbursedHeader,
     })
   );
+
+  if (!systemAddressHeader && (systemCityHeader || systemStateHeader || systemZipHeader)) {
+    console.warn(
+      "[parseCsgPortalDatabase] WARNING: system city/state/zip headers were found but system ADDRESS header was NOT matched.",
+      "Available headers:",
+      parsed.headers.map((h) => `"${h}"`).join(", ")
+    );
+  }
 
   if (!csgHeader) {
     throw new Error(
