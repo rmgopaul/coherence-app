@@ -1085,14 +1085,16 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
   // Also try raw case-insensitive .trim() match for portal exports that may have odd encoding.
   const systemAddressHeader = (() => {
     const exactAliases = [
-      "system_owner_address",
-      "system owner address",
+      // Prefer the actual system/site location columns over owner address
+      "system_address",
+      "site_address",
       "system_owner_system_address",
       "system owner system address",
       "system_owner_site_address",
       "system owner site address",
-      "system_address",
-      "site_address",
+      // Fallback to owner address if no dedicated system address column exists
+      "system_owner_address",
+      "system owner address",
     ];
     // Exact normalized match only — no fuzzy .includes()
     for (const alias of exactAliases) {
@@ -1126,14 +1128,14 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
   // Same exact-only strategy to avoid matching payment_ columns
   const systemCityHeader = (() => {
     const exactAliases = [
-      "system_owner_city",
-      "system owner city",
+      "system_city",
+      "site_city",
       "system_owner_system_city",
       "system owner system city",
       "system_owner_site_city",
       "system owner site city",
-      "system_city",
-      "site_city",
+      "system_owner_city",
+      "system owner city",
     ];
     for (const alias of exactAliases) {
       const normalizedAlias = normalizeHeader(alias);
@@ -1155,14 +1157,14 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   const systemStateHeader = (() => {
     const exactAliases = [
-      "system_owner_state",
-      "system owner state",
+      "system_state",
+      "site_state",
       "system_owner_system_state",
       "system owner system state",
       "system_owner_site_state",
       "system owner site state",
-      "system_state",
-      "site_state",
+      "system_owner_state",
+      "system owner state",
     ];
     for (const alias of exactAliases) {
       const normalizedAlias = normalizeHeader(alias);
@@ -1184,14 +1186,14 @@ export function parseCsgPortalDatabase(parsed: ParsedTabularData): CsgPortalData
 
   const systemZipHeader = (() => {
     const exactAliases = [
-      "system_owner_zip",
-      "system owner zip",
+      "system_zip",
+      "site_zip",
       "system_owner_system_zip",
       "system owner system zip",
       "system_owner_site_zip",
       "system owner site zip",
-      "system_zip",
-      "site_zip",
+      "system_owner_zip",
+      "system owner zip",
       "system_owner_system_postal_code",
       "system owner system postal code",
     ];
