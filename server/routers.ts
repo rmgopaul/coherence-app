@@ -559,7 +559,9 @@ type AbpSettlementSavedRun = {
 };
 
 const ABP_SETTLEMENT_JOB_TTL_MS = 24 * 60 * 60 * 1000;
-const ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL = 40;
+const ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL = 80;
+const ABP_SETTLEMENT_SCAN_CONCURRENCY = 3;
+const ABP_SETTLEMENT_SCAN_SNAPSHOT_BATCH_SIZE = 10;
 const abpSettlementJobs = new Map<string, AbpSettlementContractScanJob>();
 const abpSettlementActiveScanRunners = new Set<string>();
 const ABP_SETTLEMENT_RUNS_INDEX_DB_KEY = "abpSettlement:runs-index";
@@ -1006,36 +1008,52 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
     const processedIds = new Set(rows.map((row) => row.csgId));
     const pendingIds = allIds.filter((id) => !processedIds.has(id));
 
-    for (let pendingIndex = 0; pendingIndex < pendingIds.length; pendingIndex += 1) {
-      const csgId = pendingIds[pendingIndex];
-      const currentCompleted = rows.length;
+    // ── Session refresh mutex ────────────────────────────────────
+    let completedSinceLastRefresh = 0;
+    let sessionRefreshInFlight: Promise<void> | null = null;
 
-      if (currentCompleted > 0 && currentCompleted % ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL === 0) {
-        await markJob((job) => ({
+    const refreshSessionIfNeeded = async (): Promise<void> => {
+      if (completedSinceLastRefresh < ABP_SETTLEMENT_SCAN_SESSION_REFRESH_INTERVAL) return;
+      // Only one refresh at a time; other workers wait for the same promise
+      if (!sessionRefreshInFlight) {
+        sessionRefreshInFlight = (async () => {
+          try {
+            await client.login();
+          } finally {
+            completedSinceLastRefresh = 0;
+            sessionRefreshInFlight = null;
+          }
+        })();
+      }
+      await sessionRefreshInFlight;
+    };
+
+    // ── Snapshot batching ────────────────────────────────────────
+    let rowsSinceLastSnapshot = 0;
+
+    const persistSnapshotIfNeeded = async (force: boolean): Promise<void> => {
+      if (!force && rowsSinceLastSnapshot < ABP_SETTLEMENT_SCAN_SNAPSHOT_BATCH_SIZE) return;
+      rowsSinceLastSnapshot = 0;
+      await markJob(
+        (job) => ({
           ...job,
           updatedAt: new Date().toISOString(),
+          result: { rows: [...rows], successCount, failureCount },
           progress: {
-            current: currentCompleted,
+            current: rows.length,
             total: allIds.length,
-            percent: normalizeProgressPercent(currentCompleted, allIds.length),
-            message: `Refreshing portal session before ${currentCompleted + 1} of ${allIds.length}...`,
-            currentCsgId: csgId,
+            percent: normalizeProgressPercent(rows.length, allIds.length),
+            message: `Scanned ${rows.length} of ${allIds.length}`,
+            currentCsgId: null,
           },
-        }));
-        await client.login();
-      }
+        }),
+        { persist: true }
+      );
+    };
 
-      await markJob((job) => ({
-        ...job,
-        updatedAt: new Date().toISOString(),
-        progress: {
-          current: currentCompleted,
-          total: allIds.length,
-          percent: normalizeProgressPercent(currentCompleted, allIds.length),
-          message: `Fetching ${currentCompleted + 1} of ${allIds.length}`,
-          currentCsgId: csgId,
-        },
-      }));
+    // ── Process a single contract ────────────────────────────────
+    const processSingleContract = async (csgId: string): Promise<void> => {
+      await refreshSessionIfNeeded();
 
       let fetched = await client.fetchRecContractPdf(csgId);
       const fetchError = (fetched.error ?? "").toLowerCase();
@@ -1046,19 +1064,9 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
           fetchError.includes("portal login"));
 
       if (shouldRetryAfterRefresh) {
-        await markJob((job) => ({
-          ...job,
-          updatedAt: new Date().toISOString(),
-          progress: {
-            current: currentCompleted,
-            total: allIds.length,
-            percent: normalizeProgressPercent(currentCompleted, allIds.length),
-            message: `Retrying ${currentCompleted + 1} of ${allIds.length} after session refresh...`,
-            currentCsgId: csgId,
-          },
-        }));
         try {
           await client.login();
+          completedSinceLastRefresh = 0;
         } catch {
           // Keep original error if session refresh fails.
         }
@@ -1097,6 +1105,7 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
         }
       }
 
+      // Append result (synchronized — JS is single-threaded between awaits)
       rows.push({
         csgId,
         systemPageUrl: fetched.systemPageUrl,
@@ -1112,30 +1121,43 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
         failureCount += 1;
       }
 
-      const current = rows.length;
-      await markJob(
-        (job) => ({
-          ...job,
-          updatedAt: new Date().toISOString(),
-          result: {
-            rows: [...rows],
-            successCount,
-            failureCount,
-          },
-          progress: {
-            current,
-            total: allIds.length,
-            percent: normalizeProgressPercent(current, allIds.length),
-            message:
-              rowError === null
-                ? `Scanned ${current} of ${allIds.length}`
-                : `Processed ${current} of ${allIds.length} (with errors)`,
-            currentCsgId: csgId,
-          },
-        }),
-        { persist: true }
-      );
-    }
+      completedSinceLastRefresh += 1;
+      rowsSinceLastSnapshot += 1;
+
+      // Update in-memory progress after every contract (cheap, no disk I/O)
+      await markJob((job) => ({
+        ...job,
+        updatedAt: new Date().toISOString(),
+        result: { rows: [...rows], successCount, failureCount },
+        progress: {
+          current: rows.length,
+          total: allIds.length,
+          percent: normalizeProgressPercent(rows.length, allIds.length),
+          message: `Scanned ${rows.length} of ${allIds.length}`,
+          currentCsgId: csgId,
+        },
+      }));
+
+      // Persist to disk in batches
+      await persistSnapshotIfNeeded(false);
+    };
+
+    // ── Run concurrent workers ───────────────────────────────────
+    await markJob((job) => ({
+      ...job,
+      updatedAt: new Date().toISOString(),
+      progress: {
+        ...job.progress,
+        message: `Scanning ${pendingIds.length} contracts (${ABP_SETTLEMENT_SCAN_CONCURRENCY} concurrent)...`,
+      },
+    }));
+
+    await mapWithConcurrency(pendingIds, ABP_SETTLEMENT_SCAN_CONCURRENCY, async (csgId) => {
+      await processSingleContract(csgId);
+    });
+
+    // Final persist
+    await persistSnapshotIfNeeded(true);
 
     await markJob(
       (job) => ({
