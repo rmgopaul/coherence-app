@@ -1886,7 +1886,12 @@ export const appRouter = router({
 
   marketDashboard: (() => {
     // In-memory cache with 5-minute TTL; stale data served if fresh fetch fails
-    let cachedData: { quotes: any[]; headlines: any[]; fetchedAt: string } | null = null;
+    let cachedData: {
+      quotes: any[];
+      headlines: any[];
+      approvalRatings: any[];
+      fetchedAt: string;
+    } | null = null;
     let cacheExpiry = 0;
     const CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -1899,18 +1904,21 @@ export const appRouter = router({
 
         const { fetchMarketQuotes } = await import("./services/marketData");
         const { fetchNewsHeadlines } = await import("./services/newsHeadlines");
+        const { fetchTrumpApprovalRatings } = await import("./services/approvalRatings");
 
         try {
-          const [quotesResult, headlinesResult] = await Promise.allSettled([
+          const [quotesResult, headlinesResult, approvalResult] = await Promise.allSettled([
             fetchMarketQuotes([
               "GEVO", "MNTK", "PLUG", "ALTO", "REX",
               "BTC-USD", "ETH-USD",
             ]),
             fetchNewsHeadlines(),
+            fetchTrumpApprovalRatings(),
           ]);
 
           const quotes = quotesResult.status === "fulfilled" ? quotesResult.value : [];
           const headlines = headlinesResult.status === "fulfilled" ? headlinesResult.value : [];
+          const approvalRatings = approvalResult.status === "fulfilled" ? approvalResult.value : [];
           const quotesError =
             quotesResult.status === "rejected" ? String((quotesResult.reason as any)?.message ?? quotesResult.reason ?? "") : "";
           const marketRateLimited =
@@ -1923,6 +1931,9 @@ export const appRouter = router({
           if (headlinesResult.status === "rejected") {
             console.warn("[MarketDashboard] Headlines fetch failed:", headlinesResult.reason);
           }
+          if (approvalResult.status === "rejected") {
+            console.warn("[MarketDashboard] Approval ratings fetch failed:", approvalResult.reason);
+          }
 
           // If Yahoo is rate-limited, prefer serving the last good cached quotes
           // instead of returning an empty market section.
@@ -1930,6 +1941,8 @@ export const appRouter = router({
             const staleSafeData = {
               ...cachedData,
               headlines: headlines.length > 0 ? headlines : cachedData.headlines,
+              approvalRatings:
+                approvalRatings.length > 0 ? approvalRatings : cachedData.approvalRatings,
               marketRateLimited: true,
               usingStaleQuotes: true,
             };
@@ -1937,9 +1950,15 @@ export const appRouter = router({
             return staleSafeData;
           }
 
-          const freshData = { quotes, headlines, fetchedAt: new Date().toISOString(), marketRateLimited };
+          const freshData = {
+            quotes,
+            headlines,
+            approvalRatings,
+            fetchedAt: new Date().toISOString(),
+            marketRateLimited,
+          };
           // Only update cache if we got meaningful data
-          if (quotes.length > 0 || headlines.length > 0) {
+          if (quotes.length > 0 || headlines.length > 0 || approvalRatings.length > 0) {
             cachedData = freshData;
             cacheExpiry = now + CACHE_TTL_MS;
           }
@@ -1948,7 +1967,7 @@ export const appRouter = router({
           console.warn("[MarketDashboard] Fetch failed, returning stale cache if available:", error);
           // Return stale data rather than nothing
           if (cachedData) return cachedData;
-          return { quotes: [], headlines: [], fetchedAt: new Date().toISOString() };
+          return { quotes: [], headlines: [], approvalRatings: [], fetchedAt: new Date().toISOString() };
         }
       }),
     });

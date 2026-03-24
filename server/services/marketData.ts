@@ -35,6 +35,14 @@ const CRYPTO_TO_COINGECKO_ID: Record<string, string> = {
   "BTC-USD": "bitcoin",
   "ETH-USD": "ethereum",
 };
+const CRYPTO_TO_KRAKEN_PAIR: Record<string, string> = {
+  "BTC-USD": "XBTUSD",
+  "ETH-USD": "ETHUSD",
+};
+const KRAKEN_RESULT_KEYS: Record<string, string[]> = {
+  XBTUSD: ["XXBTZUSD", "XBTUSD"],
+  ETHUSD: ["XETHZUSD", "ETHUSD", "XETHUSD"],
+};
 
 function toFiniteNumber(value: unknown, fallback = 0): number {
   const parsed = typeof value === "number" ? value : Number(value);
@@ -442,17 +450,93 @@ async function fetchCryptoQuotesFromCoinGecko(symbols: string[]): Promise<Market
   }
 }
 
+async function fetchCryptoQuotesFromKraken(symbols: string[]): Promise<MarketQuote[]> {
+  const cryptoSymbols = symbols.filter((symbol) => CRYPTO_TO_KRAKEN_PAIR[symbol]);
+  if (cryptoSymbols.length === 0) return [];
+
+  const pairs = Array.from(new Set(cryptoSymbols.map((symbol) => CRYPTO_TO_KRAKEN_PAIR[symbol])));
+  const url = `https://api.kraken.com/0/public/Ticker?pair=${encodeURIComponent(pairs.join(","))}`;
+
+  let jsonText = "";
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (response.ok) {
+      jsonText = await response.text();
+    }
+  } catch {
+    // try curl fallback below
+  }
+
+  if (!jsonText) {
+    const curlFallback = await fetchTextViaCurl(url, "application/json");
+    if (!curlFallback || curlFallback.status < 200 || curlFallback.status >= 300) return [];
+    jsonText = curlFallback.text;
+  }
+
+  try {
+    const json = JSON.parse(jsonText) as {
+      error?: string[];
+      result?: Record<
+        string,
+        {
+          c?: string[]; // last trade
+          o?: string; // opening price
+        }
+      >;
+    };
+    if (!json?.result || (Array.isArray(json.error) && json.error.length > 0)) {
+      return [];
+    }
+
+    const quotes: MarketQuote[] = [];
+    for (const symbol of cryptoSymbols) {
+      const pair = CRYPTO_TO_KRAKEN_PAIR[symbol];
+      const keys = KRAKEN_RESULT_KEYS[pair] ?? [pair];
+      const payload = keys.map((key) => json.result?.[key]).find(Boolean);
+      if (!payload) continue;
+
+      const price = toFiniteNumber(payload.c?.[0], Number.NaN);
+      if (!Number.isFinite(price) || price <= 0) continue;
+      const previousClose = toFiniteNumber(payload.o, price);
+      const change = price - previousClose;
+      const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
+
+      quotes.push({
+        symbol,
+        shortName: symbol.replace("-USD", ""),
+        price,
+        previousClose,
+        change,
+        changePercent,
+        currency: "USD",
+        marketState: "CLOSED",
+      });
+    }
+    return quotes;
+  } catch {
+    return [];
+  }
+}
+
 async function fetchQuotesFromSecondaryProviders(symbols: string[]): Promise<MarketQuote[]> {
-  const [stocksResult, cryptoResult] = await Promise.allSettled([
+  const [stocksResult, coinGeckoResult, krakenResult] = await Promise.allSettled([
     fetchStockQuotesFromStooq(symbols),
     fetchCryptoQuotesFromCoinGecko(symbols),
+    fetchCryptoQuotesFromKraken(symbols),
   ]);
 
   const stocks = stocksResult.status === "fulfilled" ? stocksResult.value : [];
-  const crypto = cryptoResult.status === "fulfilled" ? cryptoResult.value : [];
+  const coinGecko = coinGeckoResult.status === "fulfilled" ? coinGeckoResult.value : [];
+  const kraken = krakenResult.status === "fulfilled" ? krakenResult.value : [];
 
   const deduped = new Map<string, MarketQuote>();
-  [...stocks, ...crypto].forEach((quote) => {
+  [...stocks, ...coinGecko, ...kraken].forEach((quote) => {
     if (!quote.symbol) return;
     if (!deduped.has(quote.symbol)) deduped.set(quote.symbol, quote);
   });

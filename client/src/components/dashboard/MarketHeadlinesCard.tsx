@@ -38,6 +38,16 @@ interface NewsHeadline {
   category: "us-politics" | "world";
 }
 
+interface ApprovalRatingSource {
+  source: "RCP" | "NYT" | string;
+  approve: number | null;
+  disapprove: number | null;
+  net: number | null;
+  asOf: string | null;
+  url: string;
+  error?: string;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                             */
 /* ------------------------------------------------------------------ */
@@ -180,6 +190,7 @@ export default function MarketHeadlinesCard() {
 
   const fetchedAt = data?.fetchedAt ? new Date(data.fetchedAt) : null;
   const marketRateLimited = Boolean((data as any)?.marketRateLimited);
+  const approvalRatings = ((data as any)?.approvalRatings ?? []) as ApprovalRatingSource[];
 
   const stocksOverallChange = useMemo(() => {
     if (stocks.length === 0) return null;
@@ -255,6 +266,49 @@ export default function MarketHeadlinesCard() {
         </div>
 
         {/* Headlines Section */}
+        {approvalRatings.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
+              Trump Approval Averages
+            </h4>
+            <div className="grid grid-cols-1 gap-2">
+              {approvalRatings.map((source, index) => (
+                <a
+                  key={`${source.source}-${index}`}
+                  href={source.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="rounded-md border px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
+                      {source.source}
+                    </span>
+                    {source.asOf && (
+                      <span className="text-[10px] text-slate-400">{source.asOf}</span>
+                    )}
+                  </div>
+                  {source.approve !== null && source.disapprove !== null ? (
+                    <div className="mt-1 text-sm text-slate-700 dark:text-slate-200">
+                      Approve {source.approve.toFixed(1)}% | Disapprove {source.disapprove.toFixed(1)}%
+                      {source.net !== null && (
+                        <span className={cn("ml-2 font-medium", source.net >= 0 ? "text-emerald-600" : "text-red-600")}>
+                          Net {source.net >= 0 ? "+" : ""}
+                          {source.net.toFixed(1)}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-xs text-amber-600">
+                      {source.error || "Data unavailable"}
+                    </div>
+                  )}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div>
           {usPolitics.length > 0 && (
             <div className="mb-3">
