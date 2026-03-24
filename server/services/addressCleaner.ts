@@ -2,9 +2,10 @@
  * Deterministic US mailing address cleaner.
  *
  * Handles: casing, abbreviations, field-placement errors, state/zip validation,
- * phone number removal, placeholder values, cityStateZip parsing.
+ * phone number removal, email removal, placeholder values, cityStateZip parsing,
+ * stuck-together numbers+words, "Illinois"→"IL" expansion, duplicate fields.
  *
- * Returns `{ cleaned, ambiguous }` — ambiguous rows need LLM review.
+ * Returns `{ cleaned, ambiguousRows }` — ambiguous rows should be sent to LLM.
  */
 
 /* ------------------------------------------------------------------ */
@@ -29,29 +30,21 @@ export type CleanedAddressRow = AddressRow & { ambiguous: boolean; ambiguousReas
 /* ------------------------------------------------------------------ */
 
 const STREET_ABBREVIATIONS: Record<string, string> = {
-  street: "St",
-  avenue: "Ave",
-  road: "Rd",
-  boulevard: "Blvd",
-  drive: "Dr",
-  lane: "Ln",
-  court: "Ct",
-  parkway: "Pkwy",
-  circle: "Cir",
-  place: "Pl",
-  terrace: "Ter",
-  trail: "Trl",
-  highway: "Hwy",
-  way: "Way",
-  apartment: "Apt",
-  suite: "Ste",
+  street: "St", avenue: "Ave", road: "Rd", boulevard: "Blvd", drive: "Dr",
+  lane: "Ln", court: "Ct", parkway: "Pkwy", circle: "Cir", place: "Pl",
+  terrace: "Ter", trail: "Trl", highway: "Hwy", way: "Way",
+  apartment: "Apt", suite: "Ste",
 };
 
-const SECONDARY_UNIT_PREFIXES = /^(apt|ste|suite|unit|bldg|building|fl|floor|rm|room|dept|department|po\s*box|p\.?o\.?\s*box|#)\b/i;
+const SECONDARY_UNIT_PREFIXES = /^(apt|ste|suite|unit|bldg|building|fl|floor|rm|room|dept|department|po\s*box|p\.?o\.?\s*box|#|attn)\b/i;
 
 const PLACEHOLDER_PATTERN = /^(n\.?a\.?|n\/a|tbd|unknown|none|null|-)$/i;
 
-const PHONE_PATTERN = /^\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$/;
+const PHONE_PATTERN = /(?:^|\s)\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?:\s|$)/;
+const PHONE_STRICT = /^\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$/;
+const PHONE_WITH_EXT = /^\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(\s*(ext|x)\.?\s*\d+)?$/i;
+
+const EMAIL_PATTERN = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
 
 const ZIP_PATTERN = /^\d{5}(-\d{4})?$/;
 
@@ -64,8 +57,29 @@ const US_STATES = new Set([
   "DC", "PR", "VI", "GU", "AS", "MP",
 ]);
 
-// Business suffixes to keep uppercase
-const PRESERVE_UPPER_PATTERN = /\b(LLC|INC|CORP|LTD|LP|LLP|PC|PA|DBA|CUPHD|HM2|NA|NV|II|III|IV)\b/gi;
+const STATE_FULL_NAMES: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA",
+  colorado: "CO", connecticut: "CT", delaware: "DE", florida: "FL", georgia: "GA",
+  hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN", iowa: "IA",
+  kansas: "KS", kentucky: "KY", louisiana: "LA", maine: "ME", maryland: "MD",
+  massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS",
+  missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
+  "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+  "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK",
+  oregon: "OR", pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC",
+  "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT",
+  vermont: "VT", virginia: "VA", washington: "WA", "west virginia": "WV",
+  wisconsin: "WI", wyoming: "WY",
+  // Common abbreviations
+  "ill": "IL", "ill.": "IL", "i'll": "IL",
+  "ind": "IN", "ind.": "IN",
+  "wis": "WI", "wis.": "WI",
+  "mich": "MI", "mich.": "MI",
+  "minn": "MN", "minn.": "MN",
+  "calif": "CA", "calif.": "CA",
+};
+
+const PRESERVE_UPPER = /\b(LLC|INC|CORP|LTD|LP|LLP|PC|PA|DBA|CUPHD|HM2|NA|NV|II|III|IV|PO|RR|US|SE|NE|NW|SW)\b/gi;
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                             */
@@ -73,7 +87,7 @@ const PRESERVE_UPPER_PATTERN = /\b(LLC|INC|CORP|LTD|LP|LLP|PC|PA|DBA|CUPHD|HM2|N
 
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
-  return String(value).trim();
+  return String(value).trim().replace(/\s+/g, " ");
 }
 
 function isPlaceholder(value: string): boolean {
@@ -81,107 +95,175 @@ function isPlaceholder(value: string): boolean {
 }
 
 function isPhone(value: string): boolean {
-  return PHONE_PATTERN.test(value.trim().replace(/\s+/g, ""));
+  return PHONE_STRICT.test(value.trim().replace(/\s+/g, "")) ||
+    PHONE_WITH_EXT.test(value.trim());
+}
+
+function containsPhone(value: string): boolean {
+  return PHONE_PATTERN.test(value);
+}
+
+function removePhones(value: string): string {
+  return value.replace(/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(\s*(ext|x)\.?\s*\d+)?/gi, "").trim();
+}
+
+function containsEmail(value: string): boolean {
+  return EMAIL_PATTERN.test(value);
+}
+
+function removeEmails(value: string): string {
+  return value.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "").trim();
 }
 
 function isZip(value: string): boolean {
   return ZIP_PATTERN.test(value.trim());
 }
 
-function isState(value: string): boolean {
+function isValidState(value: string): boolean {
   return US_STATES.has(value.trim().toUpperCase());
+}
+
+function resolveStateName(value: string): string | null {
+  const lower = value.trim().toLowerCase().replace(/\.$/, "");
+  if (STATE_FULL_NAMES[lower]) return STATE_FULL_NAMES[lower];
+  const upper = value.trim().toUpperCase();
+  if (US_STATES.has(upper)) return upper;
+  return null;
 }
 
 function isSecondaryUnit(value: string): boolean {
   return SECONDARY_UNIT_PREFIXES.test(value.trim());
 }
 
+/** Fix stuck-together number+word patterns: "17Saratoga" → "17 Saratoga" */
+function fixSpacing(value: string): string {
+  // "123MainSt" → "123 Main St" (digit followed by uppercase letter)
+  let result = value.replace(/(\d)([A-Z])/g, "$1 $2");
+  // "Main123" → handled naturally, but "1315Wabash" → "1315 Wabash"
+  result = result.replace(/(\d)([a-z])/g, (_, d, l) => `${d} ${l.toUpperCase()}`);
+  return result;
+}
+
+function looksLikeStreetAddress(value: string): boolean {
+  // Has digits + text = probably a street address
+  return /\d/.test(value) && /[a-zA-Z]/.test(value) && !isZip(value) && !isPhone(value);
+}
+
 function looksLikePersonName(value: string): boolean {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length < 3) return false;
-  // No digits → likely a name, not an address
-  if (!/\d/.test(trimmed) && !/\b(po\s*box|p\.?o\.?\s*box)\b/i.test(trimmed)) {
-    // Check if it starts with common name patterns
-    const words = trimmed.split(/\s+/);
-    if (words.length >= 2 && words.length <= 5 && !SECONDARY_UNIT_PREFIXES.test(trimmed)) {
-      // Doesn't look like a street (no St/Ave/Rd/etc suffixes)
-      const lastWord = words[words.length - 1].toLowerCase().replace(/\./g, "");
-      const streetSuffixes = Object.keys(STREET_ABBREVIATIONS).concat(
-        Object.values(STREET_ABBREVIATIONS).map((s) => s.toLowerCase())
-      );
-      if (!streetSuffixes.includes(lastWord)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  if (/\d/.test(trimmed)) return false;
+  if (/\b(po\s*box|p\.?o\.?\s*box)\b/i.test(trimmed)) return false;
+  if (isSecondaryUnit(trimmed)) return false;
+  const words = trimmed.split(/\s+/);
+  if (words.length < 2 || words.length > 5) return false;
+  const lastWord = words[words.length - 1].toLowerCase().replace(/\./g, "");
+  const streetWords = [...Object.keys(STREET_ABBREVIATIONS), ...Object.values(STREET_ABBREVIATIONS).map(s => s.toLowerCase())];
+  return !streetWords.includes(lastWord);
 }
 
 /** Title-case a string, preserving business acronyms */
 function titleCase(value: string): string {
   if (!value.trim()) return value;
-
-  // Store positions of preserved acronyms
-  const preserved: Array<{ start: number; end: number; text: string }> = [];
-  let match: RegExpExecArray | null;
-  const preserveRegex = new RegExp(PRESERVE_UPPER_PATTERN.source, "gi");
-  while ((match = preserveRegex.exec(value)) !== null) {
-    preserved.push({ start: match.index, end: match.index + match[0].length, text: match[0].toUpperCase() });
-  }
-
-  // Title-case
-  let result = value
-    .toLowerCase()
-    .replace(/(?:^|\s|[-/])\S/g, (char) => char.toUpperCase());
-
+  let result = value.toLowerCase().replace(/(?:^|\s|[-/.])\S/g, (char) => char.toUpperCase());
   // Restore preserved acronyms
-  for (const item of preserved) {
-    result = result.substring(0, item.start) + item.text + result.substring(item.end);
-  }
-
+  result = result.replace(PRESERVE_UPPER, (m) => m.toUpperCase());
+  // Fix "O'Brien" etc
+  result = result.replace(/'\w/g, (m) => m.toUpperCase());
   return result;
 }
 
-/** Standardize street abbreviations */
 function standardizeAbbreviations(value: string): string {
   let result = value;
   for (const [full, abbr] of Object.entries(STREET_ABBREVIATIONS)) {
-    // Match whole word, case-insensitive, with optional trailing period
-    const regex = new RegExp(`\\b${full}\\.?\\b`, "gi");
-    result = result.replace(regex, abbr);
+    result = result.replace(new RegExp(`\\b${full}\\.?\\b`, "gi"), abbr);
   }
-  // Fix double periods
-  result = result.replace(/\.{2,}/g, ".").replace(/\.\s*$/, "");
+  // Remove trailing periods from abbreviations
+  result = result.replace(/\.\s*$/, "");
+  // Clean stray periods after abbreviations: "IL." → "IL"
+  result = result.replace(/\b([A-Z]{2})\.\s/g, "$1 ");
   return result;
 }
 
-/** Parse "City, ST ZIP" or "City ST ZIP" patterns */
+/**
+ * Parse city/state/zip from a string like "Springfield, IL 62701" or
+ * "Springfield, Illinois 62701" or "Springfield IL. 62701"
+ */
 function parseCityStateZip(value: string): { city: string; state: string; zip: string } | null {
   const trimmed = clean(value);
   if (!trimmed) return null;
 
-  // Pattern: "City, ST 12345" or "City, ST 12345-6789"
-  const match1 = trimmed.match(/^(.+?),?\s+([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)\s*$/);
-  if (match1) {
-    const st = match1[2].toUpperCase();
-    if (US_STATES.has(st)) {
-      return { city: clean(match1[1]), state: st, zip: match1[3] };
+  // Remove "USA", "United States", "Us" suffix
+  const cleaned = trimmed.replace(/,?\s*(usa|united\s*states|us)\s*$/i, "").trim();
+
+  // Pattern: "City, STATE_NAME ZIP" or "City STATE_ABBR ZIP" or "City, IL. ZIP"
+  const patterns = [
+    // "City, IL 62701" or "City, IL.62701"
+    /^(.+?),?\s+([A-Za-z]{2,})\.?\s*(\d{5}(?:-\d{4})?)\s*$/,
+    // "City, IL" (no zip)
+    /^(.+?),\s+([A-Za-z]{2,})\s*$/,
+    // Just "City IL" (no comma, 2-letter state)
+    /^(.+?)\s+([A-Za-z]{2})\s*$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (match) {
+      const possibleState = resolveStateName(match[2]);
+      if (possibleState) {
+        return {
+          city: clean(match[1]).replace(/,\s*$/, ""),
+          state: possibleState,
+          zip: match[3] || "",
+        };
+      }
     }
   }
 
-  // Pattern: "City, ST" (no zip)
-  const match2 = trimmed.match(/^(.+?),\s+([A-Za-z]{2})\s*$/);
-  if (match2) {
-    const st = match2[2].toUpperCase();
-    if (US_STATES.has(st)) {
-      return { city: clean(match2[1]), state: st, zip: "" };
+  // Just a zip
+  const zipMatch = cleaned.match(/^(\d{5}(?:-\d{4})?)$/);
+  if (zipMatch) return { city: "", state: "", zip: zipMatch[1] };
+
+  return null;
+}
+
+/**
+ * Try to extract city, state, zip from the end of a string like
+ * "408 W High St. Roanoke, IL. 61561" → { prefix: "408 W High St", city: "Roanoke", state: "IL", zip: "61561" }
+ */
+function extractTrailingCityStateZip(value: string): { prefix: string; city: string; state: string; zip: string } | null {
+  const trimmed = clean(value);
+
+  // "... City, ST 12345" or "... City, Illinois 12345" or "... City Il 12345"
+  const patterns = [
+    /^(.+?)[.,]\s+([A-Za-z\s]+?)[.,]?\s+([A-Za-z]{2,})\.?\s+(\d{5}(?:-\d{4})?)\s*$/,
+    /^(.+?)\s+([A-Za-z\s]+?),?\s+([A-Za-z]{2,})\.?\s*(\d{5}(?:-\d{4})?)\s*$/,
+    // "... City STATE ZIP" all at end with comma before city
+    /^(.+?),\s*([A-Za-z\s]+?)\s+([A-Za-z]{2,})\.?\s*(\d{5}(?:-\d{4})?)\s*$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match) {
+      const possibleState = resolveStateName(match[3]);
+      if (possibleState && match[1].length > 3) {
+        return {
+          prefix: clean(match[1]).replace(/[.,]\s*$/, ""),
+          city: clean(match[2]),
+          state: possibleState,
+          zip: match[4],
+        };
+      }
     }
   }
 
-  // Pattern: just a zip
-  const matchZip = trimmed.match(/^(\d{5}(?:-\d{4})?)$/);
-  if (matchZip) {
-    return { city: "", state: "", zip: matchZip[1] };
+  // Simpler: "... City, ST" (no zip, comma required)
+  const simpleMatch = trimmed.match(/^(.+?),\s*([A-Za-z\s]+?),?\s+([A-Za-z]{2,})\.?\s*$/);
+  if (simpleMatch) {
+    const possibleState = resolveStateName(simpleMatch[3]);
+    if (possibleState && simpleMatch[1].length > 3) {
+      return { prefix: clean(simpleMatch[1]).replace(/[.,]\s*$/, ""), city: clean(simpleMatch[2]), state: possibleState, zip: "" };
+    }
   }
 
   return null;
@@ -210,10 +292,44 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
   if (isPlaceholder(state)) state = "";
   if (isPlaceholder(zip)) zip = "";
 
-  // ── Remove phone numbers from address fields ─────────────────
+  // ── Remove "Usa" / "United States" / "Us" from end of fields ─
+  city = city.replace(/,?\s*(usa|united\s*states|us)\s*$/i, "").trim();
+  addr2 = addr2.replace(/,?\s*(usa|united\s*states|us)\s*$/i, "").trim();
+
+  // ── Remove phone numbers from ALL fields ─────────────────────
+  if (isPhone(addr1)) addr1 = "";
   if (isPhone(addr2)) addr2 = "";
   if (isPhone(city)) city = "";
-  if (isPhone(addr1)) { ambiguousReasons.push("Phone in addr1"); addr1 = ""; }
+  if (containsPhone(addr1)) addr1 = removePhones(addr1);
+  if (containsPhone(addr2)) addr2 = removePhones(addr2);
+  if (containsPhone(city)) city = removePhones(city);
+  if (containsPhone(payeeName)) payeeName = removePhones(payeeName);
+
+  // ── Remove email addresses from address fields ───────────────
+  if (containsEmail(addr2)) addr2 = removeEmails(addr2);
+  if (containsEmail(city)) city = removeEmails(city);
+  if (containsEmail(addr1)) addr1 = removeEmails(addr1);
+
+  // ── Fix spacing: "17Saratoga" → "17 Saratoga" ───────────────
+  if (addr1) addr1 = fixSpacing(addr1);
+  if (addr2) addr2 = fixSpacing(addr2);
+  if (city) city = fixSpacing(city);
+
+  // ── Remove backticks, stray punctuation ──────────────────────
+  addr1 = addr1.replace(/[`]/g, "").trim();
+  addr2 = addr2.replace(/[`]/g, "").trim();
+
+  // ── Resolve full state names: "Illinois" → "IL" ──────────────
+  if (state) {
+    const resolved = resolveStateName(state);
+    if (resolved) {
+      state = resolved;
+    } else if (state.length > 2) {
+      // Invalid state like "GERMANY", "DR", etc.
+      ambiguousReasons.push(`Invalid state '${state}'`);
+      state = "";
+    }
+  }
 
   // ── Zip in city field ────────────────────────────────────────
   if (isZip(city)) {
@@ -221,15 +337,27 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
     city = "";
   }
 
-  // ── "USA" / "United States" / "Illinois 62701" in city ──────
-  if (/^(usa|united\s*states)$/i.test(city)) city = "";
-  const stateZipInCity = city.match(/^([A-Za-z]{2})\s+(\d{5}(?:-\d{4})?)$/);
-  if (stateZipInCity) {
-    const potentialState = stateZipInCity[1].toUpperCase();
-    if (US_STATES.has(potentialState)) {
-      if (!state) state = potentialState;
-      if (!zip) zip = stateZipInCity[2];
-      city = "";
+  // ── State+zip in city: "IL 62701" or "Illinois 62701" ────────
+  if (city) {
+    const stateZipMatch = city.match(/^([A-Za-z.'\s]+?)\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (stateZipMatch) {
+      const resolved = resolveStateName(stateZipMatch[1]);
+      if (resolved) {
+        if (!state) state = resolved;
+        if (!zip) zip = stateZipMatch[2];
+        city = "";
+      }
+    }
+    // "Christopher, Illinois" in city field
+    if (city) {
+      const cityStateMatch = city.match(/^(.+?),?\s+(illinois|indiana|iowa|missouri|wisconsin|ohio|kentucky|michigan|tennessee|minnesota|georgia|virginia|texas|california|florida|new\s+york|pennsylvania|[a-z]{2,})\s*$/i);
+      if (cityStateMatch) {
+        const resolved = resolveStateName(cityStateMatch[2]);
+        if (resolved) {
+          city = clean(cityStateMatch[1]);
+          if (!state) state = resolved;
+        }
+      }
     }
   }
 
@@ -237,49 +365,69 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
   if (cityStateZipRaw && (!city || !state || !zip)) {
     const parsed = parseCityStateZip(cityStateZipRaw);
     if (parsed) {
-      if (!city) city = parsed.city;
-      if (!state) state = parsed.state;
-      if (!zip) zip = parsed.zip;
+      if (!city && parsed.city) city = parsed.city;
+      if (!state && parsed.state) state = parsed.state;
+      if (!zip && parsed.zip) zip = parsed.zip;
     }
   }
 
-  // ── City/state/zip crammed into addr2 ────────────────────────
+  // ── addr2 contains city/state/zip ────────────────────────────
   if (addr2 && !isSecondaryUnit(addr2)) {
     const parsed = parseCityStateZip(addr2);
-    if (parsed) {
-      if (!city) city = parsed.city;
-      if (!state) state = parsed.state;
-      if (!zip) zip = parsed.zip;
+    if (parsed && (parsed.city || parsed.state || parsed.zip)) {
+      if (!city && parsed.city) city = parsed.city;
+      if (!state && parsed.state) state = parsed.state;
+      if (!zip && parsed.zip) zip = parsed.zip;
       addr2 = "";
+    } else {
+      // Check if addr2 is just a city name that matches the city field
+      if (city && addr2.toLowerCase().replace(/[.,]/g, "").trim() === city.toLowerCase().trim()) {
+        addr2 = "";
+      }
     }
   }
 
   // ── Entire address crammed into addr1 ────────────────────────
   if (addr1) {
-    // Match: "123 Main St, City, ST 62701" or "123 Main St. City, IL. 62701"
-    const crammedMatch = addr1.match(/^(.+?)[.,]\s*([A-Za-z\s]+?)[.,]?\s+([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
-    if (crammedMatch) {
-      const potentialState = crammedMatch[3].toUpperCase();
-      if (US_STATES.has(potentialState)) {
-        addr1 = clean(crammedMatch[1]);
-        if (!city) city = clean(crammedMatch[2]);
-        if (!state) state = potentialState;
-        if (!zip) zip = crammedMatch[4];
-      }
+    const extracted = extractTrailingCityStateZip(addr1);
+    if (extracted) {
+      addr1 = extracted.prefix;
+      if (!city) city = extracted.city;
+      if (!state) state = extracted.state;
+      if (!zip) zip = extracted.zip;
+    }
+  }
+
+  // ── addr1 has "City, State ZIP" but no street (entire field is city/state/zip) ─
+  if (addr1 && !looksLikeStreetAddress(addr1)) {
+    const parsed = parseCityStateZip(addr1);
+    if (parsed && (parsed.city || parsed.state)) {
+      if (!city && parsed.city) city = parsed.city;
+      if (!state && parsed.state) state = parsed.state;
+      if (!zip && parsed.zip) zip = parsed.zip;
+      addr1 = "";
     }
   }
 
   // ── Person name in addr1, real address in addr2 ──────────────
-  if (addr1 && addr2 && looksLikePersonName(addr1) && /\d/.test(addr2)) {
-    // addr1 looks like a name, addr2 looks like an address
+  if (addr1 && addr2 && looksLikePersonName(addr1) && looksLikeStreetAddress(addr2)) {
     addr1 = addr2;
     addr2 = "";
   }
 
+  // ── payeeName duplicated in addr1 ────────────────────────────
+  if (addr1 && payeeName && addr1.toLowerCase().replace(/[.,]/g, "").trim() === payeeName.toLowerCase().replace(/[.,]/g, "").trim()) {
+    if (addr2 && looksLikeStreetAddress(addr2)) {
+      addr1 = addr2;
+      addr2 = "";
+    } else {
+      addr1 = "";
+    }
+  }
+
   // ── ATTN: prefix in addr1 ───────────────────────────────────
   if (/^attn:?\s*/i.test(addr1)) {
-    if (addr2 && /\d/.test(addr2)) {
-      // addr2 has the real address
+    if (addr2 && looksLikeStreetAddress(addr2)) {
       addr1 = addr2;
       addr2 = "";
     } else {
@@ -287,28 +435,55 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
     }
   }
 
-  // ── Duplicate addr1 === addr2 ────────────────────────────────
-  if (addr1 && addr2 && addr1.toLowerCase().replace(/\s+/g, " ") === addr2.toLowerCase().replace(/\s+/g, " ")) {
-    addr2 = "";
+  // ── Duplicate addr1 ≈ addr2 ──────────────────────────────────
+  if (addr1 && addr2) {
+    const norm1 = addr1.toLowerCase().replace(/[.,\s]+/g, " ").trim();
+    const norm2 = addr2.toLowerCase().replace(/[.,\s]+/g, " ").trim();
+    if (norm1 === norm2) addr2 = "";
   }
 
   // ── Duplicate city in addr2 ──────────────────────────────────
-  if (addr2 && city && addr2.toLowerCase().trim() === city.toLowerCase().trim()) {
+  if (addr2 && city && addr2.toLowerCase().replace(/[.,]/g, "").trim() === city.toLowerCase().trim()) {
     addr2 = "";
   }
 
-  // ── Validate state ───────────────────────────────────────────
+  // ── addr2 still has "City, ST ZIP" pattern after earlier checks ─
+  if (addr2) {
+    const extracted = extractTrailingCityStateZip(addr2);
+    if (extracted) {
+      addr2 = extracted.prefix;
+      if (!city) city = extracted.city;
+      if (!state) state = extracted.state;
+      if (!zip) zip = extracted.zip;
+    }
+  }
+
+  // ── "PO Box" normalization ───────────────────────────────────
+  if (addr2 && /^po\s*box/i.test(addr2) && /^po\s*box/i.test(addr1)) {
+    // Both are PO Box — deduplicate
+    addr2 = "";
+  }
+  if (addr2 && /^(pobox|p\.?o\.?\s*box)\s/i.test(addr2) && !addr1) {
+    addr1 = addr2;
+    addr2 = "";
+  }
+
+  // ── Validate + normalize state ───────────────────────────────
   if (state) {
-    state = state.toUpperCase();
-    if (!US_STATES.has(state)) {
-      ambiguousReasons.push(`Invalid state '${state}'`);
-      state = "";
+    const resolved = resolveStateName(state);
+    if (resolved) {
+      state = resolved;
+    } else {
+      state = state.toUpperCase();
+      if (!US_STATES.has(state)) {
+        ambiguousReasons.push(`Invalid state '${state}'`);
+        state = "";
+      }
     }
   }
 
   // ── Validate zip ─────────────────────────────────────────────
   if (zip) {
-    // Strip non-digit/dash characters
     const cleanedZip = zip.replace(/[^\d-]/g, "");
     if (ZIP_PATTERN.test(cleanedZip)) {
       zip = cleanedZip;
@@ -324,7 +499,12 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
   if (addr2) addr2 = titleCase(standardizeAbbreviations(addr2));
   if (city) city = titleCase(city);
 
-  // ── Flag as ambiguous if critical data is still missing ──────
+  // ── Final cleanup: trailing dashes, commas, periods ──────────
+  addr1 = addr1.replace(/[,.\s-]+$/, "").trim();
+  addr2 = addr2.replace(/[,.\s-]+$/, "").trim();
+  city = city.replace(/[,.\s-]+$/, "").trim();
+
+  // ── Flag as ambiguous if critical data is still suspect ───────
   if (!addr1 && !ambiguousReasons.length) {
     ambiguousReasons.push("Missing street address");
   }
