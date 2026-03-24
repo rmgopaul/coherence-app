@@ -2703,14 +2703,15 @@ export default function AbpInvoiceSettlement() {
         batchCleaned.forEach((cleaned, csgId) => {
           const existing = next.get(csgId);
           if (!existing) return;
-          const city = cleaned.city ?? existing.city;
-          const state = cleaned.state ?? existing.state;
-          const zip = cleaned.zip ?? existing.zip;
+          // Use cleaned values directly — null means intentionally cleared
+          const city = cleaned.city !== undefined ? cleaned.city : existing.city;
+          const state = cleaned.state !== undefined ? cleaned.state : existing.state;
+          const zip = cleaned.zip !== undefined ? cleaned.zip : existing.zip;
           next.set(csgId, {
             ...existing,
-            payeeName: cleaned.payeeName ?? existing.payeeName,
-            mailingAddress1: cleaned.mailingAddress1 ?? existing.mailingAddress1,
-            mailingAddress2: cleaned.mailingAddress2 ?? existing.mailingAddress2,
+            payeeName: cleaned.payeeName !== undefined ? cleaned.payeeName : existing.payeeName,
+            mailingAddress1: cleaned.mailingAddress1 !== undefined ? cleaned.mailingAddress1 : existing.mailingAddress1,
+            mailingAddress2: cleaned.mailingAddress2 !== undefined ? cleaned.mailingAddress2 : existing.mailingAddress2,
             city,
             state,
             zip,
@@ -2724,14 +2725,15 @@ export default function AbpInvoiceSettlement() {
         current.map((row) => {
           const cleaned = batchCleaned.get(row.csgId);
           if (!cleaned) return row;
-          const city = cleaned.city ?? row.city;
-          const state = cleaned.state ?? row.state;
-          const zip = cleaned.zip ?? row.zip;
+          // Use cleaned values directly — null means intentionally cleared
+          const city = cleaned.city !== undefined ? cleaned.city : row.city;
+          const state = cleaned.state !== undefined ? cleaned.state : row.state;
+          const zip = cleaned.zip !== undefined ? cleaned.zip : row.zip;
           return {
             ...row,
-            payeeName: cleaned.payeeName ?? row.payeeName,
-            mailingAddress1: cleaned.mailingAddress1 ?? row.mailingAddress1,
-            mailingAddress2: cleaned.mailingAddress2 ?? row.mailingAddress2,
+            payeeName: cleaned.payeeName !== undefined ? cleaned.payeeName : row.payeeName,
+            mailingAddress1: cleaned.mailingAddress1 !== undefined ? cleaned.mailingAddress1 : row.mailingAddress1,
+            mailingAddress2: cleaned.mailingAddress2 !== undefined ? cleaned.mailingAddress2 : row.mailingAddress2,
             city,
             state,
             zip,
