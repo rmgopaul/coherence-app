@@ -320,6 +320,74 @@ function normalizeEmail(value: unknown): string {
   return clean(value).toLowerCase();
 }
 
+// ── Mailing city/zip/state cross-validation ─────────────────────
+// IL zip prefixes: 600xx–629xx. Map of state → valid 3-digit zip prefixes.
+const STATE_ZIP_PREFIXES: Record<string, number[][]> = {
+  IL: [[600, 629]],
+  IN: [[460, 479]],
+  IA: [[500, 528]],
+  WI: [[530, 549]],
+  MO: [[630, 658]],
+  KY: [[400, 427]],
+  MI: [[480, 499]],
+  OH: [[430, 459]],
+  MN: [[550, 567]],
+  PA: [[150, 196]],
+  NY: [[100, 149]],
+  CA: [[900, 961]],
+  TX: [[750, 799], [885, 885]],
+  FL: [[320, 349]],
+  GA: [[300, 319], [398, 399]],
+  VA: [[220, 246]],
+  NJ: [[70, 89]],
+  NC: [[270, 289]],
+  MA: [[10, 27], [55, 55]],
+  AZ: [[850, 865]],
+  CO: [[800, 816]],
+  TN: [[370, 385]],
+  MD: [[206, 219]],
+  SC: [[290, 299]],
+  AL: [[350, 369]],
+  LA: [[700, 714]],
+};
+
+function validateMailingCityZipState(
+  city: string,
+  state: string,
+  zip: string,
+): string | null {
+  const normalizedState = state.toUpperCase().trim();
+  const normalizedZip = zip.replace(/[^0-9]/g, "").slice(0, 5);
+  const normalizedCity = city.trim();
+
+  // If both city and zip are empty, nothing to validate
+  if (!normalizedCity && !normalizedZip) return null;
+
+  // Flag: zip exists but city is missing
+  if (normalizedZip.length === 5 && !normalizedCity) {
+    return `Mailing zip (${zip}) present but city is empty.`;
+  }
+
+  // Flag: city exists but zip is missing
+  if (normalizedCity && normalizedZip.length < 5) {
+    return `Mailing city (${normalizedCity}) present but zip is missing or incomplete.`;
+  }
+
+  // Flag: state vs zip prefix mismatch
+  if (normalizedState && normalizedZip.length === 5) {
+    const ranges = STATE_ZIP_PREFIXES[normalizedState];
+    if (ranges) {
+      const prefix = parseInt(normalizedZip.slice(0, 3), 10);
+      const inRange = ranges.some(([lo, hi]) => prefix >= lo && prefix <= hi);
+      if (!inRange) {
+        return `Mailing state (${normalizedState}) does not match zip (${zip}); zip prefix ${normalizedZip.slice(0, 3)} is outside expected range for ${normalizedState}.`;
+      }
+    }
+  }
+
+  return null;
+}
+
 function normalizeCsgId(value: unknown): string {
   const raw = clean(value);
   if (!raw) return "";
@@ -1969,6 +2037,10 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         const city = clean(terms?.city) || clean(cityStateZipParts.city);
         const state = clean(terms?.state) || clean(cityStateZipParts.state);
         const zip = clean(terms?.zip) || clean(cityStateZipParts.zip);
+
+        // ── Mailing city/zip/state cross-validation ──────────
+        const mailingCityZipMismatch = validateMailingCityZipState(city, state, zip);
+
         const aiModifiedFields = csgId
           ? Array.from(
               new Set(
@@ -2118,6 +2190,10 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
           confidenceFlags.push(
             "Payment report contains CSG ID mismatch against mapping for this ABP ID; review System Id vs State Certification Number."
           );
+        }
+
+        if (mailingCityZipMismatch) {
+          confidenceFlags.push(mailingCityZipMismatch);
         }
 
         if (!seededFromFirst && !previousCarryKnown && (row.paymentNumber ?? 0) > 1) {
