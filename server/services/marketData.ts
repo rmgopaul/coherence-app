@@ -49,6 +49,67 @@ function toFiniteNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toNumberFromLooseString(value: unknown, fallback = Number.NaN): number {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
+  }
+  if (typeof value === "string") {
+    const normalized = value.replace(/[,%\s]/g, "");
+    const parsed = Number.parseFloat(normalized);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  return fallback;
+}
+
+function extractJsonObjectByMarker(text: string, marker: string): any | null {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return null;
+
+  const objectStart = text.indexOf("{", markerIndex);
+  if (objectStart < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let isEscaped = false;
+
+  for (let i = objectStart; i < text.length; i += 1) {
+    const char = text[i];
+
+    if (inString) {
+      if (isEscaped) {
+        isEscaped = false;
+      } else if (char === "\\") {
+        isEscaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const rawObject = text.slice(objectStart, i + 1);
+        try {
+          return JSON.parse(rawObject);
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
 function normalizeQuoteFromApi(q: any): MarketQuote {
   const price = toFiniteNumber(q.regularMarketPrice);
   const previousClose = toFiniteNumber(
@@ -386,6 +447,98 @@ async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote
   }
 }
 
+async function fetchStockQuoteFromBarchart(symbol: string): Promise<MarketQuote | null> {
+  const url = `https://www.barchart.com/stocks/quotes/${encodeURIComponent(symbol)}/overview`;
+
+  let html = "";
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "text/html",
+      },
+      signal: AbortSignal.timeout(7000),
+    });
+    if (response.ok) {
+      html = await response.text();
+    }
+  } catch {
+    // try curl fallback below
+  }
+
+  if (!html) {
+    const curlFallback = await fetchTextViaCurl(url, "text/html");
+    if (!curlFallback || curlFallback.status < 200 || curlFallback.status >= 300) {
+      return null;
+    }
+    html = curlFallback.text;
+  }
+
+  try {
+    const currentSymbol =
+      extractJsonObjectByMarker(html, "\"currentSymbol\":") ??
+      extractJsonObjectByMarker(html, "\"currentSymbol\" :");
+    if (!currentSymbol || typeof currentSymbol !== "object") return null;
+
+    const symbolFromPage = String(currentSymbol.symbol ?? "").toUpperCase();
+    if (!symbolFromPage || symbolFromPage !== symbol.toUpperCase()) {
+      return null;
+    }
+
+    const raw = currentSymbol.raw ?? {};
+    const price = toNumberFromLooseString(
+      raw.lastPrice ?? currentSymbol.lastPrice,
+      Number.NaN
+    );
+    if (!Number.isFinite(price) || price <= 0) return null;
+
+    const previousClose = toNumberFromLooseString(
+      raw.dailyLastPrice ?? raw.previousClose,
+      price
+    );
+    const change = toNumberFromLooseString(raw.priceChange, price - previousClose);
+
+    let changePercent = toNumberFromLooseString(raw.percentChange, Number.NaN);
+    if (Number.isFinite(changePercent) && Math.abs(changePercent) <= 1) {
+      changePercent *= 100;
+    }
+    if (!Number.isFinite(changePercent)) {
+      const parsed = toNumberFromLooseString(currentSymbol.percentChange, Number.NaN);
+      changePercent = Number.isFinite(parsed)
+        ? parsed
+        : previousClose > 0
+          ? (change / previousClose) * 100
+          : 0;
+    }
+
+    return {
+      symbol: symbolFromPage,
+      shortName: String(currentSymbol.symbolName ?? currentSymbol.symbolShortName ?? symbolFromPage),
+      price,
+      previousClose,
+      change,
+      changePercent,
+      currency: "USD",
+      marketState: "CLOSED",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchStockQuotesFromBarchart(symbols: string[]): Promise<MarketQuote[]> {
+  const stockSymbols = symbols.filter((symbol) => !symbol.endsWith("-USD"));
+  if (stockSymbols.length === 0) return [];
+
+  const settled = await Promise.allSettled(
+    stockSymbols.map((symbol) => fetchStockQuoteFromBarchart(symbol))
+  );
+  return settled
+    .filter((result): result is PromiseFulfilledResult<MarketQuote | null> => result.status === "fulfilled")
+    .map((result) => result.value)
+    .filter((quote): quote is MarketQuote => Boolean(quote));
+}
+
 async function fetchCryptoQuotesFromCoinGecko(symbols: string[]): Promise<MarketQuote[]> {
   const cryptoSymbols = symbols.filter((symbol) => CRYPTO_TO_COINGECKO_ID[symbol]);
   if (cryptoSymbols.length === 0) return [];
@@ -525,18 +678,20 @@ async function fetchCryptoQuotesFromKraken(symbols: string[]): Promise<MarketQuo
 }
 
 async function fetchQuotesFromSecondaryProviders(symbols: string[]): Promise<MarketQuote[]> {
-  const [stocksResult, coinGeckoResult, krakenResult] = await Promise.allSettled([
+  const [stocksStooqResult, stocksBarchartResult, coinGeckoResult, krakenResult] = await Promise.allSettled([
     fetchStockQuotesFromStooq(symbols),
+    fetchStockQuotesFromBarchart(symbols),
     fetchCryptoQuotesFromCoinGecko(symbols),
     fetchCryptoQuotesFromKraken(symbols),
   ]);
 
-  const stocks = stocksResult.status === "fulfilled" ? stocksResult.value : [];
+  const stocksStooq = stocksStooqResult.status === "fulfilled" ? stocksStooqResult.value : [];
+  const stocksBarchart = stocksBarchartResult.status === "fulfilled" ? stocksBarchartResult.value : [];
   const coinGecko = coinGeckoResult.status === "fulfilled" ? coinGeckoResult.value : [];
   const kraken = krakenResult.status === "fulfilled" ? krakenResult.value : [];
 
   const deduped = new Map<string, MarketQuote>();
-  [...stocks, ...coinGecko, ...kraken].forEach((quote) => {
+  [...stocksStooq, ...stocksBarchart, ...coinGecko, ...kraken].forEach((quote) => {
     if (!quote.symbol) return;
     if (!deduped.has(quote.symbol)) deduped.set(quote.symbol, quote);
   });
@@ -576,15 +731,28 @@ export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[
     return chartQuotes;
   }
 
-  // Secondary providers (no Yahoo): Stooq for stocks + CoinGecko for crypto.
+  // Secondary providers (no Yahoo): Stooq/Barchart for stocks + CoinGecko/Kraken for crypto.
   const secondaryQuotes = await fetchQuotesFromSecondaryProviders(symbols);
+  const secondaryDeduped = new Map<string, MarketQuote>();
+  secondaryQuotes.forEach((quote) => {
+    if (!quote.symbol) return;
+    if (!secondaryDeduped.has(quote.symbol)) secondaryDeduped.set(quote.symbol, quote);
+  });
+  const missingAfterSecondary = symbols.filter((symbol) => !secondaryDeduped.has(symbol));
   if (secondaryQuotes.length > 0) {
-    console.log(`[MarketData] Secondary providers fetched ${secondaryQuotes.length} quotes.`);
-    return secondaryQuotes;
+    console.log(
+      `[MarketData] Secondary providers fetched ${secondaryQuotes.length} quotes (${missingAfterSecondary.length} missing).`
+    );
+  }
+  if (secondaryQuotes.length > 0 && missingAfterSecondary.length === 0) {
+    return Array.from(secondaryDeduped.values());
   }
 
-  // Final fallback: finance.yahoo.com HTML quote pages.
-  const pageSettled = await Promise.allSettled(symbols.map((symbol) => fetchQuoteFromPage(symbol)));
+  // Final fallback: finance.yahoo.com HTML quote pages (only for missing symbols).
+  const pageFallbackSymbols = missingAfterSecondary.length > 0 ? missingAfterSecondary : symbols;
+  const pageSettled = await Promise.allSettled(
+    pageFallbackSymbols.map((symbol) => fetchQuoteFromPage(symbol))
+  );
   const pageQuotes = pageSettled
     .filter((result): result is PromiseFulfilledResult<MarketQuote | null> => result.status === "fulfilled")
     .map((result) => result.value)
@@ -594,9 +762,16 @@ export async function fetchMarketQuotes(symbols: string[]): Promise<MarketQuote[
       sawRateLimit = true;
     }
   });
-  console.log(`[MarketData] Page fallback fetched ${pageQuotes.length} quotes.`);
-  if (pageQuotes.length === 0 && sawRateLimit) {
+  pageQuotes.forEach((quote) => {
+    if (!quote.symbol) return;
+    if (!secondaryDeduped.has(quote.symbol)) secondaryDeduped.set(quote.symbol, quote);
+  });
+
+  console.log(
+    `[MarketData] Page fallback fetched ${pageQuotes.length} quotes; returning ${secondaryDeduped.size}.`
+  );
+  if (secondaryDeduped.size === 0 && sawRateLimit) {
     throw new MarketRateLimitError("Yahoo rate limited market data requests.");
   }
-  return pageQuotes;
+  return Array.from(secondaryDeduped.values());
 }
