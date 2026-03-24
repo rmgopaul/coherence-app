@@ -65,6 +65,11 @@ const OPENAI_MODELS = [
   "gpt-4o-mini",
 ];
 
+const ANTHROPIC_MODELS = [
+  "claude-sonnet-4-20250514",
+  "claude-haiku-4-20250414",
+];
+
 const TODOIST_DEFAULT_OPTIONS = [
   { value: "all", label: "All open tasks" },
   { value: "#Inbox", label: "Inbox" },
@@ -109,6 +114,8 @@ export default function Settings() {
   const [, setLocation] = useLocation();
   const [openaiKey, setOpenaiKey] = useState("");
   const [openaiModel, setOpenaiModel] = useState("gpt-4.1");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [anthropicModel, setAnthropicModel] = useState("claude-sonnet-4-20250514");
   const [todoistToken, setTodoistToken] = useState("");
   const [todoistDefaultFilter, setTodoistDefaultFilter] = useState("all");
   const [clockifyApiKey, setClockifyApiKey] = useState("");
@@ -236,6 +243,17 @@ export default function Settings() {
     },
     onError: (error) => {
       toast.error(`Failed to connect OpenAI: ${error.message}`);
+    },
+  });
+
+  const connectAnthropic = trpc.anthropic.connect.useMutation({
+    onSuccess: () => {
+      toast.success("Anthropic settings saved successfully");
+      setAnthropicKey("");
+      refetch();
+    },
+    onError: (error) => {
+      toast.error(`Failed to connect Anthropic: ${error.message}`);
     },
   });
   
@@ -535,6 +553,19 @@ export default function Settings() {
     connectOpenAI.mutate({
       apiKey: apiKey || undefined,
       model: openaiModel,
+    });
+  };
+
+  const handleSaveAnthropic = () => {
+    const hasExistingAnthropic = connectedProviders.has("anthropic");
+    const apiKey = anthropicKey.trim();
+    if (!hasExistingAnthropic && !apiKey) {
+      toast.error("Please enter an Anthropic API key");
+      return;
+    }
+    connectAnthropic.mutate({
+      apiKey: apiKey || undefined,
+      model: anthropicModel,
     });
   };
 
@@ -1521,6 +1552,93 @@ export default function Settings() {
                     : connectedProviders.has("openai")
                       ? "Save OpenAI Settings"
                       : "Connect OpenAI"}
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Anthropic API Key */}
+          <div>
+            <h2 className="text-xl font-semibold text-slate-900 mb-4">Anthropic Configuration</h2>
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-lg bg-slate-100 text-orange-600">
+                      <MessageSquare className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base">Anthropic API Key</CardTitle>
+                      <CardDescription className="text-sm">
+                        Used for AI address cleaning (hybrid mode). Anthropic is preferred over OpenAI when connected.
+                      </CardDescription>
+                    </div>
+                  </div>
+                  {connectedProviders.has("anthropic") && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 text-sm text-green-600">
+                        <div className="w-2 h-2 bg-green-600 rounded-full"></div>
+                        Connected
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          const integration = integrations?.find((i) => i.provider === "anthropic");
+                          if (integration) handleDisconnect(integration.id);
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4 text-red-600" />
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="anthropic-model">Model</Label>
+                  <Select value={anthropicModel} onValueChange={setAnthropicModel}>
+                    <SelectTrigger id="anthropic-model">
+                      <SelectValue placeholder="Select a model" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ANTHROPIC_MODELS.map((model) => (
+                        <SelectItem key={model} value={model}>
+                          {model}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="anthropic-key">
+                    API Key {connectedProviders.has("anthropic") ? "(optional to update)" : ""}
+                  </Label>
+                  <Input
+                    id="anthropic-key"
+                    type="password"
+                    value={anthropicKey}
+                    onChange={(e) => setAnthropicKey(e.target.value)}
+                    placeholder={connectedProviders.has("anthropic") ? "••••••••" : "sk-ant-..."}
+                  />
+                  <p className="text-xs text-slate-500">
+                    Get your API key from{" "}
+                    <a
+                      href="https://console.anthropic.com/settings/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-blue-600 hover:underline"
+                    >
+                      Anthropic Console
+                    </a>
+                  </p>
+                </div>
+                <Button onClick={handleSaveAnthropic} disabled={connectAnthropic.isPending}>
+                  {connectAnthropic.isPending
+                    ? "Saving..."
+                    : connectedProviders.has("anthropic")
+                      ? "Save Anthropic Settings"
+                      : "Connect Anthropic"}
                 </Button>
               </CardContent>
             </Card>
