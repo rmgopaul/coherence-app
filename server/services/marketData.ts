@@ -4,6 +4,8 @@
  * Falls back to Yahoo chart endpoint for individual symbols if needed.
  * No API key required.
  */
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 export interface MarketQuote {
   symbol: string;
@@ -27,6 +29,8 @@ export class MarketRateLimitError extends Error {
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const execFileAsync = promisify(execFile);
+const CURL_STATUS_MARKER = "__HTTP_STATUS__:";
 const CRYPTO_TO_COINGECKO_ID: Record<string, string> = {
   "BTC-USD": "bitcoin",
   "ETH-USD": "ethereum",
@@ -87,6 +91,40 @@ function splitCsvLine(line: string): string[] {
   }
   cells.push(current);
   return cells;
+}
+
+async function fetchTextViaCurl(url: string, accept: string): Promise<{ status: number; text: string } | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "curl",
+      [
+        "-L",
+        "-sS",
+        "--max-time",
+        "12",
+        "-A",
+        USER_AGENT,
+        "-H",
+        `Accept: ${accept}`,
+        "-w",
+        `\n${CURL_STATUS_MARKER}%{http_code}`,
+        url,
+      ],
+      { timeout: 15_000, maxBuffer: 2_000_000 }
+    );
+
+    const markerIdx = stdout.lastIndexOf(CURL_STATUS_MARKER);
+    if (markerIdx < 0) return null;
+
+    const text = stdout.slice(0, markerIdx).trim();
+    const statusText = stdout.slice(markerIdx + CURL_STATUS_MARKER.length).trim();
+    const status = Number.parseInt(statusText, 10);
+    if (!Number.isFinite(status) || status <= 0) return null;
+
+    return { status, text };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -274,6 +312,7 @@ async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote
   // If "+" is URL-encoded to "%2B", Stooq treats it as a single symbol and returns N/D.
   const url = `https://stooq.com/q/l/?s=${stooqSymbols.join("+")}&f=sd2t2ohlcvn&e=csv`;
 
+  let csvText = "";
   try {
     const response = await fetch(url, {
       headers: {
@@ -283,8 +322,20 @@ async function fetchStockQuotesFromStooq(symbols: string[]): Promise<MarketQuote
       signal: AbortSignal.timeout(7000),
     });
 
-    if (!response.ok) return [];
-    const csvText = await response.text();
+    if (response.ok) {
+      csvText = await response.text();
+    }
+  } catch {
+    // try curl fallback below
+  }
+
+  if (!csvText) {
+    const curlFallback = await fetchTextViaCurl(url, "text/csv,text/plain,*/*");
+    if (!curlFallback || curlFallback.status < 200 || curlFallback.status >= 300) return [];
+    csvText = curlFallback.text;
+  }
+
+  try {
     const lines = csvText
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -336,6 +387,7 @@ async function fetchCryptoQuotesFromCoinGecko(symbols: string[]): Promise<Market
     `https://api.coingecko.com/api/v3/simple/price?ids=${encodeURIComponent(ids.join(","))}` +
     "&vs_currencies=usd&include_24hr_change=true";
 
+  let jsonText = "";
   try {
     const response = await fetch(url, {
       headers: {
@@ -344,12 +396,21 @@ async function fetchCryptoQuotesFromCoinGecko(symbols: string[]): Promise<Market
       },
       signal: AbortSignal.timeout(7000),
     });
-    if (!response.ok) return [];
+    if (response.ok) {
+      jsonText = await response.text();
+    }
+  } catch {
+    // try curl fallback below
+  }
 
-    const json = (await response.json()) as Record<
-      string,
-      { usd?: number; usd_24h_change?: number }
-    >;
+  if (!jsonText) {
+    const curlFallback = await fetchTextViaCurl(url, "application/json");
+    if (!curlFallback || curlFallback.status < 200 || curlFallback.status >= 300) return [];
+    jsonText = curlFallback.text;
+  }
+
+  try {
+    const json = JSON.parse(jsonText) as Record<string, { usd?: number; usd_24h_change?: number }>;
 
     const quotes: MarketQuote[] = [];
     for (const symbol of cryptoSymbols) {
