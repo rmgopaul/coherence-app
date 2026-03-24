@@ -101,7 +101,9 @@ async function getEnphaseV2Json(
   query?: Record<string, string | number | null | undefined>
 ): Promise<unknown> {
   const url = buildUrl(path, credentials, query);
-  const response = await fetch(url);
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(15_000),
+  });
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "");

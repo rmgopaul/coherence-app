@@ -238,6 +238,7 @@ async function zendeskFetchJson(
       Accept: "application/json",
       Authorization: buildZendeskAuthHeader(context),
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (response.status === 429 && attempt < 3) {

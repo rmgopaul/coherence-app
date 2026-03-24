@@ -136,6 +136,7 @@ async function clockifyFetch<T>(
   const response = await fetch(url, {
     ...init,
     headers,
+    signal: init?.signal ?? AbortSignal.timeout(15_000),
   });
 
   const text = await response.text().catch(() => "");

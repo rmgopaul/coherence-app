@@ -299,6 +299,7 @@ async function getSolarEdgeJson(
     });
     const response = await fetch(url, {
       headers: buildApiHeaders(attemptContext, attempt.authMode),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (response.ok) {

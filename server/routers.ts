@@ -716,6 +716,13 @@ function pruneAbpSettlementJobs(nowMs: number): void {
   });
 }
 
+// Periodic cleanup every 15 minutes to prevent unbounded map growth
+setInterval(() => {
+  const now = Date.now();
+  pruneTeslaPowerhubProductionJobs(now);
+  pruneAbpSettlementJobs(now);
+}, 15 * 60 * 1000);
+
 function getAbpSettlementRunsIndexObjectKey(userId: number): string {
   return `abp-settlement/${userId}/runs-index.json`;
 }

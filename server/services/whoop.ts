@@ -7,6 +7,7 @@ function buildWhoopAuthHeaders(accessToken: string) {
 async function getWhoopJson(path: string, accessToken: string): Promise<any> {
   const response = await fetch(`https://api.prod.whoop.com/developer${path}`, {
     headers: buildWhoopAuthHeaders(accessToken),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -173,6 +174,7 @@ export async function exchangeWhoopCode(
       client_id: clientId,
       client_secret: clientSecret,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -203,6 +205,7 @@ export async function refreshWhoopToken(
       client_id: clientId,
       client_secret: clientSecret,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {

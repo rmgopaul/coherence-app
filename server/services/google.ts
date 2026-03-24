@@ -6,6 +6,7 @@ async function makeGoogleApiCall(url: string, accessToken: string, retries = 3):
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
+        signal: AbortSignal.timeout(15_000),
       });
       return response;
     } catch (error) {
@@ -232,6 +233,7 @@ export async function markGmailMessageAsRead(accessToken: string, messageId: str
       body: JSON.stringify({
         removeLabelIds: ["UNREAD"],
       }),
+      signal: AbortSignal.timeout(15_000),
     }
   );
 
@@ -284,6 +286,7 @@ export async function createGoogleSpreadsheet(accessToken: string, title: string
     body: JSON.stringify({
       properties: { title },
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -320,6 +323,7 @@ export async function exchangeGoogleCode(
       redirect_uri: redirectUri,
       grant_type: "authorization_code",
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -349,6 +353,7 @@ export async function refreshGoogleToken(
       client_secret: clientSecret,
       grant_type: "refresh_token",
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {

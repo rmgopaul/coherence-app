@@ -1070,6 +1070,19 @@ function parseBooleanLike(value: unknown): boolean | null {
   const normalized = clean(value).toLowerCase();
   if (!normalized) return null;
 
+  // Check negatives FIRST — "not reimbursed" must not match "reimbursed"
+  if (
+    normalized === "no" ||
+    normalized === "n" ||
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized.includes("not reimbursed") ||
+    normalized.includes("no reimbursement") ||
+    normalized.includes("not returned")
+  ) {
+    return false;
+  }
+
   if (
     normalized === "yes" ||
     normalized === "y" ||
@@ -1080,17 +1093,6 @@ function parseBooleanLike(value: unknown): boolean | null {
     normalized.includes("returned")
   ) {
     return true;
-  }
-
-  if (
-    normalized === "no" ||
-    normalized === "n" ||
-    normalized === "false" ||
-    normalized === "0" ||
-    normalized.includes("not reimbursed") ||
-    normalized.includes("no reimbursement")
-  ) {
-    return false;
   }
 
   return null;
@@ -2121,6 +2123,10 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         );
 
         const inferredFirstPaymentPercent = inferFirstPaymentPercent(paymentPercent);
+        const inferredPercentFallbackWarning =
+          inferredFirstPaymentPercent === null
+            ? `First payment percent could not be inferred (paymentPercent=${paymentPercent?.toFixed(2) ?? "null"}); defaulting to 100%. Review manually.`
+            : null;
         const firstPaymentGrossBasis = roundMoney(
           grossContractValue * ((inferredFirstPaymentPercent ?? 100) / 100)
         );
@@ -2151,6 +2157,7 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
         }
 
         const confidenceFlags: string[] = [];
+        if (inferredPercentFallbackWarning) confidenceFlags.push(inferredPercentFallbackWarning);
         if (!csgId) confidenceFlags.push("Missing CSG mapping for System ID.");
         if (!terms) confidenceFlags.push("Missing scanned contract terms for CSG ID.");
         if (!projectApp) confidenceFlags.push("Missing ProjectApplication row for System/Application ID.");

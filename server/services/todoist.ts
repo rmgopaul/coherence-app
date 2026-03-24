@@ -225,6 +225,7 @@ async function fetchAllTodoistTasks(accessToken: string): Promise<TodoistTask[]>
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!response.ok) {
@@ -308,6 +309,7 @@ export async function getTodoistProjects(accessToken: string): Promise<TodoistPr
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -341,6 +343,7 @@ export async function createTodoistTask(
       due_string: dueString,
       due_date: dueDate,
     }),
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -360,6 +363,7 @@ export async function completeTodoistTask(accessToken: string, taskId: string): 
     headers: {
       Authorization: `Bearer ${accessToken}`,
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -389,6 +393,7 @@ async function fetchCompletedFromByCompletionDate(
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
+        signal: AbortSignal.timeout(15_000),
       }
     );
 
@@ -434,6 +439,7 @@ async function fetchCompletedFromByDueDate(
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
+        signal: AbortSignal.timeout(15_000),
       }
     );
 
@@ -478,6 +484,7 @@ async function fetchCompletedFromLegacySync(
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
+        signal: AbortSignal.timeout(15_000),
       }
     );
 

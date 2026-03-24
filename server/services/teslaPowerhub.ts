@@ -183,6 +183,7 @@ async function requestClientCredentialsToken(
       Accept: "application/json",
     },
     body: "grant_type=client_credentials",
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!response.ok) {

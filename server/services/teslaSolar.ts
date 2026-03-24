@@ -73,6 +73,7 @@ async function getTeslaJson(
       Accept: "application/json",
       Authorization: `Bearer ${context.accessToken}`,
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {

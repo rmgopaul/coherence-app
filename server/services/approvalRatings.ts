@@ -127,38 +127,44 @@ function decodeNextFlightPayload(html: string): string {
   return decoded;
 }
 
+function parseRcpAverageFromText(text: string): {
+  approve: number;
+  disapprove: number;
+  asOf: string | null;
+} | null {
+  const avgBlockMatch = text.match(
+    /"type":"rcp_average"[\s\S]*?"date":"([^"]+)"[\s\S]*?"candidate":\[(.*?)\],"undecided"/
+  );
+  if (!avgBlockMatch) return null;
+
+  const asOf = avgBlockMatch[1] ?? null;
+  const candidateBlock = avgBlockMatch[2] ?? "";
+  const approveMatch = candidateBlock.match(/"name":"Approve"[^}]*"value":"([^"]+)"/);
+  const disapproveMatch = candidateBlock.match(/"name":"Disapprove"[^}]*"value":"([^"]+)"/);
+
+  const approve = toFiniteNumber(approveMatch?.[1]);
+  const disapprove = toFiniteNumber(disapproveMatch?.[1]);
+  if (approve === null || disapprove === null) return null;
+
+  return { approve, disapprove, asOf };
+}
+
 async function fetchRcpTrumpApproval(): Promise<ApprovalRatingSource> {
   try {
     const html = await fetchText(RCP_APPROVAL_URL, "text/html");
-    const decoded = decodeNextFlightPayload(html);
-    if (!decoded) {
-      throw new Error("Unable to decode RealClear payload.");
+    let parsed = parseRcpAverageFromText(html);
+    if (!parsed) {
+      const decoded = decodeNextFlightPayload(html);
+      parsed = parseRcpAverageFromText(decoded);
     }
-
-    const avgBlockMatch = decoded.match(
-      /"type":"rcp_average"[\s\S]*?"date":"([^"]+)"[\s\S]*?"candidate":\[(.*?)\],"undecided"/
-    );
-    if (!avgBlockMatch) {
-      throw new Error("RCP average block not found.");
-    }
-
-    const asOf = avgBlockMatch[1] ?? null;
-    const candidateBlock = avgBlockMatch[2] ?? "";
-    const approveMatch = candidateBlock.match(/"name":"Approve"[^}]*"value":"([^"]+)"/);
-    const disapproveMatch = candidateBlock.match(/"name":"Disapprove"[^}]*"value":"([^"]+)"/);
-
-    const approve = toFiniteNumber(approveMatch?.[1]);
-    const disapprove = toFiniteNumber(disapproveMatch?.[1]);
-    if (approve === null || disapprove === null) {
-      throw new Error("RCP candidate values missing.");
-    }
+    if (!parsed) throw new Error("RCP average block not found.");
 
     return {
       source: "RCP",
-      approve,
-      disapprove,
-      net: approve - disapprove,
-      asOf,
+      approve: parsed.approve,
+      disapprove: parsed.disapprove,
+      net: parsed.approve - parsed.disapprove,
+      asOf: parsed.asOf,
       url: RCP_APPROVAL_URL,
     };
   } catch (error) {

@@ -134,6 +134,7 @@ async function requestToken(
     headers: {
       Authorization: buildBasicAuth(clientId, clientSecret),
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
@@ -205,6 +206,7 @@ async function getEnphaseV4Json(
       Authorization: `Bearer ${context.accessToken}`,
       key: context.apiKey,
     },
+    signal: AbortSignal.timeout(15_000),
   });
 
   if (!response.ok) {
