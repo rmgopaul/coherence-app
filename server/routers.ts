@@ -3775,14 +3775,27 @@ export const appRouter = router({
         const warnings: string[] = [];
         const finalRows = sourceRows.map((src) => {
           const result = resultByKey.get(src.key);
+          if (!result) {
+            // No cleaning result — return source as-is
+            return {
+              key: src.key,
+              payeeName: src.payeeName,
+              mailingAddress1: src.mailingAddress1,
+              mailingAddress2: src.mailingAddress2,
+              city: src.city,
+              state: src.state,
+              zip: src.zip,
+            };
+          }
+          // Use cleaned values directly — null means intentionally cleared
           return {
             key: src.key,
-            payeeName: result?.payeeName ?? src.payeeName,
-            mailingAddress1: result?.mailingAddress1 ?? src.mailingAddress1,
-            mailingAddress2: result?.mailingAddress2 ?? src.mailingAddress2,
-            city: result?.city ?? src.city,
-            state: result?.state ?? src.state,
-            zip: result?.zip ?? src.zip,
+            payeeName: result.payeeName,
+            mailingAddress1: result.mailingAddress1,
+            mailingAddress2: result.mailingAddress2,
+            city: result.city,
+            state: result.state,
+            zip: result.zip,
           };
         });
 
