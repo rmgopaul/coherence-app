@@ -770,7 +770,8 @@ function parseAbpSettlementRunsIndex(payload: string | null | undefined): AbpSet
       })
       .filter((row): row is AbpSettlementSavedRunSummary => Boolean(row))
       .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
-  } catch {
+  } catch (error) {
+    console.warn("[storage] Failed to list saved runs:", error instanceof Error ? error.message : error);
     return [];
   }
 }
@@ -788,8 +789,8 @@ async function readPayloadWithFallback(input: {
     const { getSolarRecDashboardPayload } = await import("./db");
     const payload = await getSolarRecDashboardPayload(input.userId, input.dbStorageKey);
     if (payload) return payload;
-  } catch {
-    // Fall through to storage.
+  } catch (error) {
+    console.warn("[solarRec] DB read failed, falling through to storage:", error instanceof Error ? error.message : error);
   }
 
   try {
@@ -799,7 +800,8 @@ async function readPayloadWithFallback(input: {
     if (!response.ok) return null;
     const payload = await response.text();
     return payload || null;
-  } catch {
+  } catch (error) {
+    console.warn("[storage] Operation failed:", error instanceof Error ? error.message : error);
     return null;
   }
 }
@@ -818,7 +820,8 @@ async function writePayloadWithFallback(input: {
       input.dbStorageKey,
       input.payload
     );
-  } catch {
+  } catch (error) {
+    console.warn("[storage] DB persist failed:", error instanceof Error ? error.message : error);
     persistedToDatabase = false;
   }
 
@@ -1008,7 +1011,8 @@ function parseAbpSettlementScanJobSnapshot(
             : rows.filter((row) => Boolean(row.error) || !row.scan).length,
       },
     };
-  } catch {
+  } catch (error) {
+    console.warn("[storage] Operation failed:", error instanceof Error ? error.message : error);
     return null;
   }
 }
@@ -1060,8 +1064,8 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
     if (options?.persist) {
       try {
         await saveAbpSettlementScanJobSnapshot(nextJob);
-      } catch {
-        // Best effort: keep in-memory job even if snapshot write fails.
+      } catch (error) {
+        console.warn("[snapshot] Best-effort snapshot write failed:", error instanceof Error ? error.message : error);
       }
     }
     return nextJob;
@@ -1192,8 +1196,8 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
         try {
           await client.login();
           completedSinceLastRefresh = 0;
-        } catch {
-          // Keep original error if session refresh fails.
+        } catch (refreshErr) {
+          console.warn(`[contractScan] Session refresh failed for ${csgId}:`, refreshErr instanceof Error ? refreshErr.message : refreshErr);
         }
         fetched = await client.fetchRecContractPdf(csgId);
       }
@@ -2178,8 +2182,8 @@ export const appRouter = router({
         const { getSolarRecDashboardPayload } = await import("./db");
         const payload = await getSolarRecDashboardPayload(ctx.user.id, dbStorageKey);
         if (payload) return { key, payload };
-      } catch {
-        // Fall back to storage proxy.
+      } catch (error) {
+        console.warn("[solarRec] DB read failed, falling back to storage:", error instanceof Error ? error.message : error);
       }
 
       try {
@@ -3655,8 +3659,8 @@ export const appRouter = router({
         abpSettlementJobs.set(jobId, job);
         try {
           await saveAbpSettlementScanJobSnapshot(job);
-        } catch {
-          // Best effort: continue even if snapshot write fails.
+        } catch (error) {
+          console.warn("[contractScan] Snapshot write failed:", error instanceof Error ? error.message : error);
         }
         void runAbpSettlementContractScanJob(jobId);
 
