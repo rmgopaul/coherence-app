@@ -283,7 +283,7 @@ function looksLikePhoneNumber(value: string | null | undefined): boolean {
 function looksLikeSecondaryAddressLine(value: string | null | undefined): boolean {
   const raw = normalizeMailingText(value);
   if (!raw) return false;
-  return /\b(?:apt|apartment|unit|suite|ste|fl|floor|bldg|building|dept|lot|trlr|trailer)\b/i.test(raw) || /#\s*[A-Za-z0-9-]+/.test(raw);
+  return /\b(?:apt|apartment|unit|suite|ste|fl|floor|bldg|building|dept|lot|trlr|trailer|po\s*box|p\.?\s*o\.?\s*box|attn|attention|c\/o|care\s+of|pmb|box)\b/i.test(raw) || /#\s*[A-Za-z0-9-]+/.test(raw);
 }
 
 function sanitizeMailingFields(input: {
@@ -368,6 +368,16 @@ function sanitizeMailingFields(input: {
       mailingAddress1 = mailingAddress2;
       mailingAddress2 = null;
     }
+  }
+
+  // ── Final guard: addr2 must be a recognized secondary line ──
+  // Bare city names, state names, or other stray text is never valid in addr2.
+  if (mailingAddress2 && !looksLikeSecondaryAddressLine(mailingAddress2)) {
+    // If it looks like a bare city name (alphabetic, no digits), use as city fallback
+    if (!city && /^[A-Za-z\s.'-]+$/.test(mailingAddress2)) {
+      city = mailingAddress2;
+    }
+    mailingAddress2 = null;
   }
 
   city = city ? city.replace(/[.,]+$/g, "").trim() : null;
