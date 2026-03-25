@@ -172,8 +172,9 @@ export function AppSidebar() {
           href="/dashboard"
           className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center"
         >
-          <div className="flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-emerald-600 to-emerald-800 text-white text-xs font-bold shadow-sm">
-            C
+          <div className="relative flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-[#1d65b8] via-[#2f7ac6] to-[#0f3f76] text-white text-xs font-extrabold shadow-sm ring-1 ring-[#00a95c]/70">
+            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]">C</span>
+            <span className="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border border-white/70 bg-[#00a95c]" />
           </div>
           <span className="text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
             Coherence

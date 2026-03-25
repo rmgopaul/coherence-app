@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Coherence logo">
+  <defs>
+    <linearGradient id="coherenceBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1d65b8" />
+      <stop offset="58%" stop-color="#2f7ac6" />
+      <stop offset="100%" stop-color="#0f3f76" />
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#coherenceBlue)" />
+  <circle cx="64" cy="64" r="49" fill="none" stroke="#c4ced4" stroke-width="6" />
+  <path
+    d="M84 41c-5-6-12-9-20-9-15 0-27 13-27 32s12 32 27 32c8 0 15-3 20-9"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="12"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="94" cy="94" r="8" fill="#00a95c" stroke="#ffffff" stroke-width="3" />
+</svg>
