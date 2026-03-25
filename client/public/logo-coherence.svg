@@ -1,20 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Coherence logo">
   <defs>
-    <linearGradient id="coherenceBlue" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#1d65b8" />
-      <stop offset="58%" stop-color="#2f7ac6" />
-      <stop offset="100%" stop-color="#0f3f76" />
+    <linearGradient id="tileBlue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2d7ed1" />
+      <stop offset="60%" stop-color="#1760ac" />
+      <stop offset="100%" stop-color="#0e3f77" />
+    </linearGradient>
+    <linearGradient id="ringSilver" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#e7edf2" />
+      <stop offset="100%" stop-color="#9fb0bd" />
     </linearGradient>
   </defs>
-  <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#coherenceBlue)" />
-  <circle cx="64" cy="64" r="49" fill="none" stroke="#c4ced4" stroke-width="6" />
+
+  <rect x="4" y="4" width="120" height="120" rx="27" fill="url(#tileBlue)" />
+
+  <circle cx="64" cy="64" r="42" fill="none" stroke="url(#ringSilver)" stroke-width="7" />
+
+  <path d="M26 64H102" stroke="#8eb2cc" stroke-opacity="0.42" stroke-width="2" />
+  <path d="M64 26V102" stroke="#8eb2cc" stroke-opacity="0.42" stroke-width="2" />
+  <ellipse cx="64" cy="64" rx="24" ry="42" fill="none" stroke="#8eb2cc" stroke-opacity="0.4" stroke-width="1.8" />
+  <ellipse cx="64" cy="64" rx="42" ry="24" fill="none" stroke="#8eb2cc" stroke-opacity="0.4" stroke-width="1.8" />
+
   <path
-    d="M84 41c-5-6-12-9-20-9-15 0-27 13-27 32s12 32 27 32c8 0 15-3 20-9"
+    d="M86 41C81 35 74 32 66 32C51 32 39 46 39 64C39 82 51 96 66 96C74 96 81 93 86 87"
     fill="none"
     stroke="#ffffff"
-    stroke-width="12"
+    stroke-width="11"
     stroke-linecap="round"
     stroke-linejoin="round"
   />
-  <circle cx="94" cy="94" r="8" fill="#00a95c" stroke="#ffffff" stroke-width="3" />
+
+  <circle cx="94" cy="92" r="8" fill="#11b36b" stroke="#ffffff" stroke-width="2.4" />
 </svg>

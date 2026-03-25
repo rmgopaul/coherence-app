@@ -41,6 +41,7 @@ import { cn } from "@/lib/utils";
 import { useState, useEffect, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { SidebarMenuBadge } from "@/components/ui/sidebar";
+import { APP_LOGO } from "@/const";
 
 type NavItem = {
   label: string;
@@ -172,10 +173,11 @@ export function AppSidebar() {
           href="/dashboard"
           className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center"
         >
-          <div className="relative flex size-7 items-center justify-center rounded-md bg-gradient-to-br from-[#1d65b8] via-[#2f7ac6] to-[#0f3f76] text-white text-xs font-extrabold shadow-sm ring-1 ring-[#00a95c]/70">
-            <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.35)]">C</span>
-            <span className="absolute -right-0.5 -bottom-0.5 size-2 rounded-full border border-white/70 bg-[#00a95c]" />
-          </div>
+          <img
+            src={APP_LOGO}
+            alt="Coherence logo"
+            className="size-7 rounded-md object-cover shadow-sm ring-1 ring-[#00a95c]/55"
+          />
           <span className="text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
             Coherence
           </span>

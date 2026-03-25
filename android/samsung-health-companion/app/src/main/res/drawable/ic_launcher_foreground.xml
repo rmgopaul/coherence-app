@@ -4,16 +4,26 @@
   android:viewportWidth="108"
   android:viewportHeight="108">
 
-  <!-- Coherence "C" mark -->
+  <path
+    android:fillColor="#00000000"
+    android:strokeColor="#C7D2DB"
+    android:strokeWidth="5"
+    android:pathData="M54,54m-34,0a34,34 0,1,1 68,0a34,34 0,1,1 -68,0" />
+
+  <!-- Coherence C mark -->
   <path
     android:fillColor="#00000000"
     android:strokeColor="#FFFFFF"
-    android:strokeWidth="12"
+    android:strokeWidth="10"
     android:strokeLineCap="round"
     android:strokeLineJoin="round"
-    android:pathData="M70,34
-      C64,28 56,24 46,24
-      C30,24 18,36 18,54
-      C18,72 30,84 46,84
-      C56,84 64,80 70,74" />
+    android:pathData="M72,36
+      C67,31 60,28 52,28
+      C37,28 26,40 26,54
+      C26,68 37,80 52,80
+      C60,80 67,77 72,72" />
+
+  <path
+    android:fillColor="#11B36B"
+    android:pathData="M76,74m-7,0a7,7 0,1,1 14,0a7,7 0,1,1 -14,0" />
 </vector>
