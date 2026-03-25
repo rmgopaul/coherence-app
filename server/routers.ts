@@ -3570,6 +3570,46 @@ export const appRouter = router({
         const runs = await getAbpSettlementRunsIndex(ctx.user.id);
         return runs.slice(0, input?.limit ?? 50);
       }),
+
+    verifyAddresses: protectedProcedure
+      .input(
+        z.object({
+          addresses: z
+            .array(
+              z.object({
+                key: z.string().min(1).max(128),
+                address1: z.string().max(256),
+                address2: z.string().max(256),
+                city: z.string().max(128),
+                state: z.string().max(64),
+                zip: z.string().max(20),
+              })
+            )
+            .min(1)
+            .max(100),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const integration = await getIntegrationByProvider(ctx.user.id, "google");
+        const googleApiKey = process.env.GOOGLE_MAPS_API_KEY ?? toNonEmptyString(integration?.metadata ? (() => { try { return JSON.parse(integration.metadata ?? "{}").mapsApiKey; } catch { return null; } })() : null);
+
+        if (!googleApiKey) {
+          throw new Error("Google Maps API key not configured. Set GOOGLE_MAPS_API_KEY in environment or add mapsApiKey to Google integration metadata.");
+        }
+
+        const { verifyAddressBatch } = await import("./services/googleAddressValidation");
+        const results = await verifyAddressBatch(googleApiKey, input.addresses);
+
+        const confirmed = results.filter((r) => r.verdict === "CONFIRMED").length;
+        const unconfirmed = results.filter((r) => r.verdict === "UNCONFIRMED").length;
+        const errors = results.filter((r) => r.verdict === "ERROR").length;
+
+        return {
+          results,
+          summary: { total: results.length, confirmed, unconfirmed, errors },
+        };
+      }),
   }),
 
   clockify: router({

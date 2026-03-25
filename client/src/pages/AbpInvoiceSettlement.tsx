@@ -50,6 +50,7 @@ import {
   ChevronDown,
   Download,
   Eye,
+  Landmark,
   Loader2,
   Mail,
   Plus,
@@ -1099,6 +1100,9 @@ export default function AbpInvoiceSettlement() {
   const [contractScanRows, setContractScanRows] = useState<ContractScanResult[]>([]);
   const [contractTermsByCsgId, setContractTermsByCsgId] = useState<Map<string, ContractTerms>>(new Map());
   const [aiMailingCleanupProgress, setAiMailingCleanupProgress] = useState<AiMailingCleanupProgress | null>(null);
+  const [addressVerificationResults, setAddressVerificationResults] = useState<
+    Array<{ key: string; verdict: string; deliverable: boolean; issues: string[]; corrected: { address1: string; city: string; state: string; zip: string; zipPlus4: string } }>
+  >([]);
   const [aiMailingModifiedFieldsByCsgId, setAiMailingModifiedFieldsByCsgId] = useState<
     Record<string, string[]>
   >({});
@@ -1146,6 +1150,7 @@ export default function AbpInvoiceSettlement() {
   const savePortalCredentialsMutation = trpc.csgPortal.saveCredentials.useMutation();
   const testPortalConnectionMutation = trpc.csgPortal.testConnection.useMutation();
   const cleanMailingDataMutation = trpc.abpSettlement.cleanMailingData.useMutation();
+  const verifyAddressesMutation = trpc.abpSettlement.verifyAddresses.useMutation();
   const saveRunMutation = trpc.abpSettlement.saveRun.useMutation();
   const getUploadStateMutation = trpc.solarRecDashboard.getDataset.useMutation();
   const saveUploadStateMutation = trpc.solarRecDashboard.saveDataset.useMutation();
@@ -2829,6 +2834,60 @@ export default function AbpInvoiceSettlement() {
     }
   };
 
+  const handleVerifyAddresses = async () => {
+    if (!computationResult || computationResult.rows.length === 0) {
+      toast.error("Compute settlement first to get addresses to verify.");
+      return;
+    }
+
+    // Deduplicate by CSG ID — one verification per unique mailing address
+    const uniqueByCsg = new Map<string, { key: string; address1: string; address2: string; city: string; state: string; zip: string }>();
+    computationResult.rows.forEach((row) => {
+      if (!row.csgId || uniqueByCsg.has(row.csgId)) return;
+      const addr1 = clean(row.mailingAddress1);
+      if (!addr1) return; // skip rows with no address
+      uniqueByCsg.set(row.csgId, {
+        key: row.csgId,
+        address1: addr1,
+        address2: clean(row.mailingAddress2),
+        city: clean(row.city),
+        state: clean(row.state),
+        zip: clean(row.zip),
+      });
+    });
+
+    const addresses = Array.from(uniqueByCsg.values());
+    if (addresses.length === 0) {
+      toast.error("No addresses to verify.");
+      return;
+    }
+
+    try {
+      // Process in batches of 100 (API limit per request)
+      const allResults: typeof addressVerificationResults = [];
+      for (let i = 0; i < addresses.length; i += 100) {
+        const batch = addresses.slice(i, i + 100);
+        toast.info(`Verifying addresses ${i + 1}–${Math.min(i + 100, addresses.length)} of ${addresses.length}...`);
+        const response = await verifyAddressesMutation.mutateAsync({ addresses: batch });
+        allResults.push(...response.results.map((r) => ({
+          key: r.key,
+          verdict: r.verdict,
+          deliverable: r.deliverable,
+          issues: r.issues,
+          corrected: r.corrected,
+        })));
+      }
+
+      setAddressVerificationResults(allResults);
+      const confirmed = allResults.filter((r) => r.verdict === "CONFIRMED").length;
+      const unconfirmed = allResults.filter((r) => r.verdict === "UNCONFIRMED").length;
+      const errors = allResults.filter((r) => r.verdict === "ERROR").length;
+      toast.success(`Address verification complete: ${confirmed} confirmed, ${unconfirmed} unconfirmed, ${errors} errors.`);
+    } catch (error) {
+      toast.error(`Address verification failed: ${toErrorMessage(error)}`);
+    }
+  };
+
   const handleSaveRun = async () => {
     if (!computationResult) {
       toast.error("Load required files first so the run can be saved.");
@@ -3950,6 +4009,22 @@ export default function AbpInvoiceSettlement() {
                 )}
                 AI Clean Mailing Data
               </Button>
+              <Button
+                variant="outline"
+                onClick={handleVerifyAddresses}
+                disabled={
+                  !computationResult ||
+                  computationResult.rows.length === 0 ||
+                  verifyAddressesMutation.isPending
+                }
+              >
+                {verifyAddressesMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Landmark className="h-4 w-4 mr-2" />
+                )}
+                Verify Addresses
+              </Button>
               <Button variant="outline" onClick={handleExportCsv} disabled={!computationResult || computationResult.rows.length === 0}>
                 <Download className="h-4 w-4 mr-2" />
                 Export CSV
@@ -4035,6 +4110,64 @@ export default function AbpInvoiceSettlement() {
                   <div className="text-xs text-red-700 dark:text-red-400">
                     CSG IDs missing contract terms: {computationResult.coverage.orphanedCsgIds.slice(0, 10).join(", ")}
                     {computationResult.coverage.orphanedCsgIds.length > 10 && ` ...+${computationResult.coverage.orphanedCsgIds.length - 10} more`}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {addressVerificationResults.length > 0 && (
+              <div className="rounded-md border p-4 text-sm space-y-3">
+                <div className="font-semibold text-slate-700 dark:text-slate-200">Address Verification (Google CASS)</div>
+                <div className="grid gap-2 md:grid-cols-3 text-xs">
+                  <div className="rounded-md border border-green-200 bg-green-50 dark:bg-green-950/30 p-2">
+                    <span className="text-green-700 dark:text-green-400 font-semibold">
+                      {addressVerificationResults.filter((r) => r.verdict === "CONFIRMED").length}
+                    </span>{" "}
+                    <span className="text-slate-500">confirmed deliverable</span>
+                  </div>
+                  <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-2">
+                    <span className="text-amber-700 dark:text-amber-400 font-semibold">
+                      {addressVerificationResults.filter((r) => r.verdict === "UNCONFIRMED").length}
+                    </span>{" "}
+                    <span className="text-slate-500">unconfirmed / suspicious</span>
+                  </div>
+                  <div className="rounded-md border border-red-200 bg-red-50 dark:bg-red-950/30 p-2">
+                    <span className="text-red-700 dark:text-red-400 font-semibold">
+                      {addressVerificationResults.filter((r) => r.verdict === "ERROR").length}
+                    </span>{" "}
+                    <span className="text-slate-500">errors</span>
+                  </div>
+                </div>
+                {addressVerificationResults.filter((r) => r.verdict !== "CONFIRMED").length > 0 && (
+                  <div className="rounded-md border max-h-48 overflow-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>CSG ID</TableHead>
+                          <TableHead>Verdict</TableHead>
+                          <TableHead>Issues</TableHead>
+                          <TableHead>Corrected Address</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {addressVerificationResults
+                          .filter((r) => r.verdict !== "CONFIRMED")
+                          .map((r) => (
+                            <TableRow key={r.key}>
+                              <TableCell className="font-mono text-xs">{r.key}</TableCell>
+                              <TableCell>
+                                <Badge variant={r.verdict === "ERROR" ? "destructive" : "outline"} className="text-xs">
+                                  {r.verdict}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs max-w-[300px]">{r.issues.join("; ")}</TableCell>
+                              <TableCell className="text-xs">
+                                {r.corrected.address1 && `${r.corrected.address1}, ${r.corrected.city}, ${r.corrected.state} ${r.corrected.zipPlus4 || r.corrected.zip}`}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                      </TableBody>
+                    </Table>
                   </div>
                 )}
               </div>
