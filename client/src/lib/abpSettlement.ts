@@ -308,8 +308,21 @@ export type SettlementComputationInput = {
   aiMailingModifiedFieldsByCsgId?: Record<string, string[]>;
 };
 
+/** Applications submitted before this date are capped at $5,000; after: $15,000. */
 const APPLICATION_FEE_CUTOFF = new Date("2024-06-01T00:00:00.000Z");
+
+/**
+ * Tolerance band (±%) for matching a payment's percent-of-gross to known
+ * classification targets (5%, 15%, 20%, 100%). Accounts for rounding
+ * differences between utility invoice amounts and exact contract math.
+ */
 const PERCENT_CLASSIFICATION_TOLERANCE = 0.25;
+
+/** Quarterly payment rate for 15%-upfront contracts (24 payments × 3.54% + 15% ≈ 100%). */
+const QUARTERLY_RATE_354_PCT = 3.54;
+
+/** Quarterly payment rate for 20%-upfront contracts (16 payments × 5% + 20% = 100%). */
+const QUARTERLY_RATE_5_PCT = 5;
 
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -1704,7 +1717,7 @@ function classifyPaymentTypeByPercent(percentOfGross: number | null): PaymentCla
 
   if (isNear(100)) return "first_full_upfront";
   if (isNear(20) || isNear(15)) return "first_partial";
-  if (isNear(5) || isNear(3.54)) return "quarterly";
+  if (isNear(QUARTERLY_RATE_5_PCT) || isNear(QUARTERLY_RATE_354_PCT)) return "quarterly";
   return "unknown";
 }
 
@@ -1715,7 +1728,7 @@ function inferFirstPaymentPercent(percentOfGross: number | null): number | null 
 
   if (isNear(100)) return 100;
   if (isNear(20) || isNear(5)) return 20;
-  if (isNear(15) || isNear(3.54)) return 15;
+  if (isNear(15) || isNear(QUARTERLY_RATE_354_PCT)) return 15;
   return null;
 }
 
@@ -1960,7 +1973,12 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       const csgPortalByCsgId = csgId ? csgPortalLookup.get(csgId) ?? null : null;
       const csgPortalSystemRow = csgPortalByCsgId;
       const appliedInstallerRule = findInstallerRuleForSystem(csgPortalSystemRow, installerRules);
-      const paymentsForSystem = paymentsReportBySystemId.get(systemId) ?? [];
+      const paymentsForSystemRaw = paymentsReportBySystemId.get(systemId) ?? [];
+      // Filter by CSG ID when available to prevent cross-contamination if two
+      // CSG contracts share the same system ID.
+      const paymentsForSystem = csgId
+        ? paymentsForSystemRaw.filter((p) => !clean(p.csgId) || clean(p.csgId) === csgId)
+        : paymentsForSystemRaw;
       const installerName = clean(csgPortalSystemRow?.installerName);
       const partnerCompanyName = clean(csgPortalSystemRow?.partnerCompanyName);
       const customerEmail = clean(csgPortalSystemRow?.customerEmail);
@@ -2288,6 +2306,23 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
       });
 
       carryforwardBySystemId[systemId] = runningCarry ?? 0;
+
+      // ── Carryforward reconciliation check ──────────────────────
+      // Verify that summing net payouts + final carryforward equals total invoices
+      // minus total withholding. A discrepancy indicates floating-point drift.
+      const systemRows = outputRows.filter((r) => r.systemId === systemId);
+      if (systemRows.length > 0) {
+        const totalInvoices = systemRows.reduce((sum, r) => sum + r.invoiceAmount, 0);
+        const totalNet = systemRows.reduce((sum, r) => sum + r.netPayoutThisRow, 0);
+        const totalRecovered = systemRows.reduce((sum, r) => sum + r.carryforwardRecoveredThisRow, 0);
+        const finalCarry = runningCarry ?? 0;
+        const drift = roundMoney(totalInvoices - totalNet - totalRecovered - finalCarry);
+        if (Math.abs(drift) > 0.02) {
+          warnings.push(
+            `Carryforward reconciliation drift of $${drift.toFixed(2)} detected for system ${systemId} (CSG ${csgId ?? "?"}). Review this system's rows.`
+          );
+        }
+      }
     });
 
   if (input.quickBooksPaidUpfrontLedger.unmatchedLines.length > 0) {
@@ -2383,22 +2418,22 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.csgId ?? "",
       row.systemId,
       row.invoiceAmount.toFixed(2),
-      row.recQuantity,
+      Number.isFinite(row.recQuantity) ? row.recQuantity.toFixed(4) : "",
       row.recPrice.toFixed(2),
       row.grossContractValue.toFixed(2),
       row.paymentNumber ?? "",
-      row.paymentPercentOfGross ?? "",
+      row.paymentPercentOfGross !== null ? row.paymentPercentOfGross.toFixed(4) : "",
       row.classification,
-      row.vendorFeePercent,
+      row.vendorFeePercent.toFixed(2),
       row.vendorFeeAmount.toFixed(2),
       row.utilityHeldCollateral5PercentAmount.toFixed(2),
       row.utilityHeldCollateralPaidUpfront.toFixed(2),
       row.collateralReimbursementToPartnerCompanyAmount.toFixed(2),
-      row.referralFeePercent,
+      row.referralFeePercent.toFixed(2),
       row.referralFeeAmount.toFixed(2),
       row.applicationFeeAmount.toFixed(2),
       row.applicationFeePaidUpfront.toFixed(2),
-      row.additionalCollateralPercent,
+      row.additionalCollateralPercent.toFixed(2),
       row.additionalCollateralAmount.toFixed(2),
       row.additionalCollateralPaidUpfront.toFixed(2),
       row.ccAuthorizationFormStatus,
