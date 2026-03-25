@@ -1,21 +1,13 @@
-function buildWhoopAuthHeaders(accessToken: string) {
-  return {
-    Authorization: `Bearer ${accessToken}`,
-  };
-}
+import { AuthError, fetchJson } from "./httpClient";
 
-async function getWhoopJson(path: string, accessToken: string): Promise<any> {
-  const response = await fetch(`https://api.prod.whoop.com/developer${path}`, {
-    headers: buildWhoopAuthHeaders(accessToken),
-    signal: AbortSignal.timeout(15_000),
+const WHOOP_BASE = "https://api.prod.whoop.com/developer";
+
+async function getWhoopJson(path: string, accessToken: string): Promise<Record<string, any>> {
+  const { data } = await fetchJson<Record<string, any>>(`${WHOOP_BASE}${path}`, {
+    service: "WHOOP",
+    headers: { Authorization: `Bearer ${accessToken}` },
   });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`WHOOP API error (${response.status}): ${text || response.statusText}`);
-  }
-
-  return response.json();
+  return data;
 }
 
 export type WhoopSummary = {
@@ -151,67 +143,47 @@ export async function getWhoopSummary(accessToken: string): Promise<WhoopSummary
   };
 }
 
+const WHOOP_TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token";
+
+async function whoopTokenRequest(params: Record<string, string>): Promise<unknown> {
+  const response = await fetch(WHOOP_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(params),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    if (response.status === 401 || response.status === 403) throw new AuthError("WHOOP", response.status);
+    throw new Error(`WHOOP token error (${response.status}): ${error}`);
+  }
+  return response.json();
+}
+
 export async function exchangeWhoopCode(
   code: string,
   redirectUri: string,
   clientId: string,
-  clientSecret: string
-): Promise<{
-  access_token: string;
-  refresh_token?: string;
-  expires_in: number;
-  scope: string;
-}> {
-  const response = await fetch("https://api.prod.whoop.com/oauth/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: redirectUri,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to exchange WHOOP code: ${error}`);
-  }
-
-  return response.json();
+  clientSecret: string,
+): Promise<{ access_token: string; refresh_token?: string; expires_in: number; scope: string }> {
+  return whoopTokenRequest({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    client_secret: clientSecret,
+  }) as Promise<{ access_token: string; refresh_token?: string; expires_in: number; scope: string }>;
 }
 
 export async function refreshWhoopToken(
   refreshToken: string,
   clientId: string,
-  clientSecret: string
-): Promise<{
-  access_token: string;
-  refresh_token?: string;
-  expires_in: number;
-}> {
-  const response = await fetch("https://api.prod.whoop.com/oauth/oauth2/token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-      client_id: clientId,
-      client_secret: clientSecret,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to refresh WHOOP token: ${error}`);
-  }
-
-  return response.json();
+  clientSecret: string,
+): Promise<{ access_token: string; refresh_token?: string; expires_in: number }> {
+  return whoopTokenRequest({
+    grant_type: "refresh_token",
+    refresh_token: refreshToken,
+    client_id: clientId,
+    client_secret: clientSecret,
+  }) as Promise<{ access_token: string; refresh_token?: string; expires_in: number }>;
 }
