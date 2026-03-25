@@ -4366,40 +4366,54 @@ export default function AbpInvoiceSettlement() {
                   {yammRowsWithIssueCount === 0 ? "All rows clean" : `${yammRowsWithIssueCount} rows with issues`}
                 </Badge>
                 {yammIssueCounts.missing_email > 0 && (
-                  <Badge variant="destructive" className="text-xs cursor-pointer" onClick={() => setYammFilter("missing_email")}>
-                    <AlertTriangle className="h-3 w-3 mr-1" />
-                    {yammIssueCounts.missing_email} missing email
-                  </Badge>
+                  <button type="button" aria-label={`Filter: ${yammIssueCounts.missing_email} missing email`} onClick={() => setYammFilter("missing_email")}>
+                    <Badge variant="destructive" className="text-xs cursor-pointer">
+                      <AlertTriangle className="h-3 w-3 mr-1" />
+                      {yammIssueCounts.missing_email} missing email
+                    </Badge>
+                  </button>
                 )}
                 {yammIssueCounts.missing_payee > 0 && (
-                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("missing_payee")}>
-                    {yammIssueCounts.missing_payee} missing payee
-                  </Badge>
+                  <button type="button" aria-label={`Filter: ${yammIssueCounts.missing_payee} missing payee`} onClick={() => setYammFilter("missing_payee")}>
+                    <Badge variant="outline" className="text-xs cursor-pointer border-amber-400 text-amber-700 dark:text-amber-400">
+                      {yammIssueCounts.missing_payee} missing payee
+                    </Badge>
+                  </button>
                 )}
                 {yammIssueCounts.missing_address > 0 && (
-                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("missing_address")}>
-                    {yammIssueCounts.missing_address} incomplete address
-                  </Badge>
+                  <button type="button" aria-label={`Filter: ${yammIssueCounts.missing_address} incomplete address`} onClick={() => setYammFilter("missing_address")}>
+                    <Badge variant="outline" className="text-xs cursor-pointer border-amber-400 text-amber-700 dark:text-amber-400">
+                      {yammIssueCounts.missing_address} incomplete address
+                    </Badge>
+                  </button>
                 )}
                 {yammIssueCounts.zero_payment > 0 && (
-                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("zero_payment")}>
-                    {yammIssueCounts.zero_payment} $0 payment
-                  </Badge>
+                  <button type="button" aria-label={`Filter: ${yammIssueCounts.zero_payment} zero dollar payment`} onClick={() => setYammFilter("zero_payment")}>
+                    <Badge variant="outline" className="text-xs cursor-pointer border-amber-400 text-amber-700 dark:text-amber-400">
+                      {yammIssueCounts.zero_payment} $0 payment
+                    </Badge>
+                  </button>
                 )}
                 {yammIssueCounts.missing_method > 0 && (
-                  <Badge variant="outline" className="text-xs border-amber-400 text-amber-700 dark:text-amber-400 cursor-pointer" onClick={() => setYammFilter("missing_method")}>
-                    {yammIssueCounts.missing_method} no method
-                  </Badge>
+                  <button type="button" aria-label={`Filter: ${yammIssueCounts.missing_method} no payment method`} onClick={() => setYammFilter("missing_method")}>
+                    <Badge variant="outline" className="text-xs cursor-pointer border-amber-400 text-amber-700 dark:text-amber-400">
+                      {yammIssueCounts.missing_method} no method
+                    </Badge>
+                  </button>
                 )}
                 {yammIssueCounts.duplicate > 0 && (
-                  <Badge variant="outline" className="text-xs border-orange-400 text-orange-700 dark:text-orange-400 cursor-pointer" onClick={() => setYammFilter("duplicate")}>
-                    {yammDuplicateRecipientCount} duplicate recipients
-                  </Badge>
+                  <button type="button" aria-label={`Filter: ${yammDuplicateRecipientCount} duplicate recipients`} onClick={() => setYammFilter("duplicate")}>
+                    <Badge variant="outline" className="text-xs cursor-pointer border-orange-400 text-orange-700 dark:text-orange-400">
+                      {yammDuplicateRecipientCount} duplicate recipients
+                    </Badge>
+                  </button>
                 )}
                 {yammFilter !== "all" && (
-                  <Badge variant="secondary" className="text-xs cursor-pointer" onClick={() => setYammFilter("all")}>
-                    Clear filter &times;
-                  </Badge>
+                  <button type="button" aria-label="Clear filter" onClick={() => setYammFilter("all")}>
+                    <Badge variant="secondary" className="text-xs cursor-pointer">
+                      Clear filter &times;
+                    </Badge>
+                  </button>
                 )}
               </div>
             )}
