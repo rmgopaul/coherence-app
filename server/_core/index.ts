@@ -13,6 +13,7 @@ import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import { registerSolarRecAuth } from "./solarRecAuth";
 import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
+import { getLocalStorageRoot, isStorageProxyConfigured, LOCAL_STORAGE_ROUTE_PREFIX } from "../storage";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -45,6 +46,12 @@ async function startServer() {
   // Allow larger dashboard dataset payloads (large CSV-derived uploads) while still bounded.
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  app.use(LOCAL_STORAGE_ROUTE_PREFIX, express.static(getLocalStorageRoot()));
+  if (!isStorageProxyConfigured()) {
+    console.warn(
+      `Storage proxy credentials are not configured; using local upload storage at ${getLocalStorageRoot()}`
+    );
+  }
   registerPinGate(app);
   // OAuth callback under /api/oauth/callback
   registerOAuthRoutes(app);

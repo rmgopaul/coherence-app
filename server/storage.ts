@@ -1,9 +1,24 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
+// Storage helpers:
+// 1) Forge proxy when BUILT_IN_FORGE_API_URL + BUILT_IN_FORGE_API_KEY are present.
+// 2) Local filesystem fallback when Forge credentials are missing.
 
-import { ENV } from './_core/env';
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { ENV } from "./_core/env";
 
 type StorageConfig = { baseUrl: string; apiKey: string };
+
+export const LOCAL_STORAGE_ROUTE_PREFIX = "/_local_uploads";
+const DEFAULT_LOCAL_STORAGE_ROOT = path.resolve(process.cwd(), ".local_uploads");
+
+export function isStorageProxyConfigured(): boolean {
+  return Boolean(ENV.forgeApiUrl && ENV.forgeApiKey);
+}
+
+export function getLocalStorageRoot(): string {
+  const configured = process.env.LOCAL_STORAGE_ROOT?.trim();
+  return configured && configured.length > 0 ? path.resolve(configured) : DEFAULT_LOCAL_STORAGE_ROOT;
+}
 
 function getStorageConfig(): StorageConfig {
   const baseUrl = ENV.forgeApiUrl;
@@ -46,7 +61,19 @@ function ensureTrailingSlash(value: string): string {
 }
 
 function normalizeKey(relKey: string): string {
-  return relKey.replace(/^\/+/, "");
+  return relKey
+    .replace(/^\/+/, "")
+    .replace(/\\/g, "/")
+    .replace(/\.\.(\/|\\)/g, "");
+}
+
+function keyToLocalUrl(key: string): string {
+  const encoded = key
+    .split("/")
+    .filter((part) => part.length > 0)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+  return `${LOCAL_STORAGE_ROUTE_PREFIX}/${encoded}`;
 }
 
 function toFormData(
@@ -72,8 +99,17 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
-  const { baseUrl, apiKey } = getStorageConfig();
   const key = normalizeKey(relKey);
+
+  if (!isStorageProxyConfigured()) {
+    const root = getLocalStorageRoot();
+    const absolutePath = path.join(root, key);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, data);
+    return { key, url: keyToLocalUrl(key) };
+  }
+
+  const { baseUrl, apiKey } = getStorageConfig();
   const uploadUrl = buildUploadUrl(baseUrl, key);
   const formData = toFormData(data, contentType, key.split("/").pop() ?? key);
   const response = await fetch(uploadUrl, {
@@ -93,8 +129,16 @@ export async function storagePut(
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
-  const { baseUrl, apiKey } = getStorageConfig();
   const key = normalizeKey(relKey);
+
+  if (!isStorageProxyConfigured()) {
+    return {
+      key,
+      url: keyToLocalUrl(key),
+    };
+  }
+
+  const { baseUrl, apiKey } = getStorageConfig();
   return {
     key,
     url: await buildDownloadUrl(baseUrl, key, apiKey),

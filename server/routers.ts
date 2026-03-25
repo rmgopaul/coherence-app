@@ -5374,7 +5374,14 @@ Generate the pipeline analysis report now.`,
         const { nanoid } = await import("nanoid");
         const { storagePut } = await import("./storage");
 
-        const ext = input.contentType.split("/")[1] ?? "png";
+        const extMap: Record<string, string> = {
+          "image/png": "png",
+          "image/jpeg": "jpg",
+          "image/gif": "gif",
+          "image/webp": "webp",
+          "image/svg+xml": "svg",
+        };
+        const ext = extMap[input.contentType] ?? "png";
         const key = `notes/${ctx.user.id}/images/${nanoid()}.${ext}`;
         const buffer = Buffer.from(input.base64Data, "base64");
 

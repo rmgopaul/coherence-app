@@ -76,6 +76,19 @@ const RichTextEditor = lazy(() => import("@/components/notebook/RichTextEditor")
 const NOTES_PAGE_SIZE = 30;
 const AUTOSAVE_DEBOUNCE_MS = 2500;
 const AUTOSAVE_MAX_WAIT_MS = 10000;
+type UploadImageContentType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/gif"
+  | "image/webp"
+  | "image/svg+xml";
+const SUPPORTED_IMAGE_CONTENT_TYPES = new Set<UploadImageContentType>([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/svg+xml",
+]);
 
 function normalizeNotebook(value: string | null | undefined): string {
   const cleaned = String(value || "").trim();
@@ -248,6 +261,17 @@ export default function Notebook() {
 
   const handleUploadImage = useCallback(async (file: File): Promise<string | null> => {
     try {
+      const normalizedFileType = (file.type || "").toLowerCase();
+      const contentType =
+        normalizedFileType === "image/jpg"
+          ? "image/jpeg"
+          : (normalizedFileType as UploadImageContentType);
+
+      if (!SUPPORTED_IMAGE_CONTENT_TYPES.has(contentType)) {
+        toast.error("Unsupported image type. Use PNG, JPG, GIF, WEBP, or SVG.");
+        return null;
+      }
+
       const reader = new FileReader();
       const base64 = await new Promise<string>((resolve, reject) => {
         reader.onload = () => {
@@ -261,12 +285,13 @@ export default function Notebook() {
 
       const { url } = await uploadImageMutation.mutateAsync({
         base64Data: base64,
-        contentType: file.type as "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml",
+        contentType,
         fileName: file.name,
       });
       return url;
-    } catch {
-      toast.error("Failed to upload image");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown upload error.";
+      toast.error(`Failed to upload image: ${message}`);
       return null;
     }
   }, [uploadImageMutation]);
