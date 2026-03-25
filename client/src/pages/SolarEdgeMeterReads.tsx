@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -50,10 +51,6 @@ type BulkSnapshotRow = {
 
 type CsvRow = Record<string, string>;
 
-function clean(value: string | null | undefined): string {
-  return (value ?? "").trim();
-}
-
 function formatDateInput(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -93,16 +90,6 @@ function getPresetRange(preset: DatePreset, now: Date = new Date()): { startDate
     startDate: formatDateInput(start),
     endDate: formatDateInput(today),
   };
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error.";
-}
-
-function formatKwh(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "N/A";
-  return NUMBER_FORMATTER.format(Math.round(value * 1000) / 1000);
 }
 
 function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
@@ -174,18 +161,6 @@ function buildCsv(headers: string[], rows: Array<Record<string, string | number 
   const headerLine = headers.map((header) => csvEscape(header)).join(",");
   const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
   return [headerLine, ...bodyLines].join("\n");
-}
-
-function downloadTextFile(fileName: string, content: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
 
 function extractSiteIdsFromCsv(text: string): string[] {

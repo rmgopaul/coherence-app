@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { clean, toErrorMessage, downloadTextFile, formatKwh } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Search, Unplug } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -19,10 +20,6 @@ const DEFAULT_SIGNAL = "solar_energy_exported";
 const PAGE_SIZE = 50;
 
 const COUNT_FORMATTER = new Intl.NumberFormat("en-US");
-const KWH_FORMATTER = new Intl.NumberFormat("en-US", {
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 2,
-});
 
 type SiteProductionRow = {
   siteId: string;
@@ -55,20 +52,11 @@ type ProductionJobSnapshot = {
   error: string | null;
 };
 
-function clean(value: string | null | undefined): string {
-  return (value ?? "").trim();
-}
-
 function normalizeGroupId(raw: string): string {
   const trimmed = clean(raw);
   if (!trimmed) return "";
   const match = trimmed.match(/\/group\/([a-zA-Z0-9-]+)/i);
   return match?.[1]?.trim() || trimmed;
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error.";
 }
 
 function csvEscape(value: string | number | null | undefined): string {
@@ -77,22 +65,6 @@ function csvEscape(value: string | number | null | undefined): string {
     return `"${normalized.replaceAll('"', '""')}"`;
   }
   return normalized;
-}
-
-function downloadTextFile(fileName: string, content: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
-
-function formatKwh(value: number): string {
-  return KWH_FORMATTER.format(Number.isFinite(value) ? value : 0);
 }
 
 export default function TeslaPowerhubApi() {

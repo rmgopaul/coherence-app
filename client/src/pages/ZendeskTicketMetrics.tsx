@@ -8,6 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { toErrorMessage, clean, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -30,33 +31,12 @@ function shiftDate(input: string, deltaDays: number): string {
   return formatDateInput(date);
 }
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error.";
-}
-
-function clean(value: string | null | undefined): string {
-  return (value ?? "").trim();
-}
-
 function csvEscape(value: string | number | null | undefined): string {
   const normalized = value === null || value === undefined ? "" : String(value);
   if (/["\n,]/.test(normalized)) {
     return `"${normalized.replaceAll('"', '""')}"`;
   }
   return normalized;
-}
-
-function downloadTextFile(fileName: string, content: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
 
 export default function ZendeskTicketMetrics() {

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { clean, formatCurrency, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, Trash2, Upload } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -160,11 +161,6 @@ type PersistedDashboardState = {
 };
 
 const COLLATOR = new Intl.Collator("en-US", { numeric: true, sensitivity: "base" });
-const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
 
 const POTENTIAL_MATCH_LIMIT = 3;
 const AMOUNT_BUCKET_SIZE = 25;
@@ -199,10 +195,6 @@ const COMMON_TOKEN_STOPWORDS = new Set([
 ]);
 
 let persistenceDbPromise: Promise<IDBDatabase> | null = null;
-
-function clean(value: string | null | undefined): string {
-  return (value ?? "").trim();
-}
 
 function dateToIso(value: Date | null): string | null {
   if (!value) return null;
@@ -489,11 +481,6 @@ function tokenize(values: string[]): string[] {
   return Array.from(tokenSet);
 }
 
-function formatCurrency(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "-";
-  return CURRENCY_FORMATTER.format(value);
-}
-
 function formatQuickBooksLineItemText(lineItem: QuickBooksLineItem): string {
   const description = clean(lineItem.description) || "Unlabeled line item";
   if (lineItem.amount === null || !Number.isFinite(lineItem.amount)) return description;
@@ -524,18 +511,6 @@ function buildCsv(
   return [headerRow, ...bodyRows].join("\n");
 }
 
-function downloadTextFile(fileName: string, content: string, mimeType: string): void {
-  if (typeof window === "undefined") return;
-  const blob = new Blob([content], { type: mimeType });
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  window.URL.revokeObjectURL(url);
-}
 
 function createEmptyLineItemTotals(): Record<LineItemCategoryKey, number> {
   return LINE_ITEM_CATEGORY_DEFINITIONS.reduce(

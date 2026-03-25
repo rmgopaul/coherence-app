@@ -29,6 +29,7 @@ import {
   convertMeterReadWorkbook,
   type MeterReadsConversionResult,
 } from "@/lib/meterReads";
+import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 
 type DatasetKey =
   | "solarApplications"
@@ -614,12 +615,6 @@ const DASHBOARD_DATASETS_RECORD_KEY = "activeDatasets";
 const DASHBOARD_DATASETS_MANIFEST_KEY = "__dataset_manifest_v2__";
 const DASHBOARD_LOGS_RECORD_KEY = "__snapshot_logs_v2__";
 
-const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 0,
-});
-
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SIZE_SITE_LIST_PAGE_SIZE = 10;
@@ -684,10 +679,6 @@ const GENERATOR_DETAILS_AC_SIZE_HEADERS = [
   "Rated Capacity (kW)",
   "Capacity (kW)",
 ];
-
-function clean(value: string | null | undefined): string {
-  return (value ?? "").trim();
-}
 
 function resolvePart2ProjectIdentity(row: CsvRow, index: number) {
   const applicationId = clean(row.Application_ID) || clean(row.application_id);
@@ -1114,11 +1105,6 @@ function toReadWindowMonthStart(value: Date): Date {
   return new Date(value.getFullYear(), value.getMonth(), 1);
 }
 
-function formatCurrency(value: number | null): string {
-  if (value === null) return "N/A";
-  return CURRENCY_FORMATTER.format(value);
-}
-
 function formatNumber(value: number | null, digits = 0): string {
   if (value === null) return "N/A";
   if (digits > 0) return value.toFixed(digits);
@@ -1133,11 +1119,6 @@ function formatCapacityKw(value: number | null): string {
 function toPercentValue(numerator: number, denominator: number): number | null {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return null;
   return (numerator / denominator) * 100;
-}
-
-function formatPercent(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "N/A";
-  return `${value.toFixed(1)}%`;
 }
 
 function isStaleUpload(uploadedAt: Date | null | undefined, thresholdDays = STALE_UPLOAD_DAYS): boolean {

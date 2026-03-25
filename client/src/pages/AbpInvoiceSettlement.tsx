@@ -41,6 +41,7 @@ import {
   type InvoiceNumberMapRow,
   type ParsedTabularData,
 } from "@/lib/abpSettlement";
+import { clean, toErrorMessage, formatCurrency, formatPercent, formatDateTime, formatDuration, downloadTextFile } from "@/lib/helpers";
 import { AbpPaymentEmailPreviewDialog } from "@/components/AbpPaymentEmailPreview";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
@@ -184,11 +185,6 @@ type PersistedUploadStatePayload = {
   invoiceMapHeaderSelection?: InvoiceMapHeaderSelectionState;
 };
 
-const CURRENCY_FORMATTER = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 2,
-});
 const ABP_UPLOAD_STATE_DATASET_KEY = "abp_settlement_upload_state_v1";
 const ABP_SHARED_SOLAR_REC_DATASET_KEYS = {
   utilityRows: "abpUtilityInvoiceRows",
@@ -263,64 +259,11 @@ const DEFAULT_INSTALLER_RULES: InstallerSettlementRule[] = [
   },
 ];
 
-function clean(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return String(value).trim();
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error.";
-}
-
 function parseCurrencyToNumber(value: string | null | undefined): number {
   if (!value) return 0;
   const cleaned = String(value).replace(/[^0-9.\-]/g, "");
   const num = Number.parseFloat(cleaned);
   return Number.isFinite(num) ? num : 0;
-}
-
-function formatCurrency(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "$0.00";
-  return CURRENCY_FORMATTER.format(value);
-}
-
-function formatPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "";
-  return `${value.toFixed(2)}%`;
-}
-
-function formatDateTime(iso: string | null | undefined): string {
-  const parsed = clean(iso);
-  if (!parsed) return "";
-  const date = new Date(parsed);
-  if (Number.isNaN(date.getTime())) return parsed;
-  return date.toLocaleString("en-US");
-}
-
-function formatDuration(valueMs: number | null | undefined): string {
-  if (valueMs === null || valueMs === undefined || !Number.isFinite(valueMs) || valueMs < 0) {
-    return "-";
-  }
-
-  const totalSeconds = Math.floor(valueMs / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-}
-
-function downloadTextFile(fileName: string, content: string, mimeType: string): void {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
 }
 
 function toYammCsv(rows: Array<Record<string, string>>): string {

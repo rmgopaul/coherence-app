@@ -13,6 +13,7 @@ import {
   synthesizeDeepUpdate,
   type DeepUpdateSynthesisResult,
 } from "@/lib/deepUpdateSynth";
+import { toErrorMessage, formatPercent } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -289,16 +290,6 @@ function filterReportsToActive(
     if (value) filtered[report.key] = value;
   });
   return filtered;
-}
-
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  return "Unknown error.";
-}
-
-function formatPercent(value: number): string {
-  if (!Number.isFinite(value)) return "0.0%";
-  return `${value.toFixed(1)}%`;
 }
 
 function triggerCsvDownload(fileName: string, csvText: string): void {

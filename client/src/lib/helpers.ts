@@ -54,7 +54,8 @@ export function formatCount(value: number): string {
   return COUNT_FORMATTER.format(value);
 }
 
-export function formatKwh(value: number): string {
+export function formatKwh(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "0 kWh";
   return `${KWH_FORMATTER.format(value)} kWh`;
 }
 
