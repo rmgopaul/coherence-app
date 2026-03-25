@@ -21,11 +21,18 @@ export type SolarEdgeProductionSnapshot = {
   lifetimeKwh: number | null;
   hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
+  mtdProductionKwh: number | null;
+  previousCalendarMonthProductionKwh: number | null;
+  last12MonthsProductionKwh: number | null;
   weeklyProductionKwh: number | null;
   dailyProductionKwh: number | null;
   anchorDate: string;
   monthlyStartDate: string;
   weeklyStartDate: string;
+  mtdStartDate: string;
+  previousCalendarMonthStartDate: string;
+  previousCalendarMonthEndDate: string;
+  last12MonthsStartDate: string;
   error: string | null;
 };
 
@@ -75,6 +82,35 @@ function shiftIsoDate(dateIso: string, deltaDays: number): string {
   if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
   const date = new Date(parsed.year, parsed.month - 1, parsed.day);
   date.setDate(date.getDate() + deltaDays);
+  return formatIsoDate(date);
+}
+
+function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setFullYear(date.getFullYear() + deltaYears);
+  return formatIsoDate(date);
+}
+
+function firstDayOfMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, 1);
+  return formatIsoDate(date);
+}
+
+function firstDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 2, 1);
+  return formatIsoDate(date);
+}
+
+function lastDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, 0);
   return formatIsoDate(date);
 }
 
@@ -429,29 +465,54 @@ export async function getSiteProductionSnapshot(
 
   const monthlyStartDate = shiftIsoDate(anchorDate, -29);
   const weeklyStartDate = shiftIsoDate(anchorDate, -6);
+  const mtdStartDate = firstDayOfMonth(anchorDate);
+  const previousCalendarMonthStartDate = firstDayOfPreviousMonth(anchorDate);
+  const previousCalendarMonthEndDate = lastDayOfPreviousMonth(anchorDate);
+  const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
 
   try {
-    const [overviewPayload, energyPayload, hourlyPayload] = await Promise.all([
+    const [overviewPayload, periodEnergyPayload, last12MonthsEnergyPayload, hourlyPayload] = await Promise.all([
       getSiteOverview(context, siteId),
-      getSiteEnergy(context, siteId, monthlyStartDate, anchorDate, "DAY"),
+      getSiteEnergy(context, siteId, previousCalendarMonthStartDate, anchorDate, "DAY"),
+      getSiteEnergy(context, siteId, last12MonthsStartDate, anchorDate, "MONTH"),
       getSiteEnergy(context, siteId, anchorDate, anchorDate, "HOUR"),
     ]);
 
     const lifetimeKwh = extractOverviewLifetimeKwh(overviewPayload);
-    const dailySeries = extractDailyEnergySeriesKwh(energyPayload);
+    const periodSeries = extractDailyEnergySeriesKwh(periodEnergyPayload);
+    const last12MonthsSeries = extractDailyEnergySeriesKwh(last12MonthsEnergyPayload);
     const hourlySeries = extractHourlyEnergySeriesKwh(hourlyPayload);
     const hourlyProductionKwh = safeRound(hourlySeries.length > 0 ? hourlySeries[hourlySeries.length - 1].kwh : null);
-    const monthlyProductionKwh = sumKwh(dailySeries.map((point) => point.kwh));
+    const monthlyProductionKwh = sumKwh(
+      periodSeries
+        .filter((point) => point.dateKey >= monthlyStartDate && point.dateKey <= anchorDate)
+        .map((point) => point.kwh)
+    );
     const weeklyProductionKwh = sumKwh(
-      dailySeries
+      periodSeries
         .filter((point) => point.dateKey >= weeklyStartDate && point.dateKey <= anchorDate)
         .map((point) => point.kwh)
     );
     const dailyProductionKwh = sumKwh(
-      dailySeries
+      periodSeries
         .filter((point) => point.dateKey === anchorDate)
         .map((point) => point.kwh)
     );
+    const mtdProductionKwh = sumKwh(
+      periodSeries
+        .filter((point) => point.dateKey >= mtdStartDate && point.dateKey <= anchorDate)
+        .map((point) => point.kwh)
+    );
+    const previousCalendarMonthProductionKwh = sumKwh(
+      periodSeries
+        .filter(
+          (point) =>
+            point.dateKey >= previousCalendarMonthStartDate &&
+            point.dateKey <= previousCalendarMonthEndDate
+        )
+        .map((point) => point.kwh)
+    );
+    const last12MonthsProductionKwh = sumKwh(last12MonthsSeries.map((point) => point.kwh));
 
     return {
       siteId,
@@ -460,11 +521,18 @@ export async function getSiteProductionSnapshot(
       lifetimeKwh,
       hourlyProductionKwh,
       monthlyProductionKwh,
+      mtdProductionKwh,
+      previousCalendarMonthProductionKwh,
+      last12MonthsProductionKwh,
       weeklyProductionKwh,
       dailyProductionKwh,
       anchorDate,
       monthlyStartDate,
       weeklyStartDate,
+      mtdStartDate,
+      previousCalendarMonthStartDate,
+      previousCalendarMonthEndDate,
+      last12MonthsStartDate,
       error: null,
     };
   } catch (error) {
@@ -476,11 +544,18 @@ export async function getSiteProductionSnapshot(
         lifetimeKwh: null,
         hourlyProductionKwh: null,
         monthlyProductionKwh: null,
+        mtdProductionKwh: null,
+        previousCalendarMonthProductionKwh: null,
+        last12MonthsProductionKwh: null,
         weeklyProductionKwh: null,
         dailyProductionKwh: null,
         anchorDate,
         monthlyStartDate,
         weeklyStartDate,
+        mtdStartDate,
+        previousCalendarMonthStartDate,
+        previousCalendarMonthEndDate,
+        last12MonthsStartDate,
         error: error instanceof Error ? error.message : "Site not found.",
       };
     }
@@ -492,11 +567,18 @@ export async function getSiteProductionSnapshot(
       lifetimeKwh: null,
       hourlyProductionKwh: null,
       monthlyProductionKwh: null,
+      mtdProductionKwh: null,
+      previousCalendarMonthProductionKwh: null,
+      last12MonthsProductionKwh: null,
       weeklyProductionKwh: null,
       dailyProductionKwh: null,
       anchorDate,
       monthlyStartDate,
       weeklyStartDate,
+      mtdStartDate,
+      previousCalendarMonthStartDate,
+      previousCalendarMonthEndDate,
+      last12MonthsStartDate,
       error: error instanceof Error ? error.message : "Unknown error.",
     };
   }

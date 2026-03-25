@@ -25,7 +25,17 @@ const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
 type TimeUnit = (typeof TIME_UNIT_OPTIONS)[number];
 type BulkStatusFilter = "All" | "Found" | "Not Found" | "Error";
-type BulkSortKey = "siteId" | "status" | "lifetime" | "hourly" | "monthly" | "weekly" | "daily";
+type BulkSortKey =
+  | "siteId"
+  | "status"
+  | "lifetime"
+  | "hourly"
+  | "monthly"
+  | "mtd"
+  | "previousMonth"
+  | "last12Months"
+  | "weekly"
+  | "daily";
 type BulkConnectionScope = "active" | "all";
 type DatePreset = "mtd" | "prevMonth" | "last12Months";
 
@@ -36,11 +46,18 @@ type BulkSnapshotRow = {
   lifetimeKwh: number | null;
   hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
+  mtdProductionKwh: number | null;
+  previousCalendarMonthProductionKwh: number | null;
+  last12MonthsProductionKwh: number | null;
   weeklyProductionKwh: number | null;
   dailyProductionKwh: number | null;
   anchorDate: string;
   monthlyStartDate: string;
   weeklyStartDate: string;
+  mtdStartDate: string;
+  previousCalendarMonthStartDate: string;
+  previousCalendarMonthEndDate: string;
+  last12MonthsStartDate: string;
   error: string | null;
   matchedConnectionId: string | null;
   matchedConnectionName: string | null;
@@ -548,6 +565,15 @@ export default function SolarEdgeMeterReads() {
           return toComparableNumber(b.hourlyProductionKwh) - toComparableNumber(a.hourlyProductionKwh);
         case "monthly":
           return toComparableNumber(b.monthlyProductionKwh) - toComparableNumber(a.monthlyProductionKwh);
+        case "mtd":
+          return toComparableNumber(b.mtdProductionKwh) - toComparableNumber(a.mtdProductionKwh);
+        case "previousMonth":
+          return (
+            toComparableNumber(b.previousCalendarMonthProductionKwh) -
+            toComparableNumber(a.previousCalendarMonthProductionKwh)
+          );
+        case "last12Months":
+          return toComparableNumber(b.last12MonthsProductionKwh) - toComparableNumber(a.last12MonthsProductionKwh);
         case "weekly":
           return toComparableNumber(b.weeklyProductionKwh) - toComparableNumber(a.weeklyProductionKwh);
         case "daily":
@@ -581,11 +607,18 @@ export default function SolarEdgeMeterReads() {
       "lifetime_kwh",
       "hourly_production_kwh",
       "monthly_production_kwh",
+      "mtd_production_kwh",
+      "previous_calendar_month_production_kwh",
+      "last_12_months_production_kwh",
       "weekly_production_kwh",
       "daily_production_kwh",
       "anchor_date",
       "monthly_start_date",
       "weekly_start_date",
+      "mtd_start_date",
+      "previous_calendar_month_start_date",
+      "previous_calendar_month_end_date",
+      "last_12_months_start_date",
       "error",
       "matched_connection_id",
       "matched_connection_name",
@@ -601,11 +634,18 @@ export default function SolarEdgeMeterReads() {
       lifetime_kwh: row.lifetimeKwh,
       hourly_production_kwh: row.hourlyProductionKwh,
       monthly_production_kwh: row.monthlyProductionKwh,
+      mtd_production_kwh: row.mtdProductionKwh,
+      previous_calendar_month_production_kwh: row.previousCalendarMonthProductionKwh,
+      last_12_months_production_kwh: row.last12MonthsProductionKwh,
       weekly_production_kwh: row.weeklyProductionKwh,
       daily_production_kwh: row.dailyProductionKwh,
       anchor_date: row.anchorDate,
       monthly_start_date: row.monthlyStartDate,
       weekly_start_date: row.weeklyStartDate,
+      mtd_start_date: row.mtdStartDate,
+      previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
+      previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
+      last_12_months_start_date: row.last12MonthsStartDate,
       error: row.error,
       matched_connection_id: row.matchedConnectionId,
       matched_connection_name: row.matchedConnectionName,
@@ -989,7 +1029,7 @@ export default function SolarEdgeMeterReads() {
           <CardHeader>
             <CardTitle>3) Bulk CSV Processing</CardTitle>
             <CardDescription>
-              Upload a CSV of site IDs, process in batches, and review/export found/not-found status with lifetime, hourly, monthly, weekly, and daily production.
+              Upload a CSV of site IDs, process in batches, and review/export found/not-found status with lifetime plus hourly, monthly, MTD, previous month, last 12 months, weekly, and daily production.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -1003,7 +1043,7 @@ export default function SolarEdgeMeterReads() {
                   onChange={(e) => setBulkAnchorDate(e.target.value)}
                 />
                 <p className="text-xs text-slate-500">
-                  Monthly = last 30 days, weekly = last 7 days, daily = anchor day.
+                  Monthly = last 30 days, MTD = first of current month through anchor day, Previous Month = prior calendar month, Last 12 Months = trailing 12 months ending on anchor day, Weekly = last 7 days, Daily = anchor day.
                 </p>
               </div>
               <div className="space-y-2">
@@ -1165,6 +1205,9 @@ export default function SolarEdgeMeterReads() {
                     <SelectItem value="lifetime">Lifetime (High-Low)</SelectItem>
                     <SelectItem value="hourly">Hourly (High-Low)</SelectItem>
                     <SelectItem value="monthly">Monthly (High-Low)</SelectItem>
+                    <SelectItem value="mtd">MTD (High-Low)</SelectItem>
+                    <SelectItem value="previousMonth">Previous Month (High-Low)</SelectItem>
+                    <SelectItem value="last12Months">Last 12 Months (High-Low)</SelectItem>
                     <SelectItem value="weekly">Weekly (High-Low)</SelectItem>
                     <SelectItem value="daily">Daily (High-Low)</SelectItem>
                   </SelectContent>
@@ -1191,6 +1234,9 @@ export default function SolarEdgeMeterReads() {
                   <TableHead>Lifetime (kWh)</TableHead>
                   <TableHead>Hourly (kWh)</TableHead>
                   <TableHead>Monthly (kWh)</TableHead>
+                  <TableHead>MTD (kWh)</TableHead>
+                  <TableHead>Previous Month (kWh)</TableHead>
+                  <TableHead>Last 12 Months (kWh)</TableHead>
                   <TableHead>Weekly (kWh)</TableHead>
                   <TableHead>Daily (kWh)</TableHead>
                   <TableHead>API Check Summary</TableHead>
@@ -1209,6 +1255,9 @@ export default function SolarEdgeMeterReads() {
                     <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
                     <TableCell>{formatKwh(row.hourlyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
+                    <TableCell>{formatKwh(row.mtdProductionKwh)}</TableCell>
+                    <TableCell>{formatKwh(row.previousCalendarMonthProductionKwh)}</TableCell>
+                    <TableCell>{formatKwh(row.last12MonthsProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
                     <TableCell className="text-xs text-slate-600">{row.profileStatusSummary}</TableCell>
@@ -1217,7 +1266,7 @@ export default function SolarEdgeMeterReads() {
                 ))}
                 {bulkPageRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                    <TableCell colSpan={14} className="py-6 text-center text-slate-500">
                       No bulk rows to display.
                     </TableCell>
                   </TableRow>

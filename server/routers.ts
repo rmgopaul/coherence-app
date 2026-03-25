@@ -2537,6 +2537,19 @@ export const appRouter = router({
             selectedSnapshot?.monthlyStartDate ?? fallbackSnapshot?.monthlyStartDate ?? input.anchorDate ?? "";
           const weeklyStartDate =
             selectedSnapshot?.weeklyStartDate ?? fallbackSnapshot?.weeklyStartDate ?? input.anchorDate ?? "";
+          const mtdStartDate = selectedSnapshot?.mtdStartDate ?? fallbackSnapshot?.mtdStartDate ?? input.anchorDate ?? "";
+          const previousCalendarMonthStartDate =
+            selectedSnapshot?.previousCalendarMonthStartDate ??
+            fallbackSnapshot?.previousCalendarMonthStartDate ??
+            input.anchorDate ??
+            "";
+          const previousCalendarMonthEndDate =
+            selectedSnapshot?.previousCalendarMonthEndDate ??
+            fallbackSnapshot?.previousCalendarMonthEndDate ??
+            input.anchorDate ??
+            "";
+          const last12MonthsStartDate =
+            selectedSnapshot?.last12MonthsStartDate ?? fallbackSnapshot?.last12MonthsStartDate ?? input.anchorDate ?? "";
 
           if (selectedSnapshot && selectedConnection) {
             return {
@@ -2559,11 +2572,18 @@ export const appRouter = router({
             lifetimeKwh: null,
             hourlyProductionKwh: null,
             monthlyProductionKwh: null,
+            mtdProductionKwh: null,
+            previousCalendarMonthProductionKwh: null,
+            last12MonthsProductionKwh: null,
             weeklyProductionKwh: null,
             dailyProductionKwh: null,
             anchorDate,
             monthlyStartDate,
             weeklyStartDate,
+            mtdStartDate,
+            previousCalendarMonthStartDate,
+            previousCalendarMonthEndDate,
+            last12MonthsStartDate,
             error: firstError,
             matchedConnectionId: null,
             matchedConnectionName: null,
