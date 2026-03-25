@@ -5,12 +5,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.coherence.samsunghealth.data.model.CalendarEvent
 import com.coherence.samsunghealth.data.model.GmailMessage
+import com.coherence.samsunghealth.data.model.MarketDashboardResponse
 import com.coherence.samsunghealth.data.model.SamsungHealthDisplay
 import com.coherence.samsunghealth.data.model.SuggestionItem
 import com.coherence.samsunghealth.data.model.TodoistProject
 import com.coherence.samsunghealth.data.model.TodoistTask
 import com.coherence.samsunghealth.data.model.WhoopSummary
 import com.coherence.samsunghealth.data.repository.GoogleRepository
+import com.coherence.samsunghealth.data.repository.MarketRepository
 import com.coherence.samsunghealth.data.repository.MetricsRepository
 import com.coherence.samsunghealth.data.repository.PlanRepository
 import com.coherence.samsunghealth.data.repository.TodoistRepository
@@ -32,6 +34,7 @@ data class DashboardState(
   val eventsState: LoadState<List<CalendarEvent>> = LoadState.Loading,
   val eventWindowDays: Int = 30,
   val emailsState: LoadState<List<GmailMessage>> = LoadState.Loading,
+  val marketState: LoadState<MarketDashboardResponse> = LoadState.Loading,
   val whoopState: LoadState<WhoopSummary?> = LoadState.Loading,
   val healthState: LoadState<SamsungHealthDisplay?> = LoadState.Loading,
   val isRefreshing: Boolean = false,
@@ -47,6 +50,7 @@ class DashboardViewModel(
   private val whoopRepo: WhoopRepository,
   private val metricsRepo: MetricsRepository? = null,
   private val planRepo: PlanRepository? = null,
+  private val marketRepo: MarketRepository? = null,
 ) : ViewModel() {
 
   private val _state = MutableStateFlow(DashboardState())
@@ -62,13 +66,14 @@ class DashboardViewModel(
     loadProjects()
     loadEvents()
     loadEmails()
+    loadMarketData()
     loadWhoop()
     loadHealth()
   }
 
   fun refresh() {
     synchronized(this) {
-      refreshPendingLoads = 6
+      refreshPendingLoads = 7
     }
     _state.value = _state.value.copy(isRefreshing = true)
     loadAll()
@@ -78,6 +83,7 @@ class DashboardViewModel(
   fun retryProjects() = loadProjects()
   fun retryEvents() = loadEvents(_state.value.eventWindowDays)
   fun retryEmails() = loadEmails()
+  fun retryMarket() = loadMarketData()
   fun retryWhoop() = loadWhoop()
   fun retryHealth() = loadHealth()
 
@@ -336,6 +342,29 @@ class DashboardViewModel(
         )
       } finally {
         recomputeSuggestedActions()
+        completeRefreshLoad()
+      }
+    }
+  }
+
+  private fun loadMarketData() {
+    val previous = _state.value.marketState.dataOrNull()
+    if (previous == null) {
+      _state.value = _state.value.copy(marketState = LoadState.Loading)
+    }
+    viewModelScope.launch {
+      try {
+        val marketData = marketRepo?.getMarketDashboard() ?: MarketDashboardResponse()
+        _state.value = _state.value.copy(marketState = LoadState.Content(marketData))
+      } catch (_: Exception) {
+        _state.value = _state.value.copy(
+          marketState = LoadState.Error(
+            message = "Couldn't load market data.",
+            previousData = previous,
+            updatedAtMillis = _state.value.marketState.updatedAtOrNull(),
+          )
+        )
+      } finally {
         completeRefreshLoad()
       }
     }

@@ -58,6 +58,7 @@ import kotlinx.coroutines.launch
 private val DashboardWidgets = listOf(
   "suggested_actions" to "Suggested Actions",
   "todays_plan" to "Today's Plan",
+  "headlines" to "Headlines & Markets",
   "health" to "Samsung Health",
   "whoop" to "WHOOP",
   "focus_timer" to "Focus Timer",

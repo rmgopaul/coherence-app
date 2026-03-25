@@ -44,6 +44,7 @@ import com.coherence.samsunghealth.ui.widgets.GmailWidget
 import com.coherence.samsunghealth.ui.widgets.HabitsWidget
 import com.coherence.samsunghealth.ui.widgets.HealthWidget
 import com.coherence.samsunghealth.ui.widgets.HeroStats
+import com.coherence.samsunghealth.ui.widgets.MarketHeadlinesWidget
 import com.coherence.samsunghealth.ui.widgets.SupplementsWidget
 import com.coherence.samsunghealth.ui.widgets.SuggestedActionsWidget
 import com.coherence.samsunghealth.ui.widgets.TodaysPlanWidget
@@ -67,6 +68,7 @@ fun DashboardScreen() {
   val events = state.eventsState.dataOrNull().orEmpty()
   val whoop = state.whoopState.dataOrNull()
   val emails = state.emailsState.dataOrNull().orEmpty()
+  val marketData = state.marketState.dataOrNull()
   val health = state.healthState.dataOrNull()
   val hiddenWidgets = preferences.hiddenWidgets
   var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -160,6 +162,19 @@ fun DashboardScreen() {
             isGenerating = state.planGenerating,
             error = state.planError,
             onGenerate = { viewModel.generatePlan() },
+          )
+        }
+      }
+
+      // Headlines & Markets
+      if (!hiddenWidgets.contains("headlines")) {
+        item {
+          MarketHeadlinesWidget(
+            marketData = marketData,
+            isLoading = state.marketState.isLoading(),
+            error = state.marketState.errorOrNull(),
+            lastUpdatedMillis = state.marketState.updatedAtOrNull(),
+            onRetry = { viewModel.retryMarket() },
           )
         }
       }

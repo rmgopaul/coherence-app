@@ -9,6 +9,7 @@ import com.coherence.samsunghealth.data.repository.ChatRepository
 import com.coherence.samsunghealth.data.repository.ClockifyRepository
 import com.coherence.samsunghealth.data.repository.GoogleRepository
 import com.coherence.samsunghealth.data.repository.HabitsRepository
+import com.coherence.samsunghealth.data.repository.MarketRepository
 import com.coherence.samsunghealth.data.repository.MetricsRepository
 import com.coherence.samsunghealth.data.repository.NotesRepository
 import com.coherence.samsunghealth.data.repository.PlanRepository
@@ -62,6 +63,8 @@ class CoherenceApplication : Application() {
     private set
   lateinit var clockifyRepository: ClockifyRepository
     private set
+  lateinit var marketRepository: MarketRepository
+    private set
 
   override fun onCreate() {
     super.onCreate()
@@ -83,6 +86,7 @@ class CoherenceApplication : Application() {
     notesRepository = NotesRepository(trpcClient)
     metricsRepository = MetricsRepository(trpcClient)
     clockifyRepository = ClockifyRepository(trpcClient)
+    marketRepository = MarketRepository(trpcClient)
 
     dashboardViewModel = DashboardViewModel(
       todoistRepo = todoistRepository,
@@ -90,6 +94,7 @@ class CoherenceApplication : Application() {
       whoopRepo = whoopRepository,
       metricsRepo = metricsRepository,
       planRepo = planRepository,
+      marketRepo = marketRepository,
     )
   }
 }
