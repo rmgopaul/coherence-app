@@ -1082,7 +1082,16 @@ export default function AbpInvoiceSettlement() {
     invoiceNumberHeader: string | null;
   }>({ csgIdHeader: null, invoiceNumberHeader: null });
 
-  const [manualOverridesByRowId, setManualOverridesByRowId] = useState<Record<string, ManualOverride>>({});
+  const [manualOverridesByRowId, setManualOverridesByRowId] = useState<Record<string, ManualOverride>>(() => {
+    try {
+      const stored = localStorage.getItem(`abp-overrides:${buildMonthKey()}`);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      }
+    } catch { /* ignore corrupt localStorage */ }
+    return {};
+  });
   const [previousCarryforwardBySystemId, setPreviousCarryforwardBySystemId] =
     useState<Record<string, number>>({});
 
@@ -2964,6 +2973,19 @@ export default function AbpInvoiceSettlement() {
     }
   };
 
+  // Persist overrides to localStorage so they survive page refresh
+  useEffect(() => {
+    const key = `abp-overrides:${clean(monthKey) || buildMonthKey()}`;
+    const hasOverrides = Object.keys(manualOverridesByRowId).length > 0;
+    try {
+      if (hasOverrides) {
+        localStorage.setItem(key, JSON.stringify(manualOverridesByRowId));
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch { /* localStorage full or unavailable */ }
+  }, [manualOverridesByRowId, monthKey]);
+
   const updateOverride = (rowId: string, patch: Partial<ManualOverride>) => {
     setManualOverridesByRowId((current) => {
       const existing = current[rowId] ?? {};
@@ -3978,6 +4000,45 @@ export default function AbpInvoiceSettlement() {
                 </div>
               </div>
             </div>
+
+            {computationResult?.coverage && (computationResult.coverage.systemsMissingCsgMapping > 0 || computationResult.coverage.csgIdsMissingContractTerms > 0) && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm space-y-2">
+                <div className="font-semibold text-amber-800 dark:text-amber-300">Data Coverage Gaps</div>
+                <div className="grid gap-2 md:grid-cols-3 text-xs">
+                  <div>
+                    <span className="text-slate-500">Utility Systems:</span>{" "}
+                    <span className="font-medium">{computationResult.coverage.utilitySystemIds}</span>
+                    {computationResult.coverage.systemsMissingCsgMapping > 0 && (
+                      <span className="text-red-600 ml-1">({computationResult.coverage.systemsMissingCsgMapping} missing CSG mapping)</span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Contract Terms:</span>{" "}
+                    <span className="font-medium">{computationResult.coverage.csgIdsWithContractTerms}</span>
+                    {computationResult.coverage.csgIdsMissingContractTerms > 0 && (
+                      <span className="text-red-600 ml-1">({computationResult.coverage.csgIdsMissingContractTerms} CSG IDs missing)</span>
+                    )}
+                  </div>
+                  <div>
+                    <span className="text-slate-500">Portal Data:</span>{" "}
+                    <span className="font-medium">{computationResult.coverage.csgIdsWithPortalData}</span>
+                    <span className="text-slate-400 ml-1">/ {computationResult.coverage.systemsWithCsgId} matched</span>
+                  </div>
+                </div>
+                {computationResult.coverage.orphanedSystemIds.length > 0 && (
+                  <div className="text-xs text-red-700 dark:text-red-400">
+                    Orphaned systems (no CSG mapping): {computationResult.coverage.orphanedSystemIds.slice(0, 10).join(", ")}
+                    {computationResult.coverage.orphanedSystemIds.length > 10 && ` ...+${computationResult.coverage.orphanedSystemIds.length - 10} more`}
+                  </div>
+                )}
+                {computationResult.coverage.orphanedCsgIds.length > 0 && (
+                  <div className="text-xs text-red-700 dark:text-red-400">
+                    CSG IDs missing contract terms: {computationResult.coverage.orphanedCsgIds.slice(0, 10).join(", ")}
+                    {computationResult.coverage.orphanedCsgIds.length > 10 && ` ...+${computationResult.coverage.orphanedCsgIds.length - 10} more`}
+                  </div>
+                )}
+              </div>
+            )}
 
             {!computationResult ? (
               <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-600">

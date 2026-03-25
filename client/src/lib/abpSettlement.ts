@@ -298,11 +298,35 @@ export type PaymentComputationRow = {
   overrideNotes: string;
 };
 
+export type SettlementCoverage = {
+  /** Unique system IDs in utility invoice data. */
+  utilitySystemIds: number;
+  /** Systems matched to a CSG ID via the mapping file. */
+  systemsWithCsgId: number;
+  /** Systems missing from the CSG↔System mapping. */
+  systemsMissingCsgMapping: number;
+  /** CSG IDs with contract terms loaded (from scan or portal). */
+  csgIdsWithContractTerms: number;
+  /** CSG IDs in utility data that have NO contract terms. */
+  csgIdsMissingContractTerms: number;
+  /** CSG IDs with a project application row. */
+  csgIdsWithProjectApp: number;
+  /** CSG IDs with portal database row. */
+  csgIdsWithPortalData: number;
+  /** CSG IDs with payment report data. */
+  csgIdsWithPaymentReport: number;
+  /** List of system IDs missing CSG mapping (first 20). */
+  orphanedSystemIds: string[];
+  /** List of CSG IDs missing contract terms (first 20). */
+  orphanedCsgIds: string[];
+};
+
 export type SettlementComputationResult = {
   rows: PaymentComputationRow[];
   warnings: string[];
   carryforwardBySystemId: Record<string, number>;
   unresolvedQuickBooksLineCount: number;
+  coverage: SettlementCoverage;
 };
 
 export type SettlementComputationInput = {
@@ -1741,6 +1765,30 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
   const paymentsReportBySystemId = buildPaymentsReportLookup(input.paymentsReportRows ?? []);
   const aiMailingModifiedFieldsByCsgId = input.aiMailingModifiedFieldsByCsgId ?? {};
 
+  // ── Duplicate detection: flag rows with same (systemId + paymentNumber) ──
+  const seenKeys = new Map<string, number>();
+  const duplicateWarnings: string[] = [];
+  input.utilityRows.forEach((row) => {
+    if (row.paymentNumber !== null) {
+      const key = `${row.systemId}::${row.paymentNumber}`;
+      const count = (seenKeys.get(key) ?? 0) + 1;
+      seenKeys.set(key, count);
+      if (count === 2) {
+        const csgId = systemToCsg.get(row.systemId) ?? "?";
+        duplicateWarnings.push(
+          `Duplicate: System ${row.systemId} (CSG ${csgId}) payment #${row.paymentNumber} appears ${count}+ times in utility invoice data.`
+        );
+      }
+    }
+  });
+  if (duplicateWarnings.length > 0) {
+    warnings.push(
+      `${duplicateWarnings.length} duplicate (system + payment number) combination(s) detected across utility files. Review to avoid double-paying:`,
+      ...duplicateWarnings.slice(0, 20),
+      ...(duplicateWarnings.length > 20 ? [`...and ${duplicateWarnings.length - 20} more.`] : []),
+    );
+  }
+
   const rowsBySystem = new Map<string, UtilityInvoiceRow[]>();
   input.utilityRows.forEach((row) => {
     const existing = rowsBySystem.get(row.systemId);
@@ -2129,11 +2177,55 @@ export function computeSettlementRows(input: SettlementComputationInput): Settle
     );
   }
 
+  // ── Coverage statistics ──────────────────────────────────────
+  const allSystemIds = new Set(input.utilityRows.map((r) => r.systemId));
+  const systemsWithCsg = new Set<string>();
+  const csgIdsInUtility = new Set<string>();
+  const orphanedSystemIds: string[] = [];
+
+  allSystemIds.forEach((sid) => {
+    const cid = systemToCsg.get(sid);
+    if (cid) {
+      systemsWithCsg.add(sid);
+      csgIdsInUtility.add(cid);
+    } else if (orphanedSystemIds.length < 20) {
+      orphanedSystemIds.push(sid);
+    }
+  });
+
+  let csgIdsWithContractTerms = 0;
+  let csgIdsWithProjectApp = 0;
+  let csgIdsWithPortalData = 0;
+  let csgIdsWithPaymentReport = 0;
+  const orphanedCsgIds: string[] = [];
+
+  csgIdsInUtility.forEach((cid) => {
+    if (input.contractTermsByCsgId.has(cid)) csgIdsWithContractTerms++;
+    else if (orphanedCsgIds.length < 20) orphanedCsgIds.push(cid);
+    if (projectAppById.get(Array.from(allSystemIds).find((sid) => systemToCsg.get(sid) === cid) ?? "")) csgIdsWithProjectApp++;
+    if (csgPortalLookup.get(cid)) csgIdsWithPortalData++;
+    if (Array.from(allSystemIds).some((sid) => systemToCsg.get(sid) === cid && paymentsReportBySystemId.has(sid))) csgIdsWithPaymentReport++;
+  });
+
+  const coverage: SettlementCoverage = {
+    utilitySystemIds: allSystemIds.size,
+    systemsWithCsgId: systemsWithCsg.size,
+    systemsMissingCsgMapping: allSystemIds.size - systemsWithCsg.size,
+    csgIdsWithContractTerms,
+    csgIdsMissingContractTerms: csgIdsInUtility.size - csgIdsWithContractTerms,
+    csgIdsWithProjectApp,
+    csgIdsWithPortalData,
+    csgIdsWithPaymentReport,
+    orphanedSystemIds,
+    orphanedCsgIds,
+  };
+
   return {
     rows: outputRows,
     warnings,
     carryforwardBySystemId,
     unresolvedQuickBooksLineCount: input.quickBooksPaidUpfrontLedger.unmatchedLines.length,
+    coverage,
   };
 }
 
