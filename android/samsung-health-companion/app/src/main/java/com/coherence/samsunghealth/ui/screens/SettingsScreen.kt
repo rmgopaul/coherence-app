@@ -255,7 +255,7 @@ fun SettingsScreen(onBack: () -> Unit) {
               Text("App Info", style = MaterialTheme.typography.titleMedium)
             }
             Spacer(Modifier.height(8.dp))
-            Text("Coherence Dashboard", style = MaterialTheme.typography.bodyMedium)
+            Text("Coherence", style = MaterialTheme.typography.bodyMedium)
             Text("Version 0.2.1", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
           }
         }
