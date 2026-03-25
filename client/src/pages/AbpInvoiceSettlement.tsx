@@ -1159,14 +1159,18 @@ export default function AbpInvoiceSettlement() {
   const [portalPassword, setPortalPassword] = useState("");
   const [portalBaseUrl, setPortalBaseUrl] = useState("https://portal2.carbonsolutionsgroup.com");
 
-  const [isUploadingUtility, setIsUploadingUtility] = useState(false);
-  const [isUploadingMapping, setIsUploadingMapping] = useState(false);
-  const [isUploadingQuickBooks, setIsUploadingQuickBooks] = useState(false);
-  const [isUploadingPaymentsReport, setIsUploadingPaymentsReport] = useState(false);
-  const [isUploadingProjectApps, setIsUploadingProjectApps] = useState(false);
-  const [isUploadingInvoiceMap, setIsUploadingInvoiceMap] = useState(false);
-  const [isUploadingCsgPortalDatabase, setIsUploadingCsgPortalDatabase] = useState(false);
-  const [isUploadingPayeeUpdates, setIsUploadingPayeeUpdates] = useState(false);
+  // Single set tracks which uploads are in-flight (replaces 8 boolean states)
+  const [uploadingKeys, setUploadingKeys] = useState<Set<string>>(() => new Set());
+  const startUploading = useCallback((key: string) => setUploadingKeys((s) => new Set(s).add(key)), []);
+  const stopUploading = useCallback((key: string) => setUploadingKeys((s) => { const next = new Set(s); next.delete(key); return next; }), []);
+  const isUploadingUtility = uploadingKeys.has("utility");
+  const isUploadingMapping = uploadingKeys.has("mapping");
+  const isUploadingQuickBooks = uploadingKeys.has("quickBooks");
+  const isUploadingPaymentsReport = uploadingKeys.has("paymentsReport");
+  const isUploadingProjectApps = uploadingKeys.has("projectApps");
+  const isUploadingInvoiceMap = uploadingKeys.has("invoiceMap");
+  const isUploadingCsgPortalDatabase = uploadingKeys.has("csgPortalDatabase");
+  const isUploadingPayeeUpdates = uploadingKeys.has("payeeUpdates");
   const [isSavingUploadsNow, setIsSavingUploadsNow] = useState(false);
   const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
   const [uploadsHydrated, setUploadsHydrated] = useState(false);
@@ -2254,7 +2258,7 @@ export default function AbpInvoiceSettlement() {
 
   const handleUtilityUpload = async (fileList: FileList | null) => {
     if (!fileList?.length) return;
-    setIsUploadingUtility(true);
+    startUploading("utility");
 
     try {
       const files = Array.from(fileList);
@@ -2274,14 +2278,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse utility invoice file(s): ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingUtility(false);
+      stopUploading("utility");
     }
   };
 
   const handleMappingUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingMapping(true);
+    startUploading("mapping");
     try {
       const parsed = await parseTabularFile(file);
       const rows = parseCsgSystemMapping(parsed);
@@ -2291,14 +2295,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse CSG/System mapping: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingMapping(false);
+      stopUploading("mapping");
     }
   };
 
   const handleQuickBooksUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingQuickBooks(true);
+    startUploading("quickBooks");
     try {
       const parsed = await parseTabularFile(file);
       const rows = parseQuickBooksDetailedReport(parsed);
@@ -2308,14 +2312,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse QuickBooks report: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingQuickBooks(false);
+      stopUploading("quickBooks");
     }
   };
 
   const handlePaymentsReportUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingPaymentsReport(true);
+    startUploading("paymentsReport");
     try {
       const parsed = await parseTabularFile(file);
       const rows = parsePaymentsReport(parsed);
@@ -2325,14 +2329,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse payment report file: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingPaymentsReport(false);
+      stopUploading("paymentsReport");
     }
   };
 
   const handleProjectApplicationUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingProjectApps(true);
+    startUploading("projectApps");
     try {
       const parsed = await parseTabularFile(file);
       const rows = parseProjectApplications(parsed);
@@ -2342,14 +2346,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse ProjectApplication file: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingProjectApps(false);
+      stopUploading("projectApps");
     }
   };
 
   const handleInvoiceMapUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingInvoiceMap(true);
+    startUploading("invoiceMap");
     try {
       const parsed = await parseTabularFile(file);
       const detection = detectInvoiceNumberMapHeaders(parsed.headers);
@@ -2373,14 +2377,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse optional invoice map file: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingInvoiceMap(false);
+      stopUploading("invoiceMap");
     }
   };
 
   const handleCsgPortalDatabaseUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingCsgPortalDatabase(true);
+    startUploading("csgPortalDatabase");
 
     try {
       const parsed = await parseTabularFile(file);
@@ -2394,14 +2398,14 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse CSG portal database file: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingCsgPortalDatabase(false);
+      stopUploading("csgPortalDatabase");
     }
   };
 
   const handlePayeeUpdateUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
-    setIsUploadingPayeeUpdates(true);
+    startUploading("payeeUpdates");
 
     try {
       const parsed = await parseTabularFile(file);
@@ -2415,7 +2419,7 @@ export default function AbpInvoiceSettlement() {
     } catch (error) {
       toast.error(`Failed to parse payee update file: ${toErrorMessage(error)}`);
     } finally {
-      setIsUploadingPayeeUpdates(false);
+      stopUploading("payeeUpdates");
     }
   };
 
