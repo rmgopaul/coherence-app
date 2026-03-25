@@ -5149,6 +5149,36 @@ export default function SolarRecDashboard() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadOfflineDetailFilteredCsv = () => {
+    if (filteredOfflineSystems.length === 0) return;
+
+    const headers = [
+      "system_name",
+      "system_id",
+      "tracking_id",
+      "monitoring_method",
+      "monitoring_platform",
+      "installer_name",
+      "last_reporting_date",
+      "contract_value",
+    ];
+
+    const rows = filteredOfflineSystems.map((system) => ({
+      system_name: system.systemName,
+      system_id: system.systemId ?? "",
+      tracking_id: system.trackingSystemRefId ?? "",
+      monitoring_method: system.monitoringType,
+      monitoring_platform: system.monitoringPlatform,
+      installer_name: system.installerName,
+      last_reporting_date: formatDate(system.latestReportingDate),
+      contract_value: resolveContractValueAmount(system),
+    }));
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `offline-systems-detail-filtered-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    triggerCsvDownload(fileName, csv);
+  };
+
   const downloadSizeSiteListCsv = () => {
     const headers = [
       "system_name",
@@ -9918,8 +9948,20 @@ export default function SolarRecDashboard() {
 
             <Card id="offline-detail" className="scroll-mt-24">
               <CardHeader>
-                <CardTitle className="text-base">Offline Systems Detail</CardTitle>
-                <CardDescription>Filterable and sortable list of non-reporting systems.</CardDescription>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div>
+                    <CardTitle className="text-base">Offline Systems Detail</CardTitle>
+                    <CardDescription>Filterable and sortable list of non-reporting systems.</CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={downloadOfflineDetailFilteredCsv}
+                    disabled={filteredOfflineSystems.length === 0}
+                  >
+                    Export Filtered Table CSV
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
