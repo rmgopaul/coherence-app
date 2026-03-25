@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { clean } from "@/lib/helpers";
+import { clean } from "./helpers";
 
 export type CsvRow = Record<string, string>;
 

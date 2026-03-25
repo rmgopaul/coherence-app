@@ -4,6 +4,7 @@ import {
   buildLatestPayeeMailingUpdates,
   buildQuickBooksPaidUpfrontLedger,
   buildSettlementCsv,
+  computeSettlementDiff,
   computeSettlementRows,
   parseCsgPortalDatabase,
   parsePaymentsReport,
@@ -886,5 +887,89 @@ describe("ABP formula and carryforward", () => {
     expect(csv).toContain("CSG ID,System ID,Invoice Amount");
     expect(csv).toContain("2001,1001,1000.00");
     expect(csv.split("\n").length).toBe(2);
+  });
+
+  it("warns on duplicate (systemId + paymentNumber) in utility data", () => {
+    const result = computeSettlementRows({
+      utilityRows: [
+        baseUtilityRow({ rowId: "r1", systemId: "1001", paymentNumber: 1, invoiceAmount: 500 }),
+        baseUtilityRow({ rowId: "r2", systemId: "1001", paymentNumber: 1, invoiceAmount: 500 }),
+      ],
+      csgSystemMappings: [{ csgId: "2001", systemId: "1001" }],
+      projectApplications: [
+        { applicationId: "1001", part1SubmissionDate: new Date("2024-05-01"), part1OriginalSubmissionDate: null, inverterSizeKwAcPart1: 10 },
+      ],
+      quickBooksPaidUpfrontLedger: { bySystemId: new Map(), unmatchedLines: [] },
+      contractTermsByCsgId: new Map([["2001", baseContractTerms("2001", { vendorFeePercent: 0, additionalCollateralPercent: 0 })]]),
+    });
+
+    expect(result.warnings.some((w) => w.includes("Duplicate") && w.includes("1001"))).toBe(true);
+    // Both rows should still compute (duplicates are warned, not removed)
+    expect(result.rows.length).toBe(2);
+  });
+
+  it("reports coverage statistics in computation result", () => {
+    const result = computeSettlementRows({
+      utilityRows: [
+        baseUtilityRow({ rowId: "r1", systemId: "1001", paymentNumber: 1, invoiceAmount: 1000 }),
+        baseUtilityRow({ rowId: "r2", systemId: "1002", paymentNumber: 1, invoiceAmount: 800 }),
+      ],
+      csgSystemMappings: [{ csgId: "2001", systemId: "1001" }], // 1002 unmapped
+      projectApplications: [
+        { applicationId: "1001", part1SubmissionDate: new Date("2024-05-01"), part1OriginalSubmissionDate: null, inverterSizeKwAcPart1: 10 },
+      ],
+      quickBooksPaidUpfrontLedger: { bySystemId: new Map(), unmatchedLines: [] },
+      contractTermsByCsgId: new Map([["2001", baseContractTerms("2001", { vendorFeePercent: 0, additionalCollateralPercent: 0 })]]),
+    });
+
+    expect(result.coverage.utilitySystemIds).toBe(2);
+    expect(result.coverage.systemsWithCsgId).toBe(1);
+    expect(result.coverage.systemsMissingCsgMapping).toBe(1);
+    expect(result.coverage.orphanedSystemIds).toContain("1002");
+    expect(result.coverage.csgIdsWithContractTerms).toBe(1);
+  });
+
+  it("computeSettlementDiff detects added, removed, and changed rows", () => {
+    const previous = [
+      baseUtilityRow({ rowId: "r1", systemId: "1001", paymentNumber: 1, invoiceAmount: 1000 }),
+    ];
+    const previousResult = computeSettlementRows({
+      utilityRows: previous,
+      csgSystemMappings: [{ csgId: "2001", systemId: "1001" }],
+      projectApplications: [
+        { applicationId: "1001", part1SubmissionDate: new Date("2024-05-01"), part1OriginalSubmissionDate: null, inverterSizeKwAcPart1: 10 },
+      ],
+      quickBooksPaidUpfrontLedger: { bySystemId: new Map(), unmatchedLines: [] },
+      contractTermsByCsgId: new Map([["2001", baseContractTerms("2001", { vendorFeePercent: 0, additionalCollateralPercent: 0 })]]),
+    });
+
+    // Current: same row but different invoice amount + new row
+    const current = [
+      baseUtilityRow({ rowId: "r1", systemId: "1001", paymentNumber: 1, invoiceAmount: 1200 }),
+      baseUtilityRow({ rowId: "r2", systemId: "1003", paymentNumber: 1, invoiceAmount: 600 }),
+    ];
+    const currentResult = computeSettlementRows({
+      utilityRows: current,
+      csgSystemMappings: [
+        { csgId: "2001", systemId: "1001" },
+        { csgId: "2003", systemId: "1003" },
+      ],
+      projectApplications: [
+        { applicationId: "1001", part1SubmissionDate: new Date("2024-05-01"), part1OriginalSubmissionDate: null, inverterSizeKwAcPart1: 10 },
+        { applicationId: "1003", part1SubmissionDate: new Date("2024-05-01"), part1OriginalSubmissionDate: null, inverterSizeKwAcPart1: 5 },
+      ],
+      quickBooksPaidUpfrontLedger: { bySystemId: new Map(), unmatchedLines: [] },
+      contractTermsByCsgId: new Map([
+        ["2001", baseContractTerms("2001", { vendorFeePercent: 0, additionalCollateralPercent: 0 })],
+        ["2003", baseContractTerms("2003", { vendorFeePercent: 0, additionalCollateralPercent: 0 })],
+      ]),
+    });
+
+    const diff = computeSettlementDiff(previousResult.rows, currentResult.rows);
+    expect(diff.added).toBe(1); // 1003::1 is new
+    expect(diff.changed).toBe(1); // 1001::1 changed net payout
+    expect(diff.removed).toBe(0);
+    expect(diff.totalPayoutDelta).not.toBe(0);
+    expect(diff.rows.length).toBe(2); // only added + changed (unchanged filtered)
   });
 });

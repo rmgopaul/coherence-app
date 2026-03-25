@@ -15,8 +15,10 @@ import {
   buildInvoiceNumberToSystemIdMap,
   buildQuickBooksPaidUpfrontLedger,
   buildSettlementCsv,
+  computeSettlementDiff,
   computeSettlementRows,
   detectInvoiceNumberMapHeaders,
+  type SettlementDiffSummary,
   parseCsgSystemMapping,
   parseCsgPortalDatabase,
   parseInvoiceNumberMap,
@@ -1100,6 +1102,8 @@ export default function AbpInvoiceSettlement() {
   const [contractScanRows, setContractScanRows] = useState<ContractScanResult[]>([]);
   const [contractTermsByCsgId, setContractTermsByCsgId] = useState<Map<string, ContractTerms>>(new Map());
   const [aiMailingCleanupProgress, setAiMailingCleanupProgress] = useState<AiMailingCleanupProgress | null>(null);
+  const [settlementDiff, setSettlementDiff] = useState<SettlementDiffSummary | null>(null);
+  const [diffRunId, setDiffRunId] = useState<string | null>(null);
   const [addressVerificationResults, setAddressVerificationResults] = useState<
     Array<{ key: string; verdict: string; deliverable: boolean; issues: string[]; corrected: { address1: string; city: string; state: string; zip: string; zipPlus4: string } }>
   >([]);
@@ -2834,6 +2838,32 @@ export default function AbpInvoiceSettlement() {
     }
   };
 
+  const handleCompareWithRun = async (runId: string) => {
+    if (!computationResult || computationResult.rows.length === 0) {
+      toast.error("Compute settlement first before comparing.");
+      return;
+    }
+    setDiffRunId(runId);
+    try {
+      const response = await trpcUtils.abpSettlement.getRun.fetch({ runId });
+      const payload = typeof response === "string" ? JSON.parse(response) : response;
+      const previousRows: PaymentComputationRow[] = payload.computedRows ?? [];
+      if (previousRows.length === 0) {
+        toast.error("Saved run has no computed rows to compare.");
+        return;
+      }
+      const diff = computeSettlementDiff(previousRows, computationResult.rows);
+      setSettlementDiff(diff);
+      toast.success(
+        `Diff: ${diff.added} added, ${diff.removed} removed, ${diff.changed} changed, ${diff.unchanged} unchanged. Payout delta: ${formatCurrency(diff.totalPayoutDelta)}`
+      );
+    } catch (error) {
+      toast.error(`Failed to load run for comparison: ${toErrorMessage(error)}`);
+    } finally {
+      setDiffRunId(null);
+    }
+  };
+
   const handleVerifyAddresses = async () => {
     if (!computationResult || computationResult.rows.length === 0) {
       toast.error("Compute settlement first to get addresses to verify.");
@@ -3257,6 +3287,15 @@ export default function AbpInvoiceSettlement() {
                             >
                               Seed Carryforward
                             </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void handleCompareWithRun(run.runId)}
+                              disabled={!computationResult || diffRunId === run.runId}
+                            >
+                              {diffRunId === run.runId ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : null}
+                              Compare
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))
@@ -3267,6 +3306,91 @@ export default function AbpInvoiceSettlement() {
             </div>
           </CardContent>
         </Card>
+
+        {settlementDiff && (
+          <Card>
+            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle>Settlement Diff</CardTitle>
+                <CardDescription>
+                  Comparing current computation against a saved run. Shows added, removed, and changed rows with field-level deltas.
+                </CardDescription>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setSettlementDiff(null)}>Dismiss</Button>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-md border border-green-200 bg-green-50 dark:bg-green-950/30 p-3 text-sm">
+                  <div className="text-green-700 dark:text-green-400 text-xs">Added</div>
+                  <div className="text-lg font-semibold text-green-800">{settlementDiff.added}</div>
+                </div>
+                <div className="rounded-md border border-red-200 bg-red-50 dark:bg-red-950/30 p-3 text-sm">
+                  <div className="text-red-700 dark:text-red-400 text-xs">Removed</div>
+                  <div className="text-lg font-semibold text-red-800">{settlementDiff.removed}</div>
+                </div>
+                <div className="rounded-md border border-amber-200 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm">
+                  <div className="text-amber-700 dark:text-amber-400 text-xs">Changed</div>
+                  <div className="text-lg font-semibold text-amber-800">{settlementDiff.changed}</div>
+                </div>
+                <div className="rounded-md border p-3 text-sm">
+                  <div className="text-slate-500 text-xs">Payout Delta</div>
+                  <div className={`text-lg font-semibold ${settlementDiff.totalPayoutDelta >= 0 ? "text-green-700" : "text-red-700"}`}>
+                    {settlementDiff.totalPayoutDelta >= 0 ? "+" : ""}{formatCurrency(settlementDiff.totalPayoutDelta)}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    {formatCurrency(settlementDiff.totalPayoutPrevious)} → {formatCurrency(settlementDiff.totalPayoutCurrent)}
+                  </div>
+                </div>
+              </div>
+
+              {settlementDiff.rows.length > 0 && (
+                <div className="rounded-md border">
+                  <div className="max-h-72 overflow-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Status</TableHead>
+                          <TableHead>CSG ID</TableHead>
+                          <TableHead>Pmt #</TableHead>
+                          <TableHead>Payee</TableHead>
+                          <TableHead>Previous</TableHead>
+                          <TableHead>Current</TableHead>
+                          <TableHead>Delta</TableHead>
+                          <TableHead>Changed Fields</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {settlementDiff.rows.slice(0, 200).map((row) => (
+                          <TableRow key={row.rowKey}>
+                            <TableCell>
+                              <Badge
+                                variant={row.status === "added" ? "default" : row.status === "removed" ? "destructive" : "outline"}
+                                className="text-xs"
+                              >
+                                {row.status}
+                              </Badge>
+                            </TableCell>
+                            <TableCell className="font-mono text-xs">{row.csgId}</TableCell>
+                            <TableCell>{row.paymentNumber ?? ""}</TableCell>
+                            <TableCell className="max-w-[120px] truncate">{row.payeeName}</TableCell>
+                            <TableCell>{formatCurrency(row.previousNetPayout)}</TableCell>
+                            <TableCell>{formatCurrency(row.currentNetPayout)}</TableCell>
+                            <TableCell className={row.payoutDelta > 0 ? "text-green-700" : row.payoutDelta < 0 ? "text-red-700" : ""}>
+                              {row.payoutDelta !== 0 ? `${row.payoutDelta > 0 ? "+" : ""}${formatCurrency(row.payoutDelta)}` : ""}
+                            </TableCell>
+                            <TableCell className="text-xs max-w-[300px]">
+                              {row.changes.map((c) => `${c.field}: ${c.previous} → ${c.current}`).join("; ")}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>

@@ -2237,6 +2237,157 @@ function csvEscape(value: string | number | null | undefined): string {
   return normalized;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Settlement diff: compare two computation runs                       */
+/* ------------------------------------------------------------------ */
+
+export type SettlementDiffRow = {
+  rowKey: string; // systemId::paymentNumber
+  csgId: string | null;
+  systemId: string;
+  paymentNumber: number | null;
+  payeeName: string;
+  status: "added" | "removed" | "changed" | "unchanged";
+  /** Fields that changed (empty for added/removed/unchanged). */
+  changes: Array<{
+    field: string;
+    previous: string;
+    current: string;
+  }>;
+  previousNetPayout: number;
+  currentNetPayout: number;
+  payoutDelta: number;
+};
+
+export type SettlementDiffSummary = {
+  added: number;
+  removed: number;
+  changed: number;
+  unchanged: number;
+  totalPayoutPrevious: number;
+  totalPayoutCurrent: number;
+  totalPayoutDelta: number;
+  rows: SettlementDiffRow[];
+};
+
+const DIFF_FIELDS: Array<{ key: keyof PaymentComputationRow; label: string }> = [
+  { key: "netPayoutThisRow", label: "Net Payout" },
+  { key: "classification", label: "Classification" },
+  { key: "vendorFeePercent", label: "Vendor Fee %" },
+  { key: "vendorFeeAmount", label: "Vendor Fee $" },
+  { key: "applicationFeeAmount", label: "Application Fee" },
+  { key: "additionalCollateralPercent", label: "Additional Collateral %" },
+  { key: "additionalCollateralAmount", label: "Additional Collateral $" },
+  { key: "ccAuthIncomplete5PercentAmount", label: "CC Auth 5%" },
+  { key: "utilityHeldCollateral5PercentAmount", label: "Utility Collateral 5%" },
+  { key: "carryforwardIn", label: "Carryforward In" },
+  { key: "carryforwardOut", label: "Carryforward Out" },
+  { key: "paymentMethod", label: "Payment Method" },
+  { key: "payeeName", label: "Payee Name" },
+  { key: "mailingAddress1", label: "Address 1" },
+  { key: "city", label: "City" },
+  { key: "state", label: "State" },
+  { key: "zip", label: "Zip" },
+];
+
+function rowKey(row: PaymentComputationRow): string {
+  return `${row.systemId}::${row.paymentNumber ?? "null"}`;
+}
+
+function formatDiffValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? value.toFixed(2) : "";
+  return String(value);
+}
+
+export function computeSettlementDiff(
+  previousRows: PaymentComputationRow[],
+  currentRows: PaymentComputationRow[],
+): SettlementDiffSummary {
+  const previousByKey = new Map<string, PaymentComputationRow>();
+  previousRows.forEach((r) => previousByKey.set(rowKey(r), r));
+
+  const currentByKey = new Map<string, PaymentComputationRow>();
+  currentRows.forEach((r) => currentByKey.set(rowKey(r), r));
+
+  const allKeys = new Set([...Array.from(previousByKey.keys()), ...Array.from(currentByKey.keys())]);
+  const diffRows: SettlementDiffRow[] = [];
+
+  let totalPayoutPrevious = 0;
+  let totalPayoutCurrent = 0;
+
+  Array.from(allKeys)
+    .sort()
+    .forEach((key) => {
+      const prev = previousByKey.get(key);
+      const curr = currentByKey.get(key);
+
+      if (prev) totalPayoutPrevious += prev.netPayoutThisRow;
+      if (curr) totalPayoutCurrent += curr.netPayoutThisRow;
+
+      if (!prev && curr) {
+        diffRows.push({
+          rowKey: key,
+          csgId: curr.csgId,
+          systemId: curr.systemId,
+          paymentNumber: curr.paymentNumber,
+          payeeName: curr.payeeName,
+          status: "added",
+          changes: [],
+          previousNetPayout: 0,
+          currentNetPayout: curr.netPayoutThisRow,
+          payoutDelta: curr.netPayoutThisRow,
+        });
+      } else if (prev && !curr) {
+        diffRows.push({
+          rowKey: key,
+          csgId: prev.csgId,
+          systemId: prev.systemId,
+          paymentNumber: prev.paymentNumber,
+          payeeName: prev.payeeName,
+          status: "removed",
+          changes: [],
+          previousNetPayout: prev.netPayoutThisRow,
+          currentNetPayout: 0,
+          payoutDelta: -prev.netPayoutThisRow,
+        });
+      } else if (prev && curr) {
+        const changes: SettlementDiffRow["changes"] = [];
+        DIFF_FIELDS.forEach(({ key: field, label }) => {
+          const pVal = formatDiffValue(prev[field]);
+          const cVal = formatDiffValue(curr[field]);
+          if (pVal !== cVal) {
+            changes.push({ field: label, previous: pVal, current: cVal });
+          }
+        });
+
+        diffRows.push({
+          rowKey: key,
+          csgId: curr.csgId,
+          systemId: curr.systemId,
+          paymentNumber: curr.paymentNumber,
+          payeeName: curr.payeeName,
+          status: changes.length > 0 ? "changed" : "unchanged",
+          changes,
+          previousNetPayout: prev.netPayoutThisRow,
+          currentNetPayout: curr.netPayoutThisRow,
+          payoutDelta: curr.netPayoutThisRow - prev.netPayoutThisRow,
+        });
+      }
+    });
+
+  return {
+    added: diffRows.filter((r) => r.status === "added").length,
+    removed: diffRows.filter((r) => r.status === "removed").length,
+    changed: diffRows.filter((r) => r.status === "changed").length,
+    unchanged: diffRows.filter((r) => r.status === "unchanged").length,
+    totalPayoutPrevious,
+    totalPayoutCurrent,
+    totalPayoutDelta: totalPayoutCurrent - totalPayoutPrevious,
+    rows: diffRows.filter((r) => r.status !== "unchanged"),
+  };
+}
+
 export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
   const headers = [
     "CSG ID",
