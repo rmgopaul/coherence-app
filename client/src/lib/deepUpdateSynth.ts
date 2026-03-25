@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { normalizeHeader, parseNumber } from "@/lib/csvParsing";
 
 export type DeepUpdateReportKey =
   | "portal"
@@ -129,12 +130,6 @@ function clean(value: unknown): string {
   return String(value).trim();
 }
 
-function normalizeHeader(value: string): string {
-  return clean(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
-}
-
 function normalizeStatus(value: string): string {
   return clean(value).replace(/\s+/g, " ").toUpperCase();
 }
@@ -142,13 +137,6 @@ function normalizeStatus(value: string): string {
 function isZeroish(value: string): boolean {
   const raw = clean(value);
   return raw === "0" || raw === "0.0" || raw === "";
-}
-
-function parseNumber(value: string): number | null {
-  const normalized = clean(value).replace(/[$,%\s]/g, "").replaceAll(",", "");
-  if (!normalized) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function excelSerialToDate(serial: number): Date | null {

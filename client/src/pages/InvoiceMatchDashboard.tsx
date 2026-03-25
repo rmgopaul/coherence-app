@@ -7,18 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { clean, formatCurrency, downloadTextFile } from "@/lib/helpers";
+import { type ParsedTabularData, type CsvRow, normalizeHeader, parseNumber, parseDate, parseCsvMatrix, matrixToParsedTabularData } from "@/lib/csvParsing";
 import { ArrowLeft, Download, Loader2, Trash2, Upload } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
-
-type CsvRow = Record<string, string>;
-
-type ParsedCsv = {
-  headers: string[];
-  rows: CsvRow[];
-  matrix: string[][];
-};
 
 type UploadedDataset = {
   fileName: string;
@@ -352,13 +345,6 @@ function clearPersistedDashboardState(): Promise<void> {
   );
 }
 
-function normalizeHeader(value: string): string {
-  return clean(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
 function normalizeText(value: string): string {
   return clean(value)
     .toLowerCase()
@@ -367,101 +353,8 @@ function normalizeText(value: string): string {
     .trim();
 }
 
-function parseCsv(text: string): ParsedCsv {
-  const source = text.replace(/^\uFEFF/, "");
-  const matrix: string[][] = [];
-
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-
-    if (char === '"') {
-      const next = source[index + 1];
-      if (inQuotes && next === '"') {
-        cell += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (!inQuotes && char === ",") {
-      row.push(cell);
-      cell = "";
-      continue;
-    }
-
-    if (!inQuotes && (char === "\n" || char === "\r")) {
-      if (char === "\r" && source[index + 1] === "\n") index += 1;
-      row.push(cell);
-      cell = "";
-      if (row.some((entry) => clean(entry).length > 0)) matrix.push(row);
-      row = [];
-      continue;
-    }
-
-    cell += char;
-  }
-
-  row.push(cell);
-  if (row.some((entry) => clean(entry).length > 0)) matrix.push(row);
-
-  if (matrix.length === 0) {
-    return { headers: [], rows: [], matrix: [] };
-  }
-
-  const headers = matrix[0].map((header, columnIndex) => clean(header) || `column_${columnIndex + 1}`);
-  const rows = matrix.slice(1).map((values) => {
-    const record: CsvRow = {};
-    headers.forEach((header, columnIndex) => {
-      record[header] = clean(values[columnIndex]);
-    });
-    return record;
-  });
-
-  return { headers, rows, matrix };
-}
-
-function parseNumber(value: string): number | null {
-  const normalized = clean(value)
-    .replace(/\$/g, "")
-    .replace(/,/g, "")
-    .replace(/\(([^)]+)\)/, "-$1");
-
-  if (!normalized) return null;
-
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseDate(value: string): Date | null {
-  const normalized = clean(value);
-  if (!normalized) return null;
-
-  const parsed = Date.parse(normalized);
-  if (Number.isFinite(parsed)) return new Date(parsed);
-
-  const match = normalized.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?:\s*(am|pm))?)?$/i
-  );
-  if (!match) return null;
-
-  const month = Number(match[1]) - 1;
-  const day = Number(match[2]);
-  const year = Number(match[3]);
-  const minute = Number(match[5] ?? "0");
-  const period = clean(match[6]).toLowerCase();
-  let hour = Number(match[4] ?? "0");
-
-  if (period === "pm" && hour < 12) hour += 12;
-  if (period === "am" && hour === 12) hour = 0;
-
-  const date = new Date(year, month, day, hour, minute);
-  return Number.isNaN(date.getTime()) ? null : date;
+function parseCsv(text: string): ParsedTabularData {
+  return matrixToParsedTabularData(parseCsvMatrix(text));
 }
 
 function tokenize(values: string[]): string[] {
@@ -666,7 +559,7 @@ function readByHeaderOptions(row: CsvRow, headerLookup: Map<string, string>, opt
   return "";
 }
 
-function parseInvoicesFile(parsed: ParsedCsv): InvoiceSourceRow[] {
+function parseInvoicesFile(parsed: ParsedTabularData): InvoiceSourceRow[] {
   const headerLookup = buildHeaderLookup(parsed.headers);
 
   const hasSystemId = hasAnyHeader(headerLookup, ["System Ids", "System ID", "System Id"]);
@@ -712,7 +605,7 @@ function parseInvoicesFile(parsed: ParsedCsv): InvoiceSourceRow[] {
     .filter((row) => row.systemId.length > 0);
 }
 
-function parseQuickBooksFile(parsed: ParsedCsv): Map<string, QuickBooksInvoice> {
+function parseQuickBooksFile(parsed: ParsedTabularData): Map<string, QuickBooksInvoice> {
   const headerRowIndex = parsed.matrix.findIndex((row) => {
     const first = normalizeHeader(row[0] ?? "");
     const second = normalizeHeader(row[1] ?? "");
