@@ -26,6 +26,7 @@ type TimeUnit = (typeof TIME_UNIT_OPTIONS)[number];
 type BulkStatusFilter = "All" | "Found" | "Not Found" | "Error";
 type BulkSortKey = "siteId" | "status" | "lifetime" | "hourly" | "monthly" | "weekly" | "daily";
 type BulkConnectionScope = "active" | "all";
+type DatePreset = "mtd" | "prevMonth" | "last12Months";
 
 type BulkSnapshotRow = {
   siteId: string;
@@ -58,6 +59,40 @@ function formatDateInput(date: Date): string {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function normalizeDateOnly(date: Date): Date {
+  const normalized = new Date(date);
+  normalized.setHours(0, 0, 0, 0);
+  return normalized;
+}
+
+function getPresetRange(preset: DatePreset, now: Date = new Date()): { startDate: string; endDate: string } {
+  const today = normalizeDateOnly(now);
+
+  if (preset === "mtd") {
+    const start = new Date(today.getFullYear(), today.getMonth(), 1);
+    return {
+      startDate: formatDateInput(start),
+      endDate: formatDateInput(today),
+    };
+  }
+
+  if (preset === "prevMonth") {
+    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+    const end = new Date(today.getFullYear(), today.getMonth(), 0);
+    return {
+      startDate: formatDateInput(start),
+      endDate: formatDateInput(end),
+    };
+  }
+
+  const start = new Date(today);
+  start.setFullYear(start.getFullYear() - 1);
+  return {
+    startDate: formatDateInput(start),
+    endDate: formatDateInput(today),
+  };
 }
 
 function toErrorMessage(error: unknown): string {
@@ -253,6 +288,12 @@ export default function SolarEdgeMeterReads() {
   const [bulkConnectionScope, setBulkConnectionScope] = useState<BulkConnectionScope>("active");
   const [bulkPage, setBulkPage] = useState(1);
   const bulkCancelRef = useRef(false);
+
+  const applyDatePreset = (preset: DatePreset) => {
+    const range = getPresetRange(preset);
+    setStartDate(range.startDate);
+    setEndDate(range.endDate);
+  };
 
   const statusQuery = trpc.solarEdge.getStatus.useQuery(undefined, {
     enabled: !!user,
@@ -857,6 +898,25 @@ export default function SolarEdgeMeterReads() {
                   onChange={(e) => setEndDate(e.target.value)}
                 />
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Quick Date Presets</Label>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => applyDatePreset("mtd")}>
+                  MTD
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => applyDatePreset("prevMonth")}>
+                  Previous Calendar Month
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => applyDatePreset("last12Months")}>
+                  Last 12 Months
+                </Button>
+              </div>
+              <p className="text-xs text-slate-500">
+                MTD = first day of current month through today. Previous Calendar Month = prior month start to end. Last 12
+                Months = same day last year through today.
+              </p>
             </div>
 
             {sitesQuery.isLoading && <div className="text-sm text-slate-600">Loading sites...</div>}
