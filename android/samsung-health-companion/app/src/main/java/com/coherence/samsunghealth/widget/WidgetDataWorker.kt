@@ -95,7 +95,7 @@ class WidgetDataWorker(
     return WidgetData(
       headlines = headlines.take(4),
       weatherSummary = weather,
-      tickers = tickers,
+      tickers = tickers.take(9),
       sports = sports.take(3),
       emails = emails.take(3),
       tasks = tasks.take(3),

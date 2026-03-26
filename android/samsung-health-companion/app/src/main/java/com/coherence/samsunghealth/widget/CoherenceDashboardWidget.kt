@@ -2,6 +2,7 @@ package com.coherence.samsunghealth.widget
 
 import android.content.Context
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.glance.GlanceId
@@ -32,7 +33,6 @@ import com.coherence.samsunghealth.MainActivity
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import android.graphics.Color as AndroidColor
 
 class CoherenceDashboardWidget : GlanceAppWidget() {
 
@@ -48,16 +48,14 @@ class CoherenceDashboardWidget : GlanceAppWidget() {
 
 // ── Color palette ──────────────────────────────────────────────────────────────
 
-private val BgDark = ColorProvider(AndroidColor.parseColor("#121212"))
-private val BgCard = ColorProvider(AndroidColor.parseColor("#1E1E1E"))
-private val TextPrimary = ColorProvider(AndroidColor.parseColor("#ECEFF1"))
-private val TextSecondary = ColorProvider(AndroidColor.parseColor("#9E9E9E"))
-private val AccentBlue = ColorProvider(AndroidColor.parseColor("#8AB4F8"))
-private val AccentGreen = ColorProvider(AndroidColor.parseColor("#81C784"))
-private val AccentRed = ColorProvider(AndroidColor.parseColor("#EF9A9A"))
-private val AccentOrange = ColorProvider(AndroidColor.parseColor("#FFB74D"))
-private val AccentPurple = ColorProvider(AndroidColor.parseColor("#CE93D8"))
-private val DividerColor = ColorProvider(AndroidColor.parseColor("#2A2A2A"))
+private val BgDark = ColorProvider(day = Color(0xFF121212), night = Color(0xFF121212))
+private val TextPrimary = ColorProvider(day = Color(0xFFECEFF1), night = Color(0xFFECEFF1))
+private val TextSecondary = ColorProvider(day = Color(0xFF9E9E9E), night = Color(0xFF9E9E9E))
+private val AccentBlue = ColorProvider(day = Color(0xFF8AB4F8), night = Color(0xFF8AB4F8))
+private val AccentGreen = ColorProvider(day = Color(0xFF81C784), night = Color(0xFF81C784))
+private val AccentRed = ColorProvider(day = Color(0xFFEF9A9A), night = Color(0xFFEF9A9A))
+private val AccentOrange = ColorProvider(day = Color(0xFFFFB74D), night = Color(0xFFFFB74D))
+private val AccentPurple = ColorProvider(day = Color(0xFFCE93D8), night = Color(0xFFCE93D8))
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
 
@@ -95,42 +93,35 @@ private fun WidgetContent(data: WidgetData) {
     ) {
       // Header
       WidgetHeader(data.updatedAtMillis)
-      Divider()
 
       // Next Calendar Event
       if (data.nextEvent != null) {
         NextEventSection(data.nextEvent)
-        Divider()
       }
 
       // Tasks due today
       if (data.tasks.isNotEmpty()) {
         TasksSection(data.tasks)
-        Divider()
       }
 
       // Emails
       if (data.emails.isNotEmpty()) {
         EmailsSection(data.emails)
-        Divider()
       }
 
       // Market tickers
       if (data.tickers.isNotEmpty()) {
         TickersSection(data.tickers)
-        Divider()
       }
 
       // Headlines
       if (data.headlines.isNotEmpty()) {
         HeadlinesSection(data.headlines)
-        Divider()
       }
 
       // Weather
       if (data.weatherSummary != null) {
         WeatherSection(data.weatherSummary)
-        Divider()
       }
 
       // Sports
@@ -376,16 +367,4 @@ private fun SportsSection(games: List<WidgetGame>) {
       }
     }
   }
-}
-
-// ── Utility ────────────────────────────────────────────────────────────────────
-
-@Composable
-private fun Divider() {
-  Box(
-    modifier = GlanceModifier
-      .fillMaxWidth()
-      .height(1.dp)
-      .background(DividerColor),
-  ) {}
 }
