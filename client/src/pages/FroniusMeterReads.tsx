@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
-import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
+import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -552,6 +552,30 @@ export default function FroniusMeterReads() {
       const message = error instanceof Error ? error.message : "Failed to parse CSV.";
       setBulkImportError(message);
       setBulkPvSystemIds([]);
+    }
+  };
+
+  const handlePullAllSites = async () => {
+    if (!isConnected) {
+      toast.error("Connect Fronius before pulling sites.");
+      return;
+    }
+    try {
+      const result = await pvSystemsQuery.refetch();
+      const systems = result.data?.pvSystems ?? [];
+      if (systems.length === 0) {
+        toast.error("No PV systems found for this API profile.");
+        return;
+      }
+      const ids = systems.map((s: { pvSystemId: string }) => s.pvSystemId);
+      setBulkPvSystemIds(ids);
+      setBulkSourceFileName(`API — ${ids.length} systems`);
+      setBulkRows([]);
+      setBulkImportError(null);
+      setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
+      toast.success(`Loaded ${NUMBER_FORMATTER.format(ids.length)} PV Systems from Fronius API.`);
+    } catch (error) {
+      toast.error(`Failed to list PV systems: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
   };
 
@@ -1238,19 +1262,41 @@ export default function FroniusMeterReads() {
                 </p>
               </div>
               <div className="space-y-2 md:col-span-1">
-                <Label htmlFor="bulk-csv-upload">PV System IDs CSV</Label>
+                <Label>PV System IDs</Label>
                 <div className="flex items-center gap-2">
-                  <Input
-                    id="bulk-csv-upload"
-                    type="file"
-                    accept=".csv,text/csv"
-                    onChange={(event) => {
-                      void handleBulkFileUpload(event.target.files?.[0] ?? null);
-                      event.currentTarget.value = "";
-                    }}
-                  />
                   <Button
-                    variant="outline"
+                    onClick={() => void handlePullAllSites()}
+                    disabled={!isConnected || pvSystemsQuery.isFetching}
+                    className="whitespace-nowrap"
+                  >
+                    {pvSystemsQuery.isFetching ? (
+                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 mr-2" />
+                    )}
+                    Pull All Sites
+                  </Button>
+                  <span className="text-xs text-muted-foreground">or</span>
+                  <label className="cursor-pointer">
+                    <Input
+                      id="bulk-csv-upload"
+                      type="file"
+                      accept=".csv,text/csv"
+                      className="hidden"
+                      onChange={(event) => {
+                        void handleBulkFileUpload(event.target.files?.[0] ?? null);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <span className="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md border border-input bg-background hover:bg-accent hover:text-accent-foreground cursor-pointer">
+                      <Upload className="h-4 w-4 mr-2" />
+                      Upload CSV
+                    </span>
+                  </label>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={bulkPvSystemIds.length === 0}
                     onClick={() => {
                       setBulkPvSystemIds([]);
                       setBulkRows([]);
@@ -1263,7 +1309,7 @@ export default function FroniusMeterReads() {
                   </Button>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Expected column: <code>pvSystemId</code> (or first column). File: {bulkSourceFileName ?? "None"}
+                  Source: {bulkSourceFileName ?? "None"}{bulkPvSystemIds.length > 0 ? ` — ${NUMBER_FORMATTER.format(bulkPvSystemIds.length)} IDs` : ""}
                 </p>
                 {bulkImportError ? <p className="text-xs text-destructive">{bulkImportError}</p> : null}
               </div>
