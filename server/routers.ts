@@ -1774,6 +1774,36 @@ export const appRouter = router({
     });
   })(),
 
+  sports: (() => {
+    let cachedGames: any[] | null = null;
+    let cacheExpiry = 0;
+    // Live games: refresh every 30s. No live games: cache 5 minutes.
+    const LIVE_CACHE_TTL = 30_000;
+    const IDLE_CACHE_TTL = 5 * 60_000;
+
+    return router({
+      getGames: protectedProcedure.query(async () => {
+        const now = Date.now();
+        if (cachedGames && now < cacheExpiry) {
+          return { games: cachedGames, fetchedAt: new Date(cacheExpiry - (cachedGames.some((g: any) => g.status === "in" || g.status === "halftime") ? LIVE_CACHE_TTL : IDLE_CACHE_TTL)).toISOString() };
+        }
+
+        try {
+          const { fetchMNSportsGames } = await import("./services/sports");
+          const games = await fetchMNSportsGames();
+          cachedGames = games;
+          const hasLive = games.some(g => g.status === "in" || g.status === "halftime");
+          cacheExpiry = now + (hasLive ? LIVE_CACHE_TTL : IDLE_CACHE_TTL);
+          return { games, fetchedAt: new Date().toISOString() };
+        } catch (error) {
+          console.warn("[Sports] Fetch failed:", error);
+          if (cachedGames) return { games: cachedGames, fetchedAt: new Date().toISOString(), stale: true };
+          return { games: [], fetchedAt: new Date().toISOString() };
+        }
+      }),
+    });
+  })(),
+
   feedback: router({
     submit: protectedProcedure
       .input(

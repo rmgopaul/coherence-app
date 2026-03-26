@@ -59,6 +59,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { DashboardHero } from "@/components/dashboard/DashboardHero";
 import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
 import MarketHeadlinesCard from "@/components/dashboard/MarketHeadlinesCard";
+import SportsCard from "@/components/dashboard/SportsCard";
 import { SamsungHealthCard } from "@/components/dashboard/SamsungHealthCard";
 import { WhoopCard } from "@/components/dashboard/WhoopCard";
 import { HabitsCard } from "@/components/dashboard/HabitsCard";
@@ -2133,6 +2134,11 @@ export default function Dashboard() {
           <MarketHeadlinesCard />
         </div>
       )}
+
+      {/* MN Sports — only renders on game days */}
+      <div className="container mx-auto px-4 pt-4 scroll-mt-40">
+        <SportsCard />
+      </div>
 
       {/* Today's Plan */}
       <div id="section-overview" className="container mx-auto px-4 pt-4 scroll-mt-40">
