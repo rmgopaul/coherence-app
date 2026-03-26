@@ -574,7 +574,9 @@ export default function FroniusMeterReads() {
       setBulkRows([]);
       setBulkImportError(null);
       setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
-      toast.success(`Loaded ${NUMBER_FORMATTER.format(ids.length)} PV Systems from Fronius API.`);
+      toast.success(
+        `Loaded ${NUMBER_FORMATTER.format(ids.length)} PV System IDs. Next step: click "Run ${bulkDataType === "production" ? "Production Snapshot" : "Device Snapshot"}" to fetch row data.`
+      );
     } catch (error) {
       toast.error(`Failed to list PV systems: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
@@ -618,6 +620,20 @@ export default function FroniusMeterReads() {
         const chunk = chunks[chunkIndex];
         if (bulkCancelRef.current) break;
 
+        const fallbackErrorRows = (message: string): BulkSnapshotRow[] =>
+          chunk.map((pvSystemId) => ({
+            pvSystemId,
+            name: null,
+            status: "Error",
+            found: false,
+            error: message,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: bulkConnectionScope === "all" ? statusQuery.data?.connections.length ?? 0 : 1,
+            foundInConnections: 0,
+            profileStatusSummary: "",
+          }));
+
         let response: {
           total: number;
           found: number;
@@ -626,24 +642,36 @@ export default function FroniusMeterReads() {
           rows: BulkSnapshotRow[];
         };
 
-        if (bulkDataType === "production") {
-          const raw = await bulkProductionSnapshotsMutation.mutateAsync({
-            pvSystemIds: chunk,
-            anchorDate: bulkAnchorDate,
-            connectionScope: bulkConnectionScope,
-          });
+        try {
+          if (bulkDataType === "production") {
+            const raw = await bulkProductionSnapshotsMutation.mutateAsync({
+              pvSystemIds: chunk,
+              anchorDate: bulkAnchorDate,
+              connectionScope: bulkConnectionScope,
+            });
+            response = {
+              ...raw,
+              rows: raw.rows as BulkSnapshotRow[],
+            };
+          } else {
+            const raw = await bulkDeviceSnapshotsMutation.mutateAsync({
+              pvSystemIds: chunk,
+              connectionScope: bulkConnectionScope,
+            });
+            response = {
+              ...raw,
+              rows: raw.rows as BulkSnapshotRow[],
+            };
+          }
+        } catch (chunkError) {
+          const message = `Chunk failed: ${toErrorMessage(chunkError)}`;
+          const rows = fallbackErrorRows(message);
           response = {
-            ...raw,
-            rows: raw.rows as BulkSnapshotRow[],
-          };
-        } else {
-          const raw = await bulkDeviceSnapshotsMutation.mutateAsync({
-            pvSystemIds: chunk,
-            connectionScope: bulkConnectionScope,
-          });
-          response = {
-            ...raw,
-            rows: raw.rows as BulkSnapshotRow[],
+            total: chunk.length,
+            found: 0,
+            notFound: 0,
+            errored: chunk.length,
+            rows,
           };
         }
 
@@ -1313,6 +1341,9 @@ export default function FroniusMeterReads() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Source: {bulkSourceFileName ?? "None"}{bulkPvSystemIds.length > 0 ? ` — ${NUMBER_FORMATTER.format(bulkPvSystemIds.length)} IDs` : ""}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  "Pull All Sites" imports IDs only. Run the bulk snapshot action to populate result rows.
                 </p>
                 {bulkImportError ? <p className="text-xs text-destructive">{bulkImportError}</p> : null}
               </div>
