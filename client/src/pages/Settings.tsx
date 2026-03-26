@@ -125,6 +125,7 @@ export default function Settings() {
   const [whoopClientId, setWhoopClientId] = useState("");
   const [whoopClientSecret, setWhoopClientSecret] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [settingsSearch, setSettingsSearch] = useState("");
   const [selectedThemeMode, setSelectedThemeMode] = useState<"light" | "dark">(theme);
   const [hiddenDashboardButtons, setHiddenDashboardButtons] = useState<DashboardHeaderToolButtonKey[]>([]);
   const [newHabitName, setNewHabitName] = useState("");
@@ -802,6 +803,10 @@ export default function Settings() {
     toast.success(`Structured CSV downloaded (${result.data.rowCount} metrics)`);
   };
 
+  const searchLower = settingsSearch.toLowerCase().trim();
+  const sectionVisible = (keywords: string) =>
+    !searchLower || keywords.toLowerCase().includes(searchLower);
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950">
       <header className="border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10">
@@ -816,7 +821,16 @@ export default function Settings() {
       </header>
 
       <main className="container max-w-4xl mx-auto px-4 py-8">
+        <div className="mb-6">
+          <Input
+            placeholder="Search settings..."
+            value={settingsSearch}
+            onChange={(e) => setSettingsSearch(e.target.value)}
+            className="max-w-sm"
+          />
+        </div>
         <div className="flex flex-col gap-8">
+          {sectionVisible("data export json csv download") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Data Export</h2>
             <Card>
@@ -840,9 +854,11 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           <TwoFactorSettings />
 
+          {sectionVisible("profile display name greeting") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Profile</h2>
             <Card>
@@ -869,7 +885,9 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
+          {sectionVisible("appearance theme dark light mode buttons dashboard") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Appearance</h2>
             <div className="space-y-4">
@@ -943,7 +961,9 @@ export default function Settings() {
               </Card>
             </div>
           </div>
+          )}
 
+          {sectionVisible("supplements protocol dose timing") && (
           <div style={{ order: 9999 }}>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Supplements</h2>
             <Card>
@@ -1253,8 +1273,10 @@ export default function Settings() {
               </Accordion>
             </Card>
           </div>
+          )}
 
           {/* Todoist Integration */}
+          {sectionVisible("todoist tasks integration token") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Todoist Integration</h2>
             <Card>
@@ -1360,8 +1382,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* Clockify Integration */}
+          {sectionVisible("time tracking clockify api key workspace") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Time Tracking</h2>
             <Card>
@@ -1469,8 +1493,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* OpenAI API Key */}
+          {sectionVisible("openai chatgpt api key model gpt") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">OpenAI Configuration</h2>
             <Card>
@@ -1556,8 +1582,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* Anthropic API Key */}
+          {sectionVisible("anthropic claude api key model") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Anthropic Configuration</h2>
             <Card>
@@ -1643,8 +1671,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* OAuth Credentials Configuration */}
+          {sectionVisible("oauth credentials google whoop client id secret") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">OAuth Credentials</h2>
             <p className="text-sm text-slate-600 mb-4">
@@ -1744,8 +1774,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* Google Integration */}
+          {sectionVisible("google calendar gmail services connect") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Google Services</h2>
             <Card>
@@ -1794,8 +1826,10 @@ export default function Settings() {
               )}
             </Card>
           </div>
+          )}
 
           {/* WHOOP Integration */}
+          {sectionVisible("fitness whoop samsung health connect services") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Fitness Services</h2>
             <Card>
@@ -1944,8 +1978,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* Habit Tracker Configuration */}
+          {sectionVisible("habits tracking tiles color") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Habits</h2>
             <Card>
@@ -2082,8 +2118,10 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
 
           {/* Engagement Insights */}
+          {sectionVisible("engagement insights section usage ratings") && (
           <div>
             <h2 className="text-xl font-semibold text-slate-900 mb-4">Engagement Insights</h2>
             <Card>
@@ -2098,6 +2136,7 @@ export default function Settings() {
               </CardContent>
             </Card>
           </div>
+          )}
         </div>
       </main>
     </div>
