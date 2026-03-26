@@ -98,6 +98,10 @@ dependencies {
   // Serialization
   implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
 
+  // Glance (home-screen App Widget)
+  implementation("androidx.glance:glance-appwidget:1.1.1")
+  implementation("androidx.glance:glance-material3:1.1.1")
+
   // Image loading (team logos in sports widget)
   implementation("io.coil-kt:coil-compose:2.7.0")
 
