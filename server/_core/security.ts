@@ -25,6 +25,8 @@ export function registerSecurityMiddleware(app: Express) {
                 "https://api.todoist.com",
                 "https://www.googleapis.com",
                 "https://graph.microsoft.com",
+                "https://api.open-meteo.com",
+                "https://geocoding-api.open-meteo.com",
               ],
               fontSrc: ["'self'", "data:"],
               objectSrc: ["'none'"],
