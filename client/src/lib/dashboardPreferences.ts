@@ -7,6 +7,7 @@ export const DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS = [
   { key: "contractScanner", label: "Contract Scanner" },
   { key: "enphaseV4", label: "Enphase v4" },
   { key: "solarEdgeApi", label: "SolarEdge API" },
+  { key: "froniusApi", label: "Fronius API" },
   { key: "teslaSolarApi", label: "Tesla Solar API" },
   { key: "teslaPowerhubApi", label: "Tesla Powerhub API" },
   { key: "zendeskApi", label: "Zendesk API" },

@@ -17,6 +17,7 @@ const SolarRecDashboard = lazy(() => import("./pages/SolarRecDashboard"));
 const InvoiceMatchDashboard = lazy(() => import("./pages/InvoiceMatchDashboard"));
 const EnphaseV2MeterReads = lazy(() => import("./pages/EnphaseV2MeterReads"));
 const SolarEdgeMeterReads = lazy(() => import("./pages/SolarEdgeMeterReads"));
+const FroniusMeterReads = lazy(() => import("./pages/FroniusMeterReads"));
 const TeslaSolarApi = lazy(() => import("./pages/TeslaSolarApi"));
 const TeslaPowerhubApi = lazy(() => import("./pages/TeslaPowerhubApi"));
 const ZendeskTicketMetrics = lazy(() => import("./pages/ZendeskTicketMetrics"));
@@ -62,6 +63,7 @@ function AppRoutes() {
       <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
       <Route path={"/enphase-v2-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
       <Route path={"/solaredge-meter-reads"} component={withRouteSuspense(SolarEdgeMeterReads)} />
+      <Route path={"/fronius-meter-reads"} component={withRouteSuspense(FroniusMeterReads)} />
       <Route path={"/tesla-solar-api"} component={withRouteSuspense(TeslaSolarApi)} />
       <Route path={"/tesla-powerhub-api"} component={withRouteSuspense(TeslaPowerhubApi)} />
       <Route path={"/zendesk-ticket-metrics"} component={withRouteSuspense(ZendeskTicketMetrics)} />

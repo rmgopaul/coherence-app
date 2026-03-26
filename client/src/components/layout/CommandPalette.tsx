@@ -51,6 +51,7 @@ const NAV_COMMANDS: CommandRoute[] = [
   { label: "ABP Invoice Settlement", href: "/abp-invoice-settlement", icon: FileText, keywords: ["abp", "settlement", "invoice"] },
   { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: FileText, keywords: ["enphase", "meter"] },
   { label: "SolarEdge", href: "/solaredge-meter-reads", icon: FileText, keywords: ["solaredge", "meter"] },
+  { label: "Fronius", href: "/fronius-meter-reads", icon: FileText, keywords: ["fronius", "solar", "meter", "solarweb"] },
   { label: "Tesla Solar", href: "/tesla-solar-api", icon: FileText, keywords: ["tesla", "solar"] },
   { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: FileText, keywords: ["tesla", "powerhub"] },
   { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: FileText, keywords: ["zendesk", "tickets"] },

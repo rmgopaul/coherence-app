@@ -50,6 +50,7 @@ const TESLA_SOLAR_PROVIDER = "tesla-solar";
 const TESLA_POWERHUB_PROVIDER = "tesla-powerhub";
 const CLOCKIFY_PROVIDER = "clockify";
 const CSG_PORTAL_PROVIDER = "csg-portal";
+const FRONIUS_PROVIDER = "fronius-solar";
 
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -1235,6 +1236,93 @@ function serializeSolarEdgeMetadata(
     activeConnectionId,
     connections,
   });
+}
+
+type FroniusConnectionConfig = {
+  id: string;
+  name: string;
+  accessKeyId: string;
+  accessKeyValue: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseFroniusMetadata(
+  metadata: string | null | undefined,
+  fallbackAccessKeyId?: string | null
+): {
+  activeConnectionId: string | null;
+  connections: FroniusConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: FroniusConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `fronius-conn-${index + 1}`;
+      const accessKeyId = toNonEmptyString(row.accessKeyId);
+      const accessKeyValue = toNonEmptyString(row.accessKeyValue);
+      if (!accessKeyId || !accessKeyValue) return null;
+      const createdAt = toNonEmptyString(row.createdAt) ?? new Date().toISOString();
+      const updatedAt = toNonEmptyString(row.updatedAt) ?? createdAt;
+      return {
+        id,
+        name: toNonEmptyString(row.name) ?? `Fronius API ${index + 1}`,
+        accessKeyId,
+        accessKeyValue,
+        createdAt,
+        updatedAt,
+      } satisfies FroniusConnectionConfig;
+    })
+    .filter((value): value is FroniusConnectionConfig => value !== null);
+
+  if (connections.length === 0) {
+    const legacyKeyId = toNonEmptyString(fallbackAccessKeyId);
+    if (legacyKeyId) {
+      const nowIso = new Date().toISOString();
+      connections.push({
+        id: "legacy-fronius-key",
+        name: "Legacy Access Key",
+        accessKeyId: legacyKeyId,
+        accessKeyValue: "",
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+  }
+
+  const activeConnectionId =
+    (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw)
+      ? activeConnectionIdRaw
+      : connections[0]?.id) ?? null;
+
+  return { activeConnectionId, connections };
+}
+
+function serializeFroniusMetadata(
+  connections: FroniusConnectionConfig[],
+  activeConnectionId: string | null
+): string {
+  return JSON.stringify({ activeConnectionId, connections });
+}
+
+async function getFroniusContext(userId: number): Promise<{
+  accessKeyId: string;
+  accessKeyValue: string;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, FRONIUS_PROVIDER);
+  const metadata = parseFroniusMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection =
+    metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) {
+    throw new Error("Fronius is not connected. Save Access Key first.");
+  }
+  return {
+    accessKeyId: activeConnection.accessKeyId,
+    accessKeyValue: activeConnection.accessKeyValue,
+  };
 }
 
 async function getEnphaseV2Credentials(userId: number): Promise<{
@@ -2854,6 +2942,488 @@ export const appRouter = router({
             totalLatestEnergyWh: null,
             firstTelemetryAt: null,
             lastTelemetryAt: null,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
+          rows,
+        };
+      }),
+  }),
+
+  fronius: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+      const metadata = parseFroniusMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const activeConnection =
+        metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+
+      return {
+        connected: metadata.connections.length > 0,
+        activeConnectionId: activeConnection?.id ?? null,
+        connections: metadata.connections.map((connection) => ({
+          id: connection.id,
+          name: connection.name,
+          accessKeyIdMasked: maskApiKey(connection.accessKeyId),
+          accessKeyValueMasked: maskApiKey(connection.accessKeyValue),
+          updatedAt: connection.updatedAt,
+          isActive: connection.id === activeConnection?.id,
+        })),
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          accessKeyId: z.string().min(1),
+          accessKeyValue: z.string().min(1),
+          connectionName: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const existing = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+        const existingMetadata = parseFroniusMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+        const nowIso = new Date().toISOString();
+        const newConnection: FroniusConnectionConfig = {
+          id: nanoid(),
+          name:
+            toNonEmptyString(input.connectionName) ??
+            `Fronius API ${existingMetadata.connections.length + 1}`,
+          accessKeyId: input.accessKeyId.trim(),
+          accessKeyValue: input.accessKeyValue.trim(),
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        const connections = [newConnection, ...existingMetadata.connections];
+        const activeConnectionId = newConnection.id;
+        const metadata = serializeFroniusMetadata(connections, activeConnectionId);
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: FRONIUS_PROVIDER,
+          accessToken: newConnection.accessKeyId,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          activeConnectionId,
+          totalConnections: connections.length,
+        };
+      }),
+    setActiveConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+        if (!integration) {
+          throw new Error("Fronius is not connected.");
+        }
+        const metadataState = parseFroniusMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const activeConnection = metadataState.connections.find((connection) => connection.id === input.connectionId);
+        if (!activeConnection) {
+          throw new Error("Selected Fronius API profile was not found.");
+        }
+
+        const metadata = serializeFroniusMetadata(metadataState.connections, activeConnection.id);
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: FRONIUS_PROVIDER,
+          accessToken: activeConnection.accessKeyId,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          activeConnectionId: activeConnection.id,
+        };
+      }),
+    removeConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+        if (!integration) {
+          throw new Error("Fronius is not connected.");
+        }
+        const metadataState = parseFroniusMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const nextConnections = metadataState.connections.filter((connection) => connection.id !== input.connectionId);
+
+        if (nextConnections.length === 0) {
+          if (integration.id) {
+            await deleteIntegration(integration.id);
+          }
+          return {
+            success: true,
+            connected: false,
+            activeConnectionId: null,
+            totalConnections: 0,
+          };
+        }
+
+        const nextActiveConnection =
+          nextConnections.find((connection) => connection.id === metadataState.activeConnectionId) ?? nextConnections[0];
+        const metadata = serializeFroniusMetadata(nextConnections, nextActiveConnection.id);
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: FRONIUS_PROVIDER,
+          accessToken: nextActiveConnection.accessKeyId,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          connected: true,
+          activeConnectionId: nextActiveConnection.id,
+          totalConnections: nextConnections.length,
+        };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    listPvSystems: protectedProcedure.query(async ({ ctx }) => {
+      const context = await getFroniusContext(ctx.user.id);
+      const { listPvSystems } = await import("./services/fronius");
+      return listPvSystems(context);
+    }),
+    getPvSystemDetails: protectedProcedure
+      .input(
+        z.object({
+          pvSystemId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getFroniusContext(ctx.user.id);
+        const { getPvSystemDetails } = await import("./services/fronius");
+        return getPvSystemDetails(context, input.pvSystemId.trim());
+      }),
+    getDevices: protectedProcedure
+      .input(
+        z.object({
+          pvSystemId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getFroniusContext(ctx.user.id);
+        const { getPvSystemDevices } = await import("./services/fronius");
+        return getPvSystemDevices(context, input.pvSystemId.trim());
+      }),
+    getAggData: protectedProcedure
+      .input(
+        z.object({
+          pvSystemId: z.string().min(1),
+          from: z.string().optional(),
+          to: z.string().optional(),
+          period: z.enum(["Total", "Years", "Months", "Days"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getFroniusContext(ctx.user.id);
+        const { getAggrData } = await import("./services/fronius");
+        return getAggrData(context, input.pvSystemId.trim(), input.from, input.to, input.period);
+      }),
+    getFlowData: protectedProcedure
+      .input(
+        z.object({
+          pvSystemId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getFroniusContext(ctx.user.id);
+        const { getFlowData } = await import("./services/fronius");
+        return getFlowData(context, input.pvSystemId.trim());
+      }),
+    getProductionSnapshot: protectedProcedure
+      .input(
+        z.object({
+          pvSystemId: z.string().min(1),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getFroniusContext(ctx.user.id);
+        const { getPvSystemProductionSnapshot } = await import("./services/fronius");
+        return getPvSystemProductionSnapshot(context, input.pvSystemId.trim(), input.anchorDate);
+      }),
+    getProductionSnapshots: protectedProcedure
+      .input(
+        z.object({
+          pvSystemIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          connectionScope: z.enum(["active", "all"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getPvSystemProductionSnapshot, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
+
+        const uniquePvSystemIds = Array.from(
+          new Set(input.pvSystemIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        );
+
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+        const metadata = parseFroniusMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("Fronius is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrencyFronius(uniquePvSystemIds, 4, async (pvSystemId: string) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getPvSystemProductionSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          let fallbackSnapshot: Awaited<ReturnType<typeof getPvSystemProductionSnapshot>> | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getPvSystemProductionSnapshot(
+              {
+                accessKeyId: connection.accessKeyId,
+                accessKeyValue: connection.accessKeyValue,
+              },
+              pvSystemId,
+              input.anchorDate
+            );
+
+            if (!fallbackSnapshot) {
+              fallbackSnapshot = snapshot;
+            }
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          const anchorDate = selectedSnapshot?.anchorDate ?? fallbackSnapshot?.anchorDate ?? input.anchorDate ?? "";
+          const monthlyStartDate =
+            selectedSnapshot?.monthlyStartDate ?? fallbackSnapshot?.monthlyStartDate ?? input.anchorDate ?? "";
+          const weeklyStartDate =
+            selectedSnapshot?.weeklyStartDate ?? fallbackSnapshot?.weeklyStartDate ?? input.anchorDate ?? "";
+          const mtdStartDate = selectedSnapshot?.mtdStartDate ?? fallbackSnapshot?.mtdStartDate ?? input.anchorDate ?? "";
+          const previousCalendarMonthStartDate =
+            selectedSnapshot?.previousCalendarMonthStartDate ??
+            fallbackSnapshot?.previousCalendarMonthStartDate ??
+            input.anchorDate ??
+            "";
+          const previousCalendarMonthEndDate =
+            selectedSnapshot?.previousCalendarMonthEndDate ??
+            fallbackSnapshot?.previousCalendarMonthEndDate ??
+            input.anchorDate ??
+            "";
+          const last12MonthsStartDate =
+            selectedSnapshot?.last12MonthsStartDate ?? fallbackSnapshot?.last12MonthsStartDate ?? input.anchorDate ?? "";
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            pvSystemId,
+            status: notFoundStatus,
+            found: false,
+            lifetimeKwh: null,
+            hourlyProductionKwh: null,
+            monthlyProductionKwh: null,
+            mtdProductionKwh: null,
+            previousCalendarMonthProductionKwh: null,
+            last12MonthsProductionKwh: null,
+            weeklyProductionKwh: null,
+            dailyProductionKwh: null,
+            anchorDate,
+            monthlyStartDate,
+            weeklyStartDate,
+            mtdStartDate,
+            previousCalendarMonthStartDate,
+            previousCalendarMonthEndDate,
+            last12MonthsStartDate,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
+          rows,
+        };
+      }),
+    getDeviceSnapshots: protectedProcedure
+      .input(
+        z.object({
+          pvSystemIds: z.array(z.string().min(1)).min(1).max(200),
+          connectionScope: z.enum(["active", "all"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getPvSystemDeviceSnapshot, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
+
+        const uniquePvSystemIds = Array.from(
+          new Set(input.pvSystemIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        );
+
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, FRONIUS_PROVIDER);
+        const metadata = parseFroniusMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("Fronius is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrencyFronius(uniquePvSystemIds, 4, async (pvSystemId: string) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getPvSystemDeviceSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getPvSystemDeviceSnapshot(
+              {
+                accessKeyId: connection.accessKeyId,
+                accessKeyValue: connection.accessKeyValue,
+              },
+              pvSystemId
+            );
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            pvSystemId,
+            status: notFoundStatus,
+            found: false,
             error: firstError,
             matchedConnectionId: null,
             matchedConnectionName: null,
