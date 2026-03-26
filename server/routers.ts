@@ -45,6 +45,7 @@ function getTodayDateKey(): string {
 const ENPHASE_V2_PROVIDER = "enphase-v2";
 const ENPHASE_V4_PROVIDER = "enphase-v4";
 const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
+const ENNEX_OS_PROVIDER = "ennexos-monitoring";
 const ZENDESK_PROVIDER = "zendesk";
 const TESLA_SOLAR_PROVIDER = "tesla-solar";
 const TESLA_POWERHUB_PROVIDER = "tesla-powerhub";
@@ -1238,6 +1239,85 @@ function serializeSolarEdgeMetadata(
   });
 }
 
+type EnnexOsConnectionConfig = {
+  id: string;
+  name: string;
+  accessToken: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseEnnexOsMetadata(
+  metadata: string | null | undefined,
+  fallbackAccessToken?: string | null
+): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: EnnexOsConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: EnnexOsConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `ennexos-conn-${index + 1}`;
+      const accessToken = toNonEmptyString(row.accessToken);
+      if (!accessToken) return null;
+      const createdAt = toNonEmptyString(row.createdAt) ?? new Date().toISOString();
+      const updatedAt = toNonEmptyString(row.updatedAt) ?? createdAt;
+      return {
+        id,
+        name: toNonEmptyString(row.name) ?? `ennexOS API ${index + 1}`,
+        accessToken,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt,
+        updatedAt,
+      } satisfies EnnexOsConnectionConfig;
+    })
+    .filter((value): value is EnnexOsConnectionConfig => value !== null);
+
+  if (connections.length === 0) {
+    const legacyAccessToken = toNonEmptyString(fallbackAccessToken);
+    if (legacyAccessToken) {
+      const nowIso = new Date().toISOString();
+      connections.push({
+        id: "legacy-ennexos-token",
+        name: "Legacy Access Token",
+        accessToken: legacyAccessToken,
+        baseUrl,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+  }
+
+  const activeConnectionId =
+    (activeConnectionIdRaw && connections.some((connection) => connection.id === activeConnectionIdRaw)
+      ? activeConnectionIdRaw
+      : connections[0]?.id) ?? null;
+
+  return {
+    baseUrl,
+    activeConnectionId,
+    connections,
+  };
+}
+
+function serializeEnnexOsMetadata(
+  connections: EnnexOsConnectionConfig[],
+  activeConnectionId: string | null,
+  baseUrl: string | null
+): string {
+  return JSON.stringify({
+    baseUrl,
+    activeConnectionId,
+    connections,
+  });
+}
+
 type FroniusConnectionConfig = {
   id: string;
   name: string;
@@ -1322,6 +1402,27 @@ async function getFroniusContext(userId: number): Promise<{
   return {
     accessKeyId: activeConnection.accessKeyId,
     accessKeyValue: activeConnection.accessKeyValue,
+  };
+}
+
+async function getEnnexOsContext(userId: number): Promise<{
+  accessToken: string;
+  baseUrl: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, ENNEX_OS_PROVIDER);
+  const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection =
+    metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ??
+    metadata.connections[0];
+
+  if (!activeConnection) {
+    throw new Error("ennexOS is not connected. Save Access Token first.");
+  }
+
+  return {
+    accessToken: activeConnection.accessToken,
+    baseUrl: activeConnection.baseUrl ?? metadata.baseUrl,
   };
 }
 
@@ -3447,6 +3548,574 @@ export const appRouter = router({
       }),
   }),
 
+  ennexOs: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+      const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const activeConnection =
+        metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ??
+        metadata.connections[0];
+
+      return {
+        connected: metadata.connections.length > 0,
+        baseUrl: activeConnection?.baseUrl ?? metadata.baseUrl,
+        activeConnectionId: activeConnection?.id ?? null,
+        connections: metadata.connections.map((connection) => ({
+          id: connection.id,
+          name: connection.name,
+          baseUrl: connection.baseUrl,
+          accessTokenMasked: maskApiKey(connection.accessToken),
+          accessKeyIdMasked: maskApiKey(connection.accessToken),
+          accessKeyValueMasked: connection.baseUrl,
+          updatedAt: connection.updatedAt,
+          isActive: connection.id === activeConnection?.id,
+        })),
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          accessToken: z.string().optional(),
+          accessKeyId: z.string().optional(),
+          baseUrl: z.string().optional(),
+          accessKeyValue: z.string().optional(),
+          connectionName: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+
+        const accessToken =
+          toNonEmptyString(input.accessToken) ?? toNonEmptyString(input.accessKeyId);
+        if (!accessToken) {
+          throw new Error("Access token is required.");
+        }
+
+        const existing = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+        const existingMetadata = parseEnnexOsMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+        const nowIso = new Date().toISOString();
+        const newConnection: EnnexOsConnectionConfig = {
+          id: nanoid(),
+          name:
+            toNonEmptyString(input.connectionName) ??
+            `ennexOS API ${existingMetadata.connections.length + 1}`,
+          accessToken,
+          baseUrl:
+            toNonEmptyString(input.baseUrl) ??
+            toNonEmptyString(input.accessKeyValue) ??
+            existingMetadata.baseUrl,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        const connections = [newConnection, ...existingMetadata.connections];
+        const activeConnectionId = newConnection.id;
+        const metadata = serializeEnnexOsMetadata(
+          connections,
+          activeConnectionId,
+          newConnection.baseUrl ?? existingMetadata.baseUrl
+        );
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: ENNEX_OS_PROVIDER,
+          accessToken: newConnection.accessToken,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          activeConnectionId,
+          totalConnections: connections.length,
+        };
+      }),
+    setActiveConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+        if (!integration) {
+          throw new Error("ennexOS is not connected.");
+        }
+        const metadataState = parseEnnexOsMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const activeConnection = metadataState.connections.find((connection) => connection.id === input.connectionId);
+        if (!activeConnection) {
+          throw new Error("Selected ennexOS API profile was not found.");
+        }
+
+        const metadata = serializeEnnexOsMetadata(
+          metadataState.connections,
+          activeConnection.id,
+          activeConnection.baseUrl ?? metadataState.baseUrl
+        );
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: ENNEX_OS_PROVIDER,
+          accessToken: activeConnection.accessToken,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          activeConnectionId: activeConnection.id,
+        };
+      }),
+    removeConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+        if (!integration) {
+          throw new Error("ennexOS is not connected.");
+        }
+        const metadataState = parseEnnexOsMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const nextConnections = metadataState.connections.filter((connection) => connection.id !== input.connectionId);
+
+        if (nextConnections.length === 0) {
+          if (integration.id) {
+            await deleteIntegration(integration.id);
+          }
+          return {
+            success: true,
+            connected: false,
+            activeConnectionId: null,
+            totalConnections: 0,
+          };
+        }
+
+        const nextActiveConnection =
+          nextConnections.find((connection) => connection.id === metadataState.activeConnectionId) ??
+          nextConnections[0];
+        const metadata = serializeEnnexOsMetadata(
+          nextConnections,
+          nextActiveConnection.id,
+          nextActiveConnection.baseUrl ?? metadataState.baseUrl
+        );
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: ENNEX_OS_PROVIDER,
+          accessToken: nextActiveConnection.accessToken,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          connected: true,
+          activeConnectionId: nextActiveConnection.id,
+          totalConnections: nextConnections.length,
+        };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    listPlants: protectedProcedure.query(async ({ ctx }) => {
+      const context = await getEnnexOsContext(ctx.user.id);
+      const { listPlants } = await import("./services/ennexos");
+      return listPlants(context);
+    }),
+    getPlantDetails: protectedProcedure
+      .input(
+        z.object({
+          plantId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnnexOsContext(ctx.user.id);
+        const { getPlantDetails } = await import("./services/ennexos");
+        return getPlantDetails(context, input.plantId.trim());
+      }),
+    getDevices: protectedProcedure
+      .input(
+        z.object({
+          plantId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnnexOsContext(ctx.user.id);
+        const { getPlantDevices } = await import("./services/ennexos");
+        return getPlantDevices(context, input.plantId.trim());
+      }),
+    getAggData: protectedProcedure
+      .input(
+        z.object({
+          plantId: z.string().min(1),
+          from: z.string().optional(),
+          to: z.string().optional(),
+          period: z.enum(["Total", "Years", "Months", "Days"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnnexOsContext(ctx.user.id);
+        const { getPlantMeasurements } = await import("./services/ennexos");
+        const normalizedPeriod =
+          input.period === "Years"
+            ? "Year"
+            : input.period === "Months" || input.period === "Total"
+              ? "Month"
+              : "Day";
+        const dateArg = toNonEmptyString(input.to) ?? toNonEmptyString(input.from) ?? null;
+        const raw = await getPlantMeasurements(
+          context,
+          input.plantId.trim(),
+          "EnergyBalance",
+          normalizedPeriod,
+          dateArg
+        );
+        return {
+          plantId: input.plantId.trim(),
+          measurementSet: "EnergyBalance",
+          period: normalizedPeriod,
+          from: input.from ?? null,
+          to: input.to ?? null,
+          date: dateArg,
+          raw,
+        };
+      }),
+    getFlowData: protectedProcedure
+      .input(
+        z.object({
+          plantId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnnexOsContext(ctx.user.id);
+        const { getPlantMeasurements } = await import("./services/ennexos");
+        const raw = await getPlantMeasurements(
+          context,
+          input.plantId.trim(),
+          "EnergyBalance",
+          "Day",
+          getTodayDateKey()
+        );
+        return {
+          plantId: input.plantId.trim(),
+          measurementSet: "EnergyBalance",
+          period: "Day",
+          date: getTodayDateKey(),
+          raw,
+        };
+      }),
+    getMeasurements: protectedProcedure
+      .input(
+        z.object({
+          plantId: z.string().min(1),
+          measurementSet: z.string().optional(),
+          period: z.string().optional(),
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnnexOsContext(ctx.user.id);
+        const { getPlantMeasurements } = await import("./services/ennexos");
+        return getPlantMeasurements(
+          context,
+          input.plantId.trim(),
+          toNonEmptyString(input.measurementSet) ?? "EnergyBalance",
+          toNonEmptyString(input.period) ?? "Day",
+          input.date
+        );
+      }),
+    getProductionSnapshot: protectedProcedure
+      .input(
+        z.object({
+          plantId: z.string().min(1),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnnexOsContext(ctx.user.id);
+        const { getPlantProductionSnapshot } = await import("./services/ennexos");
+        return getPlantProductionSnapshot(context, input.plantId.trim(), input.anchorDate);
+      }),
+    getProductionSnapshots: protectedProcedure
+      .input(
+        z.object({
+          plantIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          connectionScope: z.enum(["active", "all"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getPlantProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEnnexOs } = await import("./services/ennexos");
+
+        const uniquePlantIds = Array.from(
+          new Set(input.plantIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        );
+
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+        const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("ennexOS is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrencyEnnexOs(uniquePlantIds, 4, async (plantId: string) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getPlantProductionSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          let fallbackSnapshot: Awaited<ReturnType<typeof getPlantProductionSnapshot>> | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getPlantProductionSnapshot(
+              {
+                accessToken: connection.accessToken,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              plantId,
+              input.anchorDate
+            );
+
+            if (!fallbackSnapshot) {
+              fallbackSnapshot = snapshot;
+            }
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          const anchorDate = selectedSnapshot?.anchorDate ?? fallbackSnapshot?.anchorDate ?? input.anchorDate ?? "";
+          const monthlyStartDate =
+            selectedSnapshot?.monthlyStartDate ?? fallbackSnapshot?.monthlyStartDate ?? input.anchorDate ?? "";
+          const weeklyStartDate =
+            selectedSnapshot?.weeklyStartDate ?? fallbackSnapshot?.weeklyStartDate ?? input.anchorDate ?? "";
+          const mtdStartDate = selectedSnapshot?.mtdStartDate ?? fallbackSnapshot?.mtdStartDate ?? input.anchorDate ?? "";
+          const previousCalendarMonthStartDate =
+            selectedSnapshot?.previousCalendarMonthStartDate ??
+            fallbackSnapshot?.previousCalendarMonthStartDate ??
+            input.anchorDate ??
+            "";
+          const previousCalendarMonthEndDate =
+            selectedSnapshot?.previousCalendarMonthEndDate ??
+            fallbackSnapshot?.previousCalendarMonthEndDate ??
+            input.anchorDate ??
+            "";
+          const last12MonthsStartDate =
+            selectedSnapshot?.last12MonthsStartDate ?? fallbackSnapshot?.last12MonthsStartDate ?? input.anchorDate ?? "";
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            plantId,
+            status: notFoundStatus,
+            found: false,
+            lifetimeKwh: null,
+            hourlyProductionKwh: null,
+            monthlyProductionKwh: null,
+            mtdProductionKwh: null,
+            previousCalendarMonthProductionKwh: null,
+            last12MonthsProductionKwh: null,
+            weeklyProductionKwh: null,
+            dailyProductionKwh: null,
+            anchorDate,
+            monthlyStartDate,
+            weeklyStartDate,
+            mtdStartDate,
+            previousCalendarMonthStartDate,
+            previousCalendarMonthEndDate,
+            last12MonthsStartDate,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
+          rows,
+        };
+      }),
+    getDeviceSnapshots: protectedProcedure
+      .input(
+        z.object({
+          plantIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          connectionScope: z.enum(["active", "all"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getPlantDeviceSnapshot, mapWithConcurrency: mapWithConcurrencyEnnexOs } = await import("./services/ennexos");
+
+        const uniquePlantIds = Array.from(
+          new Set(input.plantIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        );
+
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+        const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("ennexOS is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrencyEnnexOs(uniquePlantIds, 4, async (plantId: string) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getPlantDeviceSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getPlantDeviceSnapshot(
+              {
+                accessToken: connection.accessToken,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              plantId,
+              input.anchorDate
+            );
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            plantId,
+            status: notFoundStatus,
+            found: false,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
+          rows,
+        };
+      }),
+  }),
+
   zendesk: router({
     getStatus: protectedProcedure.query(async ({ ctx }) => {
       const { getIntegrationByProvider } = await import("./db");
@@ -4430,16 +5099,16 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { getIntegrationByProvider } = await import("./db");
-        const integration = await getIntegrationByProvider(ctx.user.id, "google");
-        const googleApiKey = process.env.GOOGLE_MAPS_API_KEY ?? toNonEmptyString(integration?.metadata ? (() => { try { return JSON.parse(integration.metadata ?? "{}").mapsApiKey; } catch { return null; } })() : null);
+        // USPS Address API v3 (OAuth client credentials)
+        const uspsClientId = process.env.USPS_CLIENT_ID;
+        const uspsClientSecret = process.env.USPS_CLIENT_SECRET;
 
-        if (!googleApiKey) {
-          throw new Error("Google Maps API key not configured. Set GOOGLE_MAPS_API_KEY in environment or add mapsApiKey to Google integration metadata.");
+        if (!uspsClientId || !uspsClientSecret) {
+          throw new Error("USPS API not configured. Set USPS_CLIENT_ID and USPS_CLIENT_SECRET environment variables (from developers.usps.com).");
         }
 
-        const { verifyAddressBatch } = await import("./services/googleAddressValidation");
-        const results = await verifyAddressBatch(googleApiKey, input.addresses);
+        const { verifyAddressBatch } = await import("./services/uspsAddressValidation");
+        const results = await verifyAddressBatch(uspsClientId, uspsClientSecret, input.addresses);
 
         const confirmed = results.filter((r) => r.verdict === "CONFIRMED").length;
         const unconfirmed = results.filter((r) => r.verdict === "UNCONFIRMED").length;
