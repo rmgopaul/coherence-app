@@ -400,9 +400,8 @@ async function getInverterTelemetryPayload(
   startDate?: string | null,
   endDate?: string | null
 ): Promise<{ endpoint: string; payload: unknown }> {
-  const hasBothDates = Boolean(startDate && endDate);
-  const dateWindows = hasBothDates
-    ? splitIsoDateRange(startDate as string, endDate as string, 7)
+  const dateWindows = startDate && endDate
+    ? splitIsoDateRange(startDate, endDate, 7)
     : [
         {
           startDate: startDate ?? null,
