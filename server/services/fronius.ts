@@ -47,6 +47,15 @@ export type FroniusProductionSnapshot = {
   previousCalendarMonthStartDate: string;
   previousCalendarMonthEndDate: string;
   last12MonthsStartDate: string;
+  lifetimeChannelName: string | null;
+  lifetimeChannelUnit: string | null;
+  lifetimeChannelSelection: string | null;
+  dailyChannelName: string | null;
+  dailyChannelUnit: string | null;
+  dailyChannelSelection: string | null;
+  monthlyChannelName: string | null;
+  monthlyChannelUnit: string | null;
+  monthlyChannelSelection: string | null;
   error: string | null;
 };
 
@@ -223,29 +232,111 @@ export async function mapWithConcurrency<TInput, TOutput>(
 // Fronius channel helpers
 // ---------------------------------------------------------------------------
 
-/** Channel names to look for when extracting production energy. */
-const PRODUCTION_CHANNEL_NAMES = [
+type ProductionChannelMatch = {
+  channel: Record<string, unknown>;
+  channelName: string;
+  unit: string | null;
+  selectionSource: "priority_exact" | "priority_normalized" | "fallback_scored";
+};
+
+/** Priority order for channels that represent PV production/yield energy. */
+const PRODUCTION_CHANNEL_PRIORITY_NAMES = [
   "EnergyReal_WAC_Sum_Produced",
-  "EnergyReal_WAC_Plus_Absolute",
-  "Energy",
-  "EnergyProduced",
+  "EnergyReal_WAC_Plus_Produced",
   "EnergyReal_WAC_Sum",
+  "EnergyProduced",
+  "EnergyYield",
+  "Yield",
 ];
 
-function findProductionChannel(channels: Array<Record<string, unknown>>): Record<string, unknown> | null {
-  for (const candidateName of PRODUCTION_CHANNEL_NAMES) {
-    const match = channels.find((ch) => {
-      const name = toNullableString(ch.channelName) ?? toNullableString(ch.channel_name) ?? toNullableString(ch.name);
-      return name === candidateName;
-    });
-    if (match) return match;
+/**
+ * Excludes channels that are likely import/export, consumption, battery, or grid flow
+ * values (these often cause false zeroes for production windows).
+ */
+const NON_PRODUCTION_CHANNEL_NAME_PATTERN =
+  /(consum|import|export|feedin|feed_in|grid|load|battery|charge|discharge|purchas|sold|absolute)/i;
+
+function channelNameOf(channel: Record<string, unknown>): string | null {
+  return toNullableString(channel.channelName) ?? toNullableString(channel.channel_name) ?? toNullableString(channel.name);
+}
+
+function normalizeChannelName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function isLikelyNonProductionChannel(channelName: string): boolean {
+  return NON_PRODUCTION_CHANNEL_NAME_PATTERN.test(channelName);
+}
+
+function fallbackProductionScore(channelNameRaw: string): number {
+  const channelName = channelNameRaw.toLowerCase();
+  let score = 0;
+  if (/produced|production|yield|generated/.test(channelName)) score += 30;
+  if (/wac/.test(channelName)) score += 15;
+  if (/sum/.test(channelName)) score += 10;
+  if (/energy/.test(channelName)) score += 5;
+  if (/plus/.test(channelName)) score -= 5;
+  return score;
+}
+
+function findProductionChannel(channels: Array<Record<string, unknown>>): ProductionChannelMatch | null {
+  const namedChannels = channels
+    .map((channel) => {
+      const channelName = channelNameOf(channel);
+      return channelName ? { channel, channelName } : null;
+    })
+    .filter((value): value is { channel: Record<string, unknown>; channelName: string } => value !== null);
+
+  // 1) Exact priority-name match
+  for (const priorityName of PRODUCTION_CHANNEL_PRIORITY_NAMES) {
+    const match = namedChannels.find(({ channelName }) => channelName === priorityName);
+    if (match) {
+      return {
+        channel: match.channel,
+        channelName: match.channelName,
+        unit: toNullableString(match.channel.unit),
+        selectionSource: "priority_exact",
+      };
+    }
   }
-  // Fallback: first channel with "Energy" in the name
-  const fallback = channels.find((ch) => {
-    const name = toNullableString(ch.channelName) ?? toNullableString(ch.channel_name) ?? toNullableString(ch.name);
-    return name ? /energy/i.test(name) : false;
-  });
-  return fallback ?? null;
+
+  // 2) Normalized priority-name match (defensive against separators/casing variance)
+  const priorityNormalizedSet = new Set(PRODUCTION_CHANNEL_PRIORITY_NAMES.map(normalizeChannelName));
+  for (const candidate of namedChannels) {
+    if (priorityNormalizedSet.has(normalizeChannelName(candidate.channelName))) {
+      return {
+        channel: candidate.channel,
+        channelName: candidate.channelName,
+        unit: toNullableString(candidate.channel.unit),
+        selectionSource: "priority_normalized",
+      };
+    }
+  }
+
+  // 3) Scored fallback for yield/production-like names, excluding known non-production channels
+  const fallbackCandidates = namedChannels
+    .filter(({ channelName }) => {
+      if (isLikelyNonProductionChannel(channelName)) return false;
+      return /energy|yield|produced|production|generated/i.test(channelName);
+    })
+    .map(({ channel, channelName }) => ({
+      channel,
+      channelName,
+      unit: toNullableString(channel.unit),
+      score: fallbackProductionScore(channelName),
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score);
+
+  if (fallbackCandidates.length === 0) return null;
+
+  const best = fallbackCandidates[0];
+  return {
+    channel: best.channel,
+    channelName: best.channelName,
+    unit: best.unit,
+    selectionSource: "fallback_scored",
+  };
 }
 
 function channelValueToKwh(value: number | null, unit: string | null): number | null {
@@ -621,18 +712,32 @@ export async function getFlowData(
 // Extraction: Lifetime kWh from aggdata
 // ---------------------------------------------------------------------------
 
-export function extractLifetimeKwh(payload: unknown): number | null {
+type LifetimeKwhExtraction = {
+  kwh: number | null;
+  channelName: string | null;
+  channelUnit: string | null;
+  channelSelection: string | null;
+};
+
+export function extractLifetimeKwh(payload: unknown): LifetimeKwhExtraction {
   const root = asRecord(payload);
   const data = asRecord(root.data);
 
   // aggdata response: { data: { channels: [ { channelName, unit, values: { Total: number } } ] } }
   const channels = asRecordArray(data.channels ?? root.channels);
 
-  const channel = findProductionChannel(channels);
-  if (!channel) return null;
+  const selectedChannel = findProductionChannel(channels);
+  if (!selectedChannel) {
+    return {
+      kwh: null,
+      channelName: null,
+      channelUnit: null,
+      channelSelection: null,
+    };
+  }
 
-  const unit = toNullableString(channel.unit) ?? "Wh";
-  const valuesRecord = asRecord(channel.values);
+  const unit = selectedChannel.unit ?? "Wh";
+  const valuesRecord = asRecord(selectedChannel.channel.values);
 
   // Try "Total" key first, then any numeric value
   let rawValue = toNullableNumber(valuesRecord.Total ?? valuesRecord.total ?? valuesRecord.TOTAL);
@@ -649,10 +754,15 @@ export function extractLifetimeKwh(payload: unknown): number | null {
 
   // Also handle case where value is directly on the channel object
   if (rawValue === null) {
-    rawValue = toNullableNumber(channel.value);
+    rawValue = toNullableNumber(selectedChannel.channel.value);
   }
 
-  return safeRound(channelValueToKwh(rawValue, unit));
+  return {
+    kwh: safeRound(channelValueToKwh(rawValue, unit)),
+    channelName: selectedChannel.channelName,
+    channelUnit: selectedChannel.unit,
+    channelSelection: selectedChannel.selectionSource,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -664,10 +774,20 @@ type DailyEnergyPoint = {
   kwh: number;
 };
 
-export function extractAggrDailyEnergyKwh(payload: unknown): DailyEnergyPoint[] {
+type DailyEnergyExtraction = {
+  points: DailyEnergyPoint[];
+  channelName: string | null;
+  channelUnit: string | null;
+  channelSelection: string | null;
+};
+
+export function extractAggrDailyEnergyKwh(payload: unknown): DailyEnergyExtraction {
   const root = asRecord(payload);
   const dataEntries = asRecordArray(root.data ?? root.Data);
   const output: DailyEnergyPoint[] = [];
+  let channelName: string | null = null;
+  let channelUnit: string | null = null;
+  let channelSelection: string | null = null;
 
   for (const entry of dataEntries) {
     const logDateTime = toNullableString(
@@ -677,18 +797,29 @@ export function extractAggrDailyEnergyKwh(payload: unknown): DailyEnergyPoint[] 
     if (!dateKey) continue;
 
     const channels = asRecordArray(entry.channels ?? entry.Channels);
-    const channel = findProductionChannel(channels);
-    if (!channel) continue;
+    const selectedChannel = findProductionChannel(channels);
+    if (!selectedChannel) continue;
 
-    const unit = toNullableString(channel.unit) ?? "Wh";
-    const rawValue = toNullableNumber(channel.value ?? channel.Value);
+    const unit = selectedChannel.unit ?? "Wh";
+    const rawValue = toNullableNumber(selectedChannel.channel.value ?? selectedChannel.channel.Value);
     const kwh = channelValueToKwh(rawValue, unit);
     if (kwh === null) continue;
+
+    if (!channelName) {
+      channelName = selectedChannel.channelName;
+      channelUnit = selectedChannel.unit;
+      channelSelection = selectedChannel.selectionSource;
+    }
 
     output.push({ dateKey, kwh });
   }
 
-  return output;
+  return {
+    points: output,
+    channelName,
+    channelUnit,
+    channelSelection,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -700,10 +831,20 @@ type MonthlyEnergyPoint = {
   kwh: number;
 };
 
-export function extractAggrMonthlyEnergyKwh(payload: unknown): MonthlyEnergyPoint[] {
+type MonthlyEnergyExtraction = {
+  points: MonthlyEnergyPoint[];
+  channelName: string | null;
+  channelUnit: string | null;
+  channelSelection: string | null;
+};
+
+export function extractAggrMonthlyEnergyKwh(payload: unknown): MonthlyEnergyExtraction {
   const root = asRecord(payload);
   const dataEntries = asRecordArray(root.data ?? root.Data);
   const output: MonthlyEnergyPoint[] = [];
+  let channelName: string | null = null;
+  let channelUnit: string | null = null;
+  let channelSelection: string | null = null;
 
   for (const entry of dataEntries) {
     const logDateTime = toNullableString(
@@ -714,18 +855,29 @@ export function extractAggrMonthlyEnergyKwh(payload: unknown): MonthlyEnergyPoin
     if (!dateKey) continue;
 
     const channels = asRecordArray(entry.channels ?? entry.Channels);
-    const channel = findProductionChannel(channels);
-    if (!channel) continue;
+    const selectedChannel = findProductionChannel(channels);
+    if (!selectedChannel) continue;
 
-    const unit = toNullableString(channel.unit) ?? "Wh";
-    const rawValue = toNullableNumber(channel.value ?? channel.Value);
+    const unit = selectedChannel.unit ?? "Wh";
+    const rawValue = toNullableNumber(selectedChannel.channel.value ?? selectedChannel.channel.Value);
     const kwh = channelValueToKwh(rawValue, unit);
     if (kwh === null) continue;
+
+    if (!channelName) {
+      channelName = selectedChannel.channelName;
+      channelUnit = selectedChannel.unit;
+      channelSelection = selectedChannel.selectionSource;
+    }
 
     output.push({ dateKey, kwh });
   }
 
-  return output;
+  return {
+    points: output,
+    channelName,
+    channelUnit,
+    channelSelection,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -759,9 +911,11 @@ export async function getPvSystemProductionSnapshot(
       getAggrData(context, pvSystemId, last12MonthsStartDate, anchorDate),
     ]);
 
-    const lifetimeKwh = extractLifetimeKwh(aggdataPayload);
-    const dailySeries = extractAggrDailyEnergyKwh(dailyAggrPayload);
-    const monthlySeries = extractAggrMonthlyEnergyKwh(monthlyAggrPayload);
+    const lifetimeExtraction = extractLifetimeKwh(aggdataPayload);
+    const dailyExtraction = extractAggrDailyEnergyKwh(dailyAggrPayload);
+    const monthlyExtraction = extractAggrMonthlyEnergyKwh(monthlyAggrPayload);
+    const dailySeries = dailyExtraction.points;
+    const monthlySeries = monthlyExtraction.points;
 
     // hourlyProductionKwh: not available from aggrdata endpoints, would require separate flow/power endpoint
     // Use the most recent daily value as a rough proxy, or null
@@ -810,7 +964,7 @@ export async function getPvSystemProductionSnapshot(
       name,
       status: "Found",
       found: true,
-      lifetimeKwh,
+      lifetimeKwh: lifetimeExtraction.kwh,
       hourlyProductionKwh,
       monthlyProductionKwh,
       mtdProductionKwh,
@@ -825,6 +979,15 @@ export async function getPvSystemProductionSnapshot(
       previousCalendarMonthStartDate,
       previousCalendarMonthEndDate,
       last12MonthsStartDate,
+      lifetimeChannelName: lifetimeExtraction.channelName,
+      lifetimeChannelUnit: lifetimeExtraction.channelUnit,
+      lifetimeChannelSelection: lifetimeExtraction.channelSelection,
+      dailyChannelName: dailyExtraction.channelName,
+      dailyChannelUnit: dailyExtraction.channelUnit,
+      dailyChannelSelection: dailyExtraction.channelSelection,
+      monthlyChannelName: monthlyExtraction.channelName,
+      monthlyChannelUnit: monthlyExtraction.channelUnit,
+      monthlyChannelSelection: monthlyExtraction.channelSelection,
       error: null,
     };
   } catch (error) {
@@ -849,6 +1012,15 @@ export async function getPvSystemProductionSnapshot(
         previousCalendarMonthStartDate,
         previousCalendarMonthEndDate,
         last12MonthsStartDate,
+        lifetimeChannelName: null,
+        lifetimeChannelUnit: null,
+        lifetimeChannelSelection: null,
+        dailyChannelName: null,
+        dailyChannelUnit: null,
+        dailyChannelSelection: null,
+        monthlyChannelName: null,
+        monthlyChannelUnit: null,
+        monthlyChannelSelection: null,
         error: error instanceof Error ? error.message : "PV system not found.",
       };
     }
@@ -873,6 +1045,15 @@ export async function getPvSystemProductionSnapshot(
       previousCalendarMonthStartDate,
       previousCalendarMonthEndDate,
       last12MonthsStartDate,
+      lifetimeChannelName: null,
+      lifetimeChannelUnit: null,
+      lifetimeChannelSelection: null,
+      dailyChannelName: null,
+      dailyChannelUnit: null,
+      dailyChannelSelection: null,
+      monthlyChannelName: null,
+      monthlyChannelUnit: null,
+      monthlyChannelSelection: null,
       error: error instanceof Error ? error.message : "Unknown error.",
     };
   }

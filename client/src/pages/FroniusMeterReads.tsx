@@ -71,6 +71,15 @@ type BulkSnapshotRow = {
   previousCalendarMonthStartDate?: string;
   previousCalendarMonthEndDate?: string;
   last12MonthsStartDate?: string;
+  lifetimeChannelName?: string | null;
+  lifetimeChannelUnit?: string | null;
+  lifetimeChannelSelection?: string | null;
+  dailyChannelName?: string | null;
+  dailyChannelUnit?: string | null;
+  dailyChannelSelection?: string | null;
+  monthlyChannelName?: string | null;
+  monthlyChannelUnit?: string | null;
+  monthlyChannelSelection?: string | null;
   deviceCount?: number | null;
   inverterCount?: number | null;
   currentPowerW?: number | null;
@@ -632,6 +641,15 @@ export default function FroniusMeterReads() {
             checkedConnections: bulkConnectionScope === "all" ? statusQuery.data?.connections.length ?? 0 : 1,
             foundInConnections: 0,
             profileStatusSummary: "",
+            lifetimeChannelName: null,
+            lifetimeChannelUnit: null,
+            lifetimeChannelSelection: null,
+            dailyChannelName: null,
+            dailyChannelUnit: null,
+            dailyChannelSelection: null,
+            monthlyChannelName: null,
+            monthlyChannelUnit: null,
+            monthlyChannelSelection: null,
           }));
 
         let response: {
@@ -869,6 +887,15 @@ export default function FroniusMeterReads() {
         "previous_calendar_month_start_date",
         "previous_calendar_month_end_date",
         "last_12_months_start_date",
+        "lifetime_channel_name",
+        "lifetime_channel_unit",
+        "lifetime_channel_selection",
+        "daily_channel_name",
+        "daily_channel_unit",
+        "daily_channel_selection",
+        "monthly_channel_name",
+        "monthly_channel_unit",
+        "monthly_channel_selection",
       ];
       csvRows = rows.map((row) => ({
         ...commonCells(row),
@@ -887,6 +914,15 @@ export default function FroniusMeterReads() {
         previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
         previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
         last_12_months_start_date: row.last12MonthsStartDate,
+        lifetime_channel_name: row.lifetimeChannelName,
+        lifetime_channel_unit: row.lifetimeChannelUnit,
+        lifetime_channel_selection: row.lifetimeChannelSelection,
+        daily_channel_name: row.dailyChannelName,
+        daily_channel_unit: row.dailyChannelUnit,
+        daily_channel_selection: row.dailyChannelSelection,
+        monthly_channel_name: row.monthlyChannelName,
+        monthly_channel_unit: row.monthlyChannelUnit,
+        monthly_channel_selection: row.monthlyChannelSelection,
       }));
     }
 
