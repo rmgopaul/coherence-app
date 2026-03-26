@@ -370,6 +370,15 @@ type MonitoringDetailsRecord = {
   last_reported_online_date: string;
 };
 
+type OfflineMonitoringAccessFields = {
+  accessType: string;
+  monitoringSiteId: string;
+  monitoringSiteName: string;
+  monitoringLink: string;
+  monitoringUsername: string;
+  monitoringPassword: string;
+};
+
 type PerformanceRatioMatchType =
   | "Monitoring + System ID + System Name"
   | "Monitoring + System ID"
@@ -1201,6 +1210,79 @@ function getMonitoringDetailsForSystem(
     (keyByTracking ? monitoringDetailsBySystemKey.get(keyByTracking) : undefined) ??
     monitoringDetailsBySystemKey.get(keyByName)
   );
+}
+
+function classifyMonitoringAccessType(accessTypeRaw: string): "granted" | "link" | "login" | "other" {
+  const normalized = clean(accessTypeRaw).toLowerCase();
+  if (!normalized) return "other";
+  if (normalized.includes("grant")) return "granted";
+  if (normalized.includes("link")) return "link";
+  if (
+    normalized.includes("password") ||
+    normalized.includes("pass") ||
+    normalized.includes("pwd") ||
+    normalized.includes("login")
+  ) {
+    return "login";
+  }
+  return "other";
+}
+
+function resolveOfflineMonitoringAccessFields(
+  system: SystemRecord,
+  monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>
+): OfflineMonitoringAccessFields {
+  const details = getMonitoringDetailsForSystem(system, monitoringDetailsBySystemKey);
+  const accessType = clean(details?.online_monitoring_access_type) || clean(system.monitoringType);
+  const category = classifyMonitoringAccessType(accessType);
+  const monitoringSiteId = clean(details?.online_monitoring_system_id);
+  const monitoringSiteName = clean(details?.online_monitoring_system_name);
+  const monitoringLink = clean(details?.online_monitoring_website_api_link);
+  const monitoringUsername =
+    firstNonEmptyString(clean(details?.online_monitoring_username), clean(details?.online_monitoring_granted_username)) ?? "";
+  const monitoringPassword = clean(details?.online_monitoring_password);
+
+  if (category === "granted") {
+    return {
+      accessType,
+      monitoringSiteId,
+      monitoringSiteName,
+      monitoringLink: "",
+      monitoringUsername: "",
+      monitoringPassword: "",
+    };
+  }
+
+  if (category === "link") {
+    return {
+      accessType,
+      monitoringSiteId: "",
+      monitoringSiteName: "",
+      monitoringLink,
+      monitoringUsername: "",
+      monitoringPassword: "",
+    };
+  }
+
+  if (category === "login") {
+    return {
+      accessType,
+      monitoringSiteId: "",
+      monitoringSiteName,
+      monitoringLink: "",
+      monitoringUsername,
+      monitoringPassword,
+    };
+  }
+
+  return {
+    accessType,
+    monitoringSiteId,
+    monitoringSiteName,
+    monitoringLink,
+    monitoringUsername,
+    monitoringPassword,
+  };
 }
 
 function formatTransitionBreakdown(breakdown: Map<TransitionStatus, number>): string {
@@ -5158,21 +5240,36 @@ export default function SolarRecDashboard() {
       "tracking_id",
       "monitoring_method",
       "monitoring_platform",
+      "access_type",
+      "monitoring_site_id",
+      "monitoring_site_name",
+      "monitoring_link",
+      "monitoring_username",
+      "monitoring_password",
       "installer_name",
       "last_reporting_date",
       "contract_value",
     ];
 
-    const rows = filteredOfflineSystems.map((system) => ({
-      system_name: system.systemName,
-      system_id: system.systemId ?? "",
-      tracking_id: system.trackingSystemRefId ?? "",
-      monitoring_method: system.monitoringType,
-      monitoring_platform: system.monitoringPlatform,
-      installer_name: system.installerName,
-      last_reporting_date: formatDate(system.latestReportingDate),
-      contract_value: resolveContractValueAmount(system),
-    }));
+    const rows = filteredOfflineSystems.map((system) => {
+      const accessFields = resolveOfflineMonitoringAccessFields(system, monitoringDetailsBySystemKey);
+      return {
+        system_name: system.systemName,
+        system_id: system.systemId ?? "",
+        tracking_id: system.trackingSystemRefId ?? "",
+        monitoring_method: system.monitoringType,
+        monitoring_platform: system.monitoringPlatform,
+        access_type: accessFields.accessType,
+        monitoring_site_id: accessFields.monitoringSiteId,
+        monitoring_site_name: accessFields.monitoringSiteName,
+        monitoring_link: accessFields.monitoringLink,
+        monitoring_username: accessFields.monitoringUsername,
+        monitoring_password: accessFields.monitoringPassword,
+        installer_name: system.installerName,
+        last_reporting_date: formatDate(system.latestReportingDate),
+        contract_value: resolveContractValueAmount(system),
+      };
+    });
 
     const csv = buildCsv(headers, rows);
     const fileName = `offline-systems-detail-filtered-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
@@ -10053,7 +10150,7 @@ export default function SolarRecDashboard() {
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-slate-700">Search</label>
                     <Input
-                      placeholder="System, IDs, method, platform, installer..."
+                      placeholder="System, IDs, method, platform, installer, monitoring access..."
                       value={offlineSearch}
                       onChange={(event) => setOfflineSearch(event.target.value)}
                     />
@@ -10068,27 +10165,55 @@ export default function SolarRecDashboard() {
                       <TableHead>Tracking ID</TableHead>
                       <TableHead>Monitoring Method</TableHead>
                       <TableHead>Monitoring Platform</TableHead>
+                      <TableHead>Access Type</TableHead>
+                      <TableHead>Monitoring Site ID</TableHead>
+                      <TableHead>Monitoring Site Name</TableHead>
+                      <TableHead>Monitoring Link</TableHead>
+                      <TableHead>Monitoring Username</TableHead>
+                      <TableHead>Monitoring Password</TableHead>
                       <TableHead>Installer</TableHead>
                       <TableHead>Last Reporting Date</TableHead>
                       <TableHead>Contract Value</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {visibleOfflineDetailRows.map((system) => (
-                      <TableRow key={system.key}>
-                        <TableCell className="font-medium">{system.systemName}</TableCell>
-                        <TableCell>{system.systemId ?? "N/A"}</TableCell>
-                        <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                        <TableCell>{system.monitoringType}</TableCell>
-                        <TableCell>{system.monitoringPlatform}</TableCell>
-                        <TableCell>{system.installerName}</TableCell>
-                        <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
-                        <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
-                      </TableRow>
-                    ))}
+                    {visibleOfflineDetailRows.map((system) => {
+                      const accessFields = resolveOfflineMonitoringAccessFields(system, monitoringDetailsBySystemKey);
+                      return (
+                        <TableRow key={system.key}>
+                          <TableCell className="font-medium">{system.systemName}</TableCell>
+                          <TableCell>{system.systemId ?? "N/A"}</TableCell>
+                          <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
+                          <TableCell>{system.monitoringType}</TableCell>
+                          <TableCell>{system.monitoringPlatform}</TableCell>
+                          <TableCell>{accessFields.accessType || "N/A"}</TableCell>
+                          <TableCell>{accessFields.monitoringSiteId || "N/A"}</TableCell>
+                          <TableCell>{accessFields.monitoringSiteName || "N/A"}</TableCell>
+                          <TableCell className="max-w-[18rem] break-all">
+                            {accessFields.monitoringLink ? (
+                              <a
+                                href={accessFields.monitoringLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 underline"
+                              >
+                                {accessFields.monitoringLink}
+                              </a>
+                            ) : (
+                              "N/A"
+                            )}
+                          </TableCell>
+                          <TableCell>{accessFields.monitoringUsername || "N/A"}</TableCell>
+                          <TableCell>{accessFields.monitoringPassword || "N/A"}</TableCell>
+                          <TableCell>{system.installerName}</TableCell>
+                          <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
+                          <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
                     {visibleOfflineDetailRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="py-6 text-center text-slate-500">
+                        <TableCell colSpan={14} className="py-6 text-center text-slate-500">
                           No offline systems match the current filters.
                         </TableCell>
                       </TableRow>
