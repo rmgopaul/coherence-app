@@ -284,6 +284,8 @@ type SystemBuilder = {
   scheduleRequired: number | null;
   scheduleDelivered: number | null;
   latestGenerationDate: Date | null;
+  latestGenerationReadDate: Date | null;
+  latestGenerationReadWh: number | null;
   lastRecDeliveredGenerationDate: Date | null;
   contractedDate: Date | null;
   contractType: string | null;
@@ -313,6 +315,7 @@ type SystemRecord = {
   deliveredValue: number | null;
   valueGap: number | null;
   latestReportingDate: Date | null;
+  latestReportingKwh: number | null;
   isReporting: boolean;
   isTerminated: boolean;
   isTransferred: boolean;
@@ -1118,6 +1121,11 @@ function formatNumber(value: number | null, digits = 0): string {
   if (value === null) return "N/A";
   if (digits > 0) return value.toFixed(digits);
   return NUMBER_FORMATTER.format(value);
+}
+
+function formatKwh(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "N/A";
+  return value.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 3 });
 }
 
 function formatCapacityKw(value: number | null): string {
@@ -2861,6 +2869,8 @@ export default function SolarRecDashboard() {
         scheduleRequired: null,
         scheduleDelivered: null,
         latestGenerationDate: null,
+        latestGenerationReadDate: null,
+        latestGenerationReadWh: null,
         lastRecDeliveredGenerationDate: null,
         contractedDate: null,
         contractType: null,
@@ -2877,6 +2887,16 @@ export default function SolarRecDashboard() {
       if (trackingSystemRefId) keyByTracking.set(trackingSystemRefId, key);
       if (systemId) keyBySystemId.set(systemId, key);
       return created;
+    };
+
+    const updateLatestGenerationRead = (builder: SystemBuilder, candidateDate: Date | null, candidateWh: number | null) => {
+      if (!candidateDate || candidateWh === null) return;
+      const existingTime = builder.latestGenerationReadDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const candidateTime = candidateDate.getTime();
+      if (candidateTime > existingTime || (candidateTime === existingTime && builder.latestGenerationReadWh === null)) {
+        builder.latestGenerationReadDate = candidateDate;
+        builder.latestGenerationReadWh = candidateWh;
+      }
     };
 
     (datasets.solarApplications?.rows ?? []).forEach((row) => {
@@ -3041,7 +3061,12 @@ export default function SolarRecDashboard() {
         if (!builder.primaryName) builder.primaryName = systemName;
       }
 
-      builder.latestGenerationDate = maxDate(builder.latestGenerationDate, parseDate(row["Month of Generation"]));
+      const monthOfGeneration = parseDate(row["Month of Generation"]);
+      builder.latestGenerationDate = maxDate(builder.latestGenerationDate, monthOfGeneration);
+
+      const latestMeterReadWh = parseEnergyToWh(resolveLastMeterReadRawValue(row), "Last Meter Read (kWh)", "kwh");
+      const latestMeterReadDate = parseDate(row["Last Meter Read Date"]) ?? monthOfGeneration;
+      updateLatestGenerationRead(builder, latestMeterReadDate, latestMeterReadWh);
     });
 
     (datasets.generationEntry?.rows ?? []).forEach((row) => {
@@ -3055,7 +3080,20 @@ export default function SolarRecDashboard() {
         if (!builder.primaryName) builder.primaryName = systemName;
       }
 
-      builder.latestGenerationDate = maxDate(builder.latestGenerationDate, parseDate(row["Last Month of Gen"]));
+      const lastMonthOfGen = parseDate(row["Last Month of Gen"]);
+      builder.latestGenerationDate = maxDate(builder.latestGenerationDate, lastMonthOfGen);
+
+      let latestReadWh: number | null = null;
+      for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
+        latestReadWh = parseEnergyToWh(row[header], header, "kwh");
+        if (latestReadWh !== null) break;
+      }
+      const latestReadDate =
+        parseDate(row["Last Meter Read Date"]) ??
+        parseDate(row["Effective Date"]) ??
+        parseDate(row["Month of Generation"]) ??
+        lastMonthOfGen;
+      updateLatestGenerationRead(builder, latestReadDate, latestReadWh);
     });
 
     const threshold = new Date();
@@ -3085,6 +3123,8 @@ export default function SolarRecDashboard() {
           builder.recPrice !== null && deliveredRecs !== null ? builder.recPrice * deliveredRecs : null;
         const valueGap =
           contractedValue !== null && deliveredValue !== null ? contractedValue - deliveredValue : null;
+        const latestReportingKwh =
+          builder.latestGenerationReadWh !== null ? Math.round((builder.latestGenerationReadWh / 1_000) * 1_000) / 1_000 : null;
 
         const isContractTransferred = isTransferredContractType(builder.contractType);
         const isContractTerminated = isTerminatedContractType(builder.contractType);
@@ -3140,6 +3180,7 @@ export default function SolarRecDashboard() {
           deliveredValue,
           valueGap,
           latestReportingDate,
+          latestReportingKwh,
           isReporting,
           isTerminated,
           isTransferred: builder.transferSeen,
@@ -5270,6 +5311,7 @@ export default function SolarRecDashboard() {
       "system_online",
       "last_reported_online_date",
       "last_gats_reporting_date",
+      "last_report_kwh",
       "contract_value",
     ];
 
@@ -5312,6 +5354,7 @@ export default function SolarRecDashboard() {
           system_online: monitoringDetails?.system_online ?? "",
           last_reported_online_date: monitoringDetails?.last_reported_online_date ?? "",
           last_gats_reporting_date: formatDate(system.latestReportingDate),
+          last_report_kwh: system.latestReportingKwh ?? "",
           contract_value: resolveContractValueAmount(system),
         };
       });
@@ -5346,6 +5389,7 @@ export default function SolarRecDashboard() {
       "monitoring_password",
       "installer_name",
       "last_reporting_date",
+      "last_report_kwh",
       "contract_value",
     ];
 
@@ -5365,6 +5409,7 @@ export default function SolarRecDashboard() {
         monitoring_password: accessFields.monitoringPassword,
         installer_name: system.installerName,
         last_reporting_date: formatDate(system.latestReportingDate),
+        last_report_kwh: system.latestReportingKwh ?? "",
         contract_value: resolveContractValueAmount(system),
       };
     });
@@ -10330,6 +10375,7 @@ export default function SolarRecDashboard() {
                       <TableHead>Monitoring Password</TableHead>
                       <TableHead>Installer</TableHead>
                       <TableHead>Last Reporting Date</TableHead>
+                      <TableHead>Last Report (kWh)</TableHead>
                       <TableHead>Contract Value</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -10364,13 +10410,14 @@ export default function SolarRecDashboard() {
                           <TableCell>{accessFields.monitoringPassword || "N/A"}</TableCell>
                           <TableCell>{system.installerName}</TableCell>
                           <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
+                          <TableCell>{formatKwh(system.latestReportingKwh)}</TableCell>
                           <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
                         </TableRow>
                       );
                     })}
                     {visibleOfflineDetailRows.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={14} className="py-6 text-center text-slate-500">
+                        <TableCell colSpan={15} className="py-6 text-center text-slate-500">
                           No offline systems match the current filters.
                         </TableCell>
                       </TableRow>
