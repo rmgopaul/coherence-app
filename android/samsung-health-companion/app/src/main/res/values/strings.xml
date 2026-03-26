@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">Coherence</string>
+  <string name="widget_description">Dashboard with headlines, weather, markets, sports, email, tasks &amp; calendar</string>
 </resources>

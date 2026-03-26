@@ -76,6 +76,20 @@
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
       </intent-filter>
     </receiver>
+
+    <!-- Home-screen dashboard widget -->
+    <receiver
+      android:name=".widget.CoherenceDashboardWidgetReceiver"
+      android:exported="true"
+      android:label="Coherence Dashboard">
+      <intent-filter>
+        <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+        <action android:name="com.coherence.samsunghealth.widget.ACTION_REFRESH" />
+      </intent-filter>
+      <meta-data
+        android:name="android.appwidget.provider"
+        android:resource="@xml/coherence_dashboard_widget_info" />
+    </receiver>
   </application>
 
 </manifest>
