@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Calendar, ExternalLink, Loader2, RefreshCw } from "lucide-react";
+import { Calendar, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -241,7 +241,7 @@ export default function GoogleCalendarWidget() {
   if (authLoading || isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-slate-600" />
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -251,215 +251,195 @@ export default function GoogleCalendarWidget() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-blue-100 text-blue-600">
-              <Calendar className="w-6 h-6" />
-            </div>
+    <main className="container max-w-4xl mx-auto px-4 py-6 space-y-4">
+      {error && (
+        <Card className="border-destructive/50 bg-destructive/5">
+          <CardContent className="py-4">
+            <p className="text-destructive font-medium">Error loading calendar events</p>
+            <p className="text-destructive/80 text-sm mt-1">{error.message}</p>
+            <Button variant="outline" onClick={handleRefresh} className="mt-3" size="sm">
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Try Again
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">Google Calendar</h1>
-              <p className="text-sm text-slate-600">Filter, scan, and review your upcoming events</p>
+              <CardTitle className="text-base">Event Controls</CardTitle>
+              <CardDescription>
+                Showing {filteredEvents.length.toLocaleString()} event{filteredEvents.length === 1 ? "" : "s"} in range
+              </CardDescription>
+            </div>
+            <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing || isFetching}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${isRefreshing || isFetching ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2 md:grid-cols-4">
+            <div className="md:col-span-2">
+              <Input
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                placeholder="Search title, description, location..."
+              />
+            </div>
+            <Select value={selectedCalendar} onValueChange={setSelectedCalendar}>
+              <SelectTrigger>
+                <SelectValue placeholder="Calendar" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="primary">Primary calendar</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={eventTypeFilter} onValueChange={(value) => setEventTypeFilter(value as EventTypeFilter)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Event type" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All event types</SelectItem>
+                <SelectItem value="timed">Timed events</SelectItem>
+                <SelectItem value="all_day">All-day events</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-4">
+            <Select value={rangePreset} onValueChange={(value) => setRangePreset(value as RangePreset)}>
+              <SelectTrigger>
+                <SelectValue placeholder="Date window" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="7d">Next 7 days</SelectItem>
+                <SelectItem value="14d">Next 14 days</SelectItem>
+                <SelectItem value="30d">Next 30 days</SelectItem>
+                <SelectItem value="custom">Custom range</SelectItem>
+              </SelectContent>
+            </Select>
+            {rangePreset === "custom" ? (
+              <>
+                <Input type="date" value={customStartDate} onChange={(event) => setCustomStartDate(event.target.value)} />
+                <Input type="date" value={customEndDate} onChange={(event) => setCustomEndDate(event.target.value)} />
+              </>
+            ) : (
+              <>
+                <div className="h-10 rounded-md border bg-muted px-3 text-sm text-muted-foreground flex items-center">
+                  {new Date(rangeBounds.startMs).toLocaleDateString()}
+                </div>
+                <div className="h-10 rounded-md border bg-muted px-3 text-sm text-muted-foreground flex items-center">
+                  {new Date(rangeBounds.endMs).toLocaleDateString()}
+                </div>
+              </>
+            )}
+            <div className="h-10 rounded-md border bg-muted px-3 text-sm text-muted-foreground flex items-center">
+              {filteredEvents.filter((event) => !event.allDay).length.toLocaleString()} timed, {filteredEvents.filter((event) => event.allDay).length.toLocaleString()} all-day
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Daily Event Density</CardTitle>
+          <CardDescription>Event count by day in the selected date window</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {densityData.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No events in the selected range.</p>
+          ) : (
+            <div className="h-48 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={densityData} margin={{ left: 0, right: 16, top: 8, bottom: 0 }}>
+                  <XAxis dataKey="dateLabel" tick={{ fontSize: 12 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 12 }} width={30} />
+                  <Tooltip />
+                  <Bar dataKey="count" fill="var(--primary)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {visibleEvents.length === 0 ? (
+        <Card>
+          <CardContent className="py-10 text-center">
+            <Calendar className="w-10 h-10 text-muted-foreground/50 mx-auto mb-3" />
+            <h3 className="text-base font-semibold text-foreground">No matching events</h3>
+            <p className="text-sm text-muted-foreground mt-1">Adjust your date window or filters to see more events.</p>
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {visibleEvents.map((event) => (
+            <Card key={event.id} className="hover:shadow-sm transition-shadow">
+              <CardHeader>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <CardTitle className="text-base">{event.summary}</CardTitle>
+                    <CardDescription className="mt-1">{formatEventRange(event)}</CardDescription>
+                    <div className="mt-2 text-sm text-muted-foreground space-y-1">
+                      {event.location ? (
+                        <p>
+                          <span className="font-medium">Location:</span> {event.location}
+                        </p>
+                      ) : null}
+                      {event.description ? (
+                        <p className="line-clamp-2">
+                          <span className="font-medium">Details:</span> {event.description}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  {event.htmlLink ? (
+                    <a
+                      href={event.htmlLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:text-primary/80"
+                      aria-label={`Open ${event.summary} in Google Calendar`}
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                    </a>
+                  ) : null}
+                </div>
+              </CardHeader>
+            </Card>
+          ))}
+
+          <div className="flex items-center justify-between text-sm text-muted-foreground">
+            <span>
+              Showing {visibleEvents.length} of {filteredEvents.length}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={currentPage <= 1}
+              >
+                Previous
+              </Button>
+              <span>
+                Page {currentPage} of {totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={currentPage >= totalPages}
+              >
+                Next
+              </Button>
             </div>
           </div>
         </div>
-      </header>
-
-      <main className="container max-w-5xl mx-auto px-4 py-8 space-y-4">
-        {error && (
-          <Card className="border-red-200 bg-red-50">
-            <CardContent className="py-4">
-              <p className="text-red-800 font-medium">Error loading calendar events</p>
-              <p className="text-red-600 text-sm mt-1">{error.message}</p>
-              <Button variant="outline" onClick={handleRefresh} className="mt-3" size="sm">
-                <RefreshCw className="w-4 h-4 mr-2" />
-                Try Again
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        <Card>
-          <CardHeader>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <CardTitle className="text-base">Event Controls</CardTitle>
-                <CardDescription>
-                  Showing {filteredEvents.length.toLocaleString()} event{filteredEvents.length === 1 ? "" : "s"} in range
-                </CardDescription>
-              </div>
-              <Button variant="outline" onClick={handleRefresh} disabled={isRefreshing || isFetching}>
-                <RefreshCw className={`w-4 h-4 mr-2 ${isRefreshing || isFetching ? "animate-spin" : ""}`} />
-                Refresh
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-2 md:grid-cols-4">
-              <div className="md:col-span-2">
-                <Input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Search title, description, location..."
-                />
-              </div>
-              <Select value={selectedCalendar} onValueChange={setSelectedCalendar}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Calendar" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="primary">Primary calendar</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={eventTypeFilter} onValueChange={(value) => setEventTypeFilter(value as EventTypeFilter)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Event type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All event types</SelectItem>
-                  <SelectItem value="timed">Timed events</SelectItem>
-                  <SelectItem value="all_day">All-day events</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="grid gap-2 md:grid-cols-4">
-              <Select value={rangePreset} onValueChange={(value) => setRangePreset(value as RangePreset)}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Date window" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="7d">Next 7 days</SelectItem>
-                  <SelectItem value="14d">Next 14 days</SelectItem>
-                  <SelectItem value="30d">Next 30 days</SelectItem>
-                  <SelectItem value="custom">Custom range</SelectItem>
-                </SelectContent>
-              </Select>
-              {rangePreset === "custom" ? (
-                <>
-                  <Input type="date" value={customStartDate} onChange={(event) => setCustomStartDate(event.target.value)} />
-                  <Input type="date" value={customEndDate} onChange={(event) => setCustomEndDate(event.target.value)} />
-                </>
-              ) : (
-                <>
-                  <div className="h-10 rounded-md border bg-slate-50 px-3 text-sm text-slate-600 flex items-center">
-                    {new Date(rangeBounds.startMs).toLocaleDateString()}
-                  </div>
-                  <div className="h-10 rounded-md border bg-slate-50 px-3 text-sm text-slate-600 flex items-center">
-                    {new Date(rangeBounds.endMs).toLocaleDateString()}
-                  </div>
-                </>
-              )}
-              <div className="h-10 rounded-md border bg-slate-50 px-3 text-sm text-slate-600 flex items-center">
-                {filteredEvents.filter((event) => !event.allDay).length.toLocaleString()} timed, {filteredEvents.filter((event) => event.allDay).length.toLocaleString()} all-day
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Daily Event Density</CardTitle>
-            <CardDescription>Event count by day in the selected date window</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {densityData.length === 0 ? (
-              <p className="text-sm text-slate-500">No events in the selected range.</p>
-            ) : (
-              <div className="h-48 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={densityData} margin={{ left: 0, right: 16, top: 8, bottom: 0 }}>
-                    <XAxis dataKey="dateLabel" tick={{ fontSize: 12 }} />
-                    <YAxis allowDecimals={false} tick={{ fontSize: 12 }} width={30} />
-                    <Tooltip />
-                    <Bar dataKey="count" fill="#2563eb" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {visibleEvents.length === 0 ? (
-          <Card>
-            <CardContent className="py-10 text-center">
-              <Calendar className="w-10 h-10 text-slate-400 mx-auto mb-3" />
-              <h3 className="text-base font-semibold text-slate-900">No matching events</h3>
-              <p className="text-sm text-slate-600 mt-1">Adjust your date window or filters to see more events.</p>
-            </CardContent>
-          </Card>
-        ) : (
-          <div className="space-y-3">
-            {visibleEvents.map((event) => (
-              <Card key={event.id} className="hover:shadow-sm transition-shadow">
-                <CardHeader>
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1">
-                      <CardTitle className="text-base">{event.summary}</CardTitle>
-                      <CardDescription className="mt-1">{formatEventRange(event)}</CardDescription>
-                      <div className="mt-2 text-sm text-slate-600 space-y-1">
-                        {event.location ? (
-                          <p>
-                            <span className="font-medium">Location:</span> {event.location}
-                          </p>
-                        ) : null}
-                        {event.description ? (
-                          <p className="line-clamp-2">
-                            <span className="font-medium">Details:</span> {event.description}
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                    {event.htmlLink ? (
-                      <a
-                        href={event.htmlLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:text-blue-700"
-                        aria-label={`Open ${event.summary} in Google Calendar`}
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    ) : null}
-                  </div>
-                </CardHeader>
-              </Card>
-            ))}
-
-            <div className="flex items-center justify-between text-sm text-slate-600">
-              <span>
-                Showing {visibleEvents.length} of {filteredEvents.length}
-              </span>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((current) => Math.max(1, current - 1))}
-                  disabled={currentPage <= 1}
-                >
-                  Previous
-                </Button>
-                <span>
-                  Page {currentPage} of {totalPages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-                  disabled={currentPage >= totalPages}
-                >
-                  Next
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
+      )}
+    </main>
   );
 }

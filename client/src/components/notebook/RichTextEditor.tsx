@@ -93,7 +93,7 @@ function ToolbarButton({
       <TooltipTrigger asChild>{button}</TooltipTrigger>
       <TooltipContent side="bottom" className="flex items-center gap-1.5 text-xs">
         <span>{title}</span>
-        <kbd className="rounded border border-slate-600 bg-slate-700 px-1 py-0.5 text-[10px] font-mono text-slate-300">
+        <kbd className="rounded border border-slate-600 bg-slate-700 px-1 py-0.5 text-xs font-mono text-slate-300">
           {shortcut}
         </kbd>
       </TooltipContent>
@@ -456,7 +456,7 @@ export default function RichTextEditor({ value, onChange, onSaveShortcut, onUplo
         </div>
 
         {/* Word/character count footer */}
-        <div className="flex items-center justify-end border-t border-slate-200 bg-slate-50/60 px-4 py-1 text-[11px] text-slate-400">
+        <div className="flex items-center justify-end border-t border-slate-200 bg-slate-50/60 px-4 py-1 text-xs text-slate-400">
           {wordCount} word{wordCount !== 1 ? "s" : ""} &middot; {charCount} char{charCount !== 1 ? "s" : ""}
         </div>
 

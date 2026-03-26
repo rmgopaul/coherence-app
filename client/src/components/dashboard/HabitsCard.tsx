@@ -133,7 +133,7 @@ export function HabitsCard({
                   <div className="flex items-center justify-between">
                     <p className="text-xs font-semibold">{habit.name}</p>
                     {streakData && streakData.streak > 0 && (
-                      <span className="text-[10px] font-bold opacity-70">{streakData.streak}d</span>
+                      <span className="text-xs font-bold opacity-70">{streakData.streak}d</span>
                     )}
                   </div>
                   {streakData ? (
@@ -149,7 +149,7 @@ export function HabitsCard({
                       ))}
                     </div>
                   ) : (
-                    <p className="text-[11px] mt-0.5 opacity-80">
+                    <p className="text-xs mt-0.5 opacity-80">
                       {habit.completed ? "Done today" : "Tap to mark done"}
                     </p>
                   )}

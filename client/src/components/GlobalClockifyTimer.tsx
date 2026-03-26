@@ -72,22 +72,22 @@ export default function GlobalClockifyTimer() {
     (currentEntry?.projectId ? `Project ${currentEntry.projectId}` : "No project selected");
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(26rem,calc(100vw-2rem))] rounded-xl border border-slate-300 bg-white/95 p-3 shadow-xl backdrop-blur-sm">
+    <div className="fixed bottom-20 right-4 z-50 w-[min(26rem,calc(100vw-2rem))] rounded-xl border bg-card/95 p-3 shadow-xl backdrop-blur-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-600">
+          <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5" />
             Clockify
-            <span className={isRunning ? "text-emerald-700" : "text-slate-500"}>
+            <span className={isRunning ? "text-health" : "text-muted-foreground"}>
               {isRunning ? "Running" : "Idle"}
             </span>
           </p>
-          <p className="mt-1 truncate text-sm font-semibold text-slate-900">{description}</p>
-          <p className="mt-1 flex items-center gap-1 truncate text-xs font-medium text-blue-700">
+          <p className="mt-1 truncate text-sm font-semibold text-foreground">{description}</p>
+          <p className="mt-1 flex items-center gap-1 truncate text-xs font-medium text-primary">
             <FolderOpen className="h-3.5 w-3.5 shrink-0" />
             Project: {projectLabel}
           </p>
-          <p className="mt-1 text-xs text-slate-700">
+          <p className="mt-1 text-xs text-muted-foreground">
             {isRunning ? `Elapsed ${formatDuration(durationSeconds)}` : "No timer currently running"}
           </p>
         </div>

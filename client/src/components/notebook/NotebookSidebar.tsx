@@ -73,7 +73,7 @@ export function NotebookSidebar({
       </div>
 
       <div className="border-t border-slate-200 pt-2.5">
-        <p className="px-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Notebooks</p>
+        <p className="px-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500">Notebooks</p>
         <div className="mt-1.5 space-y-1">
           {notebooks.length === 0 ? (
             <p className="px-2.5 py-2 text-xs text-slate-500">No notebooks yet.</p>

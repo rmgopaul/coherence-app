@@ -302,7 +302,7 @@ export default function UniversalDropDock() {
 
     // Email subjects are usually longer, so shrink text progressively.
     if (item.type === "gmail") {
-      if (length > 90) return "text-[10px] leading-tight font-medium truncate flex-1";
+      if (length > 90) return "text-xs leading-tight font-medium truncate flex-1";
       if (length > 65) return "text-xs leading-tight font-medium truncate flex-1";
       return "text-sm leading-tight font-medium truncate flex-1";
     }

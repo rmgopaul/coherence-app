@@ -75,7 +75,7 @@ export function WhoopCard({
           </div>
         ) : whoopSummary ? (
           <>
-            <p className="text-[11px] text-zinc-300">
+            <p className="text-xs text-zinc-300">
               Auto-refresh every 5m.
               {whoopSummary.dataDate ? ` Data: ${whoopSummary.dataDate}.` : ""}
               {whoopSummary.profile
@@ -85,25 +85,25 @@ export function WhoopCard({
             {/* Hero metrics */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="rounded-lg border border-lime-300/30 bg-lime-300/10 p-3">
-                <p className="text-[11px] uppercase tracking-wide text-lime-200">Recovery</p>
+                <p className="text-xs uppercase tracking-wide text-lime-200">Recovery</p>
                 <p className="text-xl font-bold text-lime-300 mt-1">
                   {toPercent(whoopSummary.recoveryScore)}
                 </p>
               </div>
               <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                <p className="text-[11px] uppercase tracking-wide text-zinc-400">Day Strain</p>
+                <p className="text-xs uppercase tracking-wide text-zinc-400">Day Strain</p>
                 <p className="text-xl font-bold text-white mt-1">
                   {toOneDecimal(whoopSummary.dayStrain)}
                 </p>
               </div>
               <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                <p className="text-[11px] uppercase tracking-wide text-zinc-400">Sleep</p>
+                <p className="text-xs uppercase tracking-wide text-zinc-400">Sleep</p>
                 <p className="text-xl font-bold text-white mt-1">
                   {whoopSummary.sleepHours !== null ? `${whoopSummary.sleepHours}h` : "-"}
                 </p>
               </div>
               <div className="rounded-lg border border-zinc-700 bg-zinc-900 p-3">
-                <p className="text-[11px] uppercase tracking-wide text-zinc-400">HRV</p>
+                <p className="text-xs uppercase tracking-wide text-zinc-400">HRV</p>
                 <p className="text-xl font-bold text-white mt-1">
                   {whoopSummary.hrvRmssdMilli !== null
                     ? `${Math.round(whoopSummary.hrvRmssdMilli)} ms`

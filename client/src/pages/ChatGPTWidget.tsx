@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Loader2, MessageSquare, Plus, Send, Trash2 } from "lucide-react";
+import { Loader2, MessageSquare, Plus, Send, Trash2 } from "lucide-react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -292,7 +292,7 @@ export default function ChatGPTWidget() {
   if (authLoading || (conversationsQuery.isLoading && !conversationsQuery.data)) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-slate-600" />
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -302,205 +302,176 @@ export default function ChatGPTWidget() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-green-100 text-green-700">
-              <MessageSquare className="w-6 h-6" />
+    <main className="container max-w-6xl mx-auto px-4 py-6 space-y-4">
+      <div className="grid gap-3 md:grid-cols-3">
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">Conversations</p>
+            <p className="text-2xl font-semibold text-foreground">{(conversationsQuery.data || []).length.toLocaleString()}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">Messages Today</p>
+            <p className="text-2xl font-semibold text-foreground">{messagesToday.toLocaleString()}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-4">
+            <p className="text-sm text-muted-foreground">Avg Reply Time</p>
+            <p className="text-2xl font-semibold text-foreground">
+              {avgResponseMs === null ? "-" : `${(avgResponseMs / 1000).toFixed(1)}s`}
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">{todayResponseCount} replies measured today</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-12">
+        <Card className="lg:col-span-4">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle className="text-base">Conversations</CardTitle>
+              <Button size="sm" onClick={handleCreateConversation} disabled={createConversation.isPending}>
+                <Plus className="w-4 h-4 mr-1" />
+                New
+              </Button>
             </div>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">ChatGPT Assistant</h1>
-              <p className="text-sm text-slate-600">Conversation search, timestamps, and usage metrics</p>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="container max-w-6xl mx-auto px-4 py-6 space-y-4">
-        <div className="grid gap-3 md:grid-cols-3">
-          <Card>
-            <CardContent className="pt-4">
-              <p className="text-sm text-slate-500">Conversations</p>
-              <p className="text-2xl font-semibold text-slate-900">{(conversationsQuery.data || []).length.toLocaleString()}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4">
-              <p className="text-sm text-slate-500">Messages Today</p>
-              <p className="text-2xl font-semibold text-slate-900">{messagesToday.toLocaleString()}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4">
-              <p className="text-sm text-slate-500">Avg Reply Time</p>
-              <p className="text-2xl font-semibold text-slate-900">
-                {avgResponseMs === null ? "-" : `${(avgResponseMs / 1000).toFixed(1)}s`}
-              </p>
-              <p className="text-xs text-slate-500 mt-1">{todayResponseCount} replies measured today</p>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div className="grid gap-4 lg:grid-cols-12">
-          <Card className="lg:col-span-4">
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-base">Conversations</CardTitle>
-                <Button size="sm" onClick={handleCreateConversation} disabled={createConversation.isPending}>
-                  <Plus className="w-4 h-4 mr-1" />
-                  New
-                </Button>
-              </div>
-              <Input
-                value={conversationSearch}
-                onChange={(event) => setConversationSearch(event.target.value)}
-                placeholder="Search conversations..."
-              />
-            </CardHeader>
-            <CardContent className="space-y-2 max-h-[560px] overflow-y-auto">
-              {conversations.length === 0 ? (
-                <p className="text-sm text-slate-500">No conversations yet.</p>
-              ) : (
-                conversations.map((conversation) => {
-                  const isSelected = selectedConversationId === conversation.id;
-                  return (
-                    <div
-                      key={conversation.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedConversationId(conversation.id);
-                        setSendError(null);
-                        shouldAutoScrollRef.current = false;
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          setSelectedConversationId(conversation.id);
-                          setSendError(null);
-                          shouldAutoScrollRef.current = false;
-                        }
-                      }}
-                      className={`w-full text-left rounded-md border px-3 py-2 transition cursor-pointer ${
-                        isSelected
-                          ? "border-emerald-400 bg-emerald-50"
-                          : "border-slate-200 bg-white hover:bg-slate-50"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-900 truncate">{conversation.title || "Untitled"}</p>
-                          <p className="text-xs text-slate-500">
-                            {formatTimestamp(conversation.updatedAt || conversation.createdAt)}
-                          </p>
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            void handleDeleteConversation(conversation.id);
-                          }}
-                        >
-                          <Trash2 className="w-4 h-4 text-red-600" />
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="lg:col-span-8 flex flex-col min-h-[560px]">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base">
-                {selectedConversationId
-                  ? conversationsQuery.data?.find((conversation) => conversation.id === selectedConversationId)?.title || "Conversation"
-                  : "Select or create a conversation"}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 flex flex-col gap-3">
-              <div ref={messageListRef} className="flex-1 overflow-y-auto rounded-md border bg-slate-50 p-3 space-y-3">
-                {!selectedConversationId ? (
-                  <div className="h-full flex items-center justify-center text-center text-slate-500 text-sm">
-                    Start a new conversation to chat.
-                  </div>
-                ) : messagesQuery.isLoading && !messagesQuery.data ? (
-                  <div className="h-full flex items-center justify-center">
-                    <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
-                  </div>
-                ) : currentMessages.length === 0 && !chat.isPending ? (
-                  <div className="h-full flex items-center justify-center text-center text-slate-500 text-sm">
-                    Send a message to begin this conversation.
-                  </div>
-                ) : (
-                  currentMessages.map((message, index) => (
-                    <div key={message.id || `${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-                      <div
-                        className={`max-w-[85%] rounded-lg px-3 py-2 ${
-                          message.role === "user"
-                            ? "bg-blue-600 text-white"
-                            : "bg-white border border-slate-200 text-slate-900"
-                        }`}
-                      >
-                        <div className={`text-sm break-words prose prose-sm max-w-none ${message.role === "user" ? "prose-invert" : ""}`}>
-                          <ReactMarkdown>{message.content}</ReactMarkdown>
-                        </div>
-                        <p className={`text-[11px] mt-1 ${message.role === "user" ? "text-blue-100" : "text-slate-500"}`}>
-                          {formatTimestamp(message.createdAt)} {message.pending ? "• sending" : ""}
+            <Input
+              value={conversationSearch}
+              onChange={(event) => setConversationSearch(event.target.value)}
+              placeholder="Search conversations..."
+            />
+          </CardHeader>
+          <CardContent className="space-y-2 max-h-[560px] overflow-y-auto">
+            {conversations.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No conversations yet.</p>
+            ) : (
+              conversations.map((conversation) => {
+                const isSelected = selectedConversationId === conversation.id;
+                return (
+                  <button
+                    key={conversation.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedConversationId(conversation.id);
+                      setSendError(null);
+                      shouldAutoScrollRef.current = false;
+                    }}
+                    className={`w-full text-left rounded-md border px-3 py-2 transition cursor-pointer ${
+                      isSelected
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-card hover:bg-accent"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-foreground truncate">{conversation.title || "Untitled"}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {formatTimestamp(conversation.updatedAt || conversation.createdAt)}
                         </p>
                       </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void handleDeleteConversation(conversation.id);
+                        }}
+                      >
+                        <Trash2 className="w-4 h-4 text-destructive" />
+                      </Button>
                     </div>
-                  ))
-                )}
+                  </button>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
 
-                {chat.isPending && (
-                  <div className="flex justify-start">
-                    <div className="rounded-lg bg-white border border-slate-200 px-3 py-2 text-sm text-slate-600 flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Generating response...
+        <Card className="lg:col-span-8 flex flex-col min-h-[560px]">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">
+              {selectedConversationId
+                ? conversationsQuery.data?.find((conversation) => conversation.id === selectedConversationId)?.title || "Conversation"
+                : "Select or create a conversation"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 flex flex-col gap-3">
+            <div ref={messageListRef} className="flex-1 overflow-y-auto rounded-md border bg-muted/30 p-3 space-y-3">
+              {!selectedConversationId ? (
+                <div className="h-full flex items-center justify-center text-center text-muted-foreground text-sm">
+                  Start a new conversation to chat.
+                </div>
+              ) : messagesQuery.isLoading && !messagesQuery.data ? (
+                <div className="h-full flex items-center justify-center">
+                  <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                </div>
+              ) : currentMessages.length === 0 && !chat.isPending ? (
+                <div className="h-full flex items-center justify-center text-center text-muted-foreground text-sm">
+                  Send a message to begin this conversation.
+                </div>
+              ) : (
+                currentMessages.map((message, index) => (
+                  <div key={message.id || `${message.role}-${index}`} className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`max-w-[85%] rounded-lg px-3 py-2 ${
+                        message.role === "user"
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-card border text-foreground"
+                      }`}
+                    >
+                      <div className={`text-sm break-words prose prose-sm max-w-none ${message.role === "user" ? "prose-invert" : ""}`}>
+                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      </div>
+                      <p className={`text-xs mt-1 ${message.role === "user" ? "text-primary-foreground/70" : "text-muted-foreground"}`}>
+                        {formatTimestamp(message.createdAt)} {message.pending ? "• sending" : ""}
+                      </p>
                     </div>
                   </div>
-                )}
-              </div>
+                ))
+              )}
 
-              {sendError ? (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {sendError}
+              {chat.isPending && (
+                <div className="flex justify-start">
+                  <div className="rounded-lg bg-card border px-3 py-2 text-sm text-muted-foreground flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Generating response...
+                  </div>
                 </div>
-              ) : null}
+              )}
+            </div>
 
-              <div className="flex gap-2">
-                <Input
-                  placeholder={selectedConversationId ? "Type your message..." : "Type your first message to start a conversation..."}
-                  value={messageInput}
-                  onChange={(event) => setMessageInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      void handleSend();
-                    }
-                  }}
-                  disabled={chat.isPending || createConversation.isPending}
-                />
-                <Button
-                  onClick={() => void handleSend()}
-                  disabled={chat.isPending || createConversation.isPending || !messageInput.trim()}
-                >
-                  {chat.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                </Button>
+            {sendError ? (
+              <div className="rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {sendError}
               </div>
-            </CardContent>
-          </Card>
-        </div>
-      </main>
-    </div>
+            ) : null}
+
+            <div className="flex gap-2">
+              <Input
+                placeholder={selectedConversationId ? "Type your message..." : "Type your first message to start a conversation..."}
+                value={messageInput}
+                onChange={(event) => setMessageInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleSend();
+                  }
+                }}
+                disabled={chat.isPending || createConversation.isPending}
+              />
+              <Button
+                onClick={() => void handleSend()}
+                disabled={chat.isPending || createConversation.isPending || !messageInput.trim()}
+              >
+                {chat.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </main>
   );
 }

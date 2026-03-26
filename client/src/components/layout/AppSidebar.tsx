@@ -6,16 +6,17 @@ import {
   StickyNote,
   MessageSquare,
   HeartPulse,
-  Repeat,
-  Pill,
   Clock,
   Mail,
-  FolderOpen,
   ChevronDown,
   BarChart3,
   FileText,
   FileSpreadsheet,
-  Database,
+  Zap,
+  Sun,
+  Battery,
+  Headset,
+  FileSearch,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -64,14 +65,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Calendar", href: "/widget/google-calendar", icon: Calendar, badgeKey: "events" },
       { label: "Notes", href: "/notes", icon: StickyNote },
       { label: "Chat", href: "/widget/chatgpt", icon: MessageSquare },
-    ],
-  },
-  {
-    title: "Health",
-    items: [
-      { label: "Daily Log", href: "/dashboard#health", icon: HeartPulse },
-      { label: "Habits", href: "/dashboard#habits", icon: Repeat },
-      { label: "Supplements", href: "/dashboard#supplements", icon: Pill },
+      { label: "Health", href: "/dashboard", icon: HeartPulse },
     ],
   },
   {
@@ -87,13 +81,13 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Solar REC", href: "/solar-rec-dashboard", icon: BarChart3 },
       { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
-      { label: "Contract Scanner", href: "/contract-scanner", icon: FileText },
+      { label: "Contract Scanner", href: "/contract-scanner", icon: FileSearch },
       { label: "ABP Settlement", href: "/abp-invoice-settlement", icon: FileSpreadsheet },
-      { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Database },
-      { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Database },
-      { label: "Tesla Solar", href: "/tesla-solar-api", icon: Database },
-      { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: Database },
-      { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: Database },
+      { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Zap },
+      { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Sun },
+      { label: "Tesla Solar", href: "/tesla-solar-api", icon: Sun },
+      { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: Battery },
+      { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: Headset },
     ],
   },
 ];
@@ -140,7 +134,7 @@ export function AppSidebar() {
     () => {
       const stored = getStoredSections();
       const defaults: Record<string, boolean> = {};
-      const defaultClosed = new Set(["Portfolio"]);
+      const defaultClosed = new Set<string>(["Portfolio"]);
       for (const section of NAV_SECTIONS) {
         defaults[section.title] =
           stored[section.title] !== undefined
@@ -195,7 +189,7 @@ export function AppSidebar() {
           >
             <SidebarGroup>
               <CollapsibleTrigger asChild>
-                <SidebarGroupLabel className="cursor-pointer select-none justify-between uppercase tracking-wider text-[0.65rem]">
+                <SidebarGroupLabel className="cursor-pointer select-none justify-between uppercase tracking-wider text-xs">
                   {section.title}
                   <ChevronDown
                     className={cn(
@@ -228,7 +222,7 @@ export function AppSidebar() {
                             </a>
                           </SidebarMenuButton>
                           {item.badgeKey && badges[item.badgeKey] != null && (
-                            <SidebarMenuBadge className="text-[10px] font-medium">
+                            <SidebarMenuBadge className="text-xs font-medium">
                               {badges[item.badgeKey]}
                             </SidebarMenuBadge>
                           )}
@@ -271,7 +265,7 @@ export function AppSidebar() {
                 }
                 className="text-muted-foreground"
               >
-                <kbd className="flex size-4 items-center justify-center rounded border bg-muted text-[10px] font-mono">?</kbd>
+                <kbd className="flex size-4 items-center justify-center rounded border bg-muted text-xs font-mono">?</kbd>
                 <span>Shortcuts</span>
               </button>
             </SidebarMenuButton>

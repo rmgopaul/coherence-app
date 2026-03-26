@@ -96,7 +96,7 @@ export function FocusTimer() {
 
   return (
     <div className="rounded-md border border-slate-200 bg-white/90 p-2.5">
-      <p className="text-[11px] uppercase tracking-wide text-slate-500">Focus Timer</p>
+      <p className="text-xs uppercase tracking-wide text-slate-500">Focus Timer</p>
       <div className="mt-1 flex items-center gap-2">
         <Timer className={`h-4 w-4 ${isDone ? "text-amber-500" : running ? "text-emerald-600" : "text-slate-500"}`} />
         <span className={`text-sm font-semibold tabular-nums ${isDone ? "text-amber-600" : "text-slate-900"}`}>
@@ -153,7 +153,7 @@ export function FocusTimer() {
               key={preset.label}
               type="button"
               onClick={() => reset(preset.seconds)}
-              className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+              className={`rounded px-1.5 py-0.5 text-xs font-medium transition-colors ${
                 totalDuration === preset.seconds && remaining === preset.seconds
                   ? "bg-emerald-100 text-emerald-800"
                   : "bg-slate-100 text-slate-600 hover:bg-slate-200"

@@ -183,7 +183,7 @@ export function DashboardWidget({
 
         {lastUpdated && !isLoading && !error && (
           <CardFooter className="pt-0 pb-3">
-            <span className="text-[0.65rem] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               Updated {formatRelativeTime(lastUpdated)}
             </span>
           </CardFooter>

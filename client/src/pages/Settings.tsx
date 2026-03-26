@@ -86,7 +86,7 @@ const HABIT_COLOR_OPTIONS = [
   "amber",
 ];
 
-const SUPPLEMENT_UNITS = ["capsule", "tablet", "mg", "mcg", "g", "ml", "drop", "scoop", "other"] as const;
+import { SUPPLEMENT_UNITS } from "@shared/const";
 
 const toDateKeyLocal = (date: Date): string => {
   const year = date.getFullYear();
@@ -2213,7 +2213,7 @@ function EngagementInsightsPanel() {
                 <td className="py-2 pr-4 text-right text-slate-600">{section.interactions}</td>
                 <td className="py-2">
                   {section.rating ? (
-                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold ${RATING_COLORS[section.rating] ?? "bg-slate-100 text-slate-700"}`}>
+                    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${RATING_COLORS[section.rating] ?? "bg-slate-100 text-slate-700"}`}>
                       {section.rating === "rarely-use" ? "Rarely use" : section.rating.charAt(0).toUpperCase() + section.rating.slice(1)}
                     </span>
                   ) : (

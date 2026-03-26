@@ -555,8 +555,8 @@ function DecisionsWaitingCard({ brief, onAction }: { brief: DailyBrief; onAction
             {brief.decisions.slice(0, 3).map((item, idx) => (
               <div key={`decision-${idx}`} className="rounded-md border border-slate-200 bg-white p-2">
                 <p className="text-xs font-medium text-slate-900">{item.decision}</p>
-                {item.dueBy ? <p className="mt-0.5 text-[11px] text-slate-500">Due {new Date(item.dueBy).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</p> : null}
-                {item.suggestedMessage ? <p className="mt-1 text-[11px] text-slate-700">{item.suggestedMessage}</p> : null}
+                {item.dueBy ? <p className="mt-0.5 text-xs text-slate-500">Due {new Date(item.dueBy).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}</p> : null}
+                {item.suggestedMessage ? <p className="mt-1 text-xs text-slate-700">{item.suggestedMessage}</p> : null}
               </div>
             ))}
             {brief.decisions.length === 0 ? <p className="text-xs text-slate-500">No explicit decisions queued.</p> : null}
@@ -569,7 +569,7 @@ function DecisionsWaitingCard({ brief, onAction }: { brief: DailyBrief; onAction
             {brief.waitingOn.slice(0, 3).map((item, idx) => (
               <div key={`waiting-${idx}`} className="rounded-md border border-slate-200 bg-white p-2">
                 <p className="text-xs font-medium text-slate-900">{item.person}</p>
-                <p className="mt-0.5 text-[11px] text-slate-700">{item.blocker}</p>
+                <p className="mt-0.5 text-xs text-slate-700">{item.blocker}</p>
                 <Button
                   size="sm"
                   variant="outline"

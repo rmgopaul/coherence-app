@@ -139,7 +139,7 @@ export function KeyboardShortcuts() {
                               then
                             </span>
                           )}
-                          <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium">
+                          <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-xs font-medium">
                             {key}
                           </kbd>
                         </span>

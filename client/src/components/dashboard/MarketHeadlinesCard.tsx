@@ -96,7 +96,7 @@ function QuoteCard({ quote }: { quote: MarketQuote }) {
             {displaySymbol}
           </span>
           {isCrypto && (
-            <Badge variant="outline" className="text-[10px] px-1 py-0 h-4">
+            <Badge variant="outline" className="text-xs px-1 py-0 h-4">
               Crypto
             </Badge>
           )}
@@ -221,7 +221,7 @@ export default function MarketHeadlinesCard() {
               <Badge
                 variant="outline"
                 className={cn(
-                  "text-[10px] px-1.5 py-0 h-4",
+                  "text-xs px-1.5 py-0 h-4",
                   stocksOverallChange >= 0
                     ? "text-emerald-600 border-emerald-200"
                     : "text-red-600 border-red-200"
@@ -285,7 +285,7 @@ export default function MarketHeadlinesCard() {
                       {source.source}
                     </span>
                     {source.asOf && (
-                      <span className="text-[10px] text-slate-400">{source.asOf}</span>
+                      <span className="text-xs text-slate-400">{source.asOf}</span>
                     )}
                   </div>
                   {source.approve !== null && source.disapprove !== null ? (

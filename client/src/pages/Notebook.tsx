@@ -1026,7 +1026,7 @@ export default function Notebook() {
                     {extractTextPreview(note.content).slice(0, 100) || "No content yet."}
                   </p>
 
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                     <Badge variant="outline" className="h-5 border-slate-300 px-1.5 font-normal">
                       {normalizeNotebook(note.notebook)}
                     </Badge>
@@ -1111,7 +1111,7 @@ export default function Notebook() {
         <Card className="border-slate-200 bg-white/95 shadow-sm">
           <CardContent className="flex flex-col gap-3 p-4 md:flex-row md:items-center md:justify-between">
             <div>
-              <div className="mb-1 inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+              <div className="mb-1 inline-flex items-center gap-1.5 rounded-md bg-emerald-50 px-2 py-1 text-xs font-semibold uppercase tracking-wide text-emerald-700">
                 <BookOpen className="h-3.5 w-3.5" />
                 Notebook
               </div>
@@ -1310,7 +1310,7 @@ export default function Notebook() {
                                 <p className="mt-1 line-clamp-2 text-sm font-medium text-slate-900">
                                   {link.sourceTitle || link.externalId || "Linked item"}
                                 </p>
-                                <p className="mt-1 text-[11px] text-slate-500">Added {formatDateTime(link.createdAt)}</p>
+                                <p className="mt-1 text-xs text-slate-500">Added {formatDateTime(link.createdAt)}</p>
                               </div>
                               <Button
                                 variant="ghost"

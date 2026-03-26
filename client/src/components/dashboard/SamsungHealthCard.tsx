@@ -128,7 +128,7 @@ export function SamsungHealthCard({
           </div>
         ) : (
           <>
-            <p className="text-[11px] text-muted-foreground">
+            <p className="text-xs text-muted-foreground">
               Source: {snapshot.sourceProvider}.{" "}
               {snapshot.receivedAt
                 ? `Last sync ${new Date(snapshot.receivedAt).toLocaleTimeString("en-US", {

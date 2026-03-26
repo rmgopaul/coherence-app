@@ -65,7 +65,7 @@ export function SectionRating({
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="end">
-        <p className="px-2 py-1 text-[11px] font-medium text-muted-foreground">
+        <p className="px-2 py-1 text-xs font-medium text-muted-foreground">
           How useful is this?
         </p>
         {RATING_OPTIONS.map((option) => (

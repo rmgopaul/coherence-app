@@ -45,6 +45,9 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <SidebarProvider>
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-3 focus:bg-primary focus:text-primary-foreground focus:rounded-md focus:m-2">
+        Skip to main content
+      </a>
       <AppSidebar />
       <SidebarInset>
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
@@ -89,13 +92,13 @@ export function AppShell({ children }: AppShellProps) {
             >
               <Search className="size-3" />
               <span className="hidden sm:inline">Search</span>
-              <kbd className="pointer-events-none hidden rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium sm:inline">
+              <kbd className="pointer-events-none hidden rounded border bg-muted px-1.5 py-0.5 font-mono text-xs font-medium sm:inline">
                 ⌘K
               </kbd>
             </button>
           </div>
         </header>
-        <div key={location} data-scroll-container className="flex-1 overflow-auto animate-in fade-in duration-200">{children}</div>
+        <div id="main-content" key={location} data-scroll-container className="flex-1 overflow-auto animate-in fade-in duration-200">{children}</div>
         <ScrollToTop />
       </SidebarInset>
       <CommandPalette />

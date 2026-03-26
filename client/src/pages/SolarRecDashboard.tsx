@@ -7812,13 +7812,13 @@ export default function SolarRecDashboard() {
           <CardContent className="py-3">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-7">
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">Datasets Loaded</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Datasets Loaded</p>
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">Rows Loaded</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
                 <p className="text-lg font-semibold text-slate-900">{formatNumber(dataHealthSummary.totalRowsLoaded)}</p>
               </div>
               <div
@@ -7828,7 +7828,7 @@ export default function SolarRecDashboard() {
                     : "border-emerald-300 bg-emerald-50"
                 }`}
               >
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">Missing Required</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Missing Required</p>
                 <p
                   className={`text-lg font-semibold ${
                     dataHealthSummary.missingRequiredCount > 0 ? "text-amber-900" : "text-emerald-800"
@@ -7844,7 +7844,7 @@ export default function SolarRecDashboard() {
                     : "border-emerald-300 bg-emerald-50"
                 }`}
               >
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">Stale Uploads (&gt;14d)</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Stale Uploads (&gt;14d)</p>
                 <p
                   className={`text-lg font-semibold ${
                     dataHealthSummary.staleDatasetCount > 0 ? "text-amber-900" : "text-emerald-800"
@@ -7854,22 +7854,22 @@ export default function SolarRecDashboard() {
                 </p>
               </div>
               <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">Part II Filter QA</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Part II Filter QA</p>
                 <p className="text-sm font-semibold text-slate-900">
                   {formatNumber(part2FilterAudit.scopedSystems)} / {formatNumber(part2FilterAudit.part2UniqueSystems)} systems mapped
                 </p>
-                <p className="mt-1 text-[11px] text-slate-700">
+                <p className="mt-1 text-xs text-slate-700">
                   Coverage: {formatPercent(part2FilterAudit.scopedCoveragePercent)}
                 </p>
-                <p className="text-[11px] text-slate-700">
+                <p className="text-xs text-slate-700">
                   Rows: {formatNumber(part2FilterAudit.part2Rows)} Part II, {formatNumber(part2FilterAudit.excludedRows)} excluded
                 </p>
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 xl:col-span-2">
-                <p className="text-[11px] uppercase tracking-wide text-slate-500">Cloud Sync</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Cloud Sync</p>
                 <p className="text-sm font-semibold text-slate-900">{dataHealthSummary.syncStatus}</p>
                 {dataHealthSummary.staleDatasetLabels.length > 0 ? (
-                  <p className="mt-1 text-[11px] text-amber-800">
+                  <p className="mt-1 text-xs text-amber-800">
                     Stale: {dataHealthSummary.staleDatasetLabels.join(", ")}
                   </p>
                 ) : null}
@@ -11443,7 +11443,7 @@ export default function SolarRecDashboard() {
                               .map((source) => (
                                 <p
                                   key={`${source.fileName}-${source.uploadedAt.toISOString()}`}
-                                  className="text-[11px] text-slate-600"
+                                  className="text-xs text-slate-600"
                                 >
                                   {source.fileName} ({formatNumber(source.rowCount)} rows)
                                 </p>

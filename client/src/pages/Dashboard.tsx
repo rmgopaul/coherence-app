@@ -200,7 +200,7 @@ const isSameLocalDay = (dateA: Date, dateB: Date) => {
 };
 
 
-const SUPPLEMENT_UNITS = ["capsule", "tablet", "mg", "mcg", "g", "ml", "drop", "scoop", "other"] as const;
+import { SUPPLEMENT_UNITS } from "@shared/const";
 
 function LiveClockValue() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
@@ -214,7 +214,7 @@ function LiveClockValue() {
 
   return (
     <>
-      <Clock3 className="h-4 w-4 text-slate-600" />
+      <Clock3 className="h-4 w-4 text-muted-foreground" />
       {currentTime.toLocaleTimeString("en-US", {
         hour: "numeric",
         minute: "2-digit",
@@ -471,7 +471,7 @@ export default function Dashboard() {
     { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", header: "bg-emerald-100" },
     { bg: "bg-lime-50", border: "border-lime-200", text: "text-lime-900", header: "bg-lime-100" },
     { bg: "bg-teal-50", border: "border-teal-200", text: "text-teal-900", header: "bg-teal-100" },
-    { bg: "bg-slate-100", border: "border-slate-300", text: "text-slate-900", header: "bg-slate-200" },
+    { bg: "bg-muted", border: "border-border", text: "text-foreground", header: "bg-slate-200" },
     { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-900", header: "bg-amber-100" },
   ];
   
@@ -1979,9 +1979,12 @@ export default function Dashboard() {
             <span className="flex items-center gap-1.5 font-medium text-foreground">
               <LiveClockValue />
             </span>
-            <span
-              className="flex items-center gap-1.5 cursor-pointer hover:text-foreground transition-colors"
+            <button
+              type="button"
+              className="flex items-center gap-1.5 hover:text-foreground transition-colors"
               onClick={() => setWeatherForecastOpen((v) => !v)}
+              aria-label="Toggle weather forecast"
+              aria-expanded={weatherForecastOpen}
             >
               <CloudSun className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
               {weather.loading
@@ -1989,7 +1992,7 @@ export default function Dashboard() {
                 : weather.error
                   ? "Unavailable"
                   : `${weather.summary}${weather.temperatureF !== null ? `, ${Math.round(weather.temperatureF)}°F` : ""}`}
-            </span>
+            </button>
             <span className="flex items-center gap-1.5">
               <Calendar className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
               {!hasGoogle
@@ -2015,9 +2018,9 @@ export default function Dashboard() {
             <div className="mt-2 flex gap-2 pb-1">
               {weather.forecast.map((day, i) => (
                 <div key={i} className="flex-1 rounded-md border bg-muted/50 px-2 py-1 text-center">
-                  <p className="text-[10px] font-semibold text-muted-foreground">{day.day}</p>
-                  <p className="text-[10px] text-muted-foreground">{getWeatherLabel(day.code)}</p>
-                  <p className="text-[11px] font-medium text-foreground">
+                  <p className="text-xs font-semibold text-muted-foreground">{day.day}</p>
+                  <p className="text-xs text-muted-foreground">{getWeatherLabel(day.code)}</p>
+                  <p className="text-xs font-medium text-foreground">
                     {day.highF}° / {day.lowF}°
                   </p>
                 </div>
@@ -2026,101 +2029,53 @@ export default function Dashboard() {
           )}
         </div>
         <div className="container mx-auto px-4 py-1.5">
-          <div className="rounded-lg border bg-card px-3 py-2 shadow-sm">
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => scrollToSection("section-overview")}>
-                  <FileText className="h-3.5 w-3.5 mr-1.5" />
-                  Plan
+          <div className="flex items-center justify-end gap-2">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" className="h-7 text-xs">
+                  <SettingsIcon className="h-3.5 w-3.5 mr-1.5" />
+                  Sections
                 </Button>
-                <Button variant="outline" size="sm" className="h-7 text-xs text-health" onClick={() => scrollToSection("section-health")}>
-                  <HeartPulse className="h-3.5 w-3.5 mr-1.5" />
-                  Health
-                </Button>
-                <Button variant="outline" size="sm" className="h-7 text-xs text-health" onClick={() => scrollToSection("section-tracking")}>
-                  <BarChart3 className="h-3.5 w-3.5 mr-1.5" />
-                  Tracking
-                </Button>
-                <Button variant="outline" size="sm" className="h-7 text-xs text-productivity" onClick={() => scrollToSection("section-todoist")}>
-                  <CheckSquare className="h-3.5 w-3.5 mr-1.5" />
-                  Tasks
-                </Button>
-                {isSectionVisible("workspace") && (
-                  <Button variant="outline" size="sm" className="h-7 text-xs text-productivity" onClick={() => scrollToSection("section-workspace")}>
-                    <Calendar className="h-3.5 w-3.5 mr-1.5" />
-                    Workspace
-                  </Button>
-                )}
-                {isSectionVisible("chat") && (
-                  <Button variant="outline" size="sm" className="h-7 text-xs text-ai" onClick={() => scrollToSection("section-chat")}>
-                    <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
-                    Chat
-                  </Button>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  {isSectionVisible("workspace") && (
-                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setWorkspaceExpanded((current) => !current)}>
-                      {workspaceExpanded ? "Hide Workspace" : "Show Workspace"}
-                    </Button>
-                  )}
-                  {isSectionVisible("chat") && (
-                    <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setChatExpanded((current) => !current)}>
-                      {chatExpanded ? "Hide Chat" : "Show Chat"}
-                    </Button>
-                  )}
-                </div>
-
-                <div className="ml-auto flex items-center gap-2">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="sm" className="h-7 text-xs">
-                        Sections
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="w-44">
-                      {DASHBOARD_SECTION_OPTIONS.map((section) => (
-                        <DropdownMenuItem
-                          key={section.key}
-                          onClick={() => toggleSectionVisibility(section.key)}
-                          className="flex items-center justify-between text-xs"
-                        >
-                          {section.label}
-                          <span className={`h-2 w-2 rounded-full ${isSectionVisible(section.key) ? "bg-emerald-500" : "bg-slate-300"}`} />
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <div className="flex items-center gap-1 rounded-md border bg-muted/50 px-1 py-1">
-                    <Button
-                      variant={dashboardViewMode === "essential" ? "default" : "ghost"}
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={() => {
-                        setDashboardViewMode("essential");
-                        const newLayout = buildWidgetLayoutWithHiddenSections(preferences?.widgetLayout, ["supplements", "notes", "workspace", "chat"]);
-                        updateLayoutPreferences.mutate({ widgetLayout: newLayout });
-                      }}
-                    >
-                      Essential
-                    </Button>
-                    <Button
-                      variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
-                      size="sm"
-                      className="h-7 text-xs"
-                      onClick={() => {
-                        setDashboardViewMode("detailed");
-                        const newLayout = buildWidgetLayoutWithHiddenSections(preferences?.widgetLayout, []);
-                        updateLayoutPreferences.mutate({ widgetLayout: newLayout });
-                      }}
-                    >
-                      Detailed
-                    </Button>
-                  </div>
-                </div>
-              </div>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                {DASHBOARD_SECTION_OPTIONS.map((section) => (
+                  <DropdownMenuItem
+                    key={section.key}
+                    onClick={() => toggleSectionVisibility(section.key)}
+                    className="flex items-center justify-between text-xs"
+                  >
+                    {section.label}
+                    <span className="sr-only">{isSectionVisible(section.key) ? "visible" : "hidden"}</span>
+                    <span className={`h-2 w-2 rounded-full ${isSectionVisible(section.key) ? "bg-health" : "bg-muted-foreground/30"}`} aria-hidden="true" />
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+            <div className="flex items-center gap-1 rounded-md border bg-muted/50 px-1 py-1">
+              <Button
+                variant={dashboardViewMode === "essential" ? "default" : "ghost"}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setDashboardViewMode("essential");
+                  const newLayout = buildWidgetLayoutWithHiddenSections(preferences?.widgetLayout, ["supplements", "notes", "workspace", "chat"]);
+                  updateLayoutPreferences.mutate({ widgetLayout: newLayout });
+                }}
+              >
+                Essential
+              </Button>
+              <Button
+                variant={dashboardViewMode === "detailed" ? "default" : "ghost"}
+                size="sm"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setDashboardViewMode("detailed");
+                  const newLayout = buildWidgetLayoutWithHiddenSections(preferences?.widgetLayout, []);
+                  updateLayoutPreferences.mutate({ widgetLayout: newLayout });
+                }}
+              >
+                Detailed
+              </Button>
             </div>
           </div>
         </div>
@@ -2157,7 +2112,7 @@ export default function Dashboard() {
                 isLoading={!gmailMessages && integrationsFetching}
               >
                 <div className="space-y-2">
-                  <div className="h-32 rounded-md border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 px-2 py-1">
+                  <div className="h-32 rounded-md border border-border bg-card dark:border-slate-700 dark:bg-slate-900 px-2 py-1">
                     <ResponsiveContainer width="100%" height="100%">
                       <BarChart data={emailPriorityChartData} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -2169,7 +2124,7 @@ export default function Dashboard() {
                     </ResponsiveContainer>
                   </div>
                   {triageEmails.length === 0 ? (
-                    <p className="rounded-md border border-dashed border-slate-300 bg-slate-50 dark:border-slate-700 dark:bg-slate-800 px-3 py-4 text-sm text-slate-600 dark:text-slate-400">
+                    <p className="rounded-md border border-dashed border-border bg-muted dark:border-slate-700 dark:bg-slate-800 px-3 py-4 text-sm text-muted-foreground dark:text-slate-400">
                       No priority emails to triage right now.
                     </p>
                   ) : (
@@ -2253,7 +2208,7 @@ export default function Dashboard() {
                 <p className="text-sm text-muted-foreground">No entries yet.</p>
               ) : (
                 <div className="space-y-1">
-                  <div className="grid grid-cols-4 gap-2 rounded-md border bg-muted px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  <div className="grid grid-cols-4 gap-2 rounded-md border bg-muted px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     <span>Date</span>
                     <span>Recovery %</span>
                     <span>Samsung Steps</span>
@@ -2262,7 +2217,7 @@ export default function Dashboard() {
                   {recentMetricRows.map((row: any) => (
                     <div
                       key={row.id}
-                      className="grid grid-cols-4 gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-[11px]"
+                      className="grid grid-cols-4 gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs"
                     >
                       <span className="font-medium text-foreground">{row.dateKey}</span>
                       <span className="text-muted-foreground">{row.whoopRecoveryScore ?? "-"}</span>
@@ -2353,18 +2308,18 @@ export default function Dashboard() {
                   </Button>
                 </div>
               </div>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-xs text-muted-foreground">
                 Lock items below to auto-log daily.
               </p>
 
               <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
                 {(supplementDefinitions || []).length === 0 ? (
-                  <p className="text-xs text-slate-500">No curated supplements yet.</p>
+                  <p className="text-xs text-muted-foreground">No curated supplements yet.</p>
                 ) : (
                   (supplementDefinitions || []).map((definition: any) => (
                     <div
                       key={definition.id}
-                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5"
+                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border bg-muted px-2 py-1.5"
                     >
                       <p className="min-w-0 break-words pr-1 text-xs leading-tight text-slate-800">
                         {definition.name} • {definition.dose} {definition.doseUnit} • {definition.timing}
@@ -2373,7 +2328,7 @@ export default function Dashboard() {
                         <Button
                           variant={definition.isLocked ? "default" : "outline"}
                           size="sm"
-                          className="h-6 px-2 text-[11px]"
+                          className="h-6 px-2 text-xs"
                           onClick={() =>
                             setSupplementDefinitionLock.mutate({
                               definitionId: definition.id,
@@ -2389,7 +2344,7 @@ export default function Dashboard() {
                           className="h-6 w-6 p-0"
                           onClick={() => deleteSupplementDefinition.mutate({ definitionId: definition.id })}
                         >
-                          <Trash2 className="h-3 w-3 text-slate-600" />
+                          <Trash2 className="h-3 w-3 text-muted-foreground" />
                         </Button>
                       </div>
                     </div>
@@ -2398,7 +2353,7 @@ export default function Dashboard() {
               </div>
               <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
                 {(supplementLogs || []).length === 0 ? (
-                  <p className="text-sm text-slate-500">No supplements logged today.</p>
+                  <p className="text-sm text-muted-foreground">No supplements logged today.</p>
                 ) : (
                   (supplementLogs || []).map((log: any) => (
                     <div
@@ -2410,7 +2365,7 @@ export default function Dashboard() {
                           {log.name} • {log.dose} {log.doseUnit} • {log.timing}
                           {log.autoLogged ? " • auto" : ""}
                         </p>
-                        <p className="text-[11px] text-emerald-700">
+                        <p className="text-xs text-emerald-700">
                           {new Date(log.takenAt).toLocaleTimeString("en-US", {
                             hour: "numeric",
                             minute: "2-digit",
@@ -2518,10 +2473,10 @@ export default function Dashboard() {
                 )}
               </div>
 
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-2 space-y-2">
-                <p className="text-[11px] font-semibold text-slate-600">Link Existing Note</p>
+              <div className="rounded-md border border-border bg-muted p-2 space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground">Link Existing Note</p>
                 <Select value={linkNoteId || "__none"} onValueChange={(value) => setLinkNoteId(value === "__none" ? "" : value)}>
-                  <SelectTrigger className="h-8 text-xs bg-white">
+                  <SelectTrigger className="h-8 text-xs bg-card">
                     <SelectValue placeholder="Select note" />
                   </SelectTrigger>
                   <SelectContent>
@@ -2539,7 +2494,7 @@ export default function Dashboard() {
                       value={linkTaskId || "__none"}
                       onValueChange={(value) => setLinkTaskId(value === "__none" ? "" : value)}
                     >
-                      <SelectTrigger className="h-8 min-w-0 text-xs bg-white sm:flex-1">
+                      <SelectTrigger className="h-8 min-w-0 text-xs bg-card sm:flex-1">
                         <SelectValue placeholder="Link to Todoist task" />
                       </SelectTrigger>
                       <SelectContent>
@@ -2565,7 +2520,7 @@ export default function Dashboard() {
                       value={linkEventId || "__none"}
                       onValueChange={(value) => setLinkEventId(value === "__none" ? "" : value)}
                     >
-                      <SelectTrigger className="h-8 min-w-0 text-xs bg-white sm:flex-1">
+                      <SelectTrigger className="h-8 min-w-0 text-xs bg-card sm:flex-1">
                         <SelectValue placeholder="Link to calendar event" />
                       </SelectTrigger>
                       <SelectContent>
@@ -2592,17 +2547,17 @@ export default function Dashboard() {
               <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
                 {notesLoading ? (
                   <div className="flex justify-center py-3">
-                    <Loader2 className="h-4 w-4 animate-spin text-slate-500" />
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   </div>
                 ) : filteredNotes.length === 0 ? (
-                  <p className="text-xs text-slate-500">No notes for this notebook filter.</p>
+                  <p className="text-xs text-muted-foreground">No notes for this notebook filter.</p>
                 ) : (
                   filteredNotes.map((note: any) => (
                     <div key={note.id} className="rounded-md border border-emerald-100 bg-emerald-50/60 px-2 py-2 space-y-1.5">
                       <div className="flex items-start justify-between gap-2">
                         <button type="button" className="min-w-0 text-left" onClick={() => handleEditNote(note)}>
-                          <p className="text-xs font-semibold text-slate-900 truncate">{note.title}</p>
-                          <p className="text-[11px] text-slate-600 line-clamp-2 mt-1">
+                          <p className="text-xs font-semibold text-foreground truncate">{note.title}</p>
+                          <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
                             {toPlainText(String(note.content || "")) || "No content"}
                           </p>
                         </button>
@@ -2610,7 +2565,7 @@ export default function Dashboard() {
                           <Button
                             size="sm"
                             variant={note.pinned ? "default" : "outline"}
-                            className="h-6 px-2 text-[11px]"
+                            className="h-6 px-2 text-xs"
                             onClick={() =>
                               updateNoteMutation.mutate({
                                 noteId: note.id,
@@ -2626,15 +2581,15 @@ export default function Dashboard() {
                             className="h-6 w-6 p-0"
                             onClick={() => deleteNoteMutation.mutate({ noteId: note.id })}
                           >
-                            <Trash2 className="h-3 w-3 text-slate-600" />
+                            <Trash2 className="h-3 w-3 text-muted-foreground" />
                           </Button>
                         </div>
                       </div>
                       <div className="flex items-center justify-between">
-                        <Badge variant="outline" className="text-[10px]">
+                        <Badge variant="outline" className="text-xs">
                           Notebook: {note.notebook || "General"}
                         </Badge>
-                        <span className="text-[10px] text-slate-500">
+                        <span className="text-xs text-muted-foreground">
                           {new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleString("en-US", {
                             month: "short",
                             day: "numeric",
@@ -2646,12 +2601,12 @@ export default function Dashboard() {
                       <div className="flex flex-wrap gap-1">
                         {Array.isArray(note.links) && note.links.length > 0 ? (
                           note.links.map((link: any) => (
-                            <Badge key={link.id} variant="outline" className="text-[10px] gap-1">
+                            <Badge key={link.id} variant="outline" className="text-xs gap-1">
                               {link.linkType === "todoist_task" ? "Task" : "Event"}
                               {link.seriesId ? " • Recurring" : ""}
                               <button
                                 type="button"
-                                className="ml-1 text-slate-500 hover:text-slate-900"
+                                className="ml-1 text-muted-foreground hover:text-foreground"
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
@@ -2664,7 +2619,7 @@ export default function Dashboard() {
                             </Badge>
                           ))
                         ) : (
-                          <span className="text-[11px] text-slate-500">No links</span>
+                          <span className="text-xs text-muted-foreground">No links</span>
                         )}
                       </div>
                     </div>
@@ -2710,7 +2665,7 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent className="space-y-2 overflow-y-auto flex-1">
               {!hasGoogle ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   <Calendar className="h-12 w-12 mx-auto mb-3 text-gray-300" />
                   <p className="text-sm">Connect Google Calendar in Settings</p>
                   <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2">
@@ -2722,13 +2677,13 @@ export default function Dashboard() {
                   <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
                 </div>
               ) : upcomingEvents.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   <p className="text-sm">No upcoming events</p>
                 </div>
               ) : (
                 eventsByDate.map(({ date, events, colors }) => (
                   <div key={date} className="mb-2.5">
-                    <div className={`${colors.header} px-2 py-0.5 rounded-t text-[11px] font-semibold ${colors.text} sticky top-0 z-10`}>
+                    <div className={`${colors.header} px-2 py-0.5 rounded-t text-xs font-semibold ${colors.text} sticky top-0 z-10`}>
                       {date}
                     </div>
                     <div className="space-y-1 mt-1">
@@ -2754,9 +2709,9 @@ export default function Dashboard() {
                               className="flex-1 min-w-0"
                             >
                               <p className={`font-medium text-xs ${colors.text} truncate leading-4`}>{event.summary}</p>
-                              <p className="text-[11px] text-gray-600">{formatEventTime(event)}</p>
+                              <p className="text-xs text-muted-foreground">{formatEventTime(event)}</p>
                               {event.location && (
-                                <p className="text-[11px] text-gray-500 truncate">{event.location}</p>
+                                <p className="text-xs text-muted-foreground truncate">{event.location}</p>
                               )}
                             </a>
                             <Button
@@ -2811,11 +2766,11 @@ export default function Dashboard() {
                           String(event.id || "") === String(selectedCalendarHistoryEvent.id || "")
                       ) && (
                         <div className="mt-1.5 rounded-md border border-emerald-200 bg-emerald-50/70 p-2">
-                          <p className="text-[11px] font-semibold text-emerald-900 mb-1">
+                          <p className="text-xs font-semibold text-emerald-900 mb-1">
                             Linked notes for this event series
                           </p>
                           {calendarLinkedNotes.length === 0 ? (
-                            <p className="text-[11px] text-emerald-800">
+                            <p className="text-xs text-emerald-800">
                               No linked notes yet. Link an existing note from the Notes card or create one.
                             </p>
                           ) : (
@@ -2825,16 +2780,16 @@ export default function Dashboard() {
                                   key={note.id}
                                   type="button"
                                   onClick={() => handleEditNote(note)}
-                                  className="w-full text-left rounded border border-emerald-200 bg-white px-2 py-1.5 hover:bg-emerald-50"
+                                  className="w-full text-left rounded border border-emerald-200 bg-card px-2 py-1.5 hover:bg-emerald-50"
                                 >
-                                  <p className="text-[11px] font-semibold text-slate-900 truncate">
+                                  <p className="text-xs font-semibold text-foreground truncate">
                                     {note.notebook || "General"} • {note.title}
                                   </p>
-                                  <p className="text-[11px] text-slate-600 line-clamp-1">
+                                  <p className="text-xs text-muted-foreground line-clamp-1">
                                     {toPlainText(String(note.content || "")) || "No content"}
                                   </p>
                                   {note.latestOccurrence && (
-                                    <p className="text-[10px] text-emerald-700 mt-0.5">
+                                    <p className="text-xs text-emerald-700 mt-0.5">
                                       Linked occurrence:{" "}
                                       {new Date(note.latestOccurrence).toLocaleString("en-US", {
                                         month: "short",
@@ -2903,21 +2858,21 @@ export default function Dashboard() {
                         }
                       }}
                       placeholder="Quick add a task..."
-                      className="h-9 border-white/40 bg-white text-slate-900 placeholder:text-slate-500"
+                      className="h-9 border-white/40 bg-card text-foreground placeholder:text-muted-foreground"
                     />
                     <Button
                       type="button"
                       size="sm"
                       onClick={handleQuickAddTodoistTask}
                       disabled={quickAddTodoistTask.isPending || !quickTodoistTaskInput.trim()}
-                      className="h-9 shrink-0 bg-white text-[#c93426] hover:bg-red-50"
+                      className="h-9 shrink-0 bg-card text-[#c93426] hover:bg-red-50"
                     >
                       <Plus className="h-4 w-4 mr-1" />
                       Add
                     </Button>
                   </div>
                   <Select value={todoistFilter} onValueChange={setTodoistFilter}>
-                    <SelectTrigger className="w-full border-white/40 bg-white text-slate-800">
+                    <SelectTrigger className="w-full border-white/40 bg-card text-slate-800">
                       <SelectValue placeholder="Select filter" />
                     </SelectTrigger>
                     <SelectContent>
@@ -2982,7 +2937,7 @@ export default function Dashboard() {
                     <Checkbox
                       checked={false}
                       onCheckedChange={() => handleCompleteTask(task.id)}
-                      className="mt-1 border-white/80 data-[state=checked]:border-white data-[state=checked]:bg-white"
+                      className="mt-1 border-white/80 data-[state=checked]:border-white data-[state=checked]:bg-card"
                     />
                     <div className="flex-1 min-w-0">
                       <a
@@ -2998,7 +2953,7 @@ export default function Dashboard() {
                       )}
                       <div className="flex items-center gap-2 mt-1">
                         {task.priority > 1 && (
-                          <span className="text-xs px-1.5 py-0.5 bg-white text-[#c93426] rounded font-semibold">
+                          <span className="text-xs px-1.5 py-0.5 bg-card text-[#c93426] rounded font-semibold">
                             P{task.priority}
                           </span>
                         )}
@@ -3048,7 +3003,7 @@ export default function Dashboard() {
             </CardHeader>
             <CardContent className="space-y-3 overflow-y-auto flex-1">
               {!hasGoogle ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   <Mail className="h-12 w-12 mx-auto mb-3 text-gray-300" />
                   <p className="text-sm">Connect Gmail in Settings</p>
                   <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2">
@@ -3060,7 +3015,7 @@ export default function Dashboard() {
                   <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
                 </div>
               ) : !gmailMessages || gmailMessages.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   <p className="text-sm">No recent emails</p>
                 </div>
               ) : (
@@ -3076,14 +3031,14 @@ export default function Dashboard() {
                         <p className="font-medium text-sm text-gray-900 truncate flex-1">
                           {getEmailHeader(message, "From")}
                         </p>
-                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                        <span className="text-xs text-muted-foreground whitespace-nowrap">
                           {formatEmailDate(message.internalDate)}
                         </span>
                       </div>
                       <p className="text-sm font-medium text-gray-700 truncate mb-1">
                         {getEmailHeader(message, "Subject")}
                       </p>
-                      <p className="text-xs text-gray-600 line-clamp-2">{message.snippet}</p>
+                      <p className="text-xs text-muted-foreground line-clamp-2">{message.snippet}</p>
                     </a>
                     <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <Button
@@ -3171,7 +3126,7 @@ export default function Dashboard() {
                 </div>
               )}
               {!hasGoogle ? (
-                <div className="text-center py-8 text-gray-500">
+                <div className="text-center py-8 text-muted-foreground">
                   <FolderOpen className="h-12 w-12 mx-auto mb-3 text-gray-300" />
                   <p className="text-sm">Connect Google Drive in Settings</p>
                   <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2">
@@ -3200,7 +3155,7 @@ export default function Dashboard() {
                       <Loader2 className="h-6 w-6 animate-spin text-green-600" />
                     </div>
                   ) : displayedDriveFiles.length === 0 ? (
-                    <div className="text-center py-8 text-gray-500">
+                    <div className="text-center py-8 text-muted-foreground">
                       <p className="text-sm">{driveSearchResults !== null ? "No files found" : "No recent files"}</p>
                     </div>
                   ) : (
@@ -3218,7 +3173,7 @@ export default function Dashboard() {
                           )}
                           <div className="flex-1 min-w-0">
                             <p className="font-medium text-sm text-gray-900 truncate">{file.name}</p>
-                            <p className="text-xs text-gray-500 mt-1">
+                            <p className="text-xs text-muted-foreground mt-1">
                               {new Date(file.modifiedTime).toLocaleDateString()}
                             </p>
                           </div>
@@ -3240,7 +3195,7 @@ export default function Dashboard() {
                 <CardTitle className="text-base">Workspace Hidden</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-sm text-slate-600 mb-3">
+                <p className="text-sm text-muted-foreground mb-3">
                   Workspace data loading is paused until you expand this section.
                 </p>
                 <Button onClick={() => setWorkspaceExpanded(true)}>Show Workspace</Button>
@@ -3255,7 +3210,7 @@ export default function Dashboard() {
               <CardTitle className="text-base">Detailed Workspace</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-slate-600 mb-3">
+              <p className="text-sm text-muted-foreground mb-3">
                 Switch to Detailed mode to view calendar, Todoist, Gmail, Drive, and Chat workspace sections.
               </p>
               <Button onClick={() => setDashboardViewMode("detailed")}>Switch to Detailed Mode</Button>
@@ -3266,7 +3221,7 @@ export default function Dashboard() {
 
       {/* Chat Panel at Bottom */}
       {isSectionVisible("chat") && chatExpanded ? (
-      <div id="section-chat" className="border-t bg-white dark:bg-slate-900 scroll-mt-40">
+      <div id="section-chat" className="border-t bg-card dark:bg-slate-900 scroll-mt-40">
         <div className="container mx-auto px-4 py-4">
           <div className="grid grid-cols-12 gap-4 h-80">
             {/* Conversation List */}
@@ -3281,7 +3236,7 @@ export default function Dashboard() {
                 </Button>
               </div>
               {!hasOpenAI ? (
-                <div className="text-center py-8 text-gray-500 text-xs">
+                <div className="text-center py-8 text-muted-foreground text-xs">
                   <p>Connect OpenAI in Settings to use chat</p>
                 </div>
               ) : conversations && conversations.length > 0 ? (
@@ -3310,7 +3265,7 @@ export default function Dashboard() {
                   ))}
                 </div>
               ) : (
-                <div className="text-center py-8 text-gray-500 text-xs">
+                <div className="text-center py-8 text-muted-foreground text-xs">
                   <p>No conversations yet</p>
                   <p className="mt-1">Click + to start</p>
                 </div>
@@ -3321,14 +3276,14 @@ export default function Dashboard() {
             <div className="col-span-9 flex flex-col">
               <div className="flex-1 overflow-y-auto mb-3 space-y-3">
                 {!hasOpenAI ? (
-                  <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
                     <div className="text-center">
                       <MessageSquare className="h-12 w-12 mx-auto mb-2 text-gray-300" />
                       <p className="text-sm">Connect OpenAI in Settings to start chatting</p>
                     </div>
                   </div>
                 ) : !selectedConversationId ? (
-                  <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
                     <div className="text-center">
                       <MessageSquare className="h-12 w-12 mx-auto mb-2 text-gray-300" />
                       <p className="text-sm">Select a conversation or start a new one</p>
@@ -3361,7 +3316,7 @@ export default function Dashboard() {
                     <div ref={messagesEndRef} />
                   </>
                 ) : (
-                  <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="flex items-center justify-center h-full text-muted-foreground">
                     <p className="text-sm">Start the conversation...</p>
                   </div>
                 )}
@@ -3405,7 +3360,7 @@ export default function Dashboard() {
               <CardTitle className="text-base">Chat Hidden</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-sm text-slate-600 mb-3">
+              <p className="text-sm text-muted-foreground mb-3">
                 Chat queries are paused while this section is collapsed.
               </p>
               <Button onClick={() => setChatExpanded(true)}>Show Chat</Button>

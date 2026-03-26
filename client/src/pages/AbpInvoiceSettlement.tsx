@@ -4762,7 +4762,7 @@ export default function AbpInvoiceSettlement() {
                           <TableCell>{row["Payment Method"]}</TableCell>
                           <TableCell className="text-center">
                             {issues.length > 0 && (
-                              <Badge variant="destructive" className="text-[10px] px-1.5 py-0">
+                              <Badge variant="destructive" className="text-xs px-1.5 py-0">
                                 {issues.length}
                               </Badge>
                             )}

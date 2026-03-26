@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
-import { ArrowLeft, Clock3, ExternalLink, Loader2, Play, Square } from "lucide-react";
+import { ExternalLink, Loader2, Play, Square } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -154,7 +154,7 @@ export default function ClockifyWidget() {
   if (authLoading || statusQuery.isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-slate-600" />
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -164,182 +164,163 @@ export default function ClockifyWidget() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
-          </Button>
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-blue-100 text-blue-700">
-                <Clock3 className="w-6 h-6" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-slate-900">Clockify Tracker</h1>
-                <p className="text-sm text-slate-600">Start, stop, and review your latest time entries</p>
-              </div>
-            </div>
-            <Button variant="outline" onClick={handleRefresh}>
-              Refresh
-            </Button>
-          </div>
-        </div>
-      </header>
+    <main className="container max-w-4xl mx-auto px-4 py-6 space-y-6">
+      <div className="flex items-center justify-end">
+        <Button variant="outline" onClick={handleRefresh}>
+          Refresh
+        </Button>
+      </div>
 
-      <main className="container max-w-4xl mx-auto px-4 py-8 space-y-6">
-        {!isConnected ? (
+      {!isConnected ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Clockify is not connected</CardTitle>
+            <CardDescription>
+              Connect Clockify in Settings before using the timer.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex gap-2">
+            <Button onClick={() => setLocation("/settings")}>Open Settings</Button>
+            <Button variant="outline" asChild>
+              <a href="https://app.clockify.me/tracker" target="_blank" rel="noopener noreferrer">
+                Open Clockify
+                <ExternalLink className="w-4 h-4 ml-2" />
+              </a>
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
           <Card>
             <CardHeader>
-              <CardTitle>Clockify is not connected</CardTitle>
+              <CardTitle>Current Timer</CardTitle>
               <CardDescription>
-                Connect Clockify in Settings before using the timer.
+                {isRunning
+                  ? "A timer is currently running"
+                  : "No active timer. Start one with a task description and optional project."}
               </CardDescription>
             </CardHeader>
-            <CardContent className="flex gap-2">
-              <Button onClick={() => setLocation("/settings")}>Open Settings</Button>
-              <Button variant="outline" asChild>
-                <a href="https://app.clockify.me/tracker" target="_blank" rel="noopener noreferrer">
-                  Open Clockify
-                  <ExternalLink className="w-4 h-4 ml-2" />
-                </a>
-              </Button>
+            <CardContent className="space-y-4">
+              <div className="rounded-md border bg-card p-4">
+                <p className="text-sm font-medium text-foreground">
+                  {currentEntry?.description?.trim() || (isRunning ? "Untitled task" : "No running timer")}
+                </p>
+                <p className="mt-1 text-xs font-semibold text-primary">
+                  Project: {currentProjectLabel}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Start: {formatTimestamp(currentEntry?.start ?? null)}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  End: {isRunning ? "Running" : formatTimestamp(currentEntry?.end ?? null)}
+                </p>
+                <p className="mt-2 text-sm font-semibold text-foreground">
+                  Duration: {formatDuration(isRunning ? liveDurationSeconds : currentEntry?.durationSeconds)}
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto_auto] md:items-end">
+                <div className="space-y-2">
+                  <Label htmlFor="clockify-description">Task Description</Label>
+                  <Input
+                    id="clockify-description"
+                    value={description}
+                    onChange={(event) => setDescription(event.target.value)}
+                    placeholder="Example: Invoice reconciliation"
+                    disabled={isRunning}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="clockify-project-id">Project ID (optional)</Label>
+                  <Input
+                    id="clockify-project-id"
+                    value={projectIdInput}
+                    onChange={(event) => setProjectIdInput(event.target.value)}
+                    placeholder="Example: 6748b91fef191e6f..."
+                    disabled={isRunning}
+                  />
+                </div>
+                <Button
+                  onClick={handleStartTimer}
+                  disabled={isRunning || startTimer.isPending}
+                  className="w-full md:w-auto"
+                >
+                  {startTimer.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Starting...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      Start Timer
+                    </>
+                  )}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleStopTimer}
+                  disabled={!isRunning || stopTimer.isPending}
+                  className="w-full md:w-auto"
+                >
+                  {stopTimer.isPending ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Stopping...
+                    </>
+                  ) : (
+                    <>
+                      <Square className="w-4 h-4 mr-2" />
+                      Stop Timer
+                    </>
+                  )}
+                </Button>
+              </div>
             </CardContent>
           </Card>
-        ) : (
-          <>
-            <Card>
-              <CardHeader>
-                <CardTitle>Current Timer</CardTitle>
-                <CardDescription>
-                  {isRunning
-                    ? "A timer is currently running"
-                    : "No active timer. Start one with a task description and optional project."}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="rounded-md border border-slate-200 bg-white p-4">
-                  <p className="text-sm font-medium text-slate-900">
-                    {currentEntry?.description?.trim() || (isRunning ? "Untitled task" : "No running timer")}
-                  </p>
-                  <p className="mt-1 text-xs font-semibold text-blue-700">
-                    Project: {currentProjectLabel}
-                  </p>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Start: {formatTimestamp(currentEntry?.start ?? null)}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    End: {isRunning ? "Running" : formatTimestamp(currentEntry?.end ?? null)}
-                  </p>
-                  <p className="mt-2 text-sm font-semibold text-slate-900">
-                    Duration: {formatDuration(isRunning ? liveDurationSeconds : currentEntry?.durationSeconds)}
-                  </p>
-                </div>
 
-                <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto_auto] md:items-end">
-                  <div className="space-y-2">
-                    <Label htmlFor="clockify-description">Task Description</Label>
-                    <Input
-                      id="clockify-description"
-                      value={description}
-                      onChange={(event) => setDescription(event.target.value)}
-                      placeholder="Example: Invoice reconciliation"
-                      disabled={isRunning}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="clockify-project-id">Project ID (optional)</Label>
-                    <Input
-                      id="clockify-project-id"
-                      value={projectIdInput}
-                      onChange={(event) => setProjectIdInput(event.target.value)}
-                      placeholder="Example: 6748b91fef191e6f..."
-                      disabled={isRunning}
-                    />
-                  </div>
-                  <Button
-                    onClick={handleStartTimer}
-                    disabled={isRunning || startTimer.isPending}
-                    className="w-full md:w-auto"
-                  >
-                    {startTimer.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Starting...
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-4 h-4 mr-2" />
-                        Start Timer
-                      </>
-                    )}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleStopTimer}
-                    disabled={!isRunning || stopTimer.isPending}
-                    className="w-full md:w-auto"
-                  >
-                    {stopTimer.isPending ? (
-                      <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                        Stopping...
-                      </>
-                    ) : (
-                      <>
-                        <Square className="w-4 h-4 mr-2" />
-                        Stop Timer
-                      </>
-                    )}
-                  </Button>
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Time Entries</CardTitle>
+              <CardDescription>Last 20 entries from your selected Clockify workspace.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {recentEntriesQuery.isLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Loading entries...
                 </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent Time Entries</CardTitle>
-                <CardDescription>Last 20 entries from your selected Clockify workspace.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {recentEntriesQuery.isLoading ? (
-                  <div className="flex items-center gap-2 text-sm text-slate-600">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Loading entries...
-                  </div>
-                ) : recentEntriesQuery.data && recentEntriesQuery.data.length > 0 ? (
-                  <div className="space-y-2">
-                    {recentEntriesQuery.data.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="rounded-md border border-slate-200 bg-white px-3 py-2"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm font-medium text-slate-900">
-                            {entry.description?.trim() || "Untitled task"}
-                          </p>
-                          <p className="text-xs font-medium text-slate-700">
-                            {formatDuration(entry.durationSeconds)}
-                          </p>
-                        </div>
-                        <p className="text-xs text-slate-500">
-                          {formatTimestamp(entry.start)} to {entry.isRunning ? "Running" : formatTimestamp(entry.end)}
+              ) : recentEntriesQuery.data && recentEntriesQuery.data.length > 0 ? (
+                <div className="space-y-2">
+                  {recentEntriesQuery.data.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="rounded-md border bg-card px-3 py-2"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-sm font-medium text-foreground">
+                          {entry.description?.trim() || "Untitled task"}
                         </p>
-                        <p className="text-xs text-slate-500">
-                          Project: {entry.projectName || (entry.projectId ? `Project ${entry.projectId}` : "No project selected")}
+                        <p className="text-xs font-medium text-muted-foreground">
+                          {formatDuration(entry.durationSeconds)}
                         </p>
                       </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-slate-600">No time entries found yet.</p>
-                )}
-              </CardContent>
-            </Card>
-          </>
-        )}
-      </main>
-    </div>
+                      <p className="text-xs text-muted-foreground">
+                        {formatTimestamp(entry.start)} to {entry.isRunning ? "Running" : formatTimestamp(entry.end)}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Project: {entry.projectName || (entry.projectId ? `Project ${entry.projectId}` : "No project selected")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">No time entries found yet.</p>
+              )}
+            </CardContent>
+          </Card>
+        </>
+      )}
+    </main>
   );
 }
