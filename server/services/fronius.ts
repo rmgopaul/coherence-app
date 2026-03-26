@@ -368,7 +368,7 @@ export async function listPvSystems(context: FroniusApiContext): Promise<{
   const allRawPages: unknown[] = [];
   let offset = 0;
   const limit = 100;
-  const maxSystems = 1000;
+  const maxSystems = 10000;
 
   while (offset < maxSystems) {
     const raw = await getFroniusJson("/pvsystems", context, {
