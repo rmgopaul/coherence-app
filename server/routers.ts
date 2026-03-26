@@ -3288,8 +3288,17 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
-        const { getPvSystemProductionSnapshot } = await import("./services/fronius");
-        return getPvSystemProductionSnapshot(context, input.pvSystemId.trim(), input.anchorDate);
+        const { getPvSystemProductionSnapshot, extractPvSystems } = await import("./services/fronius");
+        const { getPvSystemDetails } = await import("./services/fronius");
+        let systemName: string | null = null;
+        try {
+          const details = await getPvSystemDetails(context, input.pvSystemId.trim());
+          const systems = extractPvSystems(Array.isArray(details) ? details : [details]);
+          systemName = systems[0]?.name ?? null;
+        } catch {
+          // Non-critical — proceed without name
+        }
+        return getPvSystemProductionSnapshot(context, input.pvSystemId.trim(), input.anchorDate, systemName);
       }),
     getProductionSnapshots: protectedProcedure
       .input(
@@ -3301,7 +3310,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getPvSystemProductionSnapshot, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
+        const { getPvSystemProductionSnapshot, listPvSystems, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
 
         const uniquePvSystemIds = Array.from(
           new Set(input.pvSystemIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -3319,6 +3328,20 @@ export const appRouter = router({
         const activeConnection =
           allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
         const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        // Fetch system names once upfront to include in snapshot results
+        const nameMap = new Map<string, string>();
+        try {
+          const { pvSystems } = await listPvSystems({
+            accessKeyId: activeConnection.accessKeyId,
+            accessKeyValue: activeConnection.accessKeyValue,
+          });
+          for (const sys of pvSystems) {
+            nameMap.set(sys.pvSystemId, sys.name);
+          }
+        } catch {
+          // Non-critical — proceed without names if the list call fails
+        }
 
         const rows = await mapWithConcurrencyFronius(uniquePvSystemIds, 4, async (pvSystemId: string) => {
           let selectedSnapshot: Awaited<ReturnType<typeof getPvSystemProductionSnapshot>> | null = null;
@@ -3339,7 +3362,8 @@ export const appRouter = router({
                 accessKeyValue: connection.accessKeyValue,
               },
               pvSystemId,
-              input.anchorDate
+              input.anchorDate,
+              nameMap.get(pvSystemId) ?? null
             );
 
             if (!fallbackSnapshot) {
@@ -3401,6 +3425,7 @@ export const appRouter = router({
           const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
           return {
             pvSystemId,
+            name: nameMap.get(pvSystemId) ?? null,
             status: notFoundStatus,
             found: false,
             lifetimeKwh: null,
@@ -3448,7 +3473,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getPvSystemDeviceSnapshot, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
+        const { getPvSystemDeviceSnapshot, listPvSystems, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
 
         const uniquePvSystemIds = Array.from(
           new Set(input.pvSystemIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -3467,6 +3492,20 @@ export const appRouter = router({
           allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
         const targetConnections = scope === "all" ? allConnections : [activeConnection];
 
+        // Fetch system names once upfront to include in snapshot results
+        const nameMap = new Map<string, string>();
+        try {
+          const { pvSystems } = await listPvSystems({
+            accessKeyId: activeConnection.accessKeyId,
+            accessKeyValue: activeConnection.accessKeyValue,
+          });
+          for (const sys of pvSystems) {
+            nameMap.set(sys.pvSystemId, sys.name);
+          }
+        } catch {
+          // Non-critical — proceed without names if the list call fails
+        }
+
         const rows = await mapWithConcurrencyFronius(uniquePvSystemIds, 4, async (pvSystemId: string) => {
           let selectedSnapshot: Awaited<ReturnType<typeof getPvSystemDeviceSnapshot>> | null = null;
           let selectedConnection: (typeof targetConnections)[number] | null = null;
@@ -3484,7 +3523,8 @@ export const appRouter = router({
                 accessKeyId: connection.accessKeyId,
                 accessKeyValue: connection.accessKeyValue,
               },
-              pvSystemId
+              pvSystemId,
+              nameMap.get(pvSystemId) ?? null
             );
 
             profileStatuses.push({
@@ -3523,6 +3563,7 @@ export const appRouter = router({
           const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
           return {
             pvSystemId,
+            name: nameMap.get(pvSystemId) ?? null,
             status: notFoundStatus,
             found: false,
             error: firstError,

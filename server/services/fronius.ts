@@ -29,6 +29,7 @@ export type FroniusDevice = {
 
 export type FroniusProductionSnapshot = {
   pvSystemId: string;
+  name: string | null;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh: number | null;
@@ -51,6 +52,7 @@ export type FroniusProductionSnapshot = {
 
 export type FroniusDeviceSnapshot = {
   pvSystemId: string;
+  name: string | null;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   deviceCount: number | null;
@@ -733,9 +735,11 @@ export function extractAggrMonthlyEnergyKwh(payload: unknown): MonthlyEnergyPoin
 export async function getPvSystemProductionSnapshot(
   context: FroniusApiContext,
   pvSystemIdRaw: string,
-  anchorDateRaw?: string | null
+  anchorDateRaw?: string | null,
+  nameOverride?: string | null
 ): Promise<FroniusProductionSnapshot> {
   const pvSystemId = pvSystemIdRaw.trim();
+  const name = nameOverride ?? null;
   const anchorDate = (anchorDateRaw ?? "").trim() || formatIsoDate(new Date());
   if (!parseIsoDate(anchorDate)) {
     throw new Error("Anchor date must be in YYYY-MM-DD format.");
@@ -803,6 +807,7 @@ export async function getPvSystemProductionSnapshot(
 
     return {
       pvSystemId,
+      name,
       status: "Found",
       found: true,
       lifetimeKwh,
@@ -826,6 +831,7 @@ export async function getPvSystemProductionSnapshot(
     if (isNotFoundError(error)) {
       return {
         pvSystemId,
+        name,
         status: "Not Found",
         found: false,
         lifetimeKwh: null,
@@ -849,6 +855,7 @@ export async function getPvSystemProductionSnapshot(
 
     return {
       pvSystemId,
+      name,
       status: "Error",
       found: false,
       lifetimeKwh: null,
@@ -877,9 +884,11 @@ export async function getPvSystemProductionSnapshot(
 
 export async function getPvSystemDeviceSnapshot(
   context: FroniusApiContext,
-  pvSystemIdRaw: string
+  pvSystemIdRaw: string,
+  nameOverride?: string | null
 ): Promise<FroniusDeviceSnapshot> {
   const pvSystemId = pvSystemIdRaw.trim();
+  const name = nameOverride ?? null;
 
   try {
     const [devices, flowPayload] = await Promise.all([
@@ -923,6 +932,7 @@ export async function getPvSystemDeviceSnapshot(
 
     return {
       pvSystemId,
+      name,
       status: "Found",
       found: true,
       deviceCount: devices.length,
@@ -935,6 +945,7 @@ export async function getPvSystemDeviceSnapshot(
     if (isNotFoundError(error)) {
       return {
         pvSystemId,
+        name,
         status: "Not Found",
         found: false,
         deviceCount: null,
@@ -947,6 +958,7 @@ export async function getPvSystemDeviceSnapshot(
 
     return {
       pvSystemId,
+      name,
       status: "Error",
       found: false,
       deviceCount: null,

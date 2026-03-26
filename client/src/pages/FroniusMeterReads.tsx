@@ -53,6 +53,7 @@ type SingleOperation =
 
 type BulkSnapshotRow = {
   pvSystemId: string;
+  name?: string | null;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh?: number | null;
@@ -692,7 +693,7 @@ export default function FroniusMeterReads() {
       const matchesStatus = bulkStatusFilter === "All" ? true : row.status === bulkStatusFilter;
       if (!matchesStatus) return false;
       if (!normalizedSearch) return true;
-      const haystack = `${row.pvSystemId} ${row.status} ${row.error ?? ""}`.toLowerCase();
+      const haystack = `${row.pvSystemId} ${row.name ?? ""} ${row.status} ${row.error ?? ""}`.toLowerCase();
       return haystack.includes(normalizedSearch);
     });
 
@@ -780,6 +781,7 @@ export default function FroniusMeterReads() {
 
     const commonHeaders = [
       "pv_system_id",
+      "system_name",
       "status",
       "found",
       "error",
@@ -792,6 +794,7 @@ export default function FroniusMeterReads() {
 
     const commonCells = (row: BulkSnapshotRow) => ({
       pv_system_id: row.pvSystemId,
+      system_name: row.name,
       status: row.status,
       found: row.found ? "Yes" : "No",
       error: row.error,
@@ -1442,6 +1445,7 @@ export default function FroniusMeterReads() {
               <TableHeader>
                 <TableRow>
                   <TableHead>PV System ID</TableHead>
+                  <TableHead>System Name</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Matched API Profile</TableHead>
                   <TableHead>Found In APIs</TableHead>
@@ -1472,6 +1476,7 @@ export default function FroniusMeterReads() {
                 {bulkPageRows.map((row) => (
                   <TableRow key={row.pvSystemId}>
                     <TableCell className="font-medium font-mono text-xs">{row.pvSystemId}</TableCell>
+                    <TableCell className="text-xs">{row.name ?? ""}</TableCell>
                     <TableCell>
                       <span
                         className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
