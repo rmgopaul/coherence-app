@@ -306,6 +306,7 @@ export default function SolarEdgeMeterReads() {
   const energyMutation = trpc.solarEdge.getEnergy.useMutation();
   const productionReadsMutation = trpc.solarEdge.getProductionMeterReadings.useMutation();
   const metersMutation = trpc.solarEdge.getMeters.useMutation();
+  const inverterProductionMutation = trpc.solarEdge.getInverterProduction.useMutation();
   const bulkSnapshotsMutation = trpc.solarEdge.getProductionSnapshots.useMutation();
 
   useEffect(() => {
@@ -1020,6 +1021,21 @@ export default function SolarEdgeMeterReads() {
                 }
               >
                 Fetch Site Meters
+              </Button>
+              <Button
+                variant="outline"
+                disabled={!selectedSiteId || isRunningAction}
+                onClick={() =>
+                  runAction("Inverter Production", () =>
+                    inverterProductionMutation.mutateAsync({
+                      siteId: selectedSiteId,
+                      startDate,
+                      endDate,
+                    })
+                  )
+                }
+              >
+                Fetch Inverter Production
               </Button>
             </div>
           </CardContent>

@@ -2445,6 +2445,19 @@ export const appRouter = router({
         const { getSiteMeters } = await import("./services/solarEdge");
         return getSiteMeters(context, input.siteId.trim(), input.startDate, input.endDate);
       }),
+    getInverterProduction: protectedProcedure
+      .input(
+        z.object({
+          siteId: z.string().min(1),
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getSolarEdgeContext(ctx.user.id);
+        const { getSiteInverterProduction } = await import("./services/solarEdge");
+        return getSiteInverterProduction(context, input.siteId.trim(), input.startDate, input.endDate);
+      }),
     getProductionSnapshot: protectedProcedure
       .input(
         z.object({
