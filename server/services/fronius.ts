@@ -259,6 +259,121 @@ function channelValueToKwh(value: number | null, unit: string | null): number | 
 // HTTP layer
 // ---------------------------------------------------------------------------
 
+const FRONIUS_SAFE_REQUESTS_PER_MINUTE = 900;
+const FRONIUS_WINDOW_MS = 60_000;
+const FRONIUS_MIN_REQUEST_GAP_MS = 75;
+const FRONIUS_MAX_RETRY_ATTEMPTS = 3;
+
+type FroniusThrottleState = {
+  tail: Promise<void>;
+  releaseTail: (() => void) | null;
+  recentRequestTimestamps: number[];
+  nextAllowedAt: number;
+  lastRequestAt: number;
+};
+
+const froniusThrottleByKey = new Map<string, FroniusThrottleState>();
+
+function getFroniusThrottleKey(context: FroniusApiContext): string {
+  return `${context.accessKeyId.trim()}::${normalizeBaseUrl(context.baseUrl)}`;
+}
+
+function getOrCreateFroniusThrottleState(context: FroniusApiContext): FroniusThrottleState {
+  const key = getFroniusThrottleKey(context);
+  const existing = froniusThrottleByKey.get(key);
+  if (existing) return existing;
+
+  const initialTail = Promise.resolve();
+  const state: FroniusThrottleState = {
+    tail: initialTail,
+    releaseTail: null,
+    recentRequestTimestamps: [],
+    nextAllowedAt: 0,
+    lastRequestAt: 0,
+  };
+  froniusThrottleByKey.set(key, state);
+  return state;
+}
+
+function sleep(ms: number): Promise<void> {
+  const safeMs = Number.isFinite(ms) ? Math.max(0, Math.floor(ms)) : 0;
+  return new Promise((resolve) => setTimeout(resolve, safeMs));
+}
+
+async function waitForFroniusRateLimitSlot(context: FroniusApiContext): Promise<void> {
+  const state = getOrCreateFroniusThrottleState(context);
+
+  const previousTail = state.tail;
+  let releaseCurrentTail: () => void = () => undefined;
+  state.tail = new Promise<void>((resolve) => {
+    releaseCurrentTail = resolve;
+  });
+  state.releaseTail = releaseCurrentTail;
+
+  await previousTail.catch(() => undefined);
+
+  try {
+    const now = Date.now();
+    state.recentRequestTimestamps = state.recentRequestTimestamps.filter(
+      (timestamp) => now - timestamp < FRONIUS_WINDOW_MS
+    );
+
+    let waitMs = 0;
+    if (state.recentRequestTimestamps.length >= FRONIUS_SAFE_REQUESTS_PER_MINUTE) {
+      const oldestInWindow = state.recentRequestTimestamps[0];
+      waitMs = Math.max(waitMs, FRONIUS_WINDOW_MS - (now - oldestInWindow) + 50);
+    }
+
+    waitMs = Math.max(waitMs, state.nextAllowedAt - now);
+    waitMs = Math.max(waitMs, state.lastRequestAt + FRONIUS_MIN_REQUEST_GAP_MS - now);
+
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+
+    const scheduledAt = Date.now();
+    state.lastRequestAt = scheduledAt;
+    state.recentRequestTimestamps.push(scheduledAt);
+  } finally {
+    releaseCurrentTail();
+    if (state.releaseTail === releaseCurrentTail) {
+      state.releaseTail = null;
+    }
+  }
+}
+
+function parseFroniusRetryAfterMs(response: Response, errorText: string): number | null {
+  const retryAfterHeader = response.headers.get("retry-after");
+  if (retryAfterHeader) {
+    const seconds = Number(retryAfterHeader.trim());
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.floor(seconds * 1000);
+    }
+
+    const parsedDateMs = Date.parse(retryAfterHeader);
+    if (Number.isFinite(parsedDateMs)) {
+      const delta = parsedDateMs - Date.now();
+      if (delta > 0) return Math.floor(delta);
+    }
+  }
+
+  const messageRetryMatch = /retry\s*after\s*:\s*(\d+)/i.exec(errorText);
+  if (messageRetryMatch) {
+    const seconds = Number(messageRetryMatch[1]);
+    if (Number.isFinite(seconds) && seconds > 0) {
+      return Math.floor(seconds * 1000);
+    }
+  }
+
+  return null;
+}
+
+function applyFroniusBackoff(context: FroniusApiContext, retryAfterMs: number): void {
+  const state = getOrCreateFroniusThrottleState(context);
+  const until = Date.now() + Math.max(0, Math.floor(retryAfterMs));
+  state.nextAllowedAt = Math.max(state.nextAllowedAt, until);
+}
+
 function normalizeBaseUrl(raw: string | null | undefined): string {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return FRONIUS_DEFAULT_BASE_URL;
@@ -281,40 +396,55 @@ async function getFroniusJson(
     url.searchParams.set(key, normalized);
   }
 
-  const response = await fetch(url.toString(), {
-    headers: {
-      AccessKeyId: context.accessKeyId,
-      AccessKeyValue: context.accessKeyValue,
-      Accept: "application/json",
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
+  for (let attempt = 1; attempt <= FRONIUS_MAX_RETRY_ATTEMPTS; attempt += 1) {
+    await waitForFroniusRateLimitSlot(context);
 
-  if (response.ok) {
-    return response.json();
-  }
+    const response = await fetch(url.toString(), {
+      headers: {
+        AccessKeyId: context.accessKeyId,
+        AccessKeyValue: context.accessKeyValue,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(20_000),
+    });
 
-  const errorText = await response.text().catch(() => "");
+    if (response.ok) {
+      return response.json();
+    }
 
-  if (response.status === 404) {
-    throw new Error(`Fronius request failed (404 Not Found)${errorText ? `: ${errorText}` : ""}`);
-  }
+    const errorText = await response.text().catch(() => "");
 
-  if (response.status === 401 || response.status === 403) {
+    if (response.status === 404) {
+      throw new Error(`Fronius request failed (404 Not Found)${errorText ? `: ${errorText}` : ""}`);
+    }
+
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(
+        `Fronius authentication failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`
+      );
+    }
+
+    if (response.status === 429) {
+      const retryAfterMs =
+        parseFroniusRetryAfterMs(response, errorText) ?? Math.min(30_000, 1_000 * 2 ** (attempt - 1));
+      applyFroniusBackoff(context, retryAfterMs);
+
+      if (attempt < FRONIUS_MAX_RETRY_ATTEMPTS) {
+        await sleep(retryAfterMs);
+        continue;
+      }
+
+      throw new Error(
+        `Fronius rate limit exceeded (429 Too Many Requests). Retry in about ${Math.ceil(retryAfterMs / 1000)}s.${errorText ? ` API response: ${errorText}` : ""}`
+      );
+    }
+
     throw new Error(
-      `Fronius authentication failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`
+      `Fronius request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`
     );
   }
 
-  if (response.status === 429) {
-    throw new Error(
-      `Fronius rate limit exceeded (429 Too Many Requests)${errorText ? `: ${errorText}` : ""}`
-    );
-  }
-
-  throw new Error(
-    `Fronius request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`
-  );
+  throw new Error("Fronius request failed after retry attempts.");
 }
 
 // ---------------------------------------------------------------------------
