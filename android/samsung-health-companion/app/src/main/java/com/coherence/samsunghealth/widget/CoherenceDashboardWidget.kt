@@ -11,7 +11,6 @@ import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
 import androidx.glance.appwidget.cornerRadius
-import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
 import androidx.glance.layout.Alignment
@@ -89,65 +88,63 @@ private fun WidgetContent(data: WidgetData) {
       .clickable(actionStartActivity<MainActivity>())
       .cornerRadius(16.dp),
   ) {
-    LazyColumn(
+    Column(
       modifier = GlanceModifier
         .fillMaxSize()
         .padding(12.dp),
     ) {
       // Header
-      item { WidgetHeader(data.updatedAtMillis) }
-      item { Divider() }
+      WidgetHeader(data.updatedAtMillis)
+      Divider()
 
       // Next Calendar Event
       if (data.nextEvent != null) {
-        item { NextEventSection(data.nextEvent) }
-        item { Divider() }
+        NextEventSection(data.nextEvent)
+        Divider()
       }
 
       // Tasks due today
       if (data.tasks.isNotEmpty()) {
-        item { TasksSection(data.tasks) }
-        item { Divider() }
+        TasksSection(data.tasks)
+        Divider()
       }
 
       // Emails
       if (data.emails.isNotEmpty()) {
-        item { EmailsSection(data.emails) }
-        item { Divider() }
+        EmailsSection(data.emails)
+        Divider()
       }
 
       // Market tickers
       if (data.tickers.isNotEmpty()) {
-        item { TickersSection(data.tickers) }
-        item { Divider() }
+        TickersSection(data.tickers)
+        Divider()
       }
 
       // Headlines
       if (data.headlines.isNotEmpty()) {
-        item { HeadlinesSection(data.headlines) }
-        item { Divider() }
+        HeadlinesSection(data.headlines)
+        Divider()
       }
 
       // Weather
       if (data.weatherSummary != null) {
-        item { WeatherSection(data.weatherSummary) }
-        item { Divider() }
+        WeatherSection(data.weatherSummary)
+        Divider()
       }
 
       // Sports
       if (data.sports.isNotEmpty()) {
-        item { SportsSection(data.sports) }
+        SportsSection(data.sports)
       }
 
       // Error footer
       if (data.error != null) {
-        item {
-          Text(
-            text = data.error,
-            style = TextStyle(color = AccentRed, fontSize = 9.sp),
-            modifier = GlanceModifier.padding(top = 4.dp),
-          )
-        }
+        Text(
+          text = data.error,
+          style = TextStyle(color = AccentRed, fontSize = 9.sp),
+          modifier = GlanceModifier.padding(top = 4.dp),
+        )
       }
     }
   }
