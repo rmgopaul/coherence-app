@@ -7920,7 +7920,8 @@ export default function SolarRecDashboard() {
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
+            {/* Row 1: System counts — compact, short values */}
+            <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
               <Card>
                 <CardHeader>
                   <CardDescription>Total Systems</CardDescription>
@@ -7946,22 +7947,25 @@ export default function SolarRecDashboard() {
                   <CardTitle className="text-2xl">{formatNumber(summary.largeSystems)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card className="min-w-0">
+            </div>
+            {/* Row 2: Part II verified values — wider cards for long numbers */}
+            <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
+              <Card>
                 <CardHeader>
                   <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
-                  <CardTitle className="text-lg xl:text-xl truncate">{formatCurrency(overviewPart2Totals.totalContractedValuePart2)}</CardTitle>
+                  <CardTitle className="text-2xl">{formatCurrency(overviewPart2Totals.totalContractedValuePart2)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card className="min-w-0">
+              <Card>
                 <CardHeader>
                   <CardDescription>Cumulative kW AC (Part II Verified)</CardDescription>
-                  <CardTitle className="text-lg xl:text-xl truncate">{formatCapacityKw(overviewPart2Totals.cumulativeKwAcPart2)}</CardTitle>
+                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwAcPart2)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card className="min-w-0">
+              <Card>
                 <CardHeader>
                   <CardDescription>Cumulative kW DC (Part II Verified)</CardDescription>
-                  <CardTitle className="text-lg xl:text-xl truncate">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
+                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
@@ -8261,34 +8265,34 @@ export default function SolarRecDashboard() {
           </TabsContent>
 
 		          <TabsContent value="value" className="space-y-4 mt-4">
-		            <div className="grid gap-4 md:grid-cols-4">
+            <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
               <Card>
                 <CardHeader>
                   <CardDescription>Part II Systems with Value Data</CardDescription>
                   <CardTitle className="text-2xl">{formatNumber(recValueRows.length)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card className="min-w-0">
+              <Card>
                 <CardHeader>
                   <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
-                  <CardTitle className="text-lg xl:text-xl truncate">{formatCurrency(snapshotPart2ValueSummary.totalContractedValue)}</CardTitle>
+                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalContractedValue)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card className="min-w-0">
+              <Card>
                 <CardHeader>
                   <CardDescription>Value Gap (Contracted - Delivered)</CardDescription>
-                  <CardTitle className="text-lg xl:text-xl truncate">{formatCurrency(snapshotPart2ValueSummary.totalGap)}</CardTitle>
+                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalGap)}</CardTitle>
                 </CardHeader>
               </Card>
-		              <Card>
-		                <CardHeader>
-		                  <CardDescription>Contract Value Reporting %</CardDescription>
-		                  <CardTitle className="text-2xl">
-                        {formatPercent(snapshotPart2ValueSummary.contractedValueReportingPercent)}
-                      </CardTitle>
-		                </CardHeader>
-		              </Card>
-		            </div>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Contract Value Reporting %</CardDescription>
+                  <CardTitle className="text-2xl">
+                    {formatPercent(snapshotPart2ValueSummary.contractedValueReportingPercent)}
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
 
 	            <div className="grid gap-4 lg:grid-cols-2">
 	              <Card>
