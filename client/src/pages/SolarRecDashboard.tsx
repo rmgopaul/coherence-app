@@ -2207,6 +2207,16 @@ export default function SolarRecDashboard() {
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
   const [changeOwnershipSearch, setChangeOwnershipSearch] = useState("");
+  const [changeOwnershipSortBy, setChangeOwnershipSortBy] = useState<
+    | "systemName"
+    | "contractValue"
+    | "installedKwAc"
+    | "contractDate"
+    | "zillowSoldDate"
+    | "status"
+    | "reporting"
+  >("contractValue");
+  const [changeOwnershipSortDir, setChangeOwnershipSortDir] = useState<"asc" | "desc">("desc");
   const [offlineMonitoringFilter, setOfflineMonitoringFilter] = useState("All");
   const [offlinePlatformFilter, setOfflinePlatformFilter] = useState("All");
   const [offlineInstallerFilter, setOfflineInstallerFilter] = useState("All");
@@ -3686,7 +3696,7 @@ export default function SolarRecDashboard() {
 
   const filteredChangeOwnershipRows = useMemo(() => {
     const normalizedSearch = changeOwnershipSearch.trim().toLowerCase();
-    return changeOwnershipRows.filter((system) => {
+    const rows = changeOwnershipRows.filter((system) => {
       const matchesFilter =
         changeOwnershipFilter === "All" ? true : system.changeOwnershipStatus === changeOwnershipFilter;
       if (!matchesFilter) return false;
@@ -3704,7 +3714,59 @@ export default function SolarRecDashboard() {
 
       return haystack.includes(normalizedSearch);
     });
-  }, [changeOwnershipFilter, changeOwnershipRows, changeOwnershipSearch]);
+
+    const direction = changeOwnershipSortDir === "asc" ? 1 : -1;
+    rows.sort((a, b) => {
+      const byName =
+        a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction;
+
+      if (changeOwnershipSortBy === "systemName") return byName;
+      if (changeOwnershipSortBy === "status") {
+        const aStatus = a.changeOwnershipStatus ?? "";
+        const bStatus = b.changeOwnershipStatus ?? "";
+        const diff =
+          aStatus.localeCompare(bStatus, undefined, { sensitivity: "base", numeric: true }) * direction;
+        return diff === 0 ? byName : diff;
+      }
+      if (changeOwnershipSortBy === "reporting") {
+        const aValue = a.isReporting ? 1 : 0;
+        const bValue = b.isReporting ? 1 : 0;
+        if (aValue === bValue) return byName;
+        return (aValue - bValue) * direction;
+      }
+      if (changeOwnershipSortBy === "contractValue") {
+        const aValue = resolveContractValueAmount(a);
+        const bValue = resolveContractValueAmount(b);
+        if (aValue === bValue) return byName;
+        return (aValue - bValue) * direction;
+      }
+      if (changeOwnershipSortBy === "installedKwAc") {
+        const aValue = a.installedKwAc ?? Number.NEGATIVE_INFINITY;
+        const bValue = b.installedKwAc ?? Number.NEGATIVE_INFINITY;
+        if (aValue === bValue) return byName;
+        return (aValue - bValue) * direction;
+      }
+      if (changeOwnershipSortBy === "contractDate") {
+        const aValue = a.contractedDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        const bValue = b.contractedDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+        if (aValue === bValue) return byName;
+        return (aValue - bValue) * direction;
+      }
+
+      const aValue = a.zillowSoldDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      const bValue = b.zillowSoldDate?.getTime() ?? Number.NEGATIVE_INFINITY;
+      if (aValue === bValue) return byName;
+      return (aValue - bValue) * direction;
+    });
+
+    return rows;
+  }, [
+    changeOwnershipFilter,
+    changeOwnershipRows,
+    changeOwnershipSearch,
+    changeOwnershipSortBy,
+    changeOwnershipSortDir,
+  ]);
 
   const ownershipCountTileRows = useMemo(
     () => ({
@@ -5116,6 +5178,42 @@ export default function SolarRecDashboard() {
 
     const csv = buildCsv(headers, rows);
     const fileName = `ownership-change-${toCsvFileSlug(status)}-${timestampForCsvFileName()}.csv`;
+    triggerCsvDownload(fileName, csv);
+  };
+
+  const downloadChangeOwnershipDetailFilteredCsv = () => {
+    if (filteredChangeOwnershipRows.length === 0) return;
+
+    const headers = [
+      "system_name",
+      "system_id",
+      "tracking_id",
+      "ac_size_kw",
+      "contract_value",
+      "contract_date",
+      "zillow_sold_date",
+      "zillow_status",
+      "contract_type",
+      "status_category",
+      "reporting",
+    ];
+
+    const rows = filteredChangeOwnershipRows.map((system) => ({
+      system_name: system.systemName,
+      system_id: system.systemId ?? "",
+      tracking_id: system.trackingSystemRefId ?? "",
+      ac_size_kw: system.installedKwAc ?? "",
+      contract_value: resolveContractValueAmount(system),
+      contract_date: system.contractedDate ? system.contractedDate.toISOString().slice(0, 10) : "",
+      zillow_sold_date: system.zillowSoldDate ? system.zillowSoldDate.toISOString().slice(0, 10) : "",
+      zillow_status: system.zillowStatus ?? "",
+      contract_type: system.contractType ?? "",
+      status_category: system.changeOwnershipStatus ?? "",
+      reporting: system.isReporting ? "Yes" : "No",
+    }));
+
+    const csv = buildCsv(headers, rows);
+    const fileName = `coo-flagged-systems-detail-${timestampForCsvFileName()}.csv`;
     triggerCsvDownload(fileName, csv);
   };
 
@@ -9556,10 +9654,20 @@ export default function SolarRecDashboard() {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Flagged Systems Detail</CardTitle>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                  <CardTitle className="text-base">Flagged Systems Detail</CardTitle>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={downloadChangeOwnershipDetailFilteredCsv}
+                    disabled={filteredChangeOwnershipRows.length === 0}
+                  >
+                    Export Filtered Table CSV
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-slate-700">Filter by status</label>
                     <select
@@ -9585,6 +9693,44 @@ export default function SolarRecDashboard() {
                       onChange={(event) => setChangeOwnershipSearch(event.target.value)}
                     />
                   </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Sort by</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={changeOwnershipSortBy}
+                      onChange={(event) =>
+                        setChangeOwnershipSortBy(
+                          event.target.value as
+                            | "systemName"
+                            | "contractValue"
+                            | "installedKwAc"
+                            | "contractDate"
+                            | "zillowSoldDate"
+                            | "status"
+                            | "reporting"
+                        )
+                      }
+                    >
+                      <option value="contractValue">Contract Value</option>
+                      <option value="installedKwAc">AC Size (kW)</option>
+                      <option value="contractDate">Contract Date</option>
+                      <option value="zillowSoldDate">Zillow Sold Date</option>
+                      <option value="status">Status Category</option>
+                      <option value="reporting">Reporting</option>
+                      <option value="systemName">System Name</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-slate-700">Direction</label>
+                    <select
+                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
+                      value={changeOwnershipSortDir}
+                      onChange={(event) => setChangeOwnershipSortDir(event.target.value as "asc" | "desc")}
+                    >
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </div>
                 </div>
 
                 {filteredChangeOwnershipRows.length > 500 ? (
@@ -9599,6 +9745,8 @@ export default function SolarRecDashboard() {
                       <TableHead>System</TableHead>
                       <TableHead>system_id</TableHead>
                       <TableHead>Tracking ID</TableHead>
+                      <TableHead>AC Size (kW)</TableHead>
+                      <TableHead>Contract Value</TableHead>
                       <TableHead>Contract Date</TableHead>
                       <TableHead>Zillow Sold Date</TableHead>
                       <TableHead>Zillow Status</TableHead>
@@ -9613,6 +9761,8 @@ export default function SolarRecDashboard() {
                         <TableCell className="font-medium">{system.systemName}</TableCell>
                         <TableCell>{system.systemId ?? "N/A"}</TableCell>
                         <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
+                        <TableCell>{formatCapacityKw(system.installedKwAc)}</TableCell>
+                        <TableCell>{formatCurrency(resolveContractValueAmount(system))}</TableCell>
                         <TableCell>{formatDate(system.contractedDate)}</TableCell>
                         <TableCell>{formatDate(system.zillowSoldDate)}</TableCell>
                         <TableCell>{system.zillowStatus ?? "N/A"}</TableCell>
@@ -9631,6 +9781,13 @@ export default function SolarRecDashboard() {
                         <TableCell>{system.isReporting ? "Yes" : "No"}</TableCell>
                       </TableRow>
                     ))}
+                    {filteredChangeOwnershipRows.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                          No flagged systems match the current filters.
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
                   </TableBody>
                 </Table>
               </CardContent>
