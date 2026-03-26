@@ -48,14 +48,14 @@ class CoherenceDashboardWidget : GlanceAppWidget() {
 
 // ── Color palette ──────────────────────────────────────────────────────────────
 
-private val BgDark = ColorProvider(day = Color(0xFF121212), night = Color(0xFF121212))
-private val TextPrimary = ColorProvider(day = Color(0xFFECEFF1), night = Color(0xFFECEFF1))
-private val TextSecondary = ColorProvider(day = Color(0xFF9E9E9E), night = Color(0xFF9E9E9E))
-private val AccentBlue = ColorProvider(day = Color(0xFF8AB4F8), night = Color(0xFF8AB4F8))
-private val AccentGreen = ColorProvider(day = Color(0xFF81C784), night = Color(0xFF81C784))
-private val AccentRed = ColorProvider(day = Color(0xFFEF9A9A), night = Color(0xFFEF9A9A))
-private val AccentOrange = ColorProvider(day = Color(0xFFFFB74D), night = Color(0xFFFFB74D))
-private val AccentPurple = ColorProvider(day = Color(0xFFCE93D8), night = Color(0xFFCE93D8))
+private val BgDark = ColorProvider(Color(0xFF121212))
+private val TextPrimary = ColorProvider(Color(0xFFECEFF1))
+private val TextSecondary = ColorProvider(Color(0xFF9E9E9E))
+private val AccentBlue = ColorProvider(Color(0xFF8AB4F8))
+private val AccentGreen = ColorProvider(Color(0xFF81C784))
+private val AccentRed = ColorProvider(Color(0xFFEF9A9A))
+private val AccentOrange = ColorProvider(Color(0xFFFFB74D))
+private val AccentPurple = ColorProvider(Color(0xFFCE93D8))
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
 
