@@ -80,6 +80,7 @@
     <!-- Home-screen dashboard widget -->
     <receiver
       android:name=".widget.CoherenceDashboardWidgetReceiver"
+      android:enabled="true"
       android:exported="true"
       android:label="Coherence Dashboard">
       <intent-filter>
