@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 import { Loader2, MessageSquare, Plus, Send, Trash2 } from "lucide-react";
+import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -290,11 +291,7 @@ export default function ChatGPTWidget() {
   };
 
   if (authLoading || (conversationsQuery.isLoading && !conversationsQuery.data)) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <WidgetPageSkeleton variant="chat" />;
   }
 
   if (!user) {
@@ -350,13 +347,22 @@ export default function ChatGPTWidget() {
               conversations.map((conversation) => {
                 const isSelected = selectedConversationId === conversation.id;
                 return (
-                  <button
+                  <div
                     key={conversation.id}
-                    type="button"
+                    role="button"
+                    tabIndex={0}
                     onClick={() => {
                       setSelectedConversationId(conversation.id);
                       setSendError(null);
                       shouldAutoScrollRef.current = false;
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedConversationId(conversation.id);
+                        setSendError(null);
+                        shouldAutoScrollRef.current = false;
+                      }
                     }}
                     className={`w-full text-left rounded-md border px-3 py-2 transition cursor-pointer ${
                       isSelected
@@ -383,7 +389,7 @@ export default function ChatGPTWidget() {
                         <Trash2 className="w-4 h-4 text-destructive" />
                       </Button>
                     </div>
-                  </button>
+                  </div>
                 );
               })
             )}

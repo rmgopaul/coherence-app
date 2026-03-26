@@ -4,7 +4,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { Loader2, Mail } from "lucide-react";
+import { Mail } from "lucide-react";
+import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -78,11 +79,7 @@ export default function GmailWidget() {
   }, [page, totalPages]);
 
   if (authLoading || isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <WidgetPageSkeleton variant="list" rows={8} />;
   }
 
   if (!user) {

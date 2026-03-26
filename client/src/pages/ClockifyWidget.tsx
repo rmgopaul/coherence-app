@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { ExternalLink, Loader2, Play, Square } from "lucide-react";
+import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -152,11 +153,7 @@ export default function ClockifyWidget() {
   };
 
   if (authLoading || statusQuery.isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    );
+    return <WidgetPageSkeleton variant="timer" />;
   }
 
   if (!user) {

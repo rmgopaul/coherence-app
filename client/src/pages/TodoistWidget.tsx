@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { CheckSquare, Loader2, Plus, RefreshCw } from "lucide-react";
+import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
@@ -163,11 +164,7 @@ export default function TodoistWidget() {
   }, [taskPage, totalTaskPages]);
 
   if (authLoading || (isLoading && !localTasks.length)) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin text-slate-600" />
-      </div>
-    );
+    return <WidgetPageSkeleton variant="list" rows={8} />;
   }
 
   if (!user) {
