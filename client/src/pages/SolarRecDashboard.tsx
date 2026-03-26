@@ -7946,22 +7946,22 @@ export default function SolarRecDashboard() {
                   <CardTitle className="text-2xl">{formatNumber(summary.largeSystems)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(overviewPart2Totals.totalContractedValuePart2)}</CardTitle>
+                  <CardTitle className="text-lg xl:text-xl truncate">{formatCurrency(overviewPart2Totals.totalContractedValuePart2)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>Cumulative kW AC (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwAcPart2)}</CardTitle>
+                  <CardTitle className="text-lg xl:text-xl truncate">{formatCapacityKw(overviewPart2Totals.cumulativeKwAcPart2)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>Cumulative kW DC (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
+                  <CardTitle className="text-lg xl:text-xl truncate">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
@@ -8268,16 +8268,16 @@ export default function SolarRecDashboard() {
                   <CardTitle className="text-2xl">{formatNumber(recValueRows.length)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalContractedValue)}</CardTitle>
+                  <CardTitle className="text-lg xl:text-xl truncate">{formatCurrency(snapshotPart2ValueSummary.totalContractedValue)}</CardTitle>
                 </CardHeader>
               </Card>
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardDescription>Value Gap (Contracted - Delivered)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalGap)}</CardTitle>
+                  <CardTitle className="text-lg xl:text-xl truncate">{formatCurrency(snapshotPart2ValueSummary.totalGap)}</CardTitle>
                 </CardHeader>
               </Card>
 		              <Card>
