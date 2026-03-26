@@ -39,7 +39,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
 import { SidebarMenuBadge } from "@/components/ui/sidebar";
 import { APP_LOGO } from "@/const";
@@ -65,7 +65,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Calendar", href: "/widget/google-calendar", icon: Calendar, badgeKey: "events" },
       { label: "Notes", href: "/notes", icon: StickyNote },
       { label: "Chat", href: "/widget/chatgpt", icon: MessageSquare },
-      { label: "Health", href: "/dashboard", icon: HeartPulse },
+      { label: "Health", href: "/dashboard#section-health", icon: HeartPulse },
     ],
   },
   {
@@ -154,9 +154,8 @@ export function AppSidebar() {
   };
 
   const isActive = (href: string) => {
-    if (href.includes("#")) {
-      return location === href.split("#")[0];
-    }
+    // Hash links (e.g. /dashboard#section-health) are jump links — never highlight as active page
+    if (href.includes("#")) return false;
     return location === href;
   };
 
@@ -204,8 +203,9 @@ export function AppSidebar() {
                   <SidebarMenu>
                     {section.items.map((item) => {
                       const active = isActive(item.href);
+                      const isHashLink = item.href.includes("#");
                       return (
-                        <SidebarMenuItem key={item.href}>
+                        <SidebarMenuItem key={item.label}>
                           <SidebarMenuButton
                             asChild
                             isActive={active}
@@ -216,7 +216,16 @@ export function AppSidebar() {
                                 "before:absolute before:left-0 before:top-1 before:bottom-1 before:w-[3px] before:rounded-full before:bg-primary"
                             )}
                           >
-                            <a href={item.href}>
+                            <a
+                              href={item.href}
+                              onClick={isHashLink ? (e) => {
+                                const [path, hash] = item.href.split("#");
+                                if (location === path) {
+                                  e.preventDefault();
+                                  document.getElementById(hash)?.scrollIntoView({ behavior: "smooth" });
+                                }
+                              } : undefined}
+                            >
                               <item.icon className="size-4" />
                               <span>{item.label}</span>
                             </a>

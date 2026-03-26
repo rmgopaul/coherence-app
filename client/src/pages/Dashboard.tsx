@@ -64,6 +64,10 @@ import { WhoopCard } from "@/components/dashboard/WhoopCard";
 import { HabitsCard } from "@/components/dashboard/HabitsCard";
 import { QuickActionsFab } from "@/components/dashboard/QuickActionsFab";
 import { DashboardSkeleton } from "@/components/dashboard/DashboardSkeleton";
+import { WorkspaceSection } from "@/components/dashboard/WorkspaceSection";
+import { ChatPanel } from "@/components/dashboard/ChatPanel";
+import { SupplementsCard } from "@/components/dashboard/SupplementsCard";
+import { NotesCard } from "@/components/dashboard/NotesCard";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -466,20 +470,14 @@ export default function Dashboard() {
     return acc;
   }, {});
   
-  // Color palette for different days
-  const dayColors = [
-    { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", header: "bg-emerald-100" },
-    { bg: "bg-lime-50", border: "border-lime-200", text: "text-lime-900", header: "bg-lime-100" },
-    { bg: "bg-teal-50", border: "border-teal-200", text: "text-teal-900", header: "bg-teal-100" },
-    { bg: "bg-muted", border: "border-border", text: "text-foreground", header: "bg-slate-200" },
-    { bg: "bg-amber-50", border: "border-amber-200", text: "text-amber-900", header: "bg-amber-100" },
-  ];
-  
+  // Single consistent accent color for all calendar event days
+  const dayColor = { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", header: "bg-emerald-100" };
+
   const dateKeys = Object.keys(groupedEvents);
-  const eventsByDate = dateKeys.map((dateKey, index) => ({
+  const eventsByDate = dateKeys.map((dateKey) => ({
     date: dateKey,
     events: groupedEvents[dateKey],
-    colors: dayColors[index % dayColors.length],
+    colors: dayColor,
   }));
   
   // Fetch Todoist projects for the filter dropdown
@@ -1535,93 +1533,127 @@ export default function Dashboard() {
   }, [todayKey]);
 
   useEffect(() => {
-    if (!navigator.geolocation) {
+    let cancelled = false;
+
+    const setWeatherError = (message: string) => {
+      if (cancelled) return;
       setWeather({
         loading: false,
         summary: "",
         location: "",
         temperatureF: null,
-        error: "Geolocation not supported",
+        error: message,
         forecast: [],
       });
-      return;
-    }
+    };
 
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        const { latitude, longitude } = position.coords;
-        try {
-          const weatherResponse = await fetch(
-            `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=3`
-          );
-          const weatherData = await weatherResponse.json();
-          const current = weatherData?.current ?? {};
-          const daily = weatherData?.daily ?? {};
-
-          let location = "";
-          try {
-            const geoResponse = await fetch(
-              `https://geocoding-api.open-meteo.com/v1/reverse?latitude=${latitude}&longitude=${longitude}&language=en&count=1`
-            );
-            const geoData = await geoResponse.json();
-            const place = geoData?.results?.[0];
-            if (place) {
-              const parts = [place.name, place.admin1].filter(Boolean);
-              location = parts.join(", ");
-            }
-          } catch {
-            // Location name is optional.
-          }
-
-          const forecastDays: Array<{ day: string; highF: number; lowF: number; code: number }> = [];
-          const dailyDates = Array.isArray(daily.time) ? daily.time : [];
-          const dailyMax = Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max : [];
-          const dailyMin = Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min : [];
-          const dailyCodes = Array.isArray(daily.weather_code) ? daily.weather_code : [];
-          for (let i = 0; i < dailyDates.length; i++) {
-            const d = new Date(dailyDates[i] + "T12:00:00");
-            forecastDays.push({
-              day: d.toLocaleDateString("en-US", { weekday: "short" }),
-              highF: typeof dailyMax[i] === "number" ? Math.round(dailyMax[i]) : 0,
-              lowF: typeof dailyMin[i] === "number" ? Math.round(dailyMin[i]) : 0,
-              code: typeof dailyCodes[i] === "number" ? dailyCodes[i] : 0,
-            });
-          }
-
-          setWeather({
-            loading: false,
-            summary: getWeatherLabel(current.weather_code),
-            location,
-            temperatureF:
-              typeof current.temperature_2m === "number" ? current.temperature_2m : null,
-            error: null,
-            forecast: forecastDays,
-          });
-        } catch (error) {
-          setWeather({
-            loading: false,
-            summary: "",
-            location: "",
-            temperatureF: null,
-            error: (error as Error).message || "Weather fetch failed",
-            forecast: [],
-          });
-        }
-      },
-      (error) => {
-        setWeather({
-          loading: false,
-          summary: "",
-          location: "",
-          temperatureF: null,
-          error: error.message || "Location access denied",
-          forecast: [],
-        });
-      },
-      {
-        timeout: 10000,
+    const fetchWeatherForCoordinates = async (
+      latitude: number,
+      longitude: number,
+      fallbackLocation = ""
+    ): Promise<void> => {
+      const weatherResponse = await fetch(
+        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=3`
+      );
+      if (!weatherResponse.ok) {
+        throw new Error(`Weather request failed (${weatherResponse.status})`);
       }
-    );
+      const weatherData = await weatherResponse.json();
+      const current = weatherData?.current ?? {};
+      const daily = weatherData?.daily ?? {};
+
+      let location = fallbackLocation;
+      try {
+        const geoResponse = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/reverse?latitude=${latitude}&longitude=${longitude}&language=en&count=1`
+        );
+        if (geoResponse.ok) {
+          const geoData = await geoResponse.json();
+          const place = geoData?.results?.[0];
+          if (place) {
+            const parts = [place.name, place.admin1].filter(Boolean);
+            location = parts.join(", ");
+          }
+        }
+      } catch {
+        // Location name is optional.
+      }
+
+      const forecastDays: Array<{ day: string; highF: number; lowF: number; code: number }> = [];
+      const dailyDates = Array.isArray(daily.time) ? daily.time : [];
+      const dailyMax = Array.isArray(daily.temperature_2m_max) ? daily.temperature_2m_max : [];
+      const dailyMin = Array.isArray(daily.temperature_2m_min) ? daily.temperature_2m_min : [];
+      const dailyCodes = Array.isArray(daily.weather_code) ? daily.weather_code : [];
+      for (let i = 0; i < dailyDates.length; i++) {
+        const d = new Date(dailyDates[i] + "T12:00:00");
+        forecastDays.push({
+          day: d.toLocaleDateString("en-US", { weekday: "short" }),
+          highF: typeof dailyMax[i] === "number" ? Math.round(dailyMax[i]) : 0,
+          lowF: typeof dailyMin[i] === "number" ? Math.round(dailyMin[i]) : 0,
+          code: typeof dailyCodes[i] === "number" ? dailyCodes[i] : 0,
+        });
+      }
+
+      if (cancelled) return;
+      setWeather({
+        loading: false,
+        summary: getWeatherLabel(current.weather_code),
+        location,
+        temperatureF: typeof current.temperature_2m === "number" ? current.temperature_2m : null,
+        error: null,
+        forecast: forecastDays,
+      });
+    };
+
+    const fetchWeatherByTimezoneFallback = async () => {
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      const segments = timezone.split("/").filter(Boolean);
+      const cityGuess = segments.length > 0 ? segments[segments.length - 1].replace(/_/g, " ") : "";
+      if (!cityGuess) {
+        throw new Error("Location unavailable");
+      }
+
+      const searchResponse = await fetch(
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityGuess)}&count=1&language=en`
+      );
+      if (!searchResponse.ok) {
+        throw new Error(`Location lookup failed (${searchResponse.status})`);
+      }
+      const searchData = await searchResponse.json();
+      const place = searchData?.results?.[0];
+      if (!place || typeof place.latitude !== "number" || typeof place.longitude !== "number") {
+        throw new Error("Could not resolve location");
+      }
+
+      const parts = [place.name, place.admin1].filter(Boolean);
+      await fetchWeatherForCoordinates(place.latitude, place.longitude, parts.join(", "));
+    };
+
+    const run = async () => {
+      if (navigator.geolocation) {
+        try {
+          const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
+          });
+          await fetchWeatherForCoordinates(position.coords.latitude, position.coords.longitude);
+          return;
+        } catch {
+          // Fallback to timezone-based lookup.
+        }
+      }
+
+      try {
+        await fetchWeatherByTimezoneFallback();
+      } catch (error) {
+        setWeatherError(error instanceof Error ? error.message : "Weather fetch failed");
+      }
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -2237,155 +2269,26 @@ export default function Dashboard() {
           </DashboardWidget>
 
           {isSectionVisible("supplements") ? (
-            <Card className="min-w-0 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <Pill className="h-4 w-4 text-emerald-600" />
-                <CardTitle className="text-base">Supplements</CardTitle>
-              </div>
-              <SectionRating sectionId="section-supplements" currentRating={sectionRatingMap["section-supplements"] as any} />
-            </CardHeader>
-            <CardContent className="space-y-3 min-w-0">
-              <div className="space-y-2 min-w-0">
-                <Input
-                  value={supplementName}
-                  onChange={(e) => setSupplementName(e.target.value)}
-                  placeholder="Supplement"
-                  className="h-9 min-w-0 text-sm"
-                />
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 min-w-0">
-                  <Input
-                    value={supplementDose}
-                    onChange={(e) => setSupplementDose(e.target.value)}
-                    placeholder="Dose"
-                    className="h-9 min-w-0 text-sm"
-                  />
-                  <Select
-                    value={supplementDoseUnit}
-                    onValueChange={(value) => setSupplementDoseUnit(value as (typeof SUPPLEMENT_UNITS)[number])}
-                  >
-                    <SelectTrigger className="h-9 w-full min-w-0 text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {SUPPLEMENT_UNITS.map((unit) => (
-                        <SelectItem key={unit} value={unit}>
-                          {unit}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 min-w-0">
-                  <Select
-                    value={supplementTiming}
-                    onValueChange={(value) => setSupplementTiming(value as "am" | "pm")}
-                  >
-                    <SelectTrigger className="h-9 w-full min-w-0 text-sm">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="am">am</SelectItem>
-                      <SelectItem value="pm">pm</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-9 w-full text-sm"
-                    onClick={handleAddSupplementDefinition}
-                    disabled={createSupplementDefinition.isPending}
-                  >
-                    Add to List
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="h-9 w-full text-sm"
-                    onClick={handleAddSupplementLog}
-                    disabled={addSupplementLog.isPending}
-                  >
-                    Log Once
-                  </Button>
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Lock items below to auto-log daily.
-              </p>
-
-              <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
-                {(supplementDefinitions || []).length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No curated supplements yet.</p>
-                ) : (
-                  (supplementDefinitions || []).map((definition: any) => (
-                    <div
-                      key={definition.id}
-                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border bg-muted px-2 py-1.5"
-                    >
-                      <p className="min-w-0 break-words pr-1 text-xs leading-tight text-slate-800">
-                        {definition.name} • {definition.dose} {definition.doseUnit} • {definition.timing}
-                      </p>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          variant={definition.isLocked ? "default" : "outline"}
-                          size="sm"
-                          className="h-6 px-2 text-xs"
-                          onClick={() =>
-                            setSupplementDefinitionLock.mutate({
-                              definitionId: definition.id,
-                              isLocked: !definition.isLocked,
-                            })
-                          }
-                        >
-                          {definition.isLocked ? "Locked" : "Lock"}
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 w-6 p-0"
-                          onClick={() => deleteSupplementDefinition.mutate({ definitionId: definition.id })}
-                        >
-                          <Trash2 className="h-3 w-3 text-muted-foreground" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-              <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
-                {(supplementLogs || []).length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No supplements logged today.</p>
-                ) : (
-                  (supplementLogs || []).map((log: any) => (
-                    <div
-                      key={log.id}
-                      className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5"
-                    >
-                      <div className="min-w-0 pr-1">
-                        <p className="break-words text-xs font-medium leading-tight text-emerald-900">
-                          {log.name} • {log.dose} {log.doseUnit} • {log.timing}
-                          {log.autoLogged ? " • auto" : ""}
-                        </p>
-                        <p className="text-xs text-emerald-700">
-                          {new Date(log.takenAt).toLocaleTimeString("en-US", {
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })}
-                        </p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 w-6 shrink-0 p-0"
-                        onClick={() => deleteSupplementLog.mutate({ id: log.id })}
-                      >
-                        <Trash2 className="h-3 w-3 text-emerald-700" />
-                      </Button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </CardContent>
-            </Card>
+            <SupplementsCard
+              supplementName={supplementName}
+              supplementDose={supplementDose}
+              supplementDoseUnit={supplementDoseUnit}
+              supplementTiming={supplementTiming}
+              supplementDefinitions={supplementDefinitions}
+              supplementLogs={supplementLogs}
+              sectionRating={sectionRatingMap["section-supplements"] as any}
+              setSupplementName={setSupplementName}
+              setSupplementDose={setSupplementDose}
+              setSupplementDoseUnit={setSupplementDoseUnit}
+              setSupplementTiming={setSupplementTiming}
+              onAddDefinition={handleAddSupplementDefinition}
+              onLogOnce={handleAddSupplementLog}
+              onToggleLock={(id, isLocked) => setSupplementDefinitionLock.mutate({ definitionId: id, isLocked })}
+              onDeleteDefinition={(id) => deleteSupplementDefinition.mutate({ definitionId: id })}
+              onDeleteLog={(id) => deleteSupplementLog.mutate({ id })}
+              addDefinitionPending={createSupplementDefinition.isPending}
+              addLogPending={addSupplementLog.isPending}
+            />
           ) : null}
 
           <HabitsCard
@@ -2399,235 +2302,43 @@ export default function Dashboard() {
           />
 
           {isSectionVisible("notes") ? (
-            <Card className="min-w-0 flex flex-col">
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <div className="flex items-center gap-2">
-                  <FileText className="h-4 w-4 text-emerald-600" />
-                  <CardTitle className="text-base">Notes</CardTitle>
-                </div>
-                <div className="flex items-center gap-1">
-                  <SectionRating sectionId="section-notes" currentRating={sectionRatingMap["section-notes"] as any} />
-                  <Button variant="ghost" size="sm" onClick={() => refetchNotes()}>
-                    <RefreshCw className="h-4 w-4" />
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-3">
-              <div className="grid grid-cols-2 gap-2">
-                <Input
-                  value={noteNotebookInput}
-                  onChange={(e) => setNoteNotebookInput(e.target.value)}
-                  placeholder="Notebook"
-                  className="h-8 text-xs"
-                />
-                <Select value={noteNotebookFilter} onValueChange={setNoteNotebookFilter}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Filter notebook" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All notebooks</SelectItem>
-                    {noteNotebookOptions.map((notebook) => (
-                      <SelectItem key={notebook} value={notebook}>
-                        {notebook}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <Input
-                value={noteTitleInput}
-                onChange={(e) => setNoteTitleInput(e.target.value)}
-                placeholder="Note title"
-                className="h-8 text-xs"
-              />
-              <Textarea
-                value={noteContentInput}
-                onChange={(e) => setNoteContentInput(e.target.value)}
-                placeholder="Write note content..."
-                className="min-h-[84px] text-xs"
-              />
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  className="h-8 text-xs"
-                  onClick={handleSubmitNote}
-                  disabled={createNoteMutation.isPending || updateNoteMutation.isPending}
-                >
-                  {editingNoteId ? "Update Note" : "Create Note"}
-                </Button>
-                {editingNoteId && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-8 text-xs"
-                    onClick={() => {
-                      setEditingNoteId(null);
-                      setNoteNotebookInput("General");
-                      setNoteTitleInput("");
-                      setNoteContentInput("");
-                    }}
-                  >
-                    Cancel
-                  </Button>
-                )}
-              </div>
-
-              <div className="rounded-md border border-border bg-muted p-2 space-y-2">
-                <p className="text-xs font-semibold text-muted-foreground">Link Existing Note</p>
-                <Select value={linkNoteId || "__none"} onValueChange={(value) => setLinkNoteId(value === "__none" ? "" : value)}>
-                  <SelectTrigger className="h-8 text-xs bg-card">
-                    <SelectValue placeholder="Select note" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none">Select note</SelectItem>
-                    {(notes || []).map((note: any) => (
-                      <SelectItem key={note.id} value={note.id}>
-                        {note.notebook || "General"} • {note.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <div className="grid grid-cols-1 gap-2">
-                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-                    <Select
-                      value={linkTaskId || "__none"}
-                      onValueChange={(value) => setLinkTaskId(value === "__none" ? "" : value)}
-                    >
-                      <SelectTrigger className="h-8 min-w-0 text-xs bg-card sm:flex-1">
-                        <SelectValue placeholder="Link to Todoist task" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none">Select Todoist task</SelectItem>
-                        {(todayTasks || []).slice(0, 50).map((task: any) => (
-                          <SelectItem key={task.id} value={String(task.id)}>
-                            {task.content}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      size="sm"
-                      className="h-8 text-xs sm:shrink-0"
-                      onClick={handleLinkExistingNoteToTask}
-                      disabled={addNoteLinkMutation.isPending}
-                    >
-                      Link Task
-                    </Button>
-                  </div>
-                  <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
-                    <Select
-                      value={linkEventId || "__none"}
-                      onValueChange={(value) => setLinkEventId(value === "__none" ? "" : value)}
-                    >
-                      <SelectTrigger className="h-8 min-w-0 text-xs bg-card sm:flex-1">
-                        <SelectValue placeholder="Link to calendar event" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="__none">Select calendar event</SelectItem>
-                        {upcomingEvents.slice(0, 50).map((event: any) => (
-                          <SelectItem key={event.id} value={String(event.id || "")}>
-                            {formatCalendarEventLabel(event)}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      size="sm"
-                      className="h-8 text-xs sm:shrink-0"
-                      onClick={handleLinkExistingNoteToEvent}
-                      disabled={addNoteLinkMutation.isPending}
-                    >
-                      Link Event
-                    </Button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-                {notesLoading ? (
-                  <div className="flex justify-center py-3">
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                  </div>
-                ) : filteredNotes.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No notes for this notebook filter.</p>
-                ) : (
-                  filteredNotes.map((note: any) => (
-                    <div key={note.id} className="rounded-md border border-emerald-100 bg-emerald-50/60 px-2 py-2 space-y-1.5">
-                      <div className="flex items-start justify-between gap-2">
-                        <button type="button" className="min-w-0 text-left" onClick={() => handleEditNote(note)}>
-                          <p className="text-xs font-semibold text-foreground truncate">{note.title}</p>
-                          <p className="text-xs text-muted-foreground line-clamp-2 mt-1">
-                            {toPlainText(String(note.content || "")) || "No content"}
-                          </p>
-                        </button>
-                        <div className="flex items-center gap-1 shrink-0">
-                          <Button
-                            size="sm"
-                            variant={note.pinned ? "default" : "outline"}
-                            className="h-6 px-2 text-xs"
-                            onClick={() =>
-                              updateNoteMutation.mutate({
-                                noteId: note.id,
-                                pinned: !note.pinned,
-                              })
-                            }
-                          >
-                            {note.pinned ? "Pinned" : "Pin"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 w-6 p-0"
-                            onClick={() => deleteNoteMutation.mutate({ noteId: note.id })}
-                          >
-                            <Trash2 className="h-3 w-3 text-muted-foreground" />
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between">
-                        <Badge variant="outline" className="text-xs">
-                          Notebook: {note.notebook || "General"}
-                        </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleString("en-US", {
-                            month: "short",
-                            day: "numeric",
-                            hour: "numeric",
-                            minute: "2-digit",
-                          })}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-1">
-                        {Array.isArray(note.links) && note.links.length > 0 ? (
-                          note.links.map((link: any) => (
-                            <Badge key={link.id} variant="outline" className="text-xs gap-1">
-                              {link.linkType === "todoist_task" ? "Task" : "Event"}
-                              {link.seriesId ? " • Recurring" : ""}
-                              <button
-                                type="button"
-                                className="ml-1 text-muted-foreground hover:text-foreground"
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  removeNoteLinkMutation.mutate({ linkId: link.id });
-                                }}
-                                aria-label="Remove link"
-                              >
-                                ×
-                              </button>
-                            </Badge>
-                          ))
-                        ) : (
-                          <span className="text-xs text-muted-foreground">No links</span>
-                        )}
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-              </CardContent>
-            </Card>
+            <NotesCard
+              noteTitleInput={noteTitleInput}
+              noteContentInput={noteContentInput}
+              noteNotebookInput={noteNotebookInput}
+              noteNotebookFilter={noteNotebookFilter}
+              editingNoteId={editingNoteId}
+              linkNoteId={linkNoteId}
+              linkTaskId={linkTaskId}
+              linkEventId={linkEventId}
+              noteNotebookOptions={noteNotebookOptions}
+              filteredNotes={filteredNotes}
+              notes={notes}
+              notesLoading={notesLoading}
+              todayTasks={todayTasks}
+              upcomingEvents={upcomingEvents}
+              sectionRating={sectionRatingMap["section-notes"] as any}
+              setNoteTitleInput={setNoteTitleInput}
+              setNoteContentInput={setNoteContentInput}
+              setNoteNotebookInput={setNoteNotebookInput}
+              setNoteNotebookFilter={setNoteNotebookFilter}
+              setEditingNoteId={setEditingNoteId}
+              setLinkNoteId={setLinkNoteId}
+              setLinkTaskId={setLinkTaskId}
+              setLinkEventId={setLinkEventId}
+              onSubmitNote={handleSubmitNote}
+              onEditNote={handleEditNote}
+              onDeleteNote={(id) => deleteNoteMutation.mutate({ noteId: id })}
+              onPinNote={(id, pinned) => updateNoteMutation.mutate({ noteId: id, pinned })}
+              onLinkNoteToTask={handleLinkExistingNoteToTask}
+              onLinkNoteToEvent={handleLinkExistingNoteToEvent}
+              onRemoveLink={(id) => removeNoteLinkMutation.mutate({ linkId: id })}
+              onRefresh={() => refetchNotes()}
+              formatCalendarEventLabel={formatCalendarEventLabel}
+              createPending={createNoteMutation.isPending}
+              updatePending={updateNoteMutation.isPending}
+              linkPending={addNoteLinkMutation.isPending}
+            />
           ) : null}
         </div>
       </div>
@@ -2638,736 +2349,85 @@ export default function Dashboard() {
       </div>
 
       {/* Main Content - Four Column Layout */}
-      {isSectionVisible("workspace") ? (
-        workspaceExpanded ? (
-      <main id="section-workspace" className="container mx-auto px-4 py-6 flex-1 overflow-hidden scroll-mt-40">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-full">
-          {/* Left Column - Calendar Events */}
-          <Card className="lg:col-span-1 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-emerald-600" />
-                <CardTitle className="text-base">Today's Events</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-calendar" currentRating={sectionRatingMap["section-calendar"] as any} />
-                {hasGoogle && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => refetchCalendar()}
-                    disabled={calendarLoading}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${calendarLoading ? "animate-spin" : ""}`} />
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-2 overflow-y-auto flex-1">
-              {!hasGoogle ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <Calendar className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                  <p className="text-sm">Connect Google Calendar in Settings</p>
-                  <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2">
-                    Go to Settings
-                  </Button>
-                </div>
-              ) : calendarLoading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
-                </div>
-              ) : upcomingEvents.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <p className="text-sm">No upcoming events</p>
-                </div>
-              ) : (
-                eventsByDate.map(({ date, events, colors }) => (
-                  <div key={date} className="mb-2.5">
-                    <div className={`${colors.header} px-2 py-0.5 rounded-t text-xs font-semibold ${colors.text} sticky top-0 z-10`}>
-                      {date}
-                    </div>
-                    <div className="space-y-1 mt-1">
-                      {events.map((event: any) => (
-                        <div
-                          key={event.id}
-                          className={`p-2 ${colors.bg} rounded-md border ${colors.border} hover:opacity-95 transition-opacity ${
-                            selectedCalendarHistoryEventId === String(event.id || "")
-                              ? "ring-1 ring-emerald-500"
-                              : ""
-                          } cursor-pointer`}
-                          onClick={() =>
-                            setSelectedCalendarHistoryEventId((current) =>
-                              current === String(event.id || "") ? null : String(event.id || "")
-                            )
-                          }
-                        >
-                          <div className="flex items-start gap-2">
-                            <a
-                              href={event.htmlLink}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-1 min-w-0"
-                            >
-                              <p className={`font-medium text-xs ${colors.text} truncate leading-4`}>{event.summary}</p>
-                              <p className="text-xs text-muted-foreground">{formatEventTime(event)}</p>
-                              {event.location && (
-                                <p className="text-xs text-muted-foreground truncate">{event.location}</p>
-                              )}
-                            </a>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-6 w-6 p-0 shrink-0"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setSelectedCalendarHistoryEventId((current) =>
-                                  current === String(event.id || "") ? null : String(event.id || "")
-                                );
-                              }}
-                              title="Show related notes"
-                            >
-                              <MessageSquare className="h-3.5 w-3.5 text-emerald-700" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-6 w-6 p-0 shrink-0"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                openNotebookForCalendarEvent(event);
-                              }}
-                              title="Open in notebook"
-                            >
-                              <FolderOpen className="h-3.5 w-3.5 text-emerald-700" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-6 w-6 p-0 shrink-0"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleCreateNoteFromCalendarEvent(event);
-                              }}
-                              disabled={createNoteFromCalendarMutation.isPending}
-                              title="Create linked note"
-                            >
-                              <FileText className="h-3.5 w-3.5 text-emerald-700" />
-                            </Button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {selectedCalendarHistoryEvent &&
-                      events.some(
-                        (event: any) =>
-                          String(event.id || "") === String(selectedCalendarHistoryEvent.id || "")
-                      ) && (
-                        <div className="mt-1.5 rounded-md border border-emerald-200 bg-emerald-50/70 p-2">
-                          <p className="text-xs font-semibold text-emerald-900 mb-1">
-                            Linked notes for this event series
-                          </p>
-                          {calendarLinkedNotes.length === 0 ? (
-                            <p className="text-xs text-emerald-800">
-                              No linked notes yet. Link an existing note from the Notes card or create one.
-                            </p>
-                          ) : (
-                            <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                              {calendarLinkedNotes.slice(0, 12).map((note: any) => (
-                                <button
-                                  key={note.id}
-                                  type="button"
-                                  onClick={() => handleEditNote(note)}
-                                  className="w-full text-left rounded border border-emerald-200 bg-card px-2 py-1.5 hover:bg-emerald-50"
-                                >
-                                  <p className="text-xs font-semibold text-foreground truncate">
-                                    {note.notebook || "General"} • {note.title}
-                                  </p>
-                                  <p className="text-xs text-muted-foreground line-clamp-1">
-                                    {toPlainText(String(note.content || "")) || "No content"}
-                                  </p>
-                                  {note.latestOccurrence && (
-                                    <p className="text-xs text-emerald-700 mt-0.5">
-                                      Linked occurrence:{" "}
-                                      {new Date(note.latestOccurrence).toLocaleString("en-US", {
-                                        month: "short",
-                                        day: "numeric",
-                                        hour: "numeric",
-                                        minute: "2-digit",
-                                      })}
-                                    </p>
-                                  )}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Middle Column - Todoist Tasks */}
-          <Card id="section-todoist" className="lg:col-span-1 flex flex-col overflow-hidden border border-[#cf3a2b] bg-[#e44332] text-white shadow-[0_18px_34px_rgba(228,67,50,0.35)] scroll-mt-40">
-            <CardHeader className="space-y-3 pb-4 border-b border-white/20 bg-[#e44332] text-white">
-              <div className="flex flex-row items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <CheckSquare className="h-5 w-5 text-white" />
-                  <CardTitle className="text-lg text-white">
-                    {todoistFilter === "all" ? "All Open Tasks" :
-                     todoistFilter === "today" ? "Today's Tasks" :
-                     todoistFilter === "#Inbox" ? "Inbox" :
-                     todoistFilter === "upcoming" ? "Upcoming" :
-                     todoistFilter.startsWith("label_") ?
-                       `@${decodeURIComponent(todoistFilter.replace("label_", ""))}` :
-                     todoistFilter.startsWith("project_") ? 
-                       todoistProjects?.find((p: any) => p.id === todoistFilter.replace("project_", ""))?.name || "Tasks" :
-                     "Tasks"}
-                  </CardTitle>
-                </div>
-                <SectionRating sectionId="section-todoist" currentRating={sectionRatingMap["section-todoist"] as any} />
-                {hasTodoist && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      refetchTasks();
-                      refetchTodoistCompletedToday();
-                    }}
-                    disabled={tasksLoading}
-                    className="text-white hover:text-white hover:bg-white/20"
-                  >
-                    <RefreshCw className={`h-4 w-4 ${tasksLoading ? "animate-spin" : ""}`} />
-                  </Button>
-                )}
-              </div>
-              {hasTodoist && (
-                <>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      value={quickTodoistTaskInput}
-                      onChange={(e) => setQuickTodoistTaskInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          handleQuickAddTodoistTask();
-                        }
-                      }}
-                      placeholder="Quick add a task..."
-                      className="h-9 border-white/40 bg-card text-foreground placeholder:text-muted-foreground"
-                    />
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={handleQuickAddTodoistTask}
-                      disabled={quickAddTodoistTask.isPending || !quickTodoistTaskInput.trim()}
-                      className="h-9 shrink-0 bg-card text-[#c93426] hover:bg-red-50"
-                    >
-                      <Plus className="h-4 w-4 mr-1" />
-                      Add
-                    </Button>
-                  </div>
-                  <Select value={todoistFilter} onValueChange={setTodoistFilter}>
-                    <SelectTrigger className="w-full border-white/40 bg-card text-slate-800">
-                      <SelectValue placeholder="Select filter" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All open tasks</SelectItem>
-                      <SelectItem value="today">Today</SelectItem>
-                      <SelectItem value="#Inbox">Inbox</SelectItem>
-                      <SelectItem value="upcoming">Upcoming</SelectItem>
-                      {todoistProjects && todoistProjects.length > 0 && (
-                        <>
-                          <SelectItem value="separator" disabled>── My Projects ──</SelectItem>
-                          {todoistProjects.map((project: any) => (
-                            <SelectItem key={project.id} value={`project_${project.id}`}>
-                              {project.name}
-                            </SelectItem>
-                          ))}
-                        </>
-                      )}
-                      {todoistLabels.length > 0 && (
-                        <>
-                          <SelectItem value="separator-labels" disabled>── Labels ──</SelectItem>
-                          {todoistLabels.map((label) => (
-                            <SelectItem key={label} value={`label_${encodeURIComponent(label)}`}>
-                              @{label}
-                            </SelectItem>
-                          ))}
-                        </>
-                      )}
-                    </SelectContent>
-                  </Select>
-                </>
-              )}
-            </CardHeader>
-            <CardContent className="space-y-2 overflow-y-auto flex-1 pt-3 bg-[#e44332]">
-              {!hasTodoist ? (
-                <div className="text-center py-8 text-white/90">
-                  <CheckSquare className="h-12 w-12 mx-auto mb-3 text-white/70" />
-                  <p className="text-sm">Connect Todoist in Settings</p>
-                  <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2 text-white">
-                    Go to Settings
-                  </Button>
-                </div>
-              ) : tasksLoading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-white" />
-                </div>
-              ) : !todayTasks || todayTasks.length === 0 ? (
-                <div className="text-center py-8 text-white/90">
-                  <p className="text-sm">
-                    {todoistFilter === "today"
-                      ? "No tasks for today"
-                      : todoistFilter === "all"
-                        ? "No open tasks found"
-                        : "No tasks for this filter"}
-                  </p>
-                </div>
-              ) : (
-                todayTasks.slice(0, 50).map((task: any) => (
-                  <div
-                    key={task.id}
-                    className="flex items-start gap-3 p-2 rounded border border-[#f29b90] bg-[#d63a2b] hover:bg-[#c93426] transition-colors"
-                  >
-                    <Checkbox
-                      checked={false}
-                      onCheckedChange={() => handleCompleteTask(task.id)}
-                      className="mt-1 border-white/80 data-[state=checked]:border-white data-[state=checked]:bg-card"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <a
-                        href={task.url || `https://todoist.com/app/task/${task.id}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-white break-words hover:text-white/90 hover:underline"
-                      >
-                        {task.content.replace(/\s*\(https?:\/\/[^)]+\)\s*/g, '').trim()}
-                      </a>
-                      {task.description && (
-                        <p className="text-xs text-red-100 mt-1 break-words">{task.description}</p>
-                      )}
-                      <div className="flex items-center gap-2 mt-1">
-                        {task.priority > 1 && (
-                          <span className="text-xs px-1.5 py-0.5 bg-card text-[#c93426] rounded font-semibold">
-                            P{task.priority}
-                          </span>
-                        )}
-                        {task.due?.date && (
-                          <span className="text-xs text-red-100">{task.due.date}</span>
-                        )}
-                      </div>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-7 w-7 p-0 shrink-0 text-white hover:bg-white/20 hover:text-white"
-                      onClick={() => handleCreateNoteFromTask(task)}
-                      disabled={createNoteFromTaskMutation.isPending}
-                      title="Create linked note"
-                    >
-                      <FileText className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Third Column - Important & Unread Emails */}
-          <Card className="lg:col-span-1 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-              <div className="flex items-center gap-2">
-                <Mail className="h-5 w-5 text-purple-600" />
-                <CardTitle className="text-lg">Important &amp; Unread</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-emails" currentRating={sectionRatingMap["section-emails"] as any} />
-                {hasGoogle && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => refetchEmails()}
-                    disabled={emailsLoading || emailsFetching}
-                  >
-                    <RefreshCw
-                      className={`h-4 w-4 ${emailsLoading || emailsFetching ? "animate-spin" : ""}`}
-                    />
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 overflow-y-auto flex-1">
-              {!hasGoogle ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <Mail className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                  <p className="text-sm">Connect Gmail in Settings</p>
-                  <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2">
-                    Go to Settings
-                  </Button>
-                </div>
-              ) : emailsLoading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="h-6 w-6 animate-spin text-purple-600" />
-                </div>
-              ) : !gmailMessages || gmailMessages.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <p className="text-sm">No recent emails</p>
-                </div>
-              ) : (
-                gmailMessages.slice(0, 50).map((message: any) => (
-                  <div key={message.id} className="group relative">
-                    <a
-                      href={`https://mail.google.com/mail/u/0/#inbox/${message.id}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block p-3 bg-purple-50 rounded-lg border border-purple-100 hover:bg-purple-100 transition-colors"
-                    >
-                      <div className="flex items-start justify-between gap-2 mb-1">
-                        <p className="font-medium text-sm text-gray-900 truncate flex-1">
-                          {getEmailHeader(message, "From")}
-                        </p>
-                        <span className="text-xs text-muted-foreground whitespace-nowrap">
-                          {formatEmailDate(message.internalDate)}
-                        </span>
-                      </div>
-                      <p className="text-sm font-medium text-gray-700 truncate mb-1">
-                        {getEmailHeader(message, "Subject")}
-                      </p>
-                      <p className="text-xs text-muted-foreground line-clamp-2">{message.snippet}</p>
-                    </a>
-                    <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="h-6 w-6 p-0"
-                        onClick={(e) => handleMarkEmailAsRead(message.id, e)}
-                        disabled={markEmailAsRead.isPending}
-                        title="Mark as read"
-                      >
-                        {markingEmailId === message.id && markEmailAsRead.isPending ? (
-                          <Loader2 className="h-3 w-3 animate-spin text-purple-600" />
-                        ) : (
-                          <MailCheck className="h-3 w-3 text-purple-700" />
-                        )}
-                      </Button>
-                      {hasTodoist && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="h-6 w-6 p-0"
-                          onClick={(e) => handleAddEmailToTodoist(message, e)}
-                          disabled={createTaskFromEmail.isPending}
-                          title="Add to Todoist"
-                        >
-                          <CheckSquare className="h-3 w-3 text-red-600" />
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ))
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Fourth Column - Google Drive Files */}
-          <Card className="lg:col-span-1 flex flex-col">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
-              <div className="flex items-center gap-2">
-                <FolderOpen className="h-5 w-5 text-green-600" />
-                <CardTitle className="text-lg">Drive Files</CardTitle>
-              </div>
-              <div className="flex items-center gap-1">
-                <SectionRating sectionId="section-drive" currentRating={sectionRatingMap["section-drive"] as any} />
-                {hasGoogle && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => refetchDrive()}
-                    disabled={driveLoading}
-                  >
-                    <RefreshCw className={`h-4 w-4 ${driveLoading ? "animate-spin" : ""}`} />
-                  </Button>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-3 overflow-y-auto flex-1">
-              {hasGoogle && (
-                <div className="flex gap-2 mb-2">
-                  <Input
-                    type="text"
-                    placeholder="Search all Drive files..."
-                    value={driveSearchQuery}
-                    onChange={(e) => setDriveSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleDriveSearch()}
-                    className="flex-1"
-                  />
-                  <Button
-                    size="sm"
-                    onClick={handleDriveSearch}
-                    disabled={isSearching || !driveSearchQuery.trim()}
-                    className="bg-green-600 hover:bg-green-700"
-                  >
-                    {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : "Search"}
-                  </Button>
-                  {driveSearchResults !== null && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={clearDriveSearch}
-                    >
-                      Clear
-                    </Button>
-                  )}
-                </div>
-              )}
-              {!hasGoogle ? (
-                <div className="text-center py-8 text-muted-foreground">
-                  <FolderOpen className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                  <p className="text-sm">Connect Google Drive in Settings</p>
-                  <Button variant="link" onClick={() => setLocation("/settings")} className="mt-2">
-                    Go to Settings
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <Button
-                    className="w-full mb-3 bg-green-600 hover:bg-green-700"
-                    onClick={() => {
-                      const title = `Untitled Spreadsheet ${new Date().toLocaleDateString()}`;
-                      createSpreadsheet.mutate({ title });
-                    }}
-                    disabled={createSpreadsheet.isPending}
-                  >
-                    {createSpreadsheet.isPending ? (
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    ) : (
-                      <FileText className="h-4 w-4 mr-2" />
-                    )}
-                    Create Spreadsheet
-                  </Button>
-                  {driveLoading ? (
-                    <div className="flex justify-center py-8">
-                      <Loader2 className="h-6 w-6 animate-spin text-green-600" />
-                    </div>
-                  ) : displayedDriveFiles.length === 0 ? (
-                    <div className="text-center py-8 text-muted-foreground">
-                      <p className="text-sm">{driveSearchResults !== null ? "No files found" : "No recent files"}</p>
-                    </div>
-                  ) : (
-                    displayedDriveFiles.map((file: any) => (
-                      <a
-                        key={file.id}
-                        href={file.webViewLink}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block p-3 bg-green-50 rounded-lg border border-green-100 hover:bg-green-100 transition-colors"
-                      >
-                        <div className="flex items-start gap-2">
-                          {file.iconLink && (
-                            <img src={file.iconLink} alt="" className="w-4 h-4 mt-0.5" />
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium text-sm text-gray-900 truncate">{file.name}</p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {new Date(file.modifiedTime).toLocaleDateString()}
-                            </p>
-                          </div>
-                        </div>
-                      </a>
-                    ))
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-        </div>
-      </main>
-        ) : (
-          <div id="section-workspace" className="container mx-auto px-4 py-6 scroll-mt-40">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Workspace Hidden</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-sm text-muted-foreground mb-3">
-                  Workspace data loading is paused until you expand this section.
-                </p>
-                <Button onClick={() => setWorkspaceExpanded(true)}>Show Workspace</Button>
-              </CardContent>
-            </Card>
-          </div>
-        )
-      ) : (
-        <div id="section-workspace" className="container mx-auto px-4 py-6 scroll-mt-40">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Detailed Workspace</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-3">
-                Switch to Detailed mode to view calendar, Todoist, Gmail, Drive, and Chat workspace sections.
-              </p>
-              <Button onClick={() => setDashboardViewMode("detailed")}>Switch to Detailed Mode</Button>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      <WorkspaceSection
+        isSectionVisible={isSectionVisible}
+        workspaceExpanded={workspaceExpanded}
+        setWorkspaceExpanded={setWorkspaceExpanded}
+        dashboardViewMode={dashboardViewMode}
+        setDashboardViewMode={setDashboardViewMode}
+        setLocation={setLocation}
+        sectionRatingMap={sectionRatingMap}
+        hasGoogle={hasGoogle}
+        calendarLoading={calendarLoading}
+        upcomingEvents={upcomingEvents}
+        eventsByDate={eventsByDate}
+        selectedCalendarHistoryEventId={selectedCalendarHistoryEventId}
+        setSelectedCalendarHistoryEventId={setSelectedCalendarHistoryEventId}
+        selectedCalendarHistoryEvent={selectedCalendarHistoryEvent}
+        calendarLinkedNotes={calendarLinkedNotes}
+        refetchCalendar={() => refetchCalendar()}
+        openNotebookForCalendarEvent={openNotebookForCalendarEvent}
+        handleCreateNoteFromCalendarEvent={handleCreateNoteFromCalendarEvent}
+        createNoteFromCalendarMutationPending={createNoteFromCalendarMutation.isPending}
+        handleEditNote={handleEditNote}
+        formatEventTime={formatEventTime}
+        hasTodoist={hasTodoist}
+        tasksLoading={tasksLoading}
+        todayTasks={todayTasks}
+        todoistFilter={todoistFilter}
+        setTodoistFilter={setTodoistFilter}
+        todoistProjects={todoistProjects}
+        todoistLabels={todoistLabels}
+        quickTodoistTaskInput={quickTodoistTaskInput}
+        setQuickTodoistTaskInput={setQuickTodoistTaskInput}
+        handleQuickAddTodoistTask={handleQuickAddTodoistTask}
+        quickAddTodoistTaskPending={quickAddTodoistTask.isPending}
+        handleCompleteTask={handleCompleteTask}
+        handleCreateNoteFromTask={handleCreateNoteFromTask}
+        createNoteFromTaskMutationPending={createNoteFromTaskMutation.isPending}
+        refetchTasks={() => refetchTasks()}
+        refetchTodoistCompletedToday={() => refetchTodoistCompletedToday()}
+        emailsLoading={emailsLoading}
+        emailsFetching={emailsFetching}
+        gmailMessages={gmailMessages}
+        markingEmailId={markingEmailId}
+        markEmailAsReadPending={markEmailAsRead.isPending}
+        createTaskFromEmailPending={createTaskFromEmail.isPending}
+        refetchEmails={() => refetchEmails()}
+        handleMarkEmailAsRead={handleMarkEmailAsRead}
+        handleAddEmailToTodoist={handleAddEmailToTodoist}
+        getEmailHeader={getEmailHeader}
+        formatEmailDate={formatEmailDate}
+        driveLoading={driveLoading}
+        displayedDriveFiles={displayedDriveFiles}
+        driveSearchQuery={driveSearchQuery}
+        setDriveSearchQuery={setDriveSearchQuery}
+        driveSearchResults={driveSearchResults}
+        isSearching={isSearching}
+        handleDriveSearch={handleDriveSearch}
+        clearDriveSearch={clearDriveSearch}
+        refetchDrive={() => refetchDrive()}
+        createSpreadsheet={{ mutate: createSpreadsheet.mutate, isPending: createSpreadsheet.isPending }}
+      />
 
       {/* Chat Panel at Bottom */}
-      {isSectionVisible("chat") && chatExpanded ? (
-      <div id="section-chat" className="border-t bg-card dark:bg-slate-900 scroll-mt-40">
-        <div className="container mx-auto px-4 py-4">
-          <div className="grid grid-cols-12 gap-4 h-80">
-            {/* Conversation List */}
-            <div className="col-span-3 border-r pr-4 overflow-y-auto">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-sm flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  Conversations
-                </h3>
-                <Button size="sm" variant="ghost" onClick={handleNewConversation}>
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
-              {!hasOpenAI ? (
-                <div className="text-center py-8 text-muted-foreground text-xs">
-                  <p>Connect OpenAI in Settings to use chat</p>
-                </div>
-              ) : conversations && conversations.length > 0 ? (
-                <div className="space-y-2">
-                  {conversations.map((conv) => (
-                    <div
-                      key={conv.id}
-                      className={`p-2 rounded cursor-pointer text-sm flex items-center justify-between group ${
-                        selectedConversationId === conv.id ? "bg-emerald-100 dark:bg-emerald-900/40" : "hover:bg-gray-100 dark:hover:bg-slate-800"
-                      }`}
-                      onClick={() => setSelectedConversationId(conv.id)}
-                    >
-                      <span className="truncate flex-1">{conv.title}</span>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        className="opacity-0 group-hover:opacity-100 h-6 w-6 p-0"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteConversation(conv.id);
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-center py-8 text-muted-foreground text-xs">
-                  <p>No conversations yet</p>
-                  <p className="mt-1">Click + to start</p>
-                </div>
-              )}
-            </div>
-
-            {/* Chat Messages */}
-            <div className="col-span-9 flex flex-col">
-              <div className="flex-1 overflow-y-auto mb-3 space-y-3">
-                {!hasOpenAI ? (
-                  <div className="flex items-center justify-center h-full text-muted-foreground">
-                    <div className="text-center">
-                      <MessageSquare className="h-12 w-12 mx-auto mb-2 text-gray-300" />
-                      <p className="text-sm">Connect OpenAI in Settings to start chatting</p>
-                    </div>
-                  </div>
-                ) : !selectedConversationId ? (
-                  <div className="flex items-center justify-center h-full text-muted-foreground">
-                    <div className="text-center">
-                      <MessageSquare className="h-12 w-12 mx-auto mb-2 text-gray-300" />
-                      <p className="text-sm">Select a conversation or start a new one</p>
-                    </div>
-                  </div>
-                ) : messages && messages.length > 0 ? (
-                  <>
-                    {messages.map((msg) => (
-                      <div
-                        key={msg.id}
-                        className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                      >
-                        <div
-                          className={`max-w-[80%] p-3 rounded-lg ${
-                            msg.role === "user"
-                              ? "bg-emerald-700 text-white"
-                              : "bg-gray-100 text-gray-900 dark:bg-slate-800 dark:text-slate-100"
-                          }`}
-                        >
-                          {msg.role === "assistant" ? (
-                            <div className="prose prose-sm max-w-none">
-                              <ReactMarkdown>{msg.content}</ReactMarkdown>
-                            </div>
-                          ) : (
-                            <p className="text-sm break-words">{msg.content}</p>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                    <div ref={messagesEndRef} />
-                  </>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-muted-foreground">
-                    <p className="text-sm">Start the conversation...</p>
-                  </div>
-                )}
-              </div>
-
-              {/* Chat Input */}
-              {hasOpenAI && (
-                <div className="flex gap-2">
-                  <Input
-                    value={chatMessage}
-                    onChange={(e) => setChatMessage(e.target.value)}
-                    placeholder="Type your message..."
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage();
-                      }
-                    }}
-                    disabled={sendMessage.isPending}
-                  />
-                  <Button
-                    onClick={handleSendMessage}
-                    disabled={!chatMessage.trim() || sendMessage.isPending}
-                  >
-                    {sendMessage.isPending ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Send className="h-4 w-4" />
-                    )}
-                  </Button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-      ) : isSectionVisible("chat") ? (
-        <div id="section-chat" className="container mx-auto px-4 pb-6 scroll-mt-40">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Chat Hidden</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground mb-3">
-                Chat queries are paused while this section is collapsed.
-              </p>
-              <Button onClick={() => setChatExpanded(true)}>Show Chat</Button>
-            </CardContent>
-          </Card>
-        </div>
-      ) : null}
+      <ChatPanel
+        hasOpenAI={hasOpenAI}
+        conversations={conversations}
+        selectedConversationId={selectedConversationId}
+        messages={messages}
+        chatMessage={chatMessage}
+        isSectionVisible={isSectionVisible}
+        chatExpanded={chatExpanded}
+        setSelectedConversationId={setSelectedConversationId}
+        setChatMessage={setChatMessage}
+        setChatExpanded={setChatExpanded}
+        handleNewConversation={handleNewConversation}
+        handleDeleteConversation={handleDeleteConversation}
+        handleSendMessage={handleSendMessage}
+        sendMessagePending={sendMessage.isPending}
+        messagesEndRef={messagesEndRef}
+      />
 
       <QuickActionsFab
         onAddTask={() => {

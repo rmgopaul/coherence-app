@@ -1,7 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
-import { Clock3, FolderOpen, PlayCircle } from "lucide-react";
+import { Clock3 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -72,30 +71,23 @@ export default function GlobalClockifyTimer() {
     (currentEntry?.projectId ? `Project ${currentEntry.projectId}` : "No project selected");
 
   return (
-    <div className="fixed bottom-20 right-4 z-50 w-[min(26rem,calc(100vw-2rem))] rounded-xl border bg-card/95 p-3 shadow-xl backdrop-blur-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            <Clock3 className="h-3.5 w-3.5" />
-            Clockify
-            <span className={isRunning ? "text-health" : "text-muted-foreground"}>
-              {isRunning ? "Running" : "Idle"}
-            </span>
-          </p>
-          <p className="mt-1 truncate text-sm font-semibold text-foreground">{description}</p>
-          <p className="mt-1 flex items-center gap-1 truncate text-xs font-medium text-primary">
-            <FolderOpen className="h-3.5 w-3.5 shrink-0" />
-            Project: {projectLabel}
-          </p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {isRunning ? `Elapsed ${formatDuration(durationSeconds)}` : "No timer currently running"}
-          </p>
-        </div>
-        <Button size="sm" variant="outline" onClick={() => setLocation("/widget/clockify")}>
-          <PlayCircle className="mr-1.5 h-4 w-4" />
-          Open
-        </Button>
-      </div>
-    </div>
+    <button
+      type="button"
+      onClick={() => setLocation("/widget/clockify")}
+      className="fixed bottom-20 right-4 z-50 flex items-center gap-2 rounded-full border bg-card/95 px-3 py-2 shadow-lg backdrop-blur-sm hover:shadow-xl transition-shadow cursor-pointer"
+    >
+      <Clock3 className={`h-3.5 w-3.5 shrink-0 ${isRunning ? "text-health" : "text-muted-foreground"}`} />
+      <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+        Clockify
+      </span>
+      <span className={`text-xs font-medium ${isRunning ? "text-foreground" : "text-muted-foreground"}`}>
+        {isRunning ? formatDuration(durationSeconds) : "Idle"}
+      </span>
+      {isRunning && (
+        <span className="text-xs text-muted-foreground truncate max-w-[10rem]">
+          {projectLabel}
+        </span>
+      )}
+    </button>
   );
 }
