@@ -86,6 +86,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Zap },
       { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Sun },
       { label: "Fronius", href: "/fronius-meter-reads", icon: Sun },
+      { label: "ennexOS", href: "/ennexos-meter-reads", icon: Sun },
       { label: "Tesla Solar", href: "/tesla-solar-api", icon: Sun },
       { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: Battery },
       { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: Headset },

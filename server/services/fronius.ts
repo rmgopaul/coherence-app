@@ -464,13 +464,13 @@ export async function getAggrData(
   context: FroniusApiContext,
   pvSystemId: string,
   from?: string | null,
-  to?: string | null,
-  period?: string | null
+  to?: string | null
 ): Promise<unknown> {
+  // Period is mutually exclusive with From/To per Fronius API docs (error 3207).
+  // Since we provide explicit date ranges, omit Period entirely.
   return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/aggrdata`, context, {
     From: from ?? undefined,
     To: to ?? undefined,
-    Period: period ?? undefined,
   });
 }
 
@@ -621,8 +621,8 @@ export async function getPvSystemProductionSnapshot(
   try {
     const [aggdataPayload, dailyAggrPayload, monthlyAggrPayload] = await Promise.all([
       getAggData(context, pvSystemId),
-      getAggrData(context, pvSystemId, previousCalendarMonthStartDate, anchorDate, "Days"),
-      getAggrData(context, pvSystemId, last12MonthsStartDate, anchorDate, "Months"),
+      getAggrData(context, pvSystemId, previousCalendarMonthStartDate, anchorDate),
+      getAggrData(context, pvSystemId, last12MonthsStartDate, anchorDate),
     ]);
 
     const lifetimeKwh = extractLifetimeKwh(aggdataPayload);

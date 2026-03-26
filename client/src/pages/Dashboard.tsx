@@ -142,6 +142,7 @@ const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
   { key: "enphaseV4", label: "Enphase v4", route: "/enphase-v4-meter-reads", icon: Database },
   { key: "solarEdgeApi", label: "SolarEdge API", route: "/solaredge-meter-reads", icon: Database },
   { key: "froniusApi", label: "Fronius API", route: "/fronius-meter-reads", icon: Database },
+  { key: "ennexOsApi", label: "ennexOS API", route: "/ennexos-meter-reads", icon: Database },
   { key: "teslaSolarApi", label: "Tesla Solar API", route: "/tesla-solar-api", icon: Database },
   { key: "teslaPowerhubApi", label: "Tesla Powerhub API", route: "/tesla-powerhub-api", icon: Database },
   { key: "zendeskApi", label: "Zendesk API", route: "/zendesk-ticket-metrics", icon: Database },

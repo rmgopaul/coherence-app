@@ -3266,7 +3266,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
         const { getAggrData } = await import("./services/fronius");
-        return getAggrData(context, input.pvSystemId.trim(), input.from, input.to, input.period);
+        return getAggrData(context, input.pvSystemId.trim(), input.from, input.to);
       }),
     getFlowData: protectedProcedure
       .input(

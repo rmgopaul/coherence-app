@@ -31,6 +31,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/enphase-v4-meter-reads": "Enphase v4",
   "/solaredge-meter-reads": "SolarEdge",
   "/fronius-meter-reads": "Fronius",
+  "/ennexos-meter-reads": "ennexOS",
   "/tesla-solar-api": "Tesla Solar",
   "/tesla-powerhub-api": "Tesla Powerhub",
   "/zendesk-ticket-metrics": "Zendesk",

@@ -52,6 +52,7 @@ const NAV_COMMANDS: CommandRoute[] = [
   { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: FileText, keywords: ["enphase", "meter"] },
   { label: "SolarEdge", href: "/solaredge-meter-reads", icon: FileText, keywords: ["solaredge", "meter"] },
   { label: "Fronius", href: "/fronius-meter-reads", icon: FileText, keywords: ["fronius", "solar", "meter", "solarweb"] },
+  { label: "ennexOS", href: "/ennexos-meter-reads", icon: FileText, keywords: ["ennexos", "sma", "solarweb", "meter"] },
   { label: "Tesla Solar", href: "/tesla-solar-api", icon: FileText, keywords: ["tesla", "solar"] },
   { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: FileText, keywords: ["tesla", "powerhub"] },
   { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: FileText, keywords: ["zendesk", "tickets"] },
