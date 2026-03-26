@@ -157,6 +157,42 @@ function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
   return formatIsoDate(date);
 }
 
+function compareIsoDates(leftIso: string, rightIso: string): number {
+  const left = parseIsoDate(leftIso);
+  const right = parseIsoDate(rightIso);
+  if (!left || !right) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const leftMs = Date.UTC(left.year, left.month - 1, left.day);
+  const rightMs = Date.UTC(right.year, right.month - 1, right.day);
+  if (leftMs < rightMs) return -1;
+  if (leftMs > rightMs) return 1;
+  return 0;
+}
+
+function splitIsoDateRange(startIso: string, endIso: string, maxDaysInclusive: number): Array<{
+  startDate: string;
+  endDate: string;
+}> {
+  if (compareIsoDates(startIso, endIso) > 0) {
+    throw new Error("Start date cannot be after end date.");
+  }
+
+  const safeWindowDays = Math.max(1, Math.floor(maxDaysInclusive) || 1);
+  const windows: Array<{ startDate: string; endDate: string }> = [];
+  let cursor = startIso;
+
+  while (compareIsoDates(cursor, endIso) <= 0) {
+    const candidateEnd = shiftIsoDate(cursor, safeWindowDays - 1);
+    const windowEnd = compareIsoDates(candidateEnd, endIso) <= 0 ? candidateEnd : endIso;
+    windows.push({
+      startDate: cursor,
+      endDate: windowEnd,
+    });
+    cursor = shiftIsoDate(windowEnd, 1);
+  }
+
+  return windows;
+}
+
 function firstDayOfMonth(dateIso: string): string {
   const parsed = parseIsoDate(dateIso);
   if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
@@ -364,8 +400,16 @@ async function getInverterTelemetryPayload(
   startDate?: string | null,
   endDate?: string | null
 ): Promise<{ endpoint: string; payload: unknown }> {
-  const startTime = startDate ? toSolarEdgeDateTime(startDate, false) : undefined;
-  const endTime = endDate ? toSolarEdgeDateTime(endDate, true) : undefined;
+  const hasBothDates = Boolean(startDate && endDate);
+  const dateWindows = hasBothDates
+    ? splitIsoDateRange(startDate as string, endDate as string, 7)
+    : [
+        {
+          startDate: startDate ?? null,
+          endDate: endDate ?? null,
+        },
+      ];
+
   const encodedSerial = encodeURIComponent(serialNumber);
   const encodedSite = encodeURIComponent(siteId);
   const candidates = [
@@ -377,11 +421,22 @@ async function getInverterTelemetryPayload(
   let lastError: unknown = null;
   for (const endpoint of candidates) {
     try {
-      const payload = await getSolarEdgeJson(endpoint, context, {
-        startTime,
-        endTime,
-      });
-      return { endpoint, payload };
+      const allTelemetries: Array<Record<string, unknown>> = [];
+      for (const window of dateWindows) {
+        const payload = await getSolarEdgeJson(endpoint, context, {
+          startTime: window.startDate ? toSolarEdgeDateTime(window.startDate, false) : undefined,
+          endTime: window.endDate ? toSolarEdgeDateTime(window.endDate, true) : undefined,
+        });
+        allTelemetries.push(...extractInverterTelemetry(payload));
+      }
+      return {
+        endpoint,
+        payload: {
+          data: {
+            telemetries: allTelemetries,
+          },
+        },
+      };
     } catch (error) {
       lastError = error;
       if (isNotFoundError(error)) continue;
