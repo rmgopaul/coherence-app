@@ -206,6 +206,17 @@ const isSameLocalDay = (dateA: Date, dateB: Date) => {
 
 import { SUPPLEMENT_UNITS } from "@shared/const";
 
+/** All-day events with these summaries are location/status markers, not actionable events. */
+const IGNORED_ALL_DAY_SUMMARIES = new Set(["home", "office", "wfh", "work from home", "remote", "travel", "vacation", "ooo", "out of office"]);
+
+/** Returns true if the event is a non-actionable all-day status marker (e.g. "Home"). */
+const isIgnoredStatusEvent = (event: any): boolean => {
+  const summary = (event?.summary || "").trim().toLowerCase();
+  if (!summary) return false;
+  const isAllDay = !event?.start?.dateTime && !!event?.start?.date;
+  return isAllDay && IGNORED_ALL_DAY_SUMMARIES.has(summary);
+};
+
 function LiveClockValue() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
 
@@ -760,6 +771,7 @@ export default function Dashboard() {
     const now = new Date();
     return (calendarEvents || [])
       .filter((event: any) => {
+        if (isIgnoredStatusEvent(event)) return false;
         const startTime = event.start?.dateTime || event.start?.date;
         if (!startTime) return false;
         const eventDate = new Date(startTime);
@@ -776,6 +788,7 @@ export default function Dashboard() {
   const todayEventCount = useMemo(() => {
     const now = new Date();
     return (calendarEvents || []).filter((event: any) => {
+      if (isIgnoredStatusEvent(event)) return false;
       const startTime = event.start?.dateTime || event.start?.date;
       if (!startTime) return false;
       return isSameLocalDay(new Date(startTime), now);
@@ -795,6 +808,7 @@ export default function Dashboard() {
     todayStart.setHours(0, 0, 0, 0);
 
     const candidates = (calendarEvents || [])
+      .filter((event: any) => !isIgnoredStatusEvent(event))
       .map((event: any) => {
         if (event?.start?.dateTime) {
           return {
@@ -2125,7 +2139,7 @@ export default function Dashboard() {
         <div className="space-y-4">
           <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
             <TodaysPlan
-              calendarEvents={calendarEvents || []}
+              calendarEvents={(calendarEvents || []).filter((e: any) => !isIgnoredStatusEvent(e))}
               todoistTasks={allTodoistTasks || []}
               emails={gmailMessages || []}
               habits={habitsForToday || []}

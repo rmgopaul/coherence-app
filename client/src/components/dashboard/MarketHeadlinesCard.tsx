@@ -4,15 +4,13 @@ import { cn } from "@/lib/utils";
 import {
   ArrowDownRight,
   ArrowUpRight,
-  ExternalLink,
   Globe,
   Landmark,
   Newspaper,
-  RefreshCw,
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { DashboardWidget } from "./DashboardWidget";
 
 /* ------------------------------------------------------------------ */
@@ -78,49 +76,41 @@ function relativeTime(dateStr: string): string {
 }
 
 const CRYPTO_SYMBOLS = new Set(["BTC-USD", "ETH-USD"]);
+const HEADLINES_COLLAPSED = 3;
+const HEADLINES_EXPANDED = 10;
 
 /* ------------------------------------------------------------------ */
 /*  Sub-components                                                      */
 /* ------------------------------------------------------------------ */
 
-function QuoteCard({ quote }: { quote: MarketQuote }) {
+function QuoteRow({ quote }: { quote: MarketQuote }) {
   const isPositive = quote.change >= 0;
   const isCrypto = CRYPTO_SYMBOLS.has(quote.symbol);
   const displaySymbol = quote.symbol.replace("-USD", "");
 
   return (
-    <div className="flex items-center justify-between rounded-lg border p-3 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-sm font-semibold text-slate-900 dark:text-slate-100">
-            {displaySymbol}
-          </span>
-          {isCrypto && (
-            <Badge variant="outline" className="text-xs px-1 py-0 h-4">
-              Crypto
-            </Badge>
-          )}
-        </div>
-        <div className="text-xs text-slate-500 truncate">{quote.shortName}</div>
-      </div>
-      <div className="text-right ml-3 shrink-0">
-        <div className="text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
-          {formatPrice(quote.price)}
-        </div>
-        <div
-          className={cn(
-            "flex items-center justify-end gap-0.5 text-xs font-medium tabular-nums",
-            isPositive ? "text-emerald-600" : "text-red-600"
-          )}
-        >
-          {isPositive ? (
-            <ArrowUpRight className="h-3 w-3" />
-          ) : (
-            <ArrowDownRight className="h-3 w-3" />
-          )}
-          {formatChangePercent(quote.changePercent)}
-        </div>
-      </div>
+    <div className="flex items-center gap-3 py-1.5 px-1 text-sm">
+      <span className="font-mono font-semibold text-foreground w-14 shrink-0">
+        {displaySymbol}
+      </span>
+      {isCrypto && (
+        <Badge variant="outline" className="text-xs px-1 py-0 h-4 shrink-0">
+          Crypto
+        </Badge>
+      )}
+      <span className="text-xs text-muted-foreground truncate flex-1">{quote.shortName}</span>
+      <span className="font-semibold tabular-nums text-foreground shrink-0">
+        {formatPrice(quote.price)}
+      </span>
+      <span
+        className={cn(
+          "flex items-center gap-0.5 text-xs font-medium tabular-nums shrink-0 w-16 justify-end",
+          isPositive ? "text-emerald-600" : "text-red-600"
+        )}
+      >
+        {isPositive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
+        {formatChangePercent(quote.changePercent)}
+      </span>
     </div>
   );
 }
@@ -131,25 +121,20 @@ function HeadlineRow({ headline }: { headline: NewsHeadline }) {
       href={headline.link}
       target="_blank"
       rel="noopener noreferrer"
-      className="group flex items-start gap-3 rounded-md px-2 py-2 transition-colors hover:bg-slate-50 dark:hover:bg-slate-900"
+      className="group flex items-center gap-2 py-1 px-1 rounded transition-colors hover:bg-muted"
     >
-      <div className="mt-0.5 shrink-0">
-        {headline.category === "us-politics" ? (
-          <Landmark className="h-3.5 w-3.5 text-blue-500" />
-        ) : (
-          <Globe className="h-3.5 w-3.5 text-emerald-500" />
-        )}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="text-sm leading-snug text-slate-800 dark:text-slate-200 group-hover:text-blue-600 dark:group-hover:text-blue-400 line-clamp-2">
-          {headline.title}
-        </div>
-        <div className="mt-0.5 flex items-center gap-2 text-xs text-slate-400">
-          {headline.source && <span>{headline.source}</span>}
-          {headline.pubDate && <span>{relativeTime(headline.pubDate)}</span>}
-        </div>
-      </div>
-      <ExternalLink className="h-3 w-3 shrink-0 text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity mt-1" />
+      {headline.category === "us-politics" ? (
+        <Landmark className="h-3 w-3 text-blue-500 shrink-0" />
+      ) : (
+        <Globe className="h-3 w-3 text-emerald-500 shrink-0" />
+      )}
+      <span className="text-sm text-foreground group-hover:text-blue-600 truncate flex-1">
+        {headline.title}
+      </span>
+      <span className="text-xs text-muted-foreground shrink-0">
+        {headline.source && `${headline.source} `}
+        {headline.pubDate && relativeTime(headline.pubDate)}
+      </span>
     </a>
   );
 }
@@ -167,6 +152,9 @@ export default function MarketHeadlinesCard() {
       retry: 1,
     }
   );
+
+  const [newsExpanded, setNewsExpanded] = useState(false);
+  const headlineLimit = newsExpanded ? HEADLINES_EXPANDED : HEADLINES_COLLAPSED;
 
   const stocks = useMemo(
     () => (data?.quotes ?? []).filter((q: MarketQuote) => !CRYPTO_SYMBOLS.has(q.symbol)),
@@ -198,6 +186,9 @@ export default function MarketHeadlinesCard() {
     return totalPercent / stocks.length;
   }, [stocks]);
 
+  const allQuotes = [...crypto, ...stocks];
+  const totalHeadlines = usPolitics.length + worldNews.length;
+
   return (
     <DashboardWidget
       title="Headlines & Markets"
@@ -210,11 +201,11 @@ export default function MarketHeadlinesCard() {
       collapsible
       storageKey="market-headlines"
     >
-      <div className="space-y-5">
-        {/* Market Section */}
+      <div className="space-y-3">
+        {/* Market — compact table rows */}
         <div>
-          <div className="flex items-center gap-2 mb-3">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <div className="flex items-center gap-2 mb-1">
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Market
             </h4>
             {stocksOverallChange !== null && (
@@ -238,70 +229,50 @@ export default function MarketHeadlinesCard() {
             )}
           </div>
 
-          {/* Crypto */}
-          {crypto.length > 0 && (
-            <div className="grid grid-cols-2 gap-2 mb-2">
-              {crypto.map((q: MarketQuote) => (
-                <QuoteCard key={q.symbol} quote={q} />
+          {allQuotes.length > 0 ? (
+            <div className="divide-y divide-border rounded-md border">
+              {allQuotes.map((q: MarketQuote) => (
+                <QuoteRow key={q.symbol} quote={q} />
               ))}
             </div>
-          )}
-
-          {/* Stocks */}
-          {stocks.length > 0 && (
-            <div className="grid grid-cols-2 gap-2">
-              {stocks.map((q: MarketQuote) => (
-                <QuoteCard key={q.symbol} quote={q} />
-              ))}
-            </div>
-          )}
-
-          {!isLoading && stocks.length === 0 && crypto.length === 0 && (
-            <p className="text-sm text-slate-400 text-center py-4">
+          ) : !isLoading ? (
+            <p className="text-sm text-muted-foreground text-center py-3">
               {marketRateLimited
-                ? "Market provider temporarily rate-limited requests (HTTP 429). Try again in 15-60 minutes."
+                ? "Market provider rate-limited. Retry in 15-60 min."
                 : "No market data available."}
             </p>
-          )}
+          ) : null}
         </div>
 
-        {/* Headlines Section */}
+        {/* Approval Ratings — inline compact */}
         {approvalRatings.length > 0 && (
           <div>
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">
-              Trump Approval Averages
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+              Approval Averages
             </h4>
-            <div className="grid grid-cols-1 gap-2">
+            <div className="flex flex-wrap gap-2">
               {approvalRatings.map((source, index) => (
                 <a
                   key={`${source.source}-${index}`}
                   href={source.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="rounded-md border px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-900 transition-colors"
+                  className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs hover:bg-muted transition-colors"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">
-                      {source.source}
-                    </span>
-                    {source.asOf && (
-                      <span className="text-xs text-slate-400">{source.asOf}</span>
-                    )}
-                  </div>
+                  <span className="font-semibold text-foreground">{source.source}</span>
                   {source.approve !== null && source.disapprove !== null ? (
-                    <div className="mt-1 text-sm text-slate-700 dark:text-slate-200">
-                      Approve {source.approve.toFixed(1)}% | Disapprove {source.disapprove.toFixed(1)}%
+                    <>
+                      <span className="text-muted-foreground">
+                        {source.approve.toFixed(1)}% / {source.disapprove.toFixed(1)}%
+                      </span>
                       {source.net !== null && (
-                        <span className={cn("ml-2 font-medium", source.net >= 0 ? "text-emerald-600" : "text-red-600")}>
-                          Net {source.net >= 0 ? "+" : ""}
-                          {source.net.toFixed(1)}
+                        <span className={cn("font-medium", source.net >= 0 ? "text-emerald-600" : "text-red-600")}>
+                          {source.net >= 0 ? "+" : ""}{source.net.toFixed(1)}
                         </span>
                       )}
-                    </div>
+                    </>
                   ) : (
-                    <div className="mt-1 text-xs text-amber-600">
-                      {source.error || "Data unavailable"}
-                    </div>
+                    <span className="text-amber-600">{source.error || "N/A"}</span>
                   )}
                 </a>
               ))}
@@ -309,41 +280,50 @@ export default function MarketHeadlinesCard() {
           </div>
         )}
 
-        <div>
-          {usPolitics.length > 0 && (
-            <div className="mb-3">
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1 flex items-center gap-1.5">
-                <Landmark className="h-3 w-3 text-blue-500" />
-                US Politics
-              </h4>
-              <div className="space-y-0.5">
-                {usPolitics.map((h: NewsHeadline, i: number) => (
+        {/* Headlines — compact single-line rows */}
+        {(usPolitics.length > 0 || worldNews.length > 0) && (
+          <div>
+            {usPolitics.length > 0 && (
+              <div className="mb-2">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-0.5 flex items-center gap-1.5">
+                  <Landmark className="h-3 w-3 text-blue-500" />
+                  US Politics
+                </h4>
+                {usPolitics.slice(0, headlineLimit).map((h: NewsHeadline, i: number) => (
                   <HeadlineRow key={`us-${i}`} headline={h} />
                 ))}
               </div>
-            </div>
-          )}
+            )}
 
-          {worldNews.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1 flex items-center gap-1.5">
-                <Globe className="h-3 w-3 text-emerald-500" />
-                World
-              </h4>
-              <div className="space-y-0.5">
-                {worldNews.map((h: NewsHeadline, i: number) => (
+            {worldNews.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-0.5 flex items-center gap-1.5">
+                  <Globe className="h-3 w-3 text-emerald-500" />
+                  World
+                </h4>
+                {worldNews.slice(0, headlineLimit).map((h: NewsHeadline, i: number) => (
                   <HeadlineRow key={`world-${i}`} headline={h} />
                 ))}
               </div>
-            </div>
-          )}
+            )}
 
-          {!isLoading && usPolitics.length === 0 && worldNews.length === 0 && (
-            <p className="text-sm text-slate-400 text-center py-4">
-              No headlines available.
-            </p>
-          )}
-        </div>
+            {totalHeadlines > HEADLINES_COLLAPSED && (
+              <button
+                type="button"
+                onClick={() => setNewsExpanded(!newsExpanded)}
+                className="mt-1 text-xs font-medium text-primary hover:underline px-1"
+              >
+                {newsExpanded ? "Show less" : `Show all ${totalHeadlines} headlines`}
+              </button>
+            )}
+          </div>
+        )}
+
+        {!isLoading && usPolitics.length === 0 && worldNews.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-3">
+            No headlines available.
+          </p>
+        )}
       </div>
     </DashboardWidget>
   );
