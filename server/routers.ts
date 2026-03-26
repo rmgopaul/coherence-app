@@ -2618,6 +2618,233 @@ export const appRouter = router({
           rows,
         };
       }),
+    getMeterSnapshots: protectedProcedure
+      .input(
+        z.object({
+          siteIds: z.array(z.string().min(1)).min(1).max(200),
+          connectionScope: z.enum(["active", "all"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getSiteMeterSnapshot } = await import("./services/solarEdge");
+
+        const uniqueSiteIds = Array.from(
+          new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
+        );
+
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+        const metadata = parseSolarEdgeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("SolarEdge is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrency(uniqueSiteIds, 4, async (siteId) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getSiteMeterSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getSiteMeterSnapshot(
+              {
+                apiKey: connection.apiKey,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              siteId
+            );
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            siteId,
+            status: notFoundStatus,
+            found: false,
+            meterCount: null,
+            productionMeterCount: null,
+            consumptionMeterCount: null,
+            meterTypes: [],
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
+          rows,
+        };
+      }),
+    getInverterSnapshots: protectedProcedure
+      .input(
+        z.object({
+          siteIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          connectionScope: z.enum(["active", "all"]).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getSiteInverterSnapshot } = await import("./services/solarEdge");
+
+        const uniqueSiteIds = Array.from(
+          new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
+        );
+
+        const scope = input.connectionScope ?? "active";
+        const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_EDGE_PROVIDER);
+        const metadata = parseSolarEdgeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("SolarEdge is not connected. Save at least one API profile first.");
+        }
+
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
+        const targetConnections = scope === "all" ? allConnections : [activeConnection];
+
+        const rows = await mapWithConcurrency(uniqueSiteIds, 4, async (siteId) => {
+          let selectedSnapshot: Awaited<ReturnType<typeof getSiteInverterSnapshot>> | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null = null;
+          let firstError: string | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
+
+          for (const connection of targetConnections) {
+            const snapshot = await getSiteInverterSnapshot(
+              {
+                apiKey: connection.apiKey,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              siteId,
+              input.anchorDate
+            );
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
+          }
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map((row) => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
+          }
+
+          const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          return {
+            siteId,
+            status: notFoundStatus,
+            found: false,
+            inverterCount: null,
+            invertersWithTelemetry: null,
+            inverterFailures: null,
+            totalLatestPowerW: null,
+            totalLatestEnergyWh: null,
+            firstTelemetryAt: null,
+            lastTelemetryAt: null,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
+            checkedConnections: targetConnections.length,
+            foundInConnections,
+            profileStatusSummary: profileStatuses
+              .map((row) => `${row.connectionName}:${row.status}`)
+              .join(" | "),
+          };
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          scope,
+          checkedConnections: targetConnections.length,
+          rows,
+        };
+      }),
   }),
 
   zendesk: router({

@@ -25,6 +25,7 @@ const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
 type TimeUnit = (typeof TIME_UNIT_OPTIONS)[number];
 type BulkStatusFilter = "All" | "Found" | "Not Found" | "Error";
+type BulkDataType = "production" | "meters" | "inverters";
 type BulkSortKey =
   | "siteId"
   | "status"
@@ -34,6 +35,14 @@ type BulkSortKey =
   | "mtd"
   | "previousMonth"
   | "last12Months"
+  | "meterCount"
+  | "productionMeters"
+  | "consumptionMeters"
+  | "inverterCount"
+  | "invertersWithTelemetry"
+  | "inverterFailures"
+  | "inverterLatestPower"
+  | "inverterLatestEnergy"
   | "weekly"
   | "daily";
 type BulkConnectionScope = "active" | "all";
@@ -43,21 +52,32 @@ type BulkSnapshotRow = {
   siteId: string;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
-  lifetimeKwh: number | null;
-  hourlyProductionKwh: number | null;
-  monthlyProductionKwh: number | null;
-  mtdProductionKwh: number | null;
-  previousCalendarMonthProductionKwh: number | null;
-  last12MonthsProductionKwh: number | null;
-  weeklyProductionKwh: number | null;
-  dailyProductionKwh: number | null;
-  anchorDate: string;
-  monthlyStartDate: string;
-  weeklyStartDate: string;
-  mtdStartDate: string;
-  previousCalendarMonthStartDate: string;
-  previousCalendarMonthEndDate: string;
-  last12MonthsStartDate: string;
+  lifetimeKwh?: number | null;
+  hourlyProductionKwh?: number | null;
+  monthlyProductionKwh?: number | null;
+  mtdProductionKwh?: number | null;
+  previousCalendarMonthProductionKwh?: number | null;
+  last12MonthsProductionKwh?: number | null;
+  weeklyProductionKwh?: number | null;
+  dailyProductionKwh?: number | null;
+  anchorDate?: string;
+  monthlyStartDate?: string;
+  weeklyStartDate?: string;
+  mtdStartDate?: string;
+  previousCalendarMonthStartDate?: string;
+  previousCalendarMonthEndDate?: string;
+  last12MonthsStartDate?: string;
+  meterCount?: number | null;
+  productionMeterCount?: number | null;
+  consumptionMeterCount?: number | null;
+  meterTypes?: string[];
+  inverterCount?: number | null;
+  invertersWithTelemetry?: number | null;
+  inverterFailures?: number | null;
+  totalLatestPowerW?: number | null;
+  totalLatestEnergyWh?: number | null;
+  firstTelemetryAt?: string | null;
+  lastTelemetryAt?: string | null;
   error: string | null;
   matchedConnectionId: string | null;
   matchedConnectionName: string | null;
@@ -224,8 +244,8 @@ function extractSiteIdsFromCsv(text: string): string[] {
   return [];
 }
 
-function toComparableNumber(value: number | null): number {
-  return value === null ? Number.NEGATIVE_INFINITY : value;
+function toComparableNumber(value: number | null | undefined): number {
+  return value === null || value === undefined ? Number.NEGATIVE_INFINITY : value;
 }
 
 function chunkArray<T>(values: T[], chunkSize: number): T[][] {
@@ -272,6 +292,7 @@ export default function SolarEdgeMeterReads() {
   const [bulkSourceFileName, setBulkSourceFileName] = useState<string | null>(null);
   const [bulkImportError, setBulkImportError] = useState<string | null>(null);
   const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
+  const [bulkDataType, setBulkDataType] = useState<BulkDataType>("production");
   const [bulkIsRunning, setBulkIsRunning] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ total: 0, processed: 0, found: 0, notFound: 0, errored: 0 });
   const [bulkStatusFilter, setBulkStatusFilter] = useState<BulkStatusFilter>("All");
@@ -308,6 +329,8 @@ export default function SolarEdgeMeterReads() {
   const metersMutation = trpc.solarEdge.getMeters.useMutation();
   const inverterProductionMutation = trpc.solarEdge.getInverterProduction.useMutation();
   const bulkSnapshotsMutation = trpc.solarEdge.getProductionSnapshots.useMutation();
+  const bulkMeterSnapshotsMutation = trpc.solarEdge.getMeterSnapshots.useMutation();
+  const bulkInverterSnapshotsMutation = trpc.solarEdge.getInverterSnapshots.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -341,7 +364,16 @@ export default function SolarEdgeMeterReads() {
 
   useEffect(() => {
     setBulkPage(1);
-  }, [bulkRows.length, bulkSearch, bulkSort, bulkStatusFilter]);
+  }, [bulkRows.length, bulkSearch, bulkSort, bulkStatusFilter, bulkDataType]);
+
+  useEffect(() => {
+    setBulkSort("siteId");
+  }, [bulkDataType]);
+
+  useEffect(() => {
+    setBulkRows([]);
+    setBulkProgress({ total: bulkSiteIds.length, processed: 0, found: 0, notFound: 0, errored: 0 });
+  }, [bulkDataType, bulkSiteIds.length]);
 
   const handleConnect = async () => {
     const apiKey = apiKeyInput.trim();
@@ -482,6 +514,12 @@ export default function SolarEdgeMeterReads() {
     const rowRenderInterval =
       bulkConnectionScope === "all" ? BULK_ROWS_RENDER_INTERVAL_ALL_PROFILES : BULK_ROWS_RENDER_INTERVAL_ACTIVE;
     const chunks = chunkArray(bulkSiteIds, effectiveBatchSize);
+    const modeLabel =
+      bulkDataType === "production"
+        ? "production snapshots"
+        : bulkDataType === "meters"
+          ? "meter inventory snapshots"
+          : "inverter snapshots";
     let processed = 0;
     let found = 0;
     let notFound = 0;
@@ -500,11 +538,44 @@ export default function SolarEdgeMeterReads() {
         const chunk = chunks[chunkIndex];
         if (bulkCancelRef.current) break;
 
-        const response = await bulkSnapshotsMutation.mutateAsync({
-          siteIds: chunk,
-          anchorDate: bulkAnchorDate,
-          connectionScope: bulkConnectionScope,
-        });
+        let response: {
+          total: number;
+          found: number;
+          notFound: number;
+          errored: number;
+          rows: BulkSnapshotRow[];
+        };
+
+        if (bulkDataType === "production") {
+          const raw = await bulkSnapshotsMutation.mutateAsync({
+            siteIds: chunk,
+            anchorDate: bulkAnchorDate,
+            connectionScope: bulkConnectionScope,
+          });
+          response = {
+            ...raw,
+            rows: raw.rows as BulkSnapshotRow[],
+          };
+        } else if (bulkDataType === "meters") {
+          const raw = await bulkMeterSnapshotsMutation.mutateAsync({
+            siteIds: chunk,
+            connectionScope: bulkConnectionScope,
+          });
+          response = {
+            ...raw,
+            rows: raw.rows as BulkSnapshotRow[],
+          };
+        } else {
+          const raw = await bulkInverterSnapshotsMutation.mutateAsync({
+            siteIds: chunk,
+            anchorDate: bulkAnchorDate,
+            connectionScope: bulkConnectionScope,
+          });
+          response = {
+            ...raw,
+            rows: raw.rows as BulkSnapshotRow[],
+          };
+        }
 
         collectedRows.push(...response.rows);
         processed += response.total;
@@ -532,15 +603,15 @@ export default function SolarEdgeMeterReads() {
 
       if (bulkCancelRef.current) {
         toast.message(
-          `Stopped after ${NUMBER_FORMATTER.format(processed)} of ${NUMBER_FORMATTER.format(bulkSiteIds.length)} site IDs.`
+          `Stopped ${modeLabel} after ${NUMBER_FORMATTER.format(processed)} of ${NUMBER_FORMATTER.format(bulkSiteIds.length)} site IDs.`
         );
       } else {
         toast.success(
-          `Completed ${NUMBER_FORMATTER.format(processed)} site IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
+          `Completed ${modeLabel} for ${NUMBER_FORMATTER.format(processed)} site IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
         );
       }
     } catch (error) {
-      toast.error(`Bulk processing failed: ${toErrorMessage(error)}`);
+      toast.error(`Bulk ${modeLabel} failed: ${toErrorMessage(error)}`);
     } finally {
       setBulkIsRunning(false);
     }
@@ -552,7 +623,7 @@ export default function SolarEdgeMeterReads() {
       const matchesStatus = bulkStatusFilter === "All" ? true : row.status === bulkStatusFilter;
       if (!matchesStatus) return false;
       if (!normalizedSearch) return true;
-      const haystack = `${row.siteId} ${row.status} ${row.error ?? ""}`.toLowerCase();
+      const haystack = `${row.siteId} ${row.status} ${row.error ?? ""} ${(row.meterTypes ?? []).join(" ")}`.toLowerCase();
       return haystack.includes(normalizedSearch);
     });
 
@@ -575,6 +646,22 @@ export default function SolarEdgeMeterReads() {
           );
         case "last12Months":
           return toComparableNumber(b.last12MonthsProductionKwh) - toComparableNumber(a.last12MonthsProductionKwh);
+        case "meterCount":
+          return toComparableNumber(b.meterCount) - toComparableNumber(a.meterCount);
+        case "productionMeters":
+          return toComparableNumber(b.productionMeterCount) - toComparableNumber(a.productionMeterCount);
+        case "consumptionMeters":
+          return toComparableNumber(b.consumptionMeterCount) - toComparableNumber(a.consumptionMeterCount);
+        case "inverterCount":
+          return toComparableNumber(b.inverterCount) - toComparableNumber(a.inverterCount);
+        case "invertersWithTelemetry":
+          return toComparableNumber(b.invertersWithTelemetry) - toComparableNumber(a.invertersWithTelemetry);
+        case "inverterFailures":
+          return toComparableNumber(b.inverterFailures) - toComparableNumber(a.inverterFailures);
+        case "inverterLatestPower":
+          return toComparableNumber(b.totalLatestPowerW) - toComparableNumber(a.totalLatestPowerW);
+        case "inverterLatestEnergy":
+          return toComparableNumber(b.totalLatestEnergyWh) - toComparableNumber(a.totalLatestEnergyWh);
         case "weekly":
           return toComparableNumber(b.weeklyProductionKwh) - toComparableNumber(a.weeklyProductionKwh);
         case "daily":
@@ -594,6 +681,49 @@ export default function SolarEdgeMeterReads() {
   const bulkPageRows = filteredBulkRows.slice(bulkPageStartIndex, bulkPageStartIndex + BULK_PAGE_SIZE);
   const bulkProgressPercent =
     bulkProgress.total > 0 ? Math.min(100, (bulkProgress.processed / bulkProgress.total) * 100) : 0;
+  const bulkDataTypeLabel =
+    bulkDataType === "production"
+      ? "Production Snapshot"
+      : bulkDataType === "meters"
+        ? "Meter Inventory"
+        : "Inverter Snapshot";
+  const bulkSortOptions: Array<{ value: BulkSortKey; label: string }> =
+    bulkDataType === "meters"
+      ? [
+          { value: "siteId", label: "Site ID (A-Z)" },
+          { value: "status", label: "Status" },
+          { value: "meterCount", label: "Meter Count (High-Low)" },
+          { value: "productionMeters", label: "Production Meters (High-Low)" },
+          { value: "consumptionMeters", label: "Consumption Meters (High-Low)" },
+        ]
+      : bulkDataType === "inverters"
+        ? [
+            { value: "siteId", label: "Site ID (A-Z)" },
+            { value: "status", label: "Status" },
+            { value: "inverterCount", label: "Inverter Count (High-Low)" },
+            { value: "invertersWithTelemetry", label: "Inverters With Telemetry (High-Low)" },
+            { value: "inverterFailures", label: "Inverter Failures (High-Low)" },
+            { value: "inverterLatestPower", label: "Latest Power (High-Low)" },
+            { value: "inverterLatestEnergy", label: "Latest Energy (High-Low)" },
+          ]
+        : [
+            { value: "siteId", label: "Site ID (A-Z)" },
+            { value: "status", label: "Status" },
+            { value: "lifetime", label: "Lifetime (High-Low)" },
+            { value: "hourly", label: "Hourly (High-Low)" },
+            { value: "monthly", label: "Monthly (High-Low)" },
+            { value: "mtd", label: "MTD (High-Low)" },
+            { value: "previousMonth", label: "Previous Month (High-Low)" },
+            { value: "last12Months", label: "Last 12 Months (High-Low)" },
+            { value: "weekly", label: "Weekly (High-Low)" },
+            { value: "daily", label: "Daily (High-Low)" },
+          ];
+  const bulkCsvPrefix =
+    bulkDataType === "production"
+      ? "solaredge-production-bulk"
+      : bulkDataType === "meters"
+        ? "solaredge-meters-bulk"
+        : "solaredge-inverters-bulk";
 
   const downloadBulkCsv = (rows: BulkSnapshotRow[], fileNamePrefix: string) => {
     if (rows.length === 0) {
@@ -601,25 +731,10 @@ export default function SolarEdgeMeterReads() {
       return;
     }
 
-    const headers = [
+    const commonHeaders = [
       "site_id",
       "status",
       "found",
-      "lifetime_kwh",
-      "hourly_production_kwh",
-      "monthly_production_kwh",
-      "mtd_production_kwh",
-      "previous_calendar_month_production_kwh",
-      "last_12_months_production_kwh",
-      "weekly_production_kwh",
-      "daily_production_kwh",
-      "anchor_date",
-      "monthly_start_date",
-      "weekly_start_date",
-      "mtd_start_date",
-      "previous_calendar_month_start_date",
-      "previous_calendar_month_end_date",
-      "last_12_months_start_date",
       "error",
       "matched_connection_id",
       "matched_connection_name",
@@ -628,32 +743,95 @@ export default function SolarEdgeMeterReads() {
       "profile_status_summary",
     ];
 
-    const csvRows = rows.map((row) => ({
+    const commonCells = (row: BulkSnapshotRow) => ({
       site_id: row.siteId,
       status: row.status,
       found: row.found ? "Yes" : "No",
-      lifetime_kwh: row.lifetimeKwh,
-      hourly_production_kwh: row.hourlyProductionKwh,
-      monthly_production_kwh: row.monthlyProductionKwh,
-      mtd_production_kwh: row.mtdProductionKwh,
-      previous_calendar_month_production_kwh: row.previousCalendarMonthProductionKwh,
-      last_12_months_production_kwh: row.last12MonthsProductionKwh,
-      weekly_production_kwh: row.weeklyProductionKwh,
-      daily_production_kwh: row.dailyProductionKwh,
-      anchor_date: row.anchorDate,
-      monthly_start_date: row.monthlyStartDate,
-      weekly_start_date: row.weeklyStartDate,
-      mtd_start_date: row.mtdStartDate,
-      previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
-      previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
-      last_12_months_start_date: row.last12MonthsStartDate,
       error: row.error,
       matched_connection_id: row.matchedConnectionId,
       matched_connection_name: row.matchedConnectionName,
       checked_connections: row.checkedConnections,
       found_in_connections: row.foundInConnections,
       profile_status_summary: row.profileStatusSummary,
-    }));
+    });
+
+    let headers: string[] = [];
+    let csvRows: Array<Record<string, string | number | null | undefined>> = [];
+
+    if (bulkDataType === "meters") {
+      headers = [
+        ...commonHeaders,
+        "meter_count",
+        "production_meter_count",
+        "consumption_meter_count",
+        "meter_types",
+      ];
+      csvRows = rows.map((row) => ({
+        ...commonCells(row),
+        meter_count: row.meterCount,
+        production_meter_count: row.productionMeterCount,
+        consumption_meter_count: row.consumptionMeterCount,
+        meter_types: (row.meterTypes ?? []).join(" | "),
+      }));
+    } else if (bulkDataType === "inverters") {
+      headers = [
+        ...commonHeaders,
+        "inverter_count",
+        "inverters_with_telemetry",
+        "inverter_failures",
+        "total_latest_power_w",
+        "total_latest_energy_wh",
+        "first_telemetry_at",
+        "last_telemetry_at",
+      ];
+      csvRows = rows.map((row) => ({
+        ...commonCells(row),
+        inverter_count: row.inverterCount,
+        inverters_with_telemetry: row.invertersWithTelemetry,
+        inverter_failures: row.inverterFailures,
+        total_latest_power_w: row.totalLatestPowerW,
+        total_latest_energy_wh: row.totalLatestEnergyWh,
+        first_telemetry_at: row.firstTelemetryAt,
+        last_telemetry_at: row.lastTelemetryAt,
+      }));
+    } else {
+      headers = [
+        ...commonHeaders,
+        "lifetime_kwh",
+        "hourly_production_kwh",
+        "monthly_production_kwh",
+        "mtd_production_kwh",
+        "previous_calendar_month_production_kwh",
+        "last_12_months_production_kwh",
+        "weekly_production_kwh",
+        "daily_production_kwh",
+        "anchor_date",
+        "monthly_start_date",
+        "weekly_start_date",
+        "mtd_start_date",
+        "previous_calendar_month_start_date",
+        "previous_calendar_month_end_date",
+        "last_12_months_start_date",
+      ];
+      csvRows = rows.map((row) => ({
+        ...commonCells(row),
+        lifetime_kwh: row.lifetimeKwh,
+        hourly_production_kwh: row.hourlyProductionKwh,
+        monthly_production_kwh: row.monthlyProductionKwh,
+        mtd_production_kwh: row.mtdProductionKwh,
+        previous_calendar_month_production_kwh: row.previousCalendarMonthProductionKwh,
+        last_12_months_production_kwh: row.last12MonthsProductionKwh,
+        weekly_production_kwh: row.weeklyProductionKwh,
+        daily_production_kwh: row.dailyProductionKwh,
+        anchor_date: row.anchorDate,
+        monthly_start_date: row.monthlyStartDate,
+        weekly_start_date: row.weeklyStartDate,
+        mtd_start_date: row.mtdStartDate,
+        previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
+        previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
+        last_12_months_start_date: row.last12MonthsStartDate,
+      }));
+    }
 
     const csvText = buildCsv(headers, csvRows);
     const fileName = `${fileNamePrefix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
@@ -1045,11 +1223,27 @@ export default function SolarEdgeMeterReads() {
           <CardHeader>
             <CardTitle>3) Bulk CSV Processing</CardTitle>
             <CardDescription>
-              Upload a CSV of site IDs, process in batches, and review/export found/not-found status with lifetime plus hourly, monthly, MTD, previous month, last 12 months, weekly, and daily production.
+              Upload a CSV of site IDs, choose bulk data type, and process in batches across API profiles.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="space-y-2">
+                <Label>Bulk Data Type</Label>
+                <Select value={bulkDataType} onValueChange={(value) => setBulkDataType(value as BulkDataType)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="production">Production Snapshot</SelectItem>
+                    <SelectItem value="meters">Meter Inventory</SelectItem>
+                    <SelectItem value="inverters">Inverter Snapshot</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Select what to pull per site ID in bulk.
+                </p>
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="bulk-anchor-date">Anchor Date</Label>
                 <Input
@@ -1059,7 +1253,7 @@ export default function SolarEdgeMeterReads() {
                   onChange={(e) => setBulkAnchorDate(e.target.value)}
                 />
                 <p className="text-xs text-slate-500">
-                  Monthly = last 30 days, MTD = first of current month through anchor day, Previous Month = prior calendar month, Last 12 Months = trailing 12 months ending on anchor day, Weekly = last 7 days, Daily = anchor day.
+                  Used for production and inverter snapshots. Production windows: Monthly = last 30 days, MTD = first of current month through anchor day, Previous Month = prior calendar month, Last 12 Months = trailing 12 months ending on anchor day.
                 </p>
               </div>
               <div className="space-y-2">
@@ -1119,7 +1313,7 @@ export default function SolarEdgeMeterReads() {
                 ) : (
                   <Upload className="h-4 w-4 mr-2" />
                 )}
-                Run Bulk Processing
+                Run {bulkDataTypeLabel}
               </Button>
               <Button
                 variant="outline"
@@ -1133,14 +1327,14 @@ export default function SolarEdgeMeterReads() {
               <Button
                 variant="outline"
                 disabled={bulkRows.length === 0}
-                onClick={() => downloadBulkCsv(bulkRows, "solaredge-production-bulk-all")}
+                onClick={() => downloadBulkCsv(bulkRows, `${bulkCsvPrefix}-all`)}
               >
                 Download All CSV
               </Button>
               <Button
                 variant="outline"
                 disabled={filteredBulkRows.length === 0}
-                onClick={() => downloadBulkCsv(filteredBulkRows, "solaredge-production-bulk-filtered")}
+                onClick={() => downloadBulkCsv(filteredBulkRows, `${bulkCsvPrefix}-filtered`)}
               >
                 Download Filtered CSV
               </Button>
@@ -1216,16 +1410,11 @@ export default function SolarEdgeMeterReads() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="siteId">Site ID (A-Z)</SelectItem>
-                    <SelectItem value="status">Status</SelectItem>
-                    <SelectItem value="lifetime">Lifetime (High-Low)</SelectItem>
-                    <SelectItem value="hourly">Hourly (High-Low)</SelectItem>
-                    <SelectItem value="monthly">Monthly (High-Low)</SelectItem>
-                    <SelectItem value="mtd">MTD (High-Low)</SelectItem>
-                    <SelectItem value="previousMonth">Previous Month (High-Low)</SelectItem>
-                    <SelectItem value="last12Months">Last 12 Months (High-Low)</SelectItem>
-                    <SelectItem value="weekly">Weekly (High-Low)</SelectItem>
-                    <SelectItem value="daily">Daily (High-Low)</SelectItem>
+                    {bulkSortOptions.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -1247,14 +1436,36 @@ export default function SolarEdgeMeterReads() {
                   <TableHead>Status</TableHead>
                   <TableHead>Matched API Profile</TableHead>
                   <TableHead>Found In APIs</TableHead>
-                  <TableHead>Lifetime (kWh)</TableHead>
-                  <TableHead>Hourly (kWh)</TableHead>
-                  <TableHead>Monthly (kWh)</TableHead>
-                  <TableHead>MTD (kWh)</TableHead>
-                  <TableHead>Previous Month (kWh)</TableHead>
-                  <TableHead>Last 12 Months (kWh)</TableHead>
-                  <TableHead>Weekly (kWh)</TableHead>
-                  <TableHead>Daily (kWh)</TableHead>
+                  {bulkDataType === "production" ? (
+                    <>
+                      <TableHead>Lifetime (kWh)</TableHead>
+                      <TableHead>Hourly (kWh)</TableHead>
+                      <TableHead>Monthly (kWh)</TableHead>
+                      <TableHead>MTD (kWh)</TableHead>
+                      <TableHead>Previous Month (kWh)</TableHead>
+                      <TableHead>Last 12 Months (kWh)</TableHead>
+                      <TableHead>Weekly (kWh)</TableHead>
+                      <TableHead>Daily (kWh)</TableHead>
+                    </>
+                  ) : null}
+                  {bulkDataType === "meters" ? (
+                    <>
+                      <TableHead>Meters</TableHead>
+                      <TableHead>Production Meters</TableHead>
+                      <TableHead>Consumption Meters</TableHead>
+                      <TableHead>Meter Types</TableHead>
+                    </>
+                  ) : null}
+                  {bulkDataType === "inverters" ? (
+                    <>
+                      <TableHead>Inverters</TableHead>
+                      <TableHead>With Telemetry</TableHead>
+                      <TableHead>Failures</TableHead>
+                      <TableHead>Latest Power (W)</TableHead>
+                      <TableHead>Latest Energy (Wh)</TableHead>
+                      <TableHead>Last Telemetry</TableHead>
+                    </>
+                  ) : null}
                   <TableHead>API Check Summary</TableHead>
                   <TableHead>Error</TableHead>
                 </TableRow>
@@ -1268,21 +1479,54 @@ export default function SolarEdgeMeterReads() {
                     <TableCell>
                       {NUMBER_FORMATTER.format(row.foundInConnections)} / {NUMBER_FORMATTER.format(row.checkedConnections)}
                     </TableCell>
-                    <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.hourlyProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.mtdProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.previousCalendarMonthProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.last12MonthsProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
+                    {bulkDataType === "production" ? (
+                      <>
+                        <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.hourlyProductionKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.mtdProductionKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.previousCalendarMonthProductionKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.last12MonthsProductionKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
+                        <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
+                      </>
+                    ) : null}
+                    {bulkDataType === "meters" ? (
+                      <>
+                        <TableCell>{row.meterCount ?? "N/A"}</TableCell>
+                        <TableCell>{row.productionMeterCount ?? "N/A"}</TableCell>
+                        <TableCell>{row.consumptionMeterCount ?? "N/A"}</TableCell>
+                        <TableCell className="text-xs text-slate-600">
+                          {(row.meterTypes ?? []).length > 0 ? (row.meterTypes ?? []).join(" | ") : "N/A"}
+                        </TableCell>
+                      </>
+                    ) : null}
+                    {bulkDataType === "inverters" ? (
+                      <>
+                        <TableCell>{row.inverterCount ?? "N/A"}</TableCell>
+                        <TableCell>{row.invertersWithTelemetry ?? "N/A"}</TableCell>
+                        <TableCell>{row.inverterFailures ?? "N/A"}</TableCell>
+                        <TableCell>{row.totalLatestPowerW ?? "N/A"}</TableCell>
+                        <TableCell>{row.totalLatestEnergyWh ?? "N/A"}</TableCell>
+                        <TableCell>{row.lastTelemetryAt ?? "N/A"}</TableCell>
+                      </>
+                    ) : null}
                     <TableCell className="text-xs text-slate-600">{row.profileStatusSummary}</TableCell>
                     <TableCell className="text-xs text-slate-600">{row.error ?? ""}</TableCell>
                   </TableRow>
                 ))}
                 {bulkPageRows.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={14} className="py-6 text-center text-slate-500">
+                    <TableCell
+                      colSpan={
+                        bulkDataType === "production"
+                          ? 14
+                          : bulkDataType === "meters"
+                            ? 10
+                            : 12
+                      }
+                      className="py-6 text-center text-slate-500"
+                    >
                       No bulk rows to display.
                     </TableCell>
                   </TableRow>

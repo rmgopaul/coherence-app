@@ -48,6 +48,31 @@ export type SolarEdgeInverterProductionResult = {
   inverters: SolarEdgeInverterProductionRow[];
 };
 
+export type SolarEdgeMeterSnapshot = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  meterCount: number | null;
+  productionMeterCount: number | null;
+  consumptionMeterCount: number | null;
+  meterTypes: string[];
+  error: string | null;
+};
+
+export type SolarEdgeInverterSnapshot = {
+  siteId: string;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  inverterCount: number | null;
+  invertersWithTelemetry: number | null;
+  inverterFailures: number | null;
+  totalLatestPowerW: number | null;
+  totalLatestEnergyWh: number | null;
+  firstTelemetryAt: string | null;
+  lastTelemetryAt: string | null;
+  error: string | null;
+};
+
 export type SolarEdgeProductionSnapshot = {
   siteId: string;
   status: "Found" | "Not Found" | "Error";
@@ -209,6 +234,65 @@ function pickTelemetryEnergyWh(record: Record<string, unknown>): number | null {
     toNullableNumber(record.eLifetime) ??
     null
   );
+}
+
+function sumFinite(values: Array<number | null | undefined>): number | null {
+  const finite = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (finite.length === 0) return null;
+  const total = finite.reduce((sum, value) => sum + value, 0);
+  return Math.round(total * 1000) / 1000;
+}
+
+function maxTimestamp(values: Array<string | null | undefined>): string | null {
+  const candidates = values
+    .map((value) => toNullableString(value))
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ value, ms: new Date(value).getTime() }))
+    .filter((row) => Number.isFinite(row.ms));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => a.ms - b.ms);
+  return candidates[candidates.length - 1].value;
+}
+
+function minTimestamp(values: Array<string | null | undefined>): string | null {
+  const candidates = values
+    .map((value) => toNullableString(value))
+    .filter((value): value is string => Boolean(value))
+    .map((value) => ({ value, ms: new Date(value).getTime() }))
+    .filter((row) => Number.isFinite(row.ms));
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => a.ms - b.ms);
+  return candidates[0].value;
+}
+
+function normalizeMeterType(raw: string | null | undefined): string {
+  const normalized = toNullableString(raw);
+  if (!normalized) return "Unknown";
+  return normalized;
+}
+
+function extractMeterTypeRows(payload: unknown): string[] {
+  const root = asRecord(payload);
+  const metersRecord = asRecord(root.meters);
+  const siteMetersRecord = asRecord(root.siteMeters);
+  let rows = asRecordArray(root.meters);
+  if (rows.length === 0) rows = asRecordArray(metersRecord.meter);
+  if (rows.length === 0) rows = asRecordArray(root.meter);
+  if (rows.length === 0) rows = asRecordArray(siteMetersRecord.meter);
+  if (rows.length === 0) rows = asRecordArray(siteMetersRecord.meters);
+
+  const output: string[] = [];
+  for (const row of rows) {
+    const type = normalizeMeterType(
+      toNullableString(row.type) ??
+        toNullableString(row.meterType) ??
+        toNullableString(row.meter_type) ??
+        toNullableString(row.name)
+    );
+    output.push(type);
+  }
+
+  return output;
 }
 
 function extractInverterInventory(payload: unknown): SolarEdgeInverterInventory[] {
@@ -711,6 +795,123 @@ export async function getSiteInverterProduction(
     failedInverters: inverters.filter((row) => Boolean(row.error)).length,
     inverters,
   };
+}
+
+export async function getSiteMeterSnapshot(
+  context: SolarEdgeApiContext,
+  siteIdRaw: string
+): Promise<SolarEdgeMeterSnapshot> {
+  const siteId = siteIdRaw.trim();
+
+  try {
+    const payload = await getSiteMeters(context, siteId);
+    const meterTypes = extractMeterTypeRows(payload);
+    const productionMeterCount = meterTypes.filter((type) => /production|prod/i.test(type)).length;
+    const consumptionMeterCount = meterTypes.filter((type) => /consumption|cons/i.test(type)).length;
+
+    return {
+      siteId,
+      status: "Found",
+      found: true,
+      meterCount: meterTypes.length,
+      productionMeterCount,
+      consumptionMeterCount,
+      meterTypes: Array.from(new Set(meterTypes)).sort((a, b) => a.localeCompare(b)),
+      error: null,
+    };
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return {
+        siteId,
+        status: "Not Found",
+        found: false,
+        meterCount: null,
+        productionMeterCount: null,
+        consumptionMeterCount: null,
+        meterTypes: [],
+        error: error instanceof Error ? error.message : "Site not found.",
+      };
+    }
+
+    return {
+      siteId,
+      status: "Error",
+      found: false,
+      meterCount: null,
+      productionMeterCount: null,
+      consumptionMeterCount: null,
+      meterTypes: [],
+      error: error instanceof Error ? error.message : "Unknown error.",
+    };
+  }
+}
+
+export async function getSiteInverterSnapshot(
+  context: SolarEdgeApiContext,
+  siteIdRaw: string,
+  anchorDateRaw?: string | null
+): Promise<SolarEdgeInverterSnapshot> {
+  const siteId = siteIdRaw.trim();
+  const anchorDate = (anchorDateRaw ?? "").trim() || formatIsoDate(new Date());
+  if (!parseIsoDate(anchorDate)) {
+    throw new Error("Anchor date must be in YYYY-MM-DD format.");
+  }
+
+  const startDate = shiftIsoDate(anchorDate, -29);
+
+  try {
+    const result = await getSiteInverterProduction(context, siteId, startDate, anchorDate);
+    const invertersWithTelemetry = result.inverters.filter((inverter) => inverter.telemetryCount > 0).length;
+    const inverterFailures = result.inverters.filter((inverter) => Boolean(inverter.error)).length;
+    const totalLatestPowerW = sumFinite(result.inverters.map((inverter) => inverter.latestPowerW));
+    const totalLatestEnergyWh = sumFinite(result.inverters.map((inverter) => inverter.latestEnergyWh));
+    const firstTelemetryAt = minTimestamp(result.inverters.map((inverter) => inverter.firstTelemetryAt));
+    const lastTelemetryAt = maxTimestamp(result.inverters.map((inverter) => inverter.lastTelemetryAt));
+
+    return {
+      siteId,
+      status: "Found",
+      found: true,
+      inverterCount: result.inventoryCount,
+      invertersWithTelemetry,
+      inverterFailures,
+      totalLatestPowerW,
+      totalLatestEnergyWh,
+      firstTelemetryAt,
+      lastTelemetryAt,
+      error: null,
+    };
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return {
+        siteId,
+        status: "Not Found",
+        found: false,
+        inverterCount: null,
+        invertersWithTelemetry: null,
+        inverterFailures: null,
+        totalLatestPowerW: null,
+        totalLatestEnergyWh: null,
+        firstTelemetryAt: null,
+        lastTelemetryAt: null,
+        error: error instanceof Error ? error.message : "Site not found.",
+      };
+    }
+
+    return {
+      siteId,
+      status: "Error",
+      found: false,
+      inverterCount: null,
+      invertersWithTelemetry: null,
+      inverterFailures: null,
+      totalLatestPowerW: null,
+      totalLatestEnergyWh: null,
+      firstTelemetryAt: null,
+      lastTelemetryAt: null,
+      error: error instanceof Error ? error.message : "Unknown error.",
+    };
+  }
 }
 
 export async function getSiteProductionSnapshot(
