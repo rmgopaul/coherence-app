@@ -45,6 +45,7 @@ import com.coherence.samsunghealth.ui.widgets.HabitsWidget
 import com.coherence.samsunghealth.ui.widgets.HealthWidget
 import com.coherence.samsunghealth.ui.widgets.HeroStats
 import com.coherence.samsunghealth.ui.widgets.MarketHeadlinesWidget
+import com.coherence.samsunghealth.ui.widgets.SportsWidget
 import com.coherence.samsunghealth.ui.widgets.SupplementsWidget
 import com.coherence.samsunghealth.ui.widgets.SuggestedActionsWidget
 import com.coherence.samsunghealth.ui.widgets.TodaysPlanWidget
@@ -69,6 +70,7 @@ fun DashboardScreen() {
   val whoop = state.whoopState.dataOrNull()
   val emails = state.emailsState.dataOrNull().orEmpty()
   val marketData = state.marketState.dataOrNull()
+  val sportsData = state.sportsState.dataOrNull()
   val health = state.healthState.dataOrNull()
   val hiddenWidgets = preferences.hiddenWidgets
   var searchQuery by rememberSaveable { mutableStateOf("") }
@@ -177,6 +179,17 @@ fun DashboardScreen() {
             onRetry = { viewModel.retryMarket() },
           )
         }
+      }
+
+      // MN Sports (auto-hides when no games today)
+      item {
+        SportsWidget(
+          sportsData = sportsData,
+          isLoading = state.sportsState.isLoading(),
+          error = state.sportsState.errorOrNull(),
+          lastUpdatedMillis = state.sportsState.updatedAtOrNull(),
+          onRetry = { viewModel.retrySports() },
+        )
       }
 
       // Samsung Health

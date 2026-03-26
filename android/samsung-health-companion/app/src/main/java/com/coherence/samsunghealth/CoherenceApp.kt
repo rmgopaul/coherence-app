@@ -11,6 +11,7 @@ import com.coherence.samsunghealth.data.repository.GoogleRepository
 import com.coherence.samsunghealth.data.repository.HabitsRepository
 import com.coherence.samsunghealth.data.repository.MarketRepository
 import com.coherence.samsunghealth.data.repository.MetricsRepository
+import com.coherence.samsunghealth.data.repository.SportsRepository
 import com.coherence.samsunghealth.data.repository.NotesRepository
 import com.coherence.samsunghealth.data.repository.PlanRepository
 import com.coherence.samsunghealth.data.repository.SearchRepository
@@ -65,6 +66,8 @@ class CoherenceApplication : Application() {
     private set
   lateinit var marketRepository: MarketRepository
     private set
+  lateinit var sportsRepository: SportsRepository
+    private set
 
   override fun onCreate() {
     super.onCreate()
@@ -87,6 +90,7 @@ class CoherenceApplication : Application() {
     metricsRepository = MetricsRepository(trpcClient)
     clockifyRepository = ClockifyRepository(trpcClient)
     marketRepository = MarketRepository(trpcClient)
+    sportsRepository = SportsRepository(trpcClient)
 
     dashboardViewModel = DashboardViewModel(
       todoistRepo = todoistRepository,
@@ -95,6 +99,7 @@ class CoherenceApplication : Application() {
       metricsRepo = metricsRepository,
       planRepo = planRepository,
       marketRepo = marketRepository,
+      sportsRepo = sportsRepository,
     )
   }
 }
