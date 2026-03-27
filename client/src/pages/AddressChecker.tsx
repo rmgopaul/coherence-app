@@ -559,6 +559,43 @@ export default function AddressChecker() {
   }, [rows, fileName]);
 
   // -----------------------------------------------------------------------
+  // Export USPS Ready CSV (simple format, all caps, best available address)
+  // -----------------------------------------------------------------------
+
+  const handleExportUspsReady = useCallback(() => {
+    if (rows.length === 0) {
+      toast.error("No rows to export.");
+      return;
+    }
+
+    const lines: string[] = [];
+
+    for (const row of rows) {
+      const v = row.verification;
+      const c = row.cleaned;
+      const o = row.original;
+
+      // Name: best available, uppercased
+      const name = (c?.name ?? o.name).toUpperCase();
+
+      // Address: prefer USPS-corrected, then cleaned, then original — all uppercase
+      const address1 = (v?.corrected.address1 || c?.address1 || o.address1).toUpperCase();
+      const address2 = (c?.address2 || o.address2).toUpperCase();
+      const city = (v?.corrected.city || c?.city || o.city).toUpperCase();
+      const state = (v?.corrected.state || c?.state || o.state).toUpperCase();
+      const zip = v?.corrected.zip || c?.zip || o.zip;
+
+      const record = [name, address1, address2, city, state, zip];
+      lines.push(record.map(csvEscape).join(","));
+    }
+
+    const csv = lines.join("\n");
+    const safeName = clean(fileName ?? "addresses").replace(/\.[^.]+$/, "");
+    downloadTextFile(`${safeName}-usps-ready.csv`, csv, "text/csv;charset=utf-8");
+    toast.success("USPS Ready CSV exported.");
+  }, [rows, fileName]);
+
+  // -----------------------------------------------------------------------
   // Filtered rows + summary
   // -----------------------------------------------------------------------
 
@@ -679,7 +716,11 @@ export default function AddressChecker() {
               <div className="flex-1" />
               <Button onClick={handleExportCsv} disabled={rows.length === 0} variant="outline">
                 <Download className="h-4 w-4 mr-2" />
-                Export CSV
+                Export Full CSV
+              </Button>
+              <Button onClick={handleExportUspsReady} disabled={rows.length === 0} variant="outline">
+                <Download className="h-4 w-4 mr-2" />
+                Export USPS Ready
               </Button>
             </div>
           </CardContent>
