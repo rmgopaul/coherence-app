@@ -2555,7 +2555,7 @@ export default function AbpInvoiceSettlement() {
       return;
     }
 
-    const csv = buildSettlementCsv(computationResult.rows);
+    const csv = buildSettlementCsv(computationResult.rows, addressVerificationResults.length > 0 ? addressVerificationResults : undefined);
     const safeMonth = clean(monthKey) || buildMonthKey();
     downloadTextFile(`abp-invoice-settlement-${safeMonth}.csv`, csv, "text/csv;charset=utf-8");
     toast.success("CSV exported.");

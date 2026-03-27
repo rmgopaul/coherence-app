@@ -2388,7 +2388,23 @@ export function computeSettlementDiff(
   };
 }
 
-export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
+export type AddressVerificationResult = {
+  key: string;
+  verdict: string;
+  deliverable: boolean;
+  issues: string[];
+  corrected: { address1: string; city: string; state: string; zip: string; zipPlus4: string };
+};
+
+export function buildSettlementCsv(
+  rows: PaymentComputationRow[],
+  addressVerificationResults?: AddressVerificationResult[]
+): string {
+  const addrByKey = new Map<string, AddressVerificationResult>();
+  if (addressVerificationResults) {
+    addressVerificationResults.forEach((r) => addrByKey.set(r.key, r));
+  }
+
   const headers = [
     "CSG ID",
     "System ID",
@@ -2423,6 +2439,14 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
     "Zip",
     "AI Mailing Modified",
     "AI Mailing Fields Modified",
+    "Address Verification Verdict",
+    "Address Verification Deliverable",
+    "Address Verification Issues",
+    "CASS Corrected Address 1",
+    "CASS Corrected City",
+    "CASS Corrected State",
+    "CASS Corrected Zip",
+    "CASS Corrected Zip+4",
     "Installer Name",
     "Partner Company Name",
     "Customer Email",
@@ -2489,6 +2513,20 @@ export function buildSettlementCsv(rows: PaymentComputationRow[]): string {
       row.zip,
       row.aiMailingModified ? "Yes" : "No",
       row.aiMailingModifiedFields,
+      ...(() => {
+        const v = row.csgId ? addrByKey.get(row.csgId) : undefined;
+        if (!v) return ["", "", "", "", "", "", "", ""];
+        return [
+          v.verdict,
+          v.deliverable ? "Yes" : "No",
+          v.issues.join("; "),
+          v.corrected.address1,
+          v.corrected.city,
+          v.corrected.state,
+          v.corrected.zip,
+          v.corrected.zipPlus4,
+        ];
+      })(),
       row.installerName,
       row.partnerCompanyName,
       row.customerEmail,

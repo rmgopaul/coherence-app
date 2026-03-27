@@ -17,6 +17,7 @@ import {
   Battery,
   Headset,
   FileSearch,
+  MapPin,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -83,6 +84,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
       { label: "Contract Scanner", href: "/contract-scanner", icon: FileSearch },
       { label: "ABP Settlement", href: "/abp-invoice-settlement", icon: FileSpreadsheet },
+      { label: "Address Checker", href: "/address-checker", icon: MapPin },
       { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Zap },
       { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Sun },
       { label: "Fronius", href: "/fronius-meter-reads", icon: Sun },
