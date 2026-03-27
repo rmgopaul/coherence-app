@@ -2196,9 +2196,10 @@ export default function SolarRecDashboard() {
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
-    retry: 3,
+    retry: 4,
     retryDelay: (attempt) => Math.min(2000 * (attempt + 1), 10_000),
     refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   });
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
@@ -6670,6 +6671,21 @@ export default function SolarRecDashboard() {
       window.clearTimeout(timeout);
     };
   }, [datasets, remoteDashboardStateQuery.refetch, remoteDashboardStateQuery.status]);
+
+  // Re-trigger data loading when the page becomes visible again (e.g. mobile
+  // browser tab was backgrounded during initial load, cancelling hydration).
+  useEffect(() => {
+    const handleVisibilityResume = () => {
+      if (document.visibilityState !== "visible") return;
+      if (remoteStateHydratedRef.current && datasetsHydratedRef.current) return;
+      // Hydration was interrupted — kick off a refetch so the load effect re-runs.
+      void remoteDashboardStateQuery.refetch();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityResume);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityResume);
+    };
+  }, [remoteDashboardStateQuery.refetch]);
 
   useEffect(() => {
     const flushLocalPersistence = () => {

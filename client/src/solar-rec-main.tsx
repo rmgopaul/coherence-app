@@ -12,11 +12,11 @@ const queryClient = new QueryClient({
       staleTime: 60_000,
       gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,
-      refetchOnReconnect: false,
-      retry: 1,
+      refetchOnReconnect: true,
+      retry: 2,
     },
     mutations: {
-      retry: 1,
+      retry: 2,
     },
   },
 });
