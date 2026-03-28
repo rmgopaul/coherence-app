@@ -30,6 +30,7 @@ import {
   type MeterReadsConversionResult,
 } from "@/lib/meterReads";
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
+import { parseTabularFile } from "@/lib/csvParsing";
 
 type DatasetKey =
   | "solarApplications"
@@ -46,7 +47,9 @@ type DatasetKey =
   | "abpQuickBooksRows"
   | "abpProjectApplicationRows"
   | "abpPortalInvoiceMapRows"
-  | "abpCsgPortalDatabaseRows";
+  | "abpCsgPortalDatabaseRows"
+  | "abpIccReport2Rows"
+  | "abpIccReport3Rows";
 
 type OwnershipStatus =
   | "Transferred and Reporting"
@@ -584,6 +587,24 @@ const DATASET_DEFINITIONS: Record<
       "Linked ABP settlement CSG portal database rows for installer/company attributes and collateral reimbursement flags.",
     requiredHeaderSets: [["systemId", "installerName"], ["System ID", "Installer"]],
   },
+  abpIccReport2Rows: {
+    label: "ABP ICC Report 2 Rows",
+    description:
+      "Shared ICC Report 2 upload (CSV/XLSX). Used by Early Payment and Solar REC modules.",
+    requiredHeaderSets: [
+      ["Application ID", "Total Quantity of RECs Contracted", "REC Price"],
+      ["Application_ID", "Total Quantity of RECs Contracted", "REC Price"],
+    ],
+  },
+  abpIccReport3Rows: {
+    label: "ABP ICC Report 3 Rows",
+    description:
+      "Shared ICC Report 3 upload (CSV/XLSX). Used by Early Payment and Solar REC modules.",
+    requiredHeaderSets: [
+      ["Application ID", "Total Quantity of RECs Contracted", "REC Price"],
+      ["Application_ID", "Total Quantity of RECs Contracted", "REC Price"],
+    ],
+  },
 };
 
 const OWNERSHIP_ORDER: OwnershipStatus[] = [
@@ -659,6 +680,7 @@ const MAX_COMPLIANT_SOURCE_CHARS = 100;
 const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
 const MAX_SINGLE_CSV_UPLOAD_BYTES = 150 * 1024 * 1024;
 const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads"]);
+const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccReport3Rows"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "solarApplications",
   "abpReport",
@@ -2554,8 +2576,12 @@ export default function SolarRecDashboard() {
     }
 
     try {
-      const raw = await file.text();
-      const parsed = await parseCsvAsync(raw);
+      const parsed = TABULAR_DATASET_KEYS.has(key)
+        ? await parseTabularFile(file)
+        : await (async () => {
+            const raw = await file.text();
+            return await parseCsvAsync(raw);
+          })();
       const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
 
       if (!isValid) {
@@ -11811,10 +11837,10 @@ export default function SolarRecDashboard() {
                     <div className="flex items-center gap-2">
                       <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                         <Upload className="h-4 w-4" />
-                        {isMultiAppend ? "Add CSV(s)" : "Choose CSV"}
+                        {isMultiAppend ? "Add CSV(s)" : (TABULAR_DATASET_KEYS.has(key) ? "Choose File" : "Choose CSV")}
                         <input
                           type="file"
-                          accept=".csv,text/csv"
+                          accept={TABULAR_DATASET_KEYS.has(key) ? ".csv,.xlsx,.xls,.xlsm,.xlsb,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : ".csv,text/csv"}
                           className="hidden"
                           multiple={isMultiAppend}
                           onChange={(event) => {
