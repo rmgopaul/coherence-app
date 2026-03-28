@@ -85,6 +85,13 @@
       "when": 1774047517005,
       "tag": "0011_cool_lady_bullseye",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1774718170219,
+      "tag": "0012_volatile_boomerang",
+      "breakpoints": true
     }
   ]
 }

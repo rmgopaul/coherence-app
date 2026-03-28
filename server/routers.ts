@@ -7755,6 +7755,60 @@ Generate the pipeline analysis report now.`,
         return { success: true, model };
       }),
   }),
+
+  // ── SunPower PVS production readings (mobile app → DB → dashboard) ──
+  solarReadings: router({
+    /** Public: called by the mobile app (no Coherence auth). */
+    submit: publicProcedure
+      .input(
+        z.object({
+          customerEmail: z.string().email(),
+          nonId: z.string().optional(),
+          lifetimeKwh: z.number().positive(),
+          meterSerial: z.string().optional(),
+          firmwareVersion: z.string().optional(),
+          pvsSerial5: z.string().max(5).optional(),
+          readAt: z.string(), // ISO timestamp
+        })
+      )
+      .mutation(async ({ input }) => {
+        const { nanoid } = await import("nanoid");
+        const { insertProductionReading } = await import("./db");
+        await insertProductionReading({
+          id: nanoid(),
+          customerEmail: input.customerEmail,
+          nonId: input.nonId ?? null,
+          lifetimeKwh: input.lifetimeKwh,
+          meterSerial: input.meterSerial ?? null,
+          firmwareVersion: input.firmwareVersion ?? null,
+          pvsSerial5: input.pvsSerial5 ?? null,
+          readAt: new Date(input.readAt),
+        });
+        return { success: true };
+      }),
+
+    /** Protected: dashboard summary card. */
+    summary: protectedProcedure.query(async () => {
+      const { getProductionReadingSummary } = await import("./db");
+      return getProductionReadingSummary();
+    }),
+
+    /** Protected: list readings with optional filters. */
+    list: protectedProcedure
+      .input(
+        z
+          .object({
+            limit: z.number().min(1).max(500).optional(),
+            email: z.string().optional(),
+            nonId: z.string().optional(),
+          })
+          .optional()
+      )
+      .query(async ({ input }) => {
+        const { listProductionReadings } = await import("./db");
+        return listProductionReadings(input ?? undefined);
+      }),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

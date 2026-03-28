@@ -458,3 +458,27 @@ export const userRecoveryCodes = mysqlTable(
 
 export type UserRecoveryCode = typeof userRecoveryCodes.$inferSelect;
 export type InsertUserRecoveryCode = typeof userRecoveryCodes.$inferInsert;
+
+// SunPower PVS production readings submitted from the mobile app.
+export const productionReadings = mysqlTable(
+  "productionReadings",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    customerEmail: varchar("customerEmail", { length: 320 }).notNull(),
+    nonId: varchar("nonId", { length: 64 }),
+    lifetimeKwh: double("lifetimeKwh").notNull(),
+    meterSerial: varchar("meterSerial", { length: 128 }),
+    firmwareVersion: varchar("firmwareVersion", { length: 64 }),
+    pvsSerial5: varchar("pvsSerial5", { length: 5 }),
+    readAt: timestamp("readAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    emailIdx: index("production_readings_email_idx").on(table.customerEmail),
+    nonIdIdx: index("production_readings_nonid_idx").on(table.nonId),
+    readAtIdx: index("production_readings_read_at_idx").on(table.readAt),
+  })
+);
+
+export type ProductionReading = typeof productionReadings.$inferSelect;
+export type InsertProductionReading = typeof productionReadings.$inferInsert;
