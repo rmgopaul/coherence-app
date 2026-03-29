@@ -79,6 +79,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: "Portfolio",
     items: [
+      { label: "SunPower Reads", href: "/sunpower-readings", icon: Zap, badgeKey: "sunpowerReadings" },
       { label: "Solar REC", href: "/solar-rec-dashboard", icon: BarChart3 },
       { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
@@ -123,17 +124,24 @@ export function AppSidebar() {
     refetchOnWindowFocus: false,
   });
 
+  const { data: readingSummary } = trpc.solarReadings.summary.useQuery(undefined, {
+    staleTime: 120_000,
+    refetchOnWindowFocus: false,
+  });
+
   const badges = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const tasksDueToday = (todoistTasks ?? []).filter(
       (t: any) => t.due?.date && t.due.date <= today
     ).length;
     const eventsToday = (calendarEvents ?? []).length;
+    const readingCount = readingSummary?.totalReadings ?? 0;
     return {
       tasks: tasksDueToday > 0 ? tasksDueToday : null,
       events: eventsToday > 0 ? eventsToday : null,
+      sunpowerReadings: readingCount > 0 ? readingCount : null,
     } as Record<string, number | null>;
-  }, [todoistTasks, calendarEvents]);
+  }, [todoistTasks, calendarEvents, readingSummary]);
 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(
     () => {

@@ -27,6 +27,7 @@ const ContractScanner = lazy(() => import("./pages/ContractScanner"));
 const AbpInvoiceSettlement = lazy(() => import("./pages/AbpInvoiceSettlement"));
 const EarlyPayment = lazy(() => import("./pages/EarlyPayment"));
 const AddressChecker = lazy(() => import("./pages/AddressChecker"));
+const SunpowerReadings = lazy(() => import("./pages/SunpowerReadings"));
 const Notebook = lazy(() => import("./pages/Notebook"));
 const Settings = lazy(() => import("./pages/Settings"));
 const TodoistWidget = lazy(() => import("./pages/TodoistWidget"));
@@ -65,6 +66,7 @@ function AppRoutes() {
       <Route path={"/abp-invoice-settlement"} component={withRouteSuspense(AbpInvoiceSettlement)} />
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
       <Route path={"/address-checker"} component={withRouteSuspense(AddressChecker)} />
+      <Route path={"/sunpower-readings"} component={withRouteSuspense(SunpowerReadings)} />
       <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
       <Route path={"/enphase-v2-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
       <Route path={"/solaredge-meter-reads"} component={withRouteSuspense(SolarEdgeMeterReads)} />

@@ -69,7 +69,6 @@ import { WorkspaceSection } from "@/components/dashboard/WorkspaceSection";
 import { ChatPanel } from "@/components/dashboard/ChatPanel";
 import { SupplementsCard } from "@/components/dashboard/SupplementsCard";
 import { NotesCard } from "@/components/dashboard/NotesCard";
-import { SolarReadingsCard } from "@/components/dashboard/SolarReadingsCard";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
 import { FocusTimer } from "@/components/FocusTimer";
@@ -2137,11 +2136,6 @@ export default function Dashboard() {
           <MarketHeadlinesCard />
         </div>
       )}
-
-      {/* SunPower Production Readings */}
-      <div className="container mx-auto px-4 pt-4 scroll-mt-40">
-        <SolarReadingsCard />
-      </div>
 
       {/* MN Sports — only renders on game days */}
       <div className="container mx-auto px-4 pt-4 scroll-mt-40">
