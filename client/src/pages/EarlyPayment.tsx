@@ -93,6 +93,11 @@ const SHARED_DATASET_KEYS = {
   iccReport3: "abpIccReport3Rows",
 } as const;
 
+const DEEP_UPDATE_COMPAT_KEYS = {
+  iccReport2: "deep_update_report_iccReport2",
+  iccReport3: "deep_update_report_iccReport3",
+} as const;
+
 const CSG_ID_STORAGE_KEY = "early_payment_csg_ids_v1";
 const CSG_FILE_STORAGE_KEY = "early_payment_csg_file_name_v1";
 const ACTIVE_SCAN_JOB_STORAGE_KEY = "early_payment_active_scan_job_id_v1";
@@ -173,6 +178,26 @@ function parseRowsFromCsv(csvText: string, headers: string[]): Array<Record<stri
     });
     return record;
   });
+}
+
+function parseChunkPointerPayload(payload: string): string[] | null {
+  try {
+    const parsed = JSON.parse(payload) as {
+      _chunkedDataset?: unknown;
+      _chunkedDeepUpdateReport?: unknown;
+      chunkKeys?: unknown;
+    };
+    const isChunked = parsed._chunkedDataset === true || parsed._chunkedDeepUpdateReport === true;
+    if (!isChunked) return null;
+    if (!Array.isArray(parsed.chunkKeys) || parsed.chunkKeys.length === 0) return null;
+    const chunkKeyPattern = /^[a-zA-Z0-9_-]{1,64}$/;
+    const chunkKeys = parsed.chunkKeys.filter(
+      (key): key is string => typeof key === "string" && chunkKeyPattern.test(key)
+    );
+    return chunkKeys.length === parsed.chunkKeys.length ? chunkKeys : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildLinkedCsvDatasetPayload(input: {
@@ -496,7 +521,7 @@ export default function EarlyPayment() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
-  const [firstPaymentPercent, setFirstPaymentPercent] = useState<15 | 20>(20);
+  const [firstPaymentPercent, setFirstPaymentPercent] = useState<15 | 20 | 100>(20);
   const [manualCsgInput, setManualCsgInput] = useState<string>(() =>
     typeof window !== "undefined" ? localStorage.getItem(CSG_ID_STORAGE_KEY) ?? "" : ""
   );
@@ -535,13 +560,35 @@ export default function EarlyPayment() {
     else localStorage.removeItem(ACTIVE_SCAN_JOB_STORAGE_KEY);
   }, [activeScanJobId]);
 
-  const loadLinkedDataset = useCallback(
-    async (key: string): Promise<LinkedCsvDatasetPayload | null> => {
+  const loadDatasetPayload = useCallback(
+    async (key: string): Promise<string | null> => {
       const result = await getDatasetMutation.mutateAsync({ key });
       if (!result?.payload) return null;
-      return parseLinkedCsvDatasetPayload(result.payload);
+
+      const chunkKeys = parseChunkPointerPayload(result.payload);
+      if (!chunkKeys) return result.payload;
+
+      const chunkPayloads = await Promise.all(
+        chunkKeys.map((chunkKey) =>
+          getDatasetMutation
+            .mutateAsync({ key: chunkKey })
+            .then((chunkResult) => chunkResult?.payload ?? null)
+            .catch(() => null)
+        )
+      );
+      if (chunkPayloads.some((chunk) => chunk === null)) return null;
+      return chunkPayloads.join("");
     },
     [getDatasetMutation]
+  );
+
+  const loadLinkedDataset = useCallback(
+    async (key: string): Promise<LinkedCsvDatasetPayload | null> => {
+      const payload = await loadDatasetPayload(key);
+      if (!payload) return null;
+      return parseLinkedCsvDatasetPayload(payload);
+    },
+    [loadDatasetPayload]
   );
 
   useEffect(() => {
@@ -567,14 +614,19 @@ export default function EarlyPayment() {
           loadLinkedDataset(SHARED_DATASET_KEYS.iccReport3),
         ]);
 
+        const [deepIcc2, deepIcc3] = await Promise.all([
+          icc2 ? Promise.resolve(null) : loadLinkedDataset(DEEP_UPDATE_COMPAT_KEYS.iccReport2),
+          icc3 ? Promise.resolve(null) : loadLinkedDataset(DEEP_UPDATE_COMPAT_KEYS.iccReport3),
+        ]);
+
         if (cancelled) return;
         setMappingDataset(mapping);
         setQuickBooksDataset(quickBooks);
         setProjectAppsDataset(projectApps);
         setInvoiceMapDataset(invoiceMap);
         setPortalDbDataset(portalDb);
-        setIcc2Dataset(icc2);
-        setIcc3Dataset(icc3);
+        setIcc2Dataset(icc2 ?? deepIcc2);
+        setIcc3Dataset(icc3 ?? deepIcc3);
       } catch (error) {
         if (!cancelled) toast.error(`Could not load shared uploads: ${toErrorMessage(error)}`);
       } finally {
@@ -627,6 +679,28 @@ export default function EarlyPayment() {
           rows: parsed.rows,
         };
         await saveLinkedDataset(datasetKey, dataset);
+        if (datasetKey === SHARED_DATASET_KEYS.iccReport2) {
+          await saveDatasetMutation.mutateAsync({
+            key: DEEP_UPDATE_COMPAT_KEYS.iccReport2,
+            payload: JSON.stringify({
+              fileName: file.name,
+              sheetName: "",
+              headers: parsed.headers,
+              rows: parsed.rows,
+            }),
+          });
+        }
+        if (datasetKey === SHARED_DATASET_KEYS.iccReport3) {
+          await saveDatasetMutation.mutateAsync({
+            key: DEEP_UPDATE_COMPAT_KEYS.iccReport3,
+            payload: JSON.stringify({
+              fileName: file.name,
+              sheetName: "",
+              headers: parsed.headers,
+              rows: parsed.rows,
+            }),
+          });
+        }
         setDataset(dataset);
         toast.success(`${label} uploaded (${parsed.rows.length.toLocaleString("en-US")} rows).`);
       } catch (error) {
@@ -635,7 +709,7 @@ export default function EarlyPayment() {
         setIsSyncingUploads(false);
       }
     },
-    [saveLinkedDataset]
+    [saveLinkedDataset, saveDatasetMutation]
   );
 
   const clearIccFile = useCallback(
@@ -643,6 +717,12 @@ export default function EarlyPayment() {
       setIsSyncingUploads(true);
       try {
         await saveLinkedDataset(datasetKey, null);
+        if (datasetKey === SHARED_DATASET_KEYS.iccReport2) {
+          await saveDatasetMutation.mutateAsync({ key: DEEP_UPDATE_COMPAT_KEYS.iccReport2, payload: "" });
+        }
+        if (datasetKey === SHARED_DATASET_KEYS.iccReport3) {
+          await saveDatasetMutation.mutateAsync({ key: DEEP_UPDATE_COMPAT_KEYS.iccReport3, payload: "" });
+        }
         setDataset(null);
         toast.success(`${label} cleared.`);
       } catch (error) {
@@ -651,7 +731,7 @@ export default function EarlyPayment() {
         setIsSyncingUploads(false);
       }
     },
-    [saveLinkedDataset]
+    [saveLinkedDataset, saveDatasetMutation]
   );
 
   useEffect(() => {
@@ -950,10 +1030,13 @@ export default function EarlyPayment() {
                 id="first-payment-percent"
                 className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={firstPaymentPercent}
-                onChange={(event) => setFirstPaymentPercent(event.target.value === "15" ? 15 : 20)}
+                onChange={(event) =>
+                  setFirstPaymentPercent(event.target.value === "100" ? 100 : event.target.value === "15" ? 15 : 20)
+                }
               >
                 <option value="20">20% first payment</option>
                 <option value="15">15% first payment</option>
+                <option value="100">100% upfront payment</option>
               </select>
             </div>
           </div>
