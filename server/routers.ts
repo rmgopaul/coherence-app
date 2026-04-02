@@ -52,6 +52,7 @@ const TESLA_POWERHUB_PROVIDER = "tesla-powerhub";
 const CLOCKIFY_PROVIDER = "clockify";
 const CSG_PORTAL_PROVIDER = "csg-portal";
 const FRONIUS_PROVIDER = "fronius-solar";
+const EGAUGE_PROVIDER = "egauge-monitoring";
 
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -1069,6 +1070,38 @@ function parseTeslaSolarMetadata(metadata: string | null | undefined): {
   };
 }
 
+type EgaugeAccessType = "public" | "user_login" | "site_login";
+
+function normalizeEgaugeAccessType(value: unknown): EgaugeAccessType {
+  if (value === "user_login" || value === "site_login" || value === "public") return value;
+  return "public";
+}
+
+function parseEgaugeMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+  accessType: EgaugeAccessType;
+  username: string | null;
+} {
+  const parsed = parseJsonMetadata(metadata);
+  return {
+    baseUrl: toNonEmptyString(parsed.baseUrl),
+    accessType: normalizeEgaugeAccessType(parsed.accessType),
+    username: toNonEmptyString(parsed.username),
+  };
+}
+
+function serializeEgaugeMetadata(metadata: {
+  baseUrl: string | null;
+  accessType: EgaugeAccessType;
+  username: string | null;
+}): string {
+  return JSON.stringify({
+    baseUrl: metadata.baseUrl,
+    accessType: metadata.accessType,
+    username: metadata.username,
+  });
+}
+
 function parseTeslaPowerhubMetadata(metadata: string | null | undefined): {
   clientId: string | null;
   tokenUrl: string | null;
@@ -1554,6 +1587,34 @@ async function getTeslaSolarContext(userId: number): Promise<{
   return {
     accessToken,
     baseUrl: metadata.baseUrl,
+  };
+}
+
+async function getEgaugeContext(userId: number): Promise<{
+  baseUrl: string;
+  accessType: EgaugeAccessType;
+  username: string | null;
+  password: string | null;
+}> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, EGAUGE_PROVIDER);
+  const metadata = parseEgaugeMetadata(integration?.metadata);
+  const password = toNonEmptyString(integration?.accessToken);
+
+  if (!metadata.baseUrl) {
+    throw new Error("eGauge is not connected. Save the eGauge URL first.");
+  }
+
+  const requiresCredentials = metadata.accessType !== "public";
+  if (requiresCredentials && (!metadata.username || !password)) {
+    throw new Error("eGauge login is incomplete. Save username and password first.");
+  }
+
+  return {
+    baseUrl: metadata.baseUrl,
+    accessType: metadata.accessType,
+    username: metadata.username,
+    password,
   };
 }
 
@@ -4340,6 +4401,121 @@ export const appRouter = router({
           periodStartDate: input?.periodStartDate,
           periodEndDate: input?.periodEndDate,
           trackedUsers: input?.trackedUsersOnly ? metadata.trackedUsers : undefined,
+        });
+      }),
+  }),
+
+  egauge: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+      const metadata = parseEgaugeMetadata(integration?.metadata);
+      const password = toNonEmptyString(integration?.accessToken);
+      const requiresCredentials = metadata.accessType !== "public";
+
+      return {
+        connected: Boolean(metadata.baseUrl && (!requiresCredentials || (metadata.username && password))),
+        baseUrl: metadata.baseUrl,
+        accessType: metadata.accessType,
+        username: metadata.username,
+        hasPassword: Boolean(password),
+        requiresCredentials,
+      };
+    }),
+    connect: protectedProcedure
+      .input(
+        z.object({
+          baseUrl: z.string().min(1),
+          accessType: z.enum(["public", "user_login", "site_login"]),
+          username: z.string().optional(),
+          password: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+
+        const username = toNonEmptyString(input.username);
+        const password = toNonEmptyString(input.password);
+        const accessType: EgaugeAccessType = input.accessType;
+
+        if (accessType !== "public" && (!username || !password)) {
+          throw new Error("Username and password are required for user/site login.");
+        }
+
+        const metadata = serializeEgaugeMetadata({
+          baseUrl: toNonEmptyString(input.baseUrl),
+          accessType,
+          username: accessType === "public" ? null : username,
+        });
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: EGAUGE_PROVIDER,
+          accessToken: accessType === "public" ? null : password,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return { success: true };
+      }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+      const { deleteIntegration, getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+      if (integration?.id) {
+        await deleteIntegration(integration.id);
+      }
+      return { success: true };
+    }),
+    getSystemInfo: protectedProcedure.mutation(async ({ ctx }) => {
+      const context = await getEgaugeContext(ctx.user.id);
+      const { getEgaugeSystemInfo } = await import("./services/egauge");
+      return getEgaugeSystemInfo(context);
+    }),
+    getLocalData: protectedProcedure.mutation(async ({ ctx }) => {
+      const context = await getEgaugeContext(ctx.user.id);
+      const { getEgaugeLocalData } = await import("./services/egauge");
+      return getEgaugeLocalData(context);
+    }),
+    getRegisterLatest: protectedProcedure
+      .input(
+        z
+          .object({
+            register: z.string().optional(),
+            includeRate: z.boolean().optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEgaugeContext(ctx.user.id);
+        const { getEgaugeRegisterLatest } = await import("./services/egauge");
+        return getEgaugeRegisterLatest(context, {
+          register: input?.register,
+          includeRate: input?.includeRate,
+        });
+      }),
+    getRegisterHistory: protectedProcedure
+      .input(
+        z.object({
+          startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          intervalMinutes: z.number().int().min(1).max(1440).optional(),
+          register: z.string().optional(),
+          includeRate: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEgaugeContext(ctx.user.id);
+        const { getEgaugeRegisterHistory } = await import("./services/egauge");
+        return getEgaugeRegisterHistory(context, {
+          startDate: input.startDate,
+          endDate: input.endDate,
+          intervalMinutes: input.intervalMinutes ?? 15,
+          register: input.register,
+          includeRate: input.includeRate,
         });
       }),
   }),
