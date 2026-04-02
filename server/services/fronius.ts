@@ -686,14 +686,15 @@ export async function getAggData(
 export async function getAggrData(
   context: FroniusApiContext,
   pvSystemId: string,
-  period: "Days" | "Months" | "Years" | "Total"
+  from?: string | null,
+  to?: string | null
 ): Promise<unknown> {
-  // Period is mutually exclusive with From/To per Fronius API docs (error 3207).
-  // Without Period the API returns a single aggregate for the whole range, which
-  // makes daily/monthly extraction fail (empty arrays → null columns).
-  // We use Period only and filter by date ranges client-side.
+  // The SWQAPI aggrdata endpoint accepts From/To date range parameters.
+  // Period is NOT supported by this endpoint (returns error 3204).
+  // The API returns data at the granularity appropriate for the date range.
   return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/aggrdata`, context, {
-    Period: period,
+    From: from ?? undefined,
+    To: to ?? undefined,
   });
 }
 
@@ -907,8 +908,8 @@ export async function getPvSystemProductionSnapshot(
   try {
     const [aggdataPayload, dailyAggrPayload, monthlyAggrPayload] = await Promise.all([
       getAggData(context, pvSystemId),
-      getAggrData(context, pvSystemId, "Days"),
-      getAggrData(context, pvSystemId, "Months"),
+      getAggrData(context, pvSystemId, previousCalendarMonthStartDate, anchorDate),
+      getAggrData(context, pvSystemId, last12MonthsStartDate, anchorDate),
     ]);
 
     const lifetimeExtraction = extractLifetimeKwh(aggdataPayload);
