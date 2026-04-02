@@ -1860,16 +1860,55 @@ export const appRouter = router({
   }),
 
   marketDashboard: (() => {
-    // In-memory cache with 5-minute TTL; stale data served if fresh fetch fails
-    let cachedData: {
+    // In-memory cache with 5-minute TTL; stale data served if fresh fetch fails.
+    const cacheBySymbolKey = new Map<string, {
       quotes: any[];
       headlines: any[];
       approvalRatings: any[];
       fetchedAt: string;
-    } | null = null;
-    let cacheExpiry = 0;
+      marketRateLimited?: boolean;
+      usingStaleQuotes?: boolean;
+    }>();
+    const cacheExpiryBySymbolKey = new Map<string, number>();
     const CACHE_TTL_MS = 5 * 60 * 1000;
     const APPROVAL_FETCH_TIMEOUT_MS = 4_500;
+    const DEFAULT_STOCK_SYMBOLS = ["GEVO", "MNTK", "PLUG", "ALTO", "REX"] as const;
+    const DEFAULT_CRYPTO_SYMBOLS = ["BTC-USD", "ETH-USD"] as const;
+
+    function normalizeStockSymbols(symbols: string[] | undefined): string[] {
+      const raw = symbols?.length ? symbols : [...DEFAULT_STOCK_SYMBOLS];
+      const seen = new Set<string>();
+      const normalized: string[] = [];
+
+      raw.forEach((symbol) => {
+        const next = String(symbol ?? "").trim().toUpperCase().replace(/\s+/g, "");
+        if (!next) return;
+        if (!/^[A-Z0-9.\-]{1,20}$/.test(next)) return;
+        if (seen.has(next)) return;
+        seen.add(next);
+        normalized.push(next);
+      });
+
+      return normalized.length > 0 ? normalized : [...DEFAULT_STOCK_SYMBOLS];
+    }
+
+    function normalizeCryptoSymbols(symbols: string[] | undefined): string[] {
+      const raw = symbols?.length ? symbols : [...DEFAULT_CRYPTO_SYMBOLS];
+      const seen = new Set<string>();
+      const normalized: string[] = [];
+
+      raw.forEach((symbol) => {
+        const cleaned = String(symbol ?? "").trim().toUpperCase().replace(/\s+/g, "");
+        if (!cleaned) return;
+        const next = cleaned.includes("-") ? cleaned : `${cleaned}-USD`;
+        if (!/^[A-Z0-9.\-]{1,20}$/.test(next)) return;
+        if (seen.has(next)) return;
+        seen.add(next);
+        normalized.push(next);
+      });
+
+      return normalized.length > 0 ? normalized : [...DEFAULT_CRYPTO_SYMBOLS];
+    }
 
     async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
       let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -1886,8 +1925,23 @@ export const appRouter = router({
     }
 
     return router({
-      getMarketData: protectedProcedure.query(async () => {
+      getMarketData: protectedProcedure
+        .input(
+          z.object({
+            stockSymbols: z.array(z.string().min(1).max(20)).max(30).optional(),
+            cryptoSymbols: z.array(z.string().min(1).max(20)).max(30).optional(),
+          }).optional()
+        )
+        .query(async ({ input }) => {
         const now = Date.now();
+
+        const stockSymbols = normalizeStockSymbols(input?.stockSymbols);
+        const cryptoSymbols = normalizeCryptoSymbols(input?.cryptoSymbols);
+        const combinedSymbols = Array.from(new Set([...stockSymbols, ...cryptoSymbols]));
+        const symbolCacheKey = `stocks:${stockSymbols.join(",")}|crypto:${cryptoSymbols.join(",")}`;
+
+        const cachedData = cacheBySymbolKey.get(symbolCacheKey) ?? null;
+        const cacheExpiry = cacheExpiryBySymbolKey.get(symbolCacheKey) ?? 0;
         if (cachedData && now < cacheExpiry) {
           return cachedData;
         }
@@ -1898,10 +1952,7 @@ export const appRouter = router({
 
         try {
           const [quotesResult, headlinesResult, approvalResult] = await Promise.allSettled([
-            fetchMarketQuotes([
-              "GEVO", "MNTK", "PLUG", "ALTO", "REX",
-              "BTC-USD", "ETH-USD",
-            ]),
+            fetchMarketQuotes(combinedSymbols),
             fetchNewsHeadlines(),
             withTimeout(fetchTrumpApprovalRatings(), APPROVAL_FETCH_TIMEOUT_MS, [] as any[]),
           ]);
@@ -1936,7 +1987,8 @@ export const appRouter = router({
               marketRateLimited: true,
               usingStaleQuotes: true,
             };
-            cacheExpiry = now + CACHE_TTL_MS;
+            cacheBySymbolKey.set(symbolCacheKey, staleSafeData);
+            cacheExpiryBySymbolKey.set(symbolCacheKey, now + CACHE_TTL_MS);
             return staleSafeData;
           }
 
@@ -1949,8 +2001,8 @@ export const appRouter = router({
           };
           // Only update cache if we got meaningful data
           if (quotes.length > 0 || headlines.length > 0 || approvalRatings.length > 0) {
-            cachedData = freshData;
-            cacheExpiry = now + CACHE_TTL_MS;
+            cacheBySymbolKey.set(symbolCacheKey, freshData);
+            cacheExpiryBySymbolKey.set(symbolCacheKey, now + CACHE_TTL_MS);
           }
           return freshData;
         } catch (error) {

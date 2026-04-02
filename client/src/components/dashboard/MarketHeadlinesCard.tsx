@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { getDashboardMarketSymbols } from "@/lib/dashboardPreferences";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
@@ -75,7 +76,6 @@ function relativeTime(dateStr: string): string {
   return `${days}d`;
 }
 
-const CRYPTO_SYMBOLS = new Set(["BTC-USD", "ETH-USD"]);
 const HEADLINES_COLLAPSED = 3;
 const HEADLINES_EXPANDED = 10;
 
@@ -85,7 +85,7 @@ const HEADLINES_EXPANDED = 10;
 
 function QuoteRow({ quote }: { quote: MarketQuote }) {
   const isPositive = quote.change >= 0;
-  const isCrypto = CRYPTO_SYMBOLS.has(quote.symbol);
+  const isCrypto = quote.symbol.toUpperCase().endsWith("-USD");
   const displaySymbol = quote.symbol.replace("-USD", "");
 
   return (
@@ -144,8 +144,26 @@ function HeadlineRow({ headline }: { headline: NewsHeadline }) {
 /* ------------------------------------------------------------------ */
 
 export default function MarketHeadlinesCard() {
+  const { data: preferences } = trpc.preferences.get.useQuery(undefined, {
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
+
+  const configuredSymbols = useMemo(
+    () => getDashboardMarketSymbols(preferences?.widgetLayout),
+    [preferences?.widgetLayout]
+  );
+
+  const configuredCryptoSet = useMemo(
+    () => new Set(configuredSymbols.crypto.map((symbol) => symbol.toUpperCase())),
+    [configuredSymbols.crypto]
+  );
+
   const { data, isLoading, error, refetch } = trpc.marketDashboard.getMarketData.useQuery(
-    undefined,
+    {
+      stockSymbols: configuredSymbols.stocks,
+      cryptoSymbols: configuredSymbols.crypto,
+    },
     {
       staleTime: 10 * 60_000,
       refetchInterval: 15 * 60_000,
@@ -157,13 +175,13 @@ export default function MarketHeadlinesCard() {
   const headlineLimit = newsExpanded ? HEADLINES_EXPANDED : HEADLINES_COLLAPSED;
 
   const stocks = useMemo(
-    () => (data?.quotes ?? []).filter((q: MarketQuote) => !CRYPTO_SYMBOLS.has(q.symbol)),
-    [data?.quotes]
+    () => (data?.quotes ?? []).filter((q: MarketQuote) => !configuredCryptoSet.has(q.symbol.toUpperCase())),
+    [configuredCryptoSet, data?.quotes]
   );
 
   const crypto = useMemo(
-    () => (data?.quotes ?? []).filter((q: MarketQuote) => CRYPTO_SYMBOLS.has(q.symbol)),
-    [data?.quotes]
+    () => (data?.quotes ?? []).filter((q: MarketQuote) => configuredCryptoSet.has(q.symbol.toUpperCase())),
+    [configuredCryptoSet, data?.quotes]
   );
 
   const usPolitics = useMemo(

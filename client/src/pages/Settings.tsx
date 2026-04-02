@@ -11,7 +11,10 @@ import { trpc } from "@/lib/trpc";
 import {
   DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS,
   buildDashboardWidgetLayoutWithHiddenButtons,
+  buildWidgetLayoutWithMarketSymbols,
+  getDashboardMarketSymbols,
   getHiddenDashboardHeaderButtons,
+  parseMarketSymbolInput,
   type DashboardHeaderToolButtonKey,
 } from "@/lib/dashboardPreferences";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -128,6 +131,8 @@ export default function Settings() {
   const [settingsSearch, setSettingsSearch] = useState("");
   const [selectedThemeMode, setSelectedThemeMode] = useState<"light" | "dark">(theme);
   const [hiddenDashboardButtons, setHiddenDashboardButtons] = useState<DashboardHeaderToolButtonKey[]>([]);
+  const [marketStockSymbolsInput, setMarketStockSymbolsInput] = useState("");
+  const [marketCryptoSymbolsInput, setMarketCryptoSymbolsInput] = useState("");
   const [newHabitName, setNewHabitName] = useState("");
   const [newHabitColor, setNewHabitColor] = useState("slate");
   const [habitHistoryDate, setHabitHistoryDate] = useState(() => toDateKeyLocal(new Date()));
@@ -414,6 +419,12 @@ export default function Settings() {
   }, [preferences?.widgetLayout]);
 
   useEffect(() => {
+    const symbols = getDashboardMarketSymbols(preferences?.widgetLayout);
+    setMarketStockSymbolsInput(symbols.stocks.join(", "));
+    setMarketCryptoSymbolsInput(symbols.crypto.join(", "));
+  }, [preferences?.widgetLayout]);
+
+  useEffect(() => {
     if (!supplementDefinitions) return;
     const nextDrafts: Record<string, SupplementEditorState> = {};
     for (const definition of supplementDefinitions) {
@@ -660,6 +671,30 @@ export default function Settings() {
       preferences?.widgetLayout,
       hiddenDashboardButtons
     );
+    updatePreferences.mutate({
+      widgetLayout: serializedWidgetLayout,
+    });
+  };
+
+  const handleSaveMarketSymbols = () => {
+    const stocks = parseMarketSymbolInput(marketStockSymbolsInput, "stock");
+    const crypto = parseMarketSymbolInput(marketCryptoSymbolsInput, "crypto");
+
+    if (stocks.length === 0) {
+      toast.error("Add at least one stock symbol.");
+      return;
+    }
+    if (crypto.length === 0) {
+      toast.error("Add at least one crypto symbol.");
+      return;
+    }
+
+    const serializedWidgetLayout = buildWidgetLayoutWithMarketSymbols(
+      preferences?.widgetLayout,
+      stocks,
+      crypto
+    );
+
     updatePreferences.mutate({
       widgetLayout: serializedWidgetLayout,
     });
@@ -956,6 +991,47 @@ export default function Settings() {
                   </div>
                   <Button onClick={handleSaveDashboardButtonVisibility} disabled={updatePreferences.isPending}>
                     {updatePreferences.isPending ? "Saving..." : "Save Button Visibility"}
+                  </Button>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Headlines & Markets Symbols</CardTitle>
+                  <CardDescription className="text-sm">
+                    Control which stock and crypto symbols appear in the dashboard market widget.
+                    Use commas, spaces, or new lines between symbols.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="market-stock-symbols">Stock Symbols</Label>
+                    <Input
+                      id="market-stock-symbols"
+                      value={marketStockSymbolsInput}
+                      onChange={(event) => setMarketStockSymbolsInput(event.target.value)}
+                      placeholder="GEVO, MNTK, PLUG, ALTO, REX"
+                    />
+                    <p className="text-xs text-slate-500">
+                      Example: `GEVO, TSLA, NVDA, BRK.B`
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="market-crypto-symbols">Crypto Symbols</Label>
+                    <Input
+                      id="market-crypto-symbols"
+                      value={marketCryptoSymbolsInput}
+                      onChange={(event) => setMarketCryptoSymbolsInput(event.target.value)}
+                      placeholder="BTC-USD, ETH-USD"
+                    />
+                    <p className="text-xs text-slate-500">
+                      Enter `BTC` or `BTC-USD` (the app auto-normalizes plain symbols to `-USD`).
+                    </p>
+                  </div>
+
+                  <Button onClick={handleSaveMarketSymbols} disabled={updatePreferences.isPending}>
+                    {updatePreferences.isPending ? "Saving..." : "Save Market Symbols"}
                   </Button>
                 </CardContent>
               </Card>
