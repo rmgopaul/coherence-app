@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { clean, formatCurrency, downloadTextFile } from "@/lib/helpers";
 import { type ParsedTabularData, type CsvRow, normalizeHeader, parseNumber, parseDate, parseCsvMatrix, matrixToParsedTabularData } from "@/lib/csvParsing";
 import { ArrowLeft, Download, Loader2, Trash2, Upload } from "lucide-react";
@@ -151,6 +152,19 @@ type PersistedDashboardState = {
   quickBooksDataset: PersistedUploadedDataset | null;
   invoiceRows: PersistedInvoiceSourceRow[];
   quickBooksInvoices: PersistedQuickBooksInvoice[];
+  csgLookupInput?: string;
+  uploadedLookupCsgIds?: string[];
+  lookupCsgDataset?: PersistedUploadedDataset | null;
+};
+
+type CsgLookupRow = {
+  csgId: string;
+  invoiceNumber: string;
+  applicationFeePaid: number | null;
+  collateral5PercentPaid: number | null;
+  ccFeePaid: number | null;
+  totalAmountPaid: number | null;
+  generalStatus: string;
 };
 
 const COLLATOR = new Intl.Collator("en-US", { numeric: true, sensitivity: "base" });
@@ -430,9 +444,75 @@ function formatNumberForCsv(value: number | null): string {
   return value.toFixed(2);
 }
 
+function formatCurrencyOrDash(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "-";
+  return formatCurrency(value);
+}
+
 function normalizeInvoiceReference(invoiceNumber: string): string {
   const normalized = clean(invoiceNumber);
   return normalized || "(missing invoice #)";
+}
+
+function parseCsgIdsFromText(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\s,;\n\t]+/g)
+        .map((entry) => clean(entry))
+        .filter(Boolean)
+    )
+  );
+}
+
+function parseCsgIdsFile(parsed: ParsedTabularData): string[] {
+  if (!parsed.matrix.length) return [];
+
+  const headerLookup = buildHeaderLookup(parsed.headers);
+  const candidates = [
+    "CSG ID",
+    "CSG IDs",
+    "CSGID",
+    "ID",
+    "System ID",
+    "System IDs",
+    "System_Id",
+    "system_id",
+  ];
+
+  const ids: string[] = [];
+  const seen = new Set<string>();
+
+  const pushId = (value: string) => {
+    const next = clean(value);
+    if (!next || seen.has(next)) return;
+    seen.add(next);
+    ids.push(next);
+  };
+
+  const readUsingHeaders = () => {
+    parsed.rows.forEach((row) => {
+      const value = readByHeaderOptions(row, headerLookup, candidates);
+      if (value) pushId(value);
+    });
+  };
+
+  const hasKnownHeader = hasAnyHeader(headerLookup, candidates);
+  if (hasKnownHeader) {
+    readUsingHeaders();
+    return ids;
+  }
+
+  // Fallback: single-column or headerless CSV where first column is the CSG ID list.
+  parsed.matrix.forEach((row) => {
+    const firstCell = clean(row[0]);
+    if (!firstCell) return;
+    const normalized = normalizeHeader(firstCell);
+    if (normalized === "csgid" || normalized === "systemid" || normalized === "id") return;
+    pushId(firstCell);
+  });
+
+  return ids;
 }
 
 function addCategoryAmount(
@@ -1196,6 +1276,10 @@ export default function InvoiceMatchDashboard() {
 
   const [isParsingInvoices, setIsParsingInvoices] = useState(false);
   const [isParsingQuickBooks, setIsParsingQuickBooks] = useState(false);
+  const [isParsingLookupCsgIds, setIsParsingLookupCsgIds] = useState(false);
+  const [csgLookupInput, setCsgLookupInput] = useState("");
+  const [uploadedLookupCsgIds, setUploadedLookupCsgIds] = useState<string[]>([]);
+  const [lookupCsgDataset, setLookupCsgDataset] = useState<UploadedDataset | null>(null);
 
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -1222,6 +1306,19 @@ export default function InvoiceMatchDashboard() {
         setQuickBooksDataset(deserializeDataset(persisted.quickBooksDataset));
         setInvoiceRows(deserializeInvoiceRows(persisted.invoiceRows));
         setQuickBooksByInvoice(deserializeQuickBooksInvoices(persisted.quickBooksInvoices));
+        setCsgLookupInput(clean(persisted.csgLookupInput));
+        setUploadedLookupCsgIds(
+          Array.isArray(persisted.uploadedLookupCsgIds)
+            ? Array.from(
+                new Set(
+                  persisted.uploadedLookupCsgIds
+                    .map((value) => clean(value))
+                    .filter(Boolean)
+                )
+              )
+            : []
+        );
+        setLookupCsgDataset(deserializeDataset(persisted.lookupCsgDataset));
       } catch (error) {
         if (!cancelled && !hasShownPersistenceErrorRef.current) {
           hasShownPersistenceErrorRef.current = true;
@@ -1251,6 +1348,9 @@ export default function InvoiceMatchDashboard() {
       const shouldClearPersistedState =
         !invoiceDataset &&
         !quickBooksDataset &&
+        !lookupCsgDataset &&
+        clean(csgLookupInput).length === 0 &&
+        uploadedLookupCsgIds.length === 0 &&
         invoiceRows.length === 0 &&
         quickBooksByInvoice.size === 0;
 
@@ -1270,6 +1370,9 @@ export default function InvoiceMatchDashboard() {
         quickBooksDataset: serializeDataset(quickBooksDataset),
         invoiceRows: serializeInvoiceRows(invoiceRows),
         quickBooksInvoices: serializeQuickBooksInvoices(quickBooksByInvoice),
+        csgLookupInput,
+        uploadedLookupCsgIds,
+        lookupCsgDataset: serializeDataset(lookupCsgDataset),
       };
 
       void writePersistedDashboardState(payload)
@@ -1287,7 +1390,15 @@ export default function InvoiceMatchDashboard() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [invoiceDataset, quickBooksDataset, invoiceRows, quickBooksByInvoice]);
+  }, [
+    invoiceDataset,
+    quickBooksDataset,
+    lookupCsgDataset,
+    csgLookupInput,
+    uploadedLookupCsgIds,
+    invoiceRows,
+    quickBooksByInvoice,
+  ]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -1299,6 +1410,152 @@ export default function InvoiceMatchDashboard() {
     () => buildDashboardRows(invoiceRows, quickBooksByInvoice),
     [invoiceRows, quickBooksByInvoice]
   );
+
+  const lookupCsgIds = useMemo(
+    () => Array.from(new Set([...parseCsgIdsFromText(csgLookupInput), ...uploadedLookupCsgIds])),
+    [csgLookupInput, uploadedLookupCsgIds]
+  );
+
+  const csgLookupRows = useMemo(() => {
+    if (!lookupCsgIds.length) return [] as CsgLookupRow[];
+
+    const bySystemId = new Map<string, InvoiceSourceRow[]>();
+    invoiceRows.forEach((row) => {
+      const systemId = clean(row.systemId);
+      if (!systemId) return;
+      const existing = bySystemId.get(systemId) ?? [];
+      existing.push(row);
+      bySystemId.set(systemId, existing);
+    });
+
+    const result: CsgLookupRow[] = [];
+
+    const toGeneralStatus = (invoice: QuickBooksInvoice | undefined, sourceRowsForInvoice: InvoiceSourceRow[]): string => {
+      if (invoice) {
+        if (normalizeText(invoice.voided) === "yes") return "Voided";
+        const amount = invoice.amount;
+        const cash = invoice.cashReceived;
+        if (amount !== null && cash !== null && Number.isFinite(amount) && Number.isFinite(cash)) {
+          if (cash >= amount - 0.01) return "Paid";
+          if (cash > 0) return "Partially Paid";
+          return "Not Paid";
+        }
+        const paymentStatus = normalizeText(invoice.paymentStatus);
+        if (paymentStatus === "paid") return "Paid";
+        if (paymentStatus.includes("unpaid")) return "Not Paid";
+      }
+
+      const sourceStatus = sourceRowsForInvoice
+        .map((row) => normalizeText(row.status))
+        .find((status) => status.length > 0) ?? "";
+      if (sourceStatus === "paid") return "Paid";
+      if (sourceStatus.includes("unpaid") || sourceStatus.includes("not paid")) return "Not Paid";
+      if (sourceStatus.includes("void")) return "Voided";
+      return invoice ? clean(invoice.paymentStatus) || "Unknown" : "Not Paid";
+    };
+
+    lookupCsgIds.forEach((csgId) => {
+      const rowsForCsg = bySystemId.get(csgId) ?? [];
+      if (!rowsForCsg.length) {
+        result.push({
+          csgId,
+          invoiceNumber: "",
+          applicationFeePaid: null,
+          collateral5PercentPaid: null,
+          ccFeePaid: null,
+          totalAmountPaid: null,
+          generalStatus: "No Invoice Found",
+        });
+        return;
+      }
+
+      const byInvoiceNumber = new Map<string, InvoiceSourceRow[]>();
+      rowsForCsg.forEach((row) => {
+        const invoiceNumber = clean(row.invoiceNumber);
+        if (!invoiceNumber) return;
+        const existing = byInvoiceNumber.get(invoiceNumber) ?? [];
+        existing.push(row);
+        byInvoiceNumber.set(invoiceNumber, existing);
+      });
+
+      if (byInvoiceNumber.size === 0) {
+        result.push({
+          csgId,
+          invoiceNumber: "",
+          applicationFeePaid: null,
+          collateral5PercentPaid: null,
+          ccFeePaid: null,
+          totalAmountPaid: null,
+          generalStatus: "Invoice Number Missing",
+        });
+        return;
+      }
+
+      byInvoiceNumber.forEach((sourceRowsForInvoice, invoiceNumber) => {
+        const quickBooksInvoice = quickBooksByInvoice.get(invoiceNumber);
+        const invoiceAmount = quickBooksInvoice?.amount ?? null;
+        const invoiceCashReceived = quickBooksInvoice?.cashReceived ?? null;
+        const paymentRatio =
+          invoiceAmount !== null &&
+          invoiceCashReceived !== null &&
+          Number.isFinite(invoiceAmount) &&
+          Number.isFinite(invoiceCashReceived) &&
+          invoiceAmount > 0
+            ? Math.max(0, Math.min(1, invoiceCashReceived / invoiceAmount))
+            : normalizeText(quickBooksInvoice?.paymentStatus ?? "") === "paid" &&
+                invoiceAmount !== null &&
+                Number.isFinite(invoiceAmount) &&
+                invoiceAmount > 0
+              ? 1
+              : 0;
+
+        let applicationFeePaid = 0;
+        let collateral5PercentPaid = 0;
+        let ccFeePaid = 0;
+
+        const applyCategoryAmount = (category: LineItemCategoryKey, amount: number | null) => {
+          if (amount === null || !Number.isFinite(amount)) return;
+          const paidAmount = amount * paymentRatio;
+          if (category === "abpApplicationFee") applicationFeePaid += paidAmount;
+          if (category === "utilityHeldCollateral5Percent") collateral5PercentPaid += paidAmount;
+          if (category === "ccFee") ccFeePaid += Math.abs(paidAmount);
+        };
+
+        if (quickBooksInvoice?.lineItems.length) {
+          quickBooksInvoice.lineItems.forEach((lineItem) => {
+            const categories = detectLineItemCategories(lineItem.description);
+            if (categories.length !== 1) return;
+            applyCategoryAmount(categories[0], lineItem.amount);
+          });
+        } else {
+          sourceRowsForInvoice.forEach((sourceRow) => {
+            const fallbackCategories = detectLineItemCategories(sourceRow.type);
+            if (fallbackCategories.length !== 1) return;
+            applyCategoryAmount(fallbackCategories[0], sourceRow.amount);
+          });
+        }
+
+        result.push({
+          csgId,
+          invoiceNumber,
+          applicationFeePaid: applicationFeePaid > 0 ? Math.round(applicationFeePaid * 100) / 100 : null,
+          collateral5PercentPaid: collateral5PercentPaid > 0 ? Math.round(collateral5PercentPaid * 100) / 100 : null,
+          ccFeePaid: ccFeePaid > 0 ? Math.round(ccFeePaid * 100) / 100 : null,
+          totalAmountPaid:
+            invoiceCashReceived !== null && Number.isFinite(invoiceCashReceived)
+              ? Math.round(invoiceCashReceived * 100) / 100
+              : null,
+          generalStatus: toGeneralStatus(quickBooksInvoice, sourceRowsForInvoice),
+        });
+      });
+    });
+
+    return result.sort((left, right) => {
+      const csgCompare = COLLATOR.compare(left.csgId, right.csgId);
+      if (csgCompare !== 0) return csgCompare;
+      return COLLATOR.compare(left.invoiceNumber, right.invoiceNumber);
+    });
+  }, [invoiceRows, lookupCsgIds, quickBooksByInvoice]);
 
   const availableStatuses = useMemo(() => {
     const statusMap = new Map<string, string>();
@@ -1547,6 +1804,38 @@ export default function InvoiceMatchDashboard() {
     toast.success(`Exported ${filteredRows.length.toLocaleString("en-US")} rows.`);
   };
 
+  const handleExportLookupRows = () => {
+    if (!csgLookupRows.length) {
+      toast.error("No CSG lookup rows to export.");
+      return;
+    }
+
+    const headers = [
+      "CSG ID",
+      "Invoice Number",
+      "Amount of 5% Paid",
+      "Amount of Application Fee Paid",
+      "Amount of CC Fee Paid",
+      "Total Amount Paid",
+      "General Status",
+    ];
+
+    const csvRows = csgLookupRows.map((row) => ({
+      "CSG ID": row.csgId,
+      "Invoice Number": row.invoiceNumber,
+      "Amount of 5% Paid": formatNumberForCsv(row.collateral5PercentPaid),
+      "Amount of Application Fee Paid": formatNumberForCsv(row.applicationFeePaid),
+      "Amount of CC Fee Paid": formatNumberForCsv(row.ccFeePaid),
+      "Total Amount Paid": formatNumberForCsv(row.totalAmountPaid),
+      "General Status": row.generalStatus,
+    }));
+
+    const csv = buildCsv(headers, csvRows);
+    const fileName = `invoice-match-csg-lookup-${new Date().toISOString().slice(0, 10)}.csv`;
+    downloadTextFile(fileName, csv, "text/csv;charset=utf-8");
+    toast.success(`Exported ${csgLookupRows.length.toLocaleString("en-US")} lookup rows.`);
+  };
+
   const handleInvoicesUpload = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
@@ -1611,6 +1900,43 @@ export default function InvoiceMatchDashboard() {
     }
   };
 
+  const handleLookupCsgUpload = async (files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+
+    if (!file.name.toLowerCase().endsWith(".csv")) {
+      toast.error("Please upload a CSV file with CSG IDs.");
+      return;
+    }
+
+    setIsParsingLookupCsgIds(true);
+    try {
+      const text = await file.text();
+      const parsed = parseCsv(text);
+      const ids = parseCsgIdsFile(parsed);
+
+      if (!ids.length) {
+        throw new Error(
+          "No CSG IDs were found in this file. Include a CSG ID/System ID column or put IDs in the first column."
+        );
+      }
+
+      setUploadedLookupCsgIds(ids);
+      setLookupCsgDataset({
+        fileName: file.name,
+        uploadedAt: new Date(),
+        rowCount: ids.length,
+      });
+
+      toast.success(`Loaded ${ids.length.toLocaleString("en-US")} CSG IDs from ${file.name}.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to parse CSG IDs file.";
+      toast.error(message);
+    } finally {
+      setIsParsingLookupCsgIds(false);
+    }
+  };
+
   const clearInvoices = () => {
     setInvoiceRows([]);
     setInvoiceDataset(null);
@@ -1624,6 +1950,13 @@ export default function InvoiceMatchDashboard() {
     setQuickBooksByInvoice(new Map());
     setQuickBooksDataset(null);
     toast.success("QuickBooks report removed.");
+  };
+
+  const clearLookupCsgIds = () => {
+    setCsgLookupInput("");
+    setUploadedLookupCsgIds([]);
+    setLookupCsgDataset(null);
+    toast.success("CSG ID lookup input cleared.");
   };
 
   if (authLoading) {
@@ -1768,6 +2101,136 @@ export default function InvoiceMatchDashboard() {
           </CardContent>
         </Card>
 
+        <Card>
+          <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+            <div>
+              <CardTitle>2) CSG ID Lookup (Paste or Upload)</CardTitle>
+              <CardDescription>
+                Provide CSG IDs and get invoice-level paid amounts for 5% collateral, application fee, CC fee, total paid, and paid status.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleExportLookupRows}
+              disabled={!csgLookupRows.length}
+              className="md:self-center"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export Lookup CSV
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="csg-id-paste">Paste CSG IDs</Label>
+                <Textarea
+                  id="csg-id-paste"
+                  value={csgLookupInput}
+                  onChange={(event) => setCsgLookupInput(event.target.value)}
+                  placeholder={"Example:\n177418\n1689\n7754"}
+                  className="min-h-[130px]"
+                />
+                <p className="text-xs text-slate-600">
+                  Accepts line breaks, commas, spaces, or semicolons.
+                </p>
+              </div>
+
+              <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">Upload CSG IDs CSV</p>
+                  <p className="text-xs text-slate-600">Use a column like CSG ID, System ID, ID, or first column IDs.</p>
+                </div>
+                <Input
+                  id="lookup-csg-upload"
+                  type="file"
+                  accept=".csv,text/csv"
+                  onChange={(event) => {
+                    void handleLookupCsgUpload(event.target.files);
+                    event.currentTarget.value = "";
+                  }}
+                  disabled={isParsingLookupCsgIds}
+                />
+                {isParsingLookupCsgIds ? (
+                  <div className="flex items-center gap-2 text-sm text-slate-600">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Parsing CSG IDs...
+                  </div>
+                ) : null}
+                {lookupCsgDataset ? (
+                  <div className="space-y-1 text-sm text-slate-700">
+                    <p className="font-medium">{lookupCsgDataset.fileName}</p>
+                    <p>{lookupCsgDataset.rowCount.toLocaleString("en-US")} CSG IDs loaded</p>
+                    <p>Uploaded: {formatUploadedAt(lookupCsgDataset.uploadedAt)}</p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500">No CSG ID CSV uploaded yet.</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+                <Badge className="bg-blue-100 text-blue-900 border-blue-200">
+                  {lookupCsgIds.length.toLocaleString("en-US")} CSG IDs
+                </Badge>
+                <Badge className="bg-emerald-100 text-emerald-900 border-emerald-200">
+                  {csgLookupRows.length.toLocaleString("en-US")} Invoice Rows
+                </Badge>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={clearLookupCsgIds}
+                disabled={!lookupCsgIds.length && !lookupCsgDataset && clean(csgLookupInput).length === 0}
+              >
+                <Trash2 className="h-4 w-4 mr-2" />
+                Clear CSG Lookup Input
+              </Button>
+            </div>
+
+            {!lookupCsgIds.length ? (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
+                Paste CSG IDs or upload a CSG ID CSV to generate lookup rows.
+              </div>
+            ) : csgLookupRows.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-center text-sm text-slate-600">
+                No lookup rows yet. Upload the invoices and QuickBooks reports, then provide CSG IDs.
+              </div>
+            ) : (
+              <div className="overflow-auto rounded-lg border border-slate-200 max-h-[45vh]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="min-w-[120px]">CSG ID</TableHead>
+                      <TableHead className="min-w-[140px]">Invoice Number</TableHead>
+                      <TableHead className="min-w-[170px]">Amount of 5% Paid</TableHead>
+                      <TableHead className="min-w-[190px]">Amount of Application Fee Paid</TableHead>
+                      <TableHead className="min-w-[170px]">Amount of CC Fee Paid</TableHead>
+                      <TableHead className="min-w-[150px]">Total Amount Paid</TableHead>
+                      <TableHead className="min-w-[140px]">General Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {csgLookupRows.map((row, index) => (
+                      <TableRow key={`${row.csgId}-${row.invoiceNumber || "no-invoice"}-${index}`}>
+                        <TableCell className="font-semibold text-slate-900">{row.csgId}</TableCell>
+                        <TableCell>{row.invoiceNumber || "-"}</TableCell>
+                        <TableCell>{formatCurrencyOrDash(row.collateral5PercentPaid)}</TableCell>
+                        <TableCell>{formatCurrencyOrDash(row.applicationFeePaid)}</TableCell>
+                        <TableCell>{formatCurrencyOrDash(row.ccFeePaid)}</TableCell>
+                        <TableCell>{formatCurrencyOrDash(row.totalAmountPaid)}</TableCell>
+                        <TableCell>
+                          <Badge className={getStatusClassName(row.generalStatus)}>{row.generalStatus}</Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
         <div className="grid gap-4 md:grid-cols-4">
           <Card>
             <CardHeader className="pb-2">
@@ -1798,7 +2261,7 @@ export default function InvoiceMatchDashboard() {
         <Card>
           <CardHeader className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
             <div>
-              <CardTitle>2) Search, Filter, and Export</CardTitle>
+              <CardTitle>3) Search, Filter, and Export</CardTitle>
               <CardDescription>
                 Search by System ID, project, company, recipient, invoice number, or potential match invoice.
               </CardDescription>
@@ -1897,7 +2360,7 @@ export default function InvoiceMatchDashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle>3) System ID Invoice Dashboard</CardTitle>
+            <CardTitle>4) System ID Invoice Dashboard</CardTitle>
             <CardDescription>
               Each System ID row includes invoice details from the invoices report and optional QuickBooks potential
               matches.
