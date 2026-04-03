@@ -263,7 +263,7 @@ type TeslaPowerhubProductionJob = {
   result: unknown | null;
 };
 
-const TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS = 2 * 60 * 60 * 1000;
+const TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS = 24 * 60 * 60 * 1000;
 const teslaPowerhubProductionJobs = new Map<string, TeslaPowerhubProductionJob>();
 
 type AbpSettlementContractScanJobStatus = "queued" | "running" | "completed" | "failed";
@@ -358,6 +358,8 @@ function normalizeProgressPercent(currentStep: number, totalSteps: number): numb
 
 function pruneTeslaPowerhubProductionJobs(nowMs: number): void {
   Array.from(teslaPowerhubProductionJobs.entries()).forEach(([jobId, job]) => {
+    // Never prune active jobs from memory.
+    if (job.status === "queued" || job.status === "running") return;
     const updatedAtMs = Date.parse(job.updatedAt);
     if (!Number.isFinite(updatedAtMs)) return;
     if (nowMs - updatedAtMs > TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS) {
@@ -401,6 +403,14 @@ function getAbpSettlementScanJobObjectKey(userId: number, jobId: string): string
 
 function getAbpSettlementScanJobDbKey(jobId: string): string {
   return `abpSettlement:scanJob:${jobId}`;
+}
+
+function getTeslaPowerhubProductionJobObjectKey(userId: number, jobId: string): string {
+  return `tesla-powerhub/${userId}/production-jobs/${jobId}.json`;
+}
+
+function getTeslaPowerhubProductionJobDbKey(jobId: string): string {
+  return `teslaPowerhub:productionJob:${jobId}`;
 }
 
 function parseAbpSettlementRunsIndex(payload: string | null | undefined): AbpSettlementSavedRunSummary[] {
@@ -582,6 +592,89 @@ async function saveAbpSettlementRun(input: {
     indexWrite,
     runWrite,
   };
+}
+
+function parseTeslaPowerhubProductionJobSnapshot(
+  payload: string | null | undefined
+): TeslaPowerhubProductionJob | null {
+  if (!payload) return null;
+  try {
+    const parsed = JSON.parse(payload) as Partial<TeslaPowerhubProductionJob>;
+    if (!parsed || typeof parsed !== "object") return null;
+
+    const id = toNonEmptyString(parsed.id);
+    const createdAt = toNonEmptyString(parsed.createdAt);
+    const updatedAt = toNonEmptyString(parsed.updatedAt);
+    const status = toNonEmptyString(parsed.status) as TeslaPowerhubProductionJobStatus | null;
+    const userId = typeof parsed.userId === "number" && Number.isFinite(parsed.userId) ? parsed.userId : null;
+    if (!id || !createdAt || !updatedAt || !status || userId === null) return null;
+
+    const progress =
+      parsed.progress && typeof parsed.progress === "object"
+        ? (parsed.progress as Record<string, unknown>)
+        : ({} as Record<string, unknown>);
+    const currentStep =
+      typeof progress.currentStep === "number" && Number.isFinite(progress.currentStep)
+        ? Math.max(0, Math.floor(progress.currentStep))
+        : 0;
+    const totalSteps =
+      typeof progress.totalSteps === "number" && Number.isFinite(progress.totalSteps)
+        ? Math.max(1, Math.floor(progress.totalSteps))
+        : 1;
+    const percent =
+      typeof progress.percent === "number" && Number.isFinite(progress.percent)
+        ? clampPercent(progress.percent)
+        : normalizeProgressPercent(currentStep, totalSteps);
+
+    return {
+      id,
+      userId,
+      createdAt,
+      updatedAt,
+      startedAt: toNonEmptyString(parsed.startedAt),
+      finishedAt: toNonEmptyString(parsed.finishedAt),
+      status,
+      progress: {
+        currentStep,
+        totalSteps,
+        percent,
+        message: toNonEmptyString(progress.message) ?? "Queued",
+        windowKey: toNonEmptyString(progress.windowKey),
+      },
+      error: toNonEmptyString(parsed.error),
+      result: parsed.result ?? null,
+    };
+  } catch (error) {
+    console.warn("[storage] Failed to parse Tesla Powerhub job snapshot:", error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+async function saveTeslaPowerhubProductionJobSnapshot(job: TeslaPowerhubProductionJob): Promise<void> {
+  const payload = JSON.stringify(job);
+  await writePayloadWithFallback({
+    userId: job.userId,
+    objectKey: getTeslaPowerhubProductionJobObjectKey(job.userId, job.id),
+    dbStorageKey: getTeslaPowerhubProductionJobDbKey(job.id),
+    payload,
+  });
+}
+
+async function loadTeslaPowerhubProductionJobSnapshot(
+  userId: number,
+  jobId: string
+): Promise<TeslaPowerhubProductionJob | null> {
+  const normalizedJobId = jobId.trim();
+  if (!normalizedJobId) return null;
+
+  const payload = await readPayloadWithFallback({
+    userId,
+    objectKey: getTeslaPowerhubProductionJobObjectKey(userId, normalizedJobId),
+    dbStorageKey: getTeslaPowerhubProductionJobDbKey(normalizedJobId),
+  });
+  const parsed = parseTeslaPowerhubProductionJobSnapshot(payload);
+  if (!parsed || parsed.userId !== userId) return null;
+  return parsed;
 }
 
 function parseAbpSettlementScanJobSnapshot(
@@ -4754,24 +4847,55 @@ export const appRouter = router({
           error: null,
           result: null,
         });
+        const initialJob = teslaPowerhubProductionJobs.get(jobId);
+        if (initialJob) {
+          void saveTeslaPowerhubProductionJobSnapshot(initialJob).catch((error) => {
+            console.warn(
+              "[snapshot] Tesla Powerhub initial job snapshot write failed:",
+              error instanceof Error ? error.message : error
+            );
+          });
+        }
 
         void (async () => {
-          const markJob = (updater: (job: TeslaPowerhubProductionJob) => TeslaPowerhubProductionJob) => {
+          let progressUpdatesSinceSnapshot = 0;
+
+          const markJob = async (
+            updater: (job: TeslaPowerhubProductionJob) => TeslaPowerhubProductionJob,
+            options?: { persist?: boolean }
+          ) => {
             const existing = teslaPowerhubProductionJobs.get(jobId);
-            if (!existing) return;
-            teslaPowerhubProductionJobs.set(jobId, updater(existing));
+            if (!existing) return null;
+            const nextJob = updater(existing);
+            teslaPowerhubProductionJobs.set(jobId, nextJob);
+
+            if (options?.persist) {
+              try {
+                await saveTeslaPowerhubProductionJobSnapshot(nextJob);
+              } catch (error) {
+                console.warn(
+                  "[snapshot] Tesla Powerhub job snapshot write failed:",
+                  error instanceof Error ? error.message : error
+                );
+              }
+            }
+
+            return nextJob;
           };
 
-          markJob((job) => ({
-            ...job,
-            status: "running",
-            startedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            progress: {
-              ...job.progress,
-              message: "Starting...",
-            },
-          }));
+          await markJob(
+            (job) => ({
+              ...job,
+              status: "running",
+              startedAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+              progress: {
+                ...job.progress,
+                message: "Starting...",
+              },
+            }),
+            { persist: true }
+          );
 
           try {
             const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
@@ -4788,54 +4912,69 @@ export const appRouter = router({
                 endpointUrl,
                 signal,
                 onProgress: (progress) => {
-                  markJob((job) => {
-                    const currentStep = Math.max(0, progress.currentStep);
-                    const totalSteps = Math.max(1, progress.totalSteps);
-                    return {
-                      ...job,
-                      updatedAt: new Date().toISOString(),
-                      progress: {
-                        currentStep,
-                        totalSteps,
-                        percent: normalizeProgressPercent(currentStep, totalSteps),
-                        message: progress.message,
-                        windowKey: progress.windowKey ?? null,
-                      },
-                    };
-                  });
+                  progressUpdatesSinceSnapshot += 1;
+                  const shouldPersist = progressUpdatesSinceSnapshot >= 25;
+                  if (shouldPersist) {
+                    progressUpdatesSinceSnapshot = 0;
+                  }
+
+                  void markJob(
+                    (job) => {
+                      const currentStep = Math.max(0, progress.currentStep);
+                      const totalSteps = Math.max(1, progress.totalSteps);
+                      return {
+                        ...job,
+                        updatedAt: new Date().toISOString(),
+                        progress: {
+                          currentStep,
+                          totalSteps,
+                          percent: normalizeProgressPercent(currentStep, totalSteps),
+                          message: progress.message,
+                          windowKey: progress.windowKey ?? null,
+                        },
+                      };
+                    },
+                    { persist: shouldPersist }
+                  );
                 },
               }
             );
 
-            markJob((job) => ({
-              ...job,
-              status: "completed",
-              updatedAt: new Date().toISOString(),
-              finishedAt: new Date().toISOString(),
-              error: null,
-              result,
-              progress: {
-                ...job.progress,
-                currentStep: job.progress.totalSteps,
-                percent: 100,
-                message: "Completed",
-                windowKey: null,
-              },
-            }));
+            await markJob(
+              (job) => ({
+                ...job,
+                status: "completed",
+                updatedAt: new Date().toISOString(),
+                finishedAt: new Date().toISOString(),
+                error: null,
+                result,
+                progress: {
+                  ...job.progress,
+                  currentStep: job.progress.totalSteps,
+                  percent: 100,
+                  message: "Completed",
+                  windowKey: null,
+                },
+              }),
+              { persist: true }
+            );
           } catch (error) {
-            markJob((job) => ({
-              ...job,
-              status: "failed",
-              updatedAt: new Date().toISOString(),
-              finishedAt: new Date().toISOString(),
-              error: error instanceof Error ? error.message : "Unknown job error.",
-              result: null,
-              progress: {
-                ...job.progress,
-                message: "Failed",
-                windowKey: null,
-              },
-            }));
+            await markJob(
+              (job) => ({
+                ...job,
+                status: "failed",
+                updatedAt: new Date().toISOString(),
+                finishedAt: new Date().toISOString(),
+                error: error instanceof Error ? error.message : "Unknown job error.",
+                result: null,
+                progress: {
+                  ...job.progress,
+                  message: "Failed",
+                  windowKey: null,
+                },
+              }),
+              { persist: true }
+            );
           }
         })();
 
@@ -4852,11 +4991,45 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         pruneTeslaPowerhubProductionJobs(Date.now());
-        const job = teslaPowerhubProductionJobs.get(input.jobId.trim());
-        if (!job || job.userId !== ctx.user.id) {
+        const normalizedJobId = input.jobId.trim();
+        const inMemoryJob = teslaPowerhubProductionJobs.get(normalizedJobId);
+        if (inMemoryJob && inMemoryJob.userId === ctx.user.id) {
+          return inMemoryJob;
+        }
+
+        const snapshotJob = await loadTeslaPowerhubProductionJobSnapshot(ctx.user.id, normalizedJobId);
+        if (!snapshotJob) {
           throw new Error("Tesla production job not found.");
         }
-        return job;
+
+        let resolvedJob = snapshotJob;
+        // If the process restarted, a queued/running snapshot cannot continue in this instance.
+        if (snapshotJob.status === "queued" || snapshotJob.status === "running") {
+          const nowIso = new Date().toISOString();
+          resolvedJob = {
+            ...snapshotJob,
+            status: "failed",
+            updatedAt: nowIso,
+            finishedAt: nowIso,
+            error:
+              snapshotJob.error ??
+              "Tesla production job was interrupted (server restarted or deployment changed). Please rerun.",
+            progress: {
+              ...snapshotJob.progress,
+              message: "Interrupted",
+              windowKey: null,
+            },
+          };
+          void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch((error) => {
+            console.warn(
+              "[snapshot] Tesla Powerhub recovered job snapshot write failed:",
+              error instanceof Error ? error.message : error
+            );
+          });
+        }
+
+        teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
+        return resolvedJob;
       }),
     getGroupUsers: protectedProcedure
       .input(
