@@ -807,6 +807,58 @@ class EgaugePortfolioClient {
     return this.username;
   }
 
+  /**
+   * Fetch the eguard dashboard HTML and extract available group IDs
+   * from the group selector dropdown.
+   */
+  async fetchAvailableGroups(): Promise<Array<{ id: string; name: string }>> {
+    const page = await this.request("/eguard/", {
+      method: "GET",
+      accept: "text/html,application/xhtml+xml",
+      referer: this.buildUrl("/"),
+    });
+
+    console.log(`[eGauge Portfolio] Eguard page length: ${page.text.length}`);
+
+    // Look for group selector options — typically <option value="123">Group Name</option>
+    // Also look for any JS data structures with group info
+    const groups: Array<{ id: string; name: string }> = [];
+
+    // Pattern 1: <option> tags in a select (common for group dropdowns)
+    const optionRegex = /<option\s[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
+    let optionMatch: RegExpExecArray | null;
+    while ((optionMatch = optionRegex.exec(page.text)) !== null) {
+      const id = optionMatch[1].trim();
+      const name = stripHtml(optionMatch[2] ?? "").trim();
+      if (id && name && id !== "" && id !== "0" && !/^(all|none|select)$/i.test(id)) {
+        groups.push({ id, name });
+      }
+    }
+
+    // Pattern 2: Look for group_id references in links or data attributes
+    const groupLinkRegex = /group_id[=:][\s"']*(\d+)/gi;
+    const seenIds = new Set(groups.map((g) => g.id));
+    let groupLinkMatch: RegExpExecArray | null;
+    while ((groupLinkMatch = groupLinkRegex.exec(page.text)) !== null) {
+      const id = groupLinkMatch[1];
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        groups.push({ id, name: `Group ${id}` });
+      }
+    }
+
+    console.log(`[eGauge Portfolio] Found ${groups.length} groups: ${JSON.stringify(groups)}`);
+
+    // Also log a section of the HTML around any "group" references for debugging
+    const groupSectionIdx = page.text.toLowerCase().indexOf("group");
+    if (groupSectionIdx >= 0) {
+      const snippet = page.text.slice(Math.max(0, groupSectionIdx - 100), groupSectionIdx + 500);
+      console.log(`[eGauge Portfolio] HTML near 'group': ${snippet.replace(/\s+/g, " ").slice(0, 600)}`);
+    }
+
+    return groups;
+  }
+
   async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<{
     rows: unknown[];
     recordsTotal: number | null;
@@ -814,23 +866,10 @@ class EgaugePortfolioClient {
   }> {
     await this.ensureAuthenticated();
 
-    const start =
-      typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
-        ? String(Math.floor(options.start))
-        : "0";
-    const length =
-      typeof options?.length === "number" && Number.isFinite(options.length) && options.length > 0
-        ? String(Math.floor(options.length))
-        : "10000";
-
-    const query: Record<string, string | null | undefined> = {
-      draw: "1",
-      start,
-      length,
-    };
+    const query: Record<string, string | null | undefined> = {};
 
     const filter = toNonEmptyString(options?.filter);
-    if (filter) query["search[value]"] = filter;
+    if (filter) query["filter"] = filter;
 
     const groupId = toNonEmptyString(options?.groupId);
     if (groupId) query["group_id"] = groupId;
@@ -847,51 +886,28 @@ class EgaugePortfolioClient {
     });
 
     const trimmed = response.text.trim();
-    console.log(`[eGauge Portfolio] Response length: ${trimmed.length} chars, first 300: ${trimmed.slice(0, 300)}`);
+    console.log(`[eGauge Portfolio] Response length: ${trimmed.length} chars, rows preview: ${trimmed.slice(0, 200)}`);
     if (!trimmed) return { rows: [], recordsTotal: null, recordsFiltered: null };
 
     try {
       const parsed = JSON.parse(trimmed);
-
-      let recordsTotal: number | null = null;
-      let recordsFiltered: number | null = null;
       let rows: unknown[] = [];
 
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (Array.isArray(parsed)) {
+        rows = parsed as unknown[];
+      } else if (parsed && typeof parsed === "object") {
         const container = parsed as Record<string, unknown>;
-        if (typeof container.recordsTotal === "number") recordsTotal = container.recordsTotal;
-        if (typeof container.recordsFiltered === "number") recordsFiltered = container.recordsFiltered;
-
-        // Log all top-level keys to understand response structure
-        console.log(`[eGauge Portfolio] Response keys: ${Object.keys(container).join(", ")}`);
-        console.log(`[eGauge Portfolio] recordsTotal=${recordsTotal}, recordsFiltered=${recordsFiltered}`);
-
         if (Array.isArray(container.data)) rows = container.data as unknown[];
         else if (Array.isArray(container.rows)) rows = container.rows as unknown[];
         else if (Array.isArray(container.results)) rows = container.results as unknown[];
-      } else if (Array.isArray(parsed)) {
-        rows = parsed as unknown[];
       }
 
-      if (rows.length > 0) {
-        // Log first row to understand data structure and group names
-        const first = rows[0] as Record<string, unknown>;
-        console.log(`[eGauge Portfolio] Got ${rows.length} rows. First row sample: ${JSON.stringify(first).slice(0, 500)}`);
-        // Log unique group values
-        const groups = new Set(rows.map((r) => {
-          const rec = r as Record<string, unknown>;
-          return rec.group ?? rec.group_name ?? rec[2] ?? "unknown";
-        }));
-        console.log(`[eGauge Portfolio] Unique groups in response: ${JSON.stringify(Array.from(groups))}`);
-        return { rows, recordsTotal, recordsFiltered };
-      }
-
-      throw new Error("Expected an array-like payload.");
-    } catch (err) {
+      console.log(`[eGauge Portfolio] Parsed ${rows.length} rows for group_id=${groupId ?? "(none)"}`);
+      return { rows, recordsTotal: null, recordsFiltered: null };
+    } catch {
       if (/<html/i.test(response.text) || /name=["']auth-username["']/i.test(response.text)) {
         throw new Error("Portfolio request returned HTML instead of JSON. Verify portfolio URL and login credentials.");
       }
-      if (err instanceof Error && err.message === "Expected an array-like payload.") throw err;
       throw new Error("Portfolio request returned invalid JSON.");
     }
   }
@@ -1314,13 +1330,10 @@ export async function getEgaugePortfolioSystems(
   authenticatedUsername: string | null;
   filter: string | null;
   groupId: string | null;
+  availableGroups: Array<{ id: string; name: string }>;
   queryAttempts: Array<{
     groupId: string | null;
-    start: number | null;
-    length: number | null;
     rowsReturned: number;
-    recordsTotal: number | null;
-    recordsFiltered: number | null;
     error: string | null;
   }>;
   total: number;
@@ -1336,113 +1349,63 @@ export async function getEgaugePortfolioSystems(
   const normalizedFilter = toNonEmptyString(options?.filter);
   const normalizedGroupId = toNonEmptyString(options?.groupId);
 
-  // For DataTables-style API: only make one request with no group filter,
-  // requesting all records. The eGauge /eguard/data/ endpoint returns all
-  // systems the authenticated account has access to.
-  const fetchAttempts: EgaugePortfolioFetchOptions[] =
-    normalizedGroupId || normalizedFilter
-      ? [
-          {
-            filter: normalizedFilter,
-            groupId: normalizedGroupId,
-            start: 0,
-            length: 10000,
-          },
-        ]
-      : [
-          { start: 0, length: 10000 },
-        ];
+  // Step 1: Discover available groups from the eguard dashboard page.
+  // The /eguard/data/ endpoint returns devices for the default group only.
+  // We need to fetch each group's devices separately and merge.
+  const availableGroups = await client.fetchAvailableGroups();
 
   const mergedRowsByKey = new Map<string, unknown>();
   let firstError: Error | null = null;
-  let serverRecordsTotal: number | null = null;
   const queryAttempts: Array<{
     groupId: string | null;
-    start: number | null;
-    length: number | null;
     rowsReturned: number;
-    recordsTotal: number | null;
-    recordsFiltered: number | null;
     error: string | null;
   }> = [];
 
-  for (const attempt of fetchAttempts) {
+  if (normalizedGroupId) {
+    // Fetch a specific group
     try {
-      const result = await client.fetchSystems({
-        filter: normalizedFilter,
-        groupId: attempt.groupId,
-        start: attempt.start,
-        length: attempt.length,
-        page: attempt.page,
-        perPage: attempt.perPage,
-      });
-
-      queryAttempts.push({
-        groupId: attempt.groupId ?? null,
-        start: attempt.start ?? null,
-        length: attempt.length ?? null,
-        rowsReturned: result.rows.length,
-        recordsTotal: result.recordsTotal,
-        recordsFiltered: result.recordsFiltered,
-        error: null,
-      });
-
-      if (result.recordsTotal !== null) serverRecordsTotal = result.recordsTotal;
-
+      const result = await client.fetchSystems({ filter: normalizedFilter, groupId: normalizedGroupId });
+      queryAttempts.push({ groupId: normalizedGroupId, rowsReturned: result.rows.length, error: null });
       for (const row of result.rows) {
         const key = buildPortfolioRowKey(row);
-        if (!mergedRowsByKey.has(key)) {
-          mergedRowsByKey.set(key, row);
-        }
-      }
-
-      // If the server reports more records than we received, paginate
-      if (result.recordsTotal !== null && result.rows.length < result.recordsTotal) {
-        let fetched = result.rows.length;
-        while (fetched < result.recordsTotal) {
-          const pageResult = await client.fetchSystems({
-            filter: normalizedFilter,
-            groupId: attempt.groupId,
-            start: fetched,
-            length: 10000,
-          });
-
-          queryAttempts.push({
-            groupId: attempt.groupId ?? null,
-            start: fetched,
-            length: 10000,
-            rowsReturned: pageResult.rows.length,
-            recordsTotal: pageResult.recordsTotal,
-            recordsFiltered: pageResult.recordsFiltered,
-            error: null,
-          });
-
-          if (pageResult.rows.length === 0) break;
-
-          for (const row of pageResult.rows) {
-            const key = buildPortfolioRowKey(row);
-            if (!mergedRowsByKey.has(key)) {
-              mergedRowsByKey.set(key, row);
-            }
-          }
-          fetched += pageResult.rows.length;
-        }
+        if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
       }
     } catch (error) {
-      queryAttempts.push({
-        groupId: attempt.groupId ?? null,
-        start: attempt.start ?? null,
-        length: attempt.length ?? null,
-        rowsReturned: 0,
-        recordsTotal: null,
-        recordsFiltered: null,
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-      if (!firstError && error instanceof Error) {
-        firstError = error;
+      queryAttempts.push({ groupId: normalizedGroupId, rowsReturned: 0, error: error instanceof Error ? error.message : "Unknown error" });
+      firstError = error instanceof Error ? error : null;
+    }
+  } else {
+    // First try default (no group_id) to get the default group's devices
+    try {
+      const result = await client.fetchSystems({ filter: normalizedFilter });
+      queryAttempts.push({ groupId: null, rowsReturned: result.rows.length, error: null });
+      for (const row of result.rows) {
+        const key = buildPortfolioRowKey(row);
+        if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
+      }
+    } catch (error) {
+      queryAttempts.push({ groupId: null, rowsReturned: 0, error: error instanceof Error ? error.message : "Unknown error" });
+      if (!firstError && error instanceof Error) firstError = error;
+    }
+
+    // Then fetch each discovered group to get all devices
+    for (const group of availableGroups) {
+      try {
+        const result = await client.fetchSystems({ filter: normalizedFilter, groupId: group.id });
+        queryAttempts.push({ groupId: `${group.id} (${group.name})`, rowsReturned: result.rows.length, error: null });
+        for (const row of result.rows) {
+          const key = buildPortfolioRowKey(row);
+          if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
+        }
+      } catch (error) {
+        queryAttempts.push({ groupId: `${group.id} (${group.name})`, rowsReturned: 0, error: error instanceof Error ? error.message : "Unknown error" });
+        if (!firstError && error instanceof Error) firstError = error;
       }
     }
   }
+
+  console.log(`[eGauge Portfolio] Total merged rows: ${mergedRowsByKey.size} from ${queryAttempts.length} queries`);
 
   if (mergedRowsByKey.size === 0) {
     if (firstError) throw firstError;
@@ -1468,6 +1431,7 @@ export async function getEgaugePortfolioSystems(
     authenticatedUsername: client.getUsername(),
     filter: normalizedFilter,
     groupId: normalizedGroupId,
+    availableGroups,
     queryAttempts,
     total: rows.length,
     found,
