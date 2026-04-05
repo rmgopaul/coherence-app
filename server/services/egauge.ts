@@ -800,6 +800,7 @@ class EgaugePortfolioClient {
     }
 
     this.authenticated = true;
+    console.log(`[eGauge Portfolio] Login successful for user: "${this.username}"`);
   }
 
   getUsername(): string | null {
@@ -822,36 +823,20 @@ class EgaugePortfolioClient {
         ? String(Math.floor(options.length))
         : "10000";
 
-    // Build full DataTables server-side query params (GET — endpoint rejects POST).
     const query: Record<string, string | null | undefined> = {
       draw: "1",
       start,
       length,
-      "search[value]": toNonEmptyString(options?.filter) ?? "",
-      "search[regex]": "false",
-      "order[0][column]": "0",
-      "order[0][dir]": "asc",
     };
 
-    // DataTables column definitions
-    const columns = [
-      "name", "serial_number", "group", "status", "last_update",
-      "generation_today", "generation_mtd", "generation_last_month",
-      "generation_12_months", "alerts",
-    ];
-    for (let i = 0; i < columns.length; i++) {
-      query[`columns[${i}][data]`] = String(i);
-      query[`columns[${i}][name]`] = columns[i];
-      query[`columns[${i}][searchable]`] = "true";
-      query[`columns[${i}][orderable]`] = "true";
-      query[`columns[${i}][search][value]`] = "";
-      query[`columns[${i}][search][regex]`] = "false";
-    }
+    const filter = toNonEmptyString(options?.filter);
+    if (filter) query["search[value]"] = filter;
 
     const groupId = toNonEmptyString(options?.groupId);
-    if (groupId) {
-      query["group_id"] = groupId;
-    }
+    if (groupId) query["group_id"] = groupId;
+
+    const requestUrl = this.buildUrl("/eguard/data/", query);
+    console.log(`[eGauge Portfolio] Fetching systems: ${requestUrl}`);
 
     const response = await this.request("/eguard/data/", {
       method: "GET",
@@ -862,6 +847,7 @@ class EgaugePortfolioClient {
     });
 
     const trimmed = response.text.trim();
+    console.log(`[eGauge Portfolio] Response length: ${trimmed.length} chars, first 300: ${trimmed.slice(0, 300)}`);
     if (!trimmed) return { rows: [], recordsTotal: null, recordsFiltered: null };
 
     try {
@@ -869,26 +855,43 @@ class EgaugePortfolioClient {
 
       let recordsTotal: number | null = null;
       let recordsFiltered: number | null = null;
+      let rows: unknown[] = [];
 
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const container = parsed as Record<string, unknown>;
         if (typeof container.recordsTotal === "number") recordsTotal = container.recordsTotal;
         if (typeof container.recordsFiltered === "number") recordsFiltered = container.recordsFiltered;
 
-        if (Array.isArray(container.data)) return { rows: container.data as unknown[], recordsTotal, recordsFiltered };
-        if (Array.isArray(container.rows)) return { rows: container.rows as unknown[], recordsTotal, recordsFiltered };
-        if (Array.isArray(container.results)) return { rows: container.results as unknown[], recordsTotal, recordsFiltered };
+        // Log all top-level keys to understand response structure
+        console.log(`[eGauge Portfolio] Response keys: ${Object.keys(container).join(", ")}`);
+        console.log(`[eGauge Portfolio] recordsTotal=${recordsTotal}, recordsFiltered=${recordsFiltered}`);
+
+        if (Array.isArray(container.data)) rows = container.data as unknown[];
+        else if (Array.isArray(container.rows)) rows = container.rows as unknown[];
+        else if (Array.isArray(container.results)) rows = container.results as unknown[];
+      } else if (Array.isArray(parsed)) {
+        rows = parsed as unknown[];
       }
 
-      if (Array.isArray(parsed)) {
-        return { rows: parsed as unknown[], recordsTotal, recordsFiltered };
+      if (rows.length > 0) {
+        // Log first row to understand data structure and group names
+        const first = rows[0] as Record<string, unknown>;
+        console.log(`[eGauge Portfolio] Got ${rows.length} rows. First row sample: ${JSON.stringify(first).slice(0, 500)}`);
+        // Log unique group values
+        const groups = new Set(rows.map((r) => {
+          const rec = r as Record<string, unknown>;
+          return rec.group ?? rec.group_name ?? rec[2] ?? "unknown";
+        }));
+        console.log(`[eGauge Portfolio] Unique groups in response: ${JSON.stringify(Array.from(groups))}`);
+        return { rows, recordsTotal, recordsFiltered };
       }
 
       throw new Error("Expected an array-like payload.");
-    } catch {
+    } catch (err) {
       if (/<html/i.test(response.text) || /name=["']auth-username["']/i.test(response.text)) {
         throw new Error("Portfolio request returned HTML instead of JSON. Verify portfolio URL and login credentials.");
       }
+      if (err instanceof Error && err.message === "Expected an array-like payload.") throw err;
       throw new Error("Portfolio request returned invalid JSON.");
     }
   }
