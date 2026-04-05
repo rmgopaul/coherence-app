@@ -616,6 +616,7 @@ export type EgaugePortfolioSnapshotRow = {
 type EgaugePortfolioFetchOptions = {
   filter?: string | null;
   groupId?: string | null;
+  anchorDate?: string | null;
 };
 
 class EgaugePortfolioClient {
@@ -1051,6 +1052,7 @@ export async function getEgaugePortfolioSystems(
   options?: {
     filter?: string | null;
     groupId?: string | null;
+    anchorDate?: string | null;
   }
 ): Promise<{
   baseUrl: string;
@@ -1073,7 +1075,11 @@ export async function getEgaugePortfolioSystems(
   });
 
   const systems = raw.map((row) => mapPortfolioSystem(row));
-  const anchorDate = formatIsoDate(new Date());
+  const requestedAnchorDate = toNonEmptyString(options?.anchorDate);
+  const anchorDate =
+    requestedAnchorDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedAnchorDate)
+      ? requestedAnchorDate
+      : formatIsoDate(new Date());
   const rows = systems.map((system) => mapPortfolioSystemToSnapshotRow(system, anchorDate));
   const found = rows.filter((row) => row.status === "Found").length;
   const notFound = rows.filter((row) => row.status === "Not Found").length;

@@ -5681,15 +5681,29 @@ export const appRouter = router({
       }),
     getProductionSnapshots: protectedProcedure
       .input(
-        z.object({
-          meterIds: z.array(z.string().min(1)).min(1).max(200),
-          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        })
+        z
+          .object({
+            meterIds: z.array(z.string().min(1)).max(5000).optional(),
+            anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+            autoFetchPortfolioIds: z.boolean().optional(),
+            filter: z.string().optional(),
+            groupId: z.string().optional(),
+          })
+          .refine(
+            (value) => Boolean(value.autoFetchPortfolioIds) || (value.meterIds?.length ?? 0) > 0,
+            {
+              message: "Provide at least one meter ID or enable portfolio auto-fetch.",
+              path: ["meterIds"],
+            }
+          )
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getMeterProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEgauge } =
-          await import("./services/egauge");
+        const {
+          getEgaugePortfolioSystems,
+          getMeterProductionSnapshot,
+          mapWithConcurrency: mapWithConcurrencyEgauge,
+        } = await import("./services/egauge");
 
         const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
         const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
@@ -5698,6 +5712,9 @@ export const appRouter = router({
         if (allConnections.length === 0) {
           throw new Error("eGauge is not connected. Save at least one meter profile first.");
         }
+        const activeConnection =
+          allConnections.find((connection) => connection.id === metadata.activeConnectionId) ??
+          allConnections[0];
 
         const anchorDate =
           input.anchorDate ??
@@ -5706,14 +5723,76 @@ export const appRouter = router({
             return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
           })();
 
-        // Build map from meterId to connection for quick lookup.
-        const connectionByMeterId = new Map(
-          allConnections.map((conn) => [conn.meterId.toLowerCase(), conn])
+        const uniqueMeterIds = Array.from(
+          new Set((input.meterIds ?? []).map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0))
         );
 
-        const uniqueMeterIds = Array.from(
-          new Set(input.meterIds.map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0))
+        const usePortfolioBulk =
+          activeConnection.accessType === "portfolio_login" || Boolean(input.autoFetchPortfolioIds);
+
+        if (usePortfolioBulk) {
+          if (activeConnection.accessType !== "portfolio_login") {
+            throw new Error(
+              "Portfolio auto-fetch requires the active eGauge profile to use Portfolio Login."
+            );
+          }
+
+          const portfolioResult = await getEgaugePortfolioSystems(
+            {
+              baseUrl: activeConnection.baseUrl,
+              accessType: activeConnection.accessType,
+              username: activeConnection.username,
+              password: activeConnection.password,
+            },
+            {
+              filter: input.filter,
+              groupId: input.groupId,
+              anchorDate,
+            }
+          );
+
+          const portfolioRowsByMeterId = new Map(
+            portfolioResult.rows.map((row) => [row.meterId.trim().toLowerCase(), row])
+          );
+
+          const rows =
+            uniqueMeterIds.length > 0
+              ? uniqueMeterIds.map((meterId) => {
+                  const matchedRow = portfolioRowsByMeterId.get(meterId);
+                  if (matchedRow) return matchedRow;
+                  return {
+                    meterId,
+                    meterName: null,
+                    status: "Not Found" as const,
+                    found: false,
+                    lifetimeKwh: null,
+                    anchorDate,
+                    error: `Meter ID "${meterId}" was not returned by the portfolio site list.`,
+                  };
+                })
+              : portfolioResult.rows;
+
+          return {
+            total: rows.length,
+            found: rows.filter((row) => row.status === "Found").length,
+            notFound: rows.filter((row) => row.status === "Not Found").length,
+            errored: rows.filter((row) => row.status === "Error").length,
+            source: "portfolio" as const,
+            meterIdsUsed: rows.map((row) => row.meterId),
+            rows,
+          };
+        }
+
+        // Build map from meterId to non-portfolio meter connections for quick lookup.
+        const connectionByMeterId = new Map(
+          allConnections
+            .filter((conn) => conn.accessType !== "portfolio_login")
+            .map((conn) => [conn.meterId.toLowerCase(), conn])
         );
+
+        if (uniqueMeterIds.length === 0) {
+          throw new Error("Provide at least one meter ID.");
+        }
 
         const rows = await mapWithConcurrencyEgauge(uniqueMeterIds, 4, async (meterId: string) => {
           const conn = connectionByMeterId.get(meterId);
@@ -5747,6 +5826,8 @@ export const appRouter = router({
           found: rows.filter((row) => row.status === "Found").length,
           notFound: rows.filter((row) => row.status === "Not Found").length,
           errored: rows.filter((row) => row.status === "Error").length,
+          source: "saved_connections" as const,
+          meterIdsUsed: uniqueMeterIds,
           rows,
         };
       }),

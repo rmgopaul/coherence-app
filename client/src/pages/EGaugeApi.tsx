@@ -237,6 +237,113 @@ export default function EGaugeApi() {
     }
   };
 
+  const parseBulkMeterIds = (): string[] =>
+    Array.from(
+      new Set(
+        bulkMeterIdsCsv
+          .split(/[\n,]+/)
+          .map((value) => value.trim().toLowerCase())
+          .filter((value) => value.length > 0)
+      )
+    );
+
+  const handlePullAllPortfolioIds = async () => {
+    if (!isConnected) {
+      toast.error("Connect eGauge first.");
+      return;
+    }
+    if (!activeIsPortfolioAccess) {
+      toast.error("Switch Active Mode to Portfolio Login first.");
+      return;
+    }
+
+    setBulkIsRunning(true);
+    try {
+      const result = await getPortfolioSystemsMutation.mutateAsync({
+        filter: portfolioFilter.trim() || undefined,
+        groupId: portfolioGroupId.trim() || undefined,
+      });
+      const ids = Array.from(
+        new Set(
+          (result.rows ?? [])
+            .map((row) => (typeof row?.meterId === "string" ? row.meterId.trim().toLowerCase() : ""))
+            .filter((value) => value.length > 0)
+        )
+      );
+      setBulkMeterIdsCsv(ids.join("\n"));
+      toast.success(
+        `Fetched ${NUMBER_FORMATTER.format(ids.length)} eGauge IDs from portfolio. Next step: run bulk snapshots.`
+      );
+    } catch (error) {
+      toast.error(`Failed to fetch portfolio IDs: ${toErrorMessage(error)}`);
+    } finally {
+      setBulkIsRunning(false);
+    }
+  };
+
+  const handleRunBulkSnapshots = async () => {
+    const ids = parseBulkMeterIds();
+    const shouldAutoFetchPortfolio = activeIsPortfolioAccess && ids.length === 0;
+
+    if (!shouldAutoFetchPortfolio && ids.length === 0) {
+      toast.error(
+        activeIsPortfolioAccess
+          ? "Click \"Fetch All Portfolio IDs\" first, or keep IDs blank to auto-fetch during run."
+          : "Enter at least one meter ID."
+      );
+      return;
+    }
+
+    setBulkIsRunning(true);
+    setBulkRows([]);
+    try {
+      const result = await bulkSnapshotsMutation.mutateAsync({
+        meterIds: ids.length > 0 ? ids : undefined,
+        autoFetchPortfolioIds: shouldAutoFetchPortfolio ? true : undefined,
+        filter: activeIsPortfolioAccess ? portfolioFilter.trim() || undefined : undefined,
+        groupId: activeIsPortfolioAccess ? portfolioGroupId.trim() || undefined : undefined,
+      });
+      const rows = result.rows as BulkSnapshotRow[];
+      setBulkRows(rows);
+
+      if (activeIsPortfolioAccess && Array.isArray(result.meterIdsUsed)) {
+        const normalizedIds = result.meterIdsUsed
+          .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
+          .filter((value) => value.length > 0);
+        if (normalizedIds.length > 0) {
+          setBulkMeterIdsCsv(Array.from(new Set(normalizedIds)).join("\n"));
+        }
+      }
+
+      toast.success(
+        `Completed eGauge bulk snapshots: ${result.found} found, ${result.notFound} not found, ${result.errored} errors.`
+      );
+
+      const readRows = rows
+        .filter((row) => row.found && row.lifetimeKwh != null)
+        .map((row) =>
+          buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+        );
+      const pushResult = await pushConvertedReadsToRecDashboard(
+        (input) => getRemoteDataset.mutateAsync(input),
+        (input) => saveRemoteDataset.mutateAsync(input),
+        readRows,
+        "eGauge"
+      );
+      if (pushResult.pushed > 0) {
+        toast.success(
+          `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+        );
+      } else if (pushResult.skipped > 0) {
+        toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+      }
+    } catch (error) {
+      toast.error(`Bulk snapshots failed: ${toErrorMessage(error)}`);
+    } finally {
+      setBulkIsRunning(false);
+    }
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -661,20 +768,31 @@ export default function EGaugeApi() {
           <CardHeader>
             <CardTitle>4) Bulk Production Snapshots</CardTitle>
             <CardDescription>
-              Enter meter IDs (one per line) matching your saved connections to fetch lifetime production. Results auto-push to the Solar REC Dashboard Converted Reads.
+              {activeIsPortfolioAccess
+                ? "Portfolio mode: fetch all eGauge IDs in your account, then run a bulk lifetime kWh pull. Results auto-push to Solar REC Dashboard Converted Reads."
+                : "Enter meter IDs (one per line) matching your saved connections to fetch lifetime production. Results auto-push to Solar REC Dashboard Converted Reads."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <Label>Meter IDs (one per line)</Label>
+              <Label>{activeIsPortfolioAccess ? "eGauge IDs (optional override)" : "Meter IDs (one per line)"}</Label>
               <textarea
                 className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 value={bulkMeterIdsCsv}
                 onChange={(e) => setBulkMeterIdsCsv(e.target.value)}
-                placeholder={"egauge12345\negauge67890"}
+                placeholder={
+                  activeIsPortfolioAccess
+                    ? "Leave blank to auto-fetch all IDs from your portfolio, or paste specific IDs"
+                    : "egauge12345\negauge67890"
+                }
                 disabled={bulkIsRunning}
               />
-              {statusQuery.data?.connections && statusQuery.data.connections.length > 0 && (
+              <p className="mt-1 text-xs text-slate-500">
+                {activeIsPortfolioAccess
+                  ? "Step 1: Fetch portfolio IDs. Step 2: Run bulk snapshots for lifetime kWh."
+                  : "Use saved meter profiles or paste IDs manually."}
+              </p>
+              {!activeIsPortfolioAccess && statusQuery.data?.connections && statusQuery.data.connections.length > 0 && (
                 <Button
                   variant="link"
                   size="sm"
@@ -689,48 +807,20 @@ export default function EGaugeApi() {
               )}
             </div>
             <div className="flex gap-2">
+              {activeIsPortfolioAccess ? (
+                <Button
+                  variant="outline"
+                  onClick={handlePullAllPortfolioIds}
+                  disabled={bulkIsRunning || !statusQuery.data?.connected}
+                >
+                  {bulkIsRunning && getPortfolioSystemsMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : null}
+                  Fetch All Portfolio IDs
+                </Button>
+              ) : null}
               <Button
-                onClick={async () => {
-                  const ids = bulkMeterIdsCsv
-                    .split(/[\n,]+/)
-                    .map((s) => s.trim())
-                    .filter((s) => s.length > 0);
-                  if (ids.length === 0) {
-                    toast.error("Enter at least one meter ID.");
-                    return;
-                  }
-                  setBulkIsRunning(true);
-                  setBulkRows([]);
-                  try {
-                    const result = await bulkSnapshotsMutation.mutateAsync({ meterIds: ids });
-                    setBulkRows(result.rows);
-                    toast.success(
-                      `Completed eGauge bulk snapshots: ${result.found} found, ${result.notFound} not found, ${result.errored} errors.`
-                    );
-
-                    // Auto-push Converted Reads.
-                    const readRows = result.rows
-                      .filter((row) => row.found && row.lifetimeKwh != null)
-                      .map((row) =>
-                        buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
-                      );
-                    const pushResult = await pushConvertedReadsToRecDashboard(
-                      (input) => getRemoteDataset.mutateAsync(input),
-                      (input) => saveRemoteDataset.mutateAsync(input),
-                      readRows,
-                      "eGauge"
-                    );
-                    if (pushResult.pushed > 0) {
-                      toast.success(`Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`);
-                    } else if (pushResult.skipped > 0) {
-                      toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
-                    }
-                  } catch (error) {
-                    toast.error(`Bulk snapshots failed: ${toErrorMessage(error)}`);
-                  } finally {
-                    setBulkIsRunning(false);
-                  }
-                }}
+                onClick={handleRunBulkSnapshots}
                 disabled={bulkIsRunning || !statusQuery.data?.connected}
               >
                 {bulkIsRunning ? (
