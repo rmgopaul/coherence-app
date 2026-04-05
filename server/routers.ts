@@ -1,5 +1,6 @@
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { verifySolarReadingsSignedRequest } from "./_core/solarReadingsIngest";
 import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, publicProcedure, protectedProcedure, twoFactorPendingProcedure, router } from "./_core/trpc";
 import { sdk } from "./_core/sdk";
@@ -8159,7 +8160,7 @@ Generate the pipeline analysis report now.`,
 
   // ── SunPower PVS production readings (mobile app → DB → dashboard) ──
   solarReadings: router({
-    /** Public: called by the mobile app (no Coherence auth). */
+    /** Public endpoint secured via HMAC signature headers from the mobile app. */
     submit: publicProcedure
       .input(
         z.object({
@@ -8169,21 +8170,25 @@ Generate the pipeline analysis report now.`,
           meterSerial: z.string().optional(),
           firmwareVersion: z.string().optional(),
           pvsSerial5: z.string().max(5).optional(),
-          readAt: z.string(), // ISO timestamp
+          readAt: z.string().datetime({ offset: true }),
         })
       )
-      .mutation(async ({ input }) => {
+      .mutation(async ({ input, ctx }) => {
+        const { payload, readAt } = verifySolarReadingsSignedRequest({
+          req: ctx.req,
+          input,
+        });
         const { nanoid } = await import("nanoid");
         const { insertProductionReading } = await import("./db");
         await insertProductionReading({
           id: nanoid(),
-          customerEmail: input.customerEmail,
-          nonId: input.nonId ?? null,
-          lifetimeKwh: input.lifetimeKwh,
-          meterSerial: input.meterSerial ?? null,
-          firmwareVersion: input.firmwareVersion ?? null,
-          pvsSerial5: input.pvsSerial5 ?? null,
-          readAt: new Date(input.readAt),
+          customerEmail: payload.customerEmail,
+          nonId: payload.nonId,
+          lifetimeKwh: payload.lifetimeKwh,
+          meterSerial: payload.meterSerial,
+          firmwareVersion: payload.firmwareVersion,
+          pvsSerial5: payload.pvsSerial5,
+          readAt,
         });
         return { success: true };
       }),

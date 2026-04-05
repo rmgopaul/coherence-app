@@ -6,7 +6,7 @@ import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import type { User } from "../../drizzle/schema";
 import * as db from "../db";
-import { ENV } from "./env";
+import { ENV, getValidatedJwtSecret, isAuthBypassEnabled } from "./env";
 import type {
   ExchangeTokenRequest,
   ExchangeTokenResponse,
@@ -17,11 +17,6 @@ import type {
 // Utility function
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === "string" && value.length > 0;
-const isTruthyEnvFlag = (value: string | undefined): boolean =>
-  typeof value === "string" && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-const isAuthBypassEnabled =
-  isTruthyEnvFlag(process.env.DEV_BYPASS_AUTH) ||
-  isTruthyEnvFlag(process.env.AUTH_BYPASS);
 
 export type SessionPayload = {
   openId: string;
@@ -161,7 +156,7 @@ class SDKServer {
   }
 
   private getSessionSecret() {
-    const secret = ENV.cookieSecret;
+    const secret = getValidatedJwtSecret();
     return new TextEncoder().encode(secret);
   }
 
@@ -280,7 +275,7 @@ class SDKServer {
   }
 
   async authenticateRequest(req: Request): Promise<User> {
-    if (isAuthBypassEnabled) {
+    if (isAuthBypassEnabled()) {
       const now = new Date();
       return {
         id: 1,

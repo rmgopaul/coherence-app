@@ -2,13 +2,8 @@ import { COOKIE_NAME } from "@shared/const";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import { parse as parseCookieHeader } from "cookie";
 import type { User } from "../../drizzle/schema";
+import { isAuthBypassEnabled } from "./env";
 import { sdk } from "./sdk";
-
-const isTruthyEnvFlag = (value: string | undefined): boolean =>
-  typeof value === "string" && ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
-
-const isAuthBypassEnabled = (): boolean =>
-  isTruthyEnvFlag(process.env.AUTH_BYPASS) || isTruthyEnvFlag(process.env.DEV_BYPASS_AUTH);
 
 const buildBypassUser = (): User => {
   const now = new Date();

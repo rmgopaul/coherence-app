@@ -51,7 +51,13 @@ export function registerSecurityMiddleware(app: Express) {
         : true, // Allow all origins in development
       credentials: true,
       methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "x-solar-signature",
+        "x-solar-timestamp",
+        "x-solar-nonce",
+      ],
     })
   );
 
@@ -65,6 +71,16 @@ export function registerSecurityMiddleware(app: Express) {
     message: { error: "Too many requests, please try again later." },
   });
   app.use("/api", apiLimiter);
+
+  // Public mobile ingest endpoint gets stricter rate limits.
+  const solarIngestLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "Too many solar reading submissions, please try again later." },
+  });
+  app.use("/api/trpc/solarReadings.submit", solarIngestLimiter);
 
   // Stricter limit for auth-related endpoints: 20 requests per minute per IP
   const authLimiter = rateLimit({

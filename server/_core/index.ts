@@ -7,6 +7,7 @@ import { registerOAuthRoutes } from "./oauth";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import oauthRouter from "../oauth-routes";
+import { assertServerRuntimeSafety } from "./env";
 import { serveStatic, setupVite } from "./vite";
 import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { registerPinGate } from "./pinGate";
@@ -35,6 +36,7 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  assertServerRuntimeSafety();
   startNightlySnapshotScheduler();
 
   const app = express();
