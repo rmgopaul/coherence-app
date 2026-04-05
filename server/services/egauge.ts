@@ -702,29 +702,74 @@ class EgaugePortfolioClient {
       headers["X-CSRFToken"] = this.cookies.get("csrftoken")!;
     }
 
-    const response = await fetch(url, {
-      method: options?.method ?? "GET",
-      headers,
-      body: options?.formBody ? options.formBody.toString() : undefined,
-      redirect: "follow",
-      signal: AbortSignal.timeout(EGAUGE_REQUEST_TIMEOUT_MS),
-    });
+    // Use manual redirect handling to capture Set-Cookie headers from
+    // intermediate 302 responses (e.g., login redirects). fetch() with
+    // redirect:"follow" only exposes the final response's headers,
+    // losing session cookies set during redirects.
+    let currentUrl = url;
+    let currentMethod = options?.method ?? "GET";
+    let currentBody: string | undefined = options?.formBody ? options.formBody.toString() : undefined;
+    let currentHeaders = { ...headers };
+    const maxRedirects = 10;
 
-    this.storeCookies(response);
+    for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
+      const response = await fetch(currentUrl, {
+        method: currentMethod,
+        headers: currentHeaders,
+        body: currentBody,
+        redirect: "manual",
+        signal: AbortSignal.timeout(EGAUGE_REQUEST_TIMEOUT_MS),
+      });
 
-    const responseText = await response.text().catch(() => "");
-    if (!response.ok) {
-      const detail = normalizeErrorPayload(responseText);
-      throw new Error(
-        `eGauge portfolio request failed (${response.status} ${response.statusText})${detail ? `: ${detail}` : ""}`
-      );
+      // Capture cookies from EVERY response, including redirects
+      this.storeCookies(response);
+
+      const status = response.status;
+
+      // Handle redirects (301, 302, 303, 307, 308)
+      if (status >= 300 && status < 400) {
+        const location = response.headers.get("location");
+        if (!location) break;
+
+        // Resolve relative URLs
+        currentUrl = location.startsWith("http") ? location : new URL(location, currentUrl).toString();
+
+        // 303 and most 302s change to GET; 307/308 preserve method
+        if (status === 303 || (status === 302 && currentMethod === "POST")) {
+          currentMethod = "GET";
+          currentBody = undefined;
+          // Remove content-type for GET
+          const { "Content-Type": _, ...rest } = currentHeaders;
+          currentHeaders = rest;
+        }
+
+        // Update cookie header for next request
+        const nextCookieHeader = this.buildCookieHeader();
+        if (nextCookieHeader) {
+          currentHeaders.Cookie = nextCookieHeader;
+        }
+
+        // Consume body to prevent memory leak
+        await response.text().catch(() => "");
+        continue;
+      }
+
+      const responseText = await response.text().catch(() => "");
+      if (!response.ok) {
+        const detail = normalizeErrorPayload(responseText);
+        throw new Error(
+          `eGauge portfolio request failed (${response.status} ${response.statusText})${detail ? `: ${detail}` : ""}`
+        );
+      }
+
+      return {
+        url: response.url || currentUrl,
+        text: responseText,
+        contentType: response.headers.get("content-type"),
+      };
     }
 
-    return {
-      url: response.url || url,
-      text: responseText,
-      contentType: response.headers.get("content-type"),
-    };
+    throw new Error("eGauge portfolio request failed: too many redirects.");
   }
 
   private extractCsrfToken(html: string): string | null {
@@ -1402,12 +1447,6 @@ export async function getEgaugePortfolioSystems(
   authenticatedUsername: string | null;
   filter: string | null;
   groupId: string | null;
-  dataSource: string;
-  queryAttempts: Array<{
-    source: string;
-    rowsReturned: number;
-    error: string | null;
-  }>;
   total: number;
   found: number;
   notFound: number;
@@ -1421,71 +1460,23 @@ export async function getEgaugePortfolioSystems(
   const normalizedFilter = toNonEmptyString(options?.filter);
   const normalizedGroupId = toNonEmptyString(options?.groupId);
 
-  let allRows: unknown[] = [];
-  let dataSource = "unknown";
-  const queryAttempts: Array<{
-    source: string;
-    rowsReturned: number;
-    error: string | null;
-  }> = [];
+  // The /eguard/data/ endpoint returns all devices for the authenticated
+  // session. Bootstrap Table calls it with client-side pagination.
+  // With proper redirect cookie handling, this returns the full portfolio.
+  const result = await client.fetchSystems({
+    filter: normalizedFilter,
+    groupId: normalizedGroupId,
+  });
 
-  // Strategy 1: Extract device data from the /eguard/ HTML page.
-  // The /eguard/data/ endpoint only returns owned devices (~14).
-  // The full portfolio is loaded in the HTML page or via an AJAX call
-  // that may use different parameters than what we've tried.
-  try {
-    const pageResult = await client.fetchSystemsFromPage();
-    queryAttempts.push({
-      source: `HTML page (${pageResult.pageLength} chars)`,
-      rowsReturned: pageResult.rows.length,
-      error: null,
-    });
+  console.log(`[eGauge Portfolio] Got ${result.rows.length} rows from /eguard/data/`);
 
-    if (pageResult.rows.length > 0) {
-      allRows = pageResult.rows;
-      dataSource = "html_page";
-      console.log(`[eGauge Portfolio] Got ${allRows.length} rows from HTML page extraction`);
-    }
-  } catch (error) {
-    queryAttempts.push({
-      source: "HTML page",
-      rowsReturned: 0,
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
-  }
-
-  // Strategy 2: Fall back to /eguard/data/ API
-  if (allRows.length === 0) {
-    try {
-      const result = await client.fetchSystems({
-        filter: normalizedFilter,
-        groupId: normalizedGroupId,
-      });
-      queryAttempts.push({
-        source: `/eguard/data/ (group_id=${normalizedGroupId ?? "none"})`,
-        rowsReturned: result.rows.length,
-        error: null,
-      });
-      allRows = result.rows;
-      dataSource = "eguard_data_api";
-    } catch (error) {
-      queryAttempts.push({
-        source: "/eguard/data/",
-        rowsReturned: 0,
-        error: error instanceof Error ? error.message : "Unknown error",
-      });
-    }
-  }
-
-  console.log(`[eGauge Portfolio] Final: ${allRows.length} rows from ${dataSource}`);
-
-  if (allRows.length === 0) {
-    throw new Error("No portfolio systems were returned. Check server logs for details.");
+  if (result.rows.length === 0) {
+    throw new Error("No portfolio systems were returned.");
   }
 
   // Deduplicate by key
   const mergedRowsByKey = new Map<string, unknown>();
-  for (const row of allRows) {
+  for (const row of result.rows) {
     const key = buildPortfolioRowKey(row);
     if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
   }
@@ -1508,8 +1499,6 @@ export async function getEgaugePortfolioSystems(
     authenticatedUsername: client.getUsername(),
     filter: normalizedFilter,
     groupId: normalizedGroupId,
-    dataSource,
-    queryAttempts,
     total: rows.length,
     found,
     notFound,
