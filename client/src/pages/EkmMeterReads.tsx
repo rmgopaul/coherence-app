@@ -747,14 +747,34 @@ export default function EkmMeterReads() {
       return;
     }
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "read_date", "status", "alert_severity"];
-    const csvRows = readRows.map((row) => {
-      const readRow = buildConvertedReadRow("EKM Encompass.io", row.meterNumber, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
-      return { monitoring: readRow.monitoring, monitoring_system_id: readRow.monitoring_system_id, monitoring_system_name: readRow.monitoring_system_name, lifetime_meter_read_wh: readRow.lifetime_meter_read_wh, read_date: readRow.read_date, status: readRow.status, alert_severity: readRow.alert_severity };
-    });
+    const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+    for (const row of readRows) {
+      const base = buildConvertedReadRow("EKM Encompass.io", row.meterNumber, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
+      // Row 1: system name only (ID blank) — matches by name
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: "",
+        monitoring_system_name: base.monitoring_system_name,
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        read_date: base.read_date,
+        status: base.status,
+        alert_severity: base.alert_severity,
+      });
+      // Row 2: system ID only (name blank) — matches by ID
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: base.monitoring_system_id,
+        monitoring_system_name: "",
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        read_date: base.read_date,
+        status: base.status,
+        alert_severity: base.alert_severity,
+      });
+    }
     const csvText = buildCsv(headers, csvRows);
     const fileName = `ekm-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
     downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
-    toast.success(`Downloaded ${NUMBER_FORMATTER.format(csvRows.length)} Converted Reads rows.`);
+    toast.success(`Downloaded ${csvRows.length} Converted Reads rows (${readRows.length} systems \u00d7 2 match rows each).`);
   };
 
   if (authLoading) {
