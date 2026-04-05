@@ -16,7 +16,9 @@ export const getLoginUrl = () => {
     normalizedAppId === "proj_abc123def456" ||
     normalizedAppId.toLowerCase().includes("example");
   if (!oauthPortalUrl || isPlaceholderAppId) {
-    return "/dashboard";
+    // Safe fallback: keep users on the landing page instead of redirecting
+    // into protected routes, which can cause redirect loops when unauthenticated.
+    return "/";
   }
   const redirectUri = `${window.location.origin}/api/oauth/callback`;
   const state = btoa(redirectUri);
