@@ -808,11 +808,18 @@ class EgaugePortfolioClient {
   }
 
   /**
-   * Fetch the eguard dashboard HTML and extract available group IDs/names
-   * from the group selector dropdown and access manager links.
+   * Fetch the eguard dashboard HTML page and extract embedded device data.
+   * The /eguard/data/ endpoint only returns owned devices (~14).
+   * The full portfolio (726 devices) is rendered in the HTML page itself,
+   * either as embedded JSON in a <script> tag or as table rows.
    */
-  async fetchAvailableGroups(): Promise<Array<{ id: string; name: string }>> {
-    // Fetch the main eguard page to find group selector
+  async fetchSystemsFromPage(): Promise<{
+    rows: unknown[];
+    groups: Array<{ id: string; name: string }>;
+    pageLength: number;
+  }> {
+    await this.ensureAuthenticated();
+
     const page = await this.request("/eguard/", {
       method: "GET",
       accept: "text/html,application/xhtml+xml",
@@ -821,85 +828,112 @@ class EgaugePortfolioClient {
 
     console.log(`[eGauge Portfolio] Eguard page length: ${page.text.length}`);
 
-    const groups: Array<{ id: string; name: string }> = [];
-    const seenIds = new Set<string>();
+    // Strategy 1: Look for embedded JSON data in <script> tags
+    // Common patterns: var data = [...], var tableData = [...], JSON.parse('...')
+    const scriptRegex = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+    let scriptMatch: RegExpExecArray | null;
+    const allJsonArrays: unknown[][] = [];
 
-    // Pattern 1: <option> tags (value can be numeric ID or group name)
-    const optionRegex = /<option\s[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
-    let optionMatch: RegExpExecArray | null;
-    while ((optionMatch = optionRegex.exec(page.text)) !== null) {
-      const id = optionMatch[1].trim();
-      const name = stripHtml(optionMatch[2] ?? "").trim();
-      if (id && !seenIds.has(id)) {
-        seenIds.add(id);
-        groups.push({ id, name: name || id });
-      }
-    }
-
-    // Pattern 2: data attributes or JS objects with group references
-    const dataGroupRegex = /["']group(?:_id|Id|_name|Name)?["']\s*[:=]\s*["']([^"']+)["']/gi;
-    let dataMatch: RegExpExecArray | null;
-    while ((dataMatch = dataGroupRegex.exec(page.text)) !== null) {
-      const id = dataMatch[1].trim();
-      if (id && !seenIds.has(id) && !/^(null|undefined|true|false)$/i.test(id)) {
-        seenIds.add(id);
-        groups.push({ id, name: id });
-      }
-    }
-
-    console.log(`[eGauge Portfolio] Found ${groups.length} groups from eguard page: ${JSON.stringify(groups.slice(0, 20))}`);
-
-    // Log HTML snippets around select/dropdown elements for debugging
-    const selectIdx = page.text.toLowerCase().indexOf("<select");
-    if (selectIdx >= 0) {
-      const selectSnippet = page.text.slice(selectIdx, selectIdx + 1000);
-      console.log(`[eGauge Portfolio] First <select> element: ${selectSnippet.replace(/\s+/g, " ").slice(0, 800)}`);
-    }
-
-    // Also try fetching the access-manager groups page
-    try {
-      const amPage = await this.request("/eguard/access-manager/groups/", {
-        method: "GET",
-        accept: "text/html,application/xhtml+xml",
-        referer: this.buildUrl("/eguard/"),
-      });
-      console.log(`[eGauge Portfolio] Access manager groups page length: ${amPage.text.length}`);
-
-      // Look for group names/links in the access manager
-      // Pattern: links to group edit pages, table rows with group names
-      const groupNameRegex = /(?:group[_-]?name|edit-group)[^"']*["']([^"']+)["']/gi;
-      let gnMatch: RegExpExecArray | null;
-      while ((gnMatch = groupNameRegex.exec(amPage.text)) !== null) {
-        const name = gnMatch[1].trim();
-        if (name && !seenIds.has(name)) {
-          seenIds.add(name);
-          groups.push({ id: name, name });
-        }
-      }
-
-      // Also extract from table cells or list items
-      const tdRegex = /<(?:td|li|a)[^>]*>\s*([^<]{2,50})\s*<\/(?:td|li|a)>/gi;
-      let tdMatch: RegExpExecArray | null;
-      while ((tdMatch = tdRegex.exec(amPage.text)) !== null) {
-        const text = tdMatch[1].trim();
-        // Skip generic text, only keep things that look like group names
-        if (text && !seenIds.has(text) && !/^(edit|delete|save|cancel|group|name|devices|actions|add)/i.test(text) && text.length > 2) {
-          // Don't add too many — this is a heuristic
-          if (groups.length < 100) {
-            seenIds.add(text);
-            groups.push({ id: text, name: text });
+    while ((scriptMatch = scriptRegex.exec(page.text)) !== null) {
+      const scriptContent = scriptMatch[1];
+      // Look for array assignments that could be device data
+      const arrayAssignRegex = /(?:var|let|const|window\.)?\s*\w+\s*=\s*(\[[\s\S]*?\]);/g;
+      let arrMatch: RegExpExecArray | null;
+      while ((arrMatch = arrayAssignRegex.exec(scriptContent)) !== null) {
+        try {
+          const parsed = JSON.parse(arrMatch[1]);
+          if (Array.isArray(parsed) && parsed.length > 10) {
+            console.log(`[eGauge Portfolio] Found JS array with ${parsed.length} items`);
+            allJsonArrays.push(parsed as unknown[]);
           }
-        }
+        } catch { /* not valid JSON */ }
       }
-
-      console.log(`[eGauge Portfolio] After access-manager scan: ${groups.length} groups total`);
-      // Log first 2000 chars of access manager for debugging
-      console.log(`[eGauge Portfolio] Access manager HTML preview: ${amPage.text.replace(/\s+/g, " ").slice(0, 2000)}`);
-    } catch (err) {
-      console.log(`[eGauge Portfolio] Access manager groups fetch failed: ${err instanceof Error ? err.message : "unknown"}`);
     }
 
-    return groups;
+    // Use the largest array found (most likely the device data)
+    if (allJsonArrays.length > 0) {
+      allJsonArrays.sort((a, b) => b.length - a.length);
+      console.log(`[eGauge Portfolio] Using embedded JS array with ${allJsonArrays[0].length} items`);
+      return { rows: allJsonArrays[0], groups: [], pageLength: page.text.length };
+    }
+
+    // Strategy 2: Look for DataTables initialization with ajax URL
+    const ajaxUrlMatch = page.text.match(/["']ajax["']\s*:\s*["']([^"']+)["']/i);
+    if (ajaxUrlMatch) {
+      console.log(`[eGauge Portfolio] Found DataTables ajax URL: ${ajaxUrlMatch[1]}`);
+      // Try fetching this specific URL
+      const ajaxResponse = await this.request(ajaxUrlMatch[1], {
+        method: "GET",
+        accept: "application/json,text/plain,*/*",
+        referer: this.buildUrl("/eguard/"),
+        xhr: true,
+      });
+      try {
+        const parsed = JSON.parse(ajaxResponse.text.trim());
+        const rows = Array.isArray(parsed) ? parsed :
+          (parsed?.data && Array.isArray(parsed.data)) ? parsed.data :
+          [];
+        console.log(`[eGauge Portfolio] Ajax URL returned ${(rows as unknown[]).length} rows`);
+        if ((rows as unknown[]).length > 0) {
+          return { rows: rows as unknown[], groups: [], pageLength: page.text.length };
+        }
+      } catch { /* invalid JSON */ }
+    }
+
+    // Strategy 3: Look for inline DataTables data (data: [...])
+    const dtDataMatch = page.text.match(/data\s*:\s*(\[\s*\{[\s\S]*?\}\s*\])/);
+    if (dtDataMatch) {
+      try {
+        const parsed = JSON.parse(dtDataMatch[1]);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          console.log(`[eGauge Portfolio] Found inline DataTables data with ${parsed.length} items`);
+          return { rows: parsed as unknown[], groups: [], pageLength: page.text.length };
+        }
+      } catch { /* not valid JSON */ }
+    }
+
+    // Strategy 4: Log key HTML sections for debugging
+    // Find the portfolio table area
+    const tableIdx = page.text.indexOf('<table');
+    if (tableIdx >= 0) {
+      const tableSnippet = page.text.slice(tableIdx, tableIdx + 2000);
+      console.log(`[eGauge Portfolio] First <table>: ${tableSnippet.replace(/\s+/g, " ").slice(0, 1000)}`);
+    }
+
+    // Log all script src attributes and inline script previews
+    const scriptSrcRegex = /<script[^>]*src=["']([^"']+)["'][^>]*>/gi;
+    let srcMatch: RegExpExecArray | null;
+    const scriptSrcs: string[] = [];
+    while ((srcMatch = scriptSrcRegex.exec(page.text)) !== null) {
+      scriptSrcs.push(srcMatch[1]);
+    }
+    console.log(`[eGauge Portfolio] Script sources: ${JSON.stringify(scriptSrcs)}`);
+
+    // Log inline scripts that mention "data" or "ajax" or "table"
+    const scriptRegex2 = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+    let sm: RegExpExecArray | null;
+    while ((sm = scriptRegex2.exec(page.text)) !== null) {
+      const content = sm[1].trim();
+      if (content.length > 50 && /(?:data|ajax|table|device|eguard)/i.test(content)) {
+        console.log(`[eGauge Portfolio] Relevant script (${content.length} chars): ${content.replace(/\s+/g, " ").slice(0, 1500)}`);
+      }
+    }
+
+    // Extract groups from <select> elements specifically within the eguard content area
+    const groups: Array<{ id: string; name: string }> = [];
+    const selectRegex = /<select[^>]*id=["'][^"']*group[^"']*["'][^>]*>([\s\S]*?)<\/select>/gi;
+    let selMatch: RegExpExecArray | null;
+    while ((selMatch = selectRegex.exec(page.text)) !== null) {
+      const optRegex = /<option[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
+      let oMatch: RegExpExecArray | null;
+      while ((oMatch = optRegex.exec(selMatch[1])) !== null) {
+        groups.push({ id: oMatch[1].trim(), name: stripHtml(oMatch[2] ?? "").trim() });
+      }
+    }
+    console.log(`[eGauge Portfolio] Groups from select: ${JSON.stringify(groups)}`);
+
+    // Fallback: return empty (caller will use /eguard/data/)
+    return { rows: [], groups, pageLength: page.text.length };
   }
 
   async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<{
@@ -911,14 +945,11 @@ class EgaugePortfolioClient {
 
     const query: Record<string, string | null | undefined> = {};
 
-    const filter = toNonEmptyString(options?.filter);
-    if (filter) query["filter"] = filter;
-
     const groupId = toNonEmptyString(options?.groupId);
     if (groupId) query["group_id"] = groupId;
 
-    const requestUrl = this.buildUrl("/eguard/data/", query);
-    console.log(`[eGauge Portfolio] Fetching systems: ${requestUrl}`);
+    const filter = toNonEmptyString(options?.filter);
+    if (filter) query["filter"] = filter;
 
     const response = await this.request("/eguard/data/", {
       method: "GET",
@@ -929,7 +960,6 @@ class EgaugePortfolioClient {
     });
 
     const trimmed = response.text.trim();
-    console.log(`[eGauge Portfolio] Response length: ${trimmed.length} chars, rows preview: ${trimmed.slice(0, 200)}`);
     if (!trimmed) return { rows: [], recordsTotal: null, recordsFiltered: null };
 
     try {
@@ -945,7 +975,6 @@ class EgaugePortfolioClient {
         else if (Array.isArray(container.results)) rows = container.results as unknown[];
       }
 
-      console.log(`[eGauge Portfolio] Parsed ${rows.length} rows for group_id=${groupId ?? "(none)"}`);
       return { rows, recordsTotal: null, recordsFiltered: null };
     } catch {
       if (/<html/i.test(response.text) || /name=["']auth-username["']/i.test(response.text)) {
@@ -1373,9 +1402,9 @@ export async function getEgaugePortfolioSystems(
   authenticatedUsername: string | null;
   filter: string | null;
   groupId: string | null;
-  availableGroups: Array<{ id: string; name: string }>;
+  dataSource: string;
   queryAttempts: Array<{
-    groupId: string | null;
+    source: string;
     rowsReturned: number;
     error: string | null;
   }>;
@@ -1392,71 +1421,76 @@ export async function getEgaugePortfolioSystems(
   const normalizedFilter = toNonEmptyString(options?.filter);
   const normalizedGroupId = toNonEmptyString(options?.groupId);
 
-  // Step 1: Discover available groups from the eguard dashboard page.
-  // The /eguard/data/ endpoint returns devices for the default group only.
-  // We need to fetch each group's devices separately and merge.
-  const availableGroups = await client.fetchAvailableGroups();
-
-  const mergedRowsByKey = new Map<string, unknown>();
-  let firstError: Error | null = null;
+  let allRows: unknown[] = [];
+  let dataSource = "unknown";
   const queryAttempts: Array<{
-    groupId: string | null;
+    source: string;
     rowsReturned: number;
     error: string | null;
   }> = [];
 
-  if (normalizedGroupId) {
-    // Fetch a specific group
-    try {
-      const result = await client.fetchSystems({ filter: normalizedFilter, groupId: normalizedGroupId });
-      queryAttempts.push({ groupId: normalizedGroupId, rowsReturned: result.rows.length, error: null });
-      for (const row of result.rows) {
-        const key = buildPortfolioRowKey(row);
-        if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
-      }
-    } catch (error) {
-      queryAttempts.push({ groupId: normalizedGroupId, rowsReturned: 0, error: error instanceof Error ? error.message : "Unknown error" });
-      firstError = error instanceof Error ? error : null;
-    }
-  } else {
-    // First try default (no group_id) to get the default group's devices
-    try {
-      const result = await client.fetchSystems({ filter: normalizedFilter });
-      queryAttempts.push({ groupId: null, rowsReturned: result.rows.length, error: null });
-      for (const row of result.rows) {
-        const key = buildPortfolioRowKey(row);
-        if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
-      }
-    } catch (error) {
-      queryAttempts.push({ groupId: null, rowsReturned: 0, error: error instanceof Error ? error.message : "Unknown error" });
-      if (!firstError && error instanceof Error) firstError = error;
-    }
+  // Strategy 1: Extract device data from the /eguard/ HTML page.
+  // The /eguard/data/ endpoint only returns owned devices (~14).
+  // The full portfolio is loaded in the HTML page or via an AJAX call
+  // that may use different parameters than what we've tried.
+  try {
+    const pageResult = await client.fetchSystemsFromPage();
+    queryAttempts.push({
+      source: `HTML page (${pageResult.pageLength} chars)`,
+      rowsReturned: pageResult.rows.length,
+      error: null,
+    });
 
-    // Then fetch each discovered group to get all devices
-    for (const group of availableGroups) {
-      try {
-        const result = await client.fetchSystems({ filter: normalizedFilter, groupId: group.id });
-        queryAttempts.push({ groupId: `${group.id} (${group.name})`, rowsReturned: result.rows.length, error: null });
-        for (const row of result.rows) {
-          const key = buildPortfolioRowKey(row);
-          if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
-        }
-      } catch (error) {
-        queryAttempts.push({ groupId: `${group.id} (${group.name})`, rowsReturned: 0, error: error instanceof Error ? error.message : "Unknown error" });
-        if (!firstError && error instanceof Error) firstError = error;
-      }
+    if (pageResult.rows.length > 0) {
+      allRows = pageResult.rows;
+      dataSource = "html_page";
+      console.log(`[eGauge Portfolio] Got ${allRows.length} rows from HTML page extraction`);
+    }
+  } catch (error) {
+    queryAttempts.push({
+      source: "HTML page",
+      rowsReturned: 0,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+
+  // Strategy 2: Fall back to /eguard/data/ API
+  if (allRows.length === 0) {
+    try {
+      const result = await client.fetchSystems({
+        filter: normalizedFilter,
+        groupId: normalizedGroupId,
+      });
+      queryAttempts.push({
+        source: `/eguard/data/ (group_id=${normalizedGroupId ?? "none"})`,
+        rowsReturned: result.rows.length,
+        error: null,
+      });
+      allRows = result.rows;
+      dataSource = "eguard_data_api";
+    } catch (error) {
+      queryAttempts.push({
+        source: "/eguard/data/",
+        rowsReturned: 0,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
     }
   }
 
-  console.log(`[eGauge Portfolio] Total merged rows: ${mergedRowsByKey.size} from ${queryAttempts.length} queries`);
+  console.log(`[eGauge Portfolio] Final: ${allRows.length} rows from ${dataSource}`);
 
-  if (mergedRowsByKey.size === 0) {
-    if (firstError) throw firstError;
-    throw new Error("No portfolio systems were returned.");
+  if (allRows.length === 0) {
+    throw new Error("No portfolio systems were returned. Check server logs for details.");
+  }
+
+  // Deduplicate by key
+  const mergedRowsByKey = new Map<string, unknown>();
+  for (const row of allRows) {
+    const key = buildPortfolioRowKey(row);
+    if (!mergedRowsByKey.has(key)) mergedRowsByKey.set(key, row);
   }
 
   const raw = Array.from(mergedRowsByKey.values());
-
   const systems = raw.map((row) => mapPortfolioSystem(row));
   const requestedAnchorDate = toNonEmptyString(options?.anchorDate);
   const anchorDate =
@@ -1474,7 +1508,7 @@ export async function getEgaugePortfolioSystems(
     authenticatedUsername: client.getUsername(),
     filter: normalizedFilter,
     groupId: normalizedGroupId,
-    availableGroups,
+    dataSource,
     queryAttempts,
     total: rows.length,
     found,
