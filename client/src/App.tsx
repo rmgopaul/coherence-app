@@ -36,6 +36,15 @@ const ClockifyWidget = lazy(() => import("./pages/ClockifyWidget"));
 const ChatGPTWidget = lazy(() => import("./pages/ChatGPTWidget"));
 const GoogleCalendarWidget = lazy(() => import("./pages/GoogleCalendarWidget"));
 const GmailWidget = lazy(() => import("./pages/GmailWidget"));
+const SolisMeterReads = lazy(() => import("./pages/SolisMeterReads"));
+const GoodWeMeterReads = lazy(() => import("./pages/GoodWeMeterReads"));
+const GeneracMeterReads = lazy(() => import("./pages/GeneracMeterReads"));
+const LocusMeterReads = lazy(() => import("./pages/LocusMeterReads"));
+const GrowattMeterReads = lazy(() => import("./pages/GrowattMeterReads"));
+const APsystemsMeterReads = lazy(() => import("./pages/APsystemsMeterReads"));
+const EkmMeterReads = lazy(() => import("./pages/EkmMeterReads"));
+const HoymilesMeterReads = lazy(() => import("./pages/HoymilesMeterReads"));
+const SolarLogMeterReads = lazy(() => import("./pages/SolarLogMeterReads"));
 
 function RouteFallback() {
   return (
@@ -76,6 +85,15 @@ function AppRoutes() {
       <Route path={"/egauge-api"} component={withRouteSuspense(EGaugeApi)} />
       <Route path={"/tesla-solar-api"} component={withRouteSuspense(TeslaSolarApi)} />
       <Route path={"/tesla-powerhub-api"} component={withRouteSuspense(TeslaPowerhubApi)} />
+      <Route path={"/solis-meter-reads"} component={withRouteSuspense(SolisMeterReads)} />
+      <Route path={"/goodwe-meter-reads"} component={withRouteSuspense(GoodWeMeterReads)} />
+      <Route path={"/generac-meter-reads"} component={withRouteSuspense(GeneracMeterReads)} />
+      <Route path={"/locus-meter-reads"} component={withRouteSuspense(LocusMeterReads)} />
+      <Route path={"/growatt-meter-reads"} component={withRouteSuspense(GrowattMeterReads)} />
+      <Route path={"/apsystems-meter-reads"} component={withRouteSuspense(APsystemsMeterReads)} />
+      <Route path={"/ekm-meter-reads"} component={withRouteSuspense(EkmMeterReads)} />
+      <Route path={"/hoymiles-meter-reads"} component={withRouteSuspense(HoymilesMeterReads)} />
+      <Route path={"/solarlog-meter-reads"} component={withRouteSuspense(SolarLogMeterReads)} />
       <Route path={"/zendesk-ticket-metrics"} component={withRouteSuspense(ZendeskTicketMetrics)} />
       <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
       <Route path={"/settings"} component={withRouteSuspense(Settings)} />

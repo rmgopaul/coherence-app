@@ -35,6 +35,15 @@ const ROUTE_TITLES: Record<string, string> = {
   "/egauge-api": "eGauge",
   "/tesla-solar-api": "Tesla Solar",
   "/tesla-powerhub-api": "Tesla Powerhub",
+  "/solis-meter-reads": "Solis",
+  "/goodwe-meter-reads": "GoodWe SEMS",
+  "/generac-meter-reads": "Generac PWRfleet",
+  "/locus-meter-reads": "Locus / SolarNOC",
+  "/growatt-meter-reads": "Growatt",
+  "/apsystems-meter-reads": "APsystems",
+  "/ekm-meter-reads": "EKM Encompass",
+  "/hoymiles-meter-reads": "Hoymiles",
+  "/solarlog-meter-reads": "Solar-Log",
   "/zendesk-ticket-metrics": "Zendesk",
 };
 
