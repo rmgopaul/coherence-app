@@ -149,8 +149,16 @@ export default function EGaugeApi() {
       return;
     }
 
+    const savedUsername = selectedConnection?.username ?? "";
+    const usernameChanged = hasSavedPassword && savedUsername && username.toLowerCase() !== savedUsername.toLowerCase();
+
     if (requiresCredentials && !password && !hasSavedPassword) {
       toast.error("Password is required for credentialed login.");
+      return;
+    }
+
+    if (requiresCredentials && !password && usernameChanged) {
+      toast.error("Password is required when changing the username. Enter the password for the new account.");
       return;
     }
 
@@ -468,7 +476,11 @@ export default function EGaugeApi() {
                   onChange={(event) => setPasswordInput(event.target.value)}
                   placeholder={
                     requiresCredentials
-                      ? (selectedConnection?.hasPassword ? "Leave blank to keep saved password" : "Required for credentialed login")
+                      ? (selectedConnection?.hasPassword
+                          ? (usernameInput.trim().toLowerCase() !== (selectedConnection?.username ?? "").toLowerCase()
+                              ? "Password required — username changed"
+                              : "Leave blank to keep saved password")
+                          : "Required for credentialed login")
                       : "Not required for public link"
                   }
                   disabled={!requiresCredentials}

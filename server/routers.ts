@@ -5439,13 +5439,24 @@ export const appRouter = router({
           accessType === "public"
             ? null
             : username ?? existingConnection?.username ?? null;
+
+        const usernameChanged =
+          existingConnection &&
+          resolvedUsername &&
+          existingConnection.username &&
+          resolvedUsername.toLowerCase() !== existingConnection.username.toLowerCase();
+
         const resolvedPassword =
           accessType === "public"
             ? null
-            : password ?? existingConnection?.password ?? null;
+            : password ?? (usernameChanged ? null : existingConnection?.password ?? null);
 
         if (accessType !== "public" && (!resolvedUsername || !resolvedPassword)) {
-          throw new Error("Username and password are required for credentialed login.");
+          throw new Error(
+            usernameChanged
+              ? "Password is required when changing the username. Please enter the password for the new account."
+              : "Username and password are required for credentialed login."
+          );
         }
 
         let nextConnections: EgaugeConnectionConfig[];
