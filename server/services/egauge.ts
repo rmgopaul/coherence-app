@@ -1270,6 +1270,13 @@ export async function getEgaugePortfolioSystems(
   accessType: EgaugeAccessType;
   filter: string | null;
   groupId: string | null;
+  queryAttempts: Array<{
+    groupId: string | null;
+    start: number | null;
+    length: number | null;
+    rowsReturned: number;
+    error: string | null;
+  }>;
   total: number;
   found: number;
   notFound: number;
@@ -1302,6 +1309,13 @@ export async function getEgaugePortfolioSystems(
 
   const mergedRowsByKey = new Map<string, unknown>();
   let firstError: Error | null = null;
+  const queryAttempts: Array<{
+    groupId: string | null;
+    start: number | null;
+    length: number | null;
+    rowsReturned: number;
+    error: string | null;
+  }> = [];
 
   for (const attempt of fetchAttempts) {
     try {
@@ -1314,6 +1328,14 @@ export async function getEgaugePortfolioSystems(
         perPage: attempt.perPage,
       });
 
+      queryAttempts.push({
+        groupId: attempt.groupId ?? null,
+        start: attempt.start ?? null,
+        length: attempt.length ?? null,
+        rowsReturned: fetchedRows.length,
+        error: null,
+      });
+
       for (const row of fetchedRows) {
         const key = buildPortfolioRowKey(row);
         if (!mergedRowsByKey.has(key)) {
@@ -1321,6 +1343,13 @@ export async function getEgaugePortfolioSystems(
         }
       }
     } catch (error) {
+      queryAttempts.push({
+        groupId: attempt.groupId ?? null,
+        start: attempt.start ?? null,
+        length: attempt.length ?? null,
+        rowsReturned: 0,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
       if (!firstError && error instanceof Error) {
         firstError = error;
       }
@@ -1350,6 +1379,7 @@ export async function getEgaugePortfolioSystems(
     accessType: normalizeEgaugeAccessType(context.accessType),
     filter: normalizedFilter,
     groupId: normalizedGroupId,
+    queryAttempts,
     total: rows.length,
     found,
     notFound,
