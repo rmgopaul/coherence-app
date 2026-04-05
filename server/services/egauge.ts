@@ -826,7 +826,7 @@ class EgaugePortfolioClient {
   }
 }
 
-function extractMeterIdFromDevicesPath(value: string | null): string | null {
+function extractMeterIdFromDevicePath(value: string | null): string | null {
   const raw = toNonEmptyString(value);
   if (!raw) return null;
 
@@ -835,7 +835,10 @@ function extractMeterIdFromDevicesPath(value: string | null): string | null {
       .split("/")
       .map((segment) => segment.trim())
       .filter(Boolean);
-    const deviceSegmentIndex = segments.findIndex((segment) => segment.toLowerCase() === "devices");
+    const deviceSegmentIndex = segments.findIndex((segment) => {
+      const normalized = segment.toLowerCase();
+      return normalized === "device" || normalized === "devices";
+    });
     if (deviceSegmentIndex < 0) return null;
     const candidate = segments[deviceSegmentIndex + 1];
     if (!candidate) return null;
@@ -858,6 +861,41 @@ function extractMeterIdFromDevicesPath(value: string | null): string | null {
   return null;
 }
 
+function extractMeterIdFromQueryParam(value: string | null): string | null {
+  const raw = toNonEmptyString(value);
+  if (!raw) return null;
+
+  const parseFromSearchParams = (searchParams: URLSearchParams): string | null => {
+    for (const key of ["device_name", "meter_id", "meterId", "name"]) {
+      const candidate = toNonEmptyString(searchParams.get(key));
+      if (candidate && /^[A-Za-z0-9._-]+$/.test(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      return parseFromSearchParams(parsed.searchParams);
+    } catch {
+      return null;
+    }
+  }
+
+  if (raw.startsWith("/")) {
+    try {
+      const parsed = new URL(raw, "https://www.egauge.net");
+      return parseFromSearchParams(parsed.searchParams);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function extractMeterIdFromProxyUrl(value: string | null): string | null {
   const raw = toNonEmptyString(value);
   if (!raw) return null;
@@ -872,6 +910,15 @@ function extractMeterIdFromProxyUrl(value: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function extractMeterIdFromInlineUrl(value: string | null): string | null {
+  const raw = toNonEmptyString(value);
+  if (!raw) return null;
+
+  const urlMatch = raw.match(/https?:\/\/[^\s)]+/i);
+  if (!urlMatch) return null;
+  return extractMeterIdFromProxyUrl(urlMatch[0]);
 }
 
 function looksLikePortfolioMeterId(value: string | null): boolean {
@@ -896,10 +943,18 @@ function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record
     return fromExplicitFields;
   }
 
+  const fromQueryParam =
+    extractMeterIdFromQueryParam(toNonEmptyString(record.Group_Edit)) ??
+    extractMeterIdFromQueryParam(toNonEmptyString(record.Name_Edit)) ??
+    extractMeterIdFromQueryParam(toNonEmptyString(record.Map_Link));
+  if (looksLikePortfolioMeterId(fromQueryParam)) {
+    return fromQueryParam;
+  }
+
   const fromDevicePath =
-    extractMeterIdFromDevicesPath(toNonEmptyString(record.Name_Edit)) ??
-    extractMeterIdFromDevicesPath(toNonEmptyString(record.Map_Link)) ??
-    extractMeterIdFromDevicesPath(toNonEmptyString(record.Group_Edit));
+    extractMeterIdFromDevicePath(toNonEmptyString(record.Name_Edit)) ??
+    extractMeterIdFromDevicePath(toNonEmptyString(record.Map_Link)) ??
+    extractMeterIdFromDevicePath(toNonEmptyString(record.Group_Edit));
   if (looksLikePortfolioMeterId(fromDevicePath)) {
     return fromDevicePath;
   }
@@ -907,6 +962,13 @@ function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record
   const fromProxyUrl = extractMeterIdFromProxyUrl(toNonEmptyString(extra.proxy_url));
   if (looksLikePortfolioMeterId(fromProxyUrl)) {
     return fromProxyUrl;
+  }
+
+  const fromInlineUrl =
+    extractMeterIdFromInlineUrl(toNonEmptyString(record.Name)) ??
+    extractMeterIdFromInlineUrl(toNonEmptyString(extra.label));
+  if (looksLikePortfolioMeterId(fromInlineUrl)) {
+    return fromInlineUrl;
   }
 
   const fallback =
