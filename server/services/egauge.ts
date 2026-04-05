@@ -193,6 +193,66 @@ function parseIsoDateToUnixEnd(dateValue: string): number {
   return Math.floor(epoch / 1000);
 }
 
+function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+function formatIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftIsoDate(dateIso: string, deltaDays: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setDate(date.getDate() + deltaDays);
+  return formatIsoDate(date);
+}
+
+function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setFullYear(date.getFullYear() + deltaYears);
+  return formatIsoDate(date);
+}
+
+function firstDayOfMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, 1);
+  return formatIsoDate(date);
+}
+
+function firstDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 2, 1);
+  return formatIsoDate(date);
+}
+
+function lastDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, 0);
+  return formatIsoDate(date);
+}
+
+function safeRound(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.round(value * 1000) / 1000;
+}
+
 function extractJwtToken(payload: unknown): string | null {
   const root = asRecord(payload);
   const direct =
@@ -505,6 +565,52 @@ export type EgaugePortfolioSystem = {
   mapLink: string | null;
   devicePagePath: string | null;
   groupEditPath: string | null;
+  sinceMidnightGenerationKwh: number | null;
+  last24HoursGenerationKwh: number | null;
+  lastWeekGenerationKwh: number | null;
+  lastMonthGenerationKwh: number | null;
+  lastYearGenerationKwh: number | null;
+  totalGenerationKwh: number | null;
+  sinceMidnightConsumptionKwh: number | null;
+  last24HoursConsumptionKwh: number | null;
+  lastWeekConsumptionKwh: number | null;
+  lastMonthConsumptionKwh: number | null;
+  lastYearConsumptionKwh: number | null;
+  totalConsumptionKwh: number | null;
+};
+
+export type EgaugePortfolioSnapshotRow = {
+  meterId: string;
+  meterName: string | null;
+  siteName: string | null;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  lifetimeKwh: number | null;
+  hourlyProductionKwh: number | null;
+  monthlyProductionKwh: number | null;
+  mtdProductionKwh: number | null;
+  previousCalendarMonthProductionKwh: number | null;
+  last12MonthsProductionKwh: number | null;
+  weeklyProductionKwh: number | null;
+  dailyProductionKwh: number | null;
+  yearlyProductionKwh: number | null;
+  anchorDate: string;
+  monthlyStartDate: string;
+  weeklyStartDate: string;
+  mtdStartDate: string;
+  previousCalendarMonthStartDate: string;
+  previousCalendarMonthEndDate: string;
+  last12MonthsStartDate: string;
+  group: string | null;
+  job: string | null;
+  owner: string | null;
+  model: string | null;
+  firmware: string | null;
+  online: boolean | null;
+  availabilityPercent: number | null;
+  temperatureC: number | null;
+  proxyHost: string | null;
+  error: string | null;
 };
 
 type EgaugePortfolioFetchOptions = {
@@ -726,6 +832,17 @@ function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
   const name = toNonEmptyString(record.Name) ?? toNonEmptyString(extra.label) ?? "Unknown";
   const status = toNonEmptyString(record.Status);
 
+  const parsePortfolioMetricKwh = (value: unknown): number | null => {
+    if (Array.isArray(value)) {
+      const numericValues = value
+        .map((entry) => parseLooseNumber(entry))
+        .filter((entry): entry is number => entry !== null);
+      if (numericValues.length === 0) return null;
+      return safeRound(numericValues[numericValues.length - 1]);
+    }
+    return safeRound(parseLooseNumber(value));
+  };
+
   return {
     systemId: toNonEmptyString(extra.label) ?? toNonEmptyString(record.Name),
     name,
@@ -744,6 +861,65 @@ function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
     mapLink: toNonEmptyString(record.Map_Link),
     devicePagePath: toNonEmptyString(record.Name_Edit),
     groupEditPath: toNonEmptyString(record.Group_Edit),
+    sinceMidnightGenerationKwh: parsePortfolioMetricKwh(record.Since_Midnight_Gen),
+    last24HoursGenerationKwh: parsePortfolioMetricKwh(record.Last_24_Hours_Gen),
+    lastWeekGenerationKwh: parsePortfolioMetricKwh(record.Last_Week_Gen),
+    lastMonthGenerationKwh: parsePortfolioMetricKwh(record.Last_Month_Gen),
+    lastYearGenerationKwh: parsePortfolioMetricKwh(record.Last_Year_Gen),
+    totalGenerationKwh: parsePortfolioMetricKwh(record.Total_Gen),
+    sinceMidnightConsumptionKwh: parsePortfolioMetricKwh(record.Since_Midnight_Used),
+    last24HoursConsumptionKwh: parsePortfolioMetricKwh(record.Last_24_Hours_Used),
+    lastWeekConsumptionKwh: parsePortfolioMetricKwh(record.Last_Week_Used),
+    lastMonthConsumptionKwh: parsePortfolioMetricKwh(record.Last_Month_Used),
+    lastYearConsumptionKwh: parsePortfolioMetricKwh(record.Last_Year_Used),
+    totalConsumptionKwh: parsePortfolioMetricKwh(record.Total_Used),
+  };
+}
+
+function mapPortfolioSystemToSnapshotRow(
+  system: EgaugePortfolioSystem,
+  anchorDate: string
+): EgaugePortfolioSnapshotRow {
+  const monthlyStartDate = shiftIsoDate(anchorDate, -29);
+  const weeklyStartDate = shiftIsoDate(anchorDate, -6);
+  const mtdStartDate = firstDayOfMonth(anchorDate);
+  const previousCalendarMonthStartDate = firstDayOfPreviousMonth(anchorDate);
+  const previousCalendarMonthEndDate = lastDayOfPreviousMonth(anchorDate);
+  const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
+  const meterId = system.systemId ?? system.name;
+
+  return {
+    meterId,
+    meterName: system.name,
+    siteName: system.siteName ?? system.job ?? null,
+    status: "Found",
+    found: true,
+    lifetimeKwh: system.totalGenerationKwh,
+    hourlyProductionKwh: null,
+    monthlyProductionKwh: system.lastMonthGenerationKwh,
+    mtdProductionKwh: null,
+    previousCalendarMonthProductionKwh: null,
+    last12MonthsProductionKwh: system.lastYearGenerationKwh,
+    weeklyProductionKwh: system.lastWeekGenerationKwh,
+    dailyProductionKwh: system.sinceMidnightGenerationKwh ?? system.last24HoursGenerationKwh,
+    yearlyProductionKwh: system.lastYearGenerationKwh,
+    anchorDate,
+    monthlyStartDate,
+    weeklyStartDate,
+    mtdStartDate,
+    previousCalendarMonthStartDate,
+    previousCalendarMonthEndDate,
+    last12MonthsStartDate,
+    group: system.group,
+    job: system.job,
+    owner: system.owner,
+    model: system.model,
+    firmware: system.firmware,
+    online: system.online,
+    availabilityPercent: system.availabilityPercent,
+    temperatureC: system.temperatureC,
+    proxyHost: system.proxyHost,
+    error: null,
   };
 }
 
@@ -881,6 +1057,11 @@ export async function getEgaugePortfolioSystems(
   accessType: EgaugeAccessType;
   filter: string | null;
   groupId: string | null;
+  total: number;
+  found: number;
+  notFound: number;
+  errored: number;
+  rows: EgaugePortfolioSnapshotRow[];
   systemCount: number;
   systems: EgaugePortfolioSystem[];
   raw: unknown[];
@@ -892,14 +1073,119 @@ export async function getEgaugePortfolioSystems(
   });
 
   const systems = raw.map((row) => mapPortfolioSystem(row));
+  const anchorDate = formatIsoDate(new Date());
+  const rows = systems.map((system) => mapPortfolioSystemToSnapshotRow(system, anchorDate));
+  const found = rows.filter((row) => row.status === "Found").length;
+  const notFound = rows.filter((row) => row.status === "Not Found").length;
+  const errored = rows.filter((row) => row.status === "Error").length;
 
   return {
     baseUrl: normalizeEgaugePortfolioBaseUrl(context.baseUrl),
     accessType: normalizeEgaugeAccessType(context.accessType),
     filter: toNonEmptyString(options?.filter),
     groupId: toNonEmptyString(options?.groupId),
+    total: rows.length,
+    found,
+    notFound,
+    errored,
+    rows,
     systemCount: systems.length,
     systems,
     raw,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Production snapshot (bulk support)                                  */
+/* ------------------------------------------------------------------ */
+
+export type EgaugeProductionSnapshot = {
+  meterId: string;
+  meterName: string | null;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  lifetimeKwh: number | null;
+  anchorDate: string;
+  error: string | null;
+};
+
+function extractRegisterCumulativeWh(raw: unknown): number | null {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+
+  // The register endpoint returns registers with cumulative values.
+  // Look for common production register names.
+  const registers = record.registers ?? record.data ?? record;
+  if (!registers || typeof registers !== "object") return null;
+
+  const reg = registers as Record<string, unknown>;
+
+  // Try common eGauge production register names.
+  for (const key of ["Generation", "Solar", "Solar+", "generation", "solar", "PV", "Grid", "Total Generation"]) {
+    const val = reg[key];
+    if (typeof val === "number" && Number.isFinite(val)) return val;
+    if (val && typeof val === "object") {
+      const nested = val as Record<string, unknown>;
+      const cumulative = nested.cumulative ?? nested.total ?? nested.value ?? nested.energy;
+      if (typeof cumulative === "number" && Number.isFinite(cumulative)) return cumulative;
+    }
+  }
+
+  // Fallback: if there's a single numeric register, use it.
+  const values = Object.values(reg).filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+  if (values.length === 1) return values[0];
+
+  return null;
+}
+
+export async function getMeterProductionSnapshot(
+  context: EgaugeApiContext,
+  meterId: string,
+  meterName: string | null,
+  anchorDate: string
+): Promise<EgaugeProductionSnapshot> {
+  try {
+    const result = await getEgaugeRegisterLatest(context);
+    const lifetimeWh = extractRegisterCumulativeWh(result.raw);
+    const lifetimeKwh = lifetimeWh !== null ? Math.round((lifetimeWh / 1000) * 1000) / 1000 : null;
+
+    return {
+      meterId,
+      meterName,
+      status: "Found",
+      found: true,
+      lifetimeKwh,
+      anchorDate,
+      error: null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error.";
+    return {
+      meterId,
+      meterName,
+      status: "Error",
+      found: false,
+      lifetimeKwh: null,
+      anchorDate,
+      error: message,
+    };
+  }
+}
+
+export async function mapWithConcurrency<TInput, TOutput>(
+  items: TInput[],
+  concurrency: number,
+  fn: (item: TInput) => Promise<TOutput>
+): Promise<TOutput[]> {
+  const results: TOutput[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await fn(items[index]);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
 }
