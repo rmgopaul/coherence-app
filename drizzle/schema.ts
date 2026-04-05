@@ -41,7 +41,7 @@ export const integrations = mysqlTable("integrations", {
   refreshToken: text("refreshToken"),
   expiresAt: timestamp("expiresAt"),
   scope: text("scope"),
-  metadata: text("metadata"), // JSON string for provider-specific data
+  metadata: mediumtext("metadata"), // JSON string for provider-specific data
   createdAt: timestamp("createdAt").defaultNow(),
   updatedAt: timestamp("updatedAt").defaultNow(),
 });

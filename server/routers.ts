@@ -1164,35 +1164,121 @@ function parseTeslaSolarMetadata(metadata: string | null | undefined): {
   };
 }
 
-type EgaugeAccessType = "public" | "user_login" | "site_login";
+type EgaugeAccessType = "public" | "user_login" | "site_login" | "portfolio_login";
 
 function normalizeEgaugeAccessType(value: unknown): EgaugeAccessType {
-  if (value === "user_login" || value === "site_login" || value === "public") return value;
+  if (value === "user_login" || value === "site_login" || value === "portfolio_login" || value === "public") return value;
   return "public";
 }
 
-function parseEgaugeMetadata(metadata: string | null | undefined): {
-  baseUrl: string | null;
+type EgaugeConnectionConfig = {
+  id: string;
+  name: string;
+  meterId: string;
+  baseUrl: string;
   accessType: EgaugeAccessType;
   username: string | null;
+  password: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function deriveEgaugeMeterId(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl);
+    const host = parsed.hostname.toLowerCase();
+    const firstLabel = host.split(".")[0]?.trim();
+    return firstLabel && firstLabel.length > 0 ? firstLabel : host;
+  } catch {
+    const normalized = baseUrl
+      .replace(/^https?:\/\//i, "")
+      .split(/[/?#]/)[0]
+      .trim()
+      .toLowerCase();
+    return normalized.split(".")[0] || normalized || "egauge-meter";
+  }
+}
+
+function parseEgaugeMetadata(
+  metadata: string | null | undefined,
+  fallbackPassword?: string | null
+): {
+  activeConnectionId: string | null;
+  connections: EgaugeConnectionConfig[];
 } {
   const parsed = parseJsonMetadata(metadata);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+
+  const connections: EgaugeConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `egauge-conn-${index + 1}`;
+      const baseUrl = toNonEmptyString(row.baseUrl);
+      if (!baseUrl) return null;
+
+      const accessType = normalizeEgaugeAccessType(row.accessType);
+      const createdAt = toNonEmptyString(row.createdAt) ?? new Date().toISOString();
+      const updatedAt = toNonEmptyString(row.updatedAt) ?? createdAt;
+      const username = toNonEmptyString(row.username);
+      const password = toNonEmptyString(row.password);
+      const meterId =
+        toNonEmptyString(row.meterId)?.toLowerCase() ?? deriveEgaugeMeterId(baseUrl).toLowerCase();
+
+      return {
+        id,
+        name: toNonEmptyString(row.name) ?? `eGauge ${index + 1}`,
+        meterId,
+        baseUrl,
+        accessType,
+        username,
+        password,
+        createdAt,
+        updatedAt,
+      } satisfies EgaugeConnectionConfig;
+    })
+    .filter((value): value is EgaugeConnectionConfig => value !== null);
+
+  if (connections.length === 0) {
+    const legacyBaseUrl = toNonEmptyString(parsed.baseUrl);
+    if (legacyBaseUrl) {
+      const nowIso = new Date().toISOString();
+      const legacyAccessType = normalizeEgaugeAccessType(parsed.accessType);
+      const legacyUsername = toNonEmptyString(parsed.username);
+      const legacyPassword = toNonEmptyString(fallbackPassword);
+
+      connections.push({
+        id: "legacy-egauge-connection",
+        name: "Legacy eGauge Connection",
+        meterId: deriveEgaugeMeterId(legacyBaseUrl).toLowerCase(),
+        baseUrl: legacyBaseUrl,
+        accessType: legacyAccessType,
+        username: legacyUsername,
+        password: legacyPassword,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      });
+    }
+  }
+
+  const activeConnectionId =
+    (activeConnectionIdRaw && connections.some((connection) => connection.id === activeConnectionIdRaw)
+      ? activeConnectionIdRaw
+      : connections[0]?.id) ?? null;
+
   return {
-    baseUrl: toNonEmptyString(parsed.baseUrl),
-    accessType: normalizeEgaugeAccessType(parsed.accessType),
-    username: toNonEmptyString(parsed.username),
+    activeConnectionId,
+    connections,
   };
 }
 
-function serializeEgaugeMetadata(metadata: {
-  baseUrl: string | null;
-  accessType: EgaugeAccessType;
-  username: string | null;
-}): string {
+function serializeEgaugeMetadata(
+  connections: EgaugeConnectionConfig[],
+  activeConnectionId: string | null
+): string {
   return JSON.stringify({
-    baseUrl: metadata.baseUrl,
-    accessType: metadata.accessType,
-    username: metadata.username,
+    activeConnectionId,
+    connections,
   });
 }
 
@@ -1692,23 +1778,24 @@ async function getEgaugeContext(userId: number): Promise<{
 }> {
   const { getIntegrationByProvider } = await import("./db");
   const integration = await getIntegrationByProvider(userId, EGAUGE_PROVIDER);
-  const metadata = parseEgaugeMetadata(integration?.metadata);
-  const password = toNonEmptyString(integration?.accessToken);
+  const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection =
+    metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ?? metadata.connections[0];
 
-  if (!metadata.baseUrl) {
-    throw new Error("eGauge is not connected. Save the eGauge URL first.");
+  if (!activeConnection) {
+    throw new Error("eGauge is not connected. Save at least one meter profile first.");
   }
 
-  const requiresCredentials = metadata.accessType !== "public";
-  if (requiresCredentials && (!metadata.username || !password)) {
-    throw new Error("eGauge login is incomplete. Save username and password first.");
+  const requiresCredentials = activeConnection.accessType !== "public";
+  if (requiresCredentials && (!activeConnection.username || !activeConnection.password)) {
+    throw new Error("eGauge login is incomplete for the active profile. Save username and password.");
   }
 
   return {
-    baseUrl: metadata.baseUrl,
-    accessType: metadata.accessType,
-    username: metadata.username,
-    password,
+    baseUrl: activeConnection.baseUrl,
+    accessType: activeConnection.accessType,
+    username: activeConnection.username,
+    password: activeConnection.password,
   };
 }
 
@@ -4503,58 +4590,219 @@ export const appRouter = router({
     getStatus: protectedProcedure.query(async ({ ctx }) => {
       const { getIntegrationByProvider } = await import("./db");
       const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
-      const metadata = parseEgaugeMetadata(integration?.metadata);
-      const password = toNonEmptyString(integration?.accessToken);
-      const requiresCredentials = metadata.accessType !== "public";
+      const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const activeConnection =
+        metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ?? metadata.connections[0];
+      const requiresCredentials = activeConnection ? activeConnection.accessType !== "public" : false;
 
       return {
-        connected: Boolean(metadata.baseUrl && (!requiresCredentials || (metadata.username && password))),
-        baseUrl: metadata.baseUrl,
-        accessType: metadata.accessType,
-        username: metadata.username,
-        hasPassword: Boolean(password),
+        connected: metadata.connections.length > 0,
+        baseUrl: activeConnection?.baseUrl ?? null,
+        accessType: activeConnection?.accessType ?? null,
+        username: activeConnection?.username ?? null,
+        hasPassword: Boolean(activeConnection?.password),
         requiresCredentials,
+        activeConnectionId: activeConnection?.id ?? null,
+        connections: metadata.connections.map((connection) => ({
+          id: connection.id,
+          name: connection.name,
+          meterId: connection.meterId,
+          baseUrl: connection.baseUrl,
+          accessType: connection.accessType,
+          username: connection.username,
+          hasPassword: Boolean(connection.password),
+          updatedAt: connection.updatedAt,
+          isActive: connection.id === activeConnection?.id,
+        })),
       };
     }),
     connect: protectedProcedure
       .input(
         z.object({
+          connectionName: z.string().optional(),
+          meterId: z.string().optional(),
           baseUrl: z.string().min(1),
-          accessType: z.enum(["public", "user_login", "site_login"]),
+          accessType: z.enum(["public", "user_login", "portfolio_login"]),
           username: z.string().optional(),
           password: z.string().optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const { upsertIntegration } = await import("./db");
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
+        const { normalizeEgaugeBaseUrl, normalizeEgaugePortfolioBaseUrl } = await import("./services/egauge");
 
+        const accessType: EgaugeAccessType = input.accessType;
         const username = toNonEmptyString(input.username);
         const password = toNonEmptyString(input.password);
-        const accessType: EgaugeAccessType = input.accessType;
 
-        if (accessType !== "public" && (!username || !password)) {
-          throw new Error("Username and password are required for user/site login.");
+        const normalizedBaseUrl =
+          accessType === "portfolio_login"
+            ? normalizeEgaugePortfolioBaseUrl(input.baseUrl)
+            : normalizeEgaugeBaseUrl(input.baseUrl);
+        const normalizedMeterId =
+          toNonEmptyString(input.meterId)?.toLowerCase() ??
+          (accessType === "portfolio_login" ? "portfolio" : deriveEgaugeMeterId(normalizedBaseUrl).toLowerCase());
+
+        const existing = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+        const metadataState = parseEgaugeMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+        const nowIso = new Date().toISOString();
+        const existingConnection = metadataState.connections.find((connection) => connection.meterId === normalizedMeterId);
+        const resolvedUsername =
+          accessType === "public"
+            ? null
+            : username ?? existingConnection?.username ?? null;
+        const resolvedPassword =
+          accessType === "public"
+            ? null
+            : password ?? existingConnection?.password ?? null;
+
+        if (accessType !== "public" && (!resolvedUsername || !resolvedPassword)) {
+          throw new Error("Username and password are required for credentialed login.");
         }
 
-        const metadata = serializeEgaugeMetadata({
-          baseUrl: toNonEmptyString(input.baseUrl),
-          accessType,
-          username: accessType === "public" ? null : username,
-        });
+        let nextConnections: EgaugeConnectionConfig[];
+        let activeConnectionId: string;
+        if (existingConnection) {
+          const updatedConnection: EgaugeConnectionConfig = {
+            ...existingConnection,
+            name: toNonEmptyString(input.connectionName) ?? existingConnection.name,
+            meterId: normalizedMeterId,
+            baseUrl: normalizedBaseUrl,
+            accessType,
+            username: resolvedUsername,
+            password: resolvedPassword,
+            updatedAt: nowIso,
+          };
+          nextConnections = [updatedConnection, ...metadataState.connections.filter((c) => c.id !== existingConnection.id)];
+          activeConnectionId = updatedConnection.id;
+        } else {
+          const newConnection: EgaugeConnectionConfig = {
+            id: nanoid(),
+            name:
+              toNonEmptyString(input.connectionName) ??
+              (accessType === "portfolio_login"
+                ? "eGauge Portfolio"
+                : `eGauge ${normalizedMeterId}`),
+            meterId: normalizedMeterId,
+            baseUrl: normalizedBaseUrl,
+            accessType,
+            username: resolvedUsername,
+            password: resolvedPassword,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+          nextConnections = [newConnection, ...metadataState.connections];
+          activeConnectionId = newConnection.id;
+        }
+
+        const activeConnection = nextConnections.find((connection) => connection.id === activeConnectionId) ?? nextConnections[0];
+        const metadata = serializeEgaugeMetadata(nextConnections, activeConnection.id);
 
         await upsertIntegration({
           id: nanoid(),
           userId: ctx.user.id,
           provider: EGAUGE_PROVIDER,
-          accessToken: accessType === "public" ? null : password,
+          accessToken: activeConnection.password,
           refreshToken: null,
           expiresAt: null,
           scope: null,
           metadata,
         });
 
-        return { success: true };
+        return {
+          success: true,
+          activeConnectionId: activeConnection.id,
+          totalConnections: nextConnections.length,
+          meterId: activeConnection.meterId,
+        };
+      }),
+    setActiveConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+        if (!integration) {
+          throw new Error("eGauge is not connected.");
+        }
+        const metadataState = parseEgaugeMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const activeConnection = metadataState.connections.find((connection) => connection.id === input.connectionId);
+        if (!activeConnection) {
+          throw new Error("Selected eGauge profile was not found.");
+        }
+
+        const metadata = serializeEgaugeMetadata(metadataState.connections, activeConnection.id);
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: EGAUGE_PROVIDER,
+          accessToken: activeConnection.password,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          activeConnectionId: activeConnection.id,
+        };
+      }),
+    removeConnection: protectedProcedure
+      .input(
+        z.object({
+          connectionId: z.string().min(1),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+        if (!integration) {
+          throw new Error("eGauge is not connected.");
+        }
+
+        const metadataState = parseEgaugeMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+        const nextConnections = metadataState.connections.filter((connection) => connection.id !== input.connectionId);
+        if (nextConnections.length === 0) {
+          if (integration.id) {
+            await deleteIntegration(integration.id);
+          }
+          return {
+            success: true,
+            connected: false,
+            activeConnectionId: null,
+            totalConnections: 0,
+          };
+        }
+
+        const nextActiveConnection =
+          nextConnections.find((connection) => connection.id === metadataState.activeConnectionId) ?? nextConnections[0];
+        const metadata = serializeEgaugeMetadata(nextConnections, nextActiveConnection.id);
+
+        await upsertIntegration({
+          id: nanoid(),
+          userId: ctx.user.id,
+          provider: EGAUGE_PROVIDER,
+          accessToken: nextActiveConnection.password,
+          refreshToken: null,
+          expiresAt: null,
+          scope: null,
+          metadata,
+        });
+
+        return {
+          success: true,
+          connected: true,
+          activeConnectionId: nextActiveConnection.id,
+          totalConnections: nextConnections.length,
+        };
       }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => {
       const { deleteIntegration, getIntegrationByProvider } = await import("./db");
@@ -4566,11 +4814,17 @@ export const appRouter = router({
     }),
     getSystemInfo: protectedProcedure.mutation(async ({ ctx }) => {
       const context = await getEgaugeContext(ctx.user.id);
+      if (context.accessType === "portfolio_login") {
+        throw new Error("System Info is meter-level. Use Fetch Portfolio Systems for portfolio access.");
+      }
       const { getEgaugeSystemInfo } = await import("./services/egauge");
       return getEgaugeSystemInfo(context);
     }),
     getLocalData: protectedProcedure.mutation(async ({ ctx }) => {
       const context = await getEgaugeContext(ctx.user.id);
+      if (context.accessType === "portfolio_login") {
+        throw new Error("Local Data is meter-level. Use Fetch Portfolio Systems for portfolio access.");
+      }
       const { getEgaugeLocalData } = await import("./services/egauge");
       return getEgaugeLocalData(context);
     }),
@@ -4585,6 +4839,9 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEgaugeContext(ctx.user.id);
+        if (context.accessType === "portfolio_login") {
+          throw new Error("Register Latest is meter-level. Use Fetch Portfolio Systems for portfolio access.");
+        }
         const { getEgaugeRegisterLatest } = await import("./services/egauge");
         return getEgaugeRegisterLatest(context, {
           register: input?.register,
@@ -4603,6 +4860,9 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEgaugeContext(ctx.user.id);
+        if (context.accessType === "portfolio_login") {
+          throw new Error("Register History is meter-level. Use Fetch Portfolio Systems for portfolio access.");
+        }
         const { getEgaugeRegisterHistory } = await import("./services/egauge");
         return getEgaugeRegisterHistory(context, {
           startDate: input.startDate,
@@ -4610,6 +4870,26 @@ export const appRouter = router({
           intervalMinutes: input.intervalMinutes ?? 15,
           register: input.register,
           includeRate: input.includeRate,
+        });
+      }),
+    getPortfolioSystems: protectedProcedure
+      .input(
+        z
+          .object({
+            filter: z.string().optional(),
+            groupId: z.string().optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEgaugeContext(ctx.user.id);
+        if (context.accessType !== "portfolio_login") {
+          throw new Error("Switch access type to Portfolio Login, then run Fetch Portfolio Systems.");
+        }
+        const { getEgaugePortfolioSystems } = await import("./services/egauge");
+        return getEgaugePortfolioSystems(context, {
+          filter: input?.filter,
+          groupId: input?.groupId,
         });
       }),
   }),

@@ -92,6 +92,13 @@
       "when": 1774718170219,
       "tag": "0012_volatile_boomerang",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1775351678821,
+      "tag": "0013_jittery_viper",
+      "breakpoints": true
     }
   ]
 }

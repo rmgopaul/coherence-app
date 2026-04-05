@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 
-export const EGAUGE_DEFAULT_BASE_URL = "https://egauge.net";
+export const EGAUGE_DEFAULT_BASE_URL = "https://YOUR-METER.d.egauge.net";
+export const EGAUGE_PORTFOLIO_BASE_URL = "https://www.egauge.net";
 
-export type EgaugeAccessType = "public" | "user_login" | "site_login";
+export type EgaugeAccessType = "public" | "user_login" | "site_login" | "portfolio_login";
 
 export type EgaugeApiContext = {
   baseUrl?: string | null;
@@ -33,8 +34,34 @@ function withHttpsIfMissing(value: string): string {
   return `https://${value}`;
 }
 
+function isEgaugePortalHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === "egauge.net" || normalized === "www.egauge.net";
+}
+
+function tryConvertPortalDevicesUrlToMeterBase(parsed: URL): string | null {
+  if (!isEgaugePortalHost(parsed.hostname)) return null;
+
+  const segments = parsed.pathname
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (segments.length < 2) return null;
+  if (segments[0].toLowerCase() !== "devices") return null;
+  if (!/^[A-Za-z0-9._-]+$/.test(segments[1])) return null;
+
+  return `https://${segments[1]}.d.egauge.net`;
+}
+
 export function normalizeEgaugeBaseUrl(value: string | null | undefined): string {
-  const raw = toNonEmptyString(value) ?? EGAUGE_DEFAULT_BASE_URL;
+  const raw = toNonEmptyString(value);
+  if (!raw) {
+    throw new Error(
+      `eGauge URL is required. Use a meter URL such as ${EGAUGE_DEFAULT_BASE_URL}.`
+    );
+  }
+
   const normalizedInput = withHttpsIfMissing(raw);
 
   let parsed: URL;
@@ -42,6 +69,21 @@ export function normalizeEgaugeBaseUrl(value: string | null | undefined): string
     parsed = new URL(normalizedInput);
   } catch {
     throw new Error("eGauge base URL is invalid.");
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("eGauge URL must start with http:// or https://.");
+  }
+
+  const convertedPortalUrl = tryConvertPortalDevicesUrlToMeterBase(parsed);
+  if (convertedPortalUrl) {
+    return convertedPortalUrl;
+  }
+
+  if (isEgaugePortalHost(parsed.hostname)) {
+    throw new Error(
+      `The URL points to the eGauge portal, not a meter API host. Use a meter URL such as ${EGAUGE_DEFAULT_BASE_URL}.`
+    );
   }
 
   let path = parsed.pathname.replace(/\/+$/, "");
@@ -54,12 +96,41 @@ export function normalizeEgaugeBaseUrl(value: string | null | undefined): string
 }
 
 function isCredentialAccess(accessType: EgaugeAccessType): boolean {
-  return accessType === "user_login" || accessType === "site_login";
+  return accessType === "user_login" || accessType === "site_login" || accessType === "portfolio_login";
 }
 
 function normalizeEgaugeAccessType(value: unknown): EgaugeAccessType {
-  if (value === "user_login" || value === "site_login" || value === "public") return value;
+  if (value === "user_login" || value === "site_login" || value === "portfolio_login" || value === "public") return value;
   return "public";
+}
+
+export function normalizeEgaugePortfolioBaseUrl(value: string | null | undefined): string {
+  const raw = toNonEmptyString(value) ?? EGAUGE_PORTFOLIO_BASE_URL;
+  const normalizedInput = withHttpsIfMissing(raw);
+
+  let parsed: URL;
+  try {
+    parsed = new URL(normalizedInput);
+  } catch {
+    throw new Error("eGauge portfolio URL is invalid.");
+  }
+
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error("eGauge portfolio URL must start with http:// or https://.");
+  }
+
+  if (!/(^|\.)egauge\.net$/i.test(parsed.hostname)) {
+    throw new Error(`Portfolio URL must be on egauge.net (example: ${EGAUGE_PORTFOLIO_BASE_URL}).`);
+  }
+
+  let path = parsed.pathname.replace(/\/+$/, "");
+  const eguardMarker = path.toLowerCase().indexOf("/eguard");
+  if (eguardMarker >= 0) {
+    path = path.slice(0, eguardMarker);
+  }
+
+  const host = parsed.hostname.toLowerCase() === "egauge.net" ? "www.egauge.net" : parsed.hostname;
+  return `${parsed.protocol}//${host}${path}`.replace(/\/+$/, "");
 }
 
 function getSetCookieValues(headers: Headers): string[] {
@@ -96,8 +167,8 @@ function parseCookiePair(setCookieHeader: string): { name: string; value: string
   return { name, value };
 }
 
-function sha256Hex(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+function md5Hex(value: string): string {
+  return createHash("md5").update(value).digest("hex");
 }
 
 function parseIsoDateToUnixStart(dateValue: string): number {
@@ -191,6 +262,28 @@ function normalizeErrorPayload(errorText: string): string {
   }
 }
 
+function stripHtml(value: string): string {
+  return value
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseLooseNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+
+  const normalized = value.replace(/,/g, "").trim();
+  if (!normalized) return null;
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 class EgaugeClient {
   private readonly baseUrl: string;
   private readonly accessType: EgaugeAccessType;
@@ -282,6 +375,12 @@ class EgaugeClient {
         throw new Error("eGauge login failed. Please verify username/password.");
       }
 
+      if (response.status === 404 && /^\s*<!doctype html/i.test(responseText)) {
+        throw new Error(
+          `eGauge endpoint not found at ${url}. This usually means the saved URL is a portal page, not a meter API host. Use a meter URL such as ${EGAUGE_DEFAULT_BASE_URL}.`
+        );
+      }
+
       throw new Error(
         `eGauge request failed (${response.status} ${response.statusText})${detail ? `: ${detail}` : ""}`
       );
@@ -321,8 +420,8 @@ class EgaugeClient {
     }
 
     const clientNonce = randomBytes(16).toString("hex");
-    const userHash = sha256Hex(`${this.username}:${realm}:${this.password}`);
-    const digestHash = sha256Hex(`${userHash}:${nonce}:${clientNonce}`);
+    const userHash = md5Hex(`${this.username}:${realm}:${this.password}`);
+    const digestHash = md5Hex(`${userHash}:${nonce}:${clientNonce}`);
 
     const loginPayload = await this.requestJson("/api/auth/login", {
       authRequired: false,
@@ -386,6 +485,266 @@ class EgaugeClient {
       query,
     });
   }
+}
+
+export type EgaugePortfolioSystem = {
+  systemId: string | null;
+  name: string;
+  group: string | null;
+  job: string | null;
+  owner: string | null;
+  proxyHost: string | null;
+  siteName: string | null;
+  model: string | null;
+  firmware: string | null;
+  status: string | null;
+  online: boolean | null;
+  availabilityPercent: number | null;
+  temperatureC: number | null;
+  map: string | null;
+  mapLink: string | null;
+  devicePagePath: string | null;
+  groupEditPath: string | null;
+};
+
+type EgaugePortfolioFetchOptions = {
+  filter?: string | null;
+  groupId?: string | null;
+};
+
+class EgaugePortfolioClient {
+  private readonly baseUrl: string;
+  private readonly username: string | null;
+  private readonly password: string | null;
+  private readonly cookies = new Map<string, string>();
+  private authenticated = false;
+
+  constructor(context: EgaugeApiContext) {
+    this.baseUrl = normalizeEgaugePortfolioBaseUrl(context.baseUrl);
+    this.username = toNonEmptyString(context.username);
+    this.password = toNonEmptyString(context.password);
+  }
+
+  private buildUrl(path: string, query?: Record<string, string | null | undefined>): string {
+    const safePath = path.startsWith("/") ? path : `/${path}`;
+    const url = new URL(`${this.baseUrl}${safePath}`);
+
+    Object.entries(query ?? {}).forEach(([key, value]) => {
+      if (value === null || value === undefined) return;
+      const normalized = value.trim();
+      if (!normalized) return;
+      url.searchParams.set(key, normalized);
+    });
+
+    return url.toString();
+  }
+
+  private buildCookieHeader(): string {
+    return Array.from(this.cookies.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; ");
+  }
+
+  private storeCookies(response: Response): void {
+    getSetCookieValues(response.headers).forEach((setCookieValue) => {
+      const parsed = parseCookiePair(setCookieValue);
+      if (!parsed) return;
+      this.cookies.set(parsed.name, parsed.value);
+    });
+  }
+
+  private async request(
+    path: string,
+    options?: {
+      method?: "GET" | "POST";
+      query?: Record<string, string | null | undefined>;
+      formBody?: URLSearchParams;
+      accept?: string;
+      referer?: string;
+      xhr?: boolean;
+    }
+  ): Promise<{ url: string; text: string; contentType: string | null }> {
+    const url = this.buildUrl(path, options?.query);
+
+    const headers: Record<string, string> = {
+      Accept: options?.accept ?? "*/*",
+    };
+
+    const cookieHeader = this.buildCookieHeader();
+    if (cookieHeader) {
+      headers.Cookie = cookieHeader;
+    }
+
+    if (options?.formBody) {
+      headers["Content-Type"] = "application/x-www-form-urlencoded";
+    }
+
+    if (options?.referer) {
+      headers.Referer = options.referer;
+    }
+
+    if (options?.xhr) {
+      headers["X-Requested-With"] = "XMLHttpRequest";
+    }
+
+    const response = await fetch(url, {
+      method: options?.method ?? "GET",
+      headers,
+      body: options?.formBody ? options.formBody.toString() : undefined,
+      redirect: "follow",
+      signal: AbortSignal.timeout(EGAUGE_REQUEST_TIMEOUT_MS),
+    });
+
+    this.storeCookies(response);
+
+    const responseText = await response.text().catch(() => "");
+    if (!response.ok) {
+      const detail = normalizeErrorPayload(responseText);
+      throw new Error(
+        `eGauge portfolio request failed (${response.status} ${response.statusText})${detail ? `: ${detail}` : ""}`
+      );
+    }
+
+    return {
+      url: response.url || url,
+      text: responseText,
+      contentType: response.headers.get("content-type"),
+    };
+  }
+
+  private extractCsrfToken(html: string): string | null {
+    const forwardMatch = html.match(/name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)["']/i)?.[1];
+    if (forwardMatch) return toNonEmptyString(forwardMatch);
+
+    const reverseMatch = html.match(/value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken["']/i)?.[1];
+    return toNonEmptyString(reverseMatch);
+  }
+
+  private extractLoginError(html: string): string | null {
+    const alertHtml = html.match(/<div[^>]*class=["'][^"']*alert[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1];
+    if (!alertHtml) return null;
+
+    const listErrors = Array.from(alertHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi))
+      .map((match) => stripHtml(match[1] ?? ""))
+      .filter(Boolean);
+
+    if (listErrors.length > 0) {
+      return listErrors.join(" ");
+    }
+
+    return stripHtml(alertHtml);
+  }
+
+  private async ensureAuthenticated(): Promise<void> {
+    if (this.authenticated) return;
+
+    if (!this.username || !this.password) {
+      throw new Error("Username and password are required for portfolio login.");
+    }
+
+    const loginPath = "/account/login/";
+    const loginUrl = this.buildUrl(loginPath);
+    const loginPage = await this.request(loginPath, {
+      method: "GET",
+      accept: "text/html,application/xhtml+xml",
+    });
+
+    const csrfToken = this.extractCsrfToken(loginPage.text);
+    if (!csrfToken) {
+      throw new Error("eGauge portfolio login page did not return a CSRF token.");
+    }
+
+    const formBody = new URLSearchParams();
+    formBody.set("csrfmiddlewaretoken", csrfToken);
+    formBody.set("login_view-current_step", "auth");
+    formBody.set("auth-username", this.username);
+    formBody.set("auth-password", this.password);
+
+    const loginResponse = await this.request(loginPath, {
+      method: "POST",
+      formBody,
+      accept: "text/html,application/xhtml+xml",
+      referer: loginUrl,
+    });
+
+    const stillAtPasswordForm =
+      /name=["']auth-username["']/i.test(loginResponse.text) &&
+      /name=["']auth-password["']/i.test(loginResponse.text);
+    if (stillAtPasswordForm) {
+      const detail = this.extractLoginError(loginResponse.text);
+      if (detail && /correct login and password/i.test(detail)) {
+        throw new Error("eGauge portfolio login failed. Please verify username/password.");
+      }
+      throw new Error(detail ? `eGauge portfolio login failed: ${detail}` : "eGauge portfolio login failed.");
+    }
+
+    if (/one-time|verification code|multi-factor|two-factor|2fa|mfa/i.test(loginResponse.text)) {
+      throw new Error(
+        "eGauge portfolio login requires an additional verification step (2FA), which this flow does not yet support."
+      );
+    }
+
+    this.authenticated = true;
+  }
+
+  async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<unknown[]> {
+    await this.ensureAuthenticated();
+
+    const response = await this.request("/eguard/data/", {
+      method: "GET",
+      accept: "application/json,text/plain,*/*",
+      referer: this.buildUrl("/eguard/"),
+      xhr: true,
+      query: {
+        filter: toNonEmptyString(options?.filter),
+        group_id: toNonEmptyString(options?.groupId),
+      },
+    });
+
+    const trimmed = response.text.trim();
+    if (!trimmed) return [];
+
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (!Array.isArray(parsed)) {
+        throw new Error("Expected an array.");
+      }
+      return parsed as unknown[];
+    } catch {
+      if (/<html/i.test(response.text) || /name=["']auth-username["']/i.test(response.text)) {
+        throw new Error("Portfolio request returned HTML instead of JSON. Verify portfolio URL and login credentials.");
+      }
+      throw new Error("Portfolio request returned invalid JSON.");
+    }
+  }
+}
+
+function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
+  const record = asRecord(row);
+  const extra = asRecord(record.extra_context);
+
+  const name = toNonEmptyString(record.Name) ?? toNonEmptyString(extra.label) ?? "Unknown";
+  const status = toNonEmptyString(record.Status);
+
+  return {
+    systemId: toNonEmptyString(extra.label) ?? toNonEmptyString(record.Name),
+    name,
+    group: toNonEmptyString(record.Group),
+    job: toNonEmptyString(record.Job),
+    owner: toNonEmptyString(record.Owner),
+    proxyHost: toNonEmptyString(extra.proxy_url),
+    siteName: toNonEmptyString(extra.site_name),
+    model: toNonEmptyString(record.Model),
+    firmware: toNonEmptyString(record.Firmware),
+    status,
+    online: status === "1" ? true : status === "0" ? false : null,
+    availabilityPercent: parseLooseNumber(record.Availability),
+    temperatureC: parseLooseNumber(record.Temp),
+    map: toNonEmptyString(record.Map),
+    mapLink: toNonEmptyString(record.Map_Link),
+    devicePagePath: toNonEmptyString(record.Name_Edit),
+    groupEditPath: toNonEmptyString(record.Group_Edit),
+  };
 }
 
 export function buildEgaugeRegisterTimeExpression(input: {
@@ -507,6 +866,40 @@ export async function getEgaugeRegisterHistory(
     includeRate: Boolean(options.includeRate),
     timeExpression,
     registerCount: extractRegisterCount(raw),
+    raw,
+  };
+}
+
+export async function getEgaugePortfolioSystems(
+  context: EgaugeApiContext,
+  options?: {
+    filter?: string | null;
+    groupId?: string | null;
+  }
+): Promise<{
+  baseUrl: string;
+  accessType: EgaugeAccessType;
+  filter: string | null;
+  groupId: string | null;
+  systemCount: number;
+  systems: EgaugePortfolioSystem[];
+  raw: unknown[];
+}> {
+  const client = new EgaugePortfolioClient(context);
+  const raw = await client.fetchSystems({
+    filter: options?.filter,
+    groupId: options?.groupId,
+  });
+
+  const systems = raw.map((row) => mapPortfolioSystem(row));
+
+  return {
+    baseUrl: normalizeEgaugePortfolioBaseUrl(context.baseUrl),
+    accessType: normalizeEgaugeAccessType(context.accessType),
+    filter: toNonEmptyString(options?.filter),
+    groupId: toNonEmptyString(options?.groupId),
+    systemCount: systems.length,
+    systems,
     raw,
   };
 }

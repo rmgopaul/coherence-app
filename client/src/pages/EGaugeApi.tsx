@@ -11,15 +11,19 @@ import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
-const DEFAULT_BASE_URL = "https://egauge.net";
+const EGAUGE_METER_URL_PLACEHOLDER = "https://YOUR-METER.d.egauge.net";
+const EGAUGE_PORTFOLIO_URL_PLACEHOLDER = "https://www.egauge.net";
 
-type EgaugeAccessType = "public" | "user_login" | "site_login";
+type EgaugeAccessType = "public" | "user_login" | "site_login" | "portfolio_login";
 
 const ACCESS_TYPE_LABELS: Record<EgaugeAccessType, string> = {
   public: "Public Link",
-  user_login: "User Login",
-  site_login: "Site Login",
+  user_login: "Credentialed Login",
+  site_login: "Credentialed Login",
+  portfolio_login: "Portfolio Login",
 };
+
+const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
 function formatDateInput(date: Date): string {
   const year = date.getFullYear();
@@ -40,16 +44,21 @@ export default function EGaugeApi() {
     return formatDateInput(date);
   }, []);
 
-  const [baseUrlInput, setBaseUrlInput] = useState(DEFAULT_BASE_URL);
+  const [connectionNameInput, setConnectionNameInput] = useState("");
+  const [meterIdInput, setMeterIdInput] = useState("");
+  const [baseUrlInput, setBaseUrlInput] = useState("");
   const [accessType, setAccessType] = useState<EgaugeAccessType>("public");
   const [usernameInput, setUsernameInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
+  const [selectedConnectionId, setSelectedConnectionId] = useState("");
 
   const [registerInput, setRegisterInput] = useState("");
   const [includeRate, setIncludeRate] = useState(false);
   const [startDate, setStartDate] = useState(defaultStartDate);
   const [endDate, setEndDate] = useState(today);
   const [intervalMinutes, setIntervalMinutes] = useState("15");
+  const [portfolioFilter, setPortfolioFilter] = useState("");
+  const [portfolioGroupId, setPortfolioGroupId] = useState("");
 
   const [resultTitle, setResultTitle] = useState("No request run yet");
   const [resultText, setResultText] = useState("{}");
@@ -61,11 +70,14 @@ export default function EGaugeApi() {
   });
 
   const connectMutation = trpc.egauge.connect.useMutation();
+  const setActiveConnectionMutation = trpc.egauge.setActiveConnection.useMutation();
+  const removeConnectionMutation = trpc.egauge.removeConnection.useMutation();
   const disconnectMutation = trpc.egauge.disconnect.useMutation();
   const getSystemInfoMutation = trpc.egauge.getSystemInfo.useMutation();
   const getLocalDataMutation = trpc.egauge.getLocalData.useMutation();
   const getRegisterLatestMutation = trpc.egauge.getRegisterLatest.useMutation();
   const getRegisterHistoryMutation = trpc.egauge.getRegisterHistory.useMutation();
+  const getPortfolioSystemsMutation = trpc.egauge.getPortfolioSystems.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -75,47 +87,119 @@ export default function EGaugeApi() {
 
   useEffect(() => {
     if (!statusQuery.data) return;
-    if (statusQuery.data.baseUrl) {
-      setBaseUrlInput(statusQuery.data.baseUrl);
+    const availableIds = new Set((statusQuery.data.connections ?? []).map((connection) => connection.id));
+    if (availableIds.size === 0) {
+      setSelectedConnectionId("");
+      return;
     }
-    if (statusQuery.data.accessType) {
-      setAccessType(statusQuery.data.accessType as EgaugeAccessType);
-    }
-    if (statusQuery.data.username) {
-      setUsernameInput(statusQuery.data.username);
-    }
+
+    setSelectedConnectionId((current) => {
+      if (current && availableIds.has(current)) return current;
+      return statusQuery.data?.activeConnectionId ?? statusQuery.data.connections[0]?.id ?? "";
+    });
   }, [statusQuery.data]);
 
+  useEffect(() => {
+    if (!statusQuery.data?.connections?.length) return;
+    const selected =
+      statusQuery.data.connections.find((connection) => connection.id === selectedConnectionId) ??
+      statusQuery.data.connections.find((connection) => connection.isActive) ??
+      statusQuery.data.connections[0];
+    if (!selected) return;
+
+    setConnectionNameInput(selected.name ?? "");
+    setMeterIdInput(selected.meterId ?? "");
+    setBaseUrlInput(selected.baseUrl ?? "");
+    setAccessType(selected.accessType as EgaugeAccessType);
+    setUsernameInput(selected.username ?? "");
+    setPasswordInput("");
+  }, [selectedConnectionId, statusQuery.data]);
+
+  const connections = statusQuery.data?.connections ?? [];
+  const selectedConnection = connections.find((connection) => connection.id === selectedConnectionId);
+  const activeConnection = connections.find((connection) => connection.isActive);
   const requiresCredentials = accessType !== "public";
+  const formIsPortfolioAccess = accessType === "portfolio_login";
+  const activeIsPortfolioAccess = (activeConnection?.accessType as EgaugeAccessType | undefined) === "portfolio_login";
+  const baseUrlPlaceholder = formIsPortfolioAccess ? EGAUGE_PORTFOLIO_URL_PLACEHOLDER : EGAUGE_METER_URL_PLACEHOLDER;
 
   const handleConnect = async () => {
     const baseUrl = baseUrlInput.trim();
     if (!baseUrl) {
-      toast.error("Enter your eGauge URL.");
+      toast.error(`Enter your eGauge URL (example: ${baseUrlPlaceholder}).`);
       return;
     }
 
     const username = usernameInput.trim();
     const password = passwordInput.trim();
+    const submitAccessType = accessType === "site_login" ? "user_login" : accessType;
+    const hasSavedPassword = Boolean(selectedConnection?.hasPassword);
 
-    if (requiresCredentials && (!username || !password)) {
-      toast.error("Username and password are required for user/site login.");
+    if (requiresCredentials && !username) {
+      toast.error("Username is required for credentialed login.");
+      return;
+    }
+
+    if (requiresCredentials && !password && !hasSavedPassword) {
+      toast.error("Password is required for credentialed login.");
       return;
     }
 
     try {
-      await connectMutation.mutateAsync({
+      const response = await connectMutation.mutateAsync({
+        connectionName: connectionNameInput.trim() || undefined,
+        meterId: meterIdInput.trim() || undefined,
         baseUrl,
-        accessType,
+        accessType: submitAccessType,
         username: requiresCredentials ? username : undefined,
-        password: requiresCredentials ? password : undefined,
+        password: requiresCredentials ? (password || undefined) : undefined,
       });
 
       await trpcUtils.egauge.getStatus.invalidate();
+      setSelectedConnectionId(response.activeConnectionId);
       setPasswordInput("");
-      toast.success("eGauge connection saved.");
+      toast.success(
+        `eGauge profile saved. ${NUMBER_FORMATTER.format(response.totalConnections)} profile(s) stored.`
+      );
     } catch (error) {
       toast.error(`Failed to connect: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const handleSetActiveConnection = async () => {
+    const connectionId = selectedConnectionId.trim();
+    if (!connectionId) {
+      toast.error("Select a meter profile first.");
+      return;
+    }
+
+    try {
+      await setActiveConnectionMutation.mutateAsync({ connectionId });
+      await trpcUtils.egauge.getStatus.invalidate();
+      toast.success("Active eGauge profile updated.");
+    } catch (error) {
+      toast.error(`Failed to switch profile: ${toErrorMessage(error)}`);
+    }
+  };
+
+  const handleRemoveConnection = async () => {
+    const connectionId = selectedConnectionId.trim();
+    if (!connectionId) {
+      toast.error("Select a meter profile first.");
+      return;
+    }
+
+    try {
+      const response = await removeConnectionMutation.mutateAsync({ connectionId });
+      await trpcUtils.egauge.getStatus.invalidate();
+      setSelectedConnectionId(response.activeConnectionId ?? "");
+      toast.success(
+        response.connected
+          ? `Removed profile. ${NUMBER_FORMATTER.format(response.totalConnections)} profile(s) remain.`
+          : "Removed final profile. eGauge is now disconnected."
+      );
+    } catch (error) {
+      toast.error(`Failed to remove profile: ${toErrorMessage(error)}`);
     }
   };
 
@@ -123,6 +207,7 @@ export default function EGaugeApi() {
     try {
       await disconnectMutation.mutateAsync();
       await trpcUtils.egauge.getStatus.invalidate();
+      setSelectedConnectionId("");
       toast.success("eGauge disconnected.");
     } catch (error) {
       toast.error(`Failed to disconnect: ${toErrorMessage(error)}`);
@@ -166,7 +251,7 @@ export default function EGaugeApi() {
           </Button>
           <h1 className="text-2xl font-bold text-slate-900">eGauge API</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Supports public links, user logins, and site logins.
+            Meter profiles support Public Link or Credentialed Login. Portfolio Login is available for account-wide system listing.
           </p>
         </div>
       </header>
@@ -176,30 +261,62 @@ export default function EGaugeApi() {
           <CardHeader>
             <CardTitle>1) Connect eGauge</CardTitle>
             <CardDescription>
-              Choose access type and save your eGauge URL + credentials (if required).
+              Save many meter profiles (hundreds of unique meter IDs). Use Public Link or Credentialed Login per meter.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="egauge-connection-name">Profile Name (optional)</Label>
+                <Input
+                  id="egauge-connection-name"
+                  value={connectionNameInput}
+                  onChange={(event) => setConnectionNameInput(event.target.value)}
+                  placeholder="Example: North Portfolio Meter A"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="egauge-meter-id">Meter ID (optional)</Label>
+                <Input
+                  id="egauge-meter-id"
+                  value={meterIdInput}
+                  onChange={(event) => setMeterIdInput(event.target.value)}
+                  placeholder="Example: egauge12345"
+                />
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="egauge-base-url">eGauge URL</Label>
                 <Input
                   id="egauge-base-url"
                   value={baseUrlInput}
                   onChange={(event) => setBaseUrlInput(event.target.value)}
-                  placeholder={DEFAULT_BASE_URL}
+                  placeholder={baseUrlPlaceholder}
                 />
+                <p className="text-xs text-slate-500">
+                  {formIsPortfolioAccess ? (
+                    <>
+                      Portfolio login URL example: <span className="font-mono">{EGAUGE_PORTFOLIO_URL_PLACEHOLDER}</span>
+                    </>
+                  ) : (
+                    <>
+                      Meter URL example: <span className="font-mono">{EGAUGE_METER_URL_PLACEHOLDER}</span>
+                    </>
+                  )}
+                </p>
               </div>
               <div className="space-y-2">
                 <Label>Access Type</Label>
-                <Select value={accessType} onValueChange={(value) => setAccessType(value as EgaugeAccessType)}>
+                <Select
+                  value={accessType === "site_login" ? "user_login" : accessType}
+                  onValueChange={(value) => setAccessType(value as EgaugeAccessType)}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select access type" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="public">Public Link</SelectItem>
-                    <SelectItem value="user_login">User Login</SelectItem>
-                    <SelectItem value="site_login">Site Login</SelectItem>
+                    <SelectItem value="user_login">Credentialed Login</SelectItem>
+                    <SelectItem value="portfolio_login">Portfolio Login</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -210,7 +327,7 @@ export default function EGaugeApi() {
                   id="egauge-username"
                   value={usernameInput}
                   onChange={(event) => setUsernameInput(event.target.value)}
-                  placeholder="Required for user/site login"
+                  placeholder="Required for credentialed login"
                   disabled={!requiresCredentials}
                 />
               </div>
@@ -221,11 +338,84 @@ export default function EGaugeApi() {
                   type="password"
                   value={passwordInput}
                   onChange={(event) => setPasswordInput(event.target.value)}
-                  placeholder="Required for user/site login"
+                  placeholder={
+                    requiresCredentials
+                      ? (selectedConnection?.hasPassword ? "Leave blank to keep saved password" : "Required for credentialed login")
+                      : "Not required for public link"
+                  }
                   disabled={!requiresCredentials}
                 />
               </div>
             </div>
+
+            {connections.length > 0 ? (
+              <div className="rounded-lg border bg-slate-50/70 p-4 space-y-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>Saved Meter Profiles</Label>
+                    <Select value={selectedConnectionId} onValueChange={setSelectedConnectionId}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select saved meter profile" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {connections.map((connection) => (
+                          <SelectItem key={connection.id} value={connection.id}>
+                            {connection.name} ({connection.meterId})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={handleSetActiveConnection}
+                      disabled={!selectedConnectionId || setActiveConnectionMutation.isPending}
+                    >
+                      {setActiveConnectionMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : null}
+                      Set Active
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={handleRemoveConnection}
+                      disabled={!selectedConnectionId || removeConnectionMutation.isPending}
+                    >
+                      {removeConnectionMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : null}
+                      Remove Profile
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-600">
+                  {NUMBER_FORMATTER.format(connections.length)} profile(s) saved. Active profile:{" "}
+                  <span className="font-medium text-slate-900">{activeConnection?.name ?? "N/A"}</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {connections.map((connection) => (
+                    <div
+                      key={connection.id}
+                      className={`rounded-md border px-3 py-2 text-xs ${
+                        connection.isActive
+                          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                          : "border-slate-200 bg-white text-slate-700"
+                      }`}
+                    >
+                      <p className="font-medium">{connection.name}</p>
+                      <p>Meter ID: {connection.meterId}</p>
+                      <p>Access: {ACCESS_TYPE_LABELS[connection.accessType as EgaugeAccessType] ?? connection.accessType}</p>
+                      <p>Username: {connection.username ?? "N/A"}</p>
+                      <p>URL: {connection.baseUrl}</p>
+                      <p>Updated: {new Date(connection.updatedAt).toLocaleString()}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             {statusError ? (
               <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
@@ -260,10 +450,10 @@ export default function EGaugeApi() {
                 Refresh
               </Button>
               <span className="text-sm text-slate-600">
-                Status: {isConnected ? "Connected" : "Not connected"}
+                Status: {isConnected ? `Connected (${connections.length} profile${connections.length === 1 ? "" : "s"})` : "Not connected"}
               </span>
               <span className="text-sm text-slate-600">
-                Mode: {ACCESS_TYPE_LABELS[(statusQuery.data?.accessType as EgaugeAccessType) ?? accessType]}
+                Active Mode: {activeConnection ? ACCESS_TYPE_LABELS[activeConnection.accessType as EgaugeAccessType] : ACCESS_TYPE_LABELS[accessType]}
               </span>
             </div>
           </CardContent>
@@ -273,69 +463,114 @@ export default function EGaugeApi() {
           <CardHeader>
             <CardTitle>2) eGauge Data Actions</CardTitle>
             <CardDescription>
-              Fetch system info, local readings, and register data.
+              {activeIsPortfolioAccess
+                ? "Fetch all systems available from your eGauge portfolio login."
+                : "Fetch system info, local readings, and register data from one meter."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="space-y-2 md:col-span-2">
-                <Label htmlFor="egauge-register">Register (optional)</Label>
-                <Input
-                  id="egauge-register"
-                  value={registerInput}
-                  onChange={(event) => setRegisterInput(event.target.value)}
-                  placeholder="Example: use /api/register default if blank"
-                />
+            {activeIsPortfolioAccess ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label htmlFor="egauge-portfolio-filter">Portfolio Filter (optional)</Label>
+                  <Input
+                    id="egauge-portfolio-filter"
+                    value={portfolioFilter}
+                    onChange={(event) => setPortfolioFilter(event.target.value)}
+                    placeholder="Filter by name/group/job (as supported by eGuard)"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="egauge-portfolio-group">Group ID (optional)</Label>
+                  <Input
+                    id="egauge-portfolio-group"
+                    value={portfolioGroupId}
+                    onChange={(event) => setPortfolioGroupId(event.target.value)}
+                    placeholder="Optional eGuard group ID"
+                  />
+                </div>
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="egauge-history-start">History Start</Label>
-                <Input
-                  id="egauge-history-start"
-                  type="date"
-                  value={startDate}
-                  onChange={(event) => setStartDate(event.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="egauge-history-end">History End</Label>
-                <Input
-                  id="egauge-history-end"
-                  type="date"
-                  value={endDate}
-                  onChange={(event) => setEndDate(event.target.value)}
-                />
-              </div>
-            </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="space-y-2 md:col-span-2">
+                    <Label htmlFor="egauge-register">Register (optional)</Label>
+                    <Input
+                      id="egauge-register"
+                      value={registerInput}
+                      onChange={(event) => setRegisterInput(event.target.value)}
+                      placeholder="Example: use /api/register default if blank"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="egauge-history-start">History Start</Label>
+                    <Input
+                      id="egauge-history-start"
+                      type="date"
+                      value={startDate}
+                      onChange={(event) => setStartDate(event.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="egauge-history-end">History End</Label>
+                    <Input
+                      id="egauge-history-end"
+                      type="date"
+                      value={endDate}
+                      onChange={(event) => setEndDate(event.target.value)}
+                    />
+                  </div>
+                </div>
 
-            <div className="flex flex-wrap items-end gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="egauge-interval">History Interval (minutes)</Label>
-                <Input
-                  id="egauge-interval"
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={intervalMinutes}
-                  onChange={(event) => setIntervalMinutes(event.target.value)}
-                  className="w-40"
-                />
-              </div>
+                <div className="flex flex-wrap items-end gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="egauge-interval">History Interval (minutes)</Label>
+                    <Input
+                      id="egauge-interval"
+                      type="number"
+                      min={1}
+                      max={1440}
+                      value={intervalMinutes}
+                      onChange={(event) => setIntervalMinutes(event.target.value)}
+                      className="w-40"
+                    />
+                  </div>
 
-              <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={includeRate}
-                  onChange={(event) => setIncludeRate(event.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300"
-                />
-                Include rate values
-              </label>
-            </div>
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={includeRate}
+                      onChange={(event) => setIncludeRate(event.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300"
+                    />
+                    Include rate values
+                  </label>
+                </div>
+              </>
+            )}
 
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
-                disabled={isRunningAction || getSystemInfoMutation.isPending || !isConnected}
+                disabled={isRunningAction || getPortfolioSystemsMutation.isPending || !isConnected || !activeIsPortfolioAccess}
+                onClick={() =>
+                  runAction("Portfolio Systems", () =>
+                    getPortfolioSystemsMutation.mutateAsync({
+                      filter: portfolioFilter.trim() || undefined,
+                      groupId: portfolioGroupId.trim() || undefined,
+                    })
+                  )
+                }
+              >
+                {(isRunningAction && getPortfolioSystemsMutation.isPending) ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : null}
+                Fetch Portfolio Systems
+              </Button>
+
+              <Button
+                variant="outline"
+                disabled={isRunningAction || getSystemInfoMutation.isPending || !isConnected || activeIsPortfolioAccess}
                 onClick={() =>
                   runAction("System Info", () => getSystemInfoMutation.mutateAsync())
                 }
@@ -348,7 +583,7 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getLocalDataMutation.isPending || !isConnected}
+                disabled={isRunningAction || getLocalDataMutation.isPending || !isConnected || activeIsPortfolioAccess}
                 onClick={() =>
                   runAction("Local Data", () => getLocalDataMutation.mutateAsync())
                 }
@@ -361,7 +596,7 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getRegisterLatestMutation.isPending || !isConnected}
+                disabled={isRunningAction || getRegisterLatestMutation.isPending || !isConnected || activeIsPortfolioAccess}
                 onClick={() =>
                   runAction("Register Latest", () =>
                     getRegisterLatestMutation.mutateAsync({
@@ -379,7 +614,7 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getRegisterHistoryMutation.isPending || !isConnected}
+                disabled={isRunningAction || getRegisterHistoryMutation.isPending || !isConnected || activeIsPortfolioAccess}
                 onClick={() =>
                   runAction("Register History", () =>
                     getRegisterHistoryMutation.mutateAsync({
