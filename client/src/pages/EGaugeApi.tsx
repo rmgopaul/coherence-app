@@ -83,7 +83,23 @@ export default function EGaugeApi() {
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
-  type BulkSnapshotRow = { meterId: string; meterName: string | null; status: string; found: boolean; lifetimeKwh: number | null; anchorDate: string; error: string | null };
+  type BulkSnapshotRow = {
+    meterId: string;
+    meterName: string | null;
+    siteName?: string | null;
+    group?: string | null;
+    status: string;
+    found: boolean;
+    lifetimeKwh: number | null;
+    dailyProductionKwh?: number | null;
+    weeklyProductionKwh?: number | null;
+    monthlyProductionKwh?: number | null;
+    yearlyProductionKwh?: number | null;
+    mtdProductionKwh?: number | null;
+    last12MonthsProductionKwh?: number | null;
+    anchorDate: string;
+    error: string | null;
+  };
   const [bulkMeterIdsCsv, setBulkMeterIdsCsv] = useState("");
   const [bulkIsRunning, setBulkIsRunning] = useState(false);
   const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
@@ -312,50 +328,86 @@ export default function EGaugeApi() {
     setBulkIsRunning(true);
     setBulkRows([]);
     try {
-      const result = await bulkSnapshotsMutation.mutateAsync({
-        meterIds: ids.length > 0 ? ids : undefined,
-        autoFetchPortfolioIds: shouldAutoFetchPortfolio ? true : undefined,
-      });
-      const rows = result.rows as BulkSnapshotRow[];
-      setBulkRows(rows);
+      // For portfolio mode: use portfolio data directly (has all kWh metrics).
+      // This avoids 726 individual API calls and gives richer data.
+      if (activeIsPortfolioAccess) {
+        const portfolioResult = await getPortfolioSystemsMutation.mutateAsync();
+        const portfolioRows: BulkSnapshotRow[] = (portfolioResult.rows ?? []).map((row: Record<string, unknown>) => ({
+          meterId: String(row.meterId ?? ""),
+          meterName: row.meterName as string | null,
+          siteName: row.siteName as string | null,
+          group: row.group as string | null,
+          status: String(row.status ?? "Found"),
+          found: row.found !== false,
+          lifetimeKwh: typeof row.lifetimeKwh === "number" ? row.lifetimeKwh : null,
+          dailyProductionKwh: typeof row.dailyProductionKwh === "number" ? row.dailyProductionKwh : null,
+          weeklyProductionKwh: typeof row.weeklyProductionKwh === "number" ? row.weeklyProductionKwh : null,
+          monthlyProductionKwh: typeof row.monthlyProductionKwh === "number" ? row.monthlyProductionKwh : null,
+          yearlyProductionKwh: typeof row.yearlyProductionKwh === "number" ? row.yearlyProductionKwh : null,
+          last12MonthsProductionKwh: typeof row.last12MonthsProductionKwh === "number" ? row.last12MonthsProductionKwh : null,
+          anchorDate: String(row.anchorDate ?? ""),
+          error: row.error as string | null,
+        }));
+        setBulkRows(portfolioRows);
 
-      if (activeIsPortfolioAccess && Array.isArray(result.meterIdsUsed)) {
-        const idsByKey = new Map<string, string>();
-        for (const value of result.meterIdsUsed) {
-          const meterId = typeof value === "string" ? value.trim() : "";
-          if (!meterId) continue;
-          const key = meterId.toLowerCase();
-          if (!idsByKey.has(key)) {
-            idsByKey.set(key, meterId);
-          }
+        const portfolioIds = portfolioRows.map((r) => r.meterId).filter(Boolean);
+        if (portfolioIds.length > 0) {
+          setBulkMeterIdsCsv(portfolioIds.join("\n"));
         }
-        const normalizedIds = Array.from(idsByKey.values());
-        if (normalizedIds.length > 0) {
-          setBulkMeterIdsCsv(normalizedIds.join("\n"));
-        }
-      }
 
-      toast.success(
-        `Completed eGauge bulk snapshots: ${result.found} found, ${result.notFound} not found, ${result.errored} errors.`
-      );
-
-      const readRows = rows
-        .filter((row) => row.found && row.lifetimeKwh != null)
-        .map((row) =>
-          buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
-        );
-      const pushResult = await pushConvertedReadsToRecDashboard(
-        (input) => getRemoteDataset.mutateAsync(input),
-        (input) => saveRemoteDataset.mutateAsync(input),
-        readRows,
-        "eGauge"
-      );
-      if (pushResult.pushed > 0) {
         toast.success(
-          `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+          `Portfolio snapshot: ${portfolioResult.found} found, ${portfolioResult.notFound} not found, ${portfolioResult.errored} errors (${portfolioResult.total} total).`
         );
-      } else if (pushResult.skipped > 0) {
-        toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+
+        const readRows = portfolioRows
+          .filter((row) => row.found && row.lifetimeKwh != null)
+          .map((row) =>
+            buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+          );
+        const pushResult = await pushConvertedReadsToRecDashboard(
+          (input) => getRemoteDataset.mutateAsync(input),
+          (input) => saveRemoteDataset.mutateAsync(input),
+          readRows,
+          "eGauge"
+        );
+        if (pushResult.pushed > 0) {
+          toast.success(
+            `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+          );
+        } else if (pushResult.skipped > 0) {
+          toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+        }
+      } else {
+        // Non-portfolio mode: per-meter register calls (lifetime only)
+        const result = await bulkSnapshotsMutation.mutateAsync({
+          meterIds: ids.length > 0 ? ids : undefined,
+          autoFetchPortfolioIds: false,
+        });
+        const rows = result.rows as BulkSnapshotRow[];
+        setBulkRows(rows);
+
+        toast.success(
+          `Completed eGauge bulk snapshots: ${result.found} found, ${result.notFound} not found, ${result.errored} errors.`
+        );
+
+        const readRows = rows
+          .filter((row) => row.found && row.lifetimeKwh != null)
+          .map((row) =>
+            buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+          );
+        const pushResult = await pushConvertedReadsToRecDashboard(
+          (input) => getRemoteDataset.mutateAsync(input),
+          (input) => saveRemoteDataset.mutateAsync(input),
+          readRows,
+          "eGauge"
+        );
+        if (pushResult.pushed > 0) {
+          toast.success(
+            `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+          );
+        } else if (pushResult.skipped > 0) {
+          toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+        }
       }
     } catch (error) {
       toast.error(`Bulk snapshots failed: ${toErrorMessage(error)}`);
@@ -860,11 +912,25 @@ export default function EGaugeApi() {
                 <Button
                   variant="outline"
                   onClick={() => {
-                    const headers = ["meter_id", "meter_name", "status", "lifetime_kwh", "anchor_date", "error"];
+                    const headers = ["meter_id", "meter_name", "site_name", "group", "status", "lifetime_kwh", "daily_production_kwh", "weekly_production_kwh", "monthly_production_kwh", "yearly_production_kwh", "last_12_months_production_kwh", "anchor_date", "error"];
                     const csvLines = [
                       headers.join(","),
                       ...bulkRows.map((row) =>
-                        [row.meterId, `"${(row.meterName ?? "").replace(/"/g, '""')}"`, row.status, row.lifetimeKwh ?? "", row.anchorDate, `"${(row.error ?? "").replace(/"/g, '""')}"`].join(",")
+                        [
+                          row.meterId,
+                          `"${(row.meterName ?? "").replace(/"/g, '""')}"`,
+                          `"${(row.siteName ?? "").replace(/"/g, '""')}"`,
+                          `"${(row.group ?? "").replace(/"/g, '""')}"`,
+                          row.status,
+                          row.lifetimeKwh ?? "",
+                          row.dailyProductionKwh ?? "",
+                          row.weeklyProductionKwh ?? "",
+                          row.monthlyProductionKwh ?? "",
+                          row.yearlyProductionKwh ?? "",
+                          row.last12MonthsProductionKwh ?? "",
+                          row.anchorDate,
+                          `"${(row.error ?? "").replace(/"/g, '""')}"`,
+                        ].join(",")
                       ),
                     ];
                     downloadTextFile(
@@ -883,19 +949,29 @@ export default function EGaugeApi() {
                   <thead className="sticky top-0 bg-background">
                     <tr className="border-b">
                       <th className="text-left p-2">Meter ID</th>
-                      <th className="text-left p-2">Meter Name</th>
+                      <th className="text-left p-2">Name</th>
+                      <th className="text-left p-2">Group</th>
                       <th className="text-left p-2">Status</th>
-                      <th className="text-left p-2">Lifetime (kWh)</th>
+                      <th className="text-right p-2">Lifetime (kWh)</th>
+                      <th className="text-right p-2">Daily (kWh)</th>
+                      <th className="text-right p-2">Weekly (kWh)</th>
+                      <th className="text-right p-2">Monthly (kWh)</th>
+                      <th className="text-right p-2">Yearly (kWh)</th>
                       <th className="text-left p-2">Error</th>
                     </tr>
                   </thead>
                   <tbody>
                     {bulkRows.map((row) => (
                       <tr key={row.meterId} className="border-b">
-                        <td className="p-2 font-mono">{row.meterId}</td>
-                        <td className="p-2">{row.meterName ?? "N/A"}</td>
-                        <td className="p-2">{row.status}</td>
-                        <td className="p-2">{row.lifetimeKwh != null ? row.lifetimeKwh.toLocaleString() : "N/A"}</td>
+                        <td className="p-2 font-mono text-xs">{row.meterId}</td>
+                        <td className="p-2 text-xs">{row.meterName ?? "N/A"}</td>
+                        <td className="p-2 text-xs">{row.group ?? ""}</td>
+                        <td className="p-2 text-xs">{row.status}</td>
+                        <td className="p-2 text-right tabular-nums">{row.lifetimeKwh != null ? row.lifetimeKwh.toLocaleString() : "N/A"}</td>
+                        <td className="p-2 text-right tabular-nums">{row.dailyProductionKwh != null ? row.dailyProductionKwh.toLocaleString() : ""}</td>
+                        <td className="p-2 text-right tabular-nums">{row.weeklyProductionKwh != null ? row.weeklyProductionKwh.toLocaleString() : ""}</td>
+                        <td className="p-2 text-right tabular-nums">{row.monthlyProductionKwh != null ? row.monthlyProductionKwh.toLocaleString() : ""}</td>
+                        <td className="p-2 text-right tabular-nums">{row.yearlyProductionKwh != null ? row.yearlyProductionKwh.toLocaleString() : ""}</td>
                         <td className="p-2 text-xs text-slate-500">{row.error ?? ""}</td>
                       </tr>
                     ))}
