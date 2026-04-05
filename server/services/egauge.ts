@@ -802,6 +802,19 @@ class EgaugePortfolioClient {
     return this.username;
   }
 
+  /**
+   * Fetch the eguard dashboard HTML to extract CSRF token and DataTables
+   * column configuration so we can replicate the exact AJAX request the
+   * browser makes.
+   */
+  private async getEguardPageCsrf(): Promise<string | null> {
+    const page = await this.request("/eguard/", {
+      method: "GET",
+      accept: "text/html,application/xhtml+xml",
+    });
+    return this.extractCsrfToken(page.text);
+  }
+
   async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<{
     rows: unknown[];
     recordsTotal: number | null;
@@ -809,32 +822,59 @@ class EgaugePortfolioClient {
   }> {
     await this.ensureAuthenticated();
 
+    // First, load the eguard dashboard to get a CSRF token for POST requests.
+    const csrfToken = await this.getEguardPageCsrf();
+
+    const start =
+      typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
+        ? String(Math.floor(options.start))
+        : "0";
+    const length =
+      typeof options?.length === "number" && Number.isFinite(options.length) && options.length > 0
+        ? String(Math.floor(options.length))
+        : "10000";
+
+    // Build full DataTables server-side processing POST body.
+    // The eGauge eguard endpoint is a Django DataTables backend that expects
+    // the standard jQuery DataTables parameters.
+    const formBody = new URLSearchParams();
+    if (csrfToken) formBody.set("csrfmiddlewaretoken", csrfToken);
+    formBody.set("draw", "1");
+    formBody.set("start", start);
+    formBody.set("length", length);
+    formBody.set("search[value]", toNonEmptyString(options?.filter) ?? "");
+    formBody.set("search[regex]", "false");
+
+    // Standard DataTables column definitions for the eguard dashboard.
+    const columns = [
+      "name", "serial_number", "group", "status", "last_update",
+      "generation_today", "generation_mtd", "generation_last_month",
+      "generation_12_months", "alerts",
+    ];
+    for (let i = 0; i < columns.length; i++) {
+      formBody.set(`columns[${i}][data]`, String(i));
+      formBody.set(`columns[${i}][name]`, columns[i]);
+      formBody.set(`columns[${i}][searchable]`, "true");
+      formBody.set(`columns[${i}][orderable]`, "true");
+      formBody.set(`columns[${i}][search][value]`, "");
+      formBody.set(`columns[${i}][search][regex]`, "false");
+    }
+
+    // Default sort by name ascending
+    formBody.set("order[0][column]", "0");
+    formBody.set("order[0][dir]", "asc");
+
+    const groupId = toNonEmptyString(options?.groupId);
+    if (groupId) {
+      formBody.set("group_id", groupId);
+    }
+
     const response = await this.request("/eguard/data/", {
-      method: "GET",
+      method: "POST",
       accept: "application/json,text/plain,*/*",
       referer: this.buildUrl("/eguard/"),
       xhr: true,
-      query: {
-        draw: "1",
-        filter: toNonEmptyString(options?.filter),
-        group_id: toNonEmptyString(options?.groupId),
-        start:
-          typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
-            ? String(Math.floor(options.start))
-            : "0",
-        length:
-          typeof options?.length === "number" && Number.isFinite(options.length) && options.length > 0
-            ? String(Math.floor(options.length))
-            : "10000",
-        page:
-          typeof options?.page === "number" && Number.isFinite(options.page) && options.page > 0
-            ? String(Math.floor(options.page))
-            : undefined,
-        per_page:
-          typeof options?.perPage === "number" && Number.isFinite(options.perPage) && options.perPage > 0
-            ? String(Math.floor(options.perPage))
-            : undefined,
-      },
+      formBody,
     });
 
     const trimmed = response.text.trim();
