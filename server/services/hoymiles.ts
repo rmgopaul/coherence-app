@@ -1,0 +1,524 @@
+export const HOYMILES_DEFAULT_BASE_URL = "https://neapi.hoymiles.com";
+
+export type HoymilesApiContext = {
+  username: string;
+  password: string;
+  baseUrl?: string | null;
+};
+
+export type HoymilesStation = {
+  stationId: string;
+  name: string;
+  capacity: number | null;
+  address: string | null;
+  status: string | null;
+};
+
+export type HoymilesProductionSnapshot = {
+  stationId: string;
+  name: string | null;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  lifetimeKwh: number | null;
+  hourlyProductionKwh: number | null;
+  monthlyProductionKwh: number | null;
+  mtdProductionKwh: number | null;
+  previousCalendarMonthProductionKwh: number | null;
+  last12MonthsProductionKwh: number | null;
+  weeklyProductionKwh: number | null;
+  dailyProductionKwh: number | null;
+  anchorDate: string;
+  monthlyStartDate: string;
+  weeklyStartDate: string;
+  mtdStartDate: string;
+  previousCalendarMonthStartDate: string;
+  previousCalendarMonthEndDate: string;
+  last12MonthsStartDate: string;
+  error: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function toNullableString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function toNullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.map((row) => asRecord(row));
+}
+
+// ---------------------------------------------------------------------------
+// Date helpers
+// ---------------------------------------------------------------------------
+
+function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return { year, month, day };
+}
+
+function formatIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function shiftIsoDate(dateIso: string, deltaDays: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setDate(date.getDate() + deltaDays);
+  return formatIsoDate(date);
+}
+
+function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setFullYear(date.getFullYear() + deltaYears);
+  return formatIsoDate(date);
+}
+
+function firstDayOfMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  return formatIsoDate(new Date(parsed.year, parsed.month - 1, 1));
+}
+
+function firstDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  return formatIsoDate(new Date(parsed.year, parsed.month - 2, 1));
+}
+
+function lastDayOfPreviousMonth(dateIso: string): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  return formatIsoDate(new Date(parsed.year, parsed.month - 1, 0));
+}
+
+function asDateKey(value: string | null | undefined): string | null {
+  const normalized = toNullableString(value);
+  if (!normalized) return null;
+  const leading = normalized.slice(0, 10);
+  return parseIsoDate(leading) ? leading : null;
+}
+
+// ---------------------------------------------------------------------------
+// Numeric helpers
+// ---------------------------------------------------------------------------
+
+function sumKwh(values: number[]): number | null {
+  if (values.length === 0) return null;
+  return safeRound(values.reduce((sum, current) => sum + current, 0));
+}
+
+function safeRound(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.round(value * 1000) / 1000;
+}
+
+function toKwh(value: number | null, unit: string | null): number | null {
+  if (value === null) return null;
+  const normalizedUnit = (unit ?? "").trim().toLowerCase();
+  if (normalizedUnit.includes("kwh")) return value;
+  if (normalizedUnit.includes("wh")) return value / 1000;
+  return value / 1000; // Default: assume Wh
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("(404") || message.includes("not found");
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency helper
+// ---------------------------------------------------------------------------
+
+export async function mapWithConcurrency<TInput, TOutput>(
+  items: TInput[],
+  limit: number,
+  worker: (item: TInput, index: number) => Promise<TOutput>
+): Promise<TOutput[]> {
+  if (items.length === 0) return [];
+  const safeLimit = Math.max(1, Math.floor(limit) || 1);
+  const output = new Array<TOutput>(items.length);
+  let cursor = 0;
+
+  const run = async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      output[index] = await worker(items[index], index);
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => run());
+  await Promise.all(workers);
+  return output;
+}
+
+// ---------------------------------------------------------------------------
+// HTTP layer — token-based auth with in-memory caching
+// ---------------------------------------------------------------------------
+
+function normalizeBaseUrl(raw: string | null | undefined): string {
+  const trimmed = typeof raw === "string" ? raw.trim() : "";
+  if (!trimmed) return HOYMILES_DEFAULT_BASE_URL;
+  return trimmed.replace(/\/+$/, "");
+}
+
+type HoymilesTokenState = {
+  token: string;
+  expiresAt: number;
+};
+
+const hoymilesTokenCache = new Map<string, HoymilesTokenState>();
+
+function getTokenCacheKey(context: HoymilesApiContext): string {
+  return `${context.username.trim()}::${normalizeBaseUrl(context.baseUrl)}`;
+}
+
+async function getHoymilesToken(context: HoymilesApiContext): Promise<string> {
+  const cacheKey = getTokenCacheKey(context);
+  const cached = hoymilesTokenCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.token;
+  }
+
+  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const response = await fetch(`${baseUrl}/iam/auth_login`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      user_name: context.username.trim(),
+      password: context.password,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    throw new Error(
+      `Hoymiles login failed (${response.status})${errorText ? `: ${errorText}` : ""}`
+    );
+  }
+
+  const json = asRecord(await response.json());
+  const data = asRecord(json.data ?? json);
+  const token = toNullableString(data.token ?? data.access_token ?? json.token);
+
+  if (!token) {
+    const status = toNullableNumber(json.status ?? json.code);
+    const msg = toNullableString(json.message ?? json.msg);
+    throw new Error(
+      `Hoymiles login failed${status ? ` (code ${status})` : ""}${msg ? `: ${msg}` : ": no token returned"}`
+    );
+  }
+
+  hoymilesTokenCache.set(cacheKey, {
+    token,
+    expiresAt: Date.now() + 30 * 60 * 1000, // 30 minute cache
+  });
+
+  return token;
+}
+
+async function postHoymilesJson(
+  path: string,
+  context: HoymilesApiContext,
+  body: Record<string, unknown> = {}
+): Promise<unknown> {
+  const token = await getHoymilesToken(context);
+  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const safePath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${baseUrl}${safePath}`;
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    if (response.status === 401 || response.status === 403) {
+      hoymilesTokenCache.delete(getTokenCacheKey(context));
+      throw new Error(
+        `Hoymiles authentication failed (${response.status})${errorText ? `: ${errorText}` : ""}`
+      );
+    }
+    throw new Error(
+      `Hoymiles request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`
+    );
+  }
+
+  const json = asRecord(await response.json());
+
+  // Hoymiles wraps responses: { status: "0", message: "...", data: {...} }
+  if (json.status !== undefined && json.status !== "0" && json.status !== 0) {
+    const msg = toNullableString(json.message ?? json.msg) ?? "Unknown Hoymiles API error";
+    throw new Error(`Hoymiles API error: ${msg}`);
+  }
+
+  return json.data ?? json;
+}
+
+// ---------------------------------------------------------------------------
+// Extraction: Stations
+// ---------------------------------------------------------------------------
+
+export function extractStations(payload: unknown): HoymilesStation[] {
+  const root = asRecord(payload);
+  const page = asRecord(root.page ?? root);
+  const rows = asRecordArray(
+    page.records ?? root.records ?? root.list ?? root.stations ?? root.data
+  );
+  const items = rows.length > 0 ? rows : Array.isArray(payload) ? asRecordArray(payload) : [];
+
+  const output: HoymilesStation[] = [];
+  for (const row of items) {
+    const stationId = toNullableString(
+      row.id ?? row.station_id ?? row.stationId ?? row.sid
+    );
+    if (!stationId) continue;
+
+    output.push({
+      stationId,
+      name: toNullableString(row.station_name ?? row.name ?? row.stationName) ?? `Station ${stationId}`,
+      capacity: toNullableNumber(row.capacity ?? row.installed_capacity ?? row.plant_power),
+      address: toNullableString(row.address ?? row.location),
+      status: toNullableString(row.status ?? row.connect_status),
+    });
+  }
+
+  return output;
+}
+
+// ---------------------------------------------------------------------------
+// API: List Stations
+// ---------------------------------------------------------------------------
+
+export async function listStations(context: HoymilesApiContext): Promise<{
+  stations: HoymilesStation[];
+  raw: unknown;
+}> {
+  const raw = await postHoymilesJson("/pvm-data/api/0/station/select_by_condition", context, {
+    page: 1,
+    page_size: 100,
+  });
+  return {
+    stations: extractStations(raw),
+    raw,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// API: Station Detail
+// ---------------------------------------------------------------------------
+
+export async function getStationDetail(
+  context: HoymilesApiContext,
+  stationId: string
+): Promise<unknown> {
+  return postHoymilesJson("/pvm-data/api/0/station/find_by_id", context, {
+    id: stationId,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Daily energy history
+// ---------------------------------------------------------------------------
+
+type DailyEnergyPoint = {
+  dateKey: string;
+  kwh: number;
+};
+
+async function getDailyEnergyHistory(
+  context: HoymilesApiContext,
+  stationId: string,
+  startDate: string,
+  endDate: string
+): Promise<DailyEnergyPoint[]> {
+  const points: DailyEnergyPoint[] = [];
+
+  try {
+    const raw = await postHoymilesJson("/pvm-data/api/0/station/find_history_data_of_station", context, {
+      sid: stationId,
+      start_date: startDate,
+      end_date: endDate,
+      type: 1, // daily
+    });
+
+    const root = asRecord(raw);
+    const records = asRecordArray(
+      root.data ?? root.list ?? root.records ?? root.values
+    );
+
+    for (const record of records) {
+      const dateKey = asDateKey(
+        toNullableString(record.date) ??
+          toNullableString(record.time) ??
+          toNullableString(record.data_time)
+      );
+      const rawValue = toNullableNumber(
+        record.energy ?? record.eq_total ?? record.production ?? record.value
+      );
+      const kwh = toKwh(rawValue, "Wh");
+      if (dateKey && kwh !== null && dateKey >= startDate && dateKey <= endDate) {
+        points.push({ dateKey, kwh: safeRound(kwh)! });
+      }
+    }
+  } catch {
+    // Non-critical
+  }
+
+  return points;
+}
+
+// ---------------------------------------------------------------------------
+// Production Snapshot
+// ---------------------------------------------------------------------------
+
+export async function getStationProductionSnapshot(
+  context: HoymilesApiContext,
+  stationIdRaw: string,
+  anchorDateRaw?: string | null,
+  nameOverride?: string | null
+): Promise<HoymilesProductionSnapshot> {
+  const stationId = stationIdRaw.trim();
+  const name = nameOverride ?? null;
+  const anchorDate = (anchorDateRaw ?? "").trim() || formatIsoDate(new Date());
+  if (!parseIsoDate(anchorDate)) {
+    throw new Error("Anchor date must be in YYYY-MM-DD format.");
+  }
+
+  const monthlyStartDate = shiftIsoDate(anchorDate, -29);
+  const weeklyStartDate = shiftIsoDate(anchorDate, -6);
+  const mtdStartDate = firstDayOfMonth(anchorDate);
+  const previousCalendarMonthStartDate = firstDayOfPreviousMonth(anchorDate);
+  const previousCalendarMonthEndDate = lastDayOfPreviousMonth(anchorDate);
+  const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
+
+  try {
+    const [detailPayload, dailySeries, last12MonthsSeries] = await Promise.all([
+      getStationDetail(context, stationId),
+      getDailyEnergyHistory(context, stationId, previousCalendarMonthStartDate, anchorDate),
+      getDailyEnergyHistory(context, stationId, last12MonthsStartDate, anchorDate),
+    ]);
+
+    const detail = asRecord(detailPayload);
+    const lifetimeRaw = toNullableNumber(
+      detail.total_eq ?? detail.lifetime_energy ?? detail.all_energy ?? detail.eq_total
+    );
+    const lifetimeKwh = safeRound(toKwh(lifetimeRaw, "Wh"));
+
+    const hourlyProductionKwh: number | null = null;
+
+    const dailyProductionKwh = sumKwh(
+      dailySeries.filter((p) => p.dateKey === anchorDate).map((p) => p.kwh)
+    );
+
+    const weeklyProductionKwh = sumKwh(
+      dailySeries.filter((p) => p.dateKey >= weeklyStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
+    );
+
+    const monthlyProductionKwh = sumKwh(
+      dailySeries.filter((p) => p.dateKey >= monthlyStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
+    );
+
+    const mtdProductionKwh = sumKwh(
+      dailySeries.filter((p) => p.dateKey >= mtdStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
+    );
+
+    const previousCalendarMonthProductionKwh = sumKwh(
+      dailySeries
+        .filter((p) => p.dateKey >= previousCalendarMonthStartDate && p.dateKey <= previousCalendarMonthEndDate)
+        .map((p) => p.kwh)
+    );
+
+    const last12MonthsProductionKwh = sumKwh(
+      last12MonthsSeries.map((p) => p.kwh)
+    );
+
+    return {
+      stationId,
+      name: name ?? toNullableString(detail.station_name ?? detail.name),
+      status: "Found",
+      found: true,
+      lifetimeKwh,
+      hourlyProductionKwh,
+      monthlyProductionKwh,
+      mtdProductionKwh,
+      previousCalendarMonthProductionKwh,
+      last12MonthsProductionKwh,
+      weeklyProductionKwh,
+      dailyProductionKwh,
+      anchorDate,
+      monthlyStartDate,
+      weeklyStartDate,
+      mtdStartDate,
+      previousCalendarMonthStartDate,
+      previousCalendarMonthEndDate,
+      last12MonthsStartDate,
+      error: null,
+    };
+  } catch (error) {
+    const isNf = isNotFoundError(error);
+    return {
+      stationId,
+      name,
+      status: isNf ? "Not Found" : "Error",
+      found: false,
+      lifetimeKwh: null,
+      hourlyProductionKwh: null,
+      monthlyProductionKwh: null,
+      mtdProductionKwh: null,
+      previousCalendarMonthProductionKwh: null,
+      last12MonthsProductionKwh: null,
+      weeklyProductionKwh: null,
+      dailyProductionKwh: null,
+      anchorDate,
+      monthlyStartDate,
+      weeklyStartDate,
+      mtdStartDate,
+      previousCalendarMonthStartDate,
+      previousCalendarMonthEndDate,
+      last12MonthsStartDate,
+      error: error instanceof Error ? error.message : "Unknown error.",
+    };
+  }
+}

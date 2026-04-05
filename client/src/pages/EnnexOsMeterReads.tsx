@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
 import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -54,6 +55,7 @@ type SingleOperation =
 
 type BulkSnapshotRow = {
   plantId: string;
+  name?: string | null;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh?: number | null;
@@ -327,6 +329,8 @@ export default function EnnexOsMeterReads() {
   const productionSnapshotMutation = trpc.ennexOs.getProductionSnapshot.useMutation();
   const bulkProductionSnapshotsMutation = trpc.ennexOs.getProductionSnapshots.useMutation();
   const bulkDeviceSnapshotsMutation = trpc.ennexOs.getDeviceSnapshots.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -681,6 +685,30 @@ export default function EnnexOsMeterReads() {
         toast.success(
           `Completed ${modeLabel} for ${NUMBER_FORMATTER.format(processed)} Plant IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
         );
+
+        // Auto-push Converted Reads to Solar REC Dashboard.
+        if (bulkDataType === "production") {
+          try {
+            const readRows = collectedRows
+              .filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate)
+              .map((row) =>
+                buildConvertedReadRow("ennexOS", row.plantId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!)
+              );
+            const result = await pushConvertedReadsToRecDashboard(
+              (input) => getRemoteDataset.mutateAsync(input),
+              (input) => saveRemoteDataset.mutateAsync(input),
+              readRows,
+              "ennexOS"
+            );
+            if (result.pushed > 0) {
+              toast.success(`Pushed ${NUMBER_FORMATTER.format(result.pushed)} ennexOS rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`);
+            } else if (result.skipped > 0) {
+              toast.message(`All ${NUMBER_FORMATTER.format(result.skipped)} ennexOS Converted Reads rows already exist. No new rows pushed.`);
+            }
+          } catch (pushError) {
+            toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
+          }
+        }
       }
     } catch (error) {
       toast.error(`Bulk ${modeLabel} failed: ${toErrorMessage(error)}`);

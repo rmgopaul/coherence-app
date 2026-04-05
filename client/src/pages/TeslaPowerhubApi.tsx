@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
 import { clean, toErrorMessage, downloadTextFile, formatKwh } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Search, Unplug } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -111,6 +112,8 @@ export default function TeslaPowerhubApi() {
   const disconnectMutation = trpc.teslaPowerhub.disconnect.useMutation();
   const refreshEgressMutation = trpc.teslaPowerhub.refreshServerEgressIpv4.useMutation();
   const startProductionJobMutation = trpc.teslaPowerhub.startGroupProductionMetricsJob.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
   const productionJobQuery = trpc.teslaPowerhub.getGroupProductionMetricsJob.useQuery(
     { jobId: activeJobId ?? "__none__" },
     {
@@ -147,6 +150,11 @@ export default function TeslaPowerhubApi() {
     return () => window.clearInterval(intervalId);
   }, [activeJobId, jobPollIntervalMs, jobStartedAtMs]);
 
+  const getRemoteDatasetRef = useRef(getRemoteDataset);
+  getRemoteDatasetRef.current = getRemoteDataset;
+  const saveRemoteDatasetRef = useRef(saveRemoteDataset);
+  saveRemoteDatasetRef.current = saveRemoteDataset;
+
   useEffect(() => {
     const snapshot = productionJobQuery.data as ProductionJobSnapshot | undefined;
     if (!snapshot) return;
@@ -160,6 +168,31 @@ export default function TeslaPowerhubApi() {
       if (lastCompletedJobIdRef.current !== snapshot.id) {
         lastCompletedJobIdRef.current = snapshot.id;
         toast.success("Production metrics loaded.");
+
+        // Auto-push Converted Reads to Solar REC Dashboard.
+        if (snapshot.result?.sites && snapshot.result.sites.length > 0) {
+          const today = new Date();
+          const anchorDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+          const readRows = snapshot.result.sites
+            .filter((site: SiteProductionRow) => site.lifetimeKwh > 0)
+            .map((site: SiteProductionRow) =>
+              buildConvertedReadRow("Tesla PowerHub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate)
+            );
+          pushConvertedReadsToRecDashboard(
+            (input) => getRemoteDatasetRef.current.mutateAsync(input),
+            (input) => saveRemoteDatasetRef.current.mutateAsync(input),
+            readRows,
+            "Tesla PowerHub"
+          ).then((result) => {
+            if (result.pushed > 0) {
+              toast.success(`Pushed ${result.pushed} Tesla PowerHub rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${result.skipped} duplicates skipped.` : ""}`);
+            } else if (result.skipped > 0) {
+              toast.message(`All ${result.skipped} Tesla PowerHub Converted Reads rows already exist.`);
+            }
+          }).catch((pushError) => {
+            toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
+          });
+        }
       }
     }
     if (snapshot.status === "failed") {

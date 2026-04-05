@@ -111,6 +111,17 @@ type SupplementEditorState = {
   isLocked: boolean;
 };
 
+type SupplementBottleScanSummary = {
+  definitionId: string;
+  definitionName: string;
+  existed: boolean;
+  imageUrl: string | null;
+  pricePerBottle: number | null;
+  sourceUrl: string | null;
+  priceLogCreated: boolean;
+  priceCheckError: string | null;
+};
+
 export default function Settings() {
   const { user, loading } = useAuth();
   const { theme, setTheme } = useTheme();
@@ -147,6 +158,7 @@ export default function Settings() {
   const [newSupplementPricePerBottle, setNewSupplementPricePerBottle] = useState("");
   const [newSupplementQuantityPerBottle, setNewSupplementQuantityPerBottle] = useState("");
   const [supplementDrafts, setSupplementDrafts] = useState<Record<string, SupplementEditorState>>({});
+  const [latestSupplementScan, setLatestSupplementScan] = useState<SupplementBottleScanSummary | null>(null);
   
   const { data: integrations, isLoading, refetch } = trpc.integrations.list.useQuery(undefined, {
     enabled: !!user,
@@ -212,6 +224,14 @@ export default function Settings() {
       enabled: !!user,
       retry: false,
     });
+  const { data: supplementPriceLogs, refetch: refetchSupplementPriceLogs } =
+    trpc.supplements.listPriceLogs.useQuery(
+      { limit: 200 },
+      {
+        enabled: !!user,
+        retry: false,
+      }
+    );
   const { data: samsungHealthConfig } = trpc.samsungHealth.getConfig.useQuery(undefined, {
     enabled: !!user,
     retry: false,
@@ -342,9 +362,63 @@ export default function Settings() {
     onSuccess: () => {
       toast.success("Supplement removed");
       refetchSupplementDefinitions();
+      refetchSupplementPriceLogs();
     },
     onError: (error) => {
       toast.error(`Failed to remove supplement: ${error.message}`);
+    },
+  });
+
+  const scanBottleWithClaude = trpc.supplements.scanBottleWithClaude.useMutation({
+    onSuccess: (result) => {
+      const definitionName = result.definition?.name ?? "Supplement";
+      setLatestSupplementScan({
+        definitionId: result.definitionId,
+        definitionName,
+        existed: Boolean(result.existed),
+        imageUrl: result.imageUrl ?? null,
+        pricePerBottle: result.priceCheck?.pricePerBottle ?? null,
+        sourceUrl: result.priceCheck?.sourceUrl ?? null,
+        priceLogCreated: Boolean(result.priceLogCreated),
+        priceCheckError: result.priceCheckError ?? null,
+      });
+      toast.success(
+        result.existed
+          ? `Updated existing supplement: ${definitionName}`
+          : `Added new supplement: ${definitionName}`
+      );
+      refetchSupplementDefinitions();
+      refetchSupplementPriceLogs();
+    },
+    onError: (error) => {
+      toast.error(`Failed to scan supplement bottle: ${error.message}`);
+    },
+  });
+
+  const checkSupplementPriceWithClaude = trpc.supplements.checkPriceWithClaude.useMutation({
+    onSuccess: (result) => {
+      const definitionName = result.definition?.name ?? "Supplement";
+      const price = result.priceCheck?.pricePerBottle;
+      if (price !== null && price !== undefined) {
+        toast.success(`Updated ${definitionName} price to $${price.toFixed(2)}`);
+      } else {
+        toast.info(`No confident price found for ${definitionName}`);
+      }
+      refetchSupplementDefinitions();
+      refetchSupplementPriceLogs();
+    },
+    onError: (error) => {
+      toast.error(`Failed to check price with Claude: ${error.message}`);
+    },
+  });
+
+  const logSupplementPrice = trpc.supplements.logPrice.useMutation({
+    onSuccess: () => {
+      toast.success("Price snapshot logged");
+      refetchSupplementPriceLogs();
+    },
+    onError: (error) => {
+      toast.error(`Failed to log supplement price: ${error.message}`);
     },
   });
 
@@ -449,6 +523,31 @@ export default function Settings() {
     }
     setSupplementDrafts(nextDrafts);
   }, [supplementDefinitions]);
+
+  const latestPriceLogByDefinition = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        pricePerBottle: number;
+        capturedAt: string | null;
+        sourceName: string | null;
+        sourceUrl: string | null;
+      }
+    >();
+
+    for (const row of supplementPriceLogs ?? []) {
+      const definitionId = typeof row.definitionId === "string" ? row.definitionId : "";
+      if (!definitionId || map.has(definitionId)) continue;
+      map.set(definitionId, {
+        pricePerBottle: Number(row.pricePerBottle ?? 0),
+        capturedAt: typeof row.capturedAt === "string" ? row.capturedAt : null,
+        sourceName: typeof row.sourceName === "string" ? row.sourceName : null,
+        sourceUrl: typeof row.sourceUrl === "string" ? row.sourceUrl : null,
+      });
+    }
+
+    return map;
+  }, [supplementPriceLogs]);
 
   useEffect(() => {
     const openaiIntegration = integrations?.find((i) => i.provider === "openai");
@@ -726,6 +825,76 @@ export default function Settings() {
       });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Invalid supplement values");
+    }
+  };
+
+  const fileToBase64 = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        const base64Data = result.split(",")[1] || "";
+        resolve(base64Data);
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+  const handleSupplementBottleUpload = async (fileList: FileList | null) => {
+    const file = fileList?.[0] ?? null;
+    if (!file) return;
+
+    const normalizedType = (file.type || "").toLowerCase();
+    const contentType =
+      normalizedType === "image/jpg"
+        ? "image/jpeg"
+        : normalizedType;
+
+    if (!["image/png", "image/jpeg", "image/webp"].includes(contentType)) {
+      toast.error("Unsupported image type. Use PNG, JPG/JPEG, or WEBP.");
+      return;
+    }
+
+    if (file.size > 8 * 1024 * 1024) {
+      toast.error("Image must be 8 MB or less.");
+      return;
+    }
+
+    try {
+      const base64Data = await fileToBase64(file);
+      await scanBottleWithClaude.mutateAsync({
+        base64Data,
+        contentType: contentType as "image/png" | "image/jpeg" | "image/webp",
+        fileName: file.name,
+        autoLogPrice: true,
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not process the supplement bottle image."
+      );
+    }
+  };
+
+  const handleCheckPriceWithClaude = async (definitionId: string) => {
+    try {
+      await checkSupplementPriceWithClaude.mutateAsync({
+        definitionId,
+        autoLogPrice: false,
+      });
+    } catch {
+      // handled by mutation onError
+    }
+  };
+
+  const handleLogCurrentPrice = async (definitionId: string) => {
+    try {
+      await logSupplementPrice.mutateAsync({
+        definitionId,
+      });
+    } catch {
+      // handled by mutation onError
     }
   };
 
@@ -1057,6 +1226,62 @@ export default function Settings() {
                   </CardHeader>
                   <AccordionContent>
                     <CardContent className="space-y-6 pt-0">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 space-y-3">
+                  <p className="text-sm font-medium text-emerald-900">
+                    Upload Bottle Photo (Claude)
+                  </p>
+                  <p className="text-xs text-emerald-800">
+                    Upload a supplement bottle image to auto-extract details, match existing supplements, check price
+                    (Amazon / Nutricost / Nootropics Depot), and log a price snapshot over time.
+                  </p>
+                  <div className="space-y-2">
+                    <Label htmlFor="supplement-bottle-upload">Bottle photo</Label>
+                    <Input
+                      id="supplement-bottle-upload"
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      onChange={(event) => {
+                        void handleSupplementBottleUpload(event.currentTarget.files);
+                        event.currentTarget.value = "";
+                      }}
+                      disabled={scanBottleWithClaude.isPending}
+                    />
+                  </div>
+                  {scanBottleWithClaude.isPending ? (
+                    <p className="text-xs text-emerald-800">Analyzing image and checking price with Claude...</p>
+                  ) : null}
+                  {latestSupplementScan ? (
+                    <div className="rounded-md border border-emerald-200 bg-white px-3 py-2 text-xs text-emerald-900 space-y-1">
+                      <p>
+                        {latestSupplementScan.existed ? "Updated existing supplement" : "Added new supplement"}:{" "}
+                        <span className="font-medium">{latestSupplementScan.definitionName}</span>
+                      </p>
+                      <p>
+                        Price:{" "}
+                        {latestSupplementScan.pricePerBottle === null
+                          ? "No confident price found"
+                          : `$${latestSupplementScan.pricePerBottle.toFixed(2)}`}
+                      </p>
+                      {latestSupplementScan.sourceUrl ? (
+                        <p>
+                          Source:{" "}
+                          <a
+                            href={latestSupplementScan.sourceUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline"
+                          >
+                            {latestSupplementScan.sourceUrl}
+                          </a>
+                        </p>
+                      ) : null}
+                      {latestSupplementScan.priceCheckError ? (
+                        <p className="text-amber-700">Price check note: {latestSupplementScan.priceCheckError}</p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
                   <p className="text-sm font-medium text-slate-900">Add Supplement</p>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1174,6 +1399,7 @@ export default function Settings() {
                     (supplementDefinitions || []).map((definition) => {
                       const draft = supplementDrafts[definition.id];
                       if (!draft) return null;
+                      const latestPriceLog = latestPriceLogByDefinition.get(definition.id);
 
                       return (
                         <div key={definition.id} className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1337,6 +1563,50 @@ export default function Settings() {
                             >
                               <Trash2 className="w-4 h-4 text-red-600" />
                             </Button>
+                          </div>
+
+                          <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700 space-y-2">
+                            <div>
+                              Latest logged price:{" "}
+                              {latestPriceLog ? (
+                                <>
+                                  <span className="font-medium">${Number(latestPriceLog.pricePerBottle).toFixed(2)}</span>
+                                  {latestPriceLog.capturedAt ? (
+                                    <> on {new Date(latestPriceLog.capturedAt).toLocaleDateString()}</>
+                                  ) : null}
+                                </>
+                              ) : (
+                                "none yet"
+                              )}
+                            </div>
+                            {latestPriceLog?.sourceUrl ? (
+                              <a
+                                href={latestPriceLog.sourceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="block underline truncate"
+                              >
+                                {latestPriceLog.sourceName || latestPriceLog.sourceUrl}
+                              </a>
+                            ) : null}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void handleCheckPriceWithClaude(definition.id)}
+                                disabled={checkSupplementPriceWithClaude.isPending}
+                              >
+                                {checkSupplementPriceWithClaude.isPending ? "Checking..." : "Check Price (Claude)"}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => void handleLogCurrentPrice(definition.id)}
+                                disabled={logSupplementPrice.isPending}
+                              >
+                                {logSupplementPrice.isPending ? "Logging..." : "Log Price"}
+                              </Button>
+                            </div>
                           </div>
                         </div>
                       );

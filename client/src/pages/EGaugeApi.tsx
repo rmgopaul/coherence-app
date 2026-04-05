@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { toErrorMessage } from "@/lib/helpers";
+import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import { toErrorMessage, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -78,6 +79,14 @@ export default function EGaugeApi() {
   const getRegisterLatestMutation = trpc.egauge.getRegisterLatest.useMutation();
   const getRegisterHistoryMutation = trpc.egauge.getRegisterHistory.useMutation();
   const getPortfolioSystemsMutation = trpc.egauge.getPortfolioSystems.useMutation();
+  const bulkSnapshotsMutation = trpc.egauge.getProductionSnapshots.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+
+  type BulkSnapshotRow = { meterId: string; meterName: string | null; status: string; found: boolean; lifetimeKwh: number | null; anchorDate: string; error: string | null };
+  const [bulkMeterIdsCsv, setBulkMeterIdsCsv] = useState("");
+  const [bulkIsRunning, setBulkIsRunning] = useState(false);
+  const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -645,6 +654,141 @@ export default function EGaugeApi() {
             <pre className="bg-slate-950 text-slate-100 p-4 rounded-md text-xs overflow-x-auto max-h-[560px]">
               {resultText}
             </pre>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>4) Bulk Production Snapshots</CardTitle>
+            <CardDescription>
+              Enter meter IDs (one per line) matching your saved connections to fetch lifetime production. Results auto-push to the Solar REC Dashboard Converted Reads.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label>Meter IDs (one per line)</Label>
+              <textarea
+                className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                value={bulkMeterIdsCsv}
+                onChange={(e) => setBulkMeterIdsCsv(e.target.value)}
+                placeholder={"egauge12345\negauge67890"}
+                disabled={bulkIsRunning}
+              />
+              {statusQuery.data?.connections && statusQuery.data.connections.length > 0 && (
+                <Button
+                  variant="link"
+                  size="sm"
+                  className="mt-1 px-0"
+                  onClick={() => {
+                    const ids = statusQuery.data!.connections.map((c: { meterId: string }) => c.meterId).join("\n");
+                    setBulkMeterIdsCsv(ids);
+                  }}
+                >
+                  Use all saved meter IDs ({statusQuery.data.connections.length})
+                </Button>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={async () => {
+                  const ids = bulkMeterIdsCsv
+                    .split(/[\n,]+/)
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+                  if (ids.length === 0) {
+                    toast.error("Enter at least one meter ID.");
+                    return;
+                  }
+                  setBulkIsRunning(true);
+                  setBulkRows([]);
+                  try {
+                    const result = await bulkSnapshotsMutation.mutateAsync({ meterIds: ids });
+                    setBulkRows(result.rows);
+                    toast.success(
+                      `Completed eGauge bulk snapshots: ${result.found} found, ${result.notFound} not found, ${result.errored} errors.`
+                    );
+
+                    // Auto-push Converted Reads.
+                    const readRows = result.rows
+                      .filter((row) => row.found && row.lifetimeKwh != null)
+                      .map((row) =>
+                        buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+                      );
+                    const pushResult = await pushConvertedReadsToRecDashboard(
+                      (input) => getRemoteDataset.mutateAsync(input),
+                      (input) => saveRemoteDataset.mutateAsync(input),
+                      readRows,
+                      "eGauge"
+                    );
+                    if (pushResult.pushed > 0) {
+                      toast.success(`Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`);
+                    } else if (pushResult.skipped > 0) {
+                      toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+                    }
+                  } catch (error) {
+                    toast.error(`Bulk snapshots failed: ${toErrorMessage(error)}`);
+                  } finally {
+                    setBulkIsRunning(false);
+                  }
+                }}
+                disabled={bulkIsRunning || !statusQuery.data?.connected}
+              >
+                {bulkIsRunning ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Running...
+                  </>
+                ) : (
+                  "Run Bulk Snapshots"
+                )}
+              </Button>
+              {bulkRows.length > 0 && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const headers = ["meter_id", "meter_name", "status", "lifetime_kwh", "anchor_date", "error"];
+                    const csvLines = [
+                      headers.join(","),
+                      ...bulkRows.map((row) =>
+                        [row.meterId, `"${(row.meterName ?? "").replace(/"/g, '""')}"`, row.status, row.lifetimeKwh ?? "", row.anchorDate, `"${(row.error ?? "").replace(/"/g, '""')}"`].join(",")
+                      ),
+                    ];
+                    downloadTextFile(
+                      `egauge-bulk-snapshots-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`,
+                      csvLines.join("\n")
+                    );
+                  }}
+                >
+                  Download CSV
+                </Button>
+              )}
+            </div>
+            {bulkRows.length > 0 && (
+              <div className="overflow-auto max-h-[400px]">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-background">
+                    <tr className="border-b">
+                      <th className="text-left p-2">Meter ID</th>
+                      <th className="text-left p-2">Meter Name</th>
+                      <th className="text-left p-2">Status</th>
+                      <th className="text-left p-2">Lifetime (kWh)</th>
+                      <th className="text-left p-2">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bulkRows.map((row) => (
+                      <tr key={row.meterId} className="border-b">
+                        <td className="p-2 font-mono">{row.meterId}</td>
+                        <td className="p-2">{row.meterName ?? "N/A"}</td>
+                        <td className="p-2">{row.status}</td>
+                        <td className="p-2">{row.lifetimeKwh != null ? row.lifetimeKwh.toLocaleString() : "N/A"}</td>
+                        <td className="p-2 text-xs text-slate-500">{row.error ?? ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </main>

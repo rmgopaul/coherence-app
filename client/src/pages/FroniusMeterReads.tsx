@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
 import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -336,6 +337,8 @@ export default function FroniusMeterReads() {
   const productionSnapshotMutation = trpc.fronius.getProductionSnapshot.useMutation();
   const bulkProductionSnapshotsMutation = trpc.fronius.getProductionSnapshots.useMutation();
   const bulkDeviceSnapshotsMutation = trpc.fronius.getDeviceSnapshots.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -725,6 +728,30 @@ export default function FroniusMeterReads() {
         toast.success(
           `Completed ${modeLabel} for ${NUMBER_FORMATTER.format(processed)} PV System IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
         );
+
+        // Auto-push Converted Reads to Solar REC Dashboard.
+        if (bulkDataType === "production") {
+          try {
+            const readRows = collectedRows
+              .filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate)
+              .map((row) =>
+                buildConvertedReadRow("Fronius Solar.web", row.pvSystemId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!)
+              );
+            const result = await pushConvertedReadsToRecDashboard(
+              (input) => getRemoteDataset.mutateAsync(input),
+              (input) => saveRemoteDataset.mutateAsync(input),
+              readRows,
+              "Fronius"
+            );
+            if (result.pushed > 0) {
+              toast.success(`Pushed ${NUMBER_FORMATTER.format(result.pushed)} Fronius rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`);
+            } else if (result.skipped > 0) {
+              toast.message(`All ${NUMBER_FORMATTER.format(result.skipped)} Fronius Converted Reads rows already exist. No new rows pushed.`);
+            }
+          } catch (pushError) {
+            toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
+          }
+        }
       }
     } catch (error) {
       toast.error(`Bulk ${modeLabel} failed: ${toErrorMessage(error)}`);

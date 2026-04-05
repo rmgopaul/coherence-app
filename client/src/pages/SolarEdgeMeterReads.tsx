@@ -7,6 +7,7 @@ import { Progress } from "@/components/ui/progress";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
 import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -52,6 +53,7 @@ type BulkSnapshotRow = {
   siteId: string;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
+  siteName?: string | null;
   lifetimeKwh?: number | null;
   hourlyProductionKwh?: number | null;
   monthlyProductionKwh?: number | null;
@@ -67,6 +69,8 @@ type BulkSnapshotRow = {
   previousCalendarMonthStartDate?: string;
   previousCalendarMonthEndDate?: string;
   last12MonthsStartDate?: string;
+  inverterLifetimes?: Array<{ serialNumber: string; name: string | null; lifetimeWh: number | null }> | null;
+  meterLifetimeKwh?: number | null;
   meterCount?: number | null;
   productionMeterCount?: number | null;
   consumptionMeterCount?: number | null;
@@ -331,6 +335,8 @@ export default function SolarEdgeMeterReads() {
   const bulkSnapshotsMutation = trpc.solarEdge.getProductionSnapshots.useMutation();
   const bulkMeterSnapshotsMutation = trpc.solarEdge.getMeterSnapshots.useMutation();
   const bulkInverterSnapshotsMutation = trpc.solarEdge.getInverterSnapshots.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -609,6 +615,30 @@ export default function SolarEdgeMeterReads() {
         toast.success(
           `Completed ${modeLabel} for ${NUMBER_FORMATTER.format(processed)} site IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
         );
+
+        // Auto-push Converted Reads to Solar REC Dashboard.
+        if (bulkDataType === "production") {
+          try {
+            const readRows = collectedRows
+              .filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate)
+              .map((row) =>
+                buildConvertedReadRow("SolarEdge", row.siteId, row.siteName ?? "", row.lifetimeKwh!, row.anchorDate!)
+              );
+            const result = await pushConvertedReadsToRecDashboard(
+              (input) => getRemoteDataset.mutateAsync(input),
+              (input) => saveRemoteDataset.mutateAsync(input),
+              readRows,
+              "SolarEdge"
+            );
+            if (result.pushed > 0) {
+              toast.success(`Pushed ${NUMBER_FORMATTER.format(result.pushed)} SolarEdge rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`);
+            } else if (result.skipped > 0) {
+              toast.message(`All ${NUMBER_FORMATTER.format(result.skipped)} SolarEdge Converted Reads rows already exist. No new rows pushed.`);
+            }
+          } catch (pushError) {
+            toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
+          }
+        }
       }
     } catch (error) {
       toast.error(`Bulk ${modeLabel} failed: ${toErrorMessage(error)}`);
@@ -797,6 +827,7 @@ export default function SolarEdgeMeterReads() {
     } else {
       headers = [
         ...commonHeaders,
+        "site_name",
         "lifetime_kwh",
         "hourly_production_kwh",
         "monthly_production_kwh",
@@ -812,9 +843,12 @@ export default function SolarEdgeMeterReads() {
         "previous_calendar_month_start_date",
         "previous_calendar_month_end_date",
         "last_12_months_start_date",
+        "inverter_lifetimes",
+        "meter_lifetime_kwh",
       ];
       csvRows = rows.map((row) => ({
         ...commonCells(row),
+        site_name: row.siteName ?? "",
         lifetime_kwh: row.lifetimeKwh,
         hourly_production_kwh: row.hourlyProductionKwh,
         monthly_production_kwh: row.monthlyProductionKwh,
@@ -830,6 +864,10 @@ export default function SolarEdgeMeterReads() {
         previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
         previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
         last_12_months_start_date: row.last12MonthsStartDate,
+        inverter_lifetimes: row.inverterLifetimes && row.inverterLifetimes.length > 0
+          ? row.inverterLifetimes.map((inv) => `${inv.serialNumber}: ${inv.lifetimeWh ?? "N/A"}`).join(" | ")
+          : "",
+        meter_lifetime_kwh: row.meterLifetimeKwh,
       }));
     }
 
@@ -1438,6 +1476,7 @@ export default function SolarEdgeMeterReads() {
                   <TableHead>Found In APIs</TableHead>
                   {bulkDataType === "production" ? (
                     <>
+                      <TableHead>Site Name</TableHead>
                       <TableHead>Lifetime (kWh)</TableHead>
                       <TableHead>Hourly (kWh)</TableHead>
                       <TableHead>Monthly (kWh)</TableHead>
@@ -1446,6 +1485,8 @@ export default function SolarEdgeMeterReads() {
                       <TableHead>Last 12 Months (kWh)</TableHead>
                       <TableHead>Weekly (kWh)</TableHead>
                       <TableHead>Daily (kWh)</TableHead>
+                      <TableHead>Inverter Lifetimes (Wh)</TableHead>
+                      <TableHead>Meter Lifetime (kWh)</TableHead>
                     </>
                   ) : null}
                   {bulkDataType === "meters" ? (
@@ -1481,6 +1522,7 @@ export default function SolarEdgeMeterReads() {
                     </TableCell>
                     {bulkDataType === "production" ? (
                       <>
+                        <TableCell>{row.siteName ?? "N/A"}</TableCell>
                         <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
                         <TableCell>{formatKwh(row.hourlyProductionKwh)}</TableCell>
                         <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
@@ -1489,6 +1531,12 @@ export default function SolarEdgeMeterReads() {
                         <TableCell>{formatKwh(row.last12MonthsProductionKwh)}</TableCell>
                         <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
                         <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
+                        <TableCell className="text-xs text-slate-600">
+                          {row.inverterLifetimes && row.inverterLifetimes.length > 0
+                            ? row.inverterLifetimes.map((inv) => `${inv.serialNumber}: ${inv.lifetimeWh ?? "N/A"}`).join(" | ")
+                            : "N/A"}
+                        </TableCell>
+                        <TableCell>{formatKwh(row.meterLifetimeKwh)}</TableCell>
                       </>
                     ) : null}
                     {bulkDataType === "meters" ? (
@@ -1520,7 +1568,7 @@ export default function SolarEdgeMeterReads() {
                     <TableCell
                       colSpan={
                         bulkDataType === "production"
-                          ? 14
+                          ? 17
                           : bulkDataType === "meters"
                             ? 10
                             : 12

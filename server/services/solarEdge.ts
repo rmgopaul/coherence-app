@@ -77,6 +77,7 @@ export type SolarEdgeProductionSnapshot = {
   siteId: string;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
+  siteName: string | null;
   lifetimeKwh: number | null;
   hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
@@ -92,6 +93,8 @@ export type SolarEdgeProductionSnapshot = {
   previousCalendarMonthStartDate: string;
   previousCalendarMonthEndDate: string;
   last12MonthsStartDate: string;
+  inverterLifetimes: Array<{ serialNumber: string; name: string | null; lifetimeWh: number | null }> | null;
+  meterLifetimeKwh: number | null;
   error: string | null;
 };
 
@@ -460,6 +463,13 @@ function extractOverviewLifetimeKwh(payload: unknown): number | null {
   );
   const energy = toNullableNumber(lifeTimeData.energy ?? overview.lifeTimeEnergy ?? overview.lifetimeEnergy);
   return safeRound(toKwh(energy, "Wh"));
+}
+
+function extractSiteNameFromDetails(payload: unknown): string | null {
+  if (!payload) return null;
+  const root = asRecord(payload);
+  const details = asRecord(root.details ?? root.site ?? root);
+  return toNullableString(details.name ?? details.siteName ?? details.site_name);
 }
 
 type DailyEnergyPoint = {
@@ -987,13 +997,15 @@ export async function getSiteProductionSnapshot(
   const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
 
   try {
-    const [overviewPayload, periodEnergyPayload, last12MonthsEnergyPayload, hourlyPayload] = await Promise.all([
+    const [overviewPayload, periodEnergyPayload, last12MonthsEnergyPayload, hourlyPayload, detailsPayload] = await Promise.all([
       getSiteOverview(context, siteId),
       getSiteEnergy(context, siteId, previousCalendarMonthStartDate, anchorDate, "DAY"),
       getSiteEnergy(context, siteId, last12MonthsStartDate, anchorDate, "MONTH"),
       getSiteEnergy(context, siteId, anchorDate, anchorDate, "HOUR"),
+      getSiteDetails(context, siteId).catch(() => null),
     ]);
 
+    const siteName = extractSiteNameFromDetails(detailsPayload);
     const lifetimeKwh = extractOverviewLifetimeKwh(overviewPayload);
     const periodSeries = extractDailyEnergySeriesKwh(periodEnergyPayload);
     const last12MonthsSeries = extractDailyEnergySeriesKwh(last12MonthsEnergyPayload);
@@ -1030,10 +1042,26 @@ export async function getSiteProductionSnapshot(
     );
     const last12MonthsProductionKwh = sumKwh(last12MonthsSeries.map((point) => point.kwh));
 
+    // Fetch per-inverter lifetime data (additive — does not block core snapshot).
+    let inverterLifetimes: Array<{ serialNumber: string; name: string | null; lifetimeWh: number | null }> | null = null;
+    try {
+      const inverterResult = await getSiteInverterProduction(context, siteId);
+      inverterLifetimes = inverterResult.inverters.map((inv) => ({
+        serialNumber: inv.serialNumber,
+        name: inv.name,
+        lifetimeWh: inv.latestEnergyWh,
+      }));
+    } catch {
+      // Inverter data is optional — degrade gracefully.
+    }
+
+    const meterLifetimeKwh = lifetimeKwh;
+
     return {
       siteId,
       status: "Found",
       found: true,
+      siteName,
       lifetimeKwh,
       hourlyProductionKwh,
       monthlyProductionKwh,
@@ -1049,6 +1077,8 @@ export async function getSiteProductionSnapshot(
       previousCalendarMonthStartDate,
       previousCalendarMonthEndDate,
       last12MonthsStartDate,
+      inverterLifetimes,
+      meterLifetimeKwh,
       error: null,
     };
   } catch (error) {
@@ -1057,6 +1087,7 @@ export async function getSiteProductionSnapshot(
         siteId,
         status: "Not Found",
         found: false,
+        siteName: null,
         lifetimeKwh: null,
         hourlyProductionKwh: null,
         monthlyProductionKwh: null,
@@ -1072,6 +1103,8 @@ export async function getSiteProductionSnapshot(
         previousCalendarMonthStartDate,
         previousCalendarMonthEndDate,
         last12MonthsStartDate,
+        inverterLifetimes: null,
+        meterLifetimeKwh: null,
         error: error instanceof Error ? error.message : "Site not found.",
       };
     }
@@ -1080,6 +1113,7 @@ export async function getSiteProductionSnapshot(
       siteId,
       status: "Error",
       found: false,
+      siteName: null,
       lifetimeKwh: null,
       hourlyProductionKwh: null,
       monthlyProductionKwh: null,
@@ -1095,6 +1129,8 @@ export async function getSiteProductionSnapshot(
       previousCalendarMonthStartDate,
       previousCalendarMonthEndDate,
       last12MonthsStartDate,
+      inverterLifetimes: null,
+      meterLifetimeKwh: null,
       error: error instanceof Error ? error.message : "Unknown error.",
     };
   }

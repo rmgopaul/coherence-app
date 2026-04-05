@@ -43,6 +43,198 @@ function getTodayDateKey(): string {
   return `${year}-${month}-${day}`;
 }
 
+type SupplementBottleScanInput = {
+  base64Data: string;
+  contentType: "image/png" | "image/jpeg" | "image/webp";
+  timing?: "am" | "pm";
+  autoLogPrice?: boolean;
+};
+
+async function performSupplementBottleScanForUser(
+  userId: number,
+  input: SupplementBottleScanInput
+): Promise<{
+  success: boolean;
+  existed: boolean;
+  definitionId: string;
+  definition: Awaited<ReturnType<typeof import("./db").getSupplementDefinitionById>>;
+  extracted: Awaited<ReturnType<typeof import("./services/supplements").extractSupplementFromBottleImage>>;
+  imageUrl: string;
+  priceCheck:
+    | Awaited<ReturnType<typeof import("./services/supplements").checkSupplementPrice>>
+    | null;
+  priceCheckError: string | null;
+  priceLogCreated: boolean;
+}> {
+  const {
+    addSupplementPriceLog,
+    createSupplementDefinition,
+    getIntegrationByProvider,
+    getSupplementDefinitionById,
+    listSupplementDefinitions,
+    updateSupplementDefinition,
+  } = await import("./db");
+  const { nanoid } = await import("nanoid");
+  const { storagePut } = await import("./storage");
+  const {
+    checkSupplementPrice,
+    extractSupplementFromBottleImage,
+    findExistingSupplementMatch,
+    sourceDomainFromUrl,
+  } = await import("./services/supplements");
+
+  const anthropicIntegration = await getIntegrationByProvider(userId, "anthropic");
+  const apiKey = toNonEmptyString(anthropicIntegration?.accessToken);
+  if (!apiKey) {
+    throw new Error("Claude is not connected. Add your Anthropic API key in Settings first.");
+  }
+
+  const anthropicMeta = parseJsonMetadata(anthropicIntegration?.metadata);
+  const model =
+    typeof anthropicMeta.model === "string" && anthropicMeta.model.trim().length > 0
+      ? anthropicMeta.model.trim()
+      : "claude-sonnet-4-20250514";
+
+  const extMap: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+  };
+  const ext = extMap[input.contentType] ?? "jpg";
+  const imageKey = `supplements/${userId}/bottles/${nanoid()}.${ext}`;
+  const imageBuffer = Buffer.from(input.base64Data, "base64");
+  const { url: imageUrl } = await storagePut(imageKey, imageBuffer, input.contentType);
+
+  const extracted = await extractSupplementFromBottleImage({
+    credentials: { apiKey, model },
+    base64Image: input.base64Data,
+    mimeType: input.contentType,
+  });
+
+  if (!extracted.name) {
+    throw new Error(
+      "Could not read the supplement name from the photo. Try a clearer front-label image."
+    );
+  }
+
+  const definitions = await listSupplementDefinitions(userId);
+  const matchedDefinition = findExistingSupplementMatch(
+    definitions,
+    extracted.name,
+    extracted.brand
+  );
+
+  const defaultDose = toNonEmptyString(extracted.dose) ?? "1";
+  const defaultDoseUnit = extracted.doseUnit ?? "capsule";
+  const defaultTiming = extracted.timing ?? input.timing ?? "am";
+  let definitionId: string;
+  const existed = Boolean(matchedDefinition);
+
+  if (matchedDefinition) {
+    definitionId = matchedDefinition.id;
+    await updateSupplementDefinition(userId, matchedDefinition.id, {
+      brand:
+        toNonEmptyString(matchedDefinition.brand) ??
+        toNonEmptyString(extracted.brand) ??
+        null,
+      dose:
+        toNonEmptyString(matchedDefinition.dose) ??
+        defaultDose,
+      doseUnit: matchedDefinition.doseUnit ?? defaultDoseUnit,
+      dosePerUnit:
+        toNonEmptyString(matchedDefinition.dosePerUnit) ??
+        toNonEmptyString(extracted.dosePerUnit) ??
+        null,
+      quantityPerBottle:
+        matchedDefinition.quantityPerBottle ?? extracted.quantityPerBottle ?? null,
+      timing: matchedDefinition.timing ?? defaultTiming,
+    });
+  } else {
+    const nextSortOrder =
+      definitions.length > 0
+        ? Math.max(...definitions.map((definition) => definition.sortOrder ?? 0)) + 1
+        : 0;
+    definitionId = nanoid();
+    await createSupplementDefinition({
+      id: definitionId,
+      userId,
+      name: extracted.name,
+      brand: toNonEmptyString(extracted.brand) ?? null,
+      dose: defaultDose,
+      doseUnit: defaultDoseUnit,
+      dosePerUnit: toNonEmptyString(extracted.dosePerUnit) ?? null,
+      productUrl: null,
+      pricePerBottle: null,
+      quantityPerBottle: extracted.quantityPerBottle ?? null,
+      timing: defaultTiming,
+      isLocked: false,
+      isActive: true,
+      sortOrder: nextSortOrder,
+    });
+  }
+
+  const definitionBeforePrice =
+    (await getSupplementDefinitionById(userId, definitionId)) ?? matchedDefinition;
+  if (!definitionBeforePrice) {
+    throw new Error("Supplement was created but could not be reloaded.");
+  }
+
+  let priceCheckError: string | null = null;
+  let priceLogCreated = false;
+  let priceCheckResult: Awaited<ReturnType<typeof checkSupplementPrice>> | null = null;
+
+  try {
+    priceCheckResult = await checkSupplementPrice({
+      credentials: { apiKey, model },
+      supplementName: definitionBeforePrice.name,
+      brand: toNonEmptyString(definitionBeforePrice.brand),
+      dosePerUnit: toNonEmptyString(definitionBeforePrice.dosePerUnit),
+    });
+  } catch (error) {
+    priceCheckError = error instanceof Error ? error.message : "Claude price lookup failed.";
+  }
+
+  if (priceCheckResult && priceCheckResult.pricePerBottle !== null) {
+    await updateSupplementDefinition(userId, definitionId, {
+      pricePerBottle: priceCheckResult.pricePerBottle,
+      productUrl: priceCheckResult.sourceUrl ?? definitionBeforePrice.productUrl ?? null,
+    });
+
+    if (input.autoLogPrice ?? true) {
+      await addSupplementPriceLog({
+        id: nanoid(),
+        userId,
+        definitionId,
+        supplementName: definitionBeforePrice.name,
+        brand: definitionBeforePrice.brand ?? null,
+        pricePerBottle: priceCheckResult.pricePerBottle,
+        currency: priceCheckResult.currency ?? "USD",
+        sourceName: priceCheckResult.sourceName ?? null,
+        sourceUrl: priceCheckResult.sourceUrl ?? null,
+        sourceDomain: sourceDomainFromUrl(priceCheckResult.sourceUrl),
+        confidence: priceCheckResult.confidence,
+        imageUrl,
+        capturedAt: new Date(),
+      });
+      priceLogCreated = true;
+    }
+  }
+
+  const finalDefinition = await getSupplementDefinitionById(userId, definitionId);
+
+  return {
+    success: true,
+    existed,
+    definitionId,
+    definition: finalDefinition,
+    extracted,
+    imageUrl,
+    priceCheck: priceCheckResult,
+    priceCheckError,
+    priceLogCreated,
+  };
+}
+
 const ENPHASE_V2_PROVIDER = "enphase-v2";
 const ENPHASE_V4_PROVIDER = "enphase-v4";
 const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
@@ -54,6 +246,15 @@ const CLOCKIFY_PROVIDER = "clockify";
 const CSG_PORTAL_PROVIDER = "csg-portal";
 const FRONIUS_PROVIDER = "fronius-solar";
 const EGAUGE_PROVIDER = "egauge-monitoring";
+const SOLIS_PROVIDER = "solis-cloud";
+const GOODWE_PROVIDER = "goodwe-sems";
+const GENERAC_PROVIDER = "generac-pwrfleet";
+const LOCUS_PROVIDER = "locus-energy";
+const GROWATT_PROVIDER = "growatt-server";
+const APSYSTEMS_PROVIDER = "apsystems-ema";
+const EKM_PROVIDER = "ekm-encompass";
+const HOYMILES_PROVIDER = "hoymiles-smiles";
+const SOLAR_LOG_PROVIDER = "solar-log";
 
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
@@ -1875,6 +2076,520 @@ async function getCsgPortalContext(userId: number): Promise<{
   };
 }
 
+// ---------------------------------------------------------------------------
+// Solis connection management
+// ---------------------------------------------------------------------------
+
+type SolisConnectionConfig = {
+  id: string;
+  name: string;
+  apiKey: string;
+  apiSecret: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseSolisMetadata(
+  metadata: string | null | undefined,
+  fallbackApiKey?: string | null
+): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: SolisConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: SolisConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `solis-conn-${index + 1}`;
+      const apiKey = toNonEmptyString(row.apiKey);
+      const apiSecret = toNonEmptyString(row.apiSecret);
+      if (!apiKey || !apiSecret) return null;
+      return {
+        id,
+        name: toNonEmptyString(row.name) ?? `Solis API ${index + 1}`,
+        apiKey,
+        apiSecret,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies SolisConnectionConfig;
+    })
+    .filter((v): v is SolisConnectionConfig => v !== null);
+
+  if (connections.length === 0 && fallbackApiKey) {
+    const legacyKey = toNonEmptyString(fallbackApiKey);
+    if (legacyKey) {
+      const nowIso = new Date().toISOString();
+      connections.push({ id: "legacy-solis-key", name: "Legacy API Key", apiKey: legacyKey, apiSecret: "", baseUrl, createdAt: nowIso, updatedAt: nowIso });
+    }
+  }
+
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeSolisMetadata(connections: SolisConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getSolisContext(userId: number): Promise<{ apiKey: string; apiSecret: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, SOLIS_PROVIDER);
+  const metadata = parseSolisMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("Solis is not connected. Save API Key and Secret first.");
+  return { apiKey: activeConnection.apiKey, apiSecret: activeConnection.apiSecret, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// GoodWe connection management
+// ---------------------------------------------------------------------------
+
+type GoodWeConnectionConfig = {
+  id: string;
+  name: string;
+  account: string;
+  password: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseGoodWeMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: GoodWeConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: GoodWeConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `goodwe-conn-${index + 1}`;
+      const account = toNonEmptyString(row.account);
+      const password = toNonEmptyString(row.password);
+      if (!account || !password) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `GoodWe ${index + 1}`, account, password,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies GoodWeConnectionConfig;
+    })
+    .filter((v): v is GoodWeConnectionConfig => v !== null);
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeGoodWeMetadata(connections: GoodWeConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getGoodWeContext(userId: number): Promise<{ account: string; password: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, GOODWE_PROVIDER);
+  const metadata = parseGoodWeMetadata(integration?.metadata);
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("GoodWe SEMS is not connected. Save account credentials first.");
+  return { account: activeConnection.account, password: activeConnection.password, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Generac connection management
+// ---------------------------------------------------------------------------
+
+type GeneracConnectionConfig = {
+  id: string;
+  name: string;
+  apiKey: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseGeneracMetadata(metadata: string | null | undefined, fallbackApiKey?: string | null): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: GeneracConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: GeneracConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `generac-conn-${index + 1}`;
+      const apiKey = toNonEmptyString(row.apiKey);
+      if (!apiKey) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `Generac API ${index + 1}`, apiKey,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies GeneracConnectionConfig;
+    })
+    .filter((v): v is GeneracConnectionConfig => v !== null);
+  if (connections.length === 0 && fallbackApiKey) {
+    const legacyKey = toNonEmptyString(fallbackApiKey);
+    if (legacyKey) { const nowIso = new Date().toISOString(); connections.push({ id: "legacy-generac-key", name: "Legacy API Key", apiKey: legacyKey, baseUrl, createdAt: nowIso, updatedAt: nowIso }); }
+  }
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeGeneracMetadata(connections: GeneracConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getGeneracContext(userId: number): Promise<{ apiKey: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, GENERAC_PROVIDER);
+  const metadata = parseGeneracMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("Generac PWRfleet is not connected. Save API key first.");
+  return { apiKey: activeConnection.apiKey, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Locus connection management
+// ---------------------------------------------------------------------------
+
+type LocusConnectionConfig = {
+  id: string;
+  name: string;
+  clientId: string;
+  clientSecret: string;
+  partnerId: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseLocusMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: LocusConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: LocusConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `locus-conn-${index + 1}`;
+      const clientId = toNonEmptyString(row.clientId);
+      const clientSecret = toNonEmptyString(row.clientSecret);
+      const partnerId = toNonEmptyString(row.partnerId);
+      if (!clientId || !clientSecret || !partnerId) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `Locus API ${index + 1}`, clientId, clientSecret, partnerId,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies LocusConnectionConfig;
+    })
+    .filter((v): v is LocusConnectionConfig => v !== null);
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeLocusMetadata(connections: LocusConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getLocusContext(userId: number): Promise<{ clientId: string; clientSecret: string; partnerId: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, LOCUS_PROVIDER);
+  const metadata = parseLocusMetadata(integration?.metadata);
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("Locus Energy is not connected. Save client credentials and partner ID first.");
+  return { clientId: activeConnection.clientId, clientSecret: activeConnection.clientSecret, partnerId: activeConnection.partnerId, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Growatt connection management
+// ---------------------------------------------------------------------------
+
+type GrowattConnectionConfig = {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseGrowattMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: GrowattConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: GrowattConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `growatt-conn-${index + 1}`;
+      const username = toNonEmptyString(row.username);
+      const password = toNonEmptyString(row.password);
+      if (!username || !password) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `Growatt ${index + 1}`, username, password,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies GrowattConnectionConfig;
+    })
+    .filter((v): v is GrowattConnectionConfig => v !== null);
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeGrowattMetadata(connections: GrowattConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getGrowattContext(userId: number): Promise<{ username: string; password: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, GROWATT_PROVIDER);
+  const metadata = parseGrowattMetadata(integration?.metadata);
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("Growatt is not connected. Save credentials first.");
+  return { username: activeConnection.username, password: activeConnection.password, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// APsystems connection management
+// ---------------------------------------------------------------------------
+
+type APsystemsConnectionConfig = {
+  id: string;
+  name: string;
+  apiKey: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseAPsystemsMetadata(metadata: string | null | undefined, fallbackApiKey?: string | null): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: APsystemsConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: APsystemsConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `apsystems-conn-${index + 1}`;
+      const apiKey = toNonEmptyString(row.apiKey);
+      if (!apiKey) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `APsystems API ${index + 1}`, apiKey,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies APsystemsConnectionConfig;
+    })
+    .filter((v): v is APsystemsConnectionConfig => v !== null);
+  if (connections.length === 0 && fallbackApiKey) {
+    const legacyKey = toNonEmptyString(fallbackApiKey);
+    if (legacyKey) { const nowIso = new Date().toISOString(); connections.push({ id: "legacy-apsystems-key", name: "Legacy API Key", apiKey: legacyKey, baseUrl, createdAt: nowIso, updatedAt: nowIso }); }
+  }
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeAPsystemsMetadata(connections: APsystemsConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getAPsystemsContext(userId: number): Promise<{ apiKey: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, APSYSTEMS_PROVIDER);
+  const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("APsystems is not connected. Save API key first.");
+  return { apiKey: activeConnection.apiKey, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// EKM connection management
+// ---------------------------------------------------------------------------
+
+type EkmConnectionConfig = {
+  id: string;
+  name: string;
+  apiKey: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseEkmMetadata(metadata: string | null | undefined, fallbackApiKey?: string | null): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: EkmConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: EkmConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `ekm-conn-${index + 1}`;
+      const apiKey = toNonEmptyString(row.apiKey);
+      if (!apiKey) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `EKM API ${index + 1}`, apiKey,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies EkmConnectionConfig;
+    })
+    .filter((v): v is EkmConnectionConfig => v !== null);
+  if (connections.length === 0 && fallbackApiKey) {
+    const legacyKey = toNonEmptyString(fallbackApiKey);
+    if (legacyKey) { const nowIso = new Date().toISOString(); connections.push({ id: "legacy-ekm-key", name: "Legacy API Key", apiKey: legacyKey, baseUrl, createdAt: nowIso, updatedAt: nowIso }); }
+  }
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeEkmMetadata(connections: EkmConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getEkmContext(userId: number): Promise<{ apiKey: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, EKM_PROVIDER);
+  const metadata = parseEkmMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("EKM Encompass is not connected. Save API key first.");
+  return { apiKey: activeConnection.apiKey, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Hoymiles connection management
+// ---------------------------------------------------------------------------
+
+type HoymilesConnectionConfig = {
+  id: string;
+  name: string;
+  username: string;
+  password: string;
+  baseUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseHoymilesMetadata(metadata: string | null | undefined): {
+  baseUrl: string | null;
+  activeConnectionId: string | null;
+  connections: HoymilesConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const baseUrl = toNonEmptyString(parsed.baseUrl);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: HoymilesConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `hoymiles-conn-${index + 1}`;
+      const username = toNonEmptyString(row.username);
+      const password = toNonEmptyString(row.password);
+      if (!username || !password) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `Hoymiles ${index + 1}`, username, password,
+        baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies HoymilesConnectionConfig;
+    })
+    .filter((v): v is HoymilesConnectionConfig => v !== null);
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { baseUrl, activeConnectionId, connections };
+}
+
+function serializeHoymilesMetadata(connections: HoymilesConnectionConfig[], activeConnectionId: string | null, baseUrl: string | null): string {
+  return JSON.stringify({ baseUrl, activeConnectionId, connections });
+}
+
+async function getHoymilesContext(userId: number): Promise<{ username: string; password: string; baseUrl: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, HOYMILES_PROVIDER);
+  const metadata = parseHoymilesMetadata(integration?.metadata);
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("Hoymiles is not connected. Save credentials first.");
+  return { username: activeConnection.username, password: activeConnection.password, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Solar-Log connection management
+// ---------------------------------------------------------------------------
+
+type SolarLogConnectionConfig = {
+  id: string;
+  name: string;
+  baseUrl: string;
+  password: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function parseSolarLogMetadata(metadata: string | null | undefined): {
+  activeConnectionId: string | null;
+  connections: SolarLogConnectionConfig[];
+} {
+  const parsed = parseJsonMetadata(metadata);
+  const activeConnectionIdRaw = toNonEmptyString(parsed.activeConnectionId);
+  const parsedConnections = Array.isArray(parsed.connections) ? parsed.connections : [];
+  const connections: SolarLogConnectionConfig[] = parsedConnections
+    .map((value, index) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const id = toNonEmptyString(row.id) ?? `solarlog-conn-${index + 1}`;
+      const baseUrl = toNonEmptyString(row.baseUrl);
+      if (!baseUrl) return null;
+      return {
+        id, name: toNonEmptyString(row.name) ?? `Solar-Log ${index + 1}`, baseUrl,
+        password: toNonEmptyString(row.password) ?? null,
+        createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
+        updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
+      } satisfies SolarLogConnectionConfig;
+    })
+    .filter((v): v is SolarLogConnectionConfig => v !== null);
+  const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
+  return { activeConnectionId, connections };
+}
+
+function serializeSolarLogMetadata(connections: SolarLogConnectionConfig[], activeConnectionId: string | null): string {
+  return JSON.stringify({ activeConnectionId, connections });
+}
+
+async function getSolarLogContext(userId: number): Promise<{ baseUrl: string; password: string | null }> {
+  const { getIntegrationByProvider } = await import("./db");
+  const integration = await getIntegrationByProvider(userId, SOLAR_LOG_PROVIDER);
+  const metadata = parseSolarLogMetadata(integration?.metadata);
+  const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+  if (!activeConnection) throw new Error("Solar-Log is not connected. Save device URL first.");
+  return { baseUrl: activeConnection.baseUrl, password: activeConnection.password };
+}
+
 export const appRouter = router({
   system: systemRouter,
 
@@ -2707,6 +3422,58 @@ export const appRouter = router({
           input.endDate
         );
       }),
+    getProductionSnapshots: protectedProcedure
+      .input(
+        z.object({
+          systemIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const context = await getEnphaseV4Context(ctx.user.id);
+        const { listSystems, getSystemProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEnphase } =
+          await import("./services/enphaseV4");
+
+        const uniqueSystemIds = Array.from(
+          new Set(input.systemIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        );
+
+        const anchorDate =
+          input.anchorDate ??
+          (() => {
+            const now = new Date();
+            return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+          })();
+
+        // Fetch system names once upfront.
+        const nameMap = new Map<string, string>();
+        try {
+          const { systems } = await listSystems(context);
+          for (const sys of systems) {
+            nameMap.set(sys.systemId, sys.systemName);
+          }
+        } catch {
+          // Non-critical — proceed without names.
+        }
+
+        const rows = await mapWithConcurrencyEnphase(uniqueSystemIds, 4, async (systemId: string) => {
+          const snapshot = await getSystemProductionSnapshot(
+            context,
+            systemId,
+            anchorDate,
+            nameMap.get(systemId) ?? null
+          );
+          return snapshot;
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          rows,
+        };
+      }),
   }),
 
   solarEdge: router({
@@ -3095,6 +3862,7 @@ export const appRouter = router({
             siteId,
             status: notFoundStatus,
             found: false,
+            siteName: null,
             lifetimeKwh: null,
             hourlyProductionKwh: null,
             monthlyProductionKwh: null,
@@ -3110,6 +3878,8 @@ export const appRouter = router({
             previousCalendarMonthStartDate,
             previousCalendarMonthEndDate,
             last12MonthsStartDate,
+            inverterLifetimes: null,
+            meterLifetimeKwh: null,
             error: firstError,
             matchedConnectionId: null,
             matchedConnectionName: null,
@@ -4230,6 +5000,21 @@ export const appRouter = router({
           allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
         const targetConnections = scope === "all" ? allConnections : [activeConnection];
 
+        // Fetch plant names once upfront to include in snapshot results.
+        const { listPlants: listPlantsEnnexOs } = await import("./services/ennexos");
+        const plantNameMap = new Map<string, string>();
+        try {
+          const { plants } = await listPlantsEnnexOs({
+            accessToken: activeConnection.accessToken,
+            baseUrl: activeConnection.baseUrl ?? metadata.baseUrl,
+          });
+          for (const plant of plants) {
+            plantNameMap.set(plant.plantId, plant.name);
+          }
+        } catch {
+          // Non-critical — proceed without names if the list call fails.
+        }
+
         const rows = await mapWithConcurrencyEnnexOs(uniquePlantIds, 4, async (plantId: string) => {
           let selectedSnapshot: Awaited<ReturnType<typeof getPlantProductionSnapshot>> | null = null;
           let selectedConnection: (typeof targetConnections)[number] | null = null;
@@ -4298,6 +5083,7 @@ export const appRouter = router({
           if (selectedSnapshot && selectedConnection) {
             return {
               ...selectedSnapshot,
+              name: plantNameMap.get(plantId) ?? null,
               matchedConnectionId: selectedConnection.id,
               matchedConnectionName: selectedConnection.name,
               checkedConnections: targetConnections.length,
@@ -4311,6 +5097,7 @@ export const appRouter = router({
           const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
           return {
             plantId,
+            name: plantNameMap.get(plantId) ?? null,
             status: notFoundStatus,
             found: false,
             lifetimeKwh: null,
@@ -4891,6 +5678,77 @@ export const appRouter = router({
           filter: input?.filter,
           groupId: input?.groupId,
         });
+      }),
+    getProductionSnapshots: protectedProcedure
+      .input(
+        z.object({
+          meterIds: z.array(z.string().min(1)).min(1).max(200),
+          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getMeterProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEgauge } =
+          await import("./services/egauge");
+
+        const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+        const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const allConnections = metadata.connections;
+        if (allConnections.length === 0) {
+          throw new Error("eGauge is not connected. Save at least one meter profile first.");
+        }
+
+        const anchorDate =
+          input.anchorDate ??
+          (() => {
+            const now = new Date();
+            return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+          })();
+
+        // Build map from meterId to connection for quick lookup.
+        const connectionByMeterId = new Map(
+          allConnections.map((conn) => [conn.meterId.toLowerCase(), conn])
+        );
+
+        const uniqueMeterIds = Array.from(
+          new Set(input.meterIds.map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0))
+        );
+
+        const rows = await mapWithConcurrencyEgauge(uniqueMeterIds, 4, async (meterId: string) => {
+          const conn = connectionByMeterId.get(meterId);
+          if (!conn) {
+            return {
+              meterId,
+              meterName: null,
+              status: "Not Found" as const,
+              found: false,
+              lifetimeKwh: null,
+              anchorDate,
+              error: `No saved connection for meter ID "${meterId}".`,
+            };
+          }
+
+          return getMeterProductionSnapshot(
+            {
+              baseUrl: conn.baseUrl,
+              accessType: conn.accessType,
+              username: conn.username,
+              password: conn.password,
+            },
+            meterId,
+            conn.name,
+            anchorDate
+          );
+        });
+
+        return {
+          total: rows.length,
+          found: rows.filter((row) => row.status === "Found").length,
+          notFound: rows.filter((row) => row.status === "Not Found").length,
+          errored: rows.filter((row) => row.status === "Error").length,
+          rows,
+        };
       }),
   }),
 
@@ -7191,6 +8049,22 @@ Generate the pipeline analysis report now.`,
       const { listSupplementDefinitions } = await import("./db");
       return listSupplementDefinitions(ctx.user.id);
     }),
+    listPriceLogs: protectedProcedure
+      .input(
+        z
+          .object({
+            definitionId: z.string().optional(),
+            limit: z.number().min(1).max(500).optional(),
+          })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const { listSupplementPriceLogs } = await import("./db");
+        return listSupplementPriceLogs(ctx.user.id, {
+          definitionId: input?.definitionId,
+          limit: input?.limit ?? 100,
+        });
+      }),
     createDefinition: protectedProcedure
       .input(
         z.object({
@@ -7231,6 +8105,191 @@ Generate the pipeline analysis report now.`,
           isLocked: false,
           isActive: true,
           sortOrder: nextSortOrder,
+        });
+
+        return { success: true };
+      }),
+    scanBottleWithClaude: protectedProcedure
+      .input(
+        z.object({
+          base64Data: z.string().max(10_000_000),
+          contentType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+          fileName: z.string().max(255).optional(),
+          timing: z.enum(["am", "pm"]).optional(),
+          autoLogPrice: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) =>
+        performSupplementBottleScanForUser(ctx.user.id, input)
+      ),
+    mobileScanBottle: publicProcedure
+      .input(
+        z.object({
+          customerEmail: z.string().email(),
+          base64Data: z.string().max(10_000_000),
+          contentType: z.enum(["image/png", "image/jpeg", "image/webp"]),
+          timing: z.enum(["am", "pm"]).optional(),
+          autoLogPrice: z.boolean().optional(),
+          capturedAt: z.string().datetime({ offset: true }),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { verifySupplementIngestSignedRequest } = await import("./_core/supplementIngest");
+        const { getUserByEmail } = await import("./db");
+
+        const { payload } = verifySupplementIngestSignedRequest({
+          req: ctx.req,
+          input,
+        });
+
+        const user = await getUserByEmail(payload.customerEmail);
+        if (!user) {
+          throw new Error(
+            "No Coherence account found for this email. Sign in to the web app once, then retry."
+          );
+        }
+
+        return performSupplementBottleScanForUser(user.id, {
+          base64Data: payload.base64Data,
+          contentType: payload.contentType,
+          timing: payload.timing ?? undefined,
+          autoLogPrice: payload.autoLogPrice,
+        });
+      }),
+    checkPriceWithClaude: protectedProcedure
+      .input(
+        z.object({
+          definitionId: z.string(),
+          autoLogPrice: z.boolean().optional(),
+          imageUrl: z.string().max(2048).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const {
+          addSupplementPriceLog,
+          getIntegrationByProvider,
+          getSupplementDefinitionById,
+          updateSupplementDefinition,
+        } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { checkSupplementPrice, sourceDomainFromUrl } = await import("./services/supplements");
+
+        const definition = await getSupplementDefinitionById(ctx.user.id, input.definitionId);
+        if (!definition) {
+          throw new Error("Supplement definition not found.");
+        }
+
+        const anthropicIntegration = await getIntegrationByProvider(ctx.user.id, "anthropic");
+        const apiKey = toNonEmptyString(anthropicIntegration?.accessToken);
+        if (!apiKey) {
+          throw new Error("Claude is not connected. Add your Anthropic API key in Settings first.");
+        }
+
+        const anthropicMeta = parseJsonMetadata(anthropicIntegration?.metadata);
+        const model =
+          typeof anthropicMeta.model === "string" && anthropicMeta.model.trim().length > 0
+            ? anthropicMeta.model.trim()
+            : "claude-sonnet-4-20250514";
+
+        const priceCheck = await checkSupplementPrice({
+          credentials: { apiKey, model },
+          supplementName: definition.name,
+          brand: definition.brand,
+          dosePerUnit: definition.dosePerUnit,
+        });
+
+        let priceLogCreated = false;
+
+        if (priceCheck.pricePerBottle !== null) {
+          await updateSupplementDefinition(ctx.user.id, definition.id, {
+            pricePerBottle: priceCheck.pricePerBottle,
+            productUrl: priceCheck.sourceUrl ?? definition.productUrl ?? null,
+          });
+
+          if (input.autoLogPrice ?? false) {
+            await addSupplementPriceLog({
+              id: nanoid(),
+              userId: ctx.user.id,
+              definitionId: definition.id,
+              supplementName: definition.name,
+              brand: definition.brand ?? null,
+              pricePerBottle: priceCheck.pricePerBottle,
+              currency: priceCheck.currency ?? "USD",
+              sourceName: priceCheck.sourceName ?? null,
+              sourceUrl: priceCheck.sourceUrl ?? null,
+              sourceDomain: sourceDomainFromUrl(priceCheck.sourceUrl),
+              confidence: priceCheck.confidence,
+              imageUrl: input.imageUrl?.trim() || null,
+              capturedAt: new Date(),
+            });
+            priceLogCreated = true;
+          }
+        }
+
+        const updatedDefinition = await getSupplementDefinitionById(ctx.user.id, definition.id);
+
+        return {
+          success: true,
+          definition: updatedDefinition,
+          priceCheck,
+          priceLogCreated,
+        };
+      }),
+    logPrice: protectedProcedure
+      .input(
+        z.object({
+          definitionId: z.string(),
+          pricePerBottle: z.number().positive().optional(),
+          currency: z.string().max(8).optional(),
+          sourceName: z.string().max(128).optional(),
+          sourceUrl: z.string().max(2048).optional(),
+          confidence: z.number().min(0).max(1).optional(),
+          imageUrl: z.string().max(2048).optional(),
+          capturedAt: z.string().datetime({ offset: true }).optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { addSupplementPriceLog, getSupplementDefinitionById } = await import("./db");
+        const { nanoid } = await import("nanoid");
+        const { sourceDomainFromUrl } = await import("./services/supplements");
+
+        const definition = await getSupplementDefinitionById(ctx.user.id, input.definitionId);
+        if (!definition) {
+          throw new Error("Supplement definition not found.");
+        }
+
+        const pricePerBottle = input.pricePerBottle ?? definition.pricePerBottle ?? null;
+        if (pricePerBottle === null) {
+          throw new Error(
+            "No price available to log. Add a price first or run Check Price with Claude."
+          );
+        }
+
+        const sourceUrl = input.sourceUrl?.trim() || definition.productUrl || null;
+        let inferredSourceName: string | null = null;
+        if (sourceUrl) {
+          try {
+            inferredSourceName = new URL(sourceUrl).hostname.replace(/^www\./, "");
+          } catch {
+            inferredSourceName = null;
+          }
+        }
+        const sourceName = input.sourceName?.trim() || inferredSourceName;
+
+        await addSupplementPriceLog({
+          id: nanoid(),
+          userId: ctx.user.id,
+          definitionId: definition.id,
+          supplementName: definition.name,
+          brand: definition.brand ?? null,
+          pricePerBottle,
+          currency: input.currency?.trim().toUpperCase() || "USD",
+          sourceName,
+          sourceUrl,
+          sourceDomain: sourceDomainFromUrl(sourceUrl),
+          confidence: input.confidence ?? null,
+          imageUrl: input.imageUrl?.trim() || null,
+          capturedAt: input.capturedAt ? new Date(input.capturedAt) : new Date(),
         });
 
         return { success: true };
@@ -8494,6 +9553,164 @@ Generate the pipeline analysis report now.`,
         const { listProductionReadings } = await import("./db");
         return listProductionReadings(input ?? undefined);
       }),
+  }),
+
+  // =========================================================================
+  // Solis Cloud
+  // =========================================================================
+  solis: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const integration = await getIntegrationByProvider(ctx.user.id, SOLIS_PROVIDER);
+      const metadata = parseSolisMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
+      return {
+        connected: metadata.connections.length > 0,
+        baseUrl: activeConnection?.baseUrl ?? metadata.baseUrl,
+        activeConnectionId: activeConnection?.id ?? null,
+        connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, baseUrl: c.baseUrl, apiKeyMasked: maskApiKey(c.apiKey), updatedAt: c.updatedAt, isActive: c.id === activeConnection?.id })),
+      };
+    }),
+    connect: protectedProcedure.input(z.object({ apiKey: z.string().min(1), apiSecret: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => {
+      const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+      const { nanoid } = await import("nanoid");
+      const existing = await getIntegrationByProvider(ctx.user.id, SOLIS_PROVIDER);
+      const existingMetadata = parseSolisMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+      const nowIso = new Date().toISOString();
+      const newConn: SolisConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `Solis API ${existingMetadata.connections.length + 1}`, apiKey: input.apiKey.trim(), apiSecret: input.apiSecret.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? existingMetadata.baseUrl, createdAt: nowIso, updatedAt: nowIso };
+      const connections = [newConn, ...existingMetadata.connections];
+      await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLIS_PROVIDER, accessToken: newConn.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolisMetadata(connections, newConn.id, newConn.baseUrl ?? existingMetadata.baseUrl) });
+      return { success: true, activeConnectionId: newConn.id, totalConnections: connections.length };
+    }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+      const { getIntegrationByProvider, upsertIntegration } = await import("./db");
+      const { nanoid } = await import("nanoid");
+      const integration = await getIntegrationByProvider(ctx.user.id, SOLIS_PROVIDER);
+      if (!integration) throw new Error("Solis is not connected.");
+      const ms = parseSolisMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+      const ac = ms.connections.find((c) => c.id === input.connectionId);
+      if (!ac) throw new Error("Selected Solis profile was not found.");
+      await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLIS_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolisMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) });
+      return { success: true, activeConnectionId: ac.id };
+    }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+      const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db");
+      const { nanoid } = await import("nanoid");
+      const integration = await getIntegrationByProvider(ctx.user.id, SOLIS_PROVIDER);
+      if (!integration) throw new Error("Solis is not connected.");
+      const ms = parseSolisMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
+      const next = ms.connections.filter((c) => c.id !== input.connectionId);
+      if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; }
+      const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0];
+      await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLIS_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolisMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) });
+      return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length };
+    }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, SOLIS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getSolisContext(ctx.user.id); const { listStations } = await import("./services/solis"); return listStations(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getSolisContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/solis"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // GoodWe SEMS
+  // =========================================================================
+  goodwe: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); const metadata = parseGoodWeMetadata(integration?.metadata); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, accountMasked: maskApiKey(c.account), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ account: z.string().min(1), password: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); const em = parseGoodWeMetadata(existing?.metadata); const nowIso = new Date().toISOString(); const nc: GoodWeConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `GoodWe ${em.connections.length + 1}`, account: input.account.trim(), password: input.password, baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GOODWE_PROVIDER, accessToken: nc.account, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGoodWeMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); if (!integration) throw new Error("GoodWe is not connected."); const ms = parseGoodWeMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected GoodWe profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GOODWE_PROVIDER, accessToken: ac.account, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGoodWeMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); if (!integration) throw new Error("GoodWe is not connected."); const ms = parseGoodWeMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GOODWE_PROVIDER, accessToken: nac.account, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGoodWeMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getGoodWeContext(ctx.user.id); const { listStations } = await import("./services/goodwe"); return listStations(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGoodWeContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/goodwe"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // Generac PWRfleet
+  // =========================================================================
+  generac: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); const metadata = parseGeneracMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken)); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, apiKeyMasked: maskApiKey(c.apiKey), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ apiKey: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); const em = parseGeneracMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken)); const nowIso = new Date().toISOString(); const nc: GeneracConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `Generac API ${em.connections.length + 1}`, apiKey: input.apiKey.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GENERAC_PROVIDER, accessToken: nc.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGeneracMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); if (!integration) throw new Error("Generac is not connected."); const ms = parseGeneracMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Generac profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GENERAC_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGeneracMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); if (!integration) throw new Error("Generac is not connected."); const ms = parseGeneracMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GENERAC_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGeneracMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getGeneracContext(ctx.user.id); const { listSystems } = await import("./services/generac"); return listSystems(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGeneracContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/generac"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // Locus Energy / SolarNOC
+  // =========================================================================
+  locus: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); const metadata = parseLocusMetadata(integration?.metadata); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, clientIdMasked: maskApiKey(c.clientId), partnerId: c.partnerId, updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ clientId: z.string().min(1), clientSecret: z.string().min(1), partnerId: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); const em = parseLocusMetadata(existing?.metadata); const nowIso = new Date().toISOString(); const nc: LocusConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `Locus API ${em.connections.length + 1}`, clientId: input.clientId.trim(), clientSecret: input.clientSecret.trim(), partnerId: input.partnerId.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: LOCUS_PROVIDER, accessToken: nc.clientId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeLocusMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); if (!integration) throw new Error("Locus is not connected."); const ms = parseLocusMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Locus profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: LOCUS_PROVIDER, accessToken: ac.clientId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeLocusMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); if (!integration) throw new Error("Locus is not connected."); const ms = parseLocusMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: LOCUS_PROVIDER, accessToken: nac.clientId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeLocusMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listSites: protectedProcedure.query(async ({ ctx }) => { const context = await getLocusContext(ctx.user.id); const { listSites } = await import("./services/locus"); return listSites(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ siteId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getLocusContext(ctx.user.id); const { getSiteProductionSnapshot } = await import("./services/locus"); return getSiteProductionSnapshot(context, input.siteId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // Growatt
+  // =========================================================================
+  growatt: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); const metadata = parseGrowattMetadata(integration?.metadata); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, usernameMasked: maskApiKey(c.username), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ username: z.string().min(1), password: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); const em = parseGrowattMetadata(existing?.metadata); const nowIso = new Date().toISOString(); const nc: GrowattConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `Growatt ${em.connections.length + 1}`, username: input.username.trim(), password: input.password, baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GROWATT_PROVIDER, accessToken: nc.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGrowattMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); if (!integration) throw new Error("Growatt is not connected."); const ms = parseGrowattMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Growatt profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GROWATT_PROVIDER, accessToken: ac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGrowattMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); if (!integration) throw new Error("Growatt is not connected."); const ms = parseGrowattMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GROWATT_PROVIDER, accessToken: nac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGrowattMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listPlants: protectedProcedure.query(async ({ ctx }) => { const context = await getGrowattContext(ctx.user.id); const { listPlants } = await import("./services/growatt"); return listPlants(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ plantId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGrowattContext(ctx.user.id); const { getPlantProductionSnapshot } = await import("./services/growatt"); return getPlantProductionSnapshot(context, input.plantId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // APsystems EMA
+  // =========================================================================
+  apsystems: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken)); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, apiKeyMasked: maskApiKey(c.apiKey), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ apiKey: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); const em = parseAPsystemsMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken)); const nowIso = new Date().toISOString(); const nc: APsystemsConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `APsystems API ${em.connections.length + 1}`, apiKey: input.apiKey.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nc.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected APsystems profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getAPsystemsContext(ctx.user.id); const { listSystems } = await import("./services/apsystems"); return listSystems(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // EKM Encompass
+  // =========================================================================
+  ekm: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); const metadata = parseEkmMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken)); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, apiKeyMasked: maskApiKey(c.apiKey), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ apiKey: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); const em = parseEkmMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken)); const nowIso = new Date().toISOString(); const nc: EkmConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `EKM API ${em.connections.length + 1}`, apiKey: input.apiKey.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: EKM_PROVIDER, accessToken: nc.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeEkmMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); if (!integration) throw new Error("EKM is not connected."); const ms = parseEkmMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected EKM profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: EKM_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeEkmMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); if (!integration) throw new Error("EKM is not connected."); const ms = parseEkmMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: EKM_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeEkmMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ meterNumber: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getEkmContext(ctx.user.id); const { getMeterProductionSnapshot } = await import("./services/ekm"); return getMeterProductionSnapshot(context, input.meterNumber.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // Hoymiles S-Miles Cloud
+  // =========================================================================
+  hoymiles: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); const metadata = parseHoymilesMetadata(integration?.metadata); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, usernameMasked: maskApiKey(c.username), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ username: z.string().min(1), password: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); const em = parseHoymilesMetadata(existing?.metadata); const nowIso = new Date().toISOString(); const nc: HoymilesConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `Hoymiles ${em.connections.length + 1}`, username: input.username.trim(), password: input.password, baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: HOYMILES_PROVIDER, accessToken: nc.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeHoymilesMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (!integration) throw new Error("Hoymiles is not connected."); const ms = parseHoymilesMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Hoymiles profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: HOYMILES_PROVIDER, accessToken: ac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeHoymilesMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (!integration) throw new Error("Hoymiles is not connected."); const ms = parseHoymilesMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: HOYMILES_PROVIDER, accessToken: nac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeHoymilesMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getHoymilesContext(ctx.user.id); const { listStations } = await import("./services/hoymiles"); return listStations(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getHoymilesContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/hoymiles"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+  }),
+
+  // =========================================================================
+  // Solar-Log (local device)
+  // =========================================================================
+  solarLog: router({
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); const metadata = parseSolarLogMetadata(integration?.metadata); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, baseUrl: c.baseUrl, hasPassword: !!c.password, updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ baseUrl: z.string().min(1), password: z.string().optional(), connectionName: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); const em = parseSolarLogMetadata(existing?.metadata); const nowIso = new Date().toISOString(); const nc: SolarLogConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `Solar-Log ${em.connections.length + 1}`, baseUrl: input.baseUrl.trim(), password: toNonEmptyString(input.password) ?? null, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLAR_LOG_PROVIDER, accessToken: nc.baseUrl, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolarLogMetadata(connections, nc.id) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); if (!integration) throw new Error("Solar-Log is not connected."); const ms = parseSolarLogMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Solar-Log profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLAR_LOG_PROVIDER, accessToken: ac.baseUrl, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolarLogMetadata(ms.connections, ac.id) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); if (!integration) throw new Error("Solar-Log is not connected."); const ms = parseSolarLogMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLAR_LOG_PROVIDER, accessToken: nac.baseUrl, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolarLogMetadata(next, nac.id) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
+    listDevices: protectedProcedure.query(async ({ ctx }) => { const context = await getSolarLogContext(ctx.user.id); const { listDevices } = await import("./services/solarLog"); return listDevices(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ deviceId: z.string().optional(), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getSolarLogContext(ctx.user.id); const { getDeviceProductionSnapshot } = await import("./services/solarLog"); return getDeviceProductionSnapshot(context, input.deviceId ?? "solar-log-1", input.anchorDate); }),
   }),
 });
 

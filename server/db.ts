@@ -12,6 +12,7 @@ import {
   dailyHealthMetrics,
   supplementLogs,
   supplementDefinitions,
+  supplementPriceLogs,
   habitDefinitions,
   habitCompletions,
   notes,
@@ -28,6 +29,7 @@ import {
   InsertDailyHealthMetric,
   InsertSupplementLog,
   InsertSupplementDefinition,
+  InsertSupplementPriceLog,
   InsertHabitDefinition,
   InsertNote,
   InsertNoteLink,
@@ -324,6 +326,27 @@ export async function getUserByOpenId(openId: string) {
 
   const result = await withDbRetry("load user", async () =>
     db.select().from(users).where(eq(users.openId, openId)).limit(1)
+  );
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get user by email: database not available");
+    return undefined;
+  }
+
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return undefined;
+
+  const result = await withDbRetry("load user by email", async () =>
+    db
+      .select()
+      .from(users)
+      .where(sql`LOWER(${users.email}) = ${normalized}`)
+      .limit(1)
   );
 
   return result.length > 0 ? result[0] : undefined;
@@ -1087,6 +1110,27 @@ export async function listSupplementDefinitions(userId: number) {
   );
 }
 
+export async function getSupplementDefinitionById(userId: number, definitionId: string) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const result = await withDbRetry("load supplement definition by id", async () =>
+    db
+      .select()
+      .from(supplementDefinitions)
+      .where(
+        and(
+          eq(supplementDefinitions.userId, userId),
+          eq(supplementDefinitions.id, definitionId),
+          eq(supplementDefinitions.isActive, true)
+        )
+      )
+      .limit(1)
+  );
+
+  return result.length > 0 ? result[0] : null;
+}
+
 export async function createSupplementDefinition(definition: InsertSupplementDefinition) {
   const db = await getDb();
   if (!db) return;
@@ -1097,6 +1141,60 @@ export async function createSupplementDefinition(definition: InsertSupplementDef
       ...definition,
       createdAt: now,
       updatedAt: now,
+    });
+  });
+}
+
+export async function listSupplementPriceLogs(
+  userId: number,
+  options?: {
+    definitionId?: string;
+    limit?: number;
+  }
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const safeLimit = Math.max(1, Math.min(options?.limit ?? 100, 500));
+  const definitionId = options?.definitionId?.trim();
+
+  if (definitionId) {
+    return withDbRetry("list supplement price logs by definition", async () =>
+      db
+        .select()
+        .from(supplementPriceLogs)
+        .where(
+          and(
+            eq(supplementPriceLogs.userId, userId),
+            eq(supplementPriceLogs.definitionId, definitionId)
+          )
+        )
+        .orderBy(desc(supplementPriceLogs.capturedAt), desc(supplementPriceLogs.createdAt))
+        .limit(safeLimit)
+    );
+  }
+
+  return withDbRetry("list supplement price logs", async () =>
+    db
+      .select()
+      .from(supplementPriceLogs)
+      .where(eq(supplementPriceLogs.userId, userId))
+      .orderBy(desc(supplementPriceLogs.capturedAt), desc(supplementPriceLogs.createdAt))
+      .limit(safeLimit)
+  );
+}
+
+export async function addSupplementPriceLog(entry: InsertSupplementPriceLog) {
+  const db = await getDb();
+  if (!db) return;
+
+  const now = new Date();
+  await withDbRetry("insert supplement price log", async () => {
+    await db.insert(supplementPriceLogs).values({
+      ...entry,
+      createdAt: now,
+      updatedAt: now,
+      capturedAt: entry.capturedAt ?? now,
     });
   });
 }
@@ -1169,6 +1267,12 @@ export async function setSupplementDefinitionLock(
 export async function deleteSupplementDefinition(userId: number, definitionId: string) {
   const db = await getDb();
   if (!db) return;
+
+  await withDbRetry("delete supplement definition price logs", async () => {
+    await db
+      .delete(supplementPriceLogs)
+      .where(and(eq(supplementPriceLogs.userId, userId), eq(supplementPriceLogs.definitionId, definitionId)));
+  });
 
   await withDbRetry("delete supplement definition logs", async () => {
     await db

@@ -196,6 +196,39 @@ export const supplementDefinitions = mysqlTable(
 export type SupplementDefinition = typeof supplementDefinitions.$inferSelect;
 export type InsertSupplementDefinition = typeof supplementDefinitions.$inferInsert;
 
+// Historical price snapshots for supplements.
+export const supplementPriceLogs = mysqlTable(
+  "supplementPriceLogs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    definitionId: varchar("definitionId", { length: 64 }).notNull(),
+    supplementName: varchar("supplementName", { length: 128 }).notNull(),
+    brand: varchar("brand", { length: 128 }),
+    pricePerBottle: double("pricePerBottle").notNull(),
+    currency: varchar("currency", { length: 8 }).default("USD").notNull(),
+    sourceName: varchar("sourceName", { length: 128 }),
+    sourceUrl: text("sourceUrl"),
+    sourceDomain: varchar("sourceDomain", { length: 128 }),
+    confidence: double("confidence"),
+    imageUrl: text("imageUrl"),
+    capturedAt: timestamp("capturedAt").defaultNow().notNull(),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userCapturedIdx: index("supplement_price_logs_user_captured_idx").on(table.userId, table.capturedAt),
+    userDefinitionCapturedIdx: index("supplement_price_logs_user_definition_captured_idx").on(
+      table.userId,
+      table.definitionId,
+      table.capturedAt
+    ),
+  })
+);
+
+export type SupplementPriceLog = typeof supplementPriceLogs.$inferSelect;
+export type InsertSupplementPriceLog = typeof supplementPriceLogs.$inferInsert;
+
 // User-defined habits for tile-based daily tracking.
 export const habitDefinitions = mysqlTable(
   "habitDefinitions",

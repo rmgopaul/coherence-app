@@ -321,3 +321,87 @@ export async function getSystemProductionMeterTelemetry(
     end_at: endDate ? toUtcEpochSeconds(endDate, true) : undefined,
   });
 }
+
+/* ------------------------------------------------------------------ */
+/*  Production snapshot (bulk support)                                  */
+/* ------------------------------------------------------------------ */
+
+export type EnphaseV4ProductionSnapshot = {
+  systemId: string;
+  systemName: string | null;
+  status: "Found" | "Not Found" | "Error";
+  found: boolean;
+  lifetimeKwh: number | null;
+  anchorDate: string;
+  error: string | null;
+};
+
+function extractSummaryLifetimeWh(payload: unknown): number | null {
+  const root = asRecord(payload);
+  // The summary endpoint returns energy_lifetime in Wh.
+  return (
+    toNullableNumber(root.energy_lifetime) ??
+    toNullableNumber(root.energyLifetime) ??
+    toNullableNumber(root.lifetime_energy) ??
+    null
+  );
+}
+
+function safeRound(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.round(value * 1000) / 1000;
+}
+
+export async function getSystemProductionSnapshot(
+  context: EnphaseV4ApiContext,
+  systemId: string,
+  anchorDate: string,
+  systemName: string | null
+): Promise<EnphaseV4ProductionSnapshot> {
+  try {
+    const summaryPayload = await getSystemSummary(context, systemId);
+    const lifetimeWh = extractSummaryLifetimeWh(summaryPayload);
+    const lifetimeKwh = safeRound(lifetimeWh !== null ? lifetimeWh / 1000 : null);
+
+    return {
+      systemId,
+      systemName,
+      status: "Found",
+      found: true,
+      lifetimeKwh,
+      anchorDate,
+      error: null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error.";
+    const isNotFound = /not.?found|404|does.?not.?exist/i.test(message);
+    return {
+      systemId,
+      systemName,
+      status: isNotFound ? "Not Found" : "Error",
+      found: false,
+      lifetimeKwh: null,
+      anchorDate,
+      error: message,
+    };
+  }
+}
+
+export async function mapWithConcurrency<TInput, TOutput>(
+  items: TInput[],
+  concurrency: number,
+  fn: (item: TInput) => Promise<TOutput>
+): Promise<TOutput[]> {
+  const results: TOutput[] = new Array(items.length);
+  let nextIndex = 0;
+
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await fn(items[index]);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}

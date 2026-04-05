@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { toErrorMessage } from "@/lib/helpers";
+import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import { toErrorMessage, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, ExternalLink, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -62,6 +63,14 @@ export default function EnphaseV4MeterReads() {
   const energyLifetimeMutation = trpc.enphaseV4.getEnergyLifetime.useMutation();
   const rgmStatsMutation = trpc.enphaseV4.getRgmStats.useMutation();
   const productionReadsMutation = trpc.enphaseV4.getProductionMeterReadings.useMutation();
+  const bulkSnapshotsMutation = trpc.enphaseV4.getProductionSnapshots.useMutation();
+  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+
+  const [bulkSystemIdsCsv, setBulkSystemIdsCsv] = useState("");
+  const [bulkIsRunning, setBulkIsRunning] = useState(false);
+  type BulkSnapshotRow = { systemId: string; systemName: string | null; status: string; found: boolean; lifetimeKwh: number | null; anchorDate: string; error: string | null };
+  const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -493,6 +502,128 @@ export default function EnphaseV4MeterReads() {
             <pre className="text-xs bg-slate-950 text-slate-100 rounded-md p-4 overflow-auto max-h-[480px]">
               {resultText}
             </pre>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>4) Bulk Production Snapshots</CardTitle>
+            <CardDescription>
+              Paste or upload system IDs (one per line) to fetch lifetime production for each system. Results auto-push to the Solar REC Dashboard Converted Reads.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div>
+              <Label>System IDs (one per line)</Label>
+              <textarea
+                className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                value={bulkSystemIdsCsv}
+                onChange={(e) => setBulkSystemIdsCsv(e.target.value)}
+                placeholder={"123456\n789012\n345678"}
+                disabled={bulkIsRunning}
+              />
+            </div>
+            <div className="flex gap-2">
+              <Button
+                onClick={async () => {
+                  const ids = bulkSystemIdsCsv
+                    .split(/[\n,]+/)
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+                  if (ids.length === 0) {
+                    toast.error("Enter at least one system ID.");
+                    return;
+                  }
+                  setBulkIsRunning(true);
+                  setBulkRows([]);
+                  try {
+                    const result = await bulkSnapshotsMutation.mutateAsync({ systemIds: ids });
+                    setBulkRows(result.rows);
+                    toast.success(
+                      `Completed Enphase bulk snapshots: ${result.found} found, ${result.notFound} not found, ${result.errored} errors.`
+                    );
+
+                    // Auto-push Converted Reads.
+                    const readRows = result.rows
+                      .filter((row) => row.found && row.lifetimeKwh != null)
+                      .map((row) =>
+                        buildConvertedReadRow("Enphase", row.systemId, row.systemName ?? "", row.lifetimeKwh!, row.anchorDate)
+                      );
+                    const pushResult = await pushConvertedReadsToRecDashboard(
+                      (input) => getRemoteDataset.mutateAsync(input),
+                      (input) => saveRemoteDataset.mutateAsync(input),
+                      readRows,
+                      "Enphase"
+                    );
+                    if (pushResult.pushed > 0) {
+                      toast.success(`Pushed ${pushResult.pushed} Enphase rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`);
+                    } else if (pushResult.skipped > 0) {
+                      toast.message(`All ${pushResult.skipped} Enphase Converted Reads rows already exist.`);
+                    }
+                  } catch (error) {
+                    toast.error(`Bulk snapshots failed: ${toErrorMessage(error)}`);
+                  } finally {
+                    setBulkIsRunning(false);
+                  }
+                }}
+                disabled={bulkIsRunning || !statusQuery.data?.connected}
+              >
+                {bulkIsRunning ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Running...
+                  </>
+                ) : (
+                  "Run Bulk Snapshots"
+                )}
+              </Button>
+              {bulkRows.length > 0 && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const headers = ["system_id", "system_name", "status", "lifetime_kwh", "anchor_date", "error"];
+                    const csvLines = [
+                      headers.join(","),
+                      ...bulkRows.map((row) =>
+                        [row.systemId, `"${(row.systemName ?? "").replace(/"/g, '""')}"`, row.status, row.lifetimeKwh ?? "", row.anchorDate, `"${(row.error ?? "").replace(/"/g, '""')}"`].join(",")
+                      ),
+                    ];
+                    downloadTextFile(
+                      `enphase-bulk-snapshots-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`,
+                      csvLines.join("\n")
+                    );
+                  }}
+                >
+                  Download CSV
+                </Button>
+              )}
+            </div>
+            {bulkRows.length > 0 && (
+              <div className="overflow-auto max-h-[400px]">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-background">
+                    <tr className="border-b">
+                      <th className="text-left p-2">System ID</th>
+                      <th className="text-left p-2">System Name</th>
+                      <th className="text-left p-2">Status</th>
+                      <th className="text-left p-2">Lifetime (kWh)</th>
+                      <th className="text-left p-2">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bulkRows.map((row) => (
+                      <tr key={row.systemId} className="border-b">
+                        <td className="p-2 font-mono">{row.systemId}</td>
+                        <td className="p-2">{row.systemName ?? "N/A"}</td>
+                        <td className="p-2">{row.status}</td>
+                        <td className="p-2">{row.lifetimeKwh != null ? row.lifetimeKwh.toLocaleString() : "N/A"}</td>
+                        <td className="p-2 text-xs text-slate-500">{row.error ?? ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </main>
