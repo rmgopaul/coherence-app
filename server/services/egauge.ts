@@ -642,9 +642,8 @@ class EgaugePortfolioClient {
 
     Object.entries(query ?? {}).forEach(([key, value]) => {
       if (value === null || value === undefined) return;
-      const normalized = value.trim();
-      if (!normalized) return;
-      url.searchParams.set(key, normalized);
+      // Allow empty strings (needed for DataTables search[value]= params)
+      url.searchParams.set(key, value);
     });
 
     return url.toString();
@@ -814,15 +813,6 @@ class EgaugePortfolioClient {
   }> {
     await this.ensureAuthenticated();
 
-    // Visit the eguard dashboard first to ensure the csrftoken cookie is set
-    // (the login redirect may not always land on /eguard/).
-    if (!this.cookies.has("csrftoken")) {
-      await this.request("/eguard/", {
-        method: "GET",
-        accept: "text/html,application/xhtml+xml",
-      });
-    }
-
     const start =
       typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
         ? String(Math.floor(options.start))
@@ -832,45 +822,43 @@ class EgaugePortfolioClient {
         ? String(Math.floor(options.length))
         : "10000";
 
-    // Build full DataTables server-side processing POST body.
-    // CSRF is handled via X-CSRFToken header (set automatically in request()).
-    const formBody = new URLSearchParams();
-    formBody.set("draw", "1");
-    formBody.set("start", start);
-    formBody.set("length", length);
-    formBody.set("search[value]", toNonEmptyString(options?.filter) ?? "");
-    formBody.set("search[regex]", "false");
+    // Build full DataTables server-side query params (GET — endpoint rejects POST).
+    const query: Record<string, string | null | undefined> = {
+      draw: "1",
+      start,
+      length,
+      "search[value]": toNonEmptyString(options?.filter) ?? "",
+      "search[regex]": "false",
+      "order[0][column]": "0",
+      "order[0][dir]": "asc",
+    };
 
-    // Standard DataTables column definitions for the eguard dashboard.
+    // DataTables column definitions
     const columns = [
       "name", "serial_number", "group", "status", "last_update",
       "generation_today", "generation_mtd", "generation_last_month",
       "generation_12_months", "alerts",
     ];
     for (let i = 0; i < columns.length; i++) {
-      formBody.set(`columns[${i}][data]`, String(i));
-      formBody.set(`columns[${i}][name]`, columns[i]);
-      formBody.set(`columns[${i}][searchable]`, "true");
-      formBody.set(`columns[${i}][orderable]`, "true");
-      formBody.set(`columns[${i}][search][value]`, "");
-      formBody.set(`columns[${i}][search][regex]`, "false");
+      query[`columns[${i}][data]`] = String(i);
+      query[`columns[${i}][name]`] = columns[i];
+      query[`columns[${i}][searchable]`] = "true";
+      query[`columns[${i}][orderable]`] = "true";
+      query[`columns[${i}][search][value]`] = "";
+      query[`columns[${i}][search][regex]`] = "false";
     }
-
-    // Default sort by name ascending
-    formBody.set("order[0][column]", "0");
-    formBody.set("order[0][dir]", "asc");
 
     const groupId = toNonEmptyString(options?.groupId);
     if (groupId) {
-      formBody.set("group_id", groupId);
+      query["group_id"] = groupId;
     }
 
     const response = await this.request("/eguard/data/", {
-      method: "POST",
+      method: "GET",
       accept: "application/json,text/plain,*/*",
       referer: this.buildUrl("/eguard/"),
       xhr: true,
-      formBody,
+      query,
     });
 
     const trimmed = response.text.trim();
