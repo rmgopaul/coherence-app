@@ -798,7 +798,15 @@ class EgaugePortfolioClient {
     this.authenticated = true;
   }
 
-  async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<unknown[]> {
+  getUsername(): string | null {
+    return this.username;
+  }
+
+  async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<{
+    rows: unknown[];
+    recordsTotal: number | null;
+    recordsFiltered: number | null;
+  }> {
     await this.ensureAuthenticated();
 
     const response = await this.request("/eguard/data/", {
@@ -807,16 +815,17 @@ class EgaugePortfolioClient {
       referer: this.buildUrl("/eguard/"),
       xhr: true,
       query: {
+        draw: "1",
         filter: toNonEmptyString(options?.filter),
         group_id: toNonEmptyString(options?.groupId),
         start:
           typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
             ? String(Math.floor(options.start))
-            : undefined,
+            : "0",
         length:
           typeof options?.length === "number" && Number.isFinite(options.length) && options.length > 0
             ? String(Math.floor(options.length))
-            : undefined,
+            : "10000",
         page:
           typeof options?.page === "number" && Number.isFinite(options.page) && options.page > 0
             ? String(Math.floor(options.page))
@@ -829,19 +838,26 @@ class EgaugePortfolioClient {
     });
 
     const trimmed = response.text.trim();
-    if (!trimmed) return [];
+    if (!trimmed) return { rows: [], recordsTotal: null, recordsFiltered: null };
 
     try {
       const parsed = JSON.parse(trimmed);
-      if (Array.isArray(parsed)) {
-        return parsed as unknown[];
+
+      let recordsTotal: number | null = null;
+      let recordsFiltered: number | null = null;
+
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const container = parsed as Record<string, unknown>;
+        if (typeof container.recordsTotal === "number") recordsTotal = container.recordsTotal;
+        if (typeof container.recordsFiltered === "number") recordsFiltered = container.recordsFiltered;
+
+        if (Array.isArray(container.data)) return { rows: container.data as unknown[], recordsTotal, recordsFiltered };
+        if (Array.isArray(container.rows)) return { rows: container.rows as unknown[], recordsTotal, recordsFiltered };
+        if (Array.isArray(container.results)) return { rows: container.results as unknown[], recordsTotal, recordsFiltered };
       }
 
-      if (parsed && typeof parsed === "object") {
-        const container = parsed as Record<string, unknown>;
-        if (Array.isArray(container.data)) return container.data as unknown[];
-        if (Array.isArray(container.rows)) return container.rows as unknown[];
-        if (Array.isArray(container.results)) return container.results as unknown[];
+      if (Array.isArray(parsed)) {
+        return { rows: parsed as unknown[], recordsTotal, recordsFiltered };
       }
 
       throw new Error("Expected an array-like payload.");
@@ -1268,6 +1284,7 @@ export async function getEgaugePortfolioSystems(
 ): Promise<{
   baseUrl: string;
   accessType: EgaugeAccessType;
+  authenticatedUsername: string | null;
   filter: string | null;
   groupId: string | null;
   queryAttempts: Array<{
@@ -1275,6 +1292,8 @@ export async function getEgaugePortfolioSystems(
     start: number | null;
     length: number | null;
     rowsReturned: number;
+    recordsTotal: number | null;
+    recordsFiltered: number | null;
     error: string | null;
   }>;
   total: number;
@@ -1290,6 +1309,9 @@ export async function getEgaugePortfolioSystems(
   const normalizedFilter = toNonEmptyString(options?.filter);
   const normalizedGroupId = toNonEmptyString(options?.groupId);
 
+  // For DataTables-style API: only make one request with no group filter,
+  // requesting all records. The eGauge /eguard/data/ endpoint returns all
+  // systems the authenticated account has access to.
   const fetchAttempts: EgaugePortfolioFetchOptions[] =
     normalizedGroupId || normalizedFilter
       ? [
@@ -1302,24 +1324,24 @@ export async function getEgaugePortfolioSystems(
         ]
       : [
           { start: 0, length: 10000 },
-          { groupId: "all", start: 0, length: 10000 },
-          { groupId: "-1", start: 0, length: 10000 },
-          { groupId: "0", start: 0, length: 10000 },
         ];
 
   const mergedRowsByKey = new Map<string, unknown>();
   let firstError: Error | null = null;
+  let serverRecordsTotal: number | null = null;
   const queryAttempts: Array<{
     groupId: string | null;
     start: number | null;
     length: number | null;
     rowsReturned: number;
+    recordsTotal: number | null;
+    recordsFiltered: number | null;
     error: string | null;
   }> = [];
 
   for (const attempt of fetchAttempts) {
     try {
-      const fetchedRows = await client.fetchSystems({
+      const result = await client.fetchSystems({
         filter: normalizedFilter,
         groupId: attempt.groupId,
         start: attempt.start,
@@ -1332,14 +1354,51 @@ export async function getEgaugePortfolioSystems(
         groupId: attempt.groupId ?? null,
         start: attempt.start ?? null,
         length: attempt.length ?? null,
-        rowsReturned: fetchedRows.length,
+        rowsReturned: result.rows.length,
+        recordsTotal: result.recordsTotal,
+        recordsFiltered: result.recordsFiltered,
         error: null,
       });
 
-      for (const row of fetchedRows) {
+      if (result.recordsTotal !== null) serverRecordsTotal = result.recordsTotal;
+
+      for (const row of result.rows) {
         const key = buildPortfolioRowKey(row);
         if (!mergedRowsByKey.has(key)) {
           mergedRowsByKey.set(key, row);
+        }
+      }
+
+      // If the server reports more records than we received, paginate
+      if (result.recordsTotal !== null && result.rows.length < result.recordsTotal) {
+        let fetched = result.rows.length;
+        while (fetched < result.recordsTotal) {
+          const pageResult = await client.fetchSystems({
+            filter: normalizedFilter,
+            groupId: attempt.groupId,
+            start: fetched,
+            length: 10000,
+          });
+
+          queryAttempts.push({
+            groupId: attempt.groupId ?? null,
+            start: fetched,
+            length: 10000,
+            rowsReturned: pageResult.rows.length,
+            recordsTotal: pageResult.recordsTotal,
+            recordsFiltered: pageResult.recordsFiltered,
+            error: null,
+          });
+
+          if (pageResult.rows.length === 0) break;
+
+          for (const row of pageResult.rows) {
+            const key = buildPortfolioRowKey(row);
+            if (!mergedRowsByKey.has(key)) {
+              mergedRowsByKey.set(key, row);
+            }
+          }
+          fetched += pageResult.rows.length;
         }
       }
     } catch (error) {
@@ -1348,6 +1407,8 @@ export async function getEgaugePortfolioSystems(
         start: attempt.start ?? null,
         length: attempt.length ?? null,
         rowsReturned: 0,
+        recordsTotal: null,
+        recordsFiltered: null,
         error: error instanceof Error ? error.message : "Unknown error",
       });
       if (!firstError && error instanceof Error) {
@@ -1377,6 +1438,7 @@ export async function getEgaugePortfolioSystems(
   return {
     baseUrl: normalizeEgaugePortfolioBaseUrl(context.baseUrl),
     accessType: normalizeEgaugeAccessType(context.accessType),
+    authenticatedUsername: client.getUsername(),
     filter: normalizedFilter,
     groupId: normalizedGroupId,
     queryAttempts,
