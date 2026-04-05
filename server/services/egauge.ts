@@ -698,6 +698,11 @@ class EgaugePortfolioClient {
       headers["X-Requested-With"] = "XMLHttpRequest";
     }
 
+    // Django CSRF: for AJAX POST, send the csrftoken cookie value as X-CSRFToken header
+    if ((options?.method === "POST") && this.cookies.has("csrftoken")) {
+      headers["X-CSRFToken"] = this.cookies.get("csrftoken")!;
+    }
+
     const response = await fetch(url, {
       method: options?.method ?? "GET",
       headers,
@@ -802,19 +807,6 @@ class EgaugePortfolioClient {
     return this.username;
   }
 
-  /**
-   * Fetch the eguard dashboard HTML to extract CSRF token and DataTables
-   * column configuration so we can replicate the exact AJAX request the
-   * browser makes.
-   */
-  private async getEguardPageCsrf(): Promise<string | null> {
-    const page = await this.request("/eguard/", {
-      method: "GET",
-      accept: "text/html,application/xhtml+xml",
-    });
-    return this.extractCsrfToken(page.text);
-  }
-
   async fetchSystems(options?: EgaugePortfolioFetchOptions): Promise<{
     rows: unknown[];
     recordsTotal: number | null;
@@ -822,8 +814,14 @@ class EgaugePortfolioClient {
   }> {
     await this.ensureAuthenticated();
 
-    // First, load the eguard dashboard to get a CSRF token for POST requests.
-    const csrfToken = await this.getEguardPageCsrf();
+    // Visit the eguard dashboard first to ensure the csrftoken cookie is set
+    // (the login redirect may not always land on /eguard/).
+    if (!this.cookies.has("csrftoken")) {
+      await this.request("/eguard/", {
+        method: "GET",
+        accept: "text/html,application/xhtml+xml",
+      });
+    }
 
     const start =
       typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
@@ -835,10 +833,8 @@ class EgaugePortfolioClient {
         : "10000";
 
     // Build full DataTables server-side processing POST body.
-    // The eGauge eguard endpoint is a Django DataTables backend that expects
-    // the standard jQuery DataTables parameters.
+    // CSRF is handled via X-CSRFToken header (set automatically in request()).
     const formBody = new URLSearchParams();
-    if (csrfToken) formBody.set("csrfmiddlewaretoken", csrfToken);
     formBody.set("draw", "1");
     formBody.set("start", start);
     formBody.set("length", length);
