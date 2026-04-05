@@ -740,6 +740,23 @@ export default function EkmMeterReads() {
     downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
   };
 
+  const downloadConvertedReadsCsv = (rows: BulkSnapshotRow[]) => {
+    const readRows = rows.filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate);
+    if (readRows.length === 0) {
+      toast.error("No rows with lifetime kWh available for Converted Reads export.");
+      return;
+    }
+    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "read_date", "status", "alert_severity"];
+    const csvRows = readRows.map((row) => {
+      const readRow = buildConvertedReadRow("EKM Encompass.io", row.meterNumber, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
+      return { monitoring: readRow.monitoring, monitoring_system_id: readRow.monitoring_system_id, monitoring_system_name: readRow.monitoring_system_name, lifetime_meter_read_wh: readRow.lifetime_meter_read_wh, read_date: readRow.read_date, status: readRow.status, alert_severity: readRow.alert_severity };
+    });
+    const csvText = buildCsv(headers, csvRows);
+    const fileName = `ekm-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
+    toast.success(`Downloaded ${NUMBER_FORMATTER.format(csvRows.length)} Converted Reads rows.`);
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -1083,6 +1100,14 @@ export default function EkmMeterReads() {
                 onClick={() => downloadBulkCsv(filteredBulkRows, "ekm-production-bulk-filtered")}
               >
                 Download Filtered CSV
+              </Button>
+              <Button
+                variant="outline"
+                disabled={bulkRows.filter((r) => r.found && r.lifetimeKwh != null).length === 0}
+                onClick={() => downloadConvertedReadsCsv(bulkRows)}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Download Converted Reads CSV
               </Button>
             </div>
 
