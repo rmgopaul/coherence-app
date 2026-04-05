@@ -617,6 +617,10 @@ type EgaugePortfolioFetchOptions = {
   filter?: string | null;
   groupId?: string | null;
   anchorDate?: string | null;
+  start?: number | null;
+  length?: number | null;
+  page?: number | null;
+  perPage?: number | null;
 };
 
 class EgaugePortfolioClient {
@@ -805,6 +809,22 @@ class EgaugePortfolioClient {
       query: {
         filter: toNonEmptyString(options?.filter),
         group_id: toNonEmptyString(options?.groupId),
+        start:
+          typeof options?.start === "number" && Number.isFinite(options.start) && options.start >= 0
+            ? String(Math.floor(options.start))
+            : undefined,
+        length:
+          typeof options?.length === "number" && Number.isFinite(options.length) && options.length > 0
+            ? String(Math.floor(options.length))
+            : undefined,
+        page:
+          typeof options?.page === "number" && Number.isFinite(options.page) && options.page > 0
+            ? String(Math.floor(options.page))
+            : undefined,
+        per_page:
+          typeof options?.perPage === "number" && Number.isFinite(options.perPage) && options.perPage > 0
+            ? String(Math.floor(options.perPage))
+            : undefined,
       },
     });
 
@@ -813,10 +833,18 @@ class EgaugePortfolioClient {
 
     try {
       const parsed = JSON.parse(trimmed);
-      if (!Array.isArray(parsed)) {
-        throw new Error("Expected an array.");
+      if (Array.isArray(parsed)) {
+        return parsed as unknown[];
       }
-      return parsed as unknown[];
+
+      if (parsed && typeof parsed === "object") {
+        const container = parsed as Record<string, unknown>;
+        if (Array.isArray(container.data)) return container.data as unknown[];
+        if (Array.isArray(container.rows)) return container.rows as unknown[];
+        if (Array.isArray(container.results)) return container.results as unknown[];
+      }
+
+      throw new Error("Expected an array-like payload.");
     } catch {
       if (/<html/i.test(response.text) || /name=["']auth-username["']/i.test(response.text)) {
         throw new Error("Portfolio request returned HTML instead of JSON. Verify portfolio URL and login credentials.");
@@ -928,6 +956,11 @@ function looksLikePortfolioMeterId(value: string | null): boolean {
 }
 
 function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record<string, unknown>): string | null {
+  const fromLabel = toNonEmptyString(extra.label);
+  if (fromLabel && /^[A-Za-z0-9._-]+$/.test(fromLabel)) {
+    return fromLabel;
+  }
+
   const fromExplicitFields =
     toNonEmptyString(record.id) ??
     toNonEmptyString(record.ID) ??
@@ -979,6 +1012,29 @@ function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record
   }
 
   return null;
+}
+
+function buildPortfolioRowKey(row: unknown): string {
+  const record = asRecord(row);
+  const extra = asRecord(record.extra_context);
+
+  const parts = [
+    toNonEmptyString(extra.label),
+    toNonEmptyString(record.Name_Edit),
+    toNonEmptyString(record.Group_Edit),
+    toNonEmptyString(record.Name),
+    toNonEmptyString(extra.proxy_url),
+    toNonEmptyString(record.Group),
+    toNonEmptyString(record.Job),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+
+  if (parts.length > 0) {
+    return parts.join("|");
+  }
+
+  return JSON.stringify(record);
 }
 
 function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
@@ -1224,10 +1280,59 @@ export async function getEgaugePortfolioSystems(
   raw: unknown[];
 }> {
   const client = new EgaugePortfolioClient(context);
-  const raw = await client.fetchSystems({
-    filter: options?.filter,
-    groupId: options?.groupId,
-  });
+  const normalizedFilter = toNonEmptyString(options?.filter);
+  const normalizedGroupId = toNonEmptyString(options?.groupId);
+
+  const fetchAttempts: EgaugePortfolioFetchOptions[] =
+    normalizedGroupId || normalizedFilter
+      ? [
+          {
+            filter: normalizedFilter,
+            groupId: normalizedGroupId,
+            start: 0,
+            length: 10000,
+          },
+        ]
+      : [
+          { start: 0, length: 10000 },
+          { groupId: "all", start: 0, length: 10000 },
+          { groupId: "-1", start: 0, length: 10000 },
+          { groupId: "0", start: 0, length: 10000 },
+        ];
+
+  const mergedRowsByKey = new Map<string, unknown>();
+  let firstError: Error | null = null;
+
+  for (const attempt of fetchAttempts) {
+    try {
+      const fetchedRows = await client.fetchSystems({
+        filter: normalizedFilter,
+        groupId: attempt.groupId,
+        start: attempt.start,
+        length: attempt.length,
+        page: attempt.page,
+        perPage: attempt.perPage,
+      });
+
+      for (const row of fetchedRows) {
+        const key = buildPortfolioRowKey(row);
+        if (!mergedRowsByKey.has(key)) {
+          mergedRowsByKey.set(key, row);
+        }
+      }
+    } catch (error) {
+      if (!firstError && error instanceof Error) {
+        firstError = error;
+      }
+    }
+  }
+
+  if (mergedRowsByKey.size === 0) {
+    if (firstError) throw firstError;
+    throw new Error("No portfolio systems were returned.");
+  }
+
+  const raw = Array.from(mergedRowsByKey.values());
 
   const systems = raw.map((row) => mapPortfolioSystem(row));
   const requestedAnchorDate = toNonEmptyString(options?.anchorDate);
@@ -1243,8 +1348,8 @@ export async function getEgaugePortfolioSystems(
   return {
     baseUrl: normalizeEgaugePortfolioBaseUrl(context.baseUrl),
     accessType: normalizeEgaugeAccessType(context.accessType),
-    filter: toNonEmptyString(options?.filter),
-    groupId: toNonEmptyString(options?.groupId),
+    filter: normalizedFilter,
+    groupId: normalizedGroupId,
     total: rows.length,
     found,
     notFound,
