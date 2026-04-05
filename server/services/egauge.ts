@@ -826,6 +826,99 @@ class EgaugePortfolioClient {
   }
 }
 
+function extractMeterIdFromDevicesPath(value: string | null): string | null {
+  const raw = toNonEmptyString(value);
+  if (!raw) return null;
+
+  const fromPath = (pathname: string): string | null => {
+    const segments = pathname
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    const deviceSegmentIndex = segments.findIndex((segment) => segment.toLowerCase() === "devices");
+    if (deviceSegmentIndex < 0) return null;
+    const candidate = segments[deviceSegmentIndex + 1];
+    if (!candidate) return null;
+    return /^[A-Za-z0-9._-]+$/.test(candidate) ? candidate : null;
+  };
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      return fromPath(parsed.pathname);
+    } catch {
+      return null;
+    }
+  }
+
+  if (raw.startsWith("/")) {
+    return fromPath(raw);
+  }
+
+  return null;
+}
+
+function extractMeterIdFromProxyUrl(value: string | null): string | null {
+  const raw = toNonEmptyString(value);
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    const hostname = parsed.hostname.trim();
+    if (!hostname) return null;
+    const firstLabel = hostname.split(".")[0]?.trim();
+    if (!firstLabel || !/^[A-Za-z0-9._-]+$/.test(firstLabel)) return null;
+    return firstLabel;
+  } catch {
+    return null;
+  }
+}
+
+function looksLikePortfolioMeterId(value: string | null): boolean {
+  if (!value) return false;
+  if (!/^[A-Za-z0-9._-]+$/.test(value)) return false;
+  return /^egauge/i.test(value) || /\d/.test(value);
+}
+
+function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record<string, unknown>): string | null {
+  const fromExplicitFields =
+    toNonEmptyString(record.id) ??
+    toNonEmptyString(record.ID) ??
+    toNonEmptyString(record.meter_id) ??
+    toNonEmptyString(record.meterId) ??
+    toNonEmptyString(record.Meter_ID) ??
+    toNonEmptyString(record.MeterId) ??
+    toNonEmptyString(record.Device_ID) ??
+    toNonEmptyString(record.device_id) ??
+    toNonEmptyString(record.serial) ??
+    toNonEmptyString(record.Serial);
+  if (looksLikePortfolioMeterId(fromExplicitFields)) {
+    return fromExplicitFields;
+  }
+
+  const fromDevicePath =
+    extractMeterIdFromDevicesPath(toNonEmptyString(record.Name_Edit)) ??
+    extractMeterIdFromDevicesPath(toNonEmptyString(record.Map_Link)) ??
+    extractMeterIdFromDevicesPath(toNonEmptyString(record.Group_Edit));
+  if (looksLikePortfolioMeterId(fromDevicePath)) {
+    return fromDevicePath;
+  }
+
+  const fromProxyUrl = extractMeterIdFromProxyUrl(toNonEmptyString(extra.proxy_url));
+  if (looksLikePortfolioMeterId(fromProxyUrl)) {
+    return fromProxyUrl;
+  }
+
+  const fallback =
+    toNonEmptyString(extra.label) ??
+    toNonEmptyString(record.Name);
+  if (looksLikePortfolioMeterId(fallback)) {
+    return fallback;
+  }
+
+  return null;
+}
+
 function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
   const record = asRecord(row);
   const extra = asRecord(record.extra_context);
@@ -845,7 +938,7 @@ function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
   };
 
   return {
-    systemId: toNonEmptyString(extra.label) ?? toNonEmptyString(record.Name),
+    systemId: extractPortfolioSystemId(record, extra),
     name,
     group: toNonEmptyString(record.Group),
     job: toNonEmptyString(record.Job),

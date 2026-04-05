@@ -237,15 +237,21 @@ export default function EGaugeApi() {
     }
   };
 
-  const parseBulkMeterIds = (): string[] =>
-    Array.from(
-      new Set(
-        bulkMeterIdsCsv
-          .split(/[\n,]+/)
-          .map((value) => value.trim().toLowerCase())
-          .filter((value) => value.length > 0)
-      )
-    );
+  const parseBulkMeterIds = (): string[] => {
+    const meterIds = bulkMeterIdsCsv
+      .split(/[\n,]+/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0);
+
+    const dedupedByCaseInsensitiveKey = new Map<string, string>();
+    meterIds.forEach((meterId) => {
+      const key = meterId.toLowerCase();
+      if (!dedupedByCaseInsensitiveKey.has(key)) {
+        dedupedByCaseInsensitiveKey.set(key, meterId);
+      }
+    });
+    return Array.from(dedupedByCaseInsensitiveKey.values());
+  };
 
   const handlePullAllPortfolioIds = async () => {
     if (!isConnected) {
@@ -263,13 +269,16 @@ export default function EGaugeApi() {
         filter: portfolioFilter.trim() || undefined,
         groupId: portfolioGroupId.trim() || undefined,
       });
-      const ids = Array.from(
-        new Set(
-          (result.rows ?? [])
-            .map((row) => (typeof row?.meterId === "string" ? row.meterId.trim().toLowerCase() : ""))
-            .filter((value) => value.length > 0)
-        )
-      );
+      const idsByKey = new Map<string, string>();
+      for (const row of result.rows ?? []) {
+        const meterId = typeof row?.meterId === "string" ? row.meterId.trim() : "";
+        if (!meterId) continue;
+        const key = meterId.toLowerCase();
+        if (!idsByKey.has(key)) {
+          idsByKey.set(key, meterId);
+        }
+      }
+      const ids = Array.from(idsByKey.values());
       setBulkMeterIdsCsv(ids.join("\n"));
       toast.success(
         `Fetched ${NUMBER_FORMATTER.format(ids.length)} eGauge IDs from portfolio. Next step: run bulk snapshots.`
@@ -307,11 +316,18 @@ export default function EGaugeApi() {
       setBulkRows(rows);
 
       if (activeIsPortfolioAccess && Array.isArray(result.meterIdsUsed)) {
-        const normalizedIds = result.meterIdsUsed
-          .map((value) => (typeof value === "string" ? value.trim().toLowerCase() : ""))
-          .filter((value) => value.length > 0);
+        const idsByKey = new Map<string, string>();
+        for (const value of result.meterIdsUsed) {
+          const meterId = typeof value === "string" ? value.trim() : "";
+          if (!meterId) continue;
+          const key = meterId.toLowerCase();
+          if (!idsByKey.has(key)) {
+            idsByKey.set(key, meterId);
+          }
+        }
+        const normalizedIds = Array.from(idsByKey.values());
         if (normalizedIds.length > 0) {
-          setBulkMeterIdsCsv(Array.from(new Set(normalizedIds)).join("\n"));
+          setBulkMeterIdsCsv(normalizedIds.join("\n"));
         }
       }
 

@@ -5723,9 +5723,17 @@ export const appRouter = router({
             return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
           })();
 
-        const uniqueMeterIds = Array.from(
-          new Set((input.meterIds ?? []).map((id) => id.trim().toLowerCase()).filter((id) => id.length > 0))
-        );
+        const requestedMeterIds = (input.meterIds ?? [])
+          .map((id) => id.trim())
+          .filter((id) => id.length > 0);
+        const uniqueMeterIdsByKey = new Map<string, string>();
+        requestedMeterIds.forEach((meterId) => {
+          const key = meterId.toLowerCase();
+          if (!uniqueMeterIdsByKey.has(key)) {
+            uniqueMeterIdsByKey.set(key, meterId);
+          }
+        });
+        const uniqueMeterIds = Array.from(uniqueMeterIdsByKey.values());
 
         const usePortfolioBulk =
           activeConnection.accessType === "portfolio_login" || Boolean(input.autoFetchPortfolioIds);
@@ -5758,7 +5766,7 @@ export const appRouter = router({
           const rows =
             uniqueMeterIds.length > 0
               ? uniqueMeterIds.map((meterId) => {
-                  const matchedRow = portfolioRowsByMeterId.get(meterId);
+                  const matchedRow = portfolioRowsByMeterId.get(meterId.toLowerCase());
                   if (matchedRow) return matchedRow;
                   return {
                     meterId,
@@ -5795,7 +5803,7 @@ export const appRouter = router({
         }
 
         const rows = await mapWithConcurrencyEgauge(uniqueMeterIds, 4, async (meterId: string) => {
-          const conn = connectionByMeterId.get(meterId);
+          const conn = connectionByMeterId.get(meterId.toLowerCase());
           if (!conn) {
             return {
               meterId,
