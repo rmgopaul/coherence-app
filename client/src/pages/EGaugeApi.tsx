@@ -265,10 +265,8 @@ export default function EGaugeApi() {
 
     setBulkIsRunning(true);
     try {
-      const result = await getPortfolioSystemsMutation.mutateAsync({
-        filter: portfolioFilter.trim() || undefined,
-        groupId: portfolioGroupId.trim() || undefined,
-      });
+      // Always fetch the full portfolio list here; this button is specifically "all IDs".
+      const result = await getPortfolioSystemsMutation.mutateAsync();
       const idsByKey = new Map<string, string>();
       for (const row of result.rows ?? []) {
         const meterId = typeof row?.meterId === "string" ? row.meterId.trim() : "";
@@ -309,8 +307,6 @@ export default function EGaugeApi() {
       const result = await bulkSnapshotsMutation.mutateAsync({
         meterIds: ids.length > 0 ? ids : undefined,
         autoFetchPortfolioIds: shouldAutoFetchPortfolio ? true : undefined,
-        filter: activeIsPortfolioAccess ? portfolioFilter.trim() || undefined : undefined,
-        groupId: activeIsPortfolioAccess ? portfolioGroupId.trim() || undefined : undefined,
       });
       const rows = result.rows as BulkSnapshotRow[];
       setBulkRows(rows);
