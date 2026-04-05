@@ -5427,9 +5427,12 @@ export const appRouter = router({
           accessType === "portfolio_login"
             ? normalizeEgaugePortfolioBaseUrl(input.baseUrl)
             : normalizeEgaugeBaseUrl(input.baseUrl);
+        const resolvedUsernameForId = toNonEmptyString(input.username)?.toLowerCase().replace(/[^a-z0-9._-]/g, "_") ?? "unknown";
         const normalizedMeterId =
           toNonEmptyString(input.meterId)?.toLowerCase() ??
-          (accessType === "portfolio_login" ? "portfolio" : deriveEgaugeMeterId(normalizedBaseUrl).toLowerCase());
+          (accessType === "portfolio_login"
+            ? `portfolio-${resolvedUsernameForId}`
+            : deriveEgaugeMeterId(normalizedBaseUrl).toLowerCase());
 
         const existing = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
         const metadataState = parseEgaugeMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
@@ -5480,7 +5483,7 @@ export const appRouter = router({
             name:
               toNonEmptyString(input.connectionName) ??
               (accessType === "portfolio_login"
-                ? "eGauge Portfolio"
+                ? `eGauge Portfolio (${toNonEmptyString(input.username) ?? "unknown"})`
                 : `eGauge ${normalizedMeterId}`),
             meterId: normalizedMeterId,
             baseUrl: normalizedBaseUrl,
@@ -5848,6 +5851,94 @@ export const appRouter = router({
           source: "saved_connections" as const,
           meterIdsUsed: uniqueMeterIds,
           rows,
+        };
+      }),
+    getAllPortfolioSnapshots: protectedProcedure
+      .input(
+        z
+          .object({
+            filter: z.string().optional(),
+            groupId: z.string().optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider } = await import("./db");
+        const { getEgaugePortfolioSystems } = await import("./services/egauge");
+
+        const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+        const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+
+        const portfolioConnections = metadata.connections.filter(
+          (c) => c.accessType === "portfolio_login" && c.username && c.password
+        );
+
+        if (portfolioConnections.length === 0) {
+          throw new Error("No portfolio login connections found. Save at least one Portfolio Login profile first.");
+        }
+
+        const portfolioResults: Array<{
+          connectionId: string;
+          connectionName: string;
+          username: string | null;
+          total: number;
+          found: number;
+          error: string | null;
+        }> = [];
+        const seenMeterIds = new Set<string>();
+        const mergedRows: Array<Record<string, unknown>> = [];
+
+        for (const conn of portfolioConnections) {
+          try {
+            const result = await getEgaugePortfolioSystems(
+              {
+                baseUrl: conn.baseUrl,
+                accessType: conn.accessType,
+                username: conn.username,
+                password: conn.password,
+              },
+              {
+                filter: input?.filter,
+                groupId: input?.groupId,
+              }
+            );
+
+            portfolioResults.push({
+              connectionId: conn.id,
+              connectionName: conn.name,
+              username: conn.username,
+              total: result.total,
+              found: result.found,
+              error: null,
+            });
+
+            for (const row of result.rows) {
+              const key = (row.meterId ?? "").trim().toLowerCase();
+              if (key && !seenMeterIds.has(key)) {
+                seenMeterIds.add(key);
+                mergedRows.push({ ...row, portfolioAccount: conn.username });
+              }
+            }
+          } catch (error) {
+            portfolioResults.push({
+              connectionId: conn.id,
+              connectionName: conn.name,
+              username: conn.username,
+              total: 0,
+              found: 0,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        return {
+          portfolioCount: portfolioConnections.length,
+          portfolioResults,
+          total: mergedRows.length,
+          found: mergedRows.filter((r) => r.status === "Found").length,
+          notFound: mergedRows.filter((r) => r.status === "Not Found").length,
+          errored: mergedRows.filter((r) => r.status === "Error").length,
+          rows: mergedRows,
         };
       }),
   }),
