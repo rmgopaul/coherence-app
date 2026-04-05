@@ -808,10 +808,11 @@ class EgaugePortfolioClient {
   }
 
   /**
-   * Fetch the eguard dashboard HTML and extract available group IDs
-   * from the group selector dropdown.
+   * Fetch the eguard dashboard HTML and extract available group IDs/names
+   * from the group selector dropdown and access manager links.
    */
   async fetchAvailableGroups(): Promise<Array<{ id: string; name: string }>> {
+    // Fetch the main eguard page to find group selector
     const page = await this.request("/eguard/", {
       method: "GET",
       accept: "text/html,application/xhtml+xml",
@@ -820,40 +821,82 @@ class EgaugePortfolioClient {
 
     console.log(`[eGauge Portfolio] Eguard page length: ${page.text.length}`);
 
-    // Look for group selector options — typically <option value="123">Group Name</option>
-    // Also look for any JS data structures with group info
     const groups: Array<{ id: string; name: string }> = [];
+    const seenIds = new Set<string>();
 
-    // Pattern 1: <option> tags in a select (common for group dropdowns)
+    // Pattern 1: <option> tags (value can be numeric ID or group name)
     const optionRegex = /<option\s[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
     let optionMatch: RegExpExecArray | null;
     while ((optionMatch = optionRegex.exec(page.text)) !== null) {
       const id = optionMatch[1].trim();
       const name = stripHtml(optionMatch[2] ?? "").trim();
-      if (id && name && id !== "" && id !== "0" && !/^(all|none|select)$/i.test(id)) {
-        groups.push({ id, name });
-      }
-    }
-
-    // Pattern 2: Look for group_id references in links or data attributes
-    const groupLinkRegex = /group_id[=:][\s"']*(\d+)/gi;
-    const seenIds = new Set(groups.map((g) => g.id));
-    let groupLinkMatch: RegExpExecArray | null;
-    while ((groupLinkMatch = groupLinkRegex.exec(page.text)) !== null) {
-      const id = groupLinkMatch[1];
       if (id && !seenIds.has(id)) {
         seenIds.add(id);
-        groups.push({ id, name: `Group ${id}` });
+        groups.push({ id, name: name || id });
       }
     }
 
-    console.log(`[eGauge Portfolio] Found ${groups.length} groups: ${JSON.stringify(groups)}`);
+    // Pattern 2: data attributes or JS objects with group references
+    const dataGroupRegex = /["']group(?:_id|Id|_name|Name)?["']\s*[:=]\s*["']([^"']+)["']/gi;
+    let dataMatch: RegExpExecArray | null;
+    while ((dataMatch = dataGroupRegex.exec(page.text)) !== null) {
+      const id = dataMatch[1].trim();
+      if (id && !seenIds.has(id) && !/^(null|undefined|true|false)$/i.test(id)) {
+        seenIds.add(id);
+        groups.push({ id, name: id });
+      }
+    }
 
-    // Also log a section of the HTML around any "group" references for debugging
-    const groupSectionIdx = page.text.toLowerCase().indexOf("group");
-    if (groupSectionIdx >= 0) {
-      const snippet = page.text.slice(Math.max(0, groupSectionIdx - 100), groupSectionIdx + 500);
-      console.log(`[eGauge Portfolio] HTML near 'group': ${snippet.replace(/\s+/g, " ").slice(0, 600)}`);
+    console.log(`[eGauge Portfolio] Found ${groups.length} groups from eguard page: ${JSON.stringify(groups.slice(0, 20))}`);
+
+    // Log HTML snippets around select/dropdown elements for debugging
+    const selectIdx = page.text.toLowerCase().indexOf("<select");
+    if (selectIdx >= 0) {
+      const selectSnippet = page.text.slice(selectIdx, selectIdx + 1000);
+      console.log(`[eGauge Portfolio] First <select> element: ${selectSnippet.replace(/\s+/g, " ").slice(0, 800)}`);
+    }
+
+    // Also try fetching the access-manager groups page
+    try {
+      const amPage = await this.request("/eguard/access-manager/groups/", {
+        method: "GET",
+        accept: "text/html,application/xhtml+xml",
+        referer: this.buildUrl("/eguard/"),
+      });
+      console.log(`[eGauge Portfolio] Access manager groups page length: ${amPage.text.length}`);
+
+      // Look for group names/links in the access manager
+      // Pattern: links to group edit pages, table rows with group names
+      const groupNameRegex = /(?:group[_-]?name|edit-group)[^"']*["']([^"']+)["']/gi;
+      let gnMatch: RegExpExecArray | null;
+      while ((gnMatch = groupNameRegex.exec(amPage.text)) !== null) {
+        const name = gnMatch[1].trim();
+        if (name && !seenIds.has(name)) {
+          seenIds.add(name);
+          groups.push({ id: name, name });
+        }
+      }
+
+      // Also extract from table cells or list items
+      const tdRegex = /<(?:td|li|a)[^>]*>\s*([^<]{2,50})\s*<\/(?:td|li|a)>/gi;
+      let tdMatch: RegExpExecArray | null;
+      while ((tdMatch = tdRegex.exec(amPage.text)) !== null) {
+        const text = tdMatch[1].trim();
+        // Skip generic text, only keep things that look like group names
+        if (text && !seenIds.has(text) && !/^(edit|delete|save|cancel|group|name|devices|actions|add)/i.test(text) && text.length > 2) {
+          // Don't add too many — this is a heuristic
+          if (groups.length < 100) {
+            seenIds.add(text);
+            groups.push({ id: text, name: text });
+          }
+        }
+      }
+
+      console.log(`[eGauge Portfolio] After access-manager scan: ${groups.length} groups total`);
+      // Log first 2000 chars of access manager for debugging
+      console.log(`[eGauge Portfolio] Access manager HTML preview: ${amPage.text.replace(/\s+/g, " ").slice(0, 2000)}`);
+    } catch (err) {
+      console.log(`[eGauge Portfolio] Access manager groups fetch failed: ${err instanceof Error ? err.message : "unknown"}`);
     }
 
     return groups;
