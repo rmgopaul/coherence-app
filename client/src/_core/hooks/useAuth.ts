@@ -61,7 +61,7 @@ export function useAuth(options?: UseAuthOptions) {
 
   useEffect(() => {
     localStorage.setItem(
-      "manus-runtime-user-info",
+      "coherence-user-info",
       JSON.stringify(meQuery.data ?? null)
     );
   }, [meQuery.data]);

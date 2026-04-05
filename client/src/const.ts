@@ -6,28 +6,23 @@ export const APP_LOGO =
   import.meta.env.VITE_APP_LOGO ||
   "/logo-coherence.svg";
 
-// Generate login URL at runtime so redirect URI reflects the current origin.
+// Generate Google OAuth login URL at runtime so redirect URI reflects the current origin.
 export const getLoginUrl = () => {
-  const oauthPortalUrl = import.meta.env.VITE_OAUTH_PORTAL_URL;
-  const appId = import.meta.env.VITE_APP_ID;
-  const normalizedAppId = typeof appId === "string" ? appId.trim() : "";
-  const isPlaceholderAppId =
-    normalizedAppId.length === 0 ||
-    normalizedAppId === "proj_abc123def456" ||
-    normalizedAppId.toLowerCase().includes("example");
-  if (!oauthPortalUrl || isPlaceholderAppId) {
-    // Safe fallback: keep users on the landing page instead of redirecting
-    // into protected routes, which can cause redirect loops when unauthenticated.
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  if (!clientId) {
     return "/";
   }
   const redirectUri = `${window.location.origin}/api/oauth/callback`;
   const state = btoa(redirectUri);
 
-  const url = new URL(`${oauthPortalUrl}/app-auth`);
-  url.searchParams.set("appId", appId);
-  url.searchParams.set("redirectUri", redirectUri);
+  const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  url.searchParams.set("client_id", clientId);
+  url.searchParams.set("redirect_uri", redirectUri);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", "openid email profile");
   url.searchParams.set("state", state);
-  url.searchParams.set("type", "signIn");
+  url.searchParams.set("access_type", "offline");
+  url.searchParams.set("prompt", "consent");
 
   return url.toString();
 };
