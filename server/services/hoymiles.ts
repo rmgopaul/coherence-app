@@ -513,18 +513,18 @@ export async function getStationDetail(
   context: HoymilesApiContext,
   stationId: string
 ): Promise<unknown> {
-  // Try /pvm/api/0/station/find first (confirmed working in HA integrations).
-  // Send id as both string and number to maximize compatibility.
-  try {
-    return await postHoymilesJson("/pvm/api/0/station/find", context, {
-      id: Number(stationId) || stationId,
-    });
-  } catch {
-    // Fallback: fetch real-time data which also includes lifetime totals.
-    return postHoymilesJson("/pvm-data/api/0/station/data/count_station_real_data", context, {
-      sid: Number(stationId) || stationId,
-    });
-  }
+  return postHoymilesJson("/pvm/api/0/station/find", context, {
+    id: Number(stationId) || stationId,
+  });
+}
+
+export async function getStationRealData(
+  context: HoymilesApiContext,
+  stationId: string
+): Promise<unknown> {
+  return postHoymilesJson("/pvm-data/api/0/station/data/count_station_real_data", context, {
+    sid: Number(stationId) || stationId,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -618,59 +618,26 @@ export async function getStationProductionSnapshot(
   const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
 
   try {
-    const [detailPayload, dailySeries, last12MonthsSeries] = await Promise.all([
-      getStationDetail(context, stationId),
-      getDailyEnergyHistory(context, stationId, previousCalendarMonthStartDate, anchorDate),
-      getDailyEnergyHistory(context, stationId, last12MonthsStartDate, anchorDate),
+    // Fetch station metadata (for name) and real-time energy data in parallel.
+    // The real-time endpoint returns: today_eq, month_eq, year_eq, total_eq (all in Wh).
+    const [detailPayload, realDataPayload] = await Promise.all([
+      getStationDetail(context, stationId).catch(() => null),
+      getStationRealData(context, stationId),
     ]);
 
     const detail = asRecord(detailPayload);
+    const realData = asRecord(realDataPayload);
 
-    // Log all keys and numeric values for diagnostics.
-    const numericFields: Record<string, number> = {};
-    for (const [key, val] of Object.entries(detail)) {
-      const num = toNullableNumber(val);
-      if (num !== null) numericFields[key] = num;
-    }
-    console.log(`[Hoymiles] Station ${stationId} detail keys: ${Object.keys(detail).join(", ")}`);
-    console.log(`[Hoymiles] Station ${stationId} numeric fields: ${JSON.stringify(numericFields)}`);
-
-    // Try multiple field names for lifetime energy — response shape varies by endpoint.
-    // Hoymiles typically returns energy in kWh, not Wh.
-    const lifetimeKwh = safeRound(
-      toNullableNumber(
-        detail.total_eq ?? detail.lifetime_energy ?? detail.all_energy ?? detail.eq_total ??
-        detail.capacitor ?? detail.month_eq ?? detail.today_eq ?? null
-      )
-    );
+    // Energy values from count_station_real_data are in Wh.
+    const lifetimeKwh = safeRound(toKwh(toNullableNumber(realData.total_eq), "Wh"));
+    const dailyProductionKwh = safeRound(toKwh(toNullableNumber(realData.today_eq), "Wh"));
+    const monthlyProductionKwh = safeRound(toKwh(toNullableNumber(realData.month_eq), "Wh"));
+    const last12MonthsProductionKwh = safeRound(toKwh(toNullableNumber(realData.year_eq), "Wh"));
 
     const hourlyProductionKwh: number | null = null;
-
-    const dailyProductionKwh = sumKwh(
-      dailySeries.filter((p) => p.dateKey === anchorDate).map((p) => p.kwh)
-    );
-
-    const weeklyProductionKwh = sumKwh(
-      dailySeries.filter((p) => p.dateKey >= weeklyStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
-    );
-
-    const monthlyProductionKwh = sumKwh(
-      dailySeries.filter((p) => p.dateKey >= monthlyStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
-    );
-
-    const mtdProductionKwh = sumKwh(
-      dailySeries.filter((p) => p.dateKey >= mtdStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
-    );
-
-    const previousCalendarMonthProductionKwh = sumKwh(
-      dailySeries
-        .filter((p) => p.dateKey >= previousCalendarMonthStartDate && p.dateKey <= previousCalendarMonthEndDate)
-        .map((p) => p.kwh)
-    );
-
-    const last12MonthsProductionKwh = sumKwh(
-      last12MonthsSeries.map((p) => p.kwh)
-    );
+    const weeklyProductionKwh: number | null = null;
+    const mtdProductionKwh: number | null = null;
+    const previousCalendarMonthProductionKwh: number | null = null;
 
     return {
       stationId,
