@@ -255,6 +255,8 @@ export default function HoymilesMeterReads() {
   const removeConnectionMutation = trpc.hoymiles.removeConnection.useMutation();
   const disconnectMutation = trpc.hoymiles.disconnect.useMutation();
   const productionSnapshotMutation = trpc.hoymiles.getProductionSnapshot.useMutation();
+  const listAllStationsMutation = trpc.hoymiles.listAllStations.useMutation();
+  const productionSnapshotAllProfilesMutation = trpc.hoymiles.getProductionSnapshotAllProfiles.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
@@ -447,21 +449,43 @@ export default function HoymilesMeterReads() {
       return;
     }
     try {
-      const result = await stationsQuery.refetch();
-      const stations = result.data?.stations ?? [];
-      if (stations.length === 0) {
-        toast.error("No stations found for this API profile.");
-        return;
+      if (bulkConnectionScope === "all") {
+        // Use the listAllStations mutation to pull from ALL saved profiles
+        const result = await listAllStationsMutation.mutateAsync();
+        const stations = result.stations ?? [];
+        if (stations.length === 0) {
+          const profileErrors = result.perProfile?.filter((p: { error: string | null }) => p.error)?.map((p: { connectionName: string; error: string | null }) => `${p.connectionName}: ${p.error}`)?.join("; ") ?? "";
+          toast.error(`No stations found across ${result.totalProfiles} profiles.${profileErrors ? ` Errors: ${profileErrors}` : ""}`);
+          return;
+        }
+        const ids = stations.map((s: { stationId: string }) => s.stationId);
+        setBulkStationIds(ids);
+        const profileSummary = result.perProfile?.map((p: { connectionName: string; stationCount: number; error: string | null }) => `${p.connectionName}: ${p.stationCount}${p.error ? " (error)" : ""}`).join(", ") ?? "";
+        setBulkSourceFileName(`All Profiles — ${ids.length} stations (${profileSummary})`);
+        setBulkRows([]);
+        setBulkImportError(null);
+        setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
+        toast.success(
+          `Loaded ${NUMBER_FORMATTER.format(ids.length)} Station IDs from ${result.totalProfiles} profiles. Next step: click "Run Production Snapshot" to fetch row data.`
+        );
+      } else {
+        // Active profile only
+        const result = await stationsQuery.refetch();
+        const stations = result.data?.stations ?? [];
+        if (stations.length === 0) {
+          toast.error("No stations found for this API profile.");
+          return;
+        }
+        const ids = stations.map((s: { stationId: string }) => s.stationId);
+        setBulkStationIds(ids);
+        setBulkSourceFileName(`API — ${ids.length} stations`);
+        setBulkRows([]);
+        setBulkImportError(null);
+        setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
+        toast.success(
+          `Loaded ${NUMBER_FORMATTER.format(ids.length)} Station IDs. Next step: click "Run Production Snapshot" to fetch row data.`
+        );
       }
-      const ids = stations.map((s: { stationId: string }) => s.stationId);
-      setBulkStationIds(ids);
-      setBulkSourceFileName(`API — ${ids.length} stations`);
-      setBulkRows([]);
-      setBulkImportError(null);
-      setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
-      toast.success(
-        `Loaded ${NUMBER_FORMATTER.format(ids.length)} Station IDs. Next step: click "Run Production Snapshot" to fetch row data.`
-      );
     } catch (error) {
       toast.error(`Failed to list stations: ${error instanceof Error ? error.message : "Unknown error"}`);
     }
@@ -527,19 +551,25 @@ export default function HoymilesMeterReads() {
 
         try {
           const batchRows: BulkSnapshotRow[] = [];
+          const useAllProfiles = bulkConnectionScope === "all";
           for (const stationId of chunk) {
             if (bulkCancelRef.current) break;
             try {
-              const snapshot = await productionSnapshotMutation.mutateAsync({
-                stationId,
-                anchorDate: bulkAnchorDate,
-              });
+              const snapshot = useAllProfiles
+                ? await productionSnapshotAllProfilesMutation.mutateAsync({
+                    stationId,
+                    anchorDate: bulkAnchorDate,
+                  })
+                : await productionSnapshotMutation.mutateAsync({
+                    stationId,
+                    anchorDate: bulkAnchorDate,
+                  });
               const snapshotRow = snapshot as unknown as BulkSnapshotRow;
               batchRows.push({
                 stationId,
                 name: snapshotRow.name ?? null,
-                status: "Found",
-                found: true,
+                status: snapshotRow.found ? "Found" : "Not Found",
+                found: !!snapshotRow.found,
                 lifetimeKwh: snapshotRow.lifetimeKwh,
                 hourlyProductionKwh: snapshotRow.hourlyProductionKwh,
                 monthlyProductionKwh: snapshotRow.monthlyProductionKwh,
@@ -555,11 +585,12 @@ export default function HoymilesMeterReads() {
                 previousCalendarMonthStartDate: snapshotRow.previousCalendarMonthStartDate,
                 previousCalendarMonthEndDate: snapshotRow.previousCalendarMonthEndDate,
                 last12MonthsStartDate: snapshotRow.last12MonthsStartDate,
-                matchedConnectionId: null,
-                matchedConnectionName: null,
-                checkedConnections: 1,
-                foundInConnections: 1,
-                profileStatusSummary: "",
+                matchedConnectionId: snapshotRow.matchedConnectionId ?? null,
+                matchedConnectionName: snapshotRow.matchedConnectionName ?? null,
+                checkedConnections: snapshotRow.checkedConnections ?? (useAllProfiles ? statusQuery.data?.connections.length ?? 0 : 1),
+                foundInConnections: snapshotRow.found ? 1 : 0,
+                profileStatusSummary: snapshotRow.matchedConnectionName ? `Found in: ${snapshotRow.matchedConnectionName}` : "",
+                error: snapshotRow.error ?? undefined,
               });
             } catch (stationError) {
               const errorMessage = toErrorMessage(stationError);
@@ -572,7 +603,7 @@ export default function HoymilesMeterReads() {
                 error: errorMessage,
                 matchedConnectionId: null,
                 matchedConnectionName: null,
-                checkedConnections: 1,
+                checkedConnections: useAllProfiles ? statusQuery.data?.connections.length ?? 0 : 1,
                 foundInConnections: 0,
                 profileStatusSummary: "",
               });
@@ -1149,15 +1180,15 @@ export default function HoymilesMeterReads() {
                 <div className="flex items-center gap-2">
                   <Button
                     onClick={() => void handlePullAllStations()}
-                    disabled={!isConnected || stationsQuery.isFetching}
+                    disabled={!isConnected || stationsQuery.isFetching || listAllStationsMutation.isPending}
                     className="whitespace-nowrap"
                   >
-                    {stationsQuery.isFetching ? (
+                    {stationsQuery.isFetching || listAllStationsMutation.isPending ? (
                       <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                     ) : (
                       <Download className="h-4 w-4 mr-2" />
                     )}
-                    Pull All Stations
+                    {bulkConnectionScope === "all" ? `Pull All Stations (${statusQuery.data?.connections.length ?? 0} profiles)` : "Pull All Stations"}
                   </Button>
                   <span className="text-xs text-muted-foreground">or</span>
                   <label className="cursor-pointer">

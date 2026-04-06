@@ -42,7 +42,9 @@ export type HoymilesProductionSnapshot = {
 // ---------------------------------------------------------------------------
 
 function toNullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return null;
 }
 
 function toNullableNumber(value: unknown): number | null {
@@ -343,12 +345,21 @@ async function postHoymilesJson(
   }
 
   // Hoymiles wraps responses: { status: "0", message: "...", data: {...} }
-  if (json.status !== undefined && json.status !== "0" && json.status !== 0) {
+  // Status can be "0", 0, "success", or missing — all are OK
+  const statusVal = json.status;
+  const isErrorStatus = statusVal !== undefined
+    && statusVal !== "0" && statusVal !== 0
+    && statusVal !== "success" && statusVal !== "ok"
+    && statusVal !== true;
+  if (isErrorStatus) {
     const msg = toNullableString(json.message ?? json.msg) ?? "Unknown Hoymiles API error";
+    console.log(`[Hoymiles] API error status for ${path}: status=${JSON.stringify(statusVal)}, msg=${msg}`);
     throw new Error(`Hoymiles API error (${path}): ${msg}`);
   }
 
-  return json.data ?? json;
+  const result = json.data ?? json;
+  console.log(`[Hoymiles] ${path} returning data type: ${typeof result}, keys: ${result && typeof result === "object" ? Object.keys(result as Record<string, unknown>).join(", ") : "N/A"}`);
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -357,27 +368,55 @@ async function postHoymilesJson(
 
 export function extractStations(payload: unknown): HoymilesStation[] {
   const root = asRecord(payload);
-  const page = asRecord(root.page ?? root);
-  const rows = asRecordArray(
-    page.records ?? root.records ?? root.list ?? root.stations ?? root.data
-  );
+
+  // root.page can be a number (e.g. 1) — only treat it as a record if it's actually an object
+  const pageValue = root.page;
+  const page = (pageValue && typeof pageValue === "object") ? asRecord(pageValue) : null;
+
+  // Try multiple paths to find the station array
+  const candidateArray =
+    page?.records ??
+    root.records ??
+    root.list ??
+    root.stations ??
+    root.data ??
+    (page?.list) ??
+    (page?.data);
+
+  const rows = asRecordArray(candidateArray);
   const items = rows.length > 0 ? rows : Array.isArray(payload) ? asRecordArray(payload) : [];
 
+  console.log(`[Hoymiles extractStations] root keys: ${Object.keys(root).join(", ")}, page type: ${typeof pageValue}, rows found: ${rows.length}, items: ${items.length}`);
+
+  if (items.length > 0 && items.length <= 3) {
+    // Log a sample for debugging
+    console.log(`[Hoymiles extractStations] sample row keys: ${Object.keys(items[0]).join(", ")}`);
+    console.log(`[Hoymiles extractStations] sample row.id: ${JSON.stringify(items[0].id)} (type: ${typeof items[0].id})`);
+  }
+
   const output: HoymilesStation[] = [];
+  let skippedNoId = 0;
   for (const row of items) {
-    const stationId = toNullableString(
-      row.id ?? row.station_id ?? row.stationId ?? row.sid
-    );
-    if (!stationId) continue;
+    const rawId = row.id ?? row.station_id ?? row.stationId ?? row.sid;
+    const stationId = rawId != null ? String(rawId).trim() : null;
+    if (!stationId) {
+      skippedNoId += 1;
+      continue;
+    }
 
     output.push({
       stationId,
       name: toNullableString(row.station_name ?? row.name ?? row.stationName) ?? `Station ${stationId}`,
-      capacity: toNullableNumber(row.capacity ?? row.installed_capacity ?? row.plant_power),
+      capacity: toNullableNumber(row.capacity ?? row.capacitor ?? row.installed_capacity ?? row.plant_power),
       address: toNullableString(row.address ?? row.location),
       status: toNullableString(row.status ?? row.connect_status),
     });
   }
+
+  if (skippedNoId > 0) {
+    console.log(`[Hoymiles extractStations] WARNING: skipped ${skippedNoId} rows with no id`);
+  }
+  console.log(`[Hoymiles extractStations] → ${output.length} stations extracted`);
 
   return output;
 }
@@ -390,36 +429,80 @@ export async function listStations(context: HoymilesApiContext): Promise<{
   stations: HoymilesStation[];
   raw: unknown;
 }> {
-  // The correct station listing endpoint is /pvm/api/0/station/select_by_page.
-  // Other endpoints are for single-station lookup (find requires id) or removed (404).
-  const endpoints = [
-    { path: "/pvm/api/0/station/select_by_page", body: { page: 1, page_size: 100 } },
-  ];
-
+  console.log(`[Hoymiles] listStations called for user: ${context.username}`);
+  const PAGE_SIZE = 100;
+  const MAX_PAGES = 50; // safety limit
+  const allStations: HoymilesStation[] = [];
+  const allRaw: unknown[] = [];
+  let page = 1;
   let lastError: Error | null = null;
-  let lastRaw: unknown = null;
-  for (const ep of endpoints) {
+
+  while (page <= MAX_PAGES) {
     try {
-      const raw = await postHoymilesJson(ep.path, context, ep.body);
-      lastRaw = raw;
-      const stations = extractStations(raw);
-      console.log(`[Hoymiles] ${ep.path} → ${stations.length} stations extracted`);
-      if (stations.length > 0) {
-        return { stations, raw };
-      }
+      const raw = await postHoymilesJson(
+        "/pvm/api/0/station/select_by_page",
+        context,
+        { page, page_size: PAGE_SIZE }
+      );
+      allRaw.push(raw);
+      const pageStations = extractStations(raw);
+      console.log(`[Hoymiles] select_by_page (page ${page}) → ${pageStations.length} stations`);
+      allStations.push(...pageStations);
+
+      // Check if there are more pages
+      const root = asRecord(raw);
+      const total = typeof root.total === "number" ? root.total : null;
+      if (total !== null && allStations.length >= total) break;
+      if (pageStations.length < PAGE_SIZE) break;
+      page += 1;
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`[Hoymiles] ${ep.path} failed: ${msg}`);
-      lastError = err instanceof Error ? err : new Error(msg);
+      lastError = err instanceof Error ? err : new Error(String(err));
+      console.log(`[Hoymiles] select_by_page failed on page ${page}: ${lastError.message}`);
+
+      // If first page fails with auth error, clear cache and retry once
+      if (page === 1 && allRaw.length === 0) {
+        const isAuthError = lastError.message.includes("401") || lastError.message.includes("403") || lastError.message.includes("authentication");
+        if (isAuthError) {
+          console.log(`[Hoymiles] Auth error on first page, clearing token cache and retrying...`);
+          hoymilesTokenCache.delete(getTokenCacheKey(context));
+          try {
+            const retryRaw = await postHoymilesJson(
+              "/pvm/api/0/station/select_by_page",
+              context,
+              { page: 1, page_size: PAGE_SIZE }
+            );
+            allRaw.push(retryRaw);
+            const retryStations = extractStations(retryRaw);
+            console.log(`[Hoymiles] Retry succeeded → ${retryStations.length} stations`);
+            allStations.push(...retryStations);
+          } catch (retryErr) {
+            console.log(`[Hoymiles] Retry also failed: ${retryErr instanceof Error ? retryErr.message : String(retryErr)}`);
+          }
+        }
+      }
+      break; // Stop pagination on error
     }
   }
 
-  // Return whatever we got (even if empty) along with raw for debugging
-  if (lastRaw !== null) {
-    return { stations: [], raw: lastRaw };
+  // Deduplicate by stationId
+  const seen = new Set<string>();
+  const deduped = allStations.filter((s) => {
+    if (seen.has(s.stationId)) return false;
+    seen.add(s.stationId);
+    return true;
+  });
+
+  console.log(`[Hoymiles] Total: ${deduped.length} unique stations across ${page} page(s)`);
+
+  // Always return raw data for diagnostics, even if 0 stations were extracted
+  const rawResult = allRaw.length === 0 ? null : allRaw.length === 1 ? allRaw[0] : allRaw;
+
+  // If we got 0 stations but also had an error AND no raw data, throw
+  if (deduped.length === 0 && lastError && allRaw.length === 0) {
+    throw lastError;
   }
-  if (lastError) throw lastError;
-  return { stations: [], raw: null };
+
+  return { stations: deduped, raw: rawResult };
 }
 
 // ---------------------------------------------------------------------------

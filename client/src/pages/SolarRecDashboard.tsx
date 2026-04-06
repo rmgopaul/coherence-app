@@ -670,6 +670,7 @@ const MAX_REMOTE_STATE_PAYLOAD_CHARS = 180_000;
 const REMOTE_LOG_ENTRY_LIMIT = 40;
 // Keep chunks comfortably below common API gateway body limits after JSON encoding overhead.
 const REMOTE_DATASET_CHUNK_CHAR_LIMIT = 250_000;
+const MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS = 3_000_000;
 const REMOTE_LOG_SYNC_MAX_CHUNKS = 120;
 const MAX_LOCAL_LOG_STORAGE_CHARS = 250_000;
 const REMOTE_DATASET_KEY_MANIFEST = "dataset_manifest_v1";
@@ -1381,10 +1382,17 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   return { headers, rows };
 }
 
-type CsvParserWorkerRequest = {
-  id: number;
-  text: string;
-};
+type CsvParserWorkerRequest =
+  | {
+      id: number;
+      mode: "text";
+      text: string;
+    }
+  | {
+      id: number;
+      mode: "file";
+      file: File;
+    };
 
 type CsvParserWorkerResponse =
   | {
@@ -1556,6 +1564,33 @@ function serializeDatasetForRemote(dataset: CsvDataset): string {
     })),
   };
   return JSON.stringify(payload);
+}
+
+function estimateDatasetRemotePayloadChars(
+  dataset: CsvDataset,
+  hardLimit: number
+): number {
+  // Rough upper bound for CSV payload size without allocating the full payload string.
+  let total = 0;
+  total += dataset.fileName.length + 128;
+  total += dataset.headers.reduce((sum, header) => sum + header.length + 3, 0) + 2;
+
+  for (const row of dataset.rows) {
+    for (const header of dataset.headers) {
+      total += clean(row[header]).length + 3;
+    }
+    total += 2;
+    if (total > hardLimit) return total;
+  }
+
+  if (dataset.sources) {
+    for (const source of dataset.sources) {
+      total += source.fileName.length + 64;
+      if (total > hardLimit) return total;
+    }
+  }
+
+  return total;
 }
 
 function deserializeRemoteDatasetPayload(payload: string): CsvDataset | null {
@@ -2216,6 +2251,9 @@ export default function SolarRecDashboard() {
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
+  const [localOnlyDatasets, setLocalOnlyDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
+  const [forceSyncingDatasets, setForceSyncingDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
+  const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
     retry: 4,
@@ -2234,6 +2272,7 @@ export default function SolarRecDashboard() {
   saveRemoteDatasetRef.current = saveRemoteDataset;
   const remoteDatasetSignatureRef = useRef<Partial<Record<DatasetKey, string>>>({});
   const remoteDatasetChunkKeysRef = useRef<Partial<Record<DatasetKey, string[]>>>({});
+  const forcedRemoteDatasetSyncKeysRef = useRef<Set<DatasetKey>>(new Set());
   const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
@@ -2381,15 +2420,18 @@ export default function SolarRecDashboard() {
     return worker;
   }, []);
 
-  const parseCsvAsync = useCallback(
-    async (text: string): Promise<{ headers: string[]; rows: CsvRow[] }> => {
+  const parseCsvFileAsync = useCallback(
+    async (file: File): Promise<{ headers: string[]; rows: CsvRow[] }> => {
       const worker = ensureCsvParserWorker();
-      if (!worker) return parseCsv(text);
+      if (!worker) {
+        const text = await file.text();
+        return parseCsv(text);
+      }
 
       return new Promise((resolve, reject) => {
         const id = csvParserRequestSeqRef.current++;
         csvParserPendingRef.current.set(id, { resolve, reject });
-        const message: CsvParserWorkerRequest = { id, text };
+        const message: CsvParserWorkerRequest = { id, mode: "file", file };
         worker.postMessage(message);
       });
     },
@@ -2497,8 +2539,7 @@ export default function SolarRecDashboard() {
   const importCompliantSourceCsv = async (file: File | null) => {
     if (!file) return;
     try {
-      const raw = await file.text();
-      const parsed = await parseCsvAsync(raw);
+      const parsed = await parseCsvFileAsync(file);
       if (!matchesExpectedHeaders(parsed.headers, ["portal_id", "source"])) {
         setCompliantSourceUploadError("CSV must include headers: portal_id, source");
         setCompliantSourceCsvMessage(null);
@@ -2577,10 +2618,11 @@ export default function SolarRecDashboard() {
 
     try {
       const parsed = TABULAR_DATASET_KEYS.has(key)
-        ? await parseTabularFile(file)
+        ? file.name.toLowerCase().endsWith(".csv")
+          ? await parseCsvFileAsync(file)
+          : await parseTabularFile(file)
         : await (async () => {
-            const raw = await file.text();
-            return await parseCsvAsync(raw);
+            return await parseCsvFileAsync(file);
           })();
       const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
 
@@ -2683,8 +2725,7 @@ export default function SolarRecDashboard() {
           }));
           return;
         }
-        const raw = await file.text();
-        const parsed = await parseCsvAsync(raw);
+        const parsed = await parseCsvFileAsync(file);
         const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
         if (!isValid) {
           setUploadErrors((previous) => ({
@@ -2770,14 +2811,30 @@ export default function SolarRecDashboard() {
   const clearDataset = (key: DatasetKey) => {
     setDatasets((previous) => ({ ...previous, [key]: undefined }));
     setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
+    setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
+    setForceSyncingDatasets((previous) => ({ ...previous, [key]: false }));
+    forcedRemoteDatasetSyncKeysRef.current.delete(key);
   };
 
   const clearAll = () => {
     setDatasets({});
     setUploadErrors({});
+    setLocalOnlyDatasets({});
+    setForceSyncingDatasets({});
+    forcedRemoteDatasetSyncKeysRef.current.clear();
     setMeterReadsResult(null);
     setMeterReadsError(null);
     setMeterReadsBusy(false);
+  };
+
+  const queueForceDatasetSync = (key: DatasetKey) => {
+    if (!datasets[key]) return;
+    forcedRemoteDatasetSyncKeysRef.current.add(key);
+    setForceSyncingDatasets((previous) => ({ ...previous, [key]: true }));
+    setStorageNotice(
+      `Force cloud sync queued for ${DATASET_DEFINITIONS[key].label}. Large datasets may take longer to upload.`
+    );
+    setForceDatasetSyncTick((previous) => previous + 1);
   };
 
   const handleMeterReadsUpload = async (file: File | null) => {
@@ -6841,10 +6898,15 @@ export default function SolarRecDashboard() {
     const timeout = window.setTimeout(() => {
       void (async () => {
         const nextSignatures: Partial<Record<DatasetKey, string>> = {};
+        const nextLocalOnlyDatasets: Partial<Record<DatasetKey, boolean>> = {};
 
         for (const key of Object.keys(DATASET_DEFINITIONS) as DatasetKey[]) {
           const dataset = datasets[key];
+          const forceSyncRequested = forcedRemoteDatasetSyncKeysRef.current.has(key);
+          const previousSyncSignature = remoteDatasetSignatureRef.current[key] ?? "";
           if (!dataset) {
+            forcedRemoteDatasetSyncKeysRef.current.delete(key);
+            setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
             if (!remoteDatasetSignatureRef.current[key]) continue;
             const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
             try {
@@ -6860,10 +6922,43 @@ export default function SolarRecDashboard() {
             }
             continue;
           }
-          const signature = `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
-          nextSignatures[key] = signature;
+          const baseSignature = `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
+          const estimatedRemotePayloadChars = estimateDatasetRemotePayloadChars(
+            dataset,
+            MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS
+          );
+          const shouldKeepLocalOnly =
+            !forceSyncRequested && estimatedRemotePayloadChars > MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS;
+          const syncSignature = shouldKeepLocalOnly ? `local-only:${baseSignature}` : baseSignature;
+          nextSignatures[key] = syncSignature;
+          if (shouldKeepLocalOnly) {
+            nextLocalOnlyDatasets[key] = true;
+          }
 
-          if (remoteDatasetSignatureRef.current[key] === signature) continue;
+          if (remoteDatasetSignatureRef.current[key] === syncSignature) continue;
+
+          if (shouldKeepLocalOnly) {
+            const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
+            try {
+              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
+              for (const chunkKey of previousChunkKeys) {
+                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+              }
+              remoteDatasetChunkKeysRef.current[key] = [];
+              remoteDatasetSignatureRef.current[key] = syncSignature;
+              if (!previousSyncSignature.startsWith("local-only:")) {
+                setStorageNotice(
+                  `${DATASET_DEFINITIONS[key].label} is currently too large for cloud sync and will stay local-only. Use Force Cloud Sync to override.`
+                );
+              }
+            } catch {
+              setStorageNotice(
+                `Could not mark ${DATASET_DEFINITIONS[key].label} as local-only. Local persistence is still active.`
+              );
+              return;
+            }
+            continue;
+          }
 
           try {
             const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
@@ -6899,8 +6994,17 @@ export default function SolarRecDashboard() {
               remoteDatasetChunkKeysRef.current[key] = chunkKeys;
             }
 
-            remoteDatasetSignatureRef.current[key] = signature;
+            remoteDatasetSignatureRef.current[key] = syncSignature;
+            if (forceSyncRequested) {
+              forcedRemoteDatasetSyncKeysRef.current.delete(key);
+              setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+              setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
+            }
           } catch {
+            if (forceSyncRequested) {
+              forcedRemoteDatasetSyncKeysRef.current.delete(key);
+              setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+            }
             setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} dataset to cloud storage.`);
             return;
           }
@@ -6920,6 +7024,7 @@ export default function SolarRecDashboard() {
         }
 
         remoteDatasetSignatureRef.current = nextSignatures;
+        setLocalOnlyDatasets(nextLocalOnlyDatasets);
       })();
     }, 1200);
 
@@ -6929,6 +7034,7 @@ export default function SolarRecDashboard() {
   }, [
     datasets,
     datasetsHydrated,
+    forceDatasetSyncTick,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
   ]);
@@ -11801,9 +11907,21 @@ export default function SolarRecDashboard() {
 
                     {dataset ? (
                       <div className="space-y-2">
-                        <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
-                          {dataset.rows.length} rows loaded
-                        </Badge>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                            {dataset.rows.length} rows loaded
+                          </Badge>
+                          {localOnlyDatasets[key] ? (
+                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
+                              Local-only sync
+                            </Badge>
+                          ) : null}
+                          {forceSyncingDatasets[key] ? (
+                            <Badge className="border-blue-200 bg-blue-100 text-blue-900">
+                              Forcing cloud sync...
+                            </Badge>
+                          ) : null}
+                        </div>
                         <p className="truncate text-xs text-slate-600">{dataset.fileName}</p>
                         {isMultiAppend && dataset.sources && dataset.sources.length > 0 ? (
                           <p className="text-xs text-slate-500">{formatNumber(dataset.sources.length)} files appended</p>
@@ -11860,6 +11978,16 @@ export default function SolarRecDashboard() {
                       {dataset ? (
                         <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
                           Remove
+                        </Button>
+                      ) : null}
+                      {dataset && localOnlyDatasets[key] ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={Boolean(forceSyncingDatasets[key])}
+                          onClick={() => queueForceDatasetSync(key)}
+                        >
+                          {forceSyncingDatasets[key] ? "Forcing..." : "Force Cloud Sync"}
                         </Button>
                       ) : null}
                     </div>

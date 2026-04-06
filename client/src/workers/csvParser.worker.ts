@@ -2,10 +2,17 @@
 
 type CsvRow = Record<string, string>;
 
-type ParseCsvRequest = {
-  id: number;
-  text: string;
-};
+type ParseCsvRequest =
+  | {
+      id: number;
+      mode: "text";
+      text: string;
+    }
+  | {
+      id: number;
+      mode: "file";
+      file: File;
+    };
 
 type ParseCsvSuccess = {
   id: number;
@@ -82,22 +89,34 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
 }
 
 self.onmessage = (event: MessageEvent<ParseCsvRequest>) => {
-  const { id, text } = event.data;
-  try {
-    const parsed = parseCsv(text);
-    const response: ParseCsvSuccess = {
-      id,
-      ok: true,
-      headers: parsed.headers,
-      rows: parsed.rows,
-    };
-    self.postMessage(response);
-  } catch (error) {
-    const response: ParseCsvFailure = {
-      id,
-      ok: false,
-      error: error instanceof Error ? error.message : "Failed to parse CSV in worker.",
-    };
-    self.postMessage(response);
-  }
+  const request = event.data;
+  void (async () => {
+    const { id } = request;
+    try {
+      const text =
+        request.mode === "file"
+          ? await request.file.text()
+          : request.mode === "text"
+            ? request.text
+            : "";
+      if (!text) {
+        throw new Error("CSV parser worker received an empty payload.");
+      }
+      const parsed = parseCsv(text);
+      const response: ParseCsvSuccess = {
+        id,
+        ok: true,
+        headers: parsed.headers,
+        rows: parsed.rows,
+      };
+      self.postMessage(response);
+    } catch (error) {
+      const response: ParseCsvFailure = {
+        id,
+        ok: false,
+        error: error instanceof Error ? error.message : "Failed to parse CSV in worker.",
+      };
+      self.postMessage(response);
+    }
+  })();
 };

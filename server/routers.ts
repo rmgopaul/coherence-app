@@ -9969,7 +9969,52 @@ Generate the pipeline analysis report now.`,
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (!integration) throw new Error("Hoymiles is not connected."); const ms = parseHoymilesMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: HOYMILES_PROVIDER, accessToken: nac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeHoymilesMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
     listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getHoymilesContext(ctx.user.id); const { listStations } = await import("./services/hoymiles"); return listStations(context); }),
+    listAllStations: protectedProcedure.mutation(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const { listStations } = await import("./services/hoymiles");
+      const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER);
+      const metadata = parseHoymilesMetadata(integration?.metadata);
+      if (metadata.connections.length === 0) throw new Error("No Hoymiles profiles saved.");
+      const allStations: Array<{ stationId: string; name: string; capacity: number | null; address: string | null; status: string | null; connectionId: string; connectionName: string }> = [];
+      const perProfile: Array<{ connectionId: string; connectionName: string; stationCount: number; error: string | null }> = [];
+      for (const conn of metadata.connections) {
+        try {
+          const context = { username: conn.username, password: conn.password, baseUrl: conn.baseUrl ?? metadata.baseUrl };
+          const result = await listStations(context);
+          for (const s of result.stations) {
+            allStations.push({ ...s, connectionId: conn.id, connectionName: conn.name });
+          }
+          perProfile.push({ connectionId: conn.id, connectionName: conn.name, stationCount: result.stations.length, error: null });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          perProfile.push({ connectionId: conn.id, connectionName: conn.name, stationCount: 0, error: msg });
+        }
+      }
+      // Deduplicate stations by stationId (keep first occurrence)
+      const seen = new Set<string>();
+      const deduped = allStations.filter((s) => { if (seen.has(s.stationId)) return false; seen.add(s.stationId); return true; });
+      return { stations: deduped, perProfile, totalProfiles: metadata.connections.length };
+    }),
     getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getHoymilesContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/hoymiles"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+    getProductionSnapshotAllProfiles: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const { getStationProductionSnapshot } = await import("./services/hoymiles");
+      const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER);
+      const metadata = parseHoymilesMetadata(integration?.metadata);
+      if (metadata.connections.length === 0) throw new Error("No Hoymiles profiles saved.");
+      for (const conn of metadata.connections) {
+        try {
+          const context = { username: conn.username, password: conn.password, baseUrl: conn.baseUrl ?? metadata.baseUrl };
+          const result = await getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate);
+          if (result.found) {
+            return { ...result, matchedConnectionId: conn.id, matchedConnectionName: conn.name, checkedConnections: metadata.connections.length };
+          }
+        } catch {
+          // Try next profile
+        }
+      }
+      return { stationId: input.stationId, name: null, status: "Not Found" as const, found: false, lifetimeKwh: null, hourlyProductionKwh: null, monthlyProductionKwh: null, mtdProductionKwh: null, previousCalendarMonthProductionKwh: null, last12MonthsProductionKwh: null, weeklyProductionKwh: null, dailyProductionKwh: null, anchorDate: input.anchorDate ?? new Date().toISOString().slice(0, 10), monthlyStartDate: "", weeklyStartDate: "", mtdStartDate: "", previousCalendarMonthStartDate: "", previousCalendarMonthEndDate: "", last12MonthsStartDate: "", error: `Station not found in any of ${metadata.connections.length} profiles`, matchedConnectionId: null, matchedConnectionName: null, checkedConnections: metadata.connections.length };
+    }),
   }),
 
   // =========================================================================
