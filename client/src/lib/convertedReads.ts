@@ -29,6 +29,7 @@ type SerializedCsvDataset = {
   fileName: string;
   uploadedAt: string;
   headers: string[];
+  csvText: string;
   rows: ConvertedReadRow[];
   sources?: Array<{
     fileName: string;
@@ -62,6 +63,33 @@ function convertedReadsRowKey(row: ConvertedReadRow): string {
     row.lifetime_meter_read_wh ?? "",
     row.read_date ?? "",
   ].join("|");
+}
+
+function csvEscape(value: string | number | null | undefined): string {
+  const normalized = value === null || value === undefined ? "" : String(value);
+  if (/["\n,]/.test(normalized)) {
+    return `"${normalized.replaceAll('"', '""')}"`;
+  }
+  return normalized;
+}
+
+function buildCsvText(headers: readonly string[], rows: ConvertedReadRow[]): string {
+  const headerLine = headers.map((h) => csvEscape(h)).join(",");
+  const bodyLines = rows.map((row) => headers.map((h) => csvEscape(row[h])).join(","));
+  return [headerLine, ...bodyLines].join("\n");
+}
+
+function parseCsvRows(csvText: string, headers: string[]): ConvertedReadRow[] {
+  if (!csvText.trim()) return [];
+  const lines = csvText.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length <= 1) return [];
+  const csvHeaders = lines[0].split(",").map((h) => h.replace(/^"|"$/g, "").trim());
+  return lines.slice(1).map((line) => {
+    const values = line.split(",").map((v) => v.replace(/^"|"$/g, "").trim());
+    const row: ConvertedReadRow = {};
+    csvHeaders.forEach((h, i) => { row[h] = values[i] ?? ""; });
+    return row;
+  });
 }
 
 /** Build a single Converted Read CSV row from monitoring data. */
@@ -115,7 +143,14 @@ export async function pushConvertedReadsToRecDashboard(
   }
 
   // Build dedup set from existing rows.
-  const existingRows: ConvertedReadRow[] = existingDataset?.rows ?? [];
+  // Prefer rows parsed from csvText (the format the dashboard actually reads),
+  // fall back to the legacy rows array for backward compatibility.
+  const existingRows: ConvertedReadRow[] =
+    (existingDataset?.csvText
+      ? parseCsvRows(existingDataset.csvText, existingDataset.headers ?? [...CONVERTED_READS_HEADERS])
+      : null) ??
+    existingDataset?.rows ??
+    [];
   const existingKeys = new Set(existingRows.map(convertedReadsRowKey));
 
   // Filter new rows to only unique ones.
@@ -151,12 +186,14 @@ export async function pushConvertedReadsToRecDashboard(
     },
   ];
 
-  // Build merged dataset.
+  // Build merged dataset with csvText (the format the dashboard deserializer expects).
+  const allRows = [...existingRows, ...uniqueNewRows];
   const merged: SerializedCsvDataset = {
     fileName: `${sources.length} files loaded`,
     uploadedAt: now,
     headers: mergedHeaders,
-    rows: [...existingRows, ...uniqueNewRows],
+    csvText: buildCsvText(mergedHeaders, allRows),
+    rows: allRows,
     sources,
   };
 

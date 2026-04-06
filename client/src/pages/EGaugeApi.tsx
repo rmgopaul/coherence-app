@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { trpc } from "@/lib/trpc";
 import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
 import { toErrorMessage, downloadTextFile } from "@/lib/helpers";
-import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
+import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -25,6 +25,20 @@ const ACCESS_TYPE_LABELS: Record<EgaugeAccessType, string> = {
 };
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+
+function csvEscape(value: string | number | boolean | null | undefined): string {
+  const normalized = value === null || value === undefined ? "" : String(value);
+  if (/["\n,]/.test(normalized)) {
+    return `"${normalized.replaceAll('"', '""')}"`;
+  }
+  return normalized;
+}
+
+function buildCsv(headers: string[], rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
+  const headerLine = headers.map((header) => csvEscape(header)).join(",");
+  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
+  return [headerLine, ...bodyLines].join("\n");
+}
 
 function formatDateInput(date: Date): string {
   const year = date.getFullYear();
@@ -105,6 +119,45 @@ export default function EGaugeApi() {
   const [bulkMeterIdsCsv, setBulkMeterIdsCsv] = useState("");
   const [bulkIsRunning, setBulkIsRunning] = useState(false);
   const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
+
+  const downloadConvertedReadsCsv = (rows: BulkSnapshotRow[]) => {
+    const readRows = rows.filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate);
+    if (readRows.length === 0) {
+      toast.error("No rows with lifetime kWh available for Converted Reads export.");
+      return;
+    }
+
+    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
+    const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+    for (const row of readRows) {
+      const base = buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate);
+      // Row 1: system name only (ID blank) — matches by name
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: "",
+        monitoring_system_name: base.monitoring_system_name,
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        status: base.status,
+        alert_severity: base.alert_severity,
+        read_date: base.read_date,
+      });
+      // Row 2: system ID only (name blank) — matches by ID
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: base.monitoring_system_id,
+        monitoring_system_name: "",
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        status: base.status,
+        alert_severity: base.alert_severity,
+        read_date: base.read_date,
+      });
+    }
+
+    const csvText = buildCsv(headers, csvRows);
+    const fileName = `egauge-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
+    toast.success(`Downloaded ${NUMBER_FORMATTER.format(csvRows.length)} Converted Reads rows (${NUMBER_FORMATTER.format(readRows.length)} systems × 2 match rows each).`);
+  };
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -1037,6 +1090,14 @@ export default function EGaugeApi() {
                   Download CSV
                 </Button>
               )}
+              <Button
+                variant="outline"
+                disabled={bulkRows.filter((r) => r.found && r.lifetimeKwh != null).length === 0}
+                onClick={() => downloadConvertedReadsCsv(bulkRows)}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Download Converted Reads CSV
+              </Button>
             </div>
             {bulkRows.length > 0 && (
               <div className="overflow-auto max-h-[400px]">

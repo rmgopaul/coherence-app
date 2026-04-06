@@ -60,12 +60,18 @@ function normalizeGroupId(raw: string): string {
   return match?.[1]?.trim() || trimmed;
 }
 
-function csvEscape(value: string | number | null | undefined): string {
+function csvEscape(value: string | number | boolean | null | undefined): string {
   const normalized = value === null || value === undefined ? "" : String(value);
   if (/["\n,]/.test(normalized)) {
     return `"${normalized.replaceAll('"', '""')}"`;
   }
   return normalized;
+}
+
+function buildCsv(headers: string[], rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
+  const headerLine = headers.map((header) => csvEscape(header)).join(",");
+  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
+  return [headerLine, ...bodyLines].join("\n");
 }
 
 export default function TeslaPowerhubApi() {
@@ -374,6 +380,48 @@ export default function TeslaPowerhubApi() {
     downloadTextFile(fileName, lines.join("\n"), "text/csv;charset=utf-8");
   };
 
+  const downloadConvertedReadsCsv = (sites: SiteProductionRow[]) => {
+    const readRows = sites.filter((site) => site.lifetimeKwh > 0);
+    if (readRows.length === 0) {
+      toast.error("No rows with lifetime kWh available for Converted Reads export.");
+      return;
+    }
+
+    const today = new Date();
+    const anchorDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
+    const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+    for (const site of readRows) {
+      const base = buildConvertedReadRow("Tesla PowerHub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate);
+      // Row 1: system name only (ID blank) — matches by name
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: "",
+        monitoring_system_name: base.monitoring_system_name,
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        status: base.status,
+        alert_severity: base.alert_severity,
+        read_date: base.read_date,
+      });
+      // Row 2: system ID only (name blank) — matches by ID
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: base.monitoring_system_id,
+        monitoring_system_name: "",
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        status: base.status,
+        alert_severity: base.alert_severity,
+        read_date: base.read_date,
+      });
+    }
+
+    const csvText = buildCsv(headers, csvRows);
+    const fileName = `tesla-powerhub-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
+    toast.success(`Downloaded ${COUNT_FORMATTER.format(csvRows.length)} Converted Reads rows (${COUNT_FORMATTER.format(readRows.length)} systems × 2 match rows each).`);
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -626,6 +674,14 @@ export default function TeslaPowerhubApi() {
               <Button variant="outline" onClick={exportMetricsCsv} disabled={filteredRows.length === 0}>
                 <Download className="h-4 w-4 mr-2" />
                 Export CSV
+              </Button>
+              <Button
+                variant="outline"
+                disabled={filteredRows.filter((r) => r.lifetimeKwh > 0).length === 0}
+                onClick={() => downloadConvertedReadsCsv(filteredRows)}
+              >
+                <Download className="h-4 w-4 mr-2" />
+                Download Converted Reads CSV
               </Button>
             </div>
 

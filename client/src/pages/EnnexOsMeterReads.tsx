@@ -895,6 +895,45 @@ export default function EnnexOsMeterReads() {
     downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
   };
 
+  const downloadConvertedReadsCsv = (rows: BulkSnapshotRow[]) => {
+    const readRows = rows.filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate);
+    if (readRows.length === 0) {
+      toast.error("No rows with lifetime kWh available for Converted Reads export.");
+      return;
+    }
+
+    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
+    const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+    for (const row of readRows) {
+      const base = buildConvertedReadRow("ennexOS", row.plantId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
+      // Row 1: system name only (ID blank) — matches by name
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: "",
+        monitoring_system_name: base.monitoring_system_name,
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        status: base.status,
+        alert_severity: base.alert_severity,
+        read_date: base.read_date,
+      });
+      // Row 2: system ID only (name blank) — matches by ID
+      csvRows.push({
+        monitoring: base.monitoring,
+        monitoring_system_id: base.monitoring_system_id,
+        monitoring_system_name: "",
+        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
+        status: base.status,
+        alert_severity: base.alert_severity,
+        read_date: base.read_date,
+      });
+    }
+
+    const csvText = buildCsv(headers, csvRows);
+    const fileName = `ennexos-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+    downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
+    toast.success(`Downloaded ${NUMBER_FORMATTER.format(csvRows.length)} Converted Reads rows (${NUMBER_FORMATTER.format(readRows.length)} systems × 2 match rows each).`);
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -1379,6 +1418,16 @@ export default function EnnexOsMeterReads() {
               >
                 Download Filtered CSV
               </Button>
+              {bulkDataType === "production" && (
+                <Button
+                  variant="outline"
+                  disabled={bulkRows.filter((r) => r.found && r.lifetimeKwh != null).length === 0}
+                  onClick={() => downloadConvertedReadsCsv(bulkRows)}
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Download Converted Reads CSV
+                </Button>
+              )}
             </div>
 
             <div className="rounded-lg border bg-card p-3 space-y-2">
