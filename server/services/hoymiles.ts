@@ -513,9 +513,18 @@ export async function getStationDetail(
   context: HoymilesApiContext,
   stationId: string
 ): Promise<unknown> {
-  return postHoymilesJson("/pvm/api/0/station/find_by_id", context, {
-    id: stationId,
-  });
+  // Try /pvm/api/0/station/find first (confirmed working in HA integrations).
+  // Send id as both string and number to maximize compatibility.
+  try {
+    return await postHoymilesJson("/pvm/api/0/station/find", context, {
+      id: Number(stationId) || stationId,
+    });
+  } catch {
+    // Fallback: fetch real-time data which also includes lifetime totals.
+    return postHoymilesJson("/pvm-data/api/0/station/data/count_station_real_data", context, {
+      sid: Number(stationId) || stationId,
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -536,12 +545,27 @@ async function getDailyEnergyHistory(
   const points: DailyEnergyPoint[] = [];
 
   try {
-    const raw = await postHoymilesJson("/pvm/api/0/station/find_history_data_of_station", context, {
-      sid: stationId,
+    // Try multiple known endpoint patterns for daily energy history.
+    let raw: unknown = null;
+    const historyBody = {
+      sid: Number(stationId) || stationId,
       start_date: startDate,
       end_date: endDate,
       type: 1, // daily
-    });
+    };
+    const historyEndpoints = [
+      "/pvm/api/0/station/find_history_data_of_station",
+      "/pvm-data/api/0/station/data/count_station_real_data",
+    ];
+    for (const endpoint of historyEndpoints) {
+      try {
+        raw = await postHoymilesJson(endpoint, context, historyBody);
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!raw) return points;
 
     const root = asRecord(raw);
     const records = asRecordArray(
@@ -601,10 +625,18 @@ export async function getStationProductionSnapshot(
     ]);
 
     const detail = asRecord(detailPayload);
+    // Try multiple field names for lifetime energy — response shape varies by endpoint.
     const lifetimeRaw = toNullableNumber(
-      detail.total_eq ?? detail.lifetime_energy ?? detail.all_energy ?? detail.eq_total
+      detail.total_eq ?? detail.lifetime_energy ?? detail.all_energy ?? detail.eq_total ??
+      detail.capacitor ?? detail.co2_emission_reduction ?? null
     );
-    const lifetimeKwh = safeRound(toKwh(lifetimeRaw, "Wh"));
+    // Also check for kWh-native fields (some responses give kWh directly).
+    const lifetimeKwhDirect = toNullableNumber(
+      detail.total_eq_kwh ?? detail.lifetime_kwh ?? detail.all_energy_kwh ?? null
+    );
+    const lifetimeKwh = lifetimeKwhDirect !== null
+      ? safeRound(lifetimeKwhDirect)
+      : safeRound(toKwh(lifetimeRaw, "Wh"));
 
     const hourlyProductionKwh: number | null = null;
 
