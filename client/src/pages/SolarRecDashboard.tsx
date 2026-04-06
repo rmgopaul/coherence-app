@@ -1536,6 +1536,46 @@ function parseDatasetKeyManifestPayload(payload: string): DatasetKey[] {
   }
 }
 
+function createRemoteSourceId(): string {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 16);
+}
+
+function buildRemoteSourceStorageKey(datasetKey: DatasetKey, sourceId: string): string {
+  const normalizedDataset = datasetKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const normalizedSource = sourceId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  // Reserve room for "_chunk_0000" suffix so chunk keys stay within 64-char server key limit.
+  return `src_${normalizedDataset}_${normalizedSource}`.slice(0, 52);
+}
+
+function isCsvLikeFile(fileName: string, contentType?: string): boolean {
+  const lowerName = clean(fileName).toLowerCase();
+  const lowerType = clean(contentType).toLowerCase();
+  return lowerName.endsWith(".csv") || lowerType.includes("csv") || lowerType.startsWith("text/");
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    for (let chunkIndex = 0; chunkIndex < chunk.length; chunkIndex += 1) {
+      binary += String.fromCharCode(chunk[chunkIndex] ?? 0);
+    }
+  }
+  return globalThis.btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = globalThis.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3, initialDelayMs = 250): Promise<T> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -1691,6 +1731,26 @@ type RemoteDatasetPayload = {
   }>;
 };
 
+type RemoteDatasetSourceEncoding = "utf8" | "base64";
+
+type RemoteDatasetSourceRef = {
+  id: string;
+  fileName: string;
+  uploadedAt: string;
+  rowCount: number;
+  sizeBytes: number;
+  storageKey: string;
+  chunkKeys?: string[];
+  encoding: RemoteDatasetSourceEncoding;
+  contentType: string;
+};
+
+type RemoteDatasetSourceManifestPayload = {
+  _rawSourcesV1: true;
+  version: 1;
+  sources: RemoteDatasetSourceRef[];
+};
+
 type RemoteDatasetManifestEntry = {
   fileName: string;
   uploadedAt: string;
@@ -1718,6 +1778,64 @@ type SerializedDashboardLogEntry = Omit<DashboardLogEntry, "createdAt" | "datase
     systemName?: string;
   }>;
 };
+
+function parseRemoteSourceManifestPayload(payload: string): RemoteDatasetSourceManifestPayload | null {
+  try {
+    const parsed = JSON.parse(payload) as {
+      _rawSourcesV1?: unknown;
+      version?: unknown;
+      sources?: unknown;
+    };
+    if (parsed._rawSourcesV1 !== true || parsed.version !== 1) return null;
+    if (!Array.isArray(parsed.sources)) return null;
+    const keyPattern = /^[a-zA-Z0-9_-]{1,64}$/;
+    const sources: RemoteDatasetSourceRef[] = parsed.sources
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const candidate = entry as Partial<RemoteDatasetSourceRef>;
+        if (!candidate.id || typeof candidate.id !== "string") return null;
+        if (!candidate.fileName || typeof candidate.fileName !== "string") return null;
+        if (!candidate.uploadedAt || typeof candidate.uploadedAt !== "string") return null;
+        if (!candidate.storageKey || typeof candidate.storageKey !== "string") return null;
+        if (!keyPattern.test(candidate.storageKey)) return null;
+        if (!candidate.encoding || (candidate.encoding !== "utf8" && candidate.encoding !== "base64")) return null;
+        const rowCount = Number(candidate.rowCount ?? 0);
+        const sizeBytes = Number(candidate.sizeBytes ?? 0);
+        const chunkKeys = Array.isArray(candidate.chunkKeys)
+          ? candidate.chunkKeys.filter((chunkKey): chunkKey is string =>
+              typeof chunkKey === "string" && keyPattern.test(chunkKey)
+            )
+          : undefined;
+
+        const normalized: RemoteDatasetSourceRef = {
+          id: candidate.id,
+          fileName: candidate.fileName,
+          uploadedAt: candidate.uploadedAt,
+          rowCount: Number.isFinite(rowCount) ? rowCount : 0,
+          sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+          storageKey: candidate.storageKey,
+          encoding: candidate.encoding,
+          contentType:
+            typeof candidate.contentType === "string" && candidate.contentType.length > 0
+              ? candidate.contentType
+              : "application/octet-stream",
+        };
+        if (chunkKeys && chunkKeys.length > 0) {
+          normalized.chunkKeys = chunkKeys;
+        }
+        return normalized;
+      })
+      .filter((entry): entry is RemoteDatasetSourceRef => entry !== null);
+
+    return {
+      _rawSourcesV1: true,
+      version: 1,
+      sources,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function deserializeDatasetRecord(dataset: SerializedCsvDataset | undefined): CsvDataset | null {
   if (!dataset) return null;
@@ -2253,6 +2371,10 @@ export default function SolarRecDashboard() {
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const [localOnlyDatasets, setLocalOnlyDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
   const [forceSyncingDatasets, setForceSyncingDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
+  const [migratingLocalOnlyDatasets, setMigratingLocalOnlyDatasets] = useState(false);
+  const [remoteSourceManifests, setRemoteSourceManifests] = useState<
+    Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>
+  >({});
   const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
@@ -2273,6 +2395,8 @@ export default function SolarRecDashboard() {
   const remoteDatasetSignatureRef = useRef<Partial<Record<DatasetKey, string>>>({});
   const remoteDatasetChunkKeysRef = useRef<Partial<Record<DatasetKey, string[]>>>({});
   const forcedRemoteDatasetSyncKeysRef = useRef<Set<DatasetKey>>(new Set());
+  const remoteSourceManifestsRef = useRef<Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>>({});
+  remoteSourceManifestsRef.current = remoteSourceManifests;
   const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
   const [searchTerm, setSearchTerm] = useState("");
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
@@ -2436,6 +2560,150 @@ export default function SolarRecDashboard() {
       });
     },
     [ensureCsvParserWorker]
+  );
+
+  const parseCsvTextAsync = useCallback(
+    async (text: string): Promise<{ headers: string[]; rows: CsvRow[] }> => {
+      const worker = ensureCsvParserWorker();
+      if (!worker) {
+        return parseCsv(text);
+      }
+
+      return new Promise((resolve, reject) => {
+        const id = csvParserRequestSeqRef.current++;
+        csvParserPendingRef.current.set(id, { resolve, reject });
+        const message: CsvParserWorkerRequest = { id, mode: "text", text };
+        worker.postMessage(message);
+      });
+    },
+    [ensureCsvParserWorker]
+  );
+
+  const saveRemotePayloadWithChunks = useCallback(async (key: string, payload: string): Promise<string[]> => {
+    const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+    if (chunks.length === 1) {
+      await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
+      return [];
+    }
+
+    const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
+    for (let index = 0; index < chunks.length; index += 1) {
+      await withRetry(() =>
+        saveRemoteDatasetRef.current.mutateAsync({
+          key: chunkKeys[index],
+          payload: chunks[index],
+        })
+      );
+    }
+    await withRetry(() =>
+      saveRemoteDatasetRef.current.mutateAsync({
+        key,
+        payload: buildChunkPointerPayload(chunkKeys),
+      })
+    );
+    return chunkKeys;
+  }, []);
+
+  const clearRemotePayloadWithChunks = useCallback(async (key: string, chunkKeys: string[] | undefined) => {
+    await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
+    if (!Array.isArray(chunkKeys)) return;
+    for (const chunkKey of chunkKeys) {
+      await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+    }
+  }, []);
+
+  const uploadRemoteSourceFile = useCallback(
+    async (
+      key: DatasetKey,
+      source: {
+        file: File;
+        uploadedAt: Date;
+        rowCount: number;
+      }
+    ): Promise<RemoteDatasetSourceRef> => {
+      const sourceId = createRemoteSourceId();
+      const storageKey = buildRemoteSourceStorageKey(key, sourceId);
+      const contentType = source.file.type || "application/octet-stream";
+      const csvLike = isCsvLikeFile(source.file.name, contentType);
+      let encoding: RemoteDatasetSourceEncoding = "utf8";
+      let payload = "";
+
+      if (csvLike) {
+        payload = await source.file.text();
+      } else {
+        encoding = "base64";
+        const bytes = new Uint8Array(await source.file.arrayBuffer());
+        payload = bytesToBase64(bytes);
+      }
+
+      const chunkKeys = await saveRemotePayloadWithChunks(storageKey, payload);
+      return {
+        id: sourceId,
+        fileName: source.file.name,
+        uploadedAt: source.uploadedAt.toISOString(),
+        rowCount: source.rowCount,
+        sizeBytes: source.file.size,
+        storageKey,
+        chunkKeys: chunkKeys.length > 0 ? chunkKeys : undefined,
+        encoding,
+        contentType,
+      } satisfies RemoteDatasetSourceRef;
+    },
+    [saveRemotePayloadWithChunks]
+  );
+
+  const persistDatasetSourceFilesToCloud = useCallback(
+    async (
+      key: DatasetKey,
+      mode: "replace" | "append",
+      uploads: Array<{
+        file: File;
+        uploadedAt: Date;
+        rowCount: number;
+      }>
+    ): Promise<boolean> => {
+      if (uploads.length === 0) return false;
+      try {
+        const previousManifest = remoteSourceManifestsRef.current[key];
+        const previousSources = previousManifest?.sources ?? [];
+        const uploadedSources: RemoteDatasetSourceRef[] = [];
+
+        for (const source of uploads) {
+          const uploadedSource = await uploadRemoteSourceFile(key, source);
+          uploadedSources.push(uploadedSource);
+        }
+
+        const mergedSources =
+          mode === "append" ? [...previousSources, ...uploadedSources] : uploadedSources;
+
+        if (mode === "replace" && previousSources.length > 0) {
+          for (const staleSource of previousSources) {
+            try {
+              await clearRemotePayloadWithChunks(staleSource.storageKey, staleSource.chunkKeys);
+            } catch {
+              // Best effort stale-source cleanup.
+            }
+          }
+        }
+
+        setRemoteSourceManifests((previous) => ({
+          ...previous,
+          [key]: {
+            _rawSourcesV1: true,
+            version: 1,
+            sources: mergedSources,
+          },
+        }));
+        setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
+        setForceDatasetSyncTick((previous) => previous + 1);
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error while syncing source files to cloud.";
+        setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} source file(s) to cloud: ${message}`);
+        return false;
+      }
+    },
+    [clearRemotePayloadWithChunks, uploadRemoteSourceFile]
   );
 
   useEffect(() => {
@@ -2634,12 +2902,12 @@ export default function SolarRecDashboard() {
         return;
       }
 
+      const uploadedAt = new Date();
+      const shouldAppend = MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
       setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
       setDatasets((previous) => ({
         ...previous,
         [key]: (() => {
-          const uploadedAt = new Date();
-          const shouldAppend = MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
           const existing = previous[key];
 
           if (shouldAppend && existing) {
@@ -2700,6 +2968,12 @@ export default function SolarRecDashboard() {
           } satisfies CsvDataset;
         })(),
       }));
+
+      void persistDatasetSourceFilesToCloud(
+        key,
+        shouldAppend ? "append" : "replace",
+        [{ file, uploadedAt, rowCount: parsed.rows.length }]
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error while reading CSV.";
       setUploadErrors((previous) => ({ ...previous, [key]: message }));
@@ -2714,7 +2988,7 @@ export default function SolarRecDashboard() {
     }
 
     const config = DATASET_DEFINITIONS[key];
-    const parsedFiles: Array<{ fileName: string; uploadedAt: Date; headers: string[]; rows: CsvRow[] }> = [];
+    const parsedFiles: Array<{ file: File; fileName: string; uploadedAt: Date; headers: string[]; rows: CsvRow[] }> = [];
 
     try {
       for (const file of files) {
@@ -2736,6 +3010,7 @@ export default function SolarRecDashboard() {
         }
 
         parsedFiles.push({
+          file,
           fileName: file.name,
           uploadedAt: new Date(),
           headers: parsed.headers,
@@ -2802,6 +3077,16 @@ export default function SolarRecDashboard() {
           } satisfies CsvDataset,
         };
       });
+
+      void persistDatasetSourceFilesToCloud(
+        key,
+        "append",
+        parsedFiles.map((parsedFile) => ({
+          file: parsedFile.file,
+          uploadedAt: parsedFile.uploadedAt,
+          rowCount: parsedFile.rows.length,
+        }))
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error while reading CSV files.";
       setUploadErrors((previous) => ({ ...previous, [key]: message }));
@@ -2813,6 +3098,7 @@ export default function SolarRecDashboard() {
     setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
     setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
     setForceSyncingDatasets((previous) => ({ ...previous, [key]: false }));
+    setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
     forcedRemoteDatasetSyncKeysRef.current.delete(key);
   };
 
@@ -2821,6 +3107,7 @@ export default function SolarRecDashboard() {
     setUploadErrors({});
     setLocalOnlyDatasets({});
     setForceSyncingDatasets({});
+    setRemoteSourceManifests({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
     setMeterReadsResult(null);
     setMeterReadsError(null);
@@ -2828,14 +3115,88 @@ export default function SolarRecDashboard() {
   };
 
   const queueForceDatasetSync = (key: DatasetKey) => {
-    if (!datasets[key]) return;
+    const dataset = datasets[key];
+    if (!dataset) return;
     forcedRemoteDatasetSyncKeysRef.current.add(key);
     setForceSyncingDatasets((previous) => ({ ...previous, [key]: true }));
+    const hasSourceManifest = Boolean(remoteSourceManifestsRef.current[key]?.sources?.length);
+
+    if (!hasSourceManifest) {
+      const fallbackFileName = dataset.fileName.toLowerCase().endsWith(".csv")
+        ? dataset.fileName
+        : `${toCsvFileSlug(DATASET_DEFINITIONS[key].label)}-cloud-backfill.csv`;
+      const csvText = buildCsv(dataset.headers, dataset.rows);
+      const fallbackFile = new File([csvText], fallbackFileName, { type: "text/csv" });
+      setStorageNotice(
+        `Preparing ${DATASET_DEFINITIONS[key].label} for forced cloud sync by creating a source-file backup.`
+      );
+      void persistDatasetSourceFilesToCloud(key, "replace", [
+        {
+          file: fallbackFile,
+          uploadedAt: dataset.uploadedAt,
+          rowCount: dataset.rows.length,
+        },
+      ]);
+      return;
+    }
+
     setStorageNotice(
       `Force cloud sync queued for ${DATASET_DEFINITIONS[key].label}. Large datasets may take longer to upload.`
     );
     setForceDatasetSyncTick((previous) => previous + 1);
   };
+
+  const localOnlyDatasetCount = useMemo(
+    () =>
+      (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(localOnlyDatasets[key])).length,
+    [localOnlyDatasets]
+  );
+
+  const migrateAllLocalOnlyDatasets = useCallback(async () => {
+    if (migratingLocalOnlyDatasets) return;
+    const keys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(localOnlyDatasets[key]));
+    if (keys.length === 0) {
+      setStorageNotice("No local-only datasets found to migrate.");
+      return;
+    }
+
+    setMigratingLocalOnlyDatasets(true);
+    setStorageNotice(`Starting cloud migration for ${formatNumber(keys.length)} local-only dataset(s).`);
+    let migrated = 0;
+
+    try {
+      for (const key of keys) {
+        const dataset = datasetsRef.current[key];
+        if (!dataset) continue;
+        const hasSourceManifest = Boolean(remoteSourceManifestsRef.current[key]?.sources?.length);
+        if (hasSourceManifest) continue;
+
+        const fallbackFileName = dataset.fileName.toLowerCase().endsWith(".csv")
+          ? dataset.fileName
+          : `${toCsvFileSlug(DATASET_DEFINITIONS[key].label)}-cloud-backfill.csv`;
+        const csvText = buildCsv(dataset.headers, dataset.rows);
+        const fallbackFile = new File([csvText], fallbackFileName, { type: "text/csv" });
+        const ok = await persistDatasetSourceFilesToCloud(key, "replace", [
+          {
+            file: fallbackFile,
+            uploadedAt: dataset.uploadedAt,
+            rowCount: dataset.rows.length,
+          },
+        ]);
+        if (ok) migrated += 1;
+      }
+
+      if (migrated > 0) {
+        setStorageNotice(
+          `Queued cloud migration for ${formatNumber(migrated)} dataset(s). Sync continues in the background.`
+        );
+      } else {
+        setStorageNotice("Could not queue cloud migration for local-only datasets.");
+      }
+    } finally {
+      setMigratingLocalOnlyDatasets(false);
+    }
+  }, [localOnlyDatasets, migratingLocalOnlyDatasets, persistDatasetSourceFilesToCloud]);
 
   const handleMeterReadsUpload = async (file: File | null) => {
     if (!file) return;
@@ -6575,32 +6936,168 @@ export default function SolarRecDashboard() {
         const loadedDatasets: Partial<Record<DatasetKey, CsvDataset>> = {};
         const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
         const loadedChunkKeys: Partial<Record<DatasetKey, string[]>> = {};
+        const loadedSourceManifests: Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>> = {};
         const loadChunkedPayload = async (chunkKeys: string[]): Promise<string | null> => {
           let combined = "";
           for (const chunkKey of chunkKeys) {
             if (cancelled) return null;
-            const chunkResponse = await getRemoteDatasetRef.current
-              .mutateAsync({ key: chunkKey })
-              .catch(() => null);
+            const chunkResponse = await getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }).catch(() => null);
             if (!chunkResponse?.payload) return null;
             combined += chunkResponse.payload;
           }
           return combined;
         };
+        const loadPayloadByKey = async (
+          key: string
+        ): Promise<{
+          payload: string;
+          chunkKeys: string[];
+        } | null> => {
+          const response = await getRemoteDatasetRef.current.mutateAsync({ key }).catch(() => null);
+          if (!response?.payload) return null;
+          const chunkKeys = parseChunkPointerPayload(response.payload);
+          if (chunkKeys && chunkKeys.length > 0) {
+            const chunkedPayload = await loadChunkedPayload(chunkKeys);
+            if (!chunkedPayload) return null;
+            return {
+              payload: chunkedPayload,
+              chunkKeys,
+            };
+          }
+          return {
+            payload: response.payload,
+            chunkKeys: [],
+          };
+        };
+        const parseSourcePayloadForDataset = async (
+          key: DatasetKey,
+          source: RemoteDatasetSourceRef,
+          payload: string
+        ): Promise<{ headers: string[]; rows: CsvRow[] } | null> => {
+          try {
+            const csvLike = isCsvLikeFile(source.fileName, source.contentType);
+            if (source.encoding === "utf8") {
+              if (csvLike || !TABULAR_DATASET_KEYS.has(key)) {
+                return await parseCsvTextAsync(payload);
+              }
+              const file = new File([payload], source.fileName, { type: source.contentType });
+              return await parseTabularFile(file);
+            }
+
+            const bytes = base64ToBytes(payload);
+            const arrayBuffer = bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength
+            ) as ArrayBuffer;
+            const file = new File([arrayBuffer], source.fileName, { type: source.contentType });
+            if (TABULAR_DATASET_KEYS.has(key) && !csvLike) {
+              return await parseTabularFile(file);
+            }
+            const text = await file.text();
+            return await parseCsvTextAsync(text);
+          } catch {
+            return null;
+          }
+        };
 
         for (const rawKey of keys) {
           if (cancelled) break;
           try {
-            const response = await getRemoteDatasetRef.current.mutateAsync({ key: rawKey });
-            if (!response?.payload) continue;
-            let datasetPayload = response.payload;
-            const chunkKeys = parseChunkPointerPayload(response.payload);
+            const loadedPayload = await loadPayloadByKey(rawKey);
+            if (!loadedPayload?.payload) continue;
+            const datasetPayload = loadedPayload.payload;
+            loadedChunkKeys[rawKey] = loadedPayload.chunkKeys;
 
-            if (chunkKeys) {
-              loadedChunkKeys[rawKey] = chunkKeys;
-              const chunkedPayload = await loadChunkedPayload(chunkKeys);
-              if (!chunkedPayload) continue;
-              datasetPayload = chunkedPayload;
+            const sourceManifest = parseRemoteSourceManifestPayload(datasetPayload);
+            if (sourceManifest) {
+              const parsedSourceData: Array<{
+                source: RemoteDatasetSourceRef;
+                parsed: { headers: string[]; rows: CsvRow[] };
+              }> = [];
+
+              for (const source of sourceManifest.sources) {
+                if (cancelled) break;
+                const sourcePayload = await loadPayloadByKey(source.storageKey);
+                if (!sourcePayload?.payload) continue;
+                const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayload.payload);
+                if (!parsed) continue;
+                parsedSourceData.push({
+                  source: {
+                    ...source,
+                    chunkKeys:
+                      source.chunkKeys && source.chunkKeys.length > 0
+                        ? source.chunkKeys
+                        : sourcePayload.chunkKeys,
+                  },
+                  parsed,
+                });
+              }
+
+              if (parsedSourceData.length > 0) {
+                const normalizedSources = parsedSourceData.map(({ source, parsed }) => ({
+                  ...source,
+                  rowCount: source.rowCount > 0 ? source.rowCount : parsed.rows.length,
+                }));
+                const sourceRows = normalizedSources.map((source) => ({
+                  fileName: source.fileName,
+                  uploadedAt: new Date(source.uploadedAt),
+                  rowCount: source.rowCount,
+                }));
+
+                if (MULTI_APPEND_DATASET_KEYS.has(rawKey)) {
+                  const headers: string[] = [];
+                  const rows: CsvRow[] = [];
+                  const dedupeKeys = new Set<string>();
+                  parsedSourceData.forEach(({ parsed }) => {
+                    parsed.headers.forEach((header) => {
+                      if (!headers.includes(header)) headers.push(header);
+                    });
+                    parsed.rows.forEach((row) => {
+                      const dedupeKey = datasetAppendRowKey(rawKey, row);
+                      if (dedupeKey && dedupeKeys.has(dedupeKey)) return;
+                      if (dedupeKey) dedupeKeys.add(dedupeKey);
+                      rows.push(row);
+                    });
+                  });
+
+                  const uploadedAt =
+                    sourceRows[sourceRows.length - 1]?.uploadedAt ??
+                    new Date();
+                  loadedDatasets[rawKey] = {
+                    fileName:
+                      sourceRows.length > 1
+                        ? `${sourceRows.length} files loaded`
+                        : sourceRows[0]?.fileName ?? `${DATASET_DEFINITIONS[rawKey].label} upload`,
+                    uploadedAt,
+                    headers,
+                    rows,
+                    sources: sourceRows,
+                  };
+                  const newest = normalizedSources[normalizedSources.length - 1];
+                  loadedSignatures[rawKey] =
+                    `raw:${normalizedSources.length}|${newest?.id ?? ""}|${newest?.uploadedAt ?? ""}|${rows.length}`;
+                } else {
+                  const latest = parsedSourceData[parsedSourceData.length - 1];
+                  const latestSource =
+                    normalizedSources[normalizedSources.length - 1];
+                  loadedDatasets[rawKey] = {
+                    fileName: latestSource?.fileName ?? `${DATASET_DEFINITIONS[rawKey].label} upload`,
+                    uploadedAt: latestSource?.uploadedAt ? new Date(latestSource.uploadedAt) : new Date(),
+                    headers: latest?.parsed.headers ?? [],
+                    rows: latest?.parsed.rows ?? [],
+                    sources: sourceRows,
+                  };
+                  loadedSignatures[rawKey] =
+                    `raw:${normalizedSources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${latest?.parsed.rows.length ?? 0}`;
+                }
+
+                loadedSourceManifests[rawKey] = {
+                  _rawSourcesV1: true,
+                  version: 1,
+                  sources: normalizedSources,
+                };
+                continue;
+              }
             }
 
             const deserializedDataset = deserializeRemoteDatasetPayload(datasetPayload);
@@ -6612,7 +7109,7 @@ export default function SolarRecDashboard() {
           }
         }
 
-        return { loadedDatasets, loadedSignatures, loadedChunkKeys };
+        return { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests };
       };
 
       try {
@@ -6654,7 +7151,8 @@ export default function SolarRecDashboard() {
           }
         }
 
-        const { loadedDatasets, loadedSignatures, loadedChunkKeys } = await loadRemoteDatasets(Array.from(keysToLoad));
+        const { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests } =
+          await loadRemoteDatasets(Array.from(keysToLoad));
 
         let loadedCloudLogs: DashboardLogEntry[] = [];
         try {
@@ -6711,6 +7209,12 @@ export default function SolarRecDashboard() {
           }
           remoteDatasetSignatureRef.current = loadedSignatures;
           remoteDatasetChunkKeysRef.current = loadedChunkKeys;
+          if (Object.keys(loadedSourceManifests).length > 0) {
+            setRemoteSourceManifests((current) => ({
+              ...current,
+              ...loadedSourceManifests,
+            }));
+          }
           if (loadedCloudLogs.length > 0) {
             setLogEntries((current) => (loadedCloudLogs.length >= current.length ? loadedCloudLogs : current));
           } else if (stateLogs.length > 0) {
@@ -6738,6 +7242,7 @@ export default function SolarRecDashboard() {
       cancelled = true;
     };
   }, [
+    parseCsvTextAsync,
     remoteDashboardStateQuery.data,
     remoteDashboardStateQuery.status,
   ]);
@@ -6902,11 +7407,22 @@ export default function SolarRecDashboard() {
 
         for (const key of Object.keys(DATASET_DEFINITIONS) as DatasetKey[]) {
           const dataset = datasets[key];
+          const sourceManifest = remoteSourceManifestsRef.current[key];
           const forceSyncRequested = forcedRemoteDatasetSyncKeysRef.current.has(key);
           const previousSyncSignature = remoteDatasetSignatureRef.current[key] ?? "";
           if (!dataset) {
             forcedRemoteDatasetSyncKeysRef.current.delete(key);
             setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+            if (sourceManifest?.sources && sourceManifest.sources.length > 0) {
+              for (const source of sourceManifest.sources) {
+                try {
+                  await clearRemotePayloadWithChunks(source.storageKey, source.chunkKeys);
+                } catch {
+                  // Best effort source cleanup.
+                }
+              }
+              setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
+            }
             if (!remoteDatasetSignatureRef.current[key]) continue;
             const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
             try {
@@ -6922,6 +7438,53 @@ export default function SolarRecDashboard() {
             }
             continue;
           }
+
+          if (sourceManifest?.sources && sourceManifest.sources.length > 0) {
+            const latestSource = sourceManifest.sources[sourceManifest.sources.length - 1];
+            const syncSignature =
+              `raw:${sourceManifest.sources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${dataset.rows.length}`;
+            nextSignatures[key] = syncSignature;
+
+            if (remoteDatasetSignatureRef.current[key] === syncSignature) {
+              if (forceSyncRequested) {
+                forcedRemoteDatasetSyncKeysRef.current.delete(key);
+                setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+                setStorageNotice(`${DATASET_DEFINITIONS[key].label} is already synced to cloud.`);
+              }
+              continue;
+            }
+
+            const manifestPayload = safeJsonStringify(sourceManifest);
+            if (!manifestPayload) {
+              setStorageNotice(`Could not serialize ${DATASET_DEFINITIONS[key].label} source manifest for cloud sync.`);
+              return;
+            }
+
+            try {
+              const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
+              const chunkKeys = await saveRemotePayloadWithChunks(key, manifestPayload);
+              const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
+              for (const staleChunkKey of staleChunkKeys) {
+                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+              }
+              remoteDatasetChunkKeysRef.current[key] = chunkKeys;
+              remoteDatasetSignatureRef.current[key] = syncSignature;
+              if (forceSyncRequested) {
+                forcedRemoteDatasetSyncKeysRef.current.delete(key);
+                setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+                setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
+              }
+            } catch {
+              if (forceSyncRequested) {
+                forcedRemoteDatasetSyncKeysRef.current.delete(key);
+                setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+              }
+              setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} source manifest to cloud storage.`);
+              return;
+            }
+            continue;
+          }
+
           const baseSignature = `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
           const estimatedRemotePayloadChars = estimateDatasetRemotePayloadChars(
             dataset,
@@ -6935,7 +7498,14 @@ export default function SolarRecDashboard() {
             nextLocalOnlyDatasets[key] = true;
           }
 
-          if (remoteDatasetSignatureRef.current[key] === syncSignature) continue;
+          if (remoteDatasetSignatureRef.current[key] === syncSignature) {
+            if (forceSyncRequested) {
+              forcedRemoteDatasetSyncKeysRef.current.delete(key);
+              setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+              setStorageNotice(`${DATASET_DEFINITIONS[key].label} is already synced to cloud.`);
+            }
+            continue;
+          }
 
           if (shouldKeepLocalOnly) {
             const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
@@ -7032,11 +7602,13 @@ export default function SolarRecDashboard() {
       window.clearTimeout(timeout);
     };
   }, [
+    clearRemotePayloadWithChunks,
     datasets,
     datasetsHydrated,
     forceDatasetSyncTick,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
+    saveRemotePayloadWithChunks,
   ]);
 
   useEffect(() => {
@@ -11888,6 +12460,18 @@ export default function SolarRecDashboard() {
                   <ChevronDown className="ml-2 h-4 w-4" />
                 )}
               </Button>
+              {localOnlyDatasetCount > 0 ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={migratingLocalOnlyDatasets}
+                  onClick={() => void migrateAllLocalOnlyDatasets()}
+                >
+                  {migratingLocalOnlyDatasets
+                    ? "Migrating..."
+                    : `Migrate ${formatNumber(localOnlyDatasetCount)} Local-only`}
+                </Button>
+              ) : null}
             </div>
           </CardHeader>
           {uploadsExpanded ? (
