@@ -14,9 +14,9 @@ export const CONVERTED_READS_HEADERS = [
   "monitoring_system_id",
   "monitoring_system_name",
   "lifetime_meter_read_wh",
-  "read_date",
   "status",
   "alert_severity",
+  "read_date",
 ] as const;
 
 /* ------------------------------------------------------------------ */

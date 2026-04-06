@@ -794,7 +794,7 @@ export default function SolarLogMeterReads() {
       toast.error("No rows with lifetime kWh available for Converted Reads export.");
       return;
     }
-    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "read_date", "status", "alert_severity"];
+    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
     for (const row of readRows) {
       const base = buildConvertedReadRow("Solar-Log", row.deviceId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
