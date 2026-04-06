@@ -27,12 +27,8 @@ type BulkSortKey =
   | "stationId"
   | "status"
   | "lifetime"
-  | "hourly"
   | "monthly"
-  | "mtd"
-  | "previousMonth"
   | "last12Months"
-  | "weekly"
   | "daily";
 type BulkConnectionScope = "active" | "all";
 
@@ -44,20 +40,10 @@ type BulkSnapshotRow = {
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh?: number | null;
-  hourlyProductionKwh?: number | null;
   monthlyProductionKwh?: number | null;
-  mtdProductionKwh?: number | null;
-  previousCalendarMonthProductionKwh?: number | null;
   last12MonthsProductionKwh?: number | null;
-  weeklyProductionKwh?: number | null;
   dailyProductionKwh?: number | null;
   anchorDate?: string;
-  monthlyStartDate?: string;
-  weeklyStartDate?: string;
-  mtdStartDate?: string;
-  previousCalendarMonthStartDate?: string;
-  previousCalendarMonthEndDate?: string;
-  last12MonthsStartDate?: string;
   error?: string | null;
   matchedConnectionId?: string | null;
   matchedConnectionName?: string | null;
@@ -571,20 +557,10 @@ export default function HoymilesMeterReads() {
                 status: snapshotRow.found ? "Found" : "Not Found",
                 found: !!snapshotRow.found,
                 lifetimeKwh: snapshotRow.lifetimeKwh,
-                hourlyProductionKwh: snapshotRow.hourlyProductionKwh,
                 monthlyProductionKwh: snapshotRow.monthlyProductionKwh,
-                mtdProductionKwh: snapshotRow.mtdProductionKwh,
-                previousCalendarMonthProductionKwh: snapshotRow.previousCalendarMonthProductionKwh,
                 last12MonthsProductionKwh: snapshotRow.last12MonthsProductionKwh,
-                weeklyProductionKwh: snapshotRow.weeklyProductionKwh,
                 dailyProductionKwh: snapshotRow.dailyProductionKwh,
                 anchorDate: snapshotRow.anchorDate,
-                monthlyStartDate: snapshotRow.monthlyStartDate,
-                weeklyStartDate: snapshotRow.weeklyStartDate,
-                mtdStartDate: snapshotRow.mtdStartDate,
-                previousCalendarMonthStartDate: snapshotRow.previousCalendarMonthStartDate,
-                previousCalendarMonthEndDate: snapshotRow.previousCalendarMonthEndDate,
-                last12MonthsStartDate: snapshotRow.last12MonthsStartDate,
                 matchedConnectionId: snapshotRow.matchedConnectionId ?? null,
                 matchedConnectionName: snapshotRow.matchedConnectionName ?? null,
                 checkedConnections: snapshotRow.checkedConnections ?? (useAllProfiles ? statusQuery.data?.connections.length ?? 0 : 1),
@@ -708,21 +684,10 @@ export default function HoymilesMeterReads() {
           return a.status.localeCompare(b.status);
         case "lifetime":
           return toComparableNumber(b.lifetimeKwh) - toComparableNumber(a.lifetimeKwh);
-        case "hourly":
-          return toComparableNumber(b.hourlyProductionKwh) - toComparableNumber(a.hourlyProductionKwh);
         case "monthly":
           return toComparableNumber(b.monthlyProductionKwh) - toComparableNumber(a.monthlyProductionKwh);
-        case "mtd":
-          return toComparableNumber(b.mtdProductionKwh) - toComparableNumber(a.mtdProductionKwh);
-        case "previousMonth":
-          return (
-            toComparableNumber(b.previousCalendarMonthProductionKwh) -
-            toComparableNumber(a.previousCalendarMonthProductionKwh)
-          );
         case "last12Months":
           return toComparableNumber(b.last12MonthsProductionKwh) - toComparableNumber(a.last12MonthsProductionKwh);
-        case "weekly":
-          return toComparableNumber(b.weeklyProductionKwh) - toComparableNumber(a.weeklyProductionKwh);
         case "daily":
           return toComparableNumber(b.dailyProductionKwh) - toComparableNumber(a.dailyProductionKwh);
         case "stationId":
@@ -744,13 +709,9 @@ export default function HoymilesMeterReads() {
     { value: "stationId", label: "Station ID (A-Z)" },
     { value: "status", label: "Status" },
     { value: "lifetime", label: "Lifetime (High-Low)" },
-    { value: "hourly", label: "Hourly (High-Low)" },
-    { value: "monthly", label: "Monthly (High-Low)" },
-    { value: "mtd", label: "MTD (High-Low)" },
-    { value: "previousMonth", label: "Previous Month (High-Low)" },
-    { value: "last12Months", label: "Last 12 Months (High-Low)" },
-    { value: "weekly", label: "Weekly (High-Low)" },
     { value: "daily", label: "Daily (High-Low)" },
+    { value: "monthly", label: "Monthly (High-Low)" },
+    { value: "last12Months", label: "Last 12 Months (High-Low)" },
   ];
 
   const downloadBulkCsv = (rows: BulkSnapshotRow[], fileNamePrefix: string) => {
@@ -771,20 +732,10 @@ export default function HoymilesMeterReads() {
       "found_in_connections",
       "profile_status_summary",
       "lifetime_kwh",
-      "hourly_production_kwh",
-      "monthly_production_kwh",
-      "mtd_production_kwh",
-      "previous_calendar_month_production_kwh",
-      "last_12_months_production_kwh",
-      "weekly_production_kwh",
       "daily_production_kwh",
+      "monthly_production_kwh",
+      "yearly_production_kwh",
       "anchor_date",
-      "monthly_start_date",
-      "weekly_start_date",
-      "mtd_start_date",
-      "previous_calendar_month_start_date",
-      "previous_calendar_month_end_date",
-      "last_12_months_start_date",
     ];
 
     const csvRows = rows.map((row) => ({
@@ -799,20 +750,10 @@ export default function HoymilesMeterReads() {
       found_in_connections: row.foundInConnections,
       profile_status_summary: row.profileStatusSummary,
       lifetime_kwh: row.lifetimeKwh,
-      hourly_production_kwh: row.hourlyProductionKwh,
-      monthly_production_kwh: row.monthlyProductionKwh,
-      mtd_production_kwh: row.mtdProductionKwh,
-      previous_calendar_month_production_kwh: row.previousCalendarMonthProductionKwh,
-      last_12_months_production_kwh: row.last12MonthsProductionKwh,
-      weekly_production_kwh: row.weeklyProductionKwh,
       daily_production_kwh: row.dailyProductionKwh,
+      monthly_production_kwh: row.monthlyProductionKwh,
+      yearly_production_kwh: row.last12MonthsProductionKwh,
       anchor_date: row.anchorDate,
-      monthly_start_date: row.monthlyStartDate,
-      weekly_start_date: row.weeklyStartDate,
-      mtd_start_date: row.mtdStartDate,
-      previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
-      previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
-      last_12_months_start_date: row.last12MonthsStartDate,
     }));
 
     const csvText = buildCsv(headers, csvRows);
@@ -1154,7 +1095,7 @@ export default function HoymilesMeterReads() {
                   onChange={(e) => setBulkAnchorDate(e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Used for production snapshots. Production windows: Monthly = last 30 days, MTD = first of current month through anchor day, Previous Month = prior calendar month, Last 12 Months = trailing 12 months ending on anchor day.
+                  Used for production snapshots. The Hoymiles API provides: Daily, Monthly, and Yearly production totals plus Lifetime cumulative energy.
                 </p>
               </div>
               <div className="space-y-2">
@@ -1367,11 +1308,8 @@ export default function HoymilesMeterReads() {
                   <TableHead>Found In APIs</TableHead>
                   <TableHead>Lifetime (kWh)</TableHead>
                   <TableHead>Daily (kWh)</TableHead>
-                  <TableHead>Weekly (kWh)</TableHead>
-                  <TableHead>MTD (kWh)</TableHead>
-                  <TableHead>Monthly 30d (kWh)</TableHead>
-                  <TableHead>Prev Month (kWh)</TableHead>
-                  <TableHead>Last 12M (kWh)</TableHead>
+                  <TableHead>Monthly (kWh)</TableHead>
+                  <TableHead>Yearly (kWh)</TableHead>
                   <TableHead>Error</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1399,10 +1337,7 @@ export default function HoymilesMeterReads() {
                     </TableCell>
                     <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
                     <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.mtdProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
-                    <TableCell>{formatKwh(row.previousCalendarMonthProductionKwh)}</TableCell>
                     <TableCell>{formatKwh(row.last12MonthsProductionKwh)}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{row.error ?? ""}</TableCell>
                   </TableRow>
@@ -1410,7 +1345,7 @@ export default function HoymilesMeterReads() {
                 {bulkPageRows.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={13}
+                      colSpan={10}
                       className="py-6 text-center text-muted-foreground"
                     >
                       No bulk rows to display.

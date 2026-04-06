@@ -10013,7 +10013,7 @@ Generate the pipeline analysis report now.`,
           // Try next profile
         }
       }
-      return { stationId: input.stationId, name: null, status: "Not Found" as const, found: false, lifetimeKwh: null, hourlyProductionKwh: null, monthlyProductionKwh: null, mtdProductionKwh: null, previousCalendarMonthProductionKwh: null, last12MonthsProductionKwh: null, weeklyProductionKwh: null, dailyProductionKwh: null, anchorDate: input.anchorDate ?? new Date().toISOString().slice(0, 10), monthlyStartDate: "", weeklyStartDate: "", mtdStartDate: "", previousCalendarMonthStartDate: "", previousCalendarMonthEndDate: "", last12MonthsStartDate: "", error: `Station not found in any of ${metadata.connections.length} profiles`, matchedConnectionId: null, matchedConnectionName: null, checkedConnections: metadata.connections.length };
+      return { stationId: input.stationId, name: null, status: "Not Found" as const, found: false, lifetimeKwh: null, monthlyProductionKwh: null, last12MonthsProductionKwh: null, dailyProductionKwh: null, anchorDate: input.anchorDate ?? new Date().toISOString().slice(0, 10), error: `Station not found in any of ${metadata.connections.length} profiles`, matchedConnectionId: null, matchedConnectionName: null, checkedConnections: metadata.connections.length };
     }),
   }),
 

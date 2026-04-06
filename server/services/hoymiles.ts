@@ -20,20 +20,10 @@ export type HoymilesProductionSnapshot = {
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   lifetimeKwh: number | null;
-  hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
-  mtdProductionKwh: number | null;
-  previousCalendarMonthProductionKwh: number | null;
   last12MonthsProductionKwh: number | null;
-  weeklyProductionKwh: number | null;
   dailyProductionKwh: number | null;
   anchorDate: string;
-  monthlyStartDate: string;
-  weeklyStartDate: string;
-  mtdStartDate: string;
-  previousCalendarMonthStartDate: string;
-  previousCalendarMonthEndDate: string;
-  last12MonthsStartDate: string;
   error: string | null;
 };
 
@@ -610,13 +600,6 @@ export async function getStationProductionSnapshot(
     throw new Error("Anchor date must be in YYYY-MM-DD format.");
   }
 
-  const monthlyStartDate = shiftIsoDate(anchorDate, -29);
-  const weeklyStartDate = shiftIsoDate(anchorDate, -6);
-  const mtdStartDate = firstDayOfMonth(anchorDate);
-  const previousCalendarMonthStartDate = firstDayOfPreviousMonth(anchorDate);
-  const previousCalendarMonthEndDate = lastDayOfPreviousMonth(anchorDate);
-  const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
-
   try {
     // Fetch station metadata (for name) and real-time energy data in parallel.
     // The real-time endpoint returns: today_eq, month_eq, year_eq, total_eq (all in Wh).
@@ -634,31 +617,16 @@ export async function getStationProductionSnapshot(
     const monthlyProductionKwh = safeRound(toKwh(toNullableNumber(realData.month_eq), "Wh"));
     const last12MonthsProductionKwh = safeRound(toKwh(toNullableNumber(realData.year_eq), "Wh"));
 
-    const hourlyProductionKwh: number | null = null;
-    const weeklyProductionKwh: number | null = null;
-    const mtdProductionKwh: number | null = null;
-    const previousCalendarMonthProductionKwh: number | null = null;
-
     return {
       stationId,
       name: name ?? toNullableString(detail.station_name ?? detail.name),
       status: "Found",
       found: true,
       lifetimeKwh,
-      hourlyProductionKwh,
       monthlyProductionKwh,
-      mtdProductionKwh,
-      previousCalendarMonthProductionKwh,
       last12MonthsProductionKwh,
-      weeklyProductionKwh,
       dailyProductionKwh,
       anchorDate,
-      monthlyStartDate,
-      weeklyStartDate,
-      mtdStartDate,
-      previousCalendarMonthStartDate,
-      previousCalendarMonthEndDate,
-      last12MonthsStartDate,
       error: null,
     };
   } catch (error) {
@@ -669,20 +637,10 @@ export async function getStationProductionSnapshot(
       status: isNf ? "Not Found" : "Error",
       found: false,
       lifetimeKwh: null,
-      hourlyProductionKwh: null,
       monthlyProductionKwh: null,
-      mtdProductionKwh: null,
-      previousCalendarMonthProductionKwh: null,
       last12MonthsProductionKwh: null,
-      weeklyProductionKwh: null,
       dailyProductionKwh: null,
       anchorDate,
-      monthlyStartDate,
-      weeklyStartDate,
-      mtdStartDate,
-      previousCalendarMonthStartDate,
-      previousCalendarMonthEndDate,
-      last12MonthsStartDate,
       error: error instanceof Error ? error.message : "Unknown error.",
     };
   }
