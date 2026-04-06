@@ -390,14 +390,10 @@ export async function listStations(context: HoymilesApiContext): Promise<{
   stations: HoymilesStation[];
   raw: unknown;
 }> {
-  // Try multiple endpoint + body combinations. Hoymiles has changed their
-  // API across versions, and different body formats cause "DTO input error".
+  // The correct station listing endpoint is /pvm/api/0/station/select_by_page.
+  // Other endpoints are for single-station lookup (find requires id) or removed (404).
   const endpoints = [
-    { path: "/pvm/api/0/station/find", body: {} },
-    { path: "/pvm/api/0/station/find", body: { page: 1, page_size: 100 } },
-    { path: "/pvm-data/api/0/station/select_by_condition", body: { page: 1, page_size: 100 } },
-    { path: "/pvm-data/api/0/station/select_by_condition", body: {} },
-    { path: "/pvm-data/api/0/station/data/count_station_real_data", body: {} },
+    { path: "/pvm/api/0/station/select_by_page", body: { page: 1, page_size: 100 } },
   ];
 
   let lastError: Error | null = null;
