@@ -249,13 +249,18 @@ async function getHoymilesToken(context: HoymilesApiContext): Promise<string> {
       signal: AbortSignal.timeout(15_000),
     });
 
+    const responseText = await response.text();
+    console.log(`[Hoymiles] MD5 login response (${response.status}): ${responseText.slice(0, 300)}`);
+
     if (response.ok) {
-      const json = asRecord(await response.json());
+      const json = asRecord(JSON.parse(responseText));
       const token = extractHoymilesToken(json);
       if (token) {
+        console.log(`[Hoymiles] MD5 login succeeded for ${username}, token: ${token.slice(0, 20)}...`);
         hoymilesTokenCache.set(cacheKey, { token, expiresAt: Date.now() + 30 * 60 * 1000 });
         return token;
       }
+      console.log(`[Hoymiles] MD5 login response OK but no token found. Keys: ${Object.keys(json).join(", ")}`);
       // Token not in response — fall through to next strategy
     }
   } catch {
@@ -327,12 +332,20 @@ async function postHoymilesJson(
     );
   }
 
-  const json = asRecord(await response.json());
+  const responseText = await response.text();
+  console.log(`[Hoymiles] ${path} response (${responseText.length} chars): ${responseText.slice(0, 500)}`);
+
+  let json: Record<string, unknown>;
+  try {
+    json = asRecord(JSON.parse(responseText));
+  } catch {
+    throw new Error(`Hoymiles request to ${path} returned invalid JSON`);
+  }
 
   // Hoymiles wraps responses: { status: "0", message: "...", data: {...} }
   if (json.status !== undefined && json.status !== "0" && json.status !== 0) {
     const msg = toNullableString(json.message ?? json.msg) ?? "Unknown Hoymiles API error";
-    throw new Error(`Hoymiles API error: ${msg}`);
+    throw new Error(`Hoymiles API error (${path}): ${msg}`);
   }
 
   return json.data ?? json;
@@ -377,39 +390,40 @@ export async function listStations(context: HoymilesApiContext): Promise<{
   stations: HoymilesStation[];
   raw: unknown;
 }> {
-  // Try the current endpoint first, then fall back to alternatives.
-  // Hoymiles has changed their API paths across versions.
+  // Try multiple endpoint + body combinations. Hoymiles has changed their
+  // API across versions, and different body formats cause "DTO input error".
   const endpoints = [
+    { path: "/pvm/api/0/station/find", body: {} },
     { path: "/pvm/api/0/station/find", body: { page: 1, page_size: 100 } },
     { path: "/pvm-data/api/0/station/select_by_condition", body: { page: 1, page_size: 100 } },
-    { path: "/pvm-data/api/0/station/data/count_station_real_data", body: { page: 1, page_size: 100 } },
+    { path: "/pvm-data/api/0/station/select_by_condition", body: {} },
+    { path: "/pvm-data/api/0/station/data/count_station_real_data", body: {} },
   ];
 
   let lastError: Error | null = null;
+  let lastRaw: unknown = null;
   for (const ep of endpoints) {
     try {
       const raw = await postHoymilesJson(ep.path, context, ep.body);
+      lastRaw = raw;
       const stations = extractStations(raw);
+      console.log(`[Hoymiles] ${ep.path} → ${stations.length} stations extracted`);
       if (stations.length > 0) {
         return { stations, raw };
       }
-      // Got a response but no stations — try to extract from nested structures
-      const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
-      const nested = record.list ?? record.stations ?? record.rows ?? record.data;
-      if (Array.isArray(nested) && nested.length > 0) {
-        return { stations: extractStations({ list: nested }), raw };
-      }
-      // Empty result — might just be this endpoint; try next
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`[Hoymiles] ${ep.path} failed: ${msg}`);
+      lastError = err instanceof Error ? err : new Error(msg);
     }
   }
 
-  // If all endpoints returned empty (not errors), return the empty result
-  if (!lastError) {
-    return { stations: [], raw: null };
+  // Return whatever we got (even if empty) along with raw for debugging
+  if (lastRaw !== null) {
+    return { stations: [], raw: lastRaw };
   }
-  throw lastError;
+  if (lastError) throw lastError;
+  return { stations: [], raw: null };
 }
 
 // ---------------------------------------------------------------------------
