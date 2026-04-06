@@ -1763,6 +1763,8 @@ type RemoteDatasetManifestEntry = {
   }>;
 };
 
+type DatasetCloudSyncStatus = "pending" | "synced" | "failed";
+
 type SerializedDashboardLogEntry = Omit<DashboardLogEntry, "createdAt" | "datasets" | "cooStatuses"> & {
   createdAt: string;
   datasets: Array<{
@@ -2370,6 +2372,9 @@ export default function SolarRecDashboard() {
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const [localOnlyDatasets, setLocalOnlyDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
+  const [datasetCloudSyncStatus, setDatasetCloudSyncStatus] = useState<
+    Partial<Record<DatasetKey, DatasetCloudSyncStatus>>
+  >({});
   const [forceSyncingDatasets, setForceSyncingDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
   const [migratingLocalOnlyDatasets, setMigratingLocalOnlyDatasets] = useState(false);
   const [remoteSourceManifests, setRemoteSourceManifests] = useState<
@@ -2612,6 +2617,76 @@ export default function SolarRecDashboard() {
     }
   }, []);
 
+  const setDatasetCloudSyncBadge = useCallback(
+    (key: DatasetKey, status: DatasetCloudSyncStatus | undefined) => {
+      setDatasetCloudSyncStatus((previous) => {
+        if (!status) {
+          if (!previous[key]) return previous;
+          const next = { ...previous };
+          delete next[key];
+          return next;
+        }
+        if (previous[key] === status) return previous;
+        return { ...previous, [key]: status };
+      });
+    },
+    []
+  );
+
+  const syncDatasetSourceManifestToCloud = useCallback(
+    async (key: DatasetKey, manifest: RemoteDatasetSourceManifestPayload): Promise<boolean> => {
+      const manifestPayload = safeJsonStringify(manifest);
+      if (!manifestPayload) {
+        setDatasetCloudSyncBadge(key, "failed");
+        setStorageNotice(`Could not serialize ${DATASET_DEFINITIONS[key].label} source manifest for cloud sync.`);
+        return false;
+      }
+
+      try {
+        const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
+        const chunkKeys = await saveRemotePayloadWithChunks(key, manifestPayload);
+        const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
+        for (const staleChunkKey of staleChunkKeys) {
+          await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+        }
+        remoteDatasetChunkKeysRef.current[key] = chunkKeys;
+
+        const latestSource = manifest.sources[manifest.sources.length - 1];
+        const rowCount = datasetsRef.current[key]?.rows.length ?? latestSource?.rowCount ?? 0;
+        remoteDatasetSignatureRef.current[key] =
+          `raw:${manifest.sources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${rowCount}`;
+
+        const activeKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((candidate) => {
+          if (candidate === key) return manifest.sources.length > 0;
+          return Boolean(datasetsRef.current[candidate]);
+        });
+
+        await withRetry(() =>
+          saveRemoteDatasetRef.current.mutateAsync({
+            key: REMOTE_DATASET_KEY_MANIFEST,
+            payload: buildDatasetKeyManifestPayload(activeKeys),
+          })
+        );
+
+        const verification = await withRetry(() => getRemoteDatasetRef.current.mutateAsync({ key })).catch(() => null);
+        if (!verification?.payload) {
+          throw new Error("Cloud verification returned empty payload.");
+        }
+
+        setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
+        setDatasetCloudSyncBadge(key, "synced");
+        return true;
+      } catch (error) {
+        setDatasetCloudSyncBadge(key, "failed");
+        const message =
+          error instanceof Error ? error.message : "Unknown error while syncing source manifest to cloud.";
+        setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} source manifest to cloud: ${message}`);
+        return false;
+      }
+    },
+    [saveRemotePayloadWithChunks, setDatasetCloudSyncBadge]
+  );
+
   const uploadRemoteSourceFile = useCallback(
     async (
       key: DatasetKey,
@@ -2663,6 +2738,7 @@ export default function SolarRecDashboard() {
       }>
     ): Promise<boolean> => {
       if (uploads.length === 0) return false;
+      setDatasetCloudSyncBadge(key, "pending");
       try {
         const previousManifest = remoteSourceManifestsRef.current[key];
         const previousSources = previousManifest?.sources ?? [];
@@ -2675,6 +2751,11 @@ export default function SolarRecDashboard() {
 
         const mergedSources =
           mode === "append" ? [...previousSources, ...uploadedSources] : uploadedSources;
+        const nextManifest: RemoteDatasetSourceManifestPayload = {
+          _rawSourcesV1: true,
+          version: 1,
+          sources: mergedSources,
+        };
 
         if (mode === "replace" && previousSources.length > 0) {
           for (const staleSource of previousSources) {
@@ -2688,22 +2769,22 @@ export default function SolarRecDashboard() {
 
         setRemoteSourceManifests((previous) => ({
           ...previous,
-          [key]: {
-            _rawSourcesV1: true,
-            version: 1,
-            sources: mergedSources,
-          },
+          [key]: nextManifest,
         }));
-        setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
-        setForceDatasetSyncTick((previous) => previous + 1);
-        return true;
+
+        const synced = await syncDatasetSourceManifestToCloud(key, nextManifest);
+        if (synced) {
+          setForceDatasetSyncTick((previous) => previous + 1);
+        }
+        return synced;
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error while syncing source files to cloud.";
+        setDatasetCloudSyncBadge(key, "failed");
         setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} source file(s) to cloud: ${message}`);
         return false;
       }
     },
-    [clearRemotePayloadWithChunks, uploadRemoteSourceFile]
+    [clearRemotePayloadWithChunks, setDatasetCloudSyncBadge, syncDatasetSourceManifestToCloud, uploadRemoteSourceFile]
   );
 
   useEffect(() => {
@@ -3097,6 +3178,7 @@ export default function SolarRecDashboard() {
     setDatasets((previous) => ({ ...previous, [key]: undefined }));
     setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
     setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
+    setDatasetCloudSyncBadge(key, undefined);
     setForceSyncingDatasets((previous) => ({ ...previous, [key]: false }));
     setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
     forcedRemoteDatasetSyncKeysRef.current.delete(key);
@@ -3106,6 +3188,7 @@ export default function SolarRecDashboard() {
     setDatasets({});
     setUploadErrors({});
     setLocalOnlyDatasets({});
+    setDatasetCloudSyncStatus({});
     setForceSyncingDatasets({});
     setRemoteSourceManifests({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
@@ -3119,6 +3202,7 @@ export default function SolarRecDashboard() {
     if (!dataset) return;
     forcedRemoteDatasetSyncKeysRef.current.add(key);
     setForceSyncingDatasets((previous) => ({ ...previous, [key]: true }));
+    setDatasetCloudSyncBadge(key, "pending");
     const hasSourceManifest = Boolean(remoteSourceManifestsRef.current[key]?.sources?.length);
 
     if (!hasSourceManifest) {
@@ -3176,6 +3260,7 @@ export default function SolarRecDashboard() {
           : `${toCsvFileSlug(DATASET_DEFINITIONS[key].label)}-cloud-backfill.csv`;
         const csvText = buildCsv(dataset.headers, dataset.rows);
         const fallbackFile = new File([csvText], fallbackFileName, { type: "text/csv" });
+        setDatasetCloudSyncBadge(key, "pending");
         const ok = await persistDatasetSourceFilesToCloud(key, "replace", [
           {
             file: fallbackFile,
@@ -3196,7 +3281,7 @@ export default function SolarRecDashboard() {
     } finally {
       setMigratingLocalOnlyDatasets(false);
     }
-  }, [localOnlyDatasets, migratingLocalOnlyDatasets, persistDatasetSourceFilesToCloud]);
+  }, [localOnlyDatasets, migratingLocalOnlyDatasets, persistDatasetSourceFilesToCloud, setDatasetCloudSyncBadge]);
 
   const handleMeterReadsUpload = async (file: File | null) => {
     if (!file) return;
@@ -7206,6 +7291,15 @@ export default function SolarRecDashboard() {
               }
               return merged;
             });
+            setDatasetCloudSyncStatus((current) => {
+              const next = { ...current };
+              (Object.keys(loadedDatasets) as DatasetKey[]).forEach((key) => {
+                if (loadedDatasets[key]) {
+                  next[key] = "synced";
+                }
+              });
+              return next;
+            });
           }
           remoteDatasetSignatureRef.current = loadedSignatures;
           remoteDatasetChunkKeysRef.current = loadedChunkKeys;
@@ -7432,7 +7526,9 @@ export default function SolarRecDashboard() {
               }
               delete remoteDatasetSignatureRef.current[key];
               delete remoteDatasetChunkKeysRef.current[key];
+              setDatasetCloudSyncBadge(key, undefined);
             } catch {
+              setDatasetCloudSyncBadge(key, "failed");
               setStorageNotice(`Could not clear ${DATASET_DEFINITIONS[key].label} dataset from cloud storage.`);
               return;
             }
@@ -7451,6 +7547,7 @@ export default function SolarRecDashboard() {
                 setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
                 setStorageNotice(`${DATASET_DEFINITIONS[key].label} is already synced to cloud.`);
               }
+              setDatasetCloudSyncBadge(key, "synced");
               continue;
             }
 
@@ -7474,11 +7571,13 @@ export default function SolarRecDashboard() {
                 setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
                 setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
               }
+              setDatasetCloudSyncBadge(key, "synced");
             } catch {
               if (forceSyncRequested) {
                 forcedRemoteDatasetSyncKeysRef.current.delete(key);
                 setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
               }
+              setDatasetCloudSyncBadge(key, "failed");
               setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} source manifest to cloud storage.`);
               return;
             }
@@ -7516,12 +7615,14 @@ export default function SolarRecDashboard() {
               }
               remoteDatasetChunkKeysRef.current[key] = [];
               remoteDatasetSignatureRef.current[key] = syncSignature;
+              setDatasetCloudSyncBadge(key, undefined);
               if (!previousSyncSignature.startsWith("local-only:")) {
                 setStorageNotice(
                   `${DATASET_DEFINITIONS[key].label} is currently too large for cloud sync and will stay local-only. Use Force Cloud Sync to override.`
                 );
               }
             } catch {
+              setDatasetCloudSyncBadge(key, "failed");
               setStorageNotice(
                 `Could not mark ${DATASET_DEFINITIONS[key].label} as local-only. Local persistence is still active.`
               );
@@ -7570,11 +7671,13 @@ export default function SolarRecDashboard() {
               setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
               setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
             }
+            setDatasetCloudSyncBadge(key, "synced");
           } catch {
             if (forceSyncRequested) {
               forcedRemoteDatasetSyncKeysRef.current.delete(key);
               setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
             }
+            setDatasetCloudSyncBadge(key, "failed");
             setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} dataset to cloud storage.`);
             return;
           }
@@ -7609,6 +7712,7 @@ export default function SolarRecDashboard() {
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
     saveRemotePayloadWithChunks,
+    setDatasetCloudSyncBadge,
   ]);
 
   useEffect(() => {
@@ -12498,6 +12602,21 @@ export default function SolarRecDashboard() {
                           {localOnlyDatasets[key] ? (
                             <Badge className="border-amber-200 bg-amber-100 text-amber-900">
                               Local-only sync
+                            </Badge>
+                          ) : null}
+                          {datasetCloudSyncStatus[key] === "pending" ? (
+                            <Badge className="border-blue-200 bg-blue-100 text-blue-900">
+                              Cloud sync pending
+                            </Badge>
+                          ) : null}
+                          {datasetCloudSyncStatus[key] === "synced" ? (
+                            <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                              Cloud verified
+                            </Badge>
+                          ) : null}
+                          {datasetCloudSyncStatus[key] === "failed" ? (
+                            <Badge className="border-rose-200 bg-rose-100 text-rose-800">
+                              Cloud sync failed
                             </Badge>
                           ) : null}
                           {forceSyncingDatasets[key] ? (
