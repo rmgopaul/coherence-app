@@ -308,7 +308,7 @@ async function postHoymilesJson(
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
-      Authorization: `Bearer ${token}`,
+      Authorization: token,
     },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(20_000),
@@ -377,14 +377,39 @@ export async function listStations(context: HoymilesApiContext): Promise<{
   stations: HoymilesStation[];
   raw: unknown;
 }> {
-  const raw = await postHoymilesJson("/pvm-data/api/0/station/select_by_condition", context, {
-    page: 1,
-    page_size: 100,
-  });
-  return {
-    stations: extractStations(raw),
-    raw,
-  };
+  // Try the current endpoint first, then fall back to alternatives.
+  // Hoymiles has changed their API paths across versions.
+  const endpoints = [
+    { path: "/pvm/api/0/station/find", body: { page: 1, page_size: 100 } },
+    { path: "/pvm-data/api/0/station/select_by_condition", body: { page: 1, page_size: 100 } },
+    { path: "/pvm-data/api/0/station/data/count_station_real_data", body: { page: 1, page_size: 100 } },
+  ];
+
+  let lastError: Error | null = null;
+  for (const ep of endpoints) {
+    try {
+      const raw = await postHoymilesJson(ep.path, context, ep.body);
+      const stations = extractStations(raw);
+      if (stations.length > 0) {
+        return { stations, raw };
+      }
+      // Got a response but no stations — try to extract from nested structures
+      const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const nested = record.list ?? record.stations ?? record.rows ?? record.data;
+      if (Array.isArray(nested) && nested.length > 0) {
+        return { stations: extractStations({ list: nested }), raw };
+      }
+      // Empty result — might just be this endpoint; try next
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  // If all endpoints returned empty (not errors), return the empty result
+  if (!lastError) {
+    return { stations: [], raw: null };
+  }
+  throw lastError;
 }
 
 // ---------------------------------------------------------------------------
