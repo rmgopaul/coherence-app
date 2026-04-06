@@ -625,18 +625,24 @@ export async function getStationProductionSnapshot(
     ]);
 
     const detail = asRecord(detailPayload);
+
+    // Log all keys and numeric values for diagnostics.
+    const numericFields: Record<string, number> = {};
+    for (const [key, val] of Object.entries(detail)) {
+      const num = toNullableNumber(val);
+      if (num !== null) numericFields[key] = num;
+    }
+    console.log(`[Hoymiles] Station ${stationId} detail keys: ${Object.keys(detail).join(", ")}`);
+    console.log(`[Hoymiles] Station ${stationId} numeric fields: ${JSON.stringify(numericFields)}`);
+
     // Try multiple field names for lifetime energy — response shape varies by endpoint.
-    const lifetimeRaw = toNullableNumber(
-      detail.total_eq ?? detail.lifetime_energy ?? detail.all_energy ?? detail.eq_total ??
-      detail.capacitor ?? detail.co2_emission_reduction ?? null
+    // Hoymiles typically returns energy in kWh, not Wh.
+    const lifetimeKwh = safeRound(
+      toNullableNumber(
+        detail.total_eq ?? detail.lifetime_energy ?? detail.all_energy ?? detail.eq_total ??
+        detail.capacitor ?? detail.month_eq ?? detail.today_eq ?? null
+      )
     );
-    // Also check for kWh-native fields (some responses give kWh directly).
-    const lifetimeKwhDirect = toNullableNumber(
-      detail.total_eq_kwh ?? detail.lifetime_kwh ?? detail.all_energy_kwh ?? null
-    );
-    const lifetimeKwh = lifetimeKwhDirect !== null
-      ? safeRound(lifetimeKwhDirect)
-      : safeRound(toKwh(lifetimeRaw, "Wh"));
 
     const hourlyProductionKwh: number | null = null;
 
