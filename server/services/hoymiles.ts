@@ -203,6 +203,26 @@ function getTokenCacheKey(context: HoymilesApiContext): string {
   return `${context.username.trim()}::${normalizeBaseUrl(context.baseUrl)}`;
 }
 
+function extractHoymilesToken(json: Record<string, unknown>): string | null {
+  const data = asRecord(json.data ?? json);
+  return toNullableString(data.token ?? data.access_token ?? json.token);
+}
+
+function hoymilesLoginError(json: Record<string, unknown>, fallbackMsg: string): Error {
+  const status = toNullableNumber(json.status ?? json.code);
+  const msg = toNullableString(json.message ?? json.msg);
+  return new Error(
+    `Hoymiles login failed${status ? ` (code ${status})` : ""}${msg ? `: ${msg}` : `: ${fallbackMsg}`}`
+  );
+}
+
+/**
+ * Authenticate with the Hoymiles S-Miles Cloud API.
+ *
+ * The API updated its auth flow. We try in order:
+ * 1) MD5-based login (legacy endpoint /iam/pub/0/auth/login) — widely compatible
+ * 2) Original plaintext login (/iam/auth_login) — oldest format
+ */
 async function getHoymilesToken(context: HoymilesApiContext): Promise<string> {
   const cacheKey = getTokenCacheKey(context);
   const cached = hoymilesTokenCache.get(cacheKey);
@@ -210,45 +230,67 @@ async function getHoymilesToken(context: HoymilesApiContext): Promise<string> {
     return cached.token;
   }
 
+  const { createHash } = await import("crypto");
   const baseUrl = normalizeBaseUrl(context.baseUrl);
-  const response = await fetch(`${baseUrl}/iam/auth_login`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      user_name: context.username.trim(),
-      password: context.password,
-    }),
-    signal: AbortSignal.timeout(15_000),
-  });
+  const username = context.username.trim();
+  const password = context.password;
+  const passwordMd5 = createHash("md5").update(password).digest("hex");
+  const headers = { "Content-Type": "application/json" };
 
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => "");
-    throw new Error(
-      `Hoymiles login failed (${response.status})${errorText ? `: ${errorText}` : ""}`
-    );
+  // Strategy 1: MD5-based login (current Hoymiles API)
+  try {
+    const response = await fetch(`${baseUrl}/iam/pub/0/auth/login`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        user_name: username,
+        password: passwordMd5,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (response.ok) {
+      const json = asRecord(await response.json());
+      const token = extractHoymilesToken(json);
+      if (token) {
+        hoymilesTokenCache.set(cacheKey, { token, expiresAt: Date.now() + 30 * 60 * 1000 });
+        return token;
+      }
+      // Token not in response — fall through to next strategy
+    }
+  } catch {
+    // Network/timeout error — fall through
   }
 
-  const json = asRecord(await response.json());
-  const data = asRecord(json.data ?? json);
-  const token = toNullableString(data.token ?? data.access_token ?? json.token);
+  // Strategy 2: Legacy plaintext login (oldest format)
+  try {
+    const response = await fetch(`${baseUrl}/iam/auth_login`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        user_name: username,
+        password,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
 
-  if (!token) {
-    const status = toNullableNumber(json.status ?? json.code);
-    const msg = toNullableString(json.message ?? json.msg);
-    throw new Error(
-      `Hoymiles login failed${status ? ` (code ${status})` : ""}${msg ? `: ${msg}` : ": no token returned"}`
-    );
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(`Hoymiles login failed (${response.status})${errorText ? `: ${errorText}` : ""}`);
+    }
+
+    const json = asRecord(await response.json());
+    const token = extractHoymilesToken(json);
+    if (token) {
+      hoymilesTokenCache.set(cacheKey, { token, expiresAt: Date.now() + 30 * 60 * 1000 });
+      return token;
+    }
+
+    throw hoymilesLoginError(json, "no token returned");
+  } catch (err) {
+    if (err instanceof Error) throw err;
+    throw new Error("Hoymiles login failed: unknown error");
   }
-
-  hoymilesTokenCache.set(cacheKey, {
-    token,
-    expiresAt: Date.now() + 30 * 60 * 1000, // 30 minute cache
-  });
-
-  return token;
 }
 
 async function postHoymilesJson(
