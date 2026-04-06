@@ -513,7 +513,7 @@ export async function getStationDetail(
   context: HoymilesApiContext,
   stationId: string
 ): Promise<unknown> {
-  return postHoymilesJson("/pvm-data/api/0/station/find_by_id", context, {
+  return postHoymilesJson("/pvm/api/0/station/find_by_id", context, {
     id: stationId,
   });
 }
@@ -536,7 +536,7 @@ async function getDailyEnergyHistory(
   const points: DailyEnergyPoint[] = [];
 
   try {
-    const raw = await postHoymilesJson("/pvm-data/api/0/station/find_history_data_of_station", context, {
+    const raw = await postHoymilesJson("/pvm/api/0/station/find_history_data_of_station", context, {
       sid: stationId,
       start_date: startDate,
       end_date: endDate,
