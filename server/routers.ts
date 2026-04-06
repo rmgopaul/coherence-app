@@ -463,10 +463,16 @@ type TeslaPowerhubProductionJob = {
   };
   error: string | null;
   result: unknown | null;
+  jobConfig: {
+    groupId: string;
+    endpointUrl: string | null;
+    signal: string | null;
+  } | null;
 };
 
 const TESLA_POWERHUB_PRODUCTION_JOB_TTL_MS = 24 * 60 * 60 * 1000;
 const teslaPowerhubProductionJobs = new Map<string, TeslaPowerhubProductionJob>();
+const teslaPowerhubResumingJobIds = new Set<string>();
 
 type AbpSettlementContractScanJobStatus = "queued" | "running" | "completed" | "failed";
 
@@ -845,6 +851,17 @@ function parseTeslaPowerhubProductionJobSnapshot(
       },
       error: toNonEmptyString(parsed.error),
       result: parsed.result ?? null,
+      jobConfig: (() => {
+        const cfg = parsed.jobConfig && typeof parsed.jobConfig === "object" ? (parsed.jobConfig as Record<string, unknown>) : null;
+        if (!cfg) return null;
+        const groupId = toNonEmptyString(cfg.groupId);
+        if (!groupId) return null;
+        return {
+          groupId,
+          endpointUrl: toNonEmptyString(cfg.endpointUrl),
+          signal: toNonEmptyString(cfg.signal),
+        };
+      })(),
     };
   } catch (error) {
     console.warn("[storage] Failed to parse Tesla Powerhub job snapshot:", error instanceof Error ? error.message : error);
@@ -877,6 +894,143 @@ async function loadTeslaPowerhubProductionJobSnapshot(
   const parsed = parseTeslaPowerhubProductionJobSnapshot(payload);
   if (!parsed || parsed.userId !== userId) return null;
   return parsed;
+}
+
+/**
+ * Launch the async worker that drives a Tesla Powerhub production metrics job.
+ * Used both for initial job creation and for auto-resuming interrupted jobs.
+ */
+function launchTeslaPowerhubProductionJobWorker(
+  jobId: string,
+  context: { clientId: string; clientSecret: string; tokenUrl: string | null; apiBaseUrl: string | null; portalBaseUrl: string | null },
+  config: { groupId: string; endpointUrl: string | null; signal: string | null }
+): void {
+  void (async () => {
+    let progressUpdatesSinceSnapshot = 0;
+
+    const markJob = async (
+      updater: (job: TeslaPowerhubProductionJob) => TeslaPowerhubProductionJob,
+      options?: { persist?: boolean }
+    ) => {
+      const existing = teslaPowerhubProductionJobs.get(jobId);
+      if (!existing) return null;
+      const nextJob = updater(existing);
+      teslaPowerhubProductionJobs.set(jobId, nextJob);
+
+      if (options?.persist) {
+        try {
+          await saveTeslaPowerhubProductionJobSnapshot(nextJob);
+        } catch (error) {
+          console.warn(
+            "[snapshot] Tesla Powerhub job snapshot write failed:",
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+
+      return nextJob;
+    };
+
+    await markJob(
+      (job) => ({
+        ...job,
+        status: "running",
+        startedAt: job.startedAt ?? new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        error: null,
+        progress: {
+          ...job.progress,
+          currentStep: 0,
+          percent: 0,
+          message: "Starting...",
+          windowKey: null,
+        },
+      }),
+      { persist: true }
+    );
+
+    try {
+      const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
+      const result = await getTeslaPowerhubGroupProductionMetrics(
+        {
+          clientId: context.clientId,
+          clientSecret: context.clientSecret,
+          tokenUrl: context.tokenUrl,
+          apiBaseUrl: context.apiBaseUrl,
+          portalBaseUrl: context.portalBaseUrl,
+        },
+        {
+          groupId: config.groupId,
+          endpointUrl: config.endpointUrl,
+          signal: config.signal,
+          onProgress: (progress) => {
+            progressUpdatesSinceSnapshot += 1;
+            const shouldPersist = progressUpdatesSinceSnapshot >= 25;
+            if (shouldPersist) {
+              progressUpdatesSinceSnapshot = 0;
+            }
+
+            void markJob(
+              (job) => {
+                const currentStep = Math.max(0, progress.currentStep);
+                const totalSteps = Math.max(1, progress.totalSteps);
+                return {
+                  ...job,
+                  updatedAt: new Date().toISOString(),
+                  progress: {
+                    currentStep,
+                    totalSteps,
+                    percent: normalizeProgressPercent(currentStep, totalSteps),
+                    message: progress.message,
+                    windowKey: progress.windowKey ?? null,
+                  },
+                };
+              },
+              { persist: shouldPersist }
+            );
+          },
+        }
+      );
+
+      await markJob(
+        (job) => ({
+          ...job,
+          status: "completed",
+          updatedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          error: null,
+          result,
+          progress: {
+            ...job.progress,
+            currentStep: job.progress.totalSteps,
+            percent: 100,
+            message: "Completed",
+            windowKey: null,
+          },
+        }),
+        { persist: true }
+      );
+    } catch (error) {
+      await markJob(
+        (job) => ({
+          ...job,
+          status: "failed",
+          updatedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : "Unknown job error.",
+          result: null,
+          progress: {
+            ...job.progress,
+            message: "Failed",
+            windowKey: null,
+          },
+        }),
+        { persist: true }
+      );
+    } finally {
+      teslaPowerhubResumingJobIds.delete(jobId);
+    }
+  })();
 }
 
 function parseAbpSettlementScanJobSnapshot(
@@ -6176,6 +6330,11 @@ export const appRouter = router({
           },
           error: null,
           result: null,
+          jobConfig: {
+            groupId,
+            endpointUrl: endpointUrl ?? null,
+            signal: signal ?? null,
+          },
         });
         const initialJob = teslaPowerhubProductionJobs.get(jobId);
         if (initialJob) {
@@ -6187,126 +6346,7 @@ export const appRouter = router({
           });
         }
 
-        void (async () => {
-          let progressUpdatesSinceSnapshot = 0;
-
-          const markJob = async (
-            updater: (job: TeslaPowerhubProductionJob) => TeslaPowerhubProductionJob,
-            options?: { persist?: boolean }
-          ) => {
-            const existing = teslaPowerhubProductionJobs.get(jobId);
-            if (!existing) return null;
-            const nextJob = updater(existing);
-            teslaPowerhubProductionJobs.set(jobId, nextJob);
-
-            if (options?.persist) {
-              try {
-                await saveTeslaPowerhubProductionJobSnapshot(nextJob);
-              } catch (error) {
-                console.warn(
-                  "[snapshot] Tesla Powerhub job snapshot write failed:",
-                  error instanceof Error ? error.message : error
-                );
-              }
-            }
-
-            return nextJob;
-          };
-
-          await markJob(
-            (job) => ({
-              ...job,
-              status: "running",
-              startedAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              progress: {
-                ...job.progress,
-                message: "Starting...",
-              },
-            }),
-            { persist: true }
-          );
-
-          try {
-            const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
-            const result = await getTeslaPowerhubGroupProductionMetrics(
-              {
-                clientId: context.clientId,
-                clientSecret: context.clientSecret,
-                tokenUrl: context.tokenUrl,
-                apiBaseUrl: context.apiBaseUrl,
-                portalBaseUrl: context.portalBaseUrl,
-              },
-              {
-                groupId,
-                endpointUrl,
-                signal,
-                onProgress: (progress) => {
-                  progressUpdatesSinceSnapshot += 1;
-                  const shouldPersist = progressUpdatesSinceSnapshot >= 25;
-                  if (shouldPersist) {
-                    progressUpdatesSinceSnapshot = 0;
-                  }
-
-                  void markJob(
-                    (job) => {
-                      const currentStep = Math.max(0, progress.currentStep);
-                      const totalSteps = Math.max(1, progress.totalSteps);
-                      return {
-                        ...job,
-                        updatedAt: new Date().toISOString(),
-                        progress: {
-                          currentStep,
-                          totalSteps,
-                          percent: normalizeProgressPercent(currentStep, totalSteps),
-                          message: progress.message,
-                          windowKey: progress.windowKey ?? null,
-                        },
-                      };
-                    },
-                    { persist: shouldPersist }
-                  );
-                },
-              }
-            );
-
-            await markJob(
-              (job) => ({
-                ...job,
-                status: "completed",
-                updatedAt: new Date().toISOString(),
-                finishedAt: new Date().toISOString(),
-                error: null,
-                result,
-                progress: {
-                  ...job.progress,
-                  currentStep: job.progress.totalSteps,
-                  percent: 100,
-                  message: "Completed",
-                  windowKey: null,
-                },
-              }),
-              { persist: true }
-            );
-          } catch (error) {
-            await markJob(
-              (job) => ({
-                ...job,
-                status: "failed",
-                updatedAt: new Date().toISOString(),
-                finishedAt: new Date().toISOString(),
-                error: error instanceof Error ? error.message : "Unknown job error.",
-                result: null,
-                progress: {
-                  ...job.progress,
-                  message: "Failed",
-                  windowKey: null,
-                },
-              }),
-              { persist: true }
-            );
-          }
-        })();
+        launchTeslaPowerhubProductionJobWorker(jobId, context, { groupId, endpointUrl: endpointUrl ?? null, signal: signal ?? null });
 
         return {
           jobId,
@@ -6334,28 +6374,69 @@ export const appRouter = router({
 
         let resolvedJob = snapshotJob;
         // If the process restarted, a queued/running snapshot cannot continue in this instance.
+        // Auto-resume if we have the original job config; otherwise fall back to failed status.
         if (snapshotJob.status === "queued" || snapshotJob.status === "running") {
-          const nowIso = new Date().toISOString();
-          resolvedJob = {
-            ...snapshotJob,
-            status: "failed",
-            updatedAt: nowIso,
-            finishedAt: nowIso,
-            error:
-              snapshotJob.error ??
-              "Tesla production job was interrupted (server restarted or deployment changed). Please rerun.",
-            progress: {
-              ...snapshotJob.progress,
-              message: "Interrupted",
-              windowKey: null,
-            },
-          };
-          void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch((error) => {
-            console.warn(
-              "[snapshot] Tesla Powerhub recovered job snapshot write failed:",
-              error instanceof Error ? error.message : error
-            );
-          });
+          if (snapshotJob.jobConfig && !teslaPowerhubResumingJobIds.has(normalizedJobId)) {
+            // Auto-resume: re-launch the job from scratch using persisted config
+            teslaPowerhubResumingJobIds.add(normalizedJobId);
+            const nowIso = new Date().toISOString();
+            resolvedJob = {
+              ...snapshotJob,
+              status: "queued",
+              updatedAt: nowIso,
+              finishedAt: null,
+              error: null,
+              result: null,
+              progress: {
+                currentStep: 0,
+                totalSteps: snapshotJob.progress.totalSteps,
+                percent: 0,
+                message: "Resuming after server restart...",
+                windowKey: null,
+              },
+            };
+            teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
+            void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch(() => {});
+
+            // Re-fetch credentials and launch worker
+            try {
+              const context = await getTeslaPowerhubContext(snapshotJob.userId);
+              launchTeslaPowerhubProductionJobWorker(normalizedJobId, context, snapshotJob.jobConfig);
+              console.info(`[resume] Tesla Powerhub job ${normalizedJobId} auto-resumed after server restart.`);
+            } catch (resumeError) {
+              teslaPowerhubResumingJobIds.delete(normalizedJobId);
+              const errorNowIso = new Date().toISOString();
+              resolvedJob = {
+                ...resolvedJob,
+                status: "failed",
+                updatedAt: errorNowIso,
+                finishedAt: errorNowIso,
+                error: `Auto-resume failed: ${resumeError instanceof Error ? resumeError.message : "Unknown error"}. Please rerun.`,
+                progress: { ...resolvedJob.progress, message: "Resume failed" },
+              };
+              teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
+              void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch(() => {});
+            }
+          } else if (!teslaPowerhubResumingJobIds.has(normalizedJobId)) {
+            // Legacy job without config — cannot resume, mark as failed
+            const nowIso = new Date().toISOString();
+            resolvedJob = {
+              ...snapshotJob,
+              status: "failed",
+              updatedAt: nowIso,
+              finishedAt: nowIso,
+              error:
+                snapshotJob.error ??
+                "Tesla production job was interrupted (server restarted or deployment changed). Please rerun.",
+              progress: {
+                ...snapshotJob.progress,
+                message: "Interrupted",
+                windowKey: null,
+              },
+            };
+            void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch(() => {});
+          }
+          // else: job is already being resumed by another poll — return current in-memory state
         }
 
         teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
