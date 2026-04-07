@@ -11050,6 +11050,15 @@ const dataQualityUnmatched = useMemo(() => {
                 <CardDescription>
                   Mirrors the REC Performance Evaluation model: rolling average by system, expected delivery, surplus
                   allocation, and drawdown payments.
+                  {hasTransferHistory ? (
+                    <span className="ml-2 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                      Deliveries from Transfer History
+                    </span>
+                  ) : (
+                    <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
+                      Deliveries from CSV
+                    </span>
+                  )}
                 </CardDescription>
               </CardHeader>
             </Card>
