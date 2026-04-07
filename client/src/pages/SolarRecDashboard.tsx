@@ -23,6 +23,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { trpc } from "@/lib/trpc";
 import {
   buildMeterReadDownloadFileName,
@@ -2514,6 +2515,18 @@ export default function SolarRecDashboard() {
   const isComparisonsTabActive = activeTab === "comparisons";
   const isFinancialsTabActive = activeTab === "financials";
   const isDataQualityTabActive = activeTab === "data-quality";
+  const [selectedSystemKey, setSelectedSystemKey] = useState<string | null>(null);
+
+  // Helper: make system names clickable to open detail sheet
+  const systemNameLink = (systemName: string, systemKey: string) => (
+    <button
+      type="button"
+      className="text-left font-medium text-blue-700 hover:text-blue-900 hover:underline cursor-pointer"
+      onClick={() => setSelectedSystemKey(systemKey)}
+    >
+      {systemName}
+    </button>
+  );
   const isContractsComputationActive =
     isContractsTabActive || isAnnualReviewTabActive || isPerformanceEvalTabActive;
   const datasetsRef = useRef(datasets);
@@ -9496,13 +9509,15 @@ const dataQualityUnmatched = useMemo(() => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => downloadOwnershipCountTileCsv("notReporting")}
+                    onClick={() => setActiveTab("offline-monitoring")}
+                    title="View offline systems"
                     className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
                   >
                     <p className="text-xs font-semibold text-amber-800">Not Reporting</p>
                     <p className="text-2xl font-semibold text-amber-900">
                       {formatNumber(summary.ownershipOverview.notReportingOwnershipTotal)}
                     </p>
+                    <p className="text-[10px] text-amber-600 mt-1">Click to view offline systems</p>
                   </button>
                   <button
                     type="button"
@@ -13268,15 +13283,18 @@ const dataQualityUnmatched = useMemo(() => {
                       <TableHead>System</TableHead><TableHead>Risk Type</TableHead><TableHead className="text-right">Contract Value</TableHead><TableHead>Last Reporting</TableHead><TableHead className="text-right">Days Offline</TableHead>
                     </TableRow></TableHeader>
                     <TableBody>
-                      {financialRevenueAtRisk.systems.slice(0, 50).map((s, i) => (
+                      {financialRevenueAtRisk.systems.slice(0, 50).map((s, i) => {
+                        const matchedSys = systems.find(sys => sys.systemName === s.name);
+                        return (
                         <TableRow key={i}>
-                          <TableCell className="font-medium">{s.name}</TableCell>
+                          <TableCell>{matchedSys ? systemNameLink(s.name, matchedSys.key) : <span className="font-medium">{s.name}</span>}</TableCell>
                           <TableCell><Badge variant={s.riskType === "Offline" ? "destructive" : "secondary"}>{s.riskType}</Badge></TableCell>
                           <TableCell className="text-right">${formatNumber(s.value)}</TableCell>
                           <TableCell>{s.lastDate}</TableCell>
                           <TableCell className="text-right">{s.daysOffline}</TableCell>
                         </TableRow>
-                      ))}
+                        );
+                      })}
                     </TableBody>
                   </Table>
                 )}
@@ -13522,6 +13540,103 @@ const dataQualityUnmatched = useMemo(() => {
             </CardContent>
           )}
         </Card>
+
+        {/* ── System Detail Sheet ───────────────────────────────────── */}
+        <Sheet open={selectedSystemKey !== null} onOpenChange={(open) => { if (!open) setSelectedSystemKey(null); }}>
+          <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
+            <SheetHeader>
+              <SheetTitle className="text-base">System Details</SheetTitle>
+              <SheetDescription>Full details for the selected system.</SheetDescription>
+            </SheetHeader>
+            {(() => {
+              const sys = systems.find((s) => s.key === selectedSystemKey);
+              if (!sys) return <p className="text-sm text-slate-500 mt-4">System not found.</p>;
+
+              // Find converted reads for this system
+              const sysReads = (datasets.convertedReads?.rows ?? []).filter((r) => {
+                const rId = (r.monitoring_system_id || "").toLowerCase();
+                const rName = (r.monitoring_system_name || "").toLowerCase();
+                const sysId = (sys.systemId || "").toLowerCase();
+                const sysName = sys.systemName.toLowerCase();
+                return (sysId && rId === sysId) || (sysName && rName === sysName);
+              }).slice(0, 20);
+
+              return (
+                <div className="space-y-4 mt-4">
+                  {/* Identifiers */}
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-semibold uppercase text-slate-500">Identifiers</h4>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                      <span className="text-slate-500">Name</span><span className="font-medium">{sys.systemName}</span>
+                      {sys.systemId && <><span className="text-slate-500">System ID</span><span className="font-medium">{sys.systemId}</span></>}
+                      {sys.trackingSystemRefId && <><span className="text-slate-500">Tracking ID</span><span className="font-medium">{sys.trackingSystemRefId}</span></>}
+                      {sys.stateApplicationRefId && <><span className="text-slate-500">App Ref ID</span><span className="font-medium">{sys.stateApplicationRefId}</span></>}
+                    </div>
+                  </div>
+
+                  {/* REC Contract */}
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-semibold uppercase text-slate-500">REC Contract</h4>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                      <span className="text-slate-500">REC Price</span><span className="font-medium">{sys.recPrice !== null ? `$${sys.recPrice}` : "N/A"}</span>
+                      <span className="text-slate-500">Contracted RECs</span><span className="font-medium">{formatNumber(sys.contractedRecs)}</span>
+                      <span className="text-slate-500">Delivered RECs</span><span className="font-medium">{formatNumber(sys.deliveredRecs)}</span>
+                      <span className="text-slate-500">Contracted Value</span><span className="font-medium">{sys.contractedValue !== null ? `$${formatNumber(sys.contractedValue)}` : "N/A"}</span>
+                      <span className="text-slate-500">Delivered Value</span><span className="font-medium">{sys.deliveredValue !== null ? `$${formatNumber(sys.deliveredValue)}` : "N/A"}</span>
+                      <span className="text-slate-500">Value Gap</span><span className={`font-medium ${(sys.valueGap ?? 0) > 0 ? "text-rose-600" : "text-emerald-600"}`}>{sys.valueGap !== null ? `$${formatNumber(sys.valueGap)}` : "N/A"}</span>
+                    </div>
+                  </div>
+
+                  {/* Status */}
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-semibold uppercase text-slate-500">Status</h4>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                      <span className="text-slate-500">Reporting</span><span><Badge variant={sys.isReporting ? "default" : "destructive"}>{sys.isReporting ? "Yes" : "No"}</Badge></span>
+                      <span className="text-slate-500">Last Reported</span><span className="font-medium">{sys.latestReportingDate?.toLocaleDateString() ?? "Never"}</span>
+                      <span className="text-slate-500">Ownership</span><span><Badge variant="outline">{sys.ownershipStatus}</Badge></span>
+                      <span className="text-slate-500">Contract Status</span><span className="font-medium">{sys.contractStatusText || "N/A"}</span>
+                    </div>
+                  </div>
+
+                  {/* System Details */}
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-semibold uppercase text-slate-500">System</h4>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+                      <span className="text-slate-500">Size (AC)</span><span className="font-medium">{sys.installedKwAc !== null ? `${formatCapacityKw(sys.installedKwAc)} kW` : "N/A"}</span>
+                      <span className="text-slate-500">Size (DC)</span><span className="font-medium">{sys.installedKwDc !== null ? `${formatCapacityKw(sys.installedKwDc)} kW` : "N/A"}</span>
+                      <span className="text-slate-500">Monitoring</span><span className="font-medium">{sys.monitoringPlatform || "N/A"}</span>
+                      <span className="text-slate-500">Type</span><span className="font-medium">{sys.monitoringType || "N/A"}</span>
+                      <span className="text-slate-500">Installer</span><span className="font-medium">{sys.installerName || "N/A"}</span>
+                    </div>
+                  </div>
+
+                  {/* Recent Converted Reads */}
+                  {sysReads.length > 0 && (
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-semibold uppercase text-slate-500">Recent Meter Reads ({sysReads.length})</h4>
+                      <Table>
+                        <TableHeader><TableRow>
+                          <TableHead className="text-xs">Date</TableHead>
+                          <TableHead className="text-xs">Platform</TableHead>
+                          <TableHead className="text-xs text-right">Lifetime (Wh)</TableHead>
+                        </TableRow></TableHeader>
+                        <TableBody>
+                          {sysReads.map((r, i) => (
+                            <TableRow key={i}>
+                              <TableCell className="text-xs">{r.read_date}</TableCell>
+                              <TableCell className="text-xs">{r.monitoring}</TableCell>
+                              <TableCell className="text-xs text-right">{formatNumber(parseFloat(r.lifetime_meter_read_wh || "0"))}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </SheetContent>
+        </Sheet>
       </div>
     </div>
   );
