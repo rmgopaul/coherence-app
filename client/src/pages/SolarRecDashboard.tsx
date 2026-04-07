@@ -2508,6 +2508,12 @@ export default function SolarRecDashboard() {
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
   const isOfflineTabActive = activeTab === "offline-monitoring";
   const isPerformanceRatioTabActive = activeTab === "performance-ratio";
+  const isTrendsTabActive = activeTab === "trends";
+  const isForecastTabActive = activeTab === "forecast";
+  const isAlertsTabActive = activeTab === "alerts";
+  const isComparisonsTabActive = activeTab === "comparisons";
+  const isFinancialsTabActive = activeTab === "financials";
+  const isDataQualityTabActive = activeTab === "data-quality";
   const isContractsComputationActive =
     isContractsTabActive || isAnnualReviewTabActive || isPerformanceEvalTabActive;
   const datasetsRef = useRef(datasets);
@@ -8852,6 +8858,372 @@ export default function SolarRecDashboard() {
     }
   }, [pipelineReportLoading, pipelineRows3Year, pipelineRows12Month, generatePipelineReport]);
 
+// ── Trends: Month-over-Month Production ──────────────────────────
+const trendProductionMoM = useMemo(() => {
+  if (!isTrendsTabActive) return [];
+  const rows = datasets.convertedReads?.rows ?? [];
+  if (rows.length === 0) return [];
+
+  // Group by system_id + month
+  const siteMonths = new Map<string, Map<string, number>>();
+  for (const row of rows) {
+    const sysId = row.monitoring_system_id || row.monitoring_system_name || "";
+    if (!sysId) continue;
+    const rawWh = parseFloat(row.lifetime_meter_read_wh || "");
+    if (!Number.isFinite(rawWh)) continue;
+    const readDate = row.read_date || "";
+    if (!readDate) continue;
+    // Parse M/D/YYYY or YYYY-MM-DD
+    const d = new Date(readDate);
+    if (isNaN(d.getTime())) continue;
+    const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+
+    if (!siteMonths.has(sysId)) siteMonths.set(sysId, new Map());
+    const months = siteMonths.get(sysId)!;
+    // Keep the max lifetime read per month
+    const existing = months.get(monthKey) ?? 0;
+    if (rawWh > existing) months.set(monthKey, rawWh);
+  }
+
+  // Calculate deltas
+  type SiteTrend = { siteId: string; months: { month: string; deltaKwh: number }[] };
+  const siteTrends: SiteTrend[] = [];
+
+  siteMonths.forEach((months, siteId) => {
+    const sorted = Array.from(months.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    const deltas: { month: string; deltaKwh: number }[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const delta = (sorted[i][1] - sorted[i - 1][1]) / 1000; // Wh to kWh
+      if (delta > 0) deltas.push({ month: sorted[i][0], deltaKwh: Math.round(delta) });
+    }
+    if (deltas.length > 0) siteTrends.push({ siteId, months: deltas });
+  });
+
+  // Get all months across all sites
+  const allMonths = Array.from(new Set(siteTrends.flatMap(s => s.months.map(m => m.month)))).sort();
+
+  // Top 10 sites by total production
+  const sorted = siteTrends
+    .map(s => ({ ...s, total: s.months.reduce((a, m) => a + m.deltaKwh, 0) }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 10);
+
+  // Build chart data: each row is a month, each column is a site
+  return allMonths.map(month => {
+    const point: Record<string, string | number> = { month };
+    for (const site of sorted) {
+      const m = site.months.find(mm => mm.month === month);
+      point[site.siteId] = m?.deltaKwh ?? 0;
+    }
+    return point;
+  });
+}, [isTrendsTabActive, datasets.convertedReads]);
+
+const trendTopSiteIds = useMemo(() => {
+  if (trendProductionMoM.length === 0) return [];
+  const first = trendProductionMoM[0];
+  return Object.keys(first).filter(k => k !== "month").slice(0, 10);
+}, [trendProductionMoM]);
+
+// ── Trends: Delivery Pace ──────────────────────────────────────
+const trendDeliveryPace = useMemo(() => {
+  if (!isTrendsTabActive) return [];
+  const now = new Date();
+  const scheduleRows = datasets.recDeliverySchedules?.rows ?? [];
+  if (scheduleRows.length === 0) return [];
+
+  // Group by utility contract, find active delivery year
+  const contractPace = new Map<string, { contract: string; required: number; delivered: number; expectedPace: number; actualPace: number }>();
+
+  for (const row of scheduleRows) {
+    const contractId = row.utility_contract_number || "Unknown";
+
+    for (let y = 1; y <= 15; y++) {
+      const startRaw = row[`year${y}_start_date`];
+      const endRaw = row[`year${y}_end_date`];
+      const required = parseFloat(row[`year${y}_quantity_required`] || "0") || 0;
+      const delivered = parseFloat(row[`year${y}_quantity_delivered`] || "0") || 0;
+      if (!startRaw || required === 0) continue;
+
+      const start = new Date(startRaw);
+      const end = endRaw ? new Date(endRaw) : new Date(start.getFullYear() + 1, start.getMonth(), start.getDate());
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) continue;
+      if (now < start || now > end) continue; // Not active
+
+      const totalMs = end.getTime() - start.getTime();
+      const elapsedMs = now.getTime() - start.getTime();
+      const expectedPace = totalMs > 0 ? (elapsedMs / totalMs) * 100 : 100;
+      const actualPace = required > 0 ? (delivered / required) * 100 : 0;
+
+      const existing = contractPace.get(contractId);
+      if (!existing) {
+        contractPace.set(contractId, { contract: contractId, required, delivered, expectedPace: Math.min(100, expectedPace), actualPace: Math.min(100, actualPace) });
+      } else {
+        existing.required += required;
+        existing.delivered += delivered;
+        // Recompute pace for the aggregate
+        existing.actualPace = existing.required > 0 ? (existing.delivered / existing.required) * 100 : 0;
+        existing.expectedPace = Math.min(100, expectedPace); // Use latest active year's pace
+      }
+    }
+  }
+
+  return Array.from(contractPace.values()).sort((a, b) => a.contract.localeCompare(b.contract));
+}, [isTrendsTabActive, datasets.recDeliverySchedules]);
+
+// ── Forecast: Projected Delivery Shortfall ──────────────────────
+const forecastProjections = useMemo(() => {
+  if (!isForecastTabActive) return [];
+  const now = new Date();
+  const scheduleRows = datasets.recDeliverySchedules?.rows ?? [];
+  if (scheduleRows.length === 0) return [];
+
+  const contractProjections = new Map<string, { contract: string; required: number; delivered: number; projected: number; projectedGap: number; status: string }>();
+
+  for (const row of scheduleRows) {
+    const contractId = row.utility_contract_number || "Unknown";
+
+    for (let y = 1; y <= 15; y++) {
+      const startRaw = row[`year${y}_start_date`];
+      const endRaw = row[`year${y}_end_date`];
+      const required = parseFloat(row[`year${y}_quantity_required`] || "0") || 0;
+      const delivered = parseFloat(row[`year${y}_quantity_delivered`] || "0") || 0;
+      if (!startRaw || required === 0) continue;
+
+      const start = new Date(startRaw);
+      const end = endRaw ? new Date(endRaw) : new Date(start.getFullYear() + 1, start.getMonth(), start.getDate());
+      if (isNaN(start.getTime()) || isNaN(end.getTime())) continue;
+      if (now < start || now > end) continue;
+
+      const totalMs = end.getTime() - start.getTime();
+      const elapsedMs = Math.max(1, now.getTime() - start.getTime());
+      const remainingMs = Math.max(0, end.getTime() - now.getTime());
+      const rate = delivered / elapsedMs;
+      const projected = Math.round(delivered + rate * remainingMs);
+      const projectedGap = required - projected;
+      const status = projectedGap <= 0 ? "On Track" : projectedGap / required < 0.1 ? "At Risk" : "Behind";
+
+      const existing = contractProjections.get(contractId);
+      if (!existing) {
+        contractProjections.set(contractId, { contract: contractId, required, delivered, projected, projectedGap, status });
+      } else {
+        existing.required += required;
+        existing.delivered += delivered;
+        existing.projected += projected;
+        existing.projectedGap = existing.required - existing.projected;
+        existing.status = existing.projectedGap <= 0 ? "On Track" : existing.projectedGap / existing.required < 0.1 ? "At Risk" : "Behind";
+      }
+    }
+  }
+
+  return Array.from(contractProjections.values()).sort((a, b) => b.projectedGap - a.projectedGap);
+}, [isForecastTabActive, datasets.recDeliverySchedules]);
+
+const forecastSummary = useMemo(() => {
+  const total = forecastProjections.length;
+  const atRisk = forecastProjections.filter(p => p.status === "At Risk").length;
+  const behind = forecastProjections.filter(p => p.status === "Behind").length;
+  const totalProjectedGap = forecastProjections.reduce((a, p) => a + Math.max(0, p.projectedGap), 0);
+  return { total, atRisk, behind, onTrack: total - atRisk - behind, totalProjectedGap };
+}, [forecastProjections]);
+
+// ── Alerts ──────────────────────────────────────────────────────
+type AlertItem = { id: string; severity: "critical" | "warning" | "info"; type: string; system: string; message: string; action: string };
+
+const alerts = useMemo<AlertItem[]>(() => {
+  if (!isAlertsTabActive) return [];
+  const items: AlertItem[] = [];
+  const now = new Date();
+  const OFFLINE_DAYS_THRESHOLD = 90;
+  const PACE_THRESHOLD = 0.8;
+
+  // Offline > 90 days
+  systems.forEach((sys) => {
+    if (sys.isReporting) return;
+    if (!sys.latestReportingDate) {
+      items.push({ id: `offline-never-${sys.key}`, severity: "critical", type: "Offline", system: sys.systemName, message: "Never reported any generation data", action: "Check monitoring connection" });
+      return;
+    }
+    const daysOffline = Math.floor((now.getTime() - sys.latestReportingDate.getTime()) / (1000 * 60 * 60 * 24));
+    if (daysOffline > OFFLINE_DAYS_THRESHOLD) {
+      items.push({ id: `offline-${sys.key}`, severity: daysOffline > 180 ? "critical" : "warning", type: "Offline", system: sys.systemName, message: `Offline for ${daysOffline} days (last: ${sys.latestReportingDate.toLocaleDateString()})`, action: "Verify monitoring access" });
+    }
+  });
+
+  // Delivery pace below 80%
+  trendDeliveryPace.forEach((p) => {
+    if (p.expectedPace > 10 && p.actualPace / p.expectedPace < PACE_THRESHOLD) {
+      items.push({ id: `pace-${p.contract}`, severity: p.actualPace / p.expectedPace < 0.5 ? "critical" : "warning", type: "Delivery Pace", system: p.contract, message: `Delivery at ${p.actualPace.toFixed(0)}% vs expected ${p.expectedPace.toFixed(0)}%`, action: "Review contract delivery" });
+    }
+  });
+
+  // Zero delivered with active contract
+  systems.forEach((sys) => {
+    if ((sys.contractedRecs ?? 0) > 0 && (sys.deliveredRecs ?? 0) === 0 && !sys.isTerminated) {
+      items.push({ id: `zero-delivered-${sys.key}`, severity: "warning", type: "Zero Delivery", system: sys.systemName, message: `${formatNumber(sys.contractedRecs)} RECs contracted but 0 delivered`, action: "Check generation and REC issuance" });
+    }
+  });
+
+  // Stale datasets
+  const DATASET_KEYS = Object.keys(datasets) as Array<keyof typeof datasets>;
+  DATASET_KEYS.forEach((key) => {
+    const ds = datasets[key];
+    if (!ds || !ds.uploadedAt) return;
+    const ageDays = Math.floor((now.getTime() - ds.uploadedAt.getTime()) / (1000 * 60 * 60 * 24));
+    if (ageDays > 14) {
+      items.push({ id: `stale-${key}`, severity: ageDays > 30 ? "warning" : "info", type: "Stale Data", system: String(key), message: `Last updated ${ageDays} days ago`, action: "Upload fresh data" });
+    }
+  });
+
+  return items.sort((a, b) => {
+    const sev = { critical: 0, warning: 1, info: 2 };
+    return (sev[a.severity] ?? 3) - (sev[b.severity] ?? 3);
+  });
+}, [isAlertsTabActive, systems, trendDeliveryPace, datasets]);
+
+const alertSummary = useMemo(() => ({
+  critical: alerts.filter(a => a.severity === "critical").length,
+  warning: alerts.filter(a => a.severity === "warning").length,
+  info: alerts.filter(a => a.severity === "info").length,
+  total: alerts.length,
+}), [alerts]);
+
+// ── Comparisons: Installer Performance ──────────────────────────
+const comparisonInstallers = useMemo(() => {
+  if (!isComparisonsTabActive) return [];
+  const groups = new Map<string, { name: string; total: number; reporting: number; totalValue: number; deliveredValue: number }>();
+
+  systems.forEach((sys) => {
+    const name = sys.installerName || "Unknown";
+    const g = groups.get(name) ?? { name, total: 0, reporting: 0, totalValue: 0, deliveredValue: 0 };
+    g.total++;
+    if (sys.isReporting) g.reporting++;
+    g.totalValue += sys.contractedValue ?? 0;
+    g.deliveredValue += sys.deliveredValue ?? 0;
+    groups.set(name, g);
+  });
+
+  return Array.from(groups.values())
+    .map(g => ({ ...g, reportingPercent: toPercentValue(g.reporting, g.total), deliveryPercent: toPercentValue(g.deliveredValue, g.totalValue) }))
+    .sort((a, b) => b.total - a.total);
+}, [isComparisonsTabActive, systems]);
+
+// ── Comparisons: Platform Reliability ───────────────────────────
+const comparisonPlatforms = useMemo(() => {
+  if (!isComparisonsTabActive) return [];
+  const groups = new Map<string, { name: string; total: number; reporting: number; offline: number; offlineValue: number }>();
+
+  systems.forEach((sys) => {
+    const name = sys.monitoringPlatform || "Unknown";
+    const g = groups.get(name) ?? { name, total: 0, reporting: 0, offline: 0, offlineValue: 0 };
+    g.total++;
+    if (sys.isReporting) g.reporting++;
+    else {
+      g.offline++;
+      g.offlineValue += sys.contractedValue ?? 0;
+    }
+    groups.set(name, g);
+  });
+
+  return Array.from(groups.values())
+    .map(g => ({ ...g, reportingPercent: toPercentValue(g.reporting, g.total), offlinePercent: toPercentValue(g.offline, g.total) }))
+    .sort((a, b) => b.total - a.total);
+}, [isComparisonsTabActive, systems]);
+
+// ── Financials: Revenue at Risk ─────────────────────────────────
+const financialRevenueAtRisk = useMemo(() => {
+  if (!isFinancialsTabActive) return { total: 0, percent: null as number | null, byType: [] as { type: string; count: number; value: number }[], systems: [] as { name: string; riskType: string; value: number; lastDate: string; daysOffline: number }[] };
+  const now = new Date();
+  const atRiskSystems: { name: string; riskType: string; value: number; lastDate: string; daysOffline: number }[] = [];
+
+  systems.forEach((sys) => {
+    if ((sys.contractedValue ?? 0) <= 0) return;
+    let riskType = "";
+    if (!sys.isReporting) riskType = "Offline";
+    else if (sys.isTerminated) riskType = "Terminated";
+    if (!riskType) return;
+
+    const daysOffline = sys.latestReportingDate ? Math.floor((now.getTime() - sys.latestReportingDate.getTime()) / (1000 * 60 * 60 * 24)) : 999;
+    atRiskSystems.push({
+      name: sys.systemName,
+      riskType,
+      value: sys.contractedValue ?? 0,
+      lastDate: sys.latestReportingDate?.toLocaleDateString() ?? "Never",
+      daysOffline,
+    });
+  });
+
+  const totalAtRisk = atRiskSystems.reduce((a, s) => a + s.value, 0);
+  const totalPortfolio = systems.reduce((a, s) => a + (s.contractedValue ?? 0), 0);
+
+  const byType = new Map<string, { type: string; count: number; value: number }>();
+  atRiskSystems.forEach(s => {
+    const g = byType.get(s.riskType) ?? { type: s.riskType, count: 0, value: 0 };
+    g.count++;
+    g.value += s.value;
+    byType.set(s.riskType, g);
+  });
+
+  return {
+    total: totalAtRisk,
+    percent: toPercentValue(totalAtRisk, totalPortfolio),
+    byType: Array.from(byType.values()),
+    systems: atRiskSystems.sort((a, b) => b.value - a.value),
+  };
+}, [isFinancialsTabActive, systems]);
+
+// ── Data Quality: Freshness ─────────────────────────────────────
+const dataQualityFreshness = useMemo(() => {
+  if (!isDataQualityTabActive) return [];
+  const now = new Date();
+  const DATASET_LABELS: Record<string, string> = {
+    solarApplications: "Solar Applications",
+    abpReport: "ABP Report",
+    recDeliverySchedules: "REC Delivery Schedules",
+    generationEntry: "Generation Entry",
+    accountSolarGeneration: "Account Solar Generation",
+    contractedDate: "Contracted Date",
+    annualProductionEstimates: "Annual Production Estimates",
+    generatorDetails: "Generator Details",
+    convertedReads: "Converted Reads",
+  };
+
+  return Object.entries(DATASET_LABELS).map(([key, label]) => {
+    const ds = datasets[key as keyof typeof datasets];
+    const uploadedAt = ds?.uploadedAt ?? null;
+    const ageDays = uploadedAt ? Math.floor((now.getTime() - uploadedAt.getTime()) / (1000 * 60 * 60 * 24)) : null;
+    const rowCount = ds?.rows?.length ?? 0;
+    const status = !uploadedAt ? "Missing" : ageDays! <= 7 ? "Fresh" : ageDays! <= 14 ? "Stale" : "Critical";
+    return { key, label, uploadedAt: uploadedAt?.toLocaleDateString() ?? "Not uploaded", ageDays, rowCount, status };
+  });
+}, [isDataQualityTabActive, datasets]);
+
+// ── Data Quality: Unmatched Reconciliation ──────────────────────
+const dataQualityUnmatched = useMemo(() => {
+  if (!isDataQualityTabActive) return { inScheduleNotMonitoring: [] as string[], inMonitoringNotSchedule: [] as string[], matchedPercent: null as number | null };
+  const scheduleIds = new Set<string>();
+  const monitoringIds = new Set<string>();
+
+  (datasets.recDeliverySchedules?.rows ?? []).forEach(row => {
+    const id = row.tracking_system_ref_id || row.system_id || "";
+    if (id) scheduleIds.add(id.toLowerCase());
+  });
+
+  (datasets.convertedReads?.rows ?? []).forEach(row => {
+    const id = row.monitoring_system_id || "";
+    if (id) monitoringIds.add(id.toLowerCase());
+  });
+
+  const inScheduleNotMonitoring = Array.from(scheduleIds).filter(id => !monitoringIds.has(id));
+  const inMonitoringNotSchedule = Array.from(monitoringIds).filter(id => !scheduleIds.has(id));
+  const combined = new Set(Array.from(scheduleIds).concat(Array.from(monitoringIds)));
+  const totalUnique = combined.size;
+  const matched = totalUnique - inScheduleNotMonitoring.length - inMonitoringNotSchedule.length;
+  const matchedPercent = toPercentValue(matched, totalUnique);
+
+  return { inScheduleNotMonitoring, inMonitoringNotSchedule, matchedPercent };
+}, [isDataQualityTabActive, datasets.recDeliverySchedules, datasets.convertedReads]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
       <div className="container py-6 space-y-6">
@@ -8993,6 +9365,14 @@ export default function SolarRecDashboard() {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="performance-ratio">Performance Ratio</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="snapshot-log">Snapshot Log</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="app-pipeline">Application Pipeline</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="trends">Trends</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="forecast">Forecast</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="alerts">
+              Alerts{alertSummary.total > 0 ? ` (${alertSummary.total})` : ""}
+            </TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="comparisons">Comparisons</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="financials">Financials</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="data-quality">Data Quality</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
@@ -12553,6 +12933,415 @@ export default function SolarRecDashboard() {
                     </TableBody>
                   </Table>
                 </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="trends" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Delivery Pace by Contract</CardTitle>
+                <CardDescription>Expected pace (based on time elapsed) vs actual delivery pace for active contracts.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {trendDeliveryPace.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">Upload REC Delivery Schedules to see delivery pace.</p>
+                ) : (
+                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={trendDeliveryPace} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="contract" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
+                        <YAxis tick={{ fontSize: 12 }} domain={[0, 100]} unit="%" />
+                        <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
+                        <Legend />
+                        <Bar dataKey="expectedPace" fill="#94a3b8" name="Expected Pace %" />
+                        <Bar dataKey="actualPace" fill="#16a34a" name="Actual Pace %" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Month-over-Month Production (Top 10 Sites)</CardTitle>
+                <CardDescription>Monthly production deltas (kWh) from converted reads, showing top 10 sites by total output.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {trendProductionMoM.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">Upload Converted Reads to see production trends.</p>
+                ) : (
+                  <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={trendProductionMoM} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        {trendTopSiteIds.map((siteId, i) => (
+                          <Line key={siteId} type="monotone" dataKey={siteId} stroke={["#16a34a","#0ea5e9","#f59e0b","#ef4444","#8b5cf6","#ec4899","#14b8a6","#f97316","#6366f1","#84cc16"][i % 10]} name={siteId.length > 25 ? siteId.slice(0, 22) + "..." : siteId} dot={false} strokeWidth={2} />
+                        ))}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Reporting Rate Over Time</CardTitle>
+                <CardDescription>Historical reporting percentage from dashboard snapshots.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {logEntries.length < 2 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">Take at least 2 snapshots to see reporting rate trends.</p>
+                ) : (
+                  <div className="h-64 rounded-md border border-slate-200 bg-white p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={logEntries.slice().reverse().map(e => ({ date: e.createdAt.toLocaleDateString(), reportingPercent: e.reportingPercent ?? 0, totalSystems: e.totalSystems }))} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                        <YAxis tick={{ fontSize: 12 }} domain={[0, 100]} unit="%" />
+                        <Tooltip />
+                        <Legend />
+                        <Line type="monotone" dataKey="reportingPercent" stroke="#16a34a" name="Reporting %" strokeWidth={2} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="forecast" className="space-y-4 mt-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Card><CardHeader><CardDescription>Contracts Tracked</CardDescription><CardTitle className="text-2xl">{forecastSummary.total}</CardTitle></CardHeader></Card>
+              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>On Track</CardDescription><CardTitle className="text-2xl text-emerald-800">{forecastSummary.onTrack}</CardTitle></CardHeader></Card>
+              <Card className="border-amber-200 bg-amber-50/50"><CardHeader><CardDescription>At Risk</CardDescription><CardTitle className="text-2xl text-amber-800">{forecastSummary.atRisk}</CardTitle></CardHeader></Card>
+              <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Behind</CardDescription><CardTitle className="text-2xl text-rose-800">{forecastSummary.behind}</CardTitle></CardHeader></Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Projected Year-End Delivery</CardTitle>
+                <CardDescription>Extrapolated delivery based on current pace. Shows projected shortfall per contract.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {forecastProjections.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">Upload REC Delivery Schedules to see forecasts.</p>
+                ) : (
+                  <>
+                    <div className="h-72 rounded-md border border-slate-200 bg-white p-2 mb-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={forecastProjections} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="contract" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
+                          <YAxis tick={{ fontSize: 12 }} />
+                          <Tooltip />
+                          <Legend />
+                          <Bar dataKey="required" fill="#94a3b8" name="Required" />
+                          <Bar dataKey="delivered" fill="#16a34a" name="Delivered" />
+                          <Bar dataKey="projected" fill="#0ea5e9" name="Projected Year-End" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>Contract</TableHead><TableHead className="text-right">Required</TableHead><TableHead className="text-right">Delivered</TableHead><TableHead className="text-right">Projected</TableHead><TableHead className="text-right">Gap</TableHead><TableHead>Status</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {forecastProjections.map((p) => (
+                          <TableRow key={p.contract}>
+                            <TableCell className="font-medium">{p.contract}</TableCell>
+                            <TableCell className="text-right">{formatNumber(p.required)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(p.delivered)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(p.projected)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(Math.max(0, p.projectedGap))}</TableCell>
+                            <TableCell>
+                              <Badge variant={p.status === "On Track" ? "default" : p.status === "At Risk" ? "secondary" : "destructive"}>{p.status}</Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="alerts" className="space-y-4 mt-4">
+            <div className="grid grid-cols-3 gap-3">
+              <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Critical</CardDescription><CardTitle className="text-2xl text-rose-800">{alertSummary.critical}</CardTitle></CardHeader></Card>
+              <Card className="border-amber-200 bg-amber-50/50"><CardHeader><CardDescription>Warning</CardDescription><CardTitle className="text-2xl text-amber-800">{alertSummary.warning}</CardTitle></CardHeader></Card>
+              <Card className="border-sky-200 bg-sky-50/50"><CardHeader><CardDescription>Info</CardDescription><CardTitle className="text-2xl text-sky-800">{alertSummary.info}</CardTitle></CardHeader></Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div><CardTitle className="text-base">All Alerts</CardTitle><CardDescription>{alerts.length} alerts detected across your portfolio.</CardDescription></div>
+                  {alerts.length > 0 && (
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(["severity", "type", "system", "message", "action"], alerts.map(a => ({ severity: a.severity, type: a.type, system: a.system, message: a.message, action: a.action })));
+                      triggerCsvDownload(`alerts-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {alerts.length === 0 ? (
+                  <p className="text-sm text-emerald-600 py-4 text-center">No alerts. Your portfolio looks healthy.</p>
+                ) : (
+                  <Table>
+                    <TableHeader><TableRow>
+                      <TableHead className="w-24">Severity</TableHead><TableHead className="w-32">Type</TableHead><TableHead>System / Contract</TableHead><TableHead>Details</TableHead><TableHead>Action</TableHead>
+                    </TableRow></TableHeader>
+                    <TableBody>
+                      {alerts.map((a) => (
+                        <TableRow key={a.id}>
+                          <TableCell><Badge variant={a.severity === "critical" ? "destructive" : a.severity === "warning" ? "secondary" : "outline"}>{a.severity}</Badge></TableCell>
+                          <TableCell className="text-sm">{a.type}</TableCell>
+                          <TableCell className="font-medium text-sm">{a.system}</TableCell>
+                          <TableCell className="text-sm text-slate-600">{a.message}</TableCell>
+                          <TableCell className="text-sm text-slate-500">{a.action}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="comparisons" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div><CardTitle className="text-base">Installer Performance</CardTitle><CardDescription>Systems grouped by installer with reporting rate and delivery metrics.</CardDescription></div>
+                  {comparisonInstallers.length > 0 && (
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(["installer", "total_systems", "reporting", "reporting_percent", "total_value", "delivered_value", "delivery_percent"], comparisonInstallers.map(i => ({ installer: i.name, total_systems: i.total, reporting: i.reporting, reporting_percent: i.reportingPercent !== null ? i.reportingPercent.toFixed(1) : "", total_value: i.totalValue, delivered_value: i.deliveredValue, delivery_percent: i.deliveryPercent !== null ? i.deliveryPercent.toFixed(1) : "" })));
+                      triggerCsvDownload(`installer-performance-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {comparisonInstallers.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">No system data available.</p>
+                ) : (
+                  <>
+                    <div className="h-64 rounded-md border border-slate-200 bg-white p-2 mb-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={comparisonInstallers.slice(0, 15)} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
+                          <YAxis tick={{ fontSize: 12 }} domain={[0, 100]} unit="%" />
+                          <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
+                          <Bar dataKey="reportingPercent" fill="#16a34a" name="Reporting %" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>Installer</TableHead><TableHead className="text-right">Systems</TableHead><TableHead className="text-right">Reporting</TableHead><TableHead className="text-right">Reporting %</TableHead><TableHead className="text-right">Contract Value</TableHead><TableHead className="text-right">Delivery %</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {comparisonInstallers.map((i) => (
+                          <TableRow key={i.name}>
+                            <TableCell className="font-medium">{i.name}</TableCell>
+                            <TableCell className="text-right">{i.total}</TableCell>
+                            <TableCell className="text-right">{i.reporting}</TableCell>
+                            <TableCell className="text-right">{i.reportingPercent !== null ? `${i.reportingPercent.toFixed(1)}%` : "N/A"}</TableCell>
+                            <TableCell className="text-right">${formatNumber(i.totalValue)}</TableCell>
+                            <TableCell className="text-right">{i.deliveryPercent !== null ? `${i.deliveryPercent.toFixed(1)}%` : "N/A"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div><CardTitle className="text-base">Monitoring Platform Reliability</CardTitle><CardDescription>Reporting rate and offline metrics by monitoring platform.</CardDescription></div>
+                  {comparisonPlatforms.length > 0 && (
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(["platform", "total_systems", "reporting", "reporting_percent", "offline", "offline_value"], comparisonPlatforms.map(p => ({ platform: p.name, total_systems: p.total, reporting: p.reporting, reporting_percent: p.reportingPercent !== null ? p.reportingPercent.toFixed(1) : "", offline: p.offline, offline_value: p.offlineValue })));
+                      triggerCsvDownload(`platform-reliability-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {comparisonPlatforms.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">No system data available.</p>
+                ) : (
+                  <>
+                    <div className="h-64 rounded-md border border-slate-200 bg-white p-2 mb-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={comparisonPlatforms.slice(0, 15)} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="name" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
+                          <YAxis tick={{ fontSize: 12 }} domain={[0, 100]} unit="%" />
+                          <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
+                          <Bar dataKey="reportingPercent" fill="#0ea5e9" name="Reporting %" />
+                          <Bar dataKey="offlinePercent" fill="#ef4444" name="Offline %" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>Platform</TableHead><TableHead className="text-right">Systems</TableHead><TableHead className="text-right">Reporting</TableHead><TableHead className="text-right">Reporting %</TableHead><TableHead className="text-right">Offline</TableHead><TableHead className="text-right">Offline Value</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {comparisonPlatforms.map((p) => (
+                          <TableRow key={p.name}>
+                            <TableCell className="font-medium">{p.name}</TableCell>
+                            <TableCell className="text-right">{p.total}</TableCell>
+                            <TableCell className="text-right">{p.reporting}</TableCell>
+                            <TableCell className="text-right">{p.reportingPercent !== null ? `${p.reportingPercent.toFixed(1)}%` : "N/A"}</TableCell>
+                            <TableCell className="text-right">{p.offline}</TableCell>
+                            <TableCell className="text-right">${formatNumber(p.offlineValue)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="financials" className="space-y-4 mt-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+              <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Revenue at Risk</CardDescription><CardTitle className="text-2xl text-rose-800">${formatNumber(financialRevenueAtRisk.total)}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>% of Portfolio</CardDescription><CardTitle className="text-2xl">{financialRevenueAtRisk.percent !== null ? `${financialRevenueAtRisk.percent.toFixed(1)}%` : "N/A"}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Systems at Risk</CardDescription><CardTitle className="text-2xl">{financialRevenueAtRisk.systems.length}</CardTitle></CardHeader></Card>
+            </div>
+
+            {financialRevenueAtRisk.byType.length > 0 && (
+              <Card>
+                <CardHeader><CardTitle className="text-base">Revenue at Risk by Category</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="h-48 rounded-md border border-slate-200 bg-white p-2 mb-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={financialRevenueAtRisk.byType} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                        <XAxis dataKey="type" tick={{ fontSize: 12 }} />
+                        <YAxis tick={{ fontSize: 12 }} />
+                        <Tooltip formatter={(v: number) => `$${formatNumber(v)}`} />
+                        <Bar dataKey="value" fill="#ef4444" name="Value at Risk" />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div><CardTitle className="text-base">Systems at Risk</CardTitle><CardDescription>Systems with contracted value that are offline or terminated.</CardDescription></div>
+                  {financialRevenueAtRisk.systems.length > 0 && (
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(["system", "risk_type", "contract_value", "last_reporting", "days_offline"], financialRevenueAtRisk.systems.map(s => ({ system: s.name, risk_type: s.riskType, contract_value: s.value, last_reporting: s.lastDate, days_offline: s.daysOffline })));
+                      triggerCsvDownload(`revenue-at-risk-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {financialRevenueAtRisk.systems.length === 0 ? (
+                  <p className="text-sm text-emerald-600 py-4 text-center">No systems at risk. All contracted systems are reporting.</p>
+                ) : (
+                  <Table>
+                    <TableHeader><TableRow>
+                      <TableHead>System</TableHead><TableHead>Risk Type</TableHead><TableHead className="text-right">Contract Value</TableHead><TableHead>Last Reporting</TableHead><TableHead className="text-right">Days Offline</TableHead>
+                    </TableRow></TableHeader>
+                    <TableBody>
+                      {financialRevenueAtRisk.systems.slice(0, 50).map((s, i) => (
+                        <TableRow key={i}>
+                          <TableCell className="font-medium">{s.name}</TableCell>
+                          <TableCell><Badge variant={s.riskType === "Offline" ? "destructive" : "secondary"}>{s.riskType}</Badge></TableCell>
+                          <TableCell className="text-right">${formatNumber(s.value)}</TableCell>
+                          <TableCell>{s.lastDate}</TableCell>
+                          <TableCell className="text-right">{s.daysOffline}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="data-quality" className="space-y-4 mt-4">
+            <Card>
+              <CardHeader><CardTitle className="text-base">Dataset Freshness</CardTitle><CardDescription>Upload status and age for each required dataset.</CardDescription></CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader><TableRow>
+                    <TableHead>Dataset</TableHead><TableHead>Last Updated</TableHead><TableHead className="text-right">Age (days)</TableHead><TableHead className="text-right">Rows</TableHead><TableHead>Status</TableHead>
+                  </TableRow></TableHeader>
+                  <TableBody>
+                    {dataQualityFreshness.map((d) => (
+                      <TableRow key={d.key}>
+                        <TableCell className="font-medium">{d.label}</TableCell>
+                        <TableCell>{d.uploadedAt}</TableCell>
+                        <TableCell className="text-right">{d.ageDays !== null ? d.ageDays : "—"}</TableCell>
+                        <TableCell className="text-right">{formatNumber(d.rowCount)}</TableCell>
+                        <TableCell>
+                          <Badge variant={d.status === "Fresh" ? "default" : d.status === "Stale" ? "secondary" : d.status === "Critical" ? "destructive" : "outline"}>{d.status}</Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader><CardTitle className="text-base">System Reconciliation</CardTitle><CardDescription>Cross-reference between delivery schedules and monitoring data.</CardDescription></CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-center">
+                    <p className="text-xs text-slate-500">Match Rate</p>
+                    <p className="text-lg font-semibold text-emerald-800">{dataQualityUnmatched.matchedPercent !== null ? `${dataQualityUnmatched.matchedPercent.toFixed(1)}%` : "N/A"}</p>
+                  </div>
+                  <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-center">
+                    <p className="text-xs text-slate-500">In Schedule, No Monitoring</p>
+                    <p className="text-lg font-semibold text-amber-800">{dataQualityUnmatched.inScheduleNotMonitoring.length}</p>
+                  </div>
+                  <div className="rounded-md border border-sky-300 bg-sky-50 px-3 py-2 text-center">
+                    <p className="text-xs text-slate-500">In Monitoring, No Schedule</p>
+                    <p className="text-lg font-semibold text-sky-800">{dataQualityUnmatched.inMonitoringNotSchedule.length}</p>
+                  </div>
+                </div>
+                {dataQualityUnmatched.inScheduleNotMonitoring.length > 0 && (
+                  <details className="mb-3">
+                    <summary className="text-sm font-medium cursor-pointer text-amber-700">Systems in schedule but missing monitoring ({dataQualityUnmatched.inScheduleNotMonitoring.length})</summary>
+                    <div className="mt-2 max-h-48 overflow-y-auto rounded border p-2 text-xs font-mono space-y-1">
+                      {dataQualityUnmatched.inScheduleNotMonitoring.map((id) => <div key={id}>{id}</div>)}
+                    </div>
+                  </details>
+                )}
+                {dataQualityUnmatched.inMonitoringNotSchedule.length > 0 && (
+                  <details>
+                    <summary className="text-sm font-medium cursor-pointer text-sky-700">Systems in monitoring but not in schedule ({dataQualityUnmatched.inMonitoringNotSchedule.length})</summary>
+                    <div className="mt-2 max-h-48 overflow-y-auto rounded border p-2 text-xs font-mono space-y-1">
+                      {dataQualityUnmatched.inMonitoringNotSchedule.map((id) => <div key={id}>{id}</div>)}
+                    </div>
+                  </details>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
