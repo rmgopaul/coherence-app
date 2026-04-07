@@ -7062,10 +7062,10 @@ export default function SolarRecDashboard() {
           try {
             const csvLike = isCsvLikeFile(source.fileName, source.contentType);
             if (source.encoding === "utf8") {
-              if (csvLike || !TABULAR_DATASET_KEYS.has(key)) {
-                return await parseCsvTextAsync(payload);
-              }
               const file = new File([payload], source.fileName, { type: source.contentType });
+              if (csvLike || !TABULAR_DATASET_KEYS.has(key)) {
+                return await parseCsvFileAsync(file);
+              }
               return await parseTabularFile(file);
             }
 
@@ -7336,6 +7336,7 @@ export default function SolarRecDashboard() {
       cancelled = true;
     };
   }, [
+    parseCsvFileAsync,
     parseCsvTextAsync,
     remoteDashboardStateQuery.data,
     remoteDashboardStateQuery.status,
@@ -12585,6 +12586,13 @@ export default function SolarRecDashboard() {
                 const dataset = datasets[key];
                 const error = uploadErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
+                const cloudStatusForDataset: DatasetCloudSyncStatus | undefined =
+                  datasetCloudSyncStatus[key] ??
+                  (localOnlyDatasets[key]
+                    ? undefined
+                    : remoteSourceManifests[key]?.sources?.length
+                      ? "synced"
+                      : undefined);
 
                 return (
                   <div key={key} className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -12604,17 +12612,17 @@ export default function SolarRecDashboard() {
                               Local-only sync
                             </Badge>
                           ) : null}
-                          {datasetCloudSyncStatus[key] === "pending" ? (
+                          {cloudStatusForDataset === "pending" ? (
                             <Badge className="border-blue-200 bg-blue-100 text-blue-900">
                               Cloud sync pending
                             </Badge>
                           ) : null}
-                          {datasetCloudSyncStatus[key] === "synced" ? (
+                          {cloudStatusForDataset === "synced" ? (
                             <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
                               Cloud verified
                             </Badge>
                           ) : null}
-                          {datasetCloudSyncStatus[key] === "failed" ? (
+                          {cloudStatusForDataset === "failed" ? (
                             <Badge className="border-rose-200 bg-rose-100 text-rose-800">
                               Cloud sync failed
                             </Badge>
