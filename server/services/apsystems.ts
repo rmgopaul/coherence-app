@@ -461,16 +461,28 @@ export async function getSystemProductionSnapshot(
   const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
 
   try {
-    const [summary, dailySeries, last12MonthsSeries] = await Promise.all([
-      getSystemSummary(context, systemId),
+    // Step 1: Validate the SID via the details endpoint (most widely confirmed)
+    const details = await getSystemDetail(context, systemId).catch(() => null);
+
+    // Step 2: Try summary (may 404 depending on account tier)
+    const summary = await getSystemSummary(context, systemId).catch(
+      () => ({ todayKwh: null, monthKwh: null, yearKwh: null, lifetimeKwh: null } as APsystemsSummary)
+    );
+
+    // Step 3: Try daily energy history (may 404 depending on account tier)
+    const [dailySeries, last12MonthsSeries] = await Promise.all([
       getDailyEnergyHistory(context, systemId, previousCalendarMonthStartDate, anchorDate),
       getDailyEnergyHistory(context, systemId, last12MonthsStartDate, anchorDate),
     ]);
+
+    // Use summary data first; fall back to details if available
+    const detailsData = asRecord(asRecord(details).data ?? details ?? {});
     const lifetimeKwh = summary.lifetimeKwh;
 
     const hourlyProductionKwh: number | null = null;
 
-    const dailyProductionKwh = sumKwh(
+    // Use summary.todayKwh if available, otherwise compute from daily series
+    const dailyProductionKwh = summary.todayKwh ?? sumKwh(
       dailySeries.filter((p) => p.dateKey === anchorDate).map((p) => p.kwh)
     );
 
@@ -478,11 +490,12 @@ export async function getSystemProductionSnapshot(
       dailySeries.filter((p) => p.dateKey >= weeklyStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
     );
 
+    // Use summary.monthKwh for MTD if available
     const monthlyProductionKwh = sumKwh(
       dailySeries.filter((p) => p.dateKey >= monthlyStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
     );
 
-    const mtdProductionKwh = sumKwh(
+    const mtdProductionKwh = summary.monthKwh ?? sumKwh(
       dailySeries.filter((p) => p.dateKey >= mtdStartDate && p.dateKey <= anchorDate).map((p) => p.kwh)
     );
 
@@ -492,9 +505,14 @@ export async function getSystemProductionSnapshot(
         .map((p) => p.kwh)
     );
 
-    const last12MonthsProductionKwh = sumKwh(
+    const last12MonthsProductionKwh = summary.yearKwh ?? sumKwh(
       last12MonthsSeries.map((p) => p.kwh)
     );
+
+    // If nothing worked at all, check if even the details endpoint failed
+    if (!details && !summary.lifetimeKwh && dailySeries.length === 0) {
+      throw new Error("All APsystems API endpoints returned errors for this System ID. Verify the SID is correct.");
+    }
 
     return {
       systemId,
