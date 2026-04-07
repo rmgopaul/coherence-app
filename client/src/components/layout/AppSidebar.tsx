@@ -80,7 +80,7 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Portfolio",
     items: [
       { label: "SunPower Reads", href: "/sunpower-readings", icon: Zap, badgeKey: "sunpowerReadings" },
-      { label: "Solar REC", href: "/solar-rec-dashboard", icon: BarChart3 },
+      { label: "Solar REC", href: "/solar-rec/", icon: BarChart3 },
       { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
       { label: "Contract Scanner", href: "/contract-scanner", icon: FileSearch },
