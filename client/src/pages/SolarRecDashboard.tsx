@@ -6072,6 +6072,50 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
+  // ── Transfer-Based Delivery Lookup (shared by Perf Eval + Forecast + Delivery Tracker) ──
+  const transferDeliveryLookup = useMemo(() => {
+    const lookup = new Map<string, Map<number, number>>();
+    const transferRows = datasets.transferHistory?.rows ?? [];
+    if (transferRows.length === 0) return lookup;
+
+    for (const row of transferRows) {
+      const unitId = clean(row["Unit ID"]);
+      if (!unitId) continue;
+      const qty = parseNumber(row.Quantity) ?? 0;
+      if (qty === 0) continue;
+
+      const transferor = (clean(row.Transferor) ?? "").toLowerCase();
+      const transferee = (clean(row.Transferee) ?? "").toLowerCase();
+
+      let direction = 0;
+      const isFromCS = transferor.includes("carbon solutions");
+      const isToCS = transferee.includes("carbon solutions");
+      const transfereeIsUtility = ["comed", "ameren", "midamerican"].some(u => transferee.includes(u));
+      const transferorIsUtility = ["comed", "ameren", "midamerican"].some(u => transferor.includes(u));
+
+      if (isFromCS && transfereeIsUtility) direction = 1;
+      else if (transferorIsUtility && isToCS) direction = -1;
+      else continue;
+
+      const completionDateRaw = clean(row["Transfer Completion Date"]);
+      const completionDate = completionDateRaw ? parseDate(completionDateRaw) : null;
+      if (!completionDate) continue;
+
+      const month = completionDate.getMonth();
+      const year = completionDate.getFullYear();
+      const eyStartYear = month >= 5 ? year : year - 1;
+
+      const key = unitId.toLowerCase();
+      if (!lookup.has(key)) lookup.set(key, new Map());
+      const yearMap = lookup.get(key)!;
+      yearMap.set(eyStartYear, (yearMap.get(eyStartYear) ?? 0) + qty * direction);
+    }
+
+    return lookup;
+  }, [datasets.transferHistory]);
+
+  const hasTransferHistory = (datasets.transferHistory?.rows ?? []).length > 0;
+
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
     if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
     return (datasets.recDeliverySchedules?.rows ?? [])
@@ -6081,6 +6125,28 @@ export default function SolarRecDashboard() {
         const system = systemsByTrackingId.get(trackingSystemRefId);
         const years = buildScheduleYearEntries(row);
         if (years.length === 0) return null;
+
+        // Override delivered values from transfer history when available
+        if (hasTransferHistory) {
+          const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
+          if (systemTransfers) {
+            for (const year of years) {
+              if (!year.startDate) continue;
+              // Match energy year: startDate's year is the EY start year
+              // (delivery years run June 1 – May 31, same as energy years)
+              const eyStartYear = year.startDate.getFullYear();
+              const transferDelivered = systemTransfers.get(eyStartYear);
+              if (transferDelivered !== undefined) {
+                year.delivered = transferDelivered;
+              }
+            }
+          } else {
+            // System not in transfer history — zero out deliveries
+            for (const year of years) {
+              year.delivered = 0;
+            }
+          }
+        }
 
         return {
           key: `${trackingSystemRefId}-${rowIndex}`,
@@ -6094,7 +6160,7 @@ export default function SolarRecDashboard() {
         } satisfies PerformanceSourceRow;
       })
       .filter((row): row is PerformanceSourceRow => row !== null);
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId]);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId, hasTransferHistory, transferDeliveryLookup]);
 
   const performanceContractOptions = useMemo(
     () =>
