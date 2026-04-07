@@ -8984,9 +8984,17 @@ const trendDeliveryPace = useMemo(() => {
   return Array.from(contractPace.values()).sort((a, b) => a.contract.localeCompare(b.contract));
 }, [isTrendsTabActive, datasets.recDeliverySchedules]);
 
-// ── Forecast: REC Performance-Based Projections (EY 2025-2026) ──
-const FORECAST_ENERGY_YEAR_END = new Date(2026, 3, 30); // April 30, 2026
-const FORECAST_FLOOR_DATE = new Date(2024, 5, 1); // June 1, 2024
+// ── Forecast: REC Performance-Based Projections (dynamic energy year) ──
+// Energy year runs May 1 – April 30. After May 31, shift to next energy year.
+const FORECAST_NOW = new Date();
+const FORECAST_EY_START_YEAR = FORECAST_NOW.getMonth() >= 5 // June (0-indexed: 5) or later
+  ? FORECAST_NOW.getFullYear()       // e.g., June 2026 → EY 2026-2027
+  : FORECAST_NOW.getFullYear() - 1;  // e.g., April 2026 → EY 2025-2026
+const FORECAST_EY_END_YEAR = FORECAST_EY_START_YEAR + 1;
+const FORECAST_EY_LABEL = `${FORECAST_EY_START_YEAR}-${FORECAST_EY_END_YEAR}`;
+const FORECAST_ENERGY_YEAR_END = new Date(FORECAST_EY_END_YEAR, 3, 30); // April 30
+const FORECAST_ENERGY_YEAR_START = new Date(FORECAST_EY_START_YEAR, 4, 1); // May 1
+const FORECAST_FLOOR_DATE = new Date(FORECAST_EY_START_YEAR - 1, 5, 1); // June 1, two years before end
 
 type ForecastContractRow = {
   contract: string;
@@ -9017,16 +9025,12 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
   }>();
 
   for (const sourceRow of performanceSourceRows) {
-    // Find the delivery year that covers 2025-2026
-    // (start date around May 2025, end date around Apr 2026)
+    // Find the delivery year that overlaps the current energy year
     let activeYear: { required: number; delivered: number } | null = null;
     for (const year of sourceRow.years) {
       if (!year.startDate || !year.endDate) continue;
-      const startYear = year.startDate.getFullYear();
-      const endYear = year.endDate.getFullYear();
-      // Match delivery year 2025-2026
-      if ((startYear === 2025 && endYear === 2026) || (startYear === 2024 && endYear === 2025) ||
-          (year.startDate <= FORECAST_ENERGY_YEAR_END && year.endDate >= new Date(2025, 4, 1))) {
+      // Match: delivery year overlaps with current energy year window (May 1 – Apr 30)
+      if (year.startDate <= FORECAST_ENERGY_YEAR_END && year.endDate >= FORECAST_ENERGY_YEAR_START) {
         activeYear = { required: year.required, delivered: year.delivered };
         break;
       }
@@ -13106,7 +13110,7 @@ const dataQualityUnmatched = useMemo(() => {
           <TabsContent value="forecast" className="space-y-4 mt-4">
             <Card className="border-sky-200 bg-sky-50/30">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">REC Production Forecast — Energy Year 2025-2026</CardTitle>
+                <CardTitle className="text-base">REC Production Forecast — Energy Year {FORECAST_EY_LABEL}</CardTitle>
                 <CardDescription>
                   Projected additional RECs per contract based on estimated production from each system&apos;s latest GATS meter read date through April 30, 2026.
                   Uses Annual Production Estimates with daily pro-rata. Floor date: June 1, 2024. 1 REC = 1,000 kWh (floored per system).
@@ -13143,7 +13147,7 @@ const dataQualityUnmatched = useMemo(() => {
                           gap_after_proj1: c.gapAfterProjection1, gap_after_proj2: c.gapAfterProjection2,
                         }))
                       );
-                      triggerCsvDownload(`rec-forecast-ey2025-2026-${timestampForCsvFileName()}.csv`, csv);
+                      triggerCsvDownload(`rec-forecast-ey${FORECAST_EY_LABEL}-${timestampForCsvFileName()}.csv`, csv);
                     }}>Export CSV</Button>
                   )}
                 </div>
