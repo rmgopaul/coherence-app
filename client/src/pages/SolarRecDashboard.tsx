@@ -1327,11 +1327,36 @@ function formatTransitionBreakdown(breakdown: Map<TransitionStatus, number>): st
 
 function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
   const source = text.replace(/^\uFEFF/, "");
-  const matrix: string[][] = [];
-
-  let row: string[] = [];
+  const rows: CsvRow[] = [];
+  let headers: string[] = [];
+  let hasHeader = false;
+  let rowValues: string[] = [];
   let cell = "";
   let inQuotes = false;
+
+  const commitRow = () => {
+    rowValues.push(cell);
+    cell = "";
+
+    if (!rowValues.some((entry) => clean(entry).length > 0)) {
+      rowValues = [];
+      return;
+    }
+
+    if (!hasHeader) {
+      headers = rowValues.map((header, index) => clean(header) || `column_${index + 1}`);
+      hasHeader = true;
+      rowValues = [];
+      return;
+    }
+
+    const record: CsvRow = {};
+    headers.forEach((header, index) => {
+      record[header] = clean(rowValues[index]);
+    });
+    rows.push(record);
+    rowValues = [];
+  };
 
   for (let i = 0; i < source.length; i += 1) {
     const char = source[i];
@@ -1348,36 +1373,22 @@ function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
     }
 
     if (!inQuotes && char === ",") {
-      row.push(cell);
+      rowValues.push(cell);
       cell = "";
       continue;
     }
 
     if (!inQuotes && (char === "\n" || char === "\r")) {
       if (char === "\r" && source[i + 1] === "\n") i += 1;
-      row.push(cell);
-      cell = "";
-      if (row.some((entry) => clean(entry).length > 0)) matrix.push(row);
-      row = [];
+      commitRow();
       continue;
     }
 
     cell += char;
   }
 
-  row.push(cell);
-  if (row.some((entry) => clean(entry).length > 0)) matrix.push(row);
-
-  if (matrix.length === 0) return { headers: [], rows: [] };
-
-  const headers = matrix[0].map((header, index) => clean(header) || `column_${index + 1}`);
-  const rows = matrix.slice(1).map((values) => {
-    const record: CsvRow = {};
-    headers.forEach((header, index) => {
-      record[header] = clean(values[index]);
-    });
-    return record;
-  });
+  commitRow();
+  if (!hasHeader) return { headers: [], rows: [] };
 
   return { headers, rows };
 }
