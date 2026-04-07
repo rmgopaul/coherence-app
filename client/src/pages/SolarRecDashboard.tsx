@@ -9316,8 +9316,12 @@ const deliveryTrackerData = useMemo(() => {
     .map(c => ({ ...c, deliveryPercent: toPercentValue(c.totalDelivered, c.totalObligated) }))
     .sort((a, b) => a.contractId.localeCompare(b.contractId, undefined, { numeric: true }));
 
-  return { rows, contracts, totalTransfers, unmatchedTransfers };
-}, [isDeliveryTrackerTabActive, datasets.deliveryScheduleBase, datasets.transferHistory]);
+  // Diagnostics: sample IDs from each side for debugging
+  const scheduleIdSample = Array.from(systemSchedules.keys()).slice(0, 5);
+  const transferIdSample = Array.from(new Set(transferRows.slice(0, 100).map(r => clean(r["Unit ID"])?.toLowerCase()).filter(Boolean))).slice(0, 5);
+
+  return { rows, contracts, totalTransfers, unmatchedTransfers, scheduleIdSample, transferIdSample, scheduleCount: systemSchedules.size };
+}, [isDeliveryTrackerTabActive, datasets.deliveryScheduleBase, datasets.transferHistory, datasets.recDeliverySchedules]);
 
 // ── Alerts ──────────────────────────────────────────────────────
 type AlertItem = { id: string; severity: "critical" | "warning" | "info"; type: string; system: string; message: string; action: string };
@@ -13706,8 +13710,19 @@ const dataQualityUnmatched = useMemo(() => {
               <Card><CardHeader><CardDescription>Systems in Schedule</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.contracts.reduce((a, c) => a + c.systems, 0))}</CardTitle></CardHeader></Card>
               <Card><CardHeader><CardDescription>Transfers Processed</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.totalTransfers)}</CardTitle></CardHeader></Card>
               <Card className={deliveryTrackerData.unmatchedTransfers > 0 ? "border-amber-200 bg-amber-50/50" : ""}><CardHeader><CardDescription>Unmatched Transfers</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.unmatchedTransfers)}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Contracts</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.contracts.length)}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Schedule Systems Loaded</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.scheduleCount ?? 0)}</CardTitle></CardHeader></Card>
             </div>
+            {deliveryTrackerData.unmatchedTransfers > 0 && ((deliveryTrackerData.scheduleIdSample ?? []).length > 0 || (deliveryTrackerData.transferIdSample ?? []).length > 0) && (
+              <Card className="border-amber-200 bg-amber-50/30">
+                <CardContent className="pt-3 pb-3">
+                  <p className="text-xs font-medium text-amber-800 mb-1">Debug: Sample IDs for matching</p>
+                  <div className="grid grid-cols-2 gap-4 text-xs font-mono">
+                    <div><p className="text-amber-700 mb-1">Schedule IDs (first 5):</p>{(deliveryTrackerData.scheduleIdSample ?? []).map((id, i) => <div key={i}>{id}</div>)}</div>
+                    <div><p className="text-amber-700 mb-1">Transfer Unit IDs (first 5):</p>{(deliveryTrackerData.transferIdSample ?? []).map((id, i) => <div key={i}>{id}</div>)}</div>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Contract summary */}
             <Card>
