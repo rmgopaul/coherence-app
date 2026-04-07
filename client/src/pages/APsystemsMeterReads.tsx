@@ -36,7 +36,7 @@ type BulkSortKey =
   | "daily";
 type BulkConnectionScope = "active" | "all";
 
-type SingleOperation = "listSystems" | "getProductionSnapshot";
+type SingleOperation = "getSystemDetails" | "getProductionSnapshot";
 
 type BulkSnapshotRow = {
   systemId: string;
@@ -221,7 +221,7 @@ export default function APsystemsMeterReads() {
   const [connectionNameInput, setConnectionNameInput] = useState("");
   const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState("");
-  const [selectedOperation, setSelectedOperation] = useState<SingleOperation>("listSystems");
+  const [selectedOperation, setSelectedOperation] = useState<SingleOperation>("getProductionSnapshot");
   const [resultTitle, setResultTitle] = useState("No request run yet");
   const [resultText, setResultText] = useState("{}");
   const [isRunningAction, setIsRunningAction] = useState(false);
@@ -246,7 +246,7 @@ export default function APsystemsMeterReads() {
   });
 
   const systemsQuery = trpc.apsystems.listSystems.useQuery(undefined, {
-    enabled: !!user && !!statusQuery.data?.connected,
+    enabled: false, // APsystems API has no list-systems endpoint; SIDs must be provided manually
     retry: false,
   });
 
@@ -394,17 +394,20 @@ export default function APsystemsMeterReads() {
   };
 
   const handleRunSingleOperation = () => {
+    if (!selectedSystemId) {
+      toast.error("Enter a System ID first.");
+      return;
+    }
     switch (selectedOperation) {
-      case "listSystems":
-        void runAction("List Systems", () =>
-          systemsQuery.refetch().then((result) => result.data)
+      case "getSystemDetails":
+        void runAction("System Details", () =>
+          productionSnapshotMutation.mutateAsync({
+            systemId: selectedSystemId,
+            anchorDate: bulkAnchorDate || undefined,
+          })
         );
         break;
       case "getProductionSnapshot":
-        if (!selectedSystemId) {
-          toast.error("Enter a System ID first.");
-          return;
-        }
         void runAction("Production Snapshot", () =>
           productionSnapshotMutation.mutateAsync({
             systemId: selectedSystemId,
@@ -442,29 +445,7 @@ export default function APsystemsMeterReads() {
   };
 
   const handlePullAllSystems = async () => {
-    if (!isConnected) {
-      toast.error("Connect APsystems before pulling systems.");
-      return;
-    }
-    try {
-      const result = await systemsQuery.refetch();
-      const systems = result.data?.systems ?? [];
-      if (systems.length === 0) {
-        toast.error("No systems found for this API profile.");
-        return;
-      }
-      const ids = systems.map((s: { systemId: string }) => s.systemId);
-      setBulkSystemIds(ids);
-      setBulkSourceFileName(`API — ${ids.length} systems`);
-      setBulkRows([]);
-      setBulkImportError(null);
-      setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
-      toast.success(
-        `Loaded ${NUMBER_FORMATTER.format(ids.length)} System IDs. Next step: click "Run Production Snapshot" to fetch row data.`
-      );
-    } catch (error) {
-      toast.error(`Failed to list systems: ${error instanceof Error ? error.message : "Unknown error"}`);
-    }
+    toast.error("APsystems API does not support listing systems. Upload a CSV with System IDs instead.");
   };
 
   const runBulkSnapshot = async () => {
@@ -990,7 +971,7 @@ export default function APsystemsMeterReads() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="listSystems">List Systems</SelectItem>
+                    <SelectItem value="getSystemDetails">Get System Details</SelectItem>
                     <SelectItem value="getProductionSnapshot">Get Production Snapshot</SelectItem>
                   </SelectContent>
                 </Select>
@@ -1024,7 +1005,7 @@ export default function APsystemsMeterReads() {
 
             {!systemsQuery.isLoading && !systemsError && isConnected && systems.length === 0 && (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
-                No systems were returned for this API profile.
+                APsystems API requires System IDs. Enter a SID above or upload a CSV with IDs for bulk operations.
               </div>
             )}
 
