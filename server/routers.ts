@@ -6748,6 +6748,213 @@ export const appRouter = router({
 
         return job;
       }),
+    // ── DB-backed contract scan job procedures ────────────────────
+    startDbContractScanJob: protectedProcedure
+      .input(
+        z.object({
+          csgIds: z.array(z.string().min(1).max(64)).min(1).max(30000),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const {
+          createContractScanJob,
+          bulkInsertContractScanJobCsgIds,
+          getIntegrationByProvider,
+        } = await import("./db");
+
+        // Validate credentials exist
+        const integration = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
+        const metadata = parseCsgPortalMetadata(integration?.metadata);
+        if (!metadata.email || !toNonEmptyString(integration?.accessToken)) {
+          throw new Error("Missing CSG portal credentials. Save portal email/password first.");
+        }
+
+        const uniqueIds = Array.from(
+          new Set(input.csgIds.map((v) => v.trim()).filter(Boolean))
+        );
+        if (uniqueIds.length === 0) {
+          throw new Error("At least one CSG ID is required.");
+        }
+
+        const jobId = await createContractScanJob({
+          userId: ctx.user.id,
+          totalContracts: uniqueIds.length,
+        });
+
+        await bulkInsertContractScanJobCsgIds(jobId, uniqueIds);
+
+        const { runContractScanJob } = await import("./services/contractScanJobRunner");
+        void runContractScanJob(jobId);
+
+        return { jobId, status: "queued" as const, total: uniqueIds.length };
+      }),
+
+    stopDbContractScanJob: protectedProcedure
+      .input(z.object({ jobId: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getContractScanJob, updateContractScanJob } = await import("./db");
+        const job = await getContractScanJob(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Contract scan job not found.");
+        }
+        if (job.status !== "running" && job.status !== "queued") {
+          throw new Error(`Cannot stop job with status "${job.status}".`);
+        }
+        await updateContractScanJob(job.id, { status: "stopping" });
+        return { success: true };
+      }),
+
+    resumeDbContractScanJob: protectedProcedure
+      .input(z.object({ jobId: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getContractScanJob, updateContractScanJob, getCompletedCsgIdsForJob } =
+          await import("./db");
+        const job = await getContractScanJob(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Contract scan job not found.");
+        }
+        if (job.status !== "stopped" && job.status !== "failed") {
+          throw new Error(`Cannot resume job with status "${job.status}".`);
+        }
+        const completedIds = await getCompletedCsgIdsForJob(job.id);
+        const pendingCount = job.totalContracts - completedIds.size;
+
+        await updateContractScanJob(job.id, {
+          status: "queued",
+          error: null,
+          currentCsgId: null,
+        });
+
+        const { runContractScanJob } = await import("./services/contractScanJobRunner");
+        void runContractScanJob(job.id);
+
+        return { success: true, pendingCount };
+      }),
+
+    getDbJobStatus: protectedProcedure
+      .input(z.object({ jobId: z.string().min(1) }))
+      .query(async ({ ctx, input }) => {
+        const { getContractScanJob } = await import("./db");
+        const job = await getContractScanJob(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Contract scan job not found.");
+        }
+
+        // Auto-resume if runner died
+        const { isContractScanRunnerActive } = await import(
+          "./services/contractScanJobRunner"
+        );
+        if (
+          (job.status === "queued" || job.status === "running") &&
+          !isContractScanRunnerActive(job.id)
+        ) {
+          const { runContractScanJob } = await import("./services/contractScanJobRunner");
+          void runContractScanJob(job.id);
+        }
+
+        const processed = job.successCount + job.failureCount;
+        const percent =
+          job.totalContracts > 0
+            ? Math.min(100, Math.round((processed / job.totalContracts) * 100))
+            : 0;
+
+        return {
+          ...job,
+          processed,
+          remaining: Math.max(0, job.totalContracts - processed),
+          percent,
+        };
+      }),
+
+    listDbContractScanJobs: protectedProcedure
+      .input(
+        z
+          .object({ limit: z.number().int().min(1).max(50).optional() })
+          .optional()
+      )
+      .query(async ({ ctx, input }) => {
+        const { listContractScanJobs } = await import("./db");
+        return listContractScanJobs(ctx.user.id, input?.limit ?? 20);
+      }),
+
+    getDbContractScanResults: protectedProcedure
+      .input(
+        z.object({
+          jobId: z.string().min(1),
+          limit: z.number().int().min(1).max(500).optional(),
+          offset: z.number().int().min(0).optional(),
+        })
+      )
+      .query(async ({ ctx, input }) => {
+        const { getContractScanJob, listContractScanResults } = await import("./db");
+        const job = await getContractScanJob(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Contract scan job not found.");
+        }
+        return listContractScanResults(job.id, {
+          limit: input.limit ?? 100,
+          offset: input.offset ?? 0,
+        });
+      }),
+
+    exportDbContractScanResultsCsv: protectedProcedure
+      .input(z.object({ jobId: z.string().min(1) }))
+      .query(async ({ ctx, input }) => {
+        const { getContractScanJob, getAllContractScanResultsForJob } =
+          await import("./db");
+        const job = await getContractScanJob(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Contract scan job not found.");
+        }
+        const rows = await getAllContractScanResultsForJob(job.id);
+        const headers = [
+          "csgId",
+          "systemName",
+          "vendorFeePercent",
+          "additionalCollateralPercent",
+          "ccAuthorizationCompleted",
+          "additionalFivePercentSelected",
+          "ccCardAsteriskCount",
+          "paymentMethod",
+          "payeeName",
+          "mailingAddress1",
+          "mailingAddress2",
+          "cityStateZip",
+          "recQuantity",
+          "recPrice",
+          "acSizeKw",
+          "dcSizeKw",
+          "pdfUrl",
+          "pdfFileName",
+          "error",
+          "scannedAt",
+        ];
+        const csvRows = rows.map((r) =>
+          headers
+            .map((h) => {
+              const val = (r as Record<string, unknown>)[h];
+              if (val === null || val === undefined) return "";
+              const str = String(val);
+              return str.includes(",") || str.includes('"') || str.includes("\n")
+                ? `"${str.replace(/"/g, '""')}"`
+                : str;
+            })
+            .join(",")
+        );
+        return [headers.join(","), ...csvRows].join("\n");
+      }),
+
+    getContractScanResultsByCsgIds: protectedProcedure
+      .input(
+        z.object({
+          csgIds: z.array(z.string().min(1).max(64)).min(1).max(5000),
+        })
+      )
+      .query(async ({ input }) => {
+        const { getLatestScanResultsByCsgIds } = await import("./db");
+        return getLatestScanResultsByCsgIds(input.csgIds);
+      }),
+
     cleanMailingData: protectedProcedure
       .input(
         z.object({

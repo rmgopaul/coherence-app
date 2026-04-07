@@ -54,6 +54,11 @@ import {
   InsertMonitoringApiRun,
   monitoringBatchRuns,
   InsertMonitoringBatchRun,
+  contractScanJobs,
+  InsertContractScanJob,
+  contractScanJobCsgIds,
+  contractScanResults,
+  InsertContractScanResult,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
@@ -2292,4 +2297,252 @@ export async function getMonitoringBatchRun(id: string) {
     const [row] = await db.select().from(monitoringBatchRuns).where(eq(monitoringBatchRuns.id, id)).limit(1);
     return row ?? null;
   });
+}
+
+// ── Contract Scan Jobs ──────────────────────────────────────────────
+
+export async function createContractScanJob(data: {
+  userId: number;
+  totalContracts: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const id = nanoid();
+  await withDbRetry("create contract scan job", async () => {
+    await db.insert(contractScanJobs).values({
+      id,
+      userId: data.userId,
+      status: "queued",
+      totalContracts: data.totalContracts,
+    });
+  });
+  return id;
+}
+
+export async function getContractScanJob(id: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get contract scan job", async () => {
+    const [row] = await db
+      .select()
+      .from(contractScanJobs)
+      .where(eq(contractScanJobs.id, id))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function getLatestContractScanJob(userId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get latest contract scan job", async () => {
+    const [row] = await db
+      .select()
+      .from(contractScanJobs)
+      .where(eq(contractScanJobs.userId, userId))
+      .orderBy(desc(contractScanJobs.createdAt))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function listContractScanJobs(
+  userId: number,
+  limit = 20
+) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list contract scan jobs", async () =>
+    db
+      .select()
+      .from(contractScanJobs)
+      .where(eq(contractScanJobs.userId, userId))
+      .orderBy(desc(contractScanJobs.createdAt))
+      .limit(limit)
+  );
+}
+
+export async function updateContractScanJob(
+  id: string,
+  data: Partial<{
+    status:
+      | "queued"
+      | "running"
+      | "stopping"
+      | "stopped"
+      | "completed"
+      | "failed";
+    currentCsgId: string | null;
+    error: string | null;
+    startedAt: Date;
+    stoppedAt: Date;
+    completedAt: Date;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("update contract scan job", async () => {
+    await db
+      .update(contractScanJobs)
+      .set(data)
+      .where(eq(contractScanJobs.id, id));
+  });
+}
+
+export async function incrementContractScanJobCounter(
+  id: string,
+  field: "successCount" | "failureCount"
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("increment contract scan job counter", async () => {
+    await db
+      .update(contractScanJobs)
+      .set({
+        [field]: sql`${contractScanJobs[field]} + 1`,
+      })
+      .where(eq(contractScanJobs.id, id));
+  });
+}
+
+// ── Contract Scan Job CSG IDs ───────────────────────────────────────
+
+export async function bulkInsertContractScanJobCsgIds(
+  jobId: string,
+  csgIds: string[]
+) {
+  const db = await getDb();
+  if (!db) return;
+  // Insert in batches of 500 to avoid query size limits
+  const batchSize = 500;
+  for (let i = 0; i < csgIds.length; i += batchSize) {
+    const batch = csgIds.slice(i, i + batchSize);
+    await withDbRetry(
+      `bulk insert contract scan csg ids batch ${i}`,
+      async () => {
+        await db.insert(contractScanJobCsgIds).values(
+          batch.map((csgId) => ({
+            id: nanoid(),
+            jobId,
+            csgId,
+          }))
+        );
+      }
+    );
+  }
+}
+
+// ── Contract Scan Results ───────────────────────────────────────────
+
+export async function insertContractScanResult(
+  data: InsertContractScanResult
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("insert contract scan result", async () => {
+    await db
+      .insert(contractScanResults)
+      .values({ ...data, id: data.id ?? nanoid() });
+  });
+}
+
+export async function getCompletedCsgIdsForJob(
+  jobId: string
+): Promise<Set<string>> {
+  const db = await getDb();
+  if (!db) return new Set();
+  return withDbRetry("get completed csg ids for job", async () => {
+    const rows = await db
+      .select({ csgId: contractScanResults.csgId })
+      .from(contractScanResults)
+      .where(
+        and(
+          eq(contractScanResults.jobId, jobId),
+          sql`${contractScanResults.error} IS NULL`
+        )
+      );
+    return new Set(rows.map((r) => r.csgId));
+  });
+}
+
+export async function listContractScanResults(
+  jobId: string,
+  opts: { limit?: number; offset?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return { rows: [], total: 0 };
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+
+  return withDbRetry("list contract scan results", async () => {
+    const [rows, countResult] = await Promise.all([
+      db
+        .select()
+        .from(contractScanResults)
+        .where(eq(contractScanResults.jobId, jobId))
+        .orderBy(desc(contractScanResults.scannedAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(contractScanResults)
+        .where(eq(contractScanResults.jobId, jobId)),
+    ]);
+    return { rows, total: countResult[0]?.count ?? 0 };
+  });
+}
+
+export async function getAllContractScanResultsForJob(jobId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("get all contract scan results for job", async () =>
+    db
+      .select()
+      .from(contractScanResults)
+      .where(eq(contractScanResults.jobId, jobId))
+      .orderBy(asc(contractScanResults.csgId))
+  );
+}
+
+export async function getLatestScanResultsByCsgIds(csgIds: string[]) {
+  const db = await getDb();
+  if (!db) return [];
+  if (csgIds.length === 0) return [];
+
+  // Query in batches to avoid oversized IN clauses
+  const batchSize = 500;
+  const allResults: (typeof contractScanResults.$inferSelect)[] = [];
+
+  for (let i = 0; i < csgIds.length; i += batchSize) {
+    const batch = csgIds.slice(i, i + batchSize);
+    const rows = await withDbRetry(
+      `get latest scan results batch ${i}`,
+      async () =>
+        db
+          .select()
+          .from(contractScanResults)
+          .where(
+            and(
+              sql`${contractScanResults.csgId} IN (${sql.join(
+                batch.map((id) => sql`${id}`),
+                sql`, `
+              )})`,
+              sql`${contractScanResults.error} IS NULL`
+            )
+          )
+          .orderBy(desc(contractScanResults.scannedAt))
+    );
+    allResults.push(...rows);
+  }
+
+  // Deduplicate: keep only the latest (first by scannedAt DESC) per csgId
+  const seen = new Set<string>();
+  const deduped: typeof allResults = [];
+  for (const row of allResults) {
+    if (!seen.has(row.csgId)) {
+      seen.add(row.csgId);
+      deduped.push(row);
+    }
+  }
+  return deduped;
 }

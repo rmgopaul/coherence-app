@@ -25,6 +25,7 @@ const TeslaPowerhubApi = lazy(() => import("./pages/TeslaPowerhubApi"));
 const ZendeskTicketMetrics = lazy(() => import("./pages/ZendeskTicketMetrics"));
 const DeepUpdateSynthesizer = lazy(() => import("./pages/DeepUpdateSynthesizer"));
 const ContractScanner = lazy(() => import("./pages/ContractScanner"));
+const ContractScrapeManager = lazy(() => import("./pages/ContractScrapeManager"));
 const AbpInvoiceSettlement = lazy(() => import("./pages/AbpInvoiceSettlement"));
 const EarlyPayment = lazy(() => import("./pages/EarlyPayment"));
 const AddressChecker = lazy(() => import("./pages/AddressChecker"));
@@ -73,6 +74,7 @@ function AppRoutes() {
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
       <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
       <Route path={"/contract-scanner"} component={withRouteSuspense(ContractScanner)} />
+      <Route path={"/contract-scrape-manager"} component={withRouteSuspense(ContractScrapeManager)} />
       <Route path={"/abp-invoice-settlement"} component={withRouteSuspense(AbpInvoiceSettlement)} />
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
       <Route path={"/address-checker"} component={withRouteSuspense(AddressChecker)} />

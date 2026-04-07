@@ -652,3 +652,101 @@ export const monitoringBatchRuns = mysqlTable(
 
 export type MonitoringBatchRun = typeof monitoringBatchRuns.$inferSelect;
 export type InsertMonitoringBatchRun = typeof monitoringBatchRuns.$inferInsert;
+
+// Tracks contract scraping jobs for ABP settlement (CSG portal).
+export const contractScanJobs = mysqlTable(
+  "contractScanJobs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    status: mysqlEnum("status", [
+      "queued",
+      "running",
+      "stopping",
+      "stopped",
+      "completed",
+      "failed",
+    ])
+      .default("queued")
+      .notNull(),
+    totalContracts: int("totalContracts").default(0).notNull(),
+    successCount: int("successCount").default(0).notNull(),
+    failureCount: int("failureCount").default(0).notNull(),
+    currentCsgId: varchar("currentCsgId", { length: 64 }),
+    error: text("error"),
+    startedAt: timestamp("startedAt"),
+    stoppedAt: timestamp("stoppedAt"),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userIdx: index("contract_scan_jobs_user_idx").on(table.userId),
+    statusIdx: index("contract_scan_jobs_status_idx").on(table.status),
+  })
+);
+
+export type ContractScanJob = typeof contractScanJobs.$inferSelect;
+export type InsertContractScanJob = typeof contractScanJobs.$inferInsert;
+
+// Input CSG IDs for a contract scan job (one row per ID).
+export const contractScanJobCsgIds = mysqlTable(
+  "contractScanJobCsgIds",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }).notNull(),
+  },
+  (table) => ({
+    jobCsgIdx: uniqueIndex("contract_scan_job_csg_ids_job_csg_idx").on(
+      table.jobId,
+      table.csgId
+    ),
+    jobIdx: index("contract_scan_job_csg_ids_job_idx").on(table.jobId),
+  })
+);
+
+export type ContractScanJobCsgId = typeof contractScanJobCsgIds.$inferSelect;
+export type InsertContractScanJobCsgId =
+  typeof contractScanJobCsgIds.$inferInsert;
+
+// Per-contract scan results from CSG portal scraping.
+export const contractScanResults = mysqlTable(
+  "contractScanResults",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }).notNull(),
+    systemName: varchar("systemName", { length: 255 }),
+    vendorFeePercent: double("vendorFeePercent"),
+    additionalCollateralPercent: double("additionalCollateralPercent"),
+    ccAuthorizationCompleted: boolean("ccAuthorizationCompleted"),
+    additionalFivePercentSelected: boolean("additionalFivePercentSelected"),
+    ccCardAsteriskCount: int("ccCardAsteriskCount"),
+    paymentMethod: varchar("paymentMethod", { length: 64 }),
+    payeeName: varchar("payeeName", { length: 255 }),
+    mailingAddress1: varchar("mailingAddress1", { length: 255 }),
+    mailingAddress2: varchar("mailingAddress2", { length: 255 }),
+    cityStateZip: varchar("cityStateZip", { length: 255 }),
+    recQuantity: double("recQuantity"),
+    recPrice: double("recPrice"),
+    acSizeKw: double("acSizeKw"),
+    dcSizeKw: double("dcSizeKw"),
+    pdfUrl: varchar("pdfUrl", { length: 512 }),
+    pdfFileName: varchar("pdfFileName", { length: 255 }),
+    error: text("error"),
+    scannedAt: timestamp("scannedAt").defaultNow(),
+  },
+  (table) => ({
+    jobIdx: index("contract_scan_results_job_idx").on(table.jobId),
+    jobCsgIdx: uniqueIndex("contract_scan_results_job_csg_idx").on(
+      table.jobId,
+      table.csgId
+    ),
+    csgIdx: index("contract_scan_results_csg_idx").on(table.csgId),
+  })
+);
+
+export type ContractScanResult = typeof contractScanResults.$inferSelect;
+export type InsertContractScanResult =
+  typeof contractScanResults.$inferInsert;

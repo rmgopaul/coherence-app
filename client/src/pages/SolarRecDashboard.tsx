@@ -1176,6 +1176,10 @@ function formatCapacityKw(value: number | null): string {
   return value.toLocaleString("en-US", { maximumFractionDigits: 3 });
 }
 
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function toPercentValue(numerator: number, denominator: number): number | null {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return null;
   return (numerator / denominator) * 100;
@@ -9546,6 +9550,191 @@ const financialRevenueAtRisk = useMemo(() => {
   };
 }, [isFinancialsTabActive, systems]);
 
+// ── Financials: Profit & Collateralization ──────────────────────
+const financialCsgIds = useMemo(() => {
+  if (!isFinancialsTabActive) return [];
+  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
+  const ids = new Set<string>();
+  for (const row of mappingRows) {
+    const csgId = (row.csgId || row["CSG ID"] || "").trim();
+    if (csgId) ids.add(csgId);
+  }
+  return Array.from(ids);
+}, [isFinancialsTabActive, datasets.abpCsgSystemMapping]);
+
+const contractScanResultsQuery = trpc.abpSettlement.getContractScanResultsByCsgIds.useQuery(
+  { csgIds: financialCsgIds },
+  { enabled: isFinancialsTabActive && financialCsgIds.length > 0 }
+);
+
+type ProfitRow = {
+  systemName: string;
+  applicationId: string;
+  csgId: string;
+  grossContractValue: number;
+  vendorFeePercent: number;
+  vendorFeeAmount: number;
+  utilityCollateral: number;
+  additionalCollateralPercent: number;
+  additionalCollateralAmount: number;
+  ccAuth5Percent: number;
+  applicationFee: number;
+  totalDeductions: number;
+  profit: number;
+  totalCollateralization: number;
+};
+
+const financialProfitData = useMemo<{
+  rows: ProfitRow[];
+  totalProfit: number;
+  avgProfit: number;
+  totalCollateralization: number;
+  systemsWithData: number;
+}>(() => {
+  const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, systemsWithData: 0 };
+  if (!isFinancialsTabActive) return empty;
+
+  const scanResults = contractScanResultsQuery.data ?? [];
+  if (scanResults.length === 0) return empty;
+
+  // Build lookup maps
+  const scanByCsgId = new Map<string, (typeof scanResults)[number]>();
+  for (const r of scanResults) {
+    scanByCsgId.set(r.csgId, r);
+  }
+
+  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
+  const csgIdByAppId = new Map<string, string>();
+  const appIdByCsgId = new Map<string, string>();
+  for (const row of mappingRows) {
+    const csgId = (row.csgId || row["CSG ID"] || "").trim();
+    const systemId = (row.systemId || row["System ID"] || "").trim();
+    if (csgId && systemId) {
+      csgIdByAppId.set(systemId, csgId);
+      appIdByCsgId.set(csgId, systemId);
+    }
+  }
+
+  // Build ICC Report 3 lookup by applicationId → grossContractValue
+  const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
+  const iccByAppId = new Map<string, { grossContractValue: number; recQuantity: number; recPrice: number }>();
+  for (const row of iccRows) {
+    const appId = (
+      row["Application ID"] || row.Application_ID || row.application_id || ""
+    ).trim();
+    if (!appId) continue;
+    const gcv = parseFloat(
+      row["Total REC Delivery Contract Value"] ||
+      row["REC Delivery Contract Value"] ||
+      row["Total Contract Value"] ||
+      "0"
+    );
+    const rq = parseFloat(
+      row["Total Quantity of RECs Contracted"] ||
+      row["Contracted SRECs"] ||
+      row.SRECs ||
+      "0"
+    );
+    const rp = parseFloat(row["REC Price"] || "0");
+    const gross = gcv > 0 ? gcv : rq * rp;
+    if (gross > 0) {
+      iccByAppId.set(appId, { grossContractValue: gross, recQuantity: rq, recPrice: rp });
+    }
+  }
+
+  // Build Part I submit date lookup from ABP report rows
+  const abpRows = datasets.abpReport?.rows ?? [];
+  const part1DateByAppId = new Map<string, Date>();
+  for (const row of abpRows) {
+    const appId = (row.Application_ID || row.application_id || "").trim();
+    if (!appId) continue;
+    const raw = row.Part_1_Submission_Date || row.Part_1_submission_date || row.Part_1_Original_Submission_Date || "";
+    if (raw) {
+      const d = new Date(raw);
+      if (!Number.isNaN(d.getTime())) part1DateByAppId.set(appId, d);
+    }
+  }
+
+  const profitRows: ProfitRow[] = [];
+  const APPLICATION_FEE_CUTOFF = new Date("2024-06-01");
+
+  for (const abpRow of part2VerifiedAbpRows) {
+    const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
+    if (!appId) continue;
+
+    const csgId = csgIdByAppId.get(appId);
+    if (!csgId) continue;
+
+    const scan = scanByCsgId.get(csgId);
+    const icc = iccByAppId.get(appId);
+    if (!scan || !icc) continue;
+
+    const gcv = icc.grossContractValue;
+    const vfp = scan.vendorFeePercent ?? 0;
+    const vendorFeeAmount = roundMoney(gcv * (vfp / 100));
+    const utilityCollateral = roundMoney(gcv * 0.05);
+    const acp = scan.additionalCollateralPercent ?? 0;
+    const additionalCollateralAmount = roundMoney(gcv * (acp / 100));
+
+    // CC auth 5%: if CC auth not completed AND not absent from contract, apply 5%
+    const ccAuthCompleted = scan.ccAuthorizationCompleted;
+    const ccAuth5Percent = ccAuthCompleted === false ? roundMoney(gcv * 0.05) : 0;
+
+    // Application fee
+    const acSizeKw = scan.acSizeKw ?? 0;
+    const part1Date = part1DateByAppId.get(appId);
+    let applicationFee = 0;
+    if (part1Date && acSizeKw > 0) {
+      if (part1Date < APPLICATION_FEE_CUTOFF) {
+        applicationFee = Math.min(roundMoney(10 * acSizeKw), 5000);
+      } else {
+        applicationFee = Math.min(roundMoney(20 * acSizeKw), 15000);
+      }
+    }
+
+    const totalDeductions = roundMoney(
+      vendorFeeAmount + utilityCollateral + additionalCollateralAmount + ccAuth5Percent + applicationFee
+    );
+    const profit = roundMoney(gcv - totalDeductions);
+    const totalCollateralization = roundMoney(utilityCollateral + additionalCollateralAmount + ccAuth5Percent);
+
+    profitRows.push({
+      systemName: scan.systemName ?? appId,
+      applicationId: appId,
+      csgId,
+      grossContractValue: gcv,
+      vendorFeePercent: vfp,
+      vendorFeeAmount,
+      utilityCollateral,
+      additionalCollateralPercent: acp,
+      additionalCollateralAmount,
+      ccAuth5Percent,
+      applicationFee,
+      totalDeductions,
+      profit,
+      totalCollateralization,
+    });
+  }
+
+  const totalProfit = profitRows.reduce((a, r) => a + r.profit, 0);
+  const totalColl = profitRows.reduce((a, r) => a + r.totalCollateralization, 0);
+
+  return {
+    rows: profitRows.sort((a, b) => b.profit - a.profit),
+    totalProfit: roundMoney(totalProfit),
+    avgProfit: profitRows.length > 0 ? roundMoney(totalProfit / profitRows.length) : 0,
+    totalCollateralization: roundMoney(totalColl),
+    systemsWithData: profitRows.length,
+  };
+}, [
+  isFinancialsTabActive,
+  part2VerifiedAbpRows,
+  contractScanResultsQuery.data,
+  datasets.abpCsgSystemMapping,
+  datasets.abpIccReport3Rows,
+  datasets.abpReport,
+]);
+
 // ── Data Quality: Freshness ─────────────────────────────────────
 const dataQualityFreshness = useMemo(() => {
   if (!isDataQualityTabActive) return [];
@@ -13721,6 +13910,114 @@ const dataQualityUnmatched = useMemo(() => {
                 )}
               </CardContent>
             </Card>
+
+            {/* ── Profit & Collateralization Section ───────────── */}
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>Total Profit</CardDescription><CardTitle className="text-2xl text-emerald-800">${formatNumber(financialProfitData.totalProfit)}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Avg Profit / System</CardDescription><CardTitle className="text-2xl">${formatNumber(financialProfitData.avgProfit)}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Total Collateralization</CardDescription><CardTitle className="text-2xl">${formatNumber(financialProfitData.totalCollateralization)}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Systems w/ Data</CardDescription><CardTitle className="text-2xl">{financialProfitData.systemsWithData}</CardTitle></CardHeader></Card>
+            </div>
+
+            {financialProfitData.rows.length === 0 && financialCsgIds.length === 0 && (
+              <Card className="border-amber-200 bg-amber-50/50">
+                <CardContent className="py-4">
+                  <p className="text-sm text-amber-800">
+                    Upload the ABP CSG-System Mapping, ICC Report 3, and complete a contract scan job on the{" "}
+                    <a href="/contract-scrape-manager" className="underline font-medium">Contract Scraper</a>{" "}
+                    page to see profit and collateralization analysis.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
+            {financialProfitData.rows.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base">Profit & Collateralization by System</CardTitle>
+                      <CardDescription>Part II verified systems only. All percentages applied to Gross Contract Value from ICC Report 3.</CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(
+                        [
+                          "system_name", "application_id", "csg_id", "gross_contract_value",
+                          "vendor_fee_percent", "vendor_fee_amount", "utility_5pct_collateral",
+                          "additional_collateral_percent", "additional_collateral_amount",
+                          "cc_auth_5pct", "application_fee", "total_deductions", "profit",
+                          "total_collateralization",
+                        ],
+                        financialProfitData.rows.map(r => ({
+                          system_name: r.systemName,
+                          application_id: r.applicationId,
+                          csg_id: r.csgId,
+                          gross_contract_value: r.grossContractValue,
+                          vendor_fee_percent: r.vendorFeePercent,
+                          vendor_fee_amount: r.vendorFeeAmount,
+                          utility_5pct_collateral: r.utilityCollateral,
+                          additional_collateral_percent: r.additionalCollateralPercent,
+                          additional_collateral_amount: r.additionalCollateralAmount,
+                          cc_auth_5pct: r.ccAuth5Percent,
+                          application_fee: r.applicationFee,
+                          total_deductions: r.totalDeductions,
+                          profit: r.profit,
+                          total_collateralization: r.totalCollateralization,
+                        }))
+                      );
+                      triggerCsvDownload(`profit-collateralization-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>System</TableHead>
+                          <TableHead>App ID</TableHead>
+                          <TableHead className="text-right">Gross Contract</TableHead>
+                          <TableHead className="text-right">Vendor Fee %</TableHead>
+                          <TableHead className="text-right">Vendor Fee $</TableHead>
+                          <TableHead className="text-right">Utility 5%</TableHead>
+                          <TableHead className="text-right">Add. Coll. %</TableHead>
+                          <TableHead className="text-right">Add. Coll. $</TableHead>
+                          <TableHead className="text-right">CC Auth 5%</TableHead>
+                          <TableHead className="text-right">App Fee</TableHead>
+                          <TableHead className="text-right">Total Deductions</TableHead>
+                          <TableHead className="text-right">Profit</TableHead>
+                          <TableHead className="text-right">Total Coll.</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {financialProfitData.rows.slice(0, 100).map((r) => (
+                          <TableRow key={r.csgId}>
+                            <TableCell className="font-medium text-xs max-w-[160px] truncate">{r.systemName}</TableCell>
+                            <TableCell className="text-xs">{r.applicationId}</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.grossContractValue)}</TableCell>
+                            <TableCell className="text-right">{r.vendorFeePercent}%</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.vendorFeeAmount)}</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.utilityCollateral)}</TableCell>
+                            <TableCell className="text-right">{r.additionalCollateralPercent}%</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.additionalCollateralAmount)}</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.ccAuth5Percent)}</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.applicationFee)}</TableCell>
+                            <TableCell className="text-right font-medium">${formatNumber(r.totalDeductions)}</TableCell>
+                            <TableCell className="text-right font-semibold text-emerald-700">${formatNumber(r.profit)}</TableCell>
+                            <TableCell className="text-right">${formatNumber(r.totalCollateralization)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {financialProfitData.rows.length > 100 && (
+                    <p className="text-xs text-muted-foreground mt-2 text-center">
+                      Showing 100 of {financialProfitData.rows.length} systems. Export CSV for full data.
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="data-quality" className="space-y-4 mt-4">
