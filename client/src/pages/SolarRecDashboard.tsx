@@ -13066,7 +13066,7 @@ const dataQualityUnmatched = useMemo(() => {
                     </div>
                     <Table>
                       <TableHeader><TableRow>
-                        <TableHead>Contract</TableHead><TableHead className="text-right">Required</TableHead><TableHead className="text-right">Delivered</TableHead><TableHead className="text-right">Projected</TableHead><TableHead className="text-right">Gap</TableHead><TableHead>Status</TableHead>
+                        <TableHead>Contract</TableHead><TableHead className="text-right">Required</TableHead><TableHead className="text-right">Delivered</TableHead><TableHead className="text-right">Delivered %</TableHead><TableHead className="text-right">Projected</TableHead><TableHead className="text-right">Projected %</TableHead><TableHead className="text-right">Gap</TableHead><TableHead>Status</TableHead>
                       </TableRow></TableHeader>
                       <TableBody>
                         {forecastProjections.map((p) => (
@@ -13074,7 +13074,9 @@ const dataQualityUnmatched = useMemo(() => {
                             <TableCell className="font-medium">{p.contract}</TableCell>
                             <TableCell className="text-right">{formatNumber(p.required)}</TableCell>
                             <TableCell className="text-right">{formatNumber(p.delivered)}</TableCell>
+                            <TableCell className="text-right">{p.required > 0 ? `${((p.delivered / p.required) * 100).toFixed(1)}%` : "N/A"}</TableCell>
                             <TableCell className="text-right">{formatNumber(p.projected)}</TableCell>
+                            <TableCell className="text-right">{p.required > 0 ? `${((p.projected / p.required) * 100).toFixed(1)}%` : "N/A"}</TableCell>
                             <TableCell className="text-right">{formatNumber(Math.max(0, p.projectedGap))}</TableCell>
                             <TableCell>
                               <Badge variant={p.status === "On Track" ? "default" : p.status === "At Risk" ? "secondary" : "destructive"}>{p.status}</Badge>
