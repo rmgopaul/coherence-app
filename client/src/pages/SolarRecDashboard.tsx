@@ -9508,13 +9508,34 @@ const comparisonPlatforms = useMemo(() => {
     .sort((a, b) => b.total - a.total);
 }, [isComparisonsTabActive, systems]);
 
+// ── Financials: Part II Verified System IDs (strict) ────────────
+const part2VerifiedSystemIds = useMemo(() => {
+  const ids = new Set<string>();
+  part2VerifiedAbpRows.forEach((row) => {
+    const appId = clean(row.Application_ID) || clean(row.system_id);
+    if (appId) ids.add(appId);
+  });
+  return ids;
+}, [part2VerifiedAbpRows]);
+
+// ── Financials: Part II Filtered Systems ────────────────────────
+const part2VerifiedSystems = useMemo(() => {
+  if (!isFinancialsTabActive) return [];
+  return systems.filter((sys) => {
+    // Only include systems with a systemId that matches a Part II verified ABP row
+    if (sys.systemId && part2VerifiedSystemIds.has(sys.systemId)) return true;
+    if (sys.trackingSystemRefId && abpEligibleTrackingIdsStrict.has(sys.trackingSystemRefId)) return true;
+    return false;
+  });
+}, [isFinancialsTabActive, systems, part2VerifiedSystemIds, abpEligibleTrackingIdsStrict]);
+
 // ── Financials: Revenue at Risk ─────────────────────────────────
 const financialRevenueAtRisk = useMemo(() => {
   if (!isFinancialsTabActive) return { total: 0, percent: null as number | null, byType: [] as { type: string; count: number; value: number }[], systems: [] as { name: string; riskType: string; value: number; lastDate: string; daysOffline: number }[] };
   const now = new Date();
   const atRiskSystems: { name: string; riskType: string; value: number; lastDate: string; daysOffline: number }[] = [];
 
-  systems.forEach((sys) => {
+  part2VerifiedSystems.forEach((sys) => {
     if ((sys.contractedValue ?? 0) <= 0) return;
     let riskType = "";
     if (!sys.isReporting) riskType = "Offline";
@@ -9532,7 +9553,7 @@ const financialRevenueAtRisk = useMemo(() => {
   });
 
   const totalAtRisk = atRiskSystems.reduce((a, s) => a + s.value, 0);
-  const totalPortfolio = systems.reduce((a, s) => a + (s.contractedValue ?? 0), 0);
+  const totalPortfolio = part2VerifiedSystems.reduce((a, s) => a + (s.contractedValue ?? 0), 0);
 
   const byType = new Map<string, { type: string; count: number; value: number }>();
   atRiskSystems.forEach(s => {
@@ -9548,7 +9569,7 @@ const financialRevenueAtRisk = useMemo(() => {
     byType: Array.from(byType.values()),
     systems: atRiskSystems.sort((a, b) => b.value - a.value),
   };
-}, [isFinancialsTabActive, systems]);
+}, [isFinancialsTabActive, part2VerifiedSystems]);
 
 // ── Financials: Profit & Collateralization ──────────────────────
 const financialCsgIds = useMemo(() => {
