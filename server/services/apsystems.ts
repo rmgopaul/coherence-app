@@ -288,18 +288,17 @@ export function extractSystems(payload: unknown): APsystemsSystem[] {
 }
 
 // ---------------------------------------------------------------------------
-// API: List Systems
+// API: List Systems (not supported — APsystems API requires known SIDs)
 // ---------------------------------------------------------------------------
 
-export async function listSystems(context: APsystemsApiContext): Promise<{
+export async function listSystems(_context: APsystemsApiContext): Promise<{
   systems: APsystemsSystem[];
   raw: unknown;
 }> {
-  const raw = await getAPsystemsJson("/user/api/v2/systems/list", context);
-  return {
-    systems: extractSystems(raw),
-    raw,
-  };
+  // The APsystems OpenAPI has no "list systems" endpoint.
+  // All endpoints require a known System ID (SID).
+  // Users must provide SIDs directly (e.g. via CSV upload).
+  return { systems: [], raw: { message: "APsystems API does not support listing systems. Provide System IDs directly." } };
 }
 
 // ---------------------------------------------------------------------------
@@ -325,11 +324,14 @@ type DailyEnergyPoint = {
   kwh: number;
 };
 
-async function getDailyEnergyHistory(
+/**
+ * Fetch daily energy for a single month via `/energy/{sid}?energy_level=daily&date_range=YYYY-MM`.
+ * The API returns an array of numbers (one per day in the month), values in kWh.
+ */
+async function getDailyEnergyForMonth(
   context: APsystemsApiContext,
   systemId: string,
-  startDate: string,
-  endDate: string
+  yearMonth: string // "YYYY-MM"
 ): Promise<DailyEnergyPoint[]> {
   const points: DailyEnergyPoint[] = [];
 
@@ -337,27 +339,25 @@ async function getDailyEnergyHistory(
     const raw = await getAPsystemsJson(
       `/user/api/v2/systems/energy/${encodeURIComponent(systemId)}`,
       context,
-      { startDate, endDate, granularity: "day" }
+      { energy_level: "daily", date_range: yearMonth }
     );
 
     const root = asRecord(raw);
-    const records = asRecordArray(
-      root.data ?? root.energy ?? root.values ?? root.readings
-    );
-    const items = records.length > 0 ? records : Array.isArray(raw) ? asRecordArray(raw) : [];
-    const unit = toNullableString(root.unit ?? root.units);
+    // API returns { data: [0.5, 1.2, ...], code: 0 } — one value per day
+    const dataArray = Array.isArray(root.data) ? root.data : [];
+    const [yearStr, monthStr] = yearMonth.split("-");
+    const year = Number(yearStr);
+    const month = Number(monthStr);
 
-    for (const record of items) {
-      const dateKey = asDateKey(
-        toNullableString(record.date) ??
-          toNullableString(record.timestamp) ??
-          toNullableString(record.time)
-      );
-      const rawValue = toNullableNumber(record.energy ?? record.value ?? record.production);
-      const kwh = toKwh(rawValue, unit ?? "Wh");
-      if (dateKey && kwh !== null && dateKey >= startDate && dateKey <= endDate) {
-        points.push({ dateKey, kwh: safeRound(kwh)! });
-      }
+    for (let i = 0; i < dataArray.length; i++) {
+      const kwh = toNullableNumber(dataArray[i]);
+      if (kwh === null) continue;
+      const day = String(i + 1).padStart(2, "0");
+      const dateKey = `${yearStr}-${monthStr}-${day}`;
+      // Validate it's a real date
+      const d = new Date(year, month - 1, i + 1);
+      if (d.getMonth() !== month - 1) continue;
+      points.push({ dateKey, kwh: safeRound(kwh)! });
     }
   } catch {
     // Non-critical
@@ -366,28 +366,77 @@ async function getDailyEnergyHistory(
   return points;
 }
 
+/**
+ * Fetch daily energy across a date range by calling the API once per month spanned.
+ */
+async function getDailyEnergyHistory(
+  context: APsystemsApiContext,
+  systemId: string,
+  startDate: string,
+  endDate: string
+): Promise<DailyEnergyPoint[]> {
+  const startParsed = parseIsoDate(startDate);
+  const endParsed = parseIsoDate(endDate);
+  if (!startParsed || !endParsed) return [];
+
+  // Collect the set of YYYY-MM months that span the range
+  const months: string[] = [];
+  let cursor = new Date(startParsed.year, startParsed.month - 1, 1);
+  const endMonth = new Date(endParsed.year, endParsed.month - 1, 1);
+  while (cursor <= endMonth) {
+    const y = cursor.getFullYear();
+    const m = String(cursor.getMonth() + 1).padStart(2, "0");
+    months.push(`${y}-${m}`);
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  // Fetch each month (with concurrency limit to conserve API calls)
+  const allPoints: DailyEnergyPoint[] = [];
+  const results = await mapWithConcurrency(months, 3, (ym) =>
+    getDailyEnergyForMonth(context, systemId, ym)
+  );
+  for (const batch of results) {
+    for (const p of batch) {
+      if (p.dateKey >= startDate && p.dateKey <= endDate) {
+        allPoints.push(p);
+      }
+    }
+  }
+
+  return allPoints;
+}
+
 // ---------------------------------------------------------------------------
 // Lifetime energy
 // ---------------------------------------------------------------------------
 
-async function getLifetimeEnergy(
+export type APsystemsSummary = {
+  todayKwh: number | null;
+  monthKwh: number | null;
+  yearKwh: number | null;
+  lifetimeKwh: number | null;
+};
+
+export async function getSystemSummary(
   context: APsystemsApiContext,
   systemId: string
-): Promise<number | null> {
+): Promise<APsystemsSummary> {
   try {
     const raw = await getAPsystemsJson(
-      `/user/api/v2/systems/details/${encodeURIComponent(systemId)}`,
+      `/user/api/v2/systems/summary/${encodeURIComponent(systemId)}`,
       context
     );
 
     const root = asRecord(raw);
     const data = asRecord(root.data ?? root);
-    const rawValue = toNullableNumber(
-      data.lifetimeEnergy ?? data.totalEnergy ?? data.lifetime_energy ?? data.allEnergy
-    );
-    return safeRound(toKwh(rawValue, "Wh"));
+    return {
+      todayKwh: safeRound(toNullableNumber(data.today)),
+      monthKwh: safeRound(toNullableNumber(data.month)),
+      yearKwh: safeRound(toNullableNumber(data.year)),
+      lifetimeKwh: safeRound(toNullableNumber(data.lifetime)),
+    };
   } catch {
-    return null;
+    return { todayKwh: null, monthKwh: null, yearKwh: null, lifetimeKwh: null };
   }
 }
 
@@ -416,11 +465,12 @@ export async function getSystemProductionSnapshot(
   const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
 
   try {
-    const [lifetimeKwh, dailySeries, last12MonthsSeries] = await Promise.all([
-      getLifetimeEnergy(context, systemId),
+    const [summary, dailySeries, last12MonthsSeries] = await Promise.all([
+      getSystemSummary(context, systemId),
       getDailyEnergyHistory(context, systemId, previousCalendarMonthStartDate, anchorDate),
       getDailyEnergyHistory(context, systemId, last12MonthsStartDate, anchorDate),
     ]);
+    const lifetimeKwh = summary.lifetimeKwh;
 
     const hourlyProductionKwh: number | null = null;
 
