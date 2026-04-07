@@ -9955,10 +9955,10 @@ Generate the pipeline analysis report now.`,
       const baseUrl = context.baseUrl || APSYSTEMS_DEFAULT_BASE_URL;
       const sid = input.systemId.trim();
       const paths = [
-        `/user/api/v2/systems/details/${sid}`,
-        `/user/api/v2/systems/summary/${sid}`,
+        `/installer/api/v2/systems/details/${sid}`,
+        `/installer/api/v2/systems/summary/${sid}`,
         `/api/v2/systems/details/${sid}`,
-        `/systems/details/${sid}`,
+        `/user/api/v2/systems/details/${sid}`,
       ];
       const results: Array<{ path: string; url: string; status: number | null; body: string | null }> = [];
       for (const path of paths) {
