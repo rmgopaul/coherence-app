@@ -9176,7 +9176,10 @@ type DeliveryTrackerContractSummary = {
 const deliveryTrackerData = useMemo(() => {
   if (!isDeliveryTrackerTabActive) return { rows: [] as DeliveryTrackerRow[], contracts: [] as DeliveryTrackerContractSummary[], totalTransfers: 0, unmatchedTransfers: 0 };
 
-  const scheduleRows = datasets.deliveryScheduleBase?.rows ?? [];
+  // Use deliveryScheduleBase if uploaded; fall back to recDeliverySchedules
+  const scheduleRows = (datasets.deliveryScheduleBase?.rows ?? []).length > 0
+    ? datasets.deliveryScheduleBase!.rows
+    : datasets.recDeliverySchedules?.rows ?? [];
   const transferRows = datasets.transferHistory?.rows ?? [];
 
   // Build schedule: system → year → { obligated, startDate, endDate }
