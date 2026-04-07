@@ -421,23 +421,19 @@ export async function getSystemSummary(
   context: APsystemsApiContext,
   systemId: string
 ): Promise<APsystemsSummary> {
-  try {
-    const raw = await getAPsystemsJson(
-      `/user/api/v2/systems/summary/${encodeURIComponent(systemId)}`,
-      context
-    );
+  const raw = await getAPsystemsJson(
+    `/user/api/v2/systems/summary/${encodeURIComponent(systemId)}`,
+    context
+  );
 
-    const root = asRecord(raw);
-    const data = asRecord(root.data ?? root);
-    return {
-      todayKwh: safeRound(toNullableNumber(data.today)),
-      monthKwh: safeRound(toNullableNumber(data.month)),
-      yearKwh: safeRound(toNullableNumber(data.year)),
-      lifetimeKwh: safeRound(toNullableNumber(data.lifetime)),
-    };
-  } catch {
-    return { todayKwh: null, monthKwh: null, yearKwh: null, lifetimeKwh: null };
-  }
+  const root = asRecord(raw);
+  const data = asRecord(root.data ?? root);
+  return {
+    todayKwh: safeRound(toNullableNumber(data.today)),
+    monthKwh: safeRound(toNullableNumber(data.month)),
+    yearKwh: safeRound(toNullableNumber(data.year)),
+    lifetimeKwh: safeRound(toNullableNumber(data.lifetime)),
+  };
 }
 
 // ---------------------------------------------------------------------------
