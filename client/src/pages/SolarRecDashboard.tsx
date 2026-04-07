@@ -9012,35 +9012,40 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
   if (!isForecastTabActive) return [];
   if (performanceSourceRows.length === 0) return [];
 
-  // Find systems eligible for 3-year review (targetYearIndex >= 2)
-  // and in the 2025-2026 delivery year window
+  // Use the same 3-year rolling logic as REC Performance Eval to match baseline numbers.
+  // For each system: find the delivery year matching FORECAST_EY_LABEL,
+  // require targetYearIndex >= 2 (3rd year or later), compute rolling average.
   const contractMap = new Map<string, {
     contract: string;
     systemsTotal: number;
     systemsReporting: number;
     projectedRecsReporting: number;
     projectedRecsAll: number;
-    requiredRecs: number;
-    deliveredRecs: number;
+    requiredRecs: number;        // = sum of DY3 required (obligation)
+    deliveredRecs: number;       // = sum of 3-year rolling average (floor)
   }>();
 
   for (const sourceRow of performanceSourceRows) {
-    // Find the delivery year that overlaps the current energy year
-    let activeYear: { required: number; delivered: number } | null = null;
-    for (const year of sourceRow.years) {
-      if (!year.startDate || !year.endDate) continue;
-      // Match: delivery year overlaps with current energy year window (May 1 – Apr 30)
-      if (year.startDate <= FORECAST_ENERGY_YEAR_END && year.endDate >= FORECAST_ENERGY_YEAR_START) {
-        activeYear = { required: year.required, delivered: year.delivered };
-        break;
-      }
-    }
-    // If no year matches, try the latest year with required > 0
-    if (!activeYear) {
-      const latestWithRequired = sourceRow.years.filter(y => y.required > 0).pop();
-      if (latestWithRequired) activeYear = { required: latestWithRequired.required, delivered: latestWithRequired.delivered };
-    }
-    if (!activeYear) continue;
+    // Find the target year matching the energy year label (same logic as perf eval)
+    const targetYearIndex = sourceRow.years.findIndex((year) => {
+      const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+      return label === FORECAST_EY_LABEL;
+    });
+    if (targetYearIndex < 2) continue; // Must be in 3rd delivery year or later
+
+    const dyOneYear = sourceRow.years[targetYearIndex - 2];
+    const dyTwoYear = sourceRow.years[targetYearIndex - 1];
+    const dyThreeYear = sourceRow.years[targetYearIndex];
+    if (!dyOneYear || !dyTwoYear || !dyThreeYear) continue;
+
+    // Same rolling logic as perf eval: year 3 = actual, year 1-2 = actual if targetYearIndex===2, else expected
+    const values: number[] =
+      targetYearIndex === 2
+        ? [dyOneYear.delivered, dyTwoYear.delivered, dyThreeYear.delivered]
+        : [dyOneYear.required, dyTwoYear.required, dyThreeYear.delivered];
+
+    const rollingAverage = Math.floor((values[0] + values[1] + values[2]) / 3);
+    const obligation = dyThreeYear.required; // DY3 required = this year's obligation
 
     const trackingId = sourceRow.trackingSystemRefId;
     const profile = annualProductionByTrackingId.get(trackingId);
@@ -9050,7 +9055,7 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
 
     // Determine start date: latest meter reading from GATS (Account Solar Generation)
     let meterReadDate = baseline?.date ?? null;
-    // Clamp to floor: cannot go before June 1, 2024
+    // Clamp to floor: cannot go before FORECAST_FLOOR_DATE
     if (meterReadDate && meterReadDate < FORECAST_FLOOR_DATE) {
       meterReadDate = FORECAST_FLOOR_DATE;
     }
@@ -9093,8 +9098,8 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
     if (isReporting && meterReadDate) {
       existing.projectedRecsReporting += projectedRecsForSystem;
     }
-    existing.requiredRecs += activeYear.required;
-    existing.deliveredRecs += activeYear.delivered;
+    existing.requiredRecs += obligation;         // DY3 required (matches perf eval obligation)
+    existing.deliveredRecs += rollingAverage;     // 3-year rolling avg (matches perf eval deliveries)
     contractMap.set(contractId, existing);
   }
 
@@ -13138,10 +13143,10 @@ const dataQualityUnmatched = useMemo(() => {
                   {forecastProjections.length > 0 && (
                     <Button variant="outline" size="sm" onClick={() => {
                       const csv = buildCsv(
-                        ["contract", "systems_total", "systems_reporting", "required_recs", "delivered_recs", "delivered_pct", "proj_recs_reporting", "proj_recs_all", "gap_after_proj1", "gap_after_proj2"],
+                        ["contract", "systems_total", "systems_reporting", "obligation_recs", "rolling_avg_recs", "delivered_pct", "proj_recs_reporting", "proj_recs_all", "gap_after_proj1", "gap_after_proj2"],
                         forecastProjections.map(c => ({
                           contract: c.contract, systems_total: c.systemsTotal, systems_reporting: c.systemsReporting,
-                          required_recs: c.requiredRecs, delivered_recs: c.deliveredRecs,
+                          obligation_recs: c.requiredRecs, rolling_avg_recs: c.deliveredRecs,
                           delivered_pct: c.requiredRecs > 0 ? ((c.deliveredRecs / c.requiredRecs) * 100).toFixed(1) : "",
                           proj_recs_reporting: c.projectedRecsReporting, proj_recs_all: c.projectedRecsAll,
                           gap_after_proj1: c.gapAfterProjection1, gap_after_proj2: c.gapAfterProjection2,
@@ -13167,8 +13172,8 @@ const dataQualityUnmatched = useMemo(() => {
                           <YAxis tick={{ fontSize: 12 }} />
                           <Tooltip />
                           <Legend />
-                          <Bar dataKey="requiredRecs" fill="#94a3b8" name="Required RECs" />
-                          <Bar dataKey="deliveredRecs" fill="#16a34a" name="Delivered RECs" />
+                          <Bar dataKey="requiredRecs" fill="#94a3b8" name="Obligation (DY3 Required)" />
+                          <Bar dataKey="deliveredRecs" fill="#16a34a" name="3-Yr Rolling Avg" />
                           <Bar dataKey="projectedRecsReporting" fill="#0ea5e9" name="Proj. RECs (Reporting)" />
                           <Bar dataKey="projectedRecsAll" fill="#8b5cf6" name="Proj. RECs (All Sites)" />
                         </BarChart>
@@ -13180,8 +13185,8 @@ const dataQualityUnmatched = useMemo(() => {
                           <TableHead>Contract</TableHead>
                           <TableHead className="text-right">Systems</TableHead>
                           <TableHead className="text-right">Reporting</TableHead>
-                          <TableHead className="text-right">Required</TableHead>
-                          <TableHead className="text-right">Delivered</TableHead>
+                          <TableHead className="text-right">Obligation</TableHead>
+                          <TableHead className="text-right">3-Yr Rolling Avg</TableHead>
                           <TableHead className="text-right">Del. %</TableHead>
                           <TableHead className="text-right text-sky-700">Proj. (Reporting)</TableHead>
                           <TableHead className="text-right text-violet-700">Proj. (All)</TableHead>
