@@ -310,7 +310,7 @@ export async function getSystemDetail(
   systemId: string
 ): Promise<unknown> {
   return getAPsystemsJson(
-    `/user/api/v2/systems/details/${encodeURIComponent(systemId)}`,
+    `/installer/api/v2/systems/details/${encodeURIComponent(systemId)}`,
     context
   );
 }
@@ -337,7 +337,7 @@ async function getDailyEnergyForMonth(
 
   try {
     const raw = await getAPsystemsJson(
-      `/user/api/v2/systems/energy/${encodeURIComponent(systemId)}`,
+      `/installer/api/v2/systems/energy/${encodeURIComponent(systemId)}`,
       context,
       { energy_level: "daily", date_range: yearMonth }
     );
@@ -422,7 +422,7 @@ export async function getSystemSummary(
   systemId: string
 ): Promise<APsystemsSummary> {
   const raw = await getAPsystemsJson(
-    `/user/api/v2/systems/summary/${encodeURIComponent(systemId)}`,
+    `/installer/api/v2/systems/summary/${encodeURIComponent(systemId)}`,
     context
   );
 

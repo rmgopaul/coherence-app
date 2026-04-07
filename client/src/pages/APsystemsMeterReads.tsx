@@ -36,7 +36,7 @@ type BulkSortKey =
   | "daily";
 type BulkConnectionScope = "active" | "all";
 
-type SingleOperation = "getSystemDetails" | "getProductionSnapshot" | "debugApiCall";
+type SingleOperation = "getSystemDetails" | "getProductionSnapshot";
 
 type BulkSnapshotRow = {
   systemId: string;
@@ -255,7 +255,6 @@ export default function APsystemsMeterReads() {
   const removeConnectionMutation = trpc.apsystems.removeConnection.useMutation();
   const disconnectMutation = trpc.apsystems.disconnect.useMutation();
   const productionSnapshotMutation = trpc.apsystems.getProductionSnapshot.useMutation();
-  const debugApiCallMutation = trpc.apsystems.debugApiCall.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
@@ -414,11 +413,6 @@ export default function APsystemsMeterReads() {
             systemId: selectedSystemId,
             anchorDate: bulkAnchorDate || undefined,
           })
-        );
-        break;
-      case "debugApiCall":
-        void runAction("Debug API Call", () =>
-          debugApiCallMutation.mutateAsync({ systemId: selectedSystemId })
         );
         break;
     }
@@ -979,7 +973,6 @@ export default function APsystemsMeterReads() {
                   <SelectContent>
                     <SelectItem value="getSystemDetails">Get System Details</SelectItem>
                     <SelectItem value="getProductionSnapshot">Get Production Snapshot</SelectItem>
-                    <SelectItem value="debugApiCall">Debug API Call</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

@@ -9948,48 +9948,6 @@ Generate the pipeline analysis report now.`,
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
     listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getAPsystemsContext(ctx.user.id); const { listSystems } = await import("./services/apsystems"); return listSystems(context); }),
     getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
-    debugApiCall: protectedProcedure.input(z.object({ systemId: z.string().min(1) })).mutation(async ({ ctx, input }) => {
-      const context = await getAPsystemsContext(ctx.user.id);
-      const { APSYSTEMS_DEFAULT_BASE_URL } = await import("./services/apsystems");
-      const crypto = await import("crypto");
-      const baseUrl = context.baseUrl || APSYSTEMS_DEFAULT_BASE_URL;
-      const sid = input.systemId.trim();
-      const paths = [
-        `/installer/api/v2/systems/details/${sid}`,
-        `/installer/api/v2/systems/summary/${sid}`,
-        `/api/v2/systems/details/${sid}`,
-        `/user/api/v2/systems/details/${sid}`,
-      ];
-      const results: Array<{ path: string; url: string; status: number | null; body: string | null }> = [];
-      for (const path of paths) {
-        const fullUrl = `${baseUrl}${path}`;
-        try {
-          const timestamp = Date.now().toString();
-          const nonce = crypto.randomBytes(16).toString("hex");
-          const segments = path.split("/").filter(Boolean);
-          const lastSegment = segments[segments.length - 1] ?? "";
-          const stringToSign = [timestamp, nonce, context.appId, lastSegment, "GET", "HmacSHA256"].join("/");
-          const hmac = crypto.createHmac("sha256", context.appSecret);
-          hmac.update(stringToSign, "utf8");
-          const signature = hmac.digest("base64");
-          const resp = await fetch(fullUrl, {
-            method: "GET",
-            headers: {
-              "X-CA-AppId": context.appId,
-              "X-CA-Timestamp": timestamp,
-              "X-CA-Nonce": nonce,
-              "X-CA-Signature-Method": "HmacSHA256",
-              "X-CA-Signature": signature,
-            },
-          });
-          const body = await resp.text();
-          results.push({ path, url: fullUrl, status: resp.status, body: body.slice(0, 500) });
-        } catch (err) {
-          results.push({ path, url: fullUrl, status: null, body: err instanceof Error ? err.message.slice(0, 300) : String(err) });
-        }
-      }
-      return { baseUrl, appIdPrefix: context.appId.slice(0, 8), results };
-    }),
   }),
 
   // =========================================================================
