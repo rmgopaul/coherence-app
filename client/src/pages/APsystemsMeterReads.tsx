@@ -216,7 +216,8 @@ export default function APsystemsMeterReads() {
 
   const today = useMemo(() => formatDateInput(new Date()), []);
 
-  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [appIdInput, setAppIdInput] = useState("");
+  const [appSecretInput, setAppSecretInput] = useState("");
   const [connectionNameInput, setConnectionNameInput] = useState("");
   const [selectedConnectionId, setSelectedConnectionId] = useState("");
   const [selectedSystemId, setSelectedSystemId] = useState("");
@@ -296,22 +297,25 @@ export default function APsystemsMeterReads() {
   }, [bulkSystemIds.length]);
 
   const handleConnect = async () => {
-    const apiKey = apiKeyInput.trim();
+    const appId = appIdInput.trim();
+    const appSecret = appSecretInput.trim();
 
-    if (!apiKey) {
-      toast.error("Enter an API Key.");
+    if (!appId || !appSecret) {
+      toast.error("Enter both App ID and App Secret.");
       return;
     }
 
     try {
       const response = await connectMutation.mutateAsync({
-        apiKey,
+        appId,
+        appSecret,
         connectionName: connectionNameInput.trim() || undefined,
       });
       await trpcUtils.apsystems.getStatus.invalidate();
       await trpcUtils.apsystems.listSystems.invalidate();
       setSelectedConnectionId(response.activeConnectionId);
-      setApiKeyInput("");
+      setAppIdInput("");
+      setAppSecretInput("");
       setConnectionNameInput("");
       toast.success(
         `APsystems profile saved. ${NUMBER_FORMATTER.format(response.totalConnections)} profile(s) stored.`
@@ -801,7 +805,7 @@ export default function APsystemsMeterReads() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="apsystems-connection-name">Profile Name (optional)</Label>
                 <Input
@@ -812,13 +816,23 @@ export default function APsystemsMeterReads() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="apsystems-api-key">API Key</Label>
+                <Label htmlFor="apsystems-app-id">App ID</Label>
                 <Input
-                  id="apsystems-api-key"
+                  id="apsystems-app-id"
                   type="password"
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="APsystems API Key"
+                  value={appIdInput}
+                  onChange={(e) => setAppIdInput(e.target.value)}
+                  placeholder="APsystems App ID"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="apsystems-app-secret">App Secret</Label>
+                <Input
+                  id="apsystems-app-secret"
+                  type="password"
+                  value={appSecretInput}
+                  onChange={(e) => setAppSecretInput(e.target.value)}
+                  placeholder="APsystems App Secret"
                 />
               </div>
             </div>

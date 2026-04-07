@@ -1,9 +1,11 @@
+import crypto from "crypto";
 import { fetchJson } from "./httpClient";
 
-export const APSYSTEMS_DEFAULT_BASE_URL = "https://api.apsystemsema.com/api/v1";
+export const APSYSTEMS_DEFAULT_BASE_URL = "https://api.apsystemsema.com:9282";
 
 export type APsystemsApiContext = {
-  apiKey: string;
+  appId: string;
+  appSecret: string;
   baseUrl?: string | null;
 };
 
@@ -184,13 +186,48 @@ export async function mapWithConcurrency<TInput, TOutput>(
 }
 
 // ---------------------------------------------------------------------------
-// HTTP layer — API key auth
+// HTTP layer — HMAC-SHA256 signature auth
 // ---------------------------------------------------------------------------
 
 function normalizeBaseUrl(raw: string | null | undefined): string {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return APSYSTEMS_DEFAULT_BASE_URL;
   return trimmed.replace(/\/+$/, "");
+}
+
+function buildSignatureHeaders(
+  context: APsystemsApiContext,
+  requestPath: string,
+  httpMethod: string
+): Record<string, string> {
+  const timestamp = Date.now().toString();
+  const nonce = crypto.randomBytes(16).toString("hex");
+  const signatureMethod = "HmacSHA256";
+
+  // APsystems requires only the LAST segment of the path for signature
+  const segments = requestPath.split("/").filter(Boolean);
+  const lastSegment = segments[segments.length - 1] ?? "";
+
+  const stringToSign = [
+    timestamp,
+    nonce,
+    context.appId,
+    lastSegment,
+    httpMethod,
+    signatureMethod,
+  ].join("/");
+
+  const hmac = crypto.createHmac("sha256", context.appSecret);
+  hmac.update(stringToSign, "utf8");
+  const signature = hmac.digest("base64");
+
+  return {
+    "X-CA-AppId": context.appId,
+    "X-CA-Timestamp": timestamp,
+    "X-CA-Nonce": nonce,
+    "X-CA-Signature-Method": signatureMethod,
+    "X-CA-Signature": signature,
+  };
 }
 
 async function getAPsystemsJson(
@@ -209,12 +246,11 @@ async function getAPsystemsJson(
     url.searchParams.set(key, normalized);
   }
 
+  const signatureHeaders = buildSignatureHeaders(context, safePath, "GET");
+
   const { data } = await fetchJson(url.toString(), {
     service: "APsystems",
-    headers: {
-      Authorization: `Bearer ${context.apiKey}`,
-      "X-API-Key": context.apiKey,
-    },
+    headers: signatureHeaders,
     timeoutMs: 20_000,
   });
 
@@ -259,7 +295,7 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
   systems: APsystemsSystem[];
   raw: unknown;
 }> {
-  const raw = await getAPsystemsJson("/systems", context);
+  const raw = await getAPsystemsJson("/user/api/v2/systems/list", context);
   return {
     systems: extractSystems(raw),
     raw,
@@ -274,7 +310,10 @@ export async function getSystemDetail(
   context: APsystemsApiContext,
   systemId: string
 ): Promise<unknown> {
-  return getAPsystemsJson(`/systems/${encodeURIComponent(systemId)}`, context);
+  return getAPsystemsJson(
+    `/user/api/v2/systems/details/${encodeURIComponent(systemId)}`,
+    context
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +335,7 @@ async function getDailyEnergyHistory(
 
   try {
     const raw = await getAPsystemsJson(
-      `/systems/${encodeURIComponent(systemId)}/energy`,
+      `/user/api/v2/systems/energy/${encodeURIComponent(systemId)}`,
       context,
       { startDate, endDate, granularity: "day" }
     );
@@ -337,7 +376,7 @@ async function getLifetimeEnergy(
 ): Promise<number | null> {
   try {
     const raw = await getAPsystemsJson(
-      `/systems/${encodeURIComponent(systemId)}`,
+      `/user/api/v2/systems/details/${encodeURIComponent(systemId)}`,
       context
     );
 

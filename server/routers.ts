@@ -2531,7 +2531,8 @@ async function getGrowattContext(userId: number): Promise<{ username: string; pa
 type APsystemsConnectionConfig = {
   id: string;
   name: string;
-  apiKey: string;
+  appId: string;
+  appSecret: string;
   baseUrl: string | null;
   createdAt: string;
   updatedAt: string;
@@ -2550,10 +2551,11 @@ function parseAPsystemsMetadata(metadata: string | null | undefined, fallbackApi
     .map((value, index) => {
       const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
       const id = toNonEmptyString(row.id) ?? `apsystems-conn-${index + 1}`;
-      const apiKey = toNonEmptyString(row.apiKey);
-      if (!apiKey) return null;
+      const appId = toNonEmptyString(row.appId) ?? toNonEmptyString(row.apiKey);
+      const appSecret = toNonEmptyString(row.appSecret) ?? "";
+      if (!appId) return null;
       return {
-        id, name: toNonEmptyString(row.name) ?? `APsystems API ${index + 1}`, apiKey,
+        id, name: toNonEmptyString(row.name) ?? `APsystems API ${index + 1}`, appId, appSecret,
         baseUrl: toNonEmptyString(row.baseUrl) ?? baseUrl,
         createdAt: toNonEmptyString(row.createdAt) ?? new Date().toISOString(),
         updatedAt: toNonEmptyString(row.updatedAt) ?? new Date().toISOString(),
@@ -2562,7 +2564,7 @@ function parseAPsystemsMetadata(metadata: string | null | undefined, fallbackApi
     .filter((v): v is APsystemsConnectionConfig => v !== null);
   if (connections.length === 0 && fallbackApiKey) {
     const legacyKey = toNonEmptyString(fallbackApiKey);
-    if (legacyKey) { const nowIso = new Date().toISOString(); connections.push({ id: "legacy-apsystems-key", name: "Legacy API Key", apiKey: legacyKey, baseUrl, createdAt: nowIso, updatedAt: nowIso }); }
+    if (legacyKey) { const nowIso = new Date().toISOString(); connections.push({ id: "legacy-apsystems-key", name: "Legacy API Key", appId: legacyKey, appSecret: "", baseUrl, createdAt: nowIso, updatedAt: nowIso }); }
   }
   const activeConnectionId = (activeConnectionIdRaw && connections.some((c) => c.id === activeConnectionIdRaw) ? activeConnectionIdRaw : connections[0]?.id) ?? null;
   return { baseUrl, activeConnectionId, connections };
@@ -2572,13 +2574,14 @@ function serializeAPsystemsMetadata(connections: APsystemsConnectionConfig[], ac
   return JSON.stringify({ baseUrl, activeConnectionId, connections });
 }
 
-async function getAPsystemsContext(userId: number): Promise<{ apiKey: string; baseUrl: string | null }> {
+async function getAPsystemsContext(userId: number): Promise<{ appId: string; appSecret: string; baseUrl: string | null }> {
   const { getIntegrationByProvider } = await import("./db");
   const integration = await getIntegrationByProvider(userId, APSYSTEMS_PROVIDER);
   const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
   const activeConnection = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0];
-  if (!activeConnection) throw new Error("APsystems is not connected. Save API key first.");
-  return { apiKey: activeConnection.apiKey, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
+  if (!activeConnection) throw new Error("APsystems is not connected. Save App ID and Secret first.");
+  if (!activeConnection.appSecret) throw new Error("APsystems App Secret is missing. Please reconnect with both App ID and App Secret.");
+  return { appId: activeConnection.appId, appSecret: activeConnection.appSecret, baseUrl: activeConnection.baseUrl ?? metadata.baseUrl };
 }
 
 // ---------------------------------------------------------------------------
@@ -9938,10 +9941,10 @@ Generate the pipeline analysis report now.`,
   // APsystems EMA
   // =========================================================================
   apsystems: router({
-    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken)); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, apiKeyMasked: maskApiKey(c.apiKey), updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
-    connect: protectedProcedure.input(z.object({ apiKey: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); const em = parseAPsystemsMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken)); const nowIso = new Date().toISOString(); const nc: APsystemsConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `APsystems API ${em.connections.length + 1}`, apiKey: input.apiKey.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nc.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
-    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected APsystems profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
-    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
+    getStatus: protectedProcedure.query(async ({ ctx }) => { const { getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken)); const ac = metadata.connections.find((c) => c.id === metadata.activeConnectionId) ?? metadata.connections[0]; return { connected: metadata.connections.length > 0, activeConnectionId: ac?.id ?? null, connections: metadata.connections.map((c) => ({ id: c.id, name: c.name, apiKeyMasked: maskApiKey(c.appId), hasSecret: !!c.appSecret, updatedAt: c.updatedAt, isActive: c.id === ac?.id })) }; }),
+    connect: protectedProcedure.input(z.object({ appId: z.string().min(1), appSecret: z.string().min(1), connectionName: z.string().optional(), baseUrl: z.string().optional() })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const existing = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); const em = parseAPsystemsMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken)); const nowIso = new Date().toISOString(); const nc: APsystemsConnectionConfig = { id: nanoid(), name: toNonEmptyString(input.connectionName) ?? `APsystems API ${em.connections.length + 1}`, appId: input.appId.trim(), appSecret: input.appSecret.trim(), baseUrl: toNonEmptyString(input.baseUrl) ?? em.baseUrl, createdAt: nowIso, updatedAt: nowIso }; const connections = [nc, ...em.connections]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nc.appId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(connections, nc.id, nc.baseUrl ?? em.baseUrl) }); return { success: true, activeConnectionId: nc.id, totalConnections: connections.length }; }),
+    setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected APsystems profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: ac.appId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
+    removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nac.appId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
     listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getAPsystemsContext(ctx.user.id); const { listSystems } = await import("./services/apsystems"); return listSystems(context); }),
     getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
