@@ -2271,6 +2271,10 @@ export async function updateMonitoringBatchRun(
     successCount: number;
     errorCount: number;
     noDataCount: number;
+    currentProvider: string | null;
+    currentCredentialName: string | null;
+    providersTotal: number;
+    providersCompleted: number;
     completedAt: Date;
   }>
 ) {

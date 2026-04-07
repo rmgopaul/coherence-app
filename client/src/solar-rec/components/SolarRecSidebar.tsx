@@ -51,6 +51,7 @@ const METER_READ_ITEMS: NavItem[] = [
   { label: "eGauge", href: "/solar-rec/meter-reads/egauge", icon: Zap },
   { label: "SunPower", href: "/solar-rec/meter-reads/sunpower", icon: Zap },
   { label: "Tesla Solar", href: "/solar-rec/meter-reads/tesla-solar", icon: Zap },
+  { label: "Tesla Powerhub", href: "/solar-rec/meter-reads/tesla-powerhub", icon: Zap },
 ];
 
 export default function SolarRecSidebar({

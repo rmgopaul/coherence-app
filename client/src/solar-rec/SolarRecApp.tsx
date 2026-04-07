@@ -55,6 +55,7 @@ const SunpowerReadings = lazy(
   () => import("../pages/SunpowerReadings")
 );
 const TeslaSolarApi = lazy(() => import("../pages/TeslaSolarApi"));
+const TeslaPowerhubApi = lazy(() => import("../pages/TeslaPowerhubApi"));
 
 function PageLoader() {
   return (
@@ -132,6 +133,9 @@ function AuthenticatedApp() {
               </Route>
               <Route path="/solar-rec/meter-reads/tesla-solar">
                 <TeslaSolarApi />
+              </Route>
+              <Route path="/solar-rec/meter-reads/tesla-powerhub">
+                <TeslaPowerhubApi />
               </Route>
 
               {/* Default: redirect to dashboard */}

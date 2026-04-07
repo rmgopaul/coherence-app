@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -222,6 +222,19 @@ function SummaryCards({
 // Main component
 // ---------------------------------------------------------------------------
 
+type BatchStatus = {
+  id: string;
+  status: "running" | "completed" | "failed";
+  currentProvider: string | null;
+  currentCredentialName: string | null;
+  providersTotal: number;
+  providersCompleted: number;
+  totalSites: number;
+  successCount: number;
+  errorCount: number;
+  noDataCount: number;
+};
+
 export default function MonitoringDashboard() {
   const [daysBack] = useState(30);
   const { startDate, endDate } = useMemo(() => getDateRange(daysBack), [daysBack]);
@@ -229,18 +242,49 @@ export default function MonitoringDashboard() {
   const [search, setSearch] = useState("");
   const [selectedRun, setSelectedRun] = useState<ApiRun | null>(null);
   const { isOperator } = useSolarRecAuth();
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
+  const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const gridQuery = trpc.monitoring.getGrid.useQuery({ startDate, endDate });
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
+  const batchStatusQuery = trpc.monitoring.getBatchStatus.useQuery(
+    { batchId: activeBatchId! },
+    { enabled: !!activeBatchId, refetchInterval: 2000 }
+  );
+
+  // Track batch progress via polling
+  useEffect(() => {
+    if (!batchStatusQuery.data) return;
+    const data = batchStatusQuery.data as BatchStatus;
+    setBatchStatus(data);
+    if (data.status === "completed" || data.status === "failed") {
+      // Batch finished - stop polling, refresh grid
+      setActiveBatchId(null);
+      gridQuery.refetch();
+      healthQuery.refetch();
+    }
+  }, [batchStatusQuery.data]);
+
   const runAllMutation = trpc.monitoring.runAll.useMutation({
-    onSuccess: () => {
-      // Refetch after a delay to let batch start
-      setTimeout(() => {
-        gridQuery.refetch();
-        healthQuery.refetch();
-      }, 3000);
+    onSuccess: (data) => {
+      setActiveBatchId(data.batchId);
+      setBatchStatus({
+        id: data.batchId,
+        status: "running",
+        currentProvider: null,
+        currentCredentialName: null,
+        providersTotal: 0,
+        providersCompleted: 0,
+        totalSites: 0,
+        successCount: 0,
+        errorCount: 0,
+        noDataCount: 0,
+      });
     },
   });
+
+  const isRunning = !!activeBatchId || runAllMutation.isPending;
 
   const dates = useMemo(() => getDatesInRange(startDate, endDate), [startDate, endDate]);
 
@@ -344,18 +388,114 @@ export default function MonitoringDashboard() {
             <Button
               size="sm"
               onClick={handleRunAll}
-              disabled={runAllMutation.isPending}
+              disabled={isRunning}
             >
-              {runAllMutation.isPending ? (
+              {isRunning ? (
                 <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
               ) : (
                 <Play className="h-3.5 w-3.5 mr-1" />
               )}
-              Run All
+              {isRunning ? "Running..." : "Run All"}
             </Button>
           )}
         </div>
       </div>
+
+      {/* Progress panel */}
+      {isRunning && batchStatus && (
+        <Card className="border-blue-200 bg-blue-50/50">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-center gap-3 mb-2">
+              <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+              <span className="text-sm font-medium text-blue-900">
+                Running monitoring batch...
+              </span>
+            </div>
+
+            {/* Progress bar */}
+            {batchStatus.providersTotal > 0 && (
+              <div className="mb-2">
+                <div className="flex justify-between text-xs text-blue-700 mb-1">
+                  <span>
+                    Provider {batchStatus.providersCompleted + (batchStatus.currentProvider ? 1 : 0)} of {batchStatus.providersTotal}
+                  </span>
+                  <span>
+                    {Math.round((batchStatus.providersCompleted / batchStatus.providersTotal) * 100)}%
+                  </span>
+                </div>
+                <div className="h-2 bg-blue-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                    style={{
+                      width: `${(batchStatus.providersCompleted / batchStatus.providersTotal) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Current provider */}
+            {batchStatus.currentProvider && (
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-blue-600 font-medium">
+                  Now: {batchStatus.currentProvider}
+                </span>
+                {batchStatus.currentCredentialName && (
+                  <span className="text-blue-500">
+                    ({batchStatus.currentCredentialName})
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Running totals */}
+            <div className="flex items-center gap-4 mt-2 text-xs text-blue-700">
+              <span className="flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                {batchStatus.successCount} success
+              </span>
+              <span className="flex items-center gap-1">
+                <XCircle className="h-3 w-3 text-red-500" />
+                {batchStatus.errorCount} errors
+              </span>
+              <span>
+                {batchStatus.totalSites} total sites
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Batch completed notification */}
+      {!isRunning && batchStatus && batchStatus.status !== "running" && (
+        <Card className={batchStatus.status === "completed" ? "border-emerald-200 bg-emerald-50/50" : "border-red-200 bg-red-50/50"}>
+          <CardContent className="py-3 px-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-sm">
+                {batchStatus.status === "completed" ? (
+                  <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                ) : (
+                  <XCircle className="h-4 w-4 text-red-600" />
+                )}
+                <span className="font-medium">
+                  Batch {batchStatus.status}
+                </span>
+                <span className="text-muted-foreground">
+                  {batchStatus.successCount} success, {batchStatus.errorCount} errors, {batchStatus.totalSites} total sites
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs"
+                onClick={() => setBatchStatus(null)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Summary cards */}
       <SummaryCards

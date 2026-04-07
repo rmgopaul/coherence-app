@@ -450,11 +450,45 @@ const monitoringRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
+// Auth compat router — so existing meter read pages that call
+// trpc.auth.me / trpc.auth.logout work in the solar-rec context.
+// ---------------------------------------------------------------------------
+
+const authRouter = t.router({
+  me: solarRecViewerProcedure.query(({ ctx }) => {
+    if (!ctx.user) return null;
+    return {
+      id: ctx.user.id,
+      openId: ctx.user.email, // compat shim
+      name: ctx.user.name,
+      email: ctx.user.email,
+      role: ctx.user.role,
+      loginMethod: "google",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+      twoFactorEnabled: false,
+      twoFactorPending: false,
+    };
+  }),
+
+  logout: solarRecViewerProcedure.mutation(({ ctx }) => {
+    // Clear the solar-rec session cookie
+    ctx.res.clearCookie("solar_rec_session", {
+      path: "/solar-rec/",
+      sameSite: "lax",
+    });
+    return { success: true };
+  }),
+});
+
+// ---------------------------------------------------------------------------
 // Compose root router
 // ---------------------------------------------------------------------------
 
 export const solarRecAppRouter = t.router({
   solarRecDashboard: dashboardRouter,
+  auth: authRouter,
   users: usersRouter,
   credentials: credentialsRouter,
   monitoring: monitoringRouter,

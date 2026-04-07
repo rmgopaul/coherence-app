@@ -68,6 +68,23 @@ async function startServer() {
     createExpressMiddleware({
       router: solarRecAppRouter,
       createContext: createSolarRecContext,
+      onError: ({ error }) => {
+        // Silence NOT_FOUND errors to avoid noise from fallback routing
+        if (error.code !== "NOT_FOUND") {
+          console.error("[SolarRecTRPC]", error.message);
+        }
+      },
+    })
+  );
+  // Mount main app router at solar-rec path too, so meter read pages
+  // can call provider-specific routes (solarEdge.*, enphaseV4.*, etc.)
+  // via the same endpoint. The solar-rec tRPC middleware above handles
+  // solar-rec specific routes; this handles the rest.
+  app.use(
+    "/solar-rec/api/trpc-main",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext,
     })
   );
   // tRPC API

@@ -49,6 +49,27 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
 };
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Extract a human-readable label from a credential's metadata (username, account, apiKey prefix). */
+function extractCredentialLabel(
+  cred: { connectionName?: string | null; metadata?: string | null; accessToken?: string | null } | undefined
+): string | null {
+  if (!cred) return null;
+  if (cred.connectionName) return cred.connectionName;
+  if (!cred.metadata) return cred.accessToken ? `...${cred.accessToken.slice(-6)}` : null;
+  try {
+    const meta = JSON.parse(cred.metadata);
+    // Try common fields that identify the login
+    return meta.username ?? meta.account ?? meta.connectionName
+      ?? (meta.apiKey ? `Key ...${meta.apiKey.slice(-6)}` : null);
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Concurrency limiter
 // ---------------------------------------------------------------------------
 
@@ -219,7 +240,26 @@ export async function executeMonitoringBatch(
     const allCredentials = await db.listSolarRecTeamCredentials();
     const providers = Array.from(new Set(allCredentials.map((c) => c.provider)));
 
+    await db.updateMonitoringBatchRun(batchId, {
+      providersTotal: providers.length,
+      providersCompleted: 0,
+    });
+
+    let providersCompleted = 0;
     for (const provider of providers) {
+      // Find credential name for this provider
+      const cred = allCredentials.find((c) => c.provider === provider);
+      const credName = cred?.connectionName ?? extractCredentialLabel(cred);
+
+      await db.updateMonitoringBatchRun(batchId, {
+        currentProvider: provider,
+        currentCredentialName: credName,
+        totalSites,
+        successCount: totalSuccess,
+        errorCount: totalError,
+        noDataCount: totalNoData,
+      });
+
       const { success, error, noData } = await executeProviderRun(
         provider,
         dateKey,
@@ -229,10 +269,21 @@ export async function executeMonitoringBatch(
       totalError += error;
       totalNoData += noData;
       totalSites += success + error + noData;
+      providersCompleted++;
+
+      await db.updateMonitoringBatchRun(batchId, {
+        providersCompleted,
+        totalSites,
+        successCount: totalSuccess,
+        errorCount: totalError,
+        noDataCount: totalNoData,
+      });
     }
 
     await db.updateMonitoringBatchRun(batchId, {
       status: "completed",
+      currentProvider: null,
+      currentCredentialName: null,
       totalSites,
       successCount: totalSuccess,
       errorCount: totalError,
@@ -243,6 +294,8 @@ export async function executeMonitoringBatch(
     console.error("[MonitoringBatch] Fatal error:", err);
     await db.updateMonitoringBatchRun(batchId, {
       status: "failed",
+      currentProvider: null,
+      currentCredentialName: null,
       totalSites,
       successCount: totalSuccess,
       errorCount: totalError,
