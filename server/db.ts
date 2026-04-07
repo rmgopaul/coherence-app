@@ -44,6 +44,16 @@ import {
   InsertUserRecoveryCode,
   productionReadings,
   InsertProductionReading,
+  solarRecUsers,
+  InsertSolarRecUser,
+  solarRecInvites,
+  InsertSolarRecInvite,
+  solarRecTeamCredentials,
+  InsertSolarRecTeamCredential,
+  monitoringApiRuns,
+  InsertMonitoringApiRun,
+  monitoringBatchRuns,
+  InsertMonitoringBatchRun,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
@@ -1887,5 +1897,395 @@ export async function getProductionReadingSummary() {
       uniqueCustomers: uniqueResult?.count ?? 0,
       latestReadings,
     };
+  });
+}
+
+// ── Solar REC Users ─────────────────────────────────────────────────
+
+export async function getSolarRecUserById(id: number) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec user by id", async () => {
+    const [user] = await db.select().from(solarRecUsers).where(eq(solarRecUsers.id, id)).limit(1);
+    return user ?? null;
+  });
+}
+
+export async function getSolarRecUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec user by email", async () => {
+    const [user] = await db.select().from(solarRecUsers).where(eq(solarRecUsers.email, email.toLowerCase())).limit(1);
+    return user ?? null;
+  });
+}
+
+export async function getSolarRecUserByGoogleOpenId(googleOpenId: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec user by google open id", async () => {
+    const [user] = await db.select().from(solarRecUsers).where(eq(solarRecUsers.googleOpenId, googleOpenId)).limit(1);
+    return user ?? null;
+  });
+}
+
+export async function createSolarRecUser(data: {
+  email: string;
+  name: string;
+  googleOpenId: string;
+  avatarUrl: string | null;
+  role: "owner" | "admin" | "operator" | "viewer";
+  invitedBy?: number | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  return withDbRetry("create solar rec user", async () => {
+    await db.insert(solarRecUsers).values({
+      email: data.email.toLowerCase(),
+      name: data.name,
+      googleOpenId: data.googleOpenId,
+      avatarUrl: data.avatarUrl,
+      role: data.role,
+      invitedBy: data.invitedBy ?? null,
+      lastSignedIn: new Date(),
+    });
+    const [user] = await db.select().from(solarRecUsers).where(eq(solarRecUsers.email, data.email.toLowerCase())).limit(1);
+    return user!;
+  });
+}
+
+export async function updateSolarRecUserLastSignIn(
+  id: number,
+  googleOpenId?: string,
+  name?: string,
+  avatarUrl?: string
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("update solar rec user last sign in", async () => {
+    const updates: Record<string, unknown> = { lastSignedIn: new Date() };
+    if (googleOpenId) updates.googleOpenId = googleOpenId;
+    if (name) updates.name = name;
+    if (avatarUrl) updates.avatarUrl = avatarUrl;
+    await db.update(solarRecUsers).set(updates).where(eq(solarRecUsers.id, id));
+  });
+}
+
+export async function updateSolarRecUserRole(id: number, role: "admin" | "operator" | "viewer") {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("update solar rec user role", async () => {
+    await db.update(solarRecUsers).set({ role }).where(eq(solarRecUsers.id, id));
+  });
+}
+
+export async function deactivateSolarRecUser(id: number) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("deactivate solar rec user", async () => {
+    await db.update(solarRecUsers).set({ isActive: false }).where(eq(solarRecUsers.id, id));
+  });
+}
+
+export async function listSolarRecUsers() {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list solar rec users", async () =>
+    db.select().from(solarRecUsers).orderBy(asc(solarRecUsers.id))
+  );
+}
+
+// ── Solar REC Invites ───────────────────────────────────────────────
+
+export async function createSolarRecInvite(data: {
+  email: string;
+  role: "admin" | "operator" | "viewer";
+  createdBy: number;
+  expiresInDays?: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+
+  const token = nanoid(32);
+  const tokenHash = (await import("crypto")).createHash("sha256").update(token).digest("hex");
+  const expiresAt = new Date(Date.now() + (data.expiresInDays ?? 30) * 24 * 60 * 60 * 1000);
+
+  await withDbRetry("create solar rec invite", async () => {
+    await db.insert(solarRecInvites).values({
+      id: nanoid(),
+      email: data.email.toLowerCase(),
+      role: data.role,
+      tokenHash,
+      createdBy: data.createdBy,
+      expiresAt,
+    });
+  });
+
+  return { token, expiresAt };
+}
+
+export async function getSolarRecInviteByEmail(email: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec invite by email", async () => {
+    const [invite] = await db
+      .select()
+      .from(solarRecInvites)
+      .where(
+        and(
+          eq(solarRecInvites.email, email.toLowerCase()),
+          sql`${solarRecInvites.usedAt} IS NULL`,
+          sql`${solarRecInvites.expiresAt} > NOW()`
+        )
+      )
+      .orderBy(desc(solarRecInvites.createdAt))
+      .limit(1);
+    return invite ?? null;
+  });
+}
+
+export async function markSolarRecInviteUsed(id: string) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("mark solar rec invite used", async () => {
+    await db.update(solarRecInvites).set({ usedAt: new Date() }).where(eq(solarRecInvites.id, id));
+  });
+}
+
+export async function listSolarRecInvites(createdBy?: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list solar rec invites", async () => {
+    const where = createdBy ? eq(solarRecInvites.createdBy, createdBy) : undefined;
+    return db
+      .select()
+      .from(solarRecInvites)
+      .where(where)
+      .orderBy(desc(solarRecInvites.createdAt))
+      .limit(50);
+  });
+}
+
+// ── Solar REC Team Credentials ──────────────────────────────────────
+
+export async function listSolarRecTeamCredentials() {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list solar rec team credentials", async () =>
+    db.select().from(solarRecTeamCredentials).orderBy(asc(solarRecTeamCredentials.provider))
+  );
+}
+
+export async function getSolarRecTeamCredential(id: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec team credential", async () => {
+    const [cred] = await db.select().from(solarRecTeamCredentials).where(eq(solarRecTeamCredentials.id, id)).limit(1);
+    return cred ?? null;
+  });
+}
+
+export async function getSolarRecTeamCredentialsByProvider(provider: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("get solar rec team credentials by provider", async () =>
+    db.select().from(solarRecTeamCredentials).where(eq(solarRecTeamCredentials.provider, provider))
+  );
+}
+
+export async function upsertSolarRecTeamCredential(data: {
+  id?: string;
+  provider: string;
+  connectionName?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: Date;
+  metadata?: string;
+  createdBy: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const id = data.id ?? nanoid();
+  return withDbRetry("upsert solar rec team credential", async () => {
+    const [existing] = await db.select().from(solarRecTeamCredentials).where(eq(solarRecTeamCredentials.id, id)).limit(1);
+    if (existing) {
+      await db.update(solarRecTeamCredentials).set({
+        connectionName: data.connectionName ?? existing.connectionName,
+        accessToken: data.accessToken ?? existing.accessToken,
+        refreshToken: data.refreshToken ?? existing.refreshToken,
+        expiresAt: data.expiresAt ?? existing.expiresAt,
+        metadata: data.metadata ?? existing.metadata,
+        updatedBy: data.createdBy,
+      }).where(eq(solarRecTeamCredentials.id, id));
+    } else {
+      await db.insert(solarRecTeamCredentials).values({
+        id,
+        provider: data.provider,
+        connectionName: data.connectionName ?? null,
+        accessToken: data.accessToken ?? null,
+        refreshToken: data.refreshToken ?? null,
+        expiresAt: data.expiresAt ?? null,
+        metadata: data.metadata ?? null,
+        createdBy: data.createdBy,
+        updatedBy: data.createdBy,
+      });
+    }
+    return id;
+  });
+}
+
+export async function deleteSolarRecTeamCredential(id: string) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("delete solar rec team credential", async () => {
+    await db.delete(solarRecTeamCredentials).where(eq(solarRecTeamCredentials.id, id));
+  });
+}
+
+// ── Monitoring API Runs ─────────────────────────────────────────────
+
+export async function upsertMonitoringApiRun(data: InsertMonitoringApiRun) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("upsert monitoring api run", async () => {
+    // Try to find existing row by unique index
+    const [existing] = await db
+      .select({ id: monitoringApiRuns.id })
+      .from(monitoringApiRuns)
+      .where(
+        and(
+          eq(monitoringApiRuns.provider, data.provider),
+          eq(monitoringApiRuns.siteId, data.siteId),
+          eq(monitoringApiRuns.dateKey, data.dateKey)
+        )
+      )
+      .limit(1);
+
+    if (existing) {
+      await db
+        .update(monitoringApiRuns)
+        .set({
+          status: data.status,
+          readingsCount: data.readingsCount,
+          lifetimeKwh: data.lifetimeKwh,
+          errorMessage: data.errorMessage,
+          durationMs: data.durationMs,
+          triggeredBy: data.triggeredBy,
+          triggeredAt: data.triggeredAt,
+          siteName: data.siteName,
+          connectionId: data.connectionId,
+        })
+        .where(eq(monitoringApiRuns.id, existing.id));
+    } else {
+      await db.insert(monitoringApiRuns).values({ ...data, id: data.id ?? nanoid() });
+    }
+  });
+}
+
+export async function getMonitoringGrid(startDate: string, endDate: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("get monitoring grid", async () =>
+    db
+      .select()
+      .from(monitoringApiRuns)
+      .where(
+        and(
+          gte(monitoringApiRuns.dateKey, startDate),
+          sql`${monitoringApiRuns.dateKey} <= ${endDate}`
+        )
+      )
+      .orderBy(asc(monitoringApiRuns.provider), asc(monitoringApiRuns.siteId), asc(monitoringApiRuns.dateKey))
+  );
+}
+
+export async function getMonitoringRunDetail(provider: string, siteId: string, dateKey: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get monitoring run detail", async () => {
+    const [row] = await db
+      .select()
+      .from(monitoringApiRuns)
+      .where(
+        and(
+          eq(monitoringApiRuns.provider, provider),
+          eq(monitoringApiRuns.siteId, siteId),
+          eq(monitoringApiRuns.dateKey, dateKey)
+        )
+      )
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function getMonitoringHealthSummary() {
+  const db = await getDb();
+  if (!db) return [];
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+  const startDate = sevenDaysAgo.toISOString().slice(0, 10);
+
+  return withDbRetry("get monitoring health summary", async () =>
+    db
+      .select({
+        provider: monitoringApiRuns.provider,
+        totalRuns: sql<number>`COUNT(*)`,
+        successCount: sql<number>`SUM(CASE WHEN ${monitoringApiRuns.status} = 'success' THEN 1 ELSE 0 END)`,
+        errorCount: sql<number>`SUM(CASE WHEN ${monitoringApiRuns.status} = 'error' THEN 1 ELSE 0 END)`,
+        noDataCount: sql<number>`SUM(CASE WHEN ${monitoringApiRuns.status} = 'no_data' THEN 1 ELSE 0 END)`,
+        uniqueSites: sql<number>`COUNT(DISTINCT ${monitoringApiRuns.siteId})`,
+        lastSuccess: sql<string>`MAX(CASE WHEN ${monitoringApiRuns.status} = 'success' THEN ${monitoringApiRuns.dateKey} END)`,
+      })
+      .from(monitoringApiRuns)
+      .where(gte(monitoringApiRuns.dateKey, startDate))
+      .groupBy(monitoringApiRuns.provider)
+  );
+}
+
+// ── Monitoring Batch Runs ───────────────────────────────────────────
+
+export async function createMonitoringBatchRun(data: {
+  dateKey: string;
+  triggeredBy: number | null;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const id = nanoid();
+  await withDbRetry("create monitoring batch run", async () => {
+    await db.insert(monitoringBatchRuns).values({
+      id,
+      dateKey: data.dateKey,
+      status: "running",
+      triggeredBy: data.triggeredBy,
+      startedAt: new Date(),
+    });
+  });
+  return id;
+}
+
+export async function updateMonitoringBatchRun(
+  id: string,
+  data: Partial<{
+    status: "running" | "completed" | "failed";
+    totalSites: number;
+    successCount: number;
+    errorCount: number;
+    noDataCount: number;
+    completedAt: Date;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("update monitoring batch run", async () => {
+    await db.update(monitoringBatchRuns).set(data).where(eq(monitoringBatchRuns.id, id));
+  });
+}
+
+export async function getMonitoringBatchRun(id: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get monitoring batch run", async () => {
+    const [row] = await db.select().from(monitoringBatchRuns).where(eq(monitoringBatchRuns.id, id)).limit(1);
+    return row ?? null;
   });
 }

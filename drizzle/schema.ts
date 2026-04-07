@@ -515,3 +515,136 @@ export const productionReadings = mysqlTable(
 
 export type ProductionReading = typeof productionReadings.$inferSelect;
 export type InsertProductionReading = typeof productionReadings.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Solar REC multi-user tables
+// ---------------------------------------------------------------------------
+
+// User accounts for the Solar REC application (Google OAuth only).
+export const solarRecUsers = mysqlTable(
+  "solarRecUsers",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    email: varchar("email", { length: 320 }).notNull().unique(),
+    name: varchar("name", { length: 255 }),
+    googleOpenId: varchar("googleOpenId", { length: 64 }).unique(),
+    avatarUrl: varchar("avatarUrl", { length: 512 }),
+    role: mysqlEnum("role", ["owner", "admin", "operator", "viewer"]).default("operator").notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    invitedBy: int("invitedBy"),
+    lastSignedIn: timestamp("lastSignedIn"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    emailIdx: index("solar_rec_users_email_idx").on(table.email),
+    googleOpenIdIdx: index("solar_rec_users_google_open_id_idx").on(table.googleOpenId),
+  })
+);
+
+export type SolarRecUser = typeof solarRecUsers.$inferSelect;
+export type InsertSolarRecUser = typeof solarRecUsers.$inferInsert;
+
+// Time-limited invite tokens for onboarding coworkers.
+export const solarRecInvites = mysqlTable(
+  "solarRecInvites",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    email: varchar("email", { length: 320 }).notNull(),
+    role: mysqlEnum("role", ["admin", "operator", "viewer"]).default("operator").notNull(),
+    tokenHash: varchar("tokenHash", { length: 128 }).notNull().unique(),
+    createdBy: int("createdBy").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    usedAt: timestamp("usedAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    emailIdx: index("solar_rec_invites_email_idx").on(table.email),
+  })
+);
+
+export type SolarRecInvite = typeof solarRecInvites.$inferSelect;
+export type InsertSolarRecInvite = typeof solarRecInvites.$inferInsert;
+
+// Shared API credentials used by the whole Solar REC team.
+export const solarRecTeamCredentials = mysqlTable(
+  "solarRecTeamCredentials",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    provider: varchar("provider", { length: 64 }).notNull(),
+    connectionName: varchar("connectionName", { length: 128 }),
+    accessToken: text("accessToken"),
+    refreshToken: text("refreshToken"),
+    expiresAt: timestamp("expiresAt"),
+    metadata: mediumtext("metadata"), // JSON - apiKey, apiSecret, baseUrl, connection configs
+    createdBy: int("createdBy").notNull(),
+    updatedBy: int("updatedBy"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    providerIdx: index("solar_rec_team_credentials_provider_idx").on(table.provider),
+  })
+);
+
+export type SolarRecTeamCredential = typeof solarRecTeamCredentials.$inferSelect;
+export type InsertSolarRecTeamCredential = typeof solarRecTeamCredentials.$inferInsert;
+
+// Per-site, per-date API call results for the Monitoring Dashboard.
+export const monitoringApiRuns = mysqlTable(
+  "monitoringApiRuns",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    provider: varchar("provider", { length: 64 }).notNull(),
+    connectionId: varchar("connectionId", { length: 64 }),
+    siteId: varchar("siteId", { length: 128 }).notNull(),
+    siteName: varchar("siteName", { length: 255 }),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(), // YYYY-MM-DD
+    status: mysqlEnum("status", ["success", "error", "no_data", "skipped"]).notNull(),
+    readingsCount: int("readingsCount").default(0).notNull(),
+    lifetimeKwh: double("lifetimeKwh"),
+    errorMessage: text("errorMessage"),
+    durationMs: int("durationMs"),
+    triggeredBy: int("triggeredBy"),
+    triggeredAt: timestamp("triggeredAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    providerSiteDateIdx: uniqueIndex("monitoring_api_runs_provider_site_date_idx").on(
+      table.provider,
+      table.siteId,
+      table.dateKey
+    ),
+    dateKeyIdx: index("monitoring_api_runs_date_key_idx").on(table.dateKey),
+    providerDateIdx: index("monitoring_api_runs_provider_date_idx").on(table.provider, table.dateKey),
+    statusDateIdx: index("monitoring_api_runs_status_date_idx").on(table.status, table.dateKey),
+  })
+);
+
+export type MonitoringApiRun = typeof monitoringApiRuns.$inferSelect;
+export type InsertMonitoringApiRun = typeof monitoringApiRuns.$inferInsert;
+
+// Tracks batch "Run All" operations for the Monitoring Dashboard.
+export const monitoringBatchRuns = mysqlTable(
+  "monitoringBatchRuns",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(),
+    status: mysqlEnum("status", ["running", "completed", "failed"]).default("running").notNull(),
+    totalSites: int("totalSites").default(0).notNull(),
+    successCount: int("successCount").default(0).notNull(),
+    errorCount: int("errorCount").default(0).notNull(),
+    noDataCount: int("noDataCount").default(0).notNull(),
+    triggeredBy: int("triggeredBy"),
+    startedAt: timestamp("startedAt").defaultNow(),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    dateKeyIdx: index("monitoring_batch_runs_date_key_idx").on(table.dateKey),
+    statusIdx: index("monitoring_batch_runs_status_idx").on(table.status),
+  })
+);
+
+export type MonitoringBatchRun = typeof monitoringBatchRuns.$inferSelect;
+export type InsertMonitoringBatchRun = typeof monitoringBatchRuns.$inferInsert;

@@ -1,9 +1,10 @@
 import { trpc } from "@/lib/trpc";
+import { solarRecTrpc } from "./solar-rec/solarRecTrpc";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpLink } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
-import SolarRecStandaloneApp from "./SolarRecStandaloneApp";
+import SolarRecApp from "./solar-rec/SolarRecApp";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -38,22 +39,28 @@ const trpcFetch: typeof fetch = async (input, init) => {
   return response;
 };
 
-// Use httpLink (no batching) pointing at the standalone Solar REC tRPC endpoint.
-// We reuse the same `trpc` instance so SolarRecDashboard.tsx works unchanged.
+const linkOptions = {
+  url: "/solar-rec/api/trpc",
+  transformer: superjson,
+  fetch: trpcFetch,
+} as const;
+
+// Main app trpc instance (for SolarRecDashboard which uses solarRecDashboard.* routes)
 const trpcClient = trpc.createClient({
-  links: [
-    httpLink({
-      url: "/solar-rec/api/trpc",
-      transformer: superjson,
-      fetch: trpcFetch,
-    }),
-  ],
+  links: [httpLink(linkOptions)],
+});
+
+// Solar REC typed trpc instance (for Settings, Monitoring, etc.)
+const solarRecTrpcClient = solarRecTrpc.createClient({
+  links: [httpLink(linkOptions)],
 });
 
 createRoot(document.getElementById("root")!).render(
   <trpc.Provider client={trpcClient} queryClient={queryClient}>
-    <QueryClientProvider client={queryClient}>
-      <SolarRecStandaloneApp />
-    </QueryClientProvider>
+    <solarRecTrpc.Provider client={solarRecTrpcClient} queryClient={queryClient}>
+      <QueryClientProvider client={queryClient}>
+        <SolarRecApp />
+      </QueryClientProvider>
+    </solarRecTrpc.Provider>
   </trpc.Provider>
 );

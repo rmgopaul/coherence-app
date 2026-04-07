@@ -10,6 +10,7 @@ import oauthRouter from "../oauth-routes";
 import { assertServerRuntimeSafety } from "./env";
 import { serveStatic, setupVite } from "./vite";
 import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
+import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
 import { registerSolarRecAuth } from "./solarRecAuth";
@@ -38,6 +39,7 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   assertServerRuntimeSafety();
   startNightlySnapshotScheduler();
+  startMonitoringScheduler();
 
   const app = express();
   const server = createServer(app);
