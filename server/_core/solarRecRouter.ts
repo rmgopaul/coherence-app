@@ -264,6 +264,14 @@ const usersRouter = t.router({
     return listSolarRecInvites();
   }),
 
+  deleteInvite: solarRecAdminProcedure
+    .input(z.object({ inviteId: z.string() }))
+    .mutation(async ({ input }) => {
+      const { deleteSolarRecInvite } = await import("../db");
+      await deleteSolarRecInvite(input.inviteId);
+      return { success: true };
+    }),
+
   updateRole: solarRecAdminProcedure
     .input(
       z.object({

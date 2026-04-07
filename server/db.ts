@@ -2071,6 +2071,14 @@ export async function listSolarRecInvites(createdBy?: number) {
   });
 }
 
+export async function deleteSolarRecInvite(id: string) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("delete solar rec invite", async () => {
+    await db.delete(solarRecInvites).where(eq(solarRecInvites.id, id));
+  });
+}
+
 // ── Solar REC Team Credentials ──────────────────────────────────────
 
 export async function listSolarRecTeamCredentials() {

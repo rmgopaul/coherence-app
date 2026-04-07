@@ -38,6 +38,9 @@ function UserManagement() {
   const updateRoleMutation = trpc.users.updateRole.useMutation({
     onSuccess: () => usersQuery.refetch(),
   });
+  const deleteInviteMutation = trpc.users.deleteInvite.useMutation({
+    onSuccess: () => invitesQuery.refetch(),
+  });
   const deactivateMutation = trpc.users.deactivate.useMutation({
     onSuccess: () => usersQuery.refetch(),
   });
@@ -203,9 +206,19 @@ function UserManagement() {
                     className="flex items-center justify-between py-1.5 px-3 rounded border text-xs"
                   >
                     <span>{invite.email}</span>
-                    <Badge variant="outline" className="text-[10px]">
-                      {invite.role}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-[10px]">
+                        {invite.role}
+                      </Badge>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-5 w-5 text-muted-foreground hover:text-destructive"
+                        onClick={() => deleteInviteMutation.mutate({ inviteId: invite.id })}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </Button>
+                    </div>
                   </div>
                 ))}
             </div>
