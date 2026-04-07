@@ -50,7 +50,9 @@ type DatasetKey =
   | "abpPortalInvoiceMapRows"
   | "abpCsgPortalDatabaseRows"
   | "abpIccReport2Rows"
-  | "abpIccReport3Rows";
+  | "abpIccReport3Rows"
+  | "deliveryScheduleBase"
+  | "transferHistory";
 
 type OwnershipStatus =
   | "Transferred and Reporting"
@@ -606,6 +608,22 @@ const DATASET_DEFINITIONS: Record<
       ["Application_ID", "Total Quantity of RECs Contracted", "REC Price"],
     ],
   },
+  deliveryScheduleBase: {
+    label: "Delivery Schedule (Obligations)",
+    description:
+      "REC delivery obligations per system per year. Same format as REC Delivery Schedules but delivered quantities are computed from Transfer History uploads.",
+    requiredHeaderSets: [
+      ["tracking_system_ref_id", "year1_quantity_required"],
+    ],
+  },
+  transferHistory: {
+    label: "Transfer History (GATS)",
+    description:
+      "GATS transfer records. Multi-file append supported. Transfers from Carbon Solutions SREC to utilities count as deliveries; reverse transfers are subtracted. Allocated by Transfer Completion Date to energy year (June 1 – May 31).",
+    requiredHeaderSets: [
+      ["Unit ID", "Quantity", "Transferor", "Transferee"],
+    ],
+  },
 };
 
 const OWNERSHIP_ORDER: OwnershipStatus[] = [
@@ -681,7 +699,7 @@ const COMPLIANT_SOURCE_STORAGE_KEY = "solarRecDashboardCompliantSourcesV1";
 const MAX_COMPLIANT_SOURCE_CHARS = 100;
 const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
 const MAX_SINGLE_CSV_UPLOAD_BYTES = 150 * 1024 * 1024;
-const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads"]);
+const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads", "transferHistory"]);
 const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccReport3Rows"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "solarApplications",
@@ -1490,9 +1508,19 @@ function convertedReadsRowKey(row: CsvRow): string {
   ].join("|");
 }
 
+function transferHistoryRowKey(row: CsvRow): string {
+  return [
+    clean(row["Transaction ID"]),
+    clean(row["Unit ID"]),
+    clean(row["Transfer Completion Date"]),
+    clean(row.Quantity),
+  ].join("|");
+}
+
 function datasetAppendRowKey(key: DatasetKey, row: CsvRow): string {
   if (key === "accountSolarGeneration") return accountSolarGenerationRowKey(row);
   if (key === "convertedReads") return convertedReadsRowKey(row);
+  if (key === "transferHistory") return transferHistoryRowKey(row);
   return "";
 }
 
@@ -2515,6 +2543,7 @@ export default function SolarRecDashboard() {
   const isComparisonsTabActive = activeTab === "comparisons";
   const isFinancialsTabActive = activeTab === "financials";
   const isDataQualityTabActive = activeTab === "data-quality";
+  const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
   const [selectedSystemKey, setSelectedSystemKey] = useState<string | null>(null);
 
   // Helper: make system names clickable to open detail sheet
@@ -9120,6 +9149,173 @@ const forecastSummary = useMemo(() => {
   return { total, totalProjReporting, totalProjAll, atRisk };
 }, [forecastProjections]);
 
+// ── Delivery Tracker ────────────────────────────────────────────
+const UTILITY_PATTERNS = ["comed", "ameren", "midamerican"];
+
+type DeliveryTrackerRow = {
+  systemName: string;
+  unitId: string;
+  contractId: string;
+  yearLabel: string;
+  yearStart: Date | null;
+  yearEnd: Date | null;
+  obligated: number;
+  delivered: number;
+  gap: number;
+};
+
+type DeliveryTrackerContractSummary = {
+  contractId: string;
+  systems: number;
+  totalObligated: number;
+  totalDelivered: number;
+  totalGap: number;
+  deliveryPercent: number | null;
+};
+
+const deliveryTrackerData = useMemo(() => {
+  if (!isDeliveryTrackerTabActive) return { rows: [] as DeliveryTrackerRow[], contracts: [] as DeliveryTrackerContractSummary[], totalTransfers: 0, unmatchedTransfers: 0 };
+
+  const scheduleRows = datasets.deliveryScheduleBase?.rows ?? [];
+  const transferRows = datasets.transferHistory?.rows ?? [];
+
+  // Build schedule: system → year → { obligated, startDate, endDate }
+  type YearSlot = { yearLabel: string; yearStart: Date | null; yearEnd: Date | null; obligated: number; delivered: number };
+  type SystemSchedule = { systemName: string; unitId: string; contractId: string; years: YearSlot[] };
+  const systemSchedules = new Map<string, SystemSchedule>();
+
+  for (const row of scheduleRows) {
+    const unitId = clean(row.tracking_system_ref_id);
+    if (!unitId) continue;
+    const systemName = clean(row.system_name) || unitId;
+    const contractId = clean(row.utility_contract_number) || "Unassigned";
+    const years: YearSlot[] = [];
+
+    for (let y = 1; y <= 15; y++) {
+      const required = parseNumber(row[`year${y}_quantity_required`]) ?? 0;
+      const startDate = parseDate(row[`year${y}_start_date`]);
+      const endDate = parseDate(row[`year${y}_end_date`]);
+      if (required === 0 && !startDate) continue;
+      const yearLabel = buildDeliveryYearLabel(startDate, endDate, row[`year${y}_start_date`] ?? "", row[`year${y}_end_date`] ?? "");
+      years.push({ yearLabel, yearStart: startDate, yearEnd: endDate, obligated: required, delivered: 0 });
+    }
+
+    if (years.length > 0) {
+      systemSchedules.set(unitId.toLowerCase(), { systemName, unitId, contractId, years });
+    }
+  }
+
+  // Process transfers: allocate to energy years
+  let totalTransfers = 0;
+  let unmatchedTransfers = 0;
+
+  for (const row of transferRows) {
+    const unitId = clean(row["Unit ID"]);
+    if (!unitId) continue;
+    const qty = parseNumber(row.Quantity) ?? 0;
+    if (qty === 0) continue;
+
+    const transferor = (clean(row.Transferor) ?? "").toLowerCase();
+    const transferee = (clean(row.Transferee) ?? "").toLowerCase();
+
+    // Determine direction
+    let direction = 0;
+    const isFromCS = transferor.includes("carbon solutions");
+    const isToCS = transferee.includes("carbon solutions");
+    const transfereeIsUtility = UTILITY_PATTERNS.some(u => transferee.includes(u));
+    const transferorIsUtility = UTILITY_PATTERNS.some(u => transferor.includes(u));
+
+    if (isFromCS && transfereeIsUtility) direction = 1;       // delivery
+    else if (transferorIsUtility && isToCS) direction = -1;   // return/subtract
+    else continue; // Skip non-utility transfers
+
+    totalTransfers++;
+
+    // Parse Transfer Completion Date to determine energy year
+    const completionDateRaw = clean(row["Transfer Completion Date"]);
+    const completionDate = completionDateRaw ? parseDate(completionDateRaw) : null;
+    if (!completionDate) continue;
+
+    // Find system schedule
+    const schedule = systemSchedules.get(unitId.toLowerCase());
+    if (!schedule) {
+      unmatchedTransfers++;
+      continue;
+    }
+
+    // Find which year slot this transfer falls into
+    let matched = false;
+    for (const year of schedule.years) {
+      if (!year.yearStart || !year.yearEnd) continue;
+      // Energy year: start <= completionDate <= end
+      if (completionDate >= year.yearStart && completionDate <= year.yearEnd) {
+        year.delivered += qty * direction;
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      // Try to match by energy year boundaries (June 1 – May 31)
+      const completionMonth = completionDate.getMonth(); // 0-indexed
+      const completionYear = completionDate.getFullYear();
+      const eyStartYear = completionMonth >= 5 ? completionYear : completionYear - 1; // June=5
+      for (const year of schedule.years) {
+        if (!year.yearStart) continue;
+        if (year.yearStart.getFullYear() === eyStartYear) {
+          year.delivered += qty * direction;
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) unmatchedTransfers++;
+    }
+  }
+
+  // Build output rows
+  const rows: DeliveryTrackerRow[] = [];
+  const contractAgg = new Map<string, DeliveryTrackerContractSummary>();
+
+  systemSchedules.forEach((schedule) => {
+    for (const year of schedule.years) {
+      const gap = year.obligated - year.delivered;
+      rows.push({
+        systemName: schedule.systemName,
+        unitId: schedule.unitId,
+        contractId: schedule.contractId,
+        yearLabel: year.yearLabel,
+        yearStart: year.yearStart,
+        yearEnd: year.yearEnd,
+        obligated: year.obligated,
+        delivered: year.delivered,
+        gap,
+      });
+
+      // Contract aggregation
+      const c = contractAgg.get(schedule.contractId) ?? {
+        contractId: schedule.contractId,
+        systems: 0,
+        totalObligated: 0,
+        totalDelivered: 0,
+        totalGap: 0,
+        deliveryPercent: null,
+      };
+      c.totalObligated += year.obligated;
+      c.totalDelivered += year.delivered;
+      c.totalGap += gap;
+      contractAgg.set(schedule.contractId, c);
+    }
+    // Count unique systems per contract
+    const c = contractAgg.get(schedule.contractId);
+    if (c) c.systems++;
+  });
+
+  const contracts = Array.from(contractAgg.values())
+    .map(c => ({ ...c, deliveryPercent: toPercentValue(c.totalDelivered, c.totalObligated) }))
+    .sort((a, b) => a.contractId.localeCompare(b.contractId, undefined, { numeric: true }));
+
+  return { rows, contracts, totalTransfers, unmatchedTransfers };
+}, [isDeliveryTrackerTabActive, datasets.deliveryScheduleBase, datasets.transferHistory]);
+
 // ── Alerts ──────────────────────────────────────────────────────
 type AlertItem = { id: string; severity: "critical" | "warning" | "info"; type: string; system: string; message: string; action: string };
 
@@ -9466,6 +9662,7 @@ const dataQualityUnmatched = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="comparisons">Comparisons</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="financials">Financials</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="data-quality">Data Quality</TabsTrigger>
+            <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
 
           <TabsContent value="overview" className="space-y-4 mt-4">
@@ -13499,6 +13696,142 @@ const dataQualityUnmatched = useMemo(() => {
                 )}
               </CardContent>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="delivery-tracker" className="space-y-4 mt-4">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <Card><CardHeader><CardDescription>Systems in Schedule</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.contracts.reduce((a, c) => a + c.systems, 0))}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Transfers Processed</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.totalTransfers)}</CardTitle></CardHeader></Card>
+              <Card className={deliveryTrackerData.unmatchedTransfers > 0 ? "border-amber-200 bg-amber-50/50" : ""}><CardHeader><CardDescription>Unmatched Transfers</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.unmatchedTransfers)}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Contracts</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.contracts.length)}</CardTitle></CardHeader></Card>
+            </div>
+
+            {/* Contract summary */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">Delivery by Contract</CardTitle>
+                    <CardDescription>Obligations from Delivery Schedule Base, actuals computed from Transfer History uploads.</CardDescription>
+                  </div>
+                  {deliveryTrackerData.contracts.length > 0 && (
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(
+                        ["contract", "systems", "total_obligated", "total_delivered", "total_gap", "delivery_percent"],
+                        deliveryTrackerData.contracts.map(c => ({
+                          contract: c.contractId, systems: c.systems, total_obligated: c.totalObligated,
+                          total_delivered: c.totalDelivered, total_gap: c.totalGap,
+                          delivery_percent: c.deliveryPercent !== null ? c.deliveryPercent.toFixed(1) : "",
+                        }))
+                      );
+                      triggerCsvDownload(`delivery-tracker-contracts-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                {deliveryTrackerData.contracts.length === 0 ? (
+                  <p className="text-sm text-slate-500 py-4 text-center">
+                    Upload Delivery Schedule (Obligations) and Transfer History to see delivery tracking.
+                  </p>
+                ) : (
+                  <>
+                    <div className="h-72 rounded-md border border-slate-200 bg-white p-2 mb-4">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={deliveryTrackerData.contracts} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          <XAxis dataKey="contractId" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
+                          <YAxis tick={{ fontSize: 12 }} />
+                          <Tooltip />
+                          <Legend />
+                          <Bar dataKey="totalObligated" fill="#94a3b8" name="Obligated" />
+                          <Bar dataKey="totalDelivered" fill="#16a34a" name="Delivered" />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>Contract</TableHead>
+                        <TableHead className="text-right">Systems</TableHead>
+                        <TableHead className="text-right">Obligated</TableHead>
+                        <TableHead className="text-right">Delivered</TableHead>
+                        <TableHead className="text-right">Gap</TableHead>
+                        <TableHead className="text-right">Delivery %</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {deliveryTrackerData.contracts.map((c) => (
+                          <TableRow key={c.contractId}>
+                            <TableCell className="font-medium">{c.contractId}</TableCell>
+                            <TableCell className="text-right">{c.systems}</TableCell>
+                            <TableCell className="text-right">{formatNumber(c.totalObligated)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(c.totalDelivered)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(c.totalGap)}</TableCell>
+                            <TableCell className="text-right">{c.deliveryPercent !== null ? `${c.deliveryPercent.toFixed(1)}%` : "N/A"}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* System-level detail (paginated) */}
+            {deliveryTrackerData.rows.length > 0 && (
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-base">System × Year Detail</CardTitle>
+                      <CardDescription>{formatNumber(deliveryTrackerData.rows.length)} system-year rows</CardDescription>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(
+                        ["system_name", "unit_id", "contract", "year", "start_date", "end_date", "obligated", "delivered", "gap"],
+                        deliveryTrackerData.rows.map(r => ({
+                          system_name: r.systemName, unit_id: r.unitId, contract: r.contractId,
+                          year: r.yearLabel, start_date: r.yearStart?.toISOString().slice(0, 10) ?? "",
+                          end_date: r.yearEnd?.toISOString().slice(0, 10) ?? "",
+                          obligated: r.obligated, delivered: r.delivered, gap: r.gap,
+                        }))
+                      );
+                      triggerCsvDownload(`delivery-tracker-detail-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="max-h-[500px] overflow-y-auto">
+                    <Table>
+                      <TableHeader><TableRow>
+                        <TableHead>System</TableHead>
+                        <TableHead>Unit ID</TableHead>
+                        <TableHead>Contract</TableHead>
+                        <TableHead>Year</TableHead>
+                        <TableHead className="text-right">Obligated</TableHead>
+                        <TableHead className="text-right">Delivered</TableHead>
+                        <TableHead className="text-right">Gap</TableHead>
+                      </TableRow></TableHeader>
+                      <TableBody>
+                        {deliveryTrackerData.rows.slice(0, 200).map((r, i) => (
+                          <TableRow key={i}>
+                            <TableCell className="text-sm">{r.systemName}</TableCell>
+                            <TableCell className="text-xs text-slate-500">{r.unitId}</TableCell>
+                            <TableCell className="text-sm">{r.contractId}</TableCell>
+                            <TableCell className="text-sm">{r.yearLabel}</TableCell>
+                            <TableCell className="text-right">{formatNumber(r.obligated)}</TableCell>
+                            <TableCell className="text-right">{formatNumber(r.delivered)}</TableCell>
+                            <TableCell className={`text-right ${r.gap > 0 ? "text-rose-600" : r.gap < 0 ? "text-emerald-600" : ""}`}>{formatNumber(r.gap)}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {deliveryTrackerData.rows.length > 200 && (
+                    <p className="text-xs text-slate-500 mt-2 text-center">Showing first 200 of {formatNumber(deliveryTrackerData.rows.length)} rows. Export CSV for full data.</p>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
         </Tabs>
 
