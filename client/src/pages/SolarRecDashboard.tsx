@@ -239,6 +239,7 @@ type RecPerformanceResultRow = {
   batchId: string;
   systemName: string;
   contractId: string;
+  scheduleYearNumber: number; // Which year in the schedule DY3 corresponds to (1-15)
   deliveryYearOne: number;
   deliveryYearTwo: number;
   deliveryYearThree: number;
@@ -6210,10 +6211,20 @@ export default function SolarRecDashboard() {
     });
   }, [effectivePerformanceContractId, isPerformanceEvalTabActive, performanceSourceRows]);
 
+  // Default to the current energy year instead of the last year in the schedule.
+  // Current EY: if month >= June (5), use this year's June 1; otherwise last year's June 1.
+  const currentEyStartKey = (() => {
+    const now = new Date();
+    const eyStartYear = now.getMonth() >= 5 ? now.getFullYear() : now.getFullYear() - 1;
+    return `${eyStartYear}-06-01`;
+  })();
+
   const effectivePerformanceDeliveryYearKey =
     performanceDeliveryYearOptions.some((option) => option.key === performanceDeliveryYearKey)
       ? performanceDeliveryYearKey
-      : (performanceDeliveryYearOptions[performanceDeliveryYearOptions.length - 1]?.key ?? "");
+      : (performanceDeliveryYearOptions.find((option) => option.key === currentEyStartKey)?.key
+        ?? performanceDeliveryYearOptions[performanceDeliveryYearOptions.length - 1]?.key
+        ?? "");
 
   const performanceSelectedDeliveryYearLabel =
     performanceDeliveryYearOptions.find((option) => option.key === effectivePerformanceDeliveryYearKey)?.label ??
@@ -6281,6 +6292,7 @@ export default function SolarRecDashboard() {
           batchId: row.batchId ?? "N/A",
           systemName: row.systemName,
           contractId: row.contractId,
+          scheduleYearNumber: dyThreeYear.yearIndex, // Which year in this system's schedule
           deliveryYearOne: values[0]?.value ?? 0,
           deliveryYearTwo: values[1]?.value ?? 0,
           deliveryYearThree: values[2]?.value ?? 0,
@@ -11125,6 +11137,7 @@ const dataQualityUnmatched = useMemo(() => {
                           <TableHead>Unit ID</TableHead>
                           <TableHead>Batch ID</TableHead>
                           <TableHead>System</TableHead>
+                          <TableHead>Yr</TableHead>
                           <TableHead>DY 1 (RECs)</TableHead>
                           <TableHead>DY 2 (RECs)</TableHead>
                           <TableHead>DY 3 (RECs)</TableHead>
@@ -11146,6 +11159,7 @@ const dataQualityUnmatched = useMemo(() => {
                             <TableCell>{row.unitId}</TableCell>
                             <TableCell>{row.batchId}</TableCell>
                             <TableCell className="font-medium">{row.systemName}</TableCell>
+                            <TableCell className="text-center text-xs text-slate-500">{row.scheduleYearNumber}</TableCell>
                             <TableCell>{formatNumber(row.deliveryYearOne)}</TableCell>
                             <TableCell>{formatNumber(row.deliveryYearTwo)}</TableCell>
                             <TableCell>{formatNumber(row.deliveryYearThree)}</TableCell>
