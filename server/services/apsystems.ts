@@ -257,6 +257,31 @@ async function getAPsystemsJson(
   return data;
 }
 
+async function postAPsystemsJson(
+  path: string,
+  context: APsystemsApiContext,
+  body?: Record<string, unknown>
+): Promise<unknown> {
+  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const safePath = path.startsWith("/") ? path : `/${path}`;
+  const url = `${baseUrl}${safePath}`;
+
+  const signatureHeaders = buildSignatureHeaders(context, safePath, "POST");
+
+  const { data } = await fetchJson(url, {
+    service: "APsystems",
+    method: "POST",
+    headers: {
+      ...signatureHeaders,
+      "Content-Type": "application/json",
+    },
+    body,
+    timeoutMs: 20_000,
+  });
+
+  return data;
+}
+
 // ---------------------------------------------------------------------------
 // Extraction: Systems
 // ---------------------------------------------------------------------------
@@ -288,38 +313,68 @@ export function extractSystems(payload: unknown): APsystemsSystem[] {
 }
 
 // ---------------------------------------------------------------------------
-// API: List Systems (installer accounts)
+// API: List ECUs (paginated POST endpoint)
 // ---------------------------------------------------------------------------
 
 export async function listSystems(context: APsystemsApiContext): Promise<{
   systems: APsystemsSystem[];
   raw: unknown;
 }> {
-  // Try known installer list-systems endpoint patterns
-  const candidates = [
-    "/installer/api/v2/systems",
-    "/installer/api/v2/systems/list",
-  ];
+  const allEcuIds: string[] = [];
+  let page = 1;
+  const size = 50; // max page size per API docs
+  let totalPages = 1;
 
-  for (const path of candidates) {
-    try {
-      const raw = await getAPsystemsJson(path, context);
+  try {
+    while (page <= totalPages) {
+      const raw = await postAPsystemsJson(
+        "/installer/api/v2/systems/ecus",
+        context,
+        { page, size }
+      );
+
       const root = asRecord(raw);
       const code = toNullableNumber(root.code);
+      if (code !== 0) break;
 
-      // code 0 = success
-      if (code === 0) {
-        const systems = extractSystems(raw);
-        return { systems, raw };
+      const data = asRecord(root.data);
+      const total = toNullableNumber(data.total) ?? 0;
+      const ecuList = Array.isArray(data.data) ? data.data : [];
+
+      for (const id of ecuList) {
+        const ecuId = toNullableString(id);
+        if (ecuId) allEcuIds.push(ecuId);
       }
-    } catch {
-      // Try next candidate
+
+      totalPages = Math.ceil(total / size);
+      page++;
+
+      // Safety cap to avoid runaway pagination
+      if (page > 200) break;
     }
+  } catch {
+    // Endpoint may not exist for this account type
   }
 
+  // ECU IDs aren't System IDs, but they can be used for ECU-level queries.
+  // Convert to system format for the UI.
+  const systems: APsystemsSystem[] = allEcuIds.map((ecuId) => ({
+    systemId: ecuId,
+    name: `ECU ${ecuId}`,
+    capacity: null,
+    address: null,
+    status: null,
+  }));
+
   return {
-    systems: [],
-    raw: { message: "No list-systems endpoint found. Upload a CSV with System IDs instead." },
+    systems,
+    raw: {
+      totalEcus: allEcuIds.length,
+      ecuIds: allEcuIds,
+      message: allEcuIds.length > 0
+        ? `Found ${allEcuIds.length} ECU(s). Note: these are ECU IDs, not System IDs (SIDs).`
+        : "No ECUs found. Upload a CSV with System IDs instead.",
+    },
   };
 }
 
