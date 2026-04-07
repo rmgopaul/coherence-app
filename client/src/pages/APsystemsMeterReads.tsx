@@ -246,7 +246,7 @@ export default function APsystemsMeterReads() {
   });
 
   const systemsQuery = trpc.apsystems.listSystems.useQuery(undefined, {
-    enabled: false, // APsystems API has no list-systems endpoint; SIDs must be provided manually
+    enabled: !!user && !!statusQuery.data?.connected,
     retry: false,
   });
 
@@ -445,7 +445,29 @@ export default function APsystemsMeterReads() {
   };
 
   const handlePullAllSystems = async () => {
-    toast.error("APsystems API does not support listing systems. Upload a CSV with System IDs instead.");
+    if (!isConnected) {
+      toast.error("Connect APsystems before pulling systems.");
+      return;
+    }
+    try {
+      const result = await systemsQuery.refetch();
+      const systems = result.data?.systems ?? [];
+      if (systems.length === 0) {
+        toast.error("No systems returned. The API may not support listing for this account. Upload a CSV instead.");
+        return;
+      }
+      const ids = systems.map((s: { systemId: string }) => s.systemId);
+      setBulkSystemIds(ids);
+      setBulkSourceFileName(`API — ${ids.length} systems`);
+      setBulkRows([]);
+      setBulkImportError(null);
+      setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
+      toast.success(
+        `Loaded ${NUMBER_FORMATTER.format(ids.length)} System IDs. Next step: click "Run Production Snapshot" to fetch row data.`
+      );
+    } catch (error) {
+      toast.error(`Failed to list systems: ${error instanceof Error ? error.message : "Unknown error"}`);
+    }
   };
 
   const runBulkSnapshot = async () => {

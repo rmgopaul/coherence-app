@@ -288,17 +288,39 @@ export function extractSystems(payload: unknown): APsystemsSystem[] {
 }
 
 // ---------------------------------------------------------------------------
-// API: List Systems (not supported — APsystems API requires known SIDs)
+// API: List Systems (installer accounts)
 // ---------------------------------------------------------------------------
 
-export async function listSystems(_context: APsystemsApiContext): Promise<{
+export async function listSystems(context: APsystemsApiContext): Promise<{
   systems: APsystemsSystem[];
   raw: unknown;
 }> {
-  // The APsystems OpenAPI has no "list systems" endpoint.
-  // All endpoints require a known System ID (SID).
-  // Users must provide SIDs directly (e.g. via CSV upload).
-  return { systems: [], raw: { message: "APsystems API does not support listing systems. Provide System IDs directly." } };
+  // Try known installer list-systems endpoint patterns
+  const candidates = [
+    "/installer/api/v2/systems",
+    "/installer/api/v2/systems/list",
+  ];
+
+  for (const path of candidates) {
+    try {
+      const raw = await getAPsystemsJson(path, context);
+      const root = asRecord(raw);
+      const code = toNullableNumber(root.code);
+
+      // code 0 = success
+      if (code === 0) {
+        const systems = extractSystems(raw);
+        return { systems, raw };
+      }
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  return {
+    systems: [],
+    raw: { message: "No list-systems endpoint found. Upload a CSV with System IDs instead." },
+  };
 }
 
 // ---------------------------------------------------------------------------
