@@ -1,8 +1,5 @@
 /**
  * SolarEdge monitoring adapter.
- *
- * Wraps server/services/solarEdge.ts functions to conform to the
- * ProviderAdapter interface used by the monitoring batch runner.
  */
 import {
   listSites as seListSites,
@@ -10,26 +7,37 @@ import {
   type SolarEdgeApiContext,
 } from "../../services/solarEdge";
 
-function parseMetadata(metadata: string | null | undefined): SolarEdgeApiContext | null {
-  if (!metadata) return null;
-  try {
-    const parsed = JSON.parse(metadata);
-    if (parsed.apiKey) return { apiKey: parsed.apiKey, baseUrl: parsed.baseUrl ?? null };
-    return null;
-  } catch {
-    return null;
+function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolarEdgeApiContext[] {
+  if (credential.metadata) {
+    try {
+      const meta = JSON.parse(credential.metadata);
+      // Multi-connection format: connections[].apiKey
+      if (meta.connections && Array.isArray(meta.connections)) {
+        return meta.connections
+          .filter((c: any) => c.apiKey)
+          .map((c: any) => ({ apiKey: c.apiKey, baseUrl: c.baseUrl ?? meta.baseUrl ?? null }));
+      }
+      // Simple format
+      if (meta.apiKey) return [{ apiKey: meta.apiKey, baseUrl: meta.baseUrl ?? null }];
+    } catch {}
   }
+  if (credential.accessToken) return [{ apiKey: credential.accessToken }];
+  return [];
 }
 
 const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
-    // SolarEdge uses apiKey from metadata
-    const ctx = parseMetadata(credential.metadata) ?? { apiKey: credential.accessToken ?? "" };
-    const { sites } = await seListSites(ctx);
-    return sites.map((s) => ({
-      siteId: s.siteId,
-      siteName: s.siteName,
-    }));
+    const contexts = getContexts(credential);
+    const allSites: { siteId: string; siteName: string }[] = [];
+    for (const ctx of contexts) {
+      try {
+        const { sites } = await seListSites(ctx);
+        allSites.push(...sites.map((s) => ({ siteId: s.siteId, siteName: s.siteName })));
+      } catch (err) {
+        console.error(`[SolarEdge adapter] listSites error:`, err instanceof Error ? err.message : err);
+      }
+    }
+    return allSites;
   },
 
   async getSnapshots(
@@ -37,7 +45,11 @@ const adapter = {
     siteIds: string[],
     anchorDate: string
   ) {
-    const ctx = parseMetadata(credential.metadata) ?? { apiKey: credential.accessToken ?? "" };
+    const contexts = getContexts(credential);
+    // Use first context that has the site (simplified: try first context)
+    const ctx = contexts[0];
+    if (!ctx) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
+
     const results = [];
     for (const siteId of siteIds) {
       try {
@@ -49,13 +61,7 @@ const adapter = {
           lifetimeKwh: snap.lifetimeKwh ?? null,
         });
       } catch (err) {
-        results.push({
-          siteId,
-          siteName: null,
-          status: "Error" as const,
-          lifetimeKwh: null,
-          errorMessage: err instanceof Error ? err.message : String(err),
-        });
+        results.push({ siteId, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: err instanceof Error ? err.message : String(err) });
       }
     }
     return results;

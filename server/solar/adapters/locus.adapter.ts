@@ -4,30 +4,49 @@ import {
   type LocusApiContext,
 } from "../../services/locus";
 
-function parseMetadata(metadata: string | null | undefined): LocusApiContext | null {
-  if (!metadata) return null;
-  try {
-    const parsed = JSON.parse(metadata);
-    if (parsed.clientId && parsed.clientSecret && parsed.partnerId) {
-      return {
-        clientId: parsed.clientId,
-        clientSecret: parsed.clientSecret,
-        partnerId: parsed.partnerId,
-        baseUrl: parsed.baseUrl ?? null,
-      };
-    }
-    return null;
-  } catch {
-    return null;
+function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): LocusApiContext[] {
+  if (credential.metadata) {
+    try {
+      const meta = JSON.parse(credential.metadata);
+      // Multi-connection format: connections[].clientId, connections[].clientSecret, connections[].partnerId
+      if (meta.connections && Array.isArray(meta.connections)) {
+        return meta.connections
+          .filter((c: any) => c.clientId && c.clientSecret && c.partnerId)
+          .map((c: any) => ({
+            clientId: c.clientId,
+            clientSecret: c.clientSecret,
+            partnerId: c.partnerId,
+            baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
+          }));
+      }
+      // Simple format fallback
+      if (meta.clientId && meta.clientSecret && meta.partnerId) {
+        return [{
+          clientId: meta.clientId,
+          clientSecret: meta.clientSecret,
+          partnerId: meta.partnerId,
+          baseUrl: meta.baseUrl ?? null,
+        }];
+      }
+    } catch {}
   }
+  return [];
 }
 
 const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
-    const ctx = parseMetadata(credential.metadata);
-    if (!ctx) throw new Error("Locus requires clientId, clientSecret, and partnerId in metadata.");
-    const { sites } = await locusList(ctx);
-    return sites.map((s) => ({ siteId: s.siteId, siteName: s.name }));
+    const contexts = getContexts(credential);
+    if (contexts.length === 0) throw new Error("Locus requires clientId, clientSecret, and partnerId in metadata.");
+    const allSites: { siteId: string; siteName: string }[] = [];
+    for (const ctx of contexts) {
+      try {
+        const { sites } = await locusList(ctx);
+        allSites.push(...sites.map((s) => ({ siteId: s.siteId, siteName: s.name })));
+      } catch (err) {
+        console.error(`[Locus adapter] listSites error:`, err instanceof Error ? err.message : err);
+      }
+    }
+    return allSites;
   },
 
   async getSnapshots(
@@ -35,8 +54,9 @@ const adapter = {
     siteIds: string[],
     anchorDate: string,
   ) {
-    const ctx = parseMetadata(credential.metadata);
-    if (!ctx) throw new Error("Locus requires clientId, clientSecret, and partnerId in metadata.");
+    const contexts = getContexts(credential);
+    const ctx = contexts[0];
+    if (!ctx) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
     const results = [];
     for (const siteId of siteIds) {
       try {

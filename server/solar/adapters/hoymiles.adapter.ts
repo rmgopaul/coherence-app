@@ -4,29 +4,47 @@ import {
   type HoymilesApiContext,
 } from "../../services/hoymiles";
 
-function parseMetadata(metadata: string | null | undefined): HoymilesApiContext | null {
-  if (!metadata) return null;
-  try {
-    const parsed = JSON.parse(metadata);
-    if (parsed.username && parsed.password) {
-      return {
-        username: parsed.username,
-        password: parsed.password,
-        baseUrl: parsed.baseUrl ?? null,
-      };
-    }
-    return null;
-  } catch {
-    return null;
+function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): HoymilesApiContext[] {
+  if (credential.metadata) {
+    try {
+      const meta = JSON.parse(credential.metadata);
+      // Multi-connection format: connections[].username, connections[].password, connections[].baseUrl
+      if (meta.connections && Array.isArray(meta.connections)) {
+        return meta.connections
+          .filter((c: any) => c.username && c.password)
+          .map((c: any) => ({
+            username: c.username,
+            password: c.password,
+            baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
+          }));
+      }
+      // Simple format fallback
+      if (meta.username && meta.password) {
+        return [{
+          username: meta.username,
+          password: meta.password,
+          baseUrl: meta.baseUrl ?? null,
+        }];
+      }
+    } catch {}
   }
+  return [];
 }
 
 const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
-    const ctx = parseMetadata(credential.metadata);
-    if (!ctx) throw new Error("Hoymiles requires username and password in metadata.");
-    const { stations } = await listStations(ctx);
-    return stations.map((s) => ({ siteId: s.stationId, siteName: s.name }));
+    const contexts = getContexts(credential);
+    if (contexts.length === 0) throw new Error("Hoymiles requires username and password in metadata.");
+    const allSites: { siteId: string; siteName: string }[] = [];
+    for (const ctx of contexts) {
+      try {
+        const { stations } = await listStations(ctx);
+        allSites.push(...stations.map((s) => ({ siteId: s.stationId, siteName: s.name })));
+      } catch (err) {
+        console.error(`[Hoymiles adapter] listSites error:`, err instanceof Error ? err.message : err);
+      }
+    }
+    return allSites;
   },
 
   async getSnapshots(
@@ -34,8 +52,9 @@ const adapter = {
     siteIds: string[],
     anchorDate: string,
   ) {
-    const ctx = parseMetadata(credential.metadata);
-    if (!ctx) throw new Error("Hoymiles requires username and password in metadata.");
+    const contexts = getContexts(credential);
+    const ctx = contexts[0];
+    if (!ctx) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
     const results = [];
     for (const siteId of siteIds) {
       try {

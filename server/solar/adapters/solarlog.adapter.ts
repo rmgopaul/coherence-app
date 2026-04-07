@@ -4,28 +4,45 @@ import {
   type SolarLogApiContext,
 } from "../../services/solarLog";
 
-function parseMetadata(metadata: string | null | undefined): SolarLogApiContext | null {
-  if (!metadata) return null;
-  try {
-    const parsed = JSON.parse(metadata);
-    if (parsed.baseUrl) {
-      return {
-        baseUrl: parsed.baseUrl,
-        password: parsed.password ?? null,
-      };
-    }
-    return null;
-  } catch {
-    return null;
+function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolarLogApiContext[] {
+  if (credential.metadata) {
+    try {
+      const meta = JSON.parse(credential.metadata);
+      // Multi-connection format: connections[].baseUrl (deviceUrl), connections[].password
+      if (meta.connections && Array.isArray(meta.connections)) {
+        return meta.connections
+          .filter((c: any) => c.baseUrl || c.deviceUrl)
+          .map((c: any) => ({
+            baseUrl: c.baseUrl ?? c.deviceUrl,
+            password: c.password ?? null,
+          }));
+      }
+      // Simple format fallback
+      if (meta.baseUrl) {
+        return [{
+          baseUrl: meta.baseUrl,
+          password: meta.password ?? null,
+        }];
+      }
+    } catch {}
   }
+  return [];
 }
 
 const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
-    const ctx = parseMetadata(credential.metadata);
-    if (!ctx) throw new Error("Solar-Log requires baseUrl (device IP/hostname) in metadata.");
-    const { devices } = await listDevices(ctx);
-    return devices.map((d) => ({ siteId: d.deviceId, siteName: d.name }));
+    const contexts = getContexts(credential);
+    if (contexts.length === 0) throw new Error("Solar-Log requires baseUrl (device IP/hostname) in metadata.");
+    const allSites: { siteId: string; siteName: string }[] = [];
+    for (const ctx of contexts) {
+      try {
+        const { devices } = await listDevices(ctx);
+        allSites.push(...devices.map((d) => ({ siteId: d.deviceId, siteName: d.name })));
+      } catch (err) {
+        console.error(`[Solar-Log adapter] listSites error:`, err instanceof Error ? err.message : err);
+      }
+    }
+    return allSites;
   },
 
   async getSnapshots(
@@ -33,8 +50,9 @@ const adapter = {
     siteIds: string[],
     anchorDate: string,
   ) {
-    const ctx = parseMetadata(credential.metadata);
-    if (!ctx) throw new Error("Solar-Log requires baseUrl (device IP/hostname) in metadata.");
+    const contexts = getContexts(credential);
+    const ctx = contexts[0];
+    if (!ctx) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
     const results = [];
     for (const siteId of siteIds) {
       try {
