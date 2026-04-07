@@ -139,6 +139,7 @@ const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
   { key: "invoiceMatch", label: "Invoice Match", route: "/invoice-match-dashboard", icon: FileSpreadsheet },
   { key: "deepUpdate", label: "Deep Update", route: "/deep-update-synthesizer", icon: FileSpreadsheet },
   { key: "contractScanner", label: "Contract Scanner", route: "/contract-scanner", icon: FileText },
+  { key: "contractScraper", label: "Contract Scraper", route: "/contract-scrape-manager", icon: FileText },
   { key: "enphaseV4", label: "Enphase v4", route: "/enphase-v4-meter-reads", icon: Database },
   { key: "solarEdgeApi", label: "SolarEdge API", route: "/solaredge-meter-reads", icon: Database },
   { key: "froniusApi", label: "Fronius API", route: "/fronius-meter-reads", icon: Database },
