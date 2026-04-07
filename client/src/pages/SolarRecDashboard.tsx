@@ -12586,12 +12586,19 @@ export default function SolarRecDashboard() {
                 const dataset = datasets[key];
                 const error = uploadErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
+                const hasCloudBackfillMarker = Boolean(
+                  dataset &&
+                    (dataset.fileName.toLowerCase().includes("cloud-backfill") ||
+                      dataset.sources?.some((source) => source.fileName.toLowerCase().includes("cloud-backfill")))
+                );
                 const cloudStatusForDataset: DatasetCloudSyncStatus | undefined =
                   datasetCloudSyncStatus[key] ??
                   (localOnlyDatasets[key]
                     ? undefined
                     : remoteSourceManifests[key]?.sources?.length
                       ? "synced"
+                      : hasCloudBackfillMarker
+                        ? "synced"
                       : undefined);
 
                 return (
