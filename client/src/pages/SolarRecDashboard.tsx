@@ -2528,7 +2528,7 @@ export default function SolarRecDashboard() {
     </button>
   );
   const isContractsComputationActive =
-    isContractsTabActive || isAnnualReviewTabActive || isPerformanceEvalTabActive;
+    isContractsTabActive || isAnnualReviewTabActive || isPerformanceEvalTabActive || isForecastTabActive;
   const datasetsRef = useRef(datasets);
   datasetsRef.current = datasets;
   const logEntriesRef = useRef(logEntries);
@@ -4836,7 +4836,7 @@ export default function SolarRecDashboard() {
   }, [datasets.solarApplications]);
 
   const annualProductionByTrackingId = useMemo(() => {
-    if (!isPerformanceRatioTabActive) return new Map<string, AnnualProductionProfile>();
+    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, AnnualProductionProfile>();
     const mapping = new Map<string, AnnualProductionProfile>();
 
     (datasets.annualProductionEstimates?.rows ?? []).forEach((row) => {
@@ -4866,7 +4866,7 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.annualProductionEstimates, isPerformanceRatioTabActive]);
+  }, [datasets.annualProductionEstimates, isPerformanceRatioTabActive, isForecastTabActive]);
 
   const generatorDateOnlineByTrackingId = useMemo(() => {
     if (!isPerformanceRatioTabActive) return new Map<string, Date>();
@@ -4889,7 +4889,7 @@ export default function SolarRecDashboard() {
   }, [datasets.generatorDetails, isPerformanceRatioTabActive]);
 
   const generationBaselineByTrackingId = useMemo(() => {
-    if (!isPerformanceRatioTabActive) return new Map<string, GenerationBaseline>();
+    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, GenerationBaseline>();
     const mapping = new Map<string, GenerationBaseline>();
 
     const updateBaseline = (
@@ -4961,7 +4961,7 @@ export default function SolarRecDashboard() {
     });
 
     return mapping;
-  }, [datasets.accountSolarGeneration, datasets.generationEntry, isPerformanceRatioTabActive]);
+  }, [datasets.accountSolarGeneration, datasets.generationEntry, isPerformanceRatioTabActive, isForecastTabActive]);
 
   const portalMonitoringCandidates = useMemo<PortalMonitoringCandidate[]>(() => {
     if (!isPerformanceRatioTabActive) return [];
@@ -6044,7 +6044,7 @@ export default function SolarRecDashboard() {
   }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
-    if (!isPerformanceEvalTabActive) return [];
+    if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
     return (datasets.recDeliverySchedules?.rows ?? [])
       .map((row, rowIndex) => {
         const trackingSystemRefId = clean(row.tracking_system_ref_id);
@@ -6065,7 +6065,7 @@ export default function SolarRecDashboard() {
         } satisfies PerformanceSourceRow;
       })
       .filter((row): row is PerformanceSourceRow => row !== null);
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isPerformanceEvalTabActive, systemsByTrackingId]);
+  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId]);
 
   const performanceContractOptions = useMemo(
     () =>
@@ -8984,60 +8984,131 @@ const trendDeliveryPace = useMemo(() => {
   return Array.from(contractPace.values()).sort((a, b) => a.contract.localeCompare(b.contract));
 }, [isTrendsTabActive, datasets.recDeliverySchedules]);
 
-// ── Forecast: Projected Delivery Shortfall ──────────────────────
-const forecastProjections = useMemo(() => {
+// ── Forecast: REC Performance-Based Projections (EY 2025-2026) ──
+const FORECAST_ENERGY_YEAR_END = new Date(2026, 3, 30); // April 30, 2026
+const FORECAST_FLOOR_DATE = new Date(2024, 5, 1); // June 1, 2024
+
+type ForecastContractRow = {
+  contract: string;
+  systemsTotal: number;
+  systemsReporting: number;
+  projectedRecsReporting: number;
+  projectedRecsAll: number;
+  requiredRecs: number;
+  deliveredRecs: number;
+  gapAfterProjection1: number;
+  gapAfterProjection2: number;
+};
+
+const forecastProjections = useMemo<ForecastContractRow[]>(() => {
   if (!isForecastTabActive) return [];
-  const now = new Date();
-  const scheduleRows = datasets.recDeliverySchedules?.rows ?? [];
-  if (scheduleRows.length === 0) return [];
+  if (performanceSourceRows.length === 0) return [];
 
-  const contractProjections = new Map<string, { contract: string; required: number; delivered: number; projected: number; projectedGap: number; status: string }>();
+  // Find systems eligible for 3-year review (targetYearIndex >= 2)
+  // and in the 2025-2026 delivery year window
+  const contractMap = new Map<string, {
+    contract: string;
+    systemsTotal: number;
+    systemsReporting: number;
+    projectedRecsReporting: number;
+    projectedRecsAll: number;
+    requiredRecs: number;
+    deliveredRecs: number;
+  }>();
 
-  for (const row of scheduleRows) {
-    const contractId = row.utility_contract_number || "Unknown";
-
-    for (let y = 1; y <= 15; y++) {
-      const startRaw = row[`year${y}_start_date`];
-      const endRaw = row[`year${y}_end_date`];
-      const required = parseFloat(row[`year${y}_quantity_required`] || "0") || 0;
-      const delivered = parseFloat(row[`year${y}_quantity_delivered`] || "0") || 0;
-      if (!startRaw || required === 0) continue;
-
-      const start = new Date(startRaw);
-      const end = endRaw ? new Date(endRaw) : new Date(start.getFullYear() + 1, start.getMonth(), start.getDate());
-      if (isNaN(start.getTime()) || isNaN(end.getTime())) continue;
-      if (now < start || now > end) continue;
-
-      const totalMs = end.getTime() - start.getTime();
-      const elapsedMs = Math.max(1, now.getTime() - start.getTime());
-      const remainingMs = Math.max(0, end.getTime() - now.getTime());
-      const rate = delivered / elapsedMs;
-      const projected = Math.round(delivered + rate * remainingMs);
-      const projectedGap = required - projected;
-      const status = projectedGap <= 0 ? "On Track" : projectedGap / required < 0.1 ? "At Risk" : "Behind";
-
-      const existing = contractProjections.get(contractId);
-      if (!existing) {
-        contractProjections.set(contractId, { contract: contractId, required, delivered, projected, projectedGap, status });
-      } else {
-        existing.required += required;
-        existing.delivered += delivered;
-        existing.projected += projected;
-        existing.projectedGap = existing.required - existing.projected;
-        existing.status = existing.projectedGap <= 0 ? "On Track" : existing.projectedGap / existing.required < 0.1 ? "At Risk" : "Behind";
+  for (const sourceRow of performanceSourceRows) {
+    // Find the delivery year that covers 2025-2026
+    // (start date around May 2025, end date around Apr 2026)
+    let activeYear: { required: number; delivered: number } | null = null;
+    for (const year of sourceRow.years) {
+      if (!year.startDate || !year.endDate) continue;
+      const startYear = year.startDate.getFullYear();
+      const endYear = year.endDate.getFullYear();
+      // Match delivery year 2025-2026
+      if ((startYear === 2025 && endYear === 2026) || (startYear === 2024 && endYear === 2025) ||
+          (year.startDate <= FORECAST_ENERGY_YEAR_END && year.endDate >= new Date(2025, 4, 1))) {
+        activeYear = { required: year.required, delivered: year.delivered };
+        break;
       }
     }
+    // If no year matches, try the latest year with required > 0
+    if (!activeYear) {
+      const latestWithRequired = sourceRow.years.filter(y => y.required > 0).pop();
+      if (latestWithRequired) activeYear = { required: latestWithRequired.required, delivered: latestWithRequired.delivered };
+    }
+    if (!activeYear) continue;
+
+    const trackingId = sourceRow.trackingSystemRefId;
+    const profile = annualProductionByTrackingId.get(trackingId);
+    const baseline = generationBaselineByTrackingId.get(trackingId);
+    const sys = systems.find(s => s.trackingSystemRefId === trackingId);
+    const isReporting = sys?.isReporting ?? false;
+
+    // Determine start date: latest meter reading from GATS (Account Solar Generation)
+    let meterReadDate = baseline?.date ?? null;
+    // Clamp to floor: cannot go before June 1, 2024
+    if (meterReadDate && meterReadDate < FORECAST_FLOOR_DATE) {
+      meterReadDate = FORECAST_FLOOR_DATE;
+    }
+
+    // Calculate projected RECs for this system
+    let projectedRecsForSystem = 0;
+    if (profile && meterReadDate) {
+      const startDate = meterReadDate;
+      const endDate = FORECAST_ENERGY_YEAR_END;
+      if (startDate < endDate) {
+        const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, startDate, endDate);
+        if (expectedWh !== null && expectedWh > 0) {
+          const expectedKwh = expectedWh / 1000;
+          projectedRecsForSystem = Math.floor(expectedKwh / 1000); // 1 REC = 1,000 kWh
+        }
+      }
+    } else if (profile && !meterReadDate) {
+      // No meter read date — use floor date for "all sites" projection
+      const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, FORECAST_FLOOR_DATE, FORECAST_ENERGY_YEAR_END);
+      if (expectedWh !== null && expectedWh > 0) {
+        projectedRecsForSystem = Math.floor((expectedWh / 1000) / 1000);
+      }
+    }
+
+    // Accumulate by contract
+    const contractId = sourceRow.contractId;
+    const existing = contractMap.get(contractId) ?? {
+      contract: contractId,
+      systemsTotal: 0,
+      systemsReporting: 0,
+      projectedRecsReporting: 0,
+      projectedRecsAll: 0,
+      requiredRecs: 0,
+      deliveredRecs: 0,
+    };
+
+    existing.systemsTotal++;
+    if (isReporting) existing.systemsReporting++;
+    existing.projectedRecsAll += projectedRecsForSystem;
+    if (isReporting && meterReadDate) {
+      existing.projectedRecsReporting += projectedRecsForSystem;
+    }
+    existing.requiredRecs += activeYear.required;
+    existing.deliveredRecs += activeYear.delivered;
+    contractMap.set(contractId, existing);
   }
 
-  return Array.from(contractProjections.values()).sort((a, b) => b.projectedGap - a.projectedGap);
-}, [isForecastTabActive, datasets.recDeliverySchedules]);
+  return Array.from(contractMap.values())
+    .map(c => ({
+      ...c,
+      gapAfterProjection1: c.requiredRecs - c.deliveredRecs - c.projectedRecsReporting,
+      gapAfterProjection2: c.requiredRecs - c.deliveredRecs - c.projectedRecsAll,
+    }))
+    .sort((a, b) => b.gapAfterProjection1 - a.gapAfterProjection1);
+}, [isForecastTabActive, performanceSourceRows, annualProductionByTrackingId, generationBaselineByTrackingId, systems]);
 
 const forecastSummary = useMemo(() => {
   const total = forecastProjections.length;
-  const atRisk = forecastProjections.filter(p => p.status === "At Risk").length;
-  const behind = forecastProjections.filter(p => p.status === "Behind").length;
-  const totalProjectedGap = forecastProjections.reduce((a, p) => a + Math.max(0, p.projectedGap), 0);
-  return { total, atRisk, behind, onTrack: total - atRisk - behind, totalProjectedGap };
+  const totalProjReporting = forecastProjections.reduce((a, c) => a + c.projectedRecsReporting, 0);
+  const totalProjAll = forecastProjections.reduce((a, c) => a + c.projectedRecsAll, 0);
+  const atRisk = forecastProjections.filter(c => c.gapAfterProjection1 > 0).length;
+  return { total, totalProjReporting, totalProjAll, atRisk };
 }, [forecastProjections]);
 
 // ── Alerts ──────────────────────────────────────────────────────
@@ -13033,24 +13104,58 @@ const dataQualityUnmatched = useMemo(() => {
           </TabsContent>
 
           <TabsContent value="forecast" className="space-y-4 mt-4">
+            <Card className="border-sky-200 bg-sky-50/30">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">REC Production Forecast — Energy Year 2025-2026</CardTitle>
+                <CardDescription>
+                  Projected additional RECs per contract based on estimated production from each system&apos;s latest GATS meter read date through April 30, 2026.
+                  Uses Annual Production Estimates with daily pro-rata. Floor date: June 1, 2024. 1 REC = 1,000 kWh (floored per system).
+                </CardDescription>
+              </CardHeader>
+            </Card>
+
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Card><CardHeader><CardDescription>Contracts Tracked</CardDescription><CardTitle className="text-2xl">{forecastSummary.total}</CardTitle></CardHeader></Card>
-              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>On Track</CardDescription><CardTitle className="text-2xl text-emerald-800">{forecastSummary.onTrack}</CardTitle></CardHeader></Card>
-              <Card className="border-amber-200 bg-amber-50/50"><CardHeader><CardDescription>At Risk</CardDescription><CardTitle className="text-2xl text-amber-800">{forecastSummary.atRisk}</CardTitle></CardHeader></Card>
-              <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Behind</CardDescription><CardTitle className="text-2xl text-rose-800">{forecastSummary.behind}</CardTitle></CardHeader></Card>
+              <Card><CardHeader><CardDescription>Contracts</CardDescription><CardTitle className="text-2xl">{forecastSummary.total}</CardTitle></CardHeader></Card>
+              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>Proj. RECs (Reporting)</CardDescription><CardTitle className="text-2xl text-emerald-800">{formatNumber(forecastSummary.totalProjReporting)}</CardTitle></CardHeader></Card>
+              <Card className="border-sky-200 bg-sky-50/50"><CardHeader><CardDescription>Proj. RECs (All Sites)</CardDescription><CardTitle className="text-2xl text-sky-800">{formatNumber(forecastSummary.totalProjAll)}</CardTitle></CardHeader></Card>
+              <Card className={forecastSummary.atRisk > 0 ? "border-rose-200 bg-rose-50/50" : "border-emerald-200 bg-emerald-50/50"}><CardHeader><CardDescription>Contracts At Risk</CardDescription><CardTitle className="text-2xl">{forecastSummary.atRisk}</CardTitle></CardHeader></Card>
             </div>
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Projected Year-End Delivery</CardTitle>
-                <CardDescription>Extrapolated delivery based on current pace. Shows projected shortfall per contract.</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <CardTitle className="text-base">Projected REC Production by Contract</CardTitle>
+                    <CardDescription>
+                      <strong>Projection 1 (Reporting):</strong> Only sites reporting in the last 3 months.{" "}
+                      <strong>Projection 2 (All Sites):</strong> All eligible sites including non-reporting (using June 1, 2024 floor for missing dates).
+                    </CardDescription>
+                  </div>
+                  {forecastProjections.length > 0 && (
+                    <Button variant="outline" size="sm" onClick={() => {
+                      const csv = buildCsv(
+                        ["contract", "systems_total", "systems_reporting", "required_recs", "delivered_recs", "delivered_pct", "proj_recs_reporting", "proj_recs_all", "gap_after_proj1", "gap_after_proj2"],
+                        forecastProjections.map(c => ({
+                          contract: c.contract, systems_total: c.systemsTotal, systems_reporting: c.systemsReporting,
+                          required_recs: c.requiredRecs, delivered_recs: c.deliveredRecs,
+                          delivered_pct: c.requiredRecs > 0 ? ((c.deliveredRecs / c.requiredRecs) * 100).toFixed(1) : "",
+                          proj_recs_reporting: c.projectedRecsReporting, proj_recs_all: c.projectedRecsAll,
+                          gap_after_proj1: c.gapAfterProjection1, gap_after_proj2: c.gapAfterProjection2,
+                        }))
+                      );
+                      triggerCsvDownload(`rec-forecast-ey2025-2026-${timestampForCsvFileName()}.csv`, csv);
+                    }}>Export CSV</Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent>
                 {forecastProjections.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-4 text-center">Upload REC Delivery Schedules to see forecasts.</p>
+                  <p className="text-sm text-slate-500 py-4 text-center">
+                    Upload REC Delivery Schedules, Account Solar Generation, and Annual Production Estimates to see forecasts.
+                  </p>
                 ) : (
                   <>
-                    <div className="h-72 rounded-md border border-slate-200 bg-white p-2 mb-4">
+                    <div className="h-80 rounded-md border border-slate-200 bg-white p-2 mb-4">
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={forecastProjections} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
                           <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -13058,33 +13163,54 @@ const dataQualityUnmatched = useMemo(() => {
                           <YAxis tick={{ fontSize: 12 }} />
                           <Tooltip />
                           <Legend />
-                          <Bar dataKey="required" fill="#94a3b8" name="Required" />
-                          <Bar dataKey="delivered" fill="#16a34a" name="Delivered" />
-                          <Bar dataKey="projected" fill="#0ea5e9" name="Projected Year-End" />
+                          <Bar dataKey="requiredRecs" fill="#94a3b8" name="Required RECs" />
+                          <Bar dataKey="deliveredRecs" fill="#16a34a" name="Delivered RECs" />
+                          <Bar dataKey="projectedRecsReporting" fill="#0ea5e9" name="Proj. RECs (Reporting)" />
+                          <Bar dataKey="projectedRecsAll" fill="#8b5cf6" name="Proj. RECs (All Sites)" />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
-                    <Table>
-                      <TableHeader><TableRow>
-                        <TableHead>Contract</TableHead><TableHead className="text-right">Required</TableHead><TableHead className="text-right">Delivered</TableHead><TableHead className="text-right">Delivered %</TableHead><TableHead className="text-right">Projected</TableHead><TableHead className="text-right">Projected %</TableHead><TableHead className="text-right">Gap</TableHead><TableHead>Status</TableHead>
-                      </TableRow></TableHeader>
-                      <TableBody>
-                        {forecastProjections.map((p) => (
-                          <TableRow key={p.contract}>
-                            <TableCell className="font-medium">{p.contract}</TableCell>
-                            <TableCell className="text-right">{formatNumber(p.required)}</TableCell>
-                            <TableCell className="text-right">{formatNumber(p.delivered)}</TableCell>
-                            <TableCell className="text-right">{p.required > 0 ? `${((p.delivered / p.required) * 100).toFixed(1)}%` : "N/A"}</TableCell>
-                            <TableCell className="text-right">{formatNumber(p.projected)}</TableCell>
-                            <TableCell className="text-right">{p.required > 0 ? `${((p.projected / p.required) * 100).toFixed(1)}%` : "N/A"}</TableCell>
-                            <TableCell className="text-right">{formatNumber(Math.max(0, p.projectedGap))}</TableCell>
-                            <TableCell>
-                              <Badge variant={p.status === "On Track" ? "default" : p.status === "At Risk" ? "secondary" : "destructive"}>{p.status}</Badge>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader><TableRow>
+                          <TableHead>Contract</TableHead>
+                          <TableHead className="text-right">Systems</TableHead>
+                          <TableHead className="text-right">Reporting</TableHead>
+                          <TableHead className="text-right">Required</TableHead>
+                          <TableHead className="text-right">Delivered</TableHead>
+                          <TableHead className="text-right">Del. %</TableHead>
+                          <TableHead className="text-right text-sky-700">Proj. (Reporting)</TableHead>
+                          <TableHead className="text-right text-violet-700">Proj. (All)</TableHead>
+                          <TableHead className="text-right">Gap (Proj 1)</TableHead>
+                          <TableHead className="text-right">Gap (Proj 2)</TableHead>
+                        </TableRow></TableHeader>
+                        <TableBody>
+                          {forecastProjections.map((c) => {
+                            const delPct = c.requiredRecs > 0 ? ((c.deliveredRecs / c.requiredRecs) * 100).toFixed(1) : "N/A";
+                            const status1 = c.gapAfterProjection1 <= 0 ? "default" as const : "destructive" as const;
+                            const status2 = c.gapAfterProjection2 <= 0 ? "default" as const : "destructive" as const;
+                            return (
+                              <TableRow key={c.contract}>
+                                <TableCell className="font-medium">{c.contract}</TableCell>
+                                <TableCell className="text-right">{c.systemsTotal}</TableCell>
+                                <TableCell className="text-right">{c.systemsReporting}</TableCell>
+                                <TableCell className="text-right">{formatNumber(c.requiredRecs)}</TableCell>
+                                <TableCell className="text-right">{formatNumber(c.deliveredRecs)}</TableCell>
+                                <TableCell className="text-right">{delPct}%</TableCell>
+                                <TableCell className="text-right font-medium text-sky-700">{formatNumber(c.projectedRecsReporting)}</TableCell>
+                                <TableCell className="text-right font-medium text-violet-700">{formatNumber(c.projectedRecsAll)}</TableCell>
+                                <TableCell className="text-right">
+                                  <Badge variant={status1}>{c.gapAfterProjection1 <= 0 ? `+${formatNumber(Math.abs(c.gapAfterProjection1))}` : formatNumber(c.gapAfterProjection1)}</Badge>
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Badge variant={status2}>{c.gapAfterProjection2 <= 0 ? `+${formatNumber(Math.abs(c.gapAfterProjection2))}` : formatNumber(c.gapAfterProjection2)}</Badge>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
                   </>
                 )}
               </CardContent>
