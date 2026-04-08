@@ -2451,6 +2451,9 @@ function ScheduleBImport({
   const [scheduleBProgress, setScheduleBProgress] = useState({ current: 0, total: 0 });
   const [scheduleBHydrated, setScheduleBHydrated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [contractIdMappingText, setContractIdMappingText] = useState("");
+  const [contractIdMappingCount, setContractIdMappingCount] = useState(0);
+  const contractIdMappingRef = useRef<Map<string, string>>(new Map());
 
   // ── Persist to / restore from IndexedDB ───────────────────────
   const persistToIdb = useCallback(async (results: ScheduleBResultRow[]) => {
@@ -2492,6 +2495,17 @@ function ScheduleBImport({
       setScheduleBHydrated(true);
     })();
   }, []);
+
+  const handleContractIdMappingChange = useCallback(
+    async (text: string) => {
+      setContractIdMappingText(text);
+      const { parseContractIdMapping } = await import("@/lib/scheduleBScanner");
+      const mapping = parseContractIdMapping(text);
+      contractIdMappingRef.current = mapping;
+      setContractIdMappingCount(mapping.size);
+    },
+    []
+  );
 
   const handleScheduleBFolder = useCallback(
     async (files: FileList | null) => {
@@ -2595,7 +2609,10 @@ function ScheduleBImport({
     await new Promise((r) => setTimeout(r, 100));
     try {
       const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
-      const rows = toDeliveryScheduleBaseRows(scheduleBResults);
+      const rows = toDeliveryScheduleBaseRows(
+        scheduleBResults,
+        contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined
+      );
       if (rows.length === 0) {
         toast.error("No valid results to apply");
         return;
@@ -2736,6 +2753,32 @@ function ScheduleBImport({
             </span>
           )}
         </div>
+
+        {/* Contract ID Mapping */}
+        {scheduleBResults.length > 0 && (
+          <div className="rounded-md border border-border/60 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider">GATS ID to Contract ID Mapping</p>
+                <p className="text-xs text-muted-foreground">
+                  Paste two columns: GATS ID and Contract Number (CSV, tab, or one per line).
+                </p>
+              </div>
+              {contractIdMappingCount > 0 && (
+                <span className="text-xs font-semibold text-green-600 dark:text-green-400">
+                  {contractIdMappingCount} mapped
+                </span>
+              )}
+            </div>
+            <textarea
+              value={contractIdMappingText}
+              onChange={(e) => handleContractIdMappingChange(e.target.value)}
+              placeholder={"NON426617,493\nNON427890,512\nNON428123,515"}
+              rows={3}
+              className="w-full rounded-sm border bg-background px-2 py-1.5 text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+        )}
 
         {scheduleBResults.length > 0 && (
           <div className="overflow-x-auto">

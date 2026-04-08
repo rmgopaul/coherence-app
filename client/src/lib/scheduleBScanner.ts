@@ -474,19 +474,24 @@ export function toDeliveryScheduleBaseRows(
   extractions: Array<{
     extraction: ScheduleBExtraction;
     adjustedYears: AdjustedScheduleYear[];
-  }>
+  }>,
+  contractIdMapping?: Map<string, string>
 ): Array<Record<string, string>> {
   return extractions
     .filter((e) => e.adjustedYears.length > 0 && e.extraction.gatsId)
     .map(({ extraction, adjustedYears }) => {
+      const gatsId = extraction.gatsId ?? "";
+      const contractId = contractIdMapping?.get(gatsId.toUpperCase()) ?? "";
+
       const row: Record<string, string> = {
-        tracking_system_ref_id: extraction.gatsId ?? "",
+        tracking_system_ref_id: gatsId,
         system_name:
           extraction.designatedSystemId
             ? `App ${extraction.designatedSystemId}`
             : extraction.fileName,
         designated_system_id:
           extraction.designatedSystemId ?? "",
+        utility_contract_number: contractId,
       };
 
       for (let i = 0; i < 15; i++) {
@@ -498,4 +503,42 @@ export function toDeliveryScheduleBaseRows(
 
       return row;
     });
+}
+
+/**
+ * Parse a GATS ID → Contract ID mapping from CSV text or pasted lines.
+ * Expects two columns: GATS ID (e.g. NON426617) and Contract ID (e.g. 493).
+ * Returns a Map keyed by uppercase GATS ID.
+ */
+export function parseContractIdMapping(
+  text: string
+): Map<string, string> {
+  const mapping = new Map<string, string>();
+  const lines = text.split(/\r?\n/);
+
+  for (const line of lines) {
+    const parts = line.split(/[,\t]+/).map((s) => s.trim());
+    if (parts.length < 2) continue;
+
+    // Find the GATS ID (starts with letters like NON, matches pattern)
+    // and the contract number (digits only, 3-5 chars)
+    let gatsId = "";
+    let contractId = "";
+
+    for (const part of parts) {
+      const clean = part.replace(/^["']|["']$/g, "");
+      if (!clean) continue;
+      if (/^[A-Z]{2,5}\d{4,10}$/i.test(clean) && !gatsId) {
+        gatsId = clean.toUpperCase();
+      } else if (/^\d{1,5}$/.test(clean) && !contractId) {
+        contractId = clean;
+      }
+    }
+
+    if (gatsId && contractId) {
+      mapping.set(gatsId, contractId);
+    }
+  }
+
+  return mapping;
 }
