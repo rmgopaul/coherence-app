@@ -10263,7 +10263,7 @@ const dataQualityUnmatched = useMemo(() => {
               <Database className="h-3.5 w-3.5" />
               Solar REC Analytics
             </div>
-            <h1 className="text-2xl font-semibold text-slate-900">CSV-Updatable Portfolio Dashboard</h1>
+            <h1 className="text-2xl font-bold tracking-wide text-foreground" style={{ fontFamily: '"Permanent Marker", cursive' }}>Coherence Portfolio Analytics & Data Core</h1>
             <p className="text-sm text-slate-600">
               Import updated CSV exports anytime to refresh every view and status category.
             </p>
