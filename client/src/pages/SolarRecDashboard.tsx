@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
@@ -27,6 +27,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { trpc } from "@/lib/trpc";
+
+const TabAIChatLazy = lazy(() =>
+  import("@/components/dashboard/TabAIChat").then((m) => ({
+    default: m.TabAIChat,
+  }))
+);
 import {
   buildMeterReadDownloadFileName,
   convertMeterReadWorkbook,
@@ -10341,6 +10347,101 @@ const dataQualityUnmatched = useMemo(() => {
   return { inScheduleNotMonitoring, inMonitoringNotSchedule, matchedPercent };
 }, [isDataQualityTabActive, datasets.recDeliverySchedules, datasets.convertedReads]);
 
+// ── AI Data Context per Tab ─────────────────────────────────────
+const aiDataContext = useMemo(() => {
+  const MAX_ROWS = 200;
+  const truncate = <T,>(arr: T[], limit = MAX_ROWS) => arr.slice(0, limit);
+  const pick = <T extends Record<string, unknown>>(obj: T, keys: string[]) => {
+    const result: Record<string, unknown> = {};
+    for (const k of keys) if (k in obj) result[k] = obj[k];
+    return result;
+  };
+
+  try {
+    switch (activeTab) {
+      case "forecast":
+        return JSON.stringify({
+          tab: "forecast",
+          contracts: forecastProjections,
+          systemCount: systems.length,
+          note: "gapReporting/gapAll: positive=surplus, negative=shortfall. revisedRollingAvg includes projected RECs through EY end.",
+        });
+      case "financials":
+        return JSON.stringify({
+          tab: "financials",
+          profitRows: truncate(financialProfitData.rows),
+          totalProfit: financialProfitData.totalProfit,
+          avgProfit: financialProfitData.avgProfit,
+          totalCollateralization: financialProfitData.totalCollateralization,
+          revenueAtRisk: financialRevenueAtRisk,
+        });
+      case "performance-eval":
+        return JSON.stringify({
+          tab: "performance-eval",
+          systems: truncate(
+            performanceSourceRows.map((r) => ({
+              trackingId: r.trackingSystemRefId,
+              contractId: r.contractId,
+              systemName: r.systemName,
+              years: r.years.map((y) => ({
+                key: y.key,
+                required: y.required,
+                delivered: y.delivered,
+              })),
+            }))
+          ),
+        });
+      case "delivery-tracker":
+        return JSON.stringify({
+          tab: "delivery-tracker",
+          contracts: deliveryTrackerData.contracts,
+          totalTransfers: deliveryTrackerData.totalTransfers,
+          unmatchedTransfers: deliveryTrackerData.unmatchedTransfers,
+        });
+      case "overview":
+        return JSON.stringify({
+          tab: "overview",
+          systems: truncate(
+            systems.map((s) =>
+              pick(s as unknown as Record<string, unknown>, [
+                "systemName", "systemId", "trackingSystemRefId",
+                "installedKwAc", "recPrice", "contractedRecs",
+                "deliveredRecs", "contractedValue", "deliveredValue",
+                "valueGap", "isReporting", "isTerminated",
+                "latestReportingDate", "installerName", "monitoringPlatform",
+              ])
+            )
+          ),
+          totalSystems: systems.length,
+        });
+      case "alerts":
+        return JSON.stringify({
+          tab: "alerts",
+          alerts: truncate(alerts),
+          summary: alertSummary,
+        });
+      case "comparisons":
+        return JSON.stringify({
+          tab: "comparisons",
+          installers: comparisonInstallers,
+          platforms: comparisonPlatforms,
+        });
+      default:
+        return JSON.stringify({
+          tab: activeTab,
+          systemCount: systems.length,
+          note: "Limited context for this tab. Ask general portfolio questions.",
+        });
+    }
+  } catch {
+    return JSON.stringify({ tab: activeTab, error: "Failed to serialize data context" });
+  }
+}, [
+  activeTab, forecastProjections, financialProfitData, financialRevenueAtRisk,
+  performanceSourceRows, deliveryTrackerData, systems, alerts, alertSummary,
+  comparisonInstallers, comparisonPlatforms,
+]);
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 via-white to-emerald-50/40">
       <div className="container py-6 space-y-6">
@@ -14819,6 +14920,16 @@ const dataQualityUnmatched = useMemo(() => {
               </Card>
             )}
           </TabsContent>
+          {/* AI Data Assistant — shared across all tabs */}
+          <div className="mt-4">
+            <Suspense fallback={null}>
+              <TabAIChatLazy
+                tabId={activeTab}
+                dataContext={aiDataContext}
+                isActive={true}
+              />
+            </Suspense>
+          </div>
         </Tabs>
 
         <Card className="border-slate-200">
