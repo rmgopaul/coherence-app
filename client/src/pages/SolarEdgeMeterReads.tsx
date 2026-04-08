@@ -305,6 +305,7 @@ export default function SolarEdgeMeterReads() {
   const [bulkConnectionScope, setBulkConnectionScope] = useState<BulkConnectionScope>("active");
   const [bulkPage, setBulkPage] = useState(1);
   const bulkCancelRef = useRef(false);
+  const bulkStartTimeRef = useRef<number>(0);
 
   const applyDatePreset = (preset: DatePreset) => {
     const range = getPresetRange(preset);
@@ -514,6 +515,7 @@ export default function SolarEdgeMeterReads() {
 
     setBulkIsRunning(true);
     bulkCancelRef.current = false;
+    bulkStartTimeRef.current = Date.now();
     setBulkRows([]);
     const effectiveBatchSize =
       bulkConnectionScope === "all" ? BULK_BATCH_SIZE_ALL_PROFILES : BULK_BATCH_SIZE_ACTIVE;
@@ -1435,6 +1437,21 @@ export default function SolarEdgeMeterReads() {
                 <span>{bulkProgressPercent.toFixed(1)}%</span>
               </div>
               <Progress value={bulkProgressPercent} />
+              {bulkIsRunning && bulkProgress.processed > 0 && (() => {
+                const elapsed = (Date.now() - bulkStartTimeRef.current) / 1000;
+                const rate = bulkProgress.processed / elapsed;
+                const remaining = bulkProgress.total - bulkProgress.processed;
+                const etaSec = rate > 0 ? remaining / rate : 0;
+                const etaMin = Math.floor(etaSec / 60);
+                const etaSecRem = Math.floor(etaSec % 60);
+                const elapsedMin = Math.floor(elapsed / 60);
+                const elapsedSec = Math.floor(elapsed % 60);
+                return (
+                  <p className="text-xs font-medium text-slate-600">
+                    {rate.toFixed(1)} sites/sec | Elapsed: {elapsedMin}m {elapsedSec}s | ETA: {etaMin}m {etaSecRem}s remaining
+                  </p>
+                );
+              })()}
               <p className="text-xs text-slate-500">
                 Update cadence:{" "}
                 {bulkConnectionScope === "all"
