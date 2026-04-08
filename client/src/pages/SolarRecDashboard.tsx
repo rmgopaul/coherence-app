@@ -303,6 +303,7 @@ type SystemBuilder = {
   monitoringType: string | null;
   monitoringPlatform: string | null;
   installerName: string | null;
+  part2VerificationDate: Date | null;
 };
 
 type SystemRecord = {
@@ -337,6 +338,7 @@ type SystemRecord = {
   monitoringType: string;
   monitoringPlatform: string;
   installerName: string;
+  part2VerificationDate: Date | null;
 };
 
 type OwnershipOverviewExportRow = {
@@ -3475,6 +3477,7 @@ export default function SolarRecDashboard() {
         monitoringType: null,
         monitoringPlatform: null,
         installerName: null,
+        part2VerificationDate: null,
       };
 
       builders.set(key, created);
@@ -3530,6 +3533,10 @@ export default function SolarRecDashboard() {
         parseNumber(row.Inverter_Size_kW_DC_Part_1)
       );
       if (installedDc !== null) builder.installedKwDc = installedDc;
+
+      const part2DateRaw = clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      const part2Date = parsePart2VerificationDate(part2DateRaw);
+      if (part2Date && !builder.part2VerificationDate) builder.part2VerificationDate = part2Date;
 
       const recPrice = parseNumber(row.rec_price);
       if (recPrice !== null) builder.recPrice = recPrice;
@@ -3830,6 +3837,7 @@ export default function SolarRecDashboard() {
           monitoringType: builder.monitoringType || "Unknown",
           monitoringPlatform: builder.monitoringPlatform || "Unknown",
           installerName: builder.installerName || "Unknown",
+          part2VerificationDate: builder.part2VerificationDate,
         } satisfies SystemRecord;
       })
       .filter((system) => {
@@ -9562,13 +9570,8 @@ const part2VerifiedSystemIds = useMemo(() => {
 // ── Financials: Part II Filtered Systems ────────────────────────
 const part2VerifiedSystems = useMemo(() => {
   if (!isFinancialsTabActive) return [];
-  return systems.filter((sys) => {
-    // Only include systems with a systemId that matches a Part II verified ABP row
-    if (sys.systemId && part2VerifiedSystemIds.has(sys.systemId)) return true;
-    if (sys.trackingSystemRefId && abpEligibleTrackingIdsStrict.has(sys.trackingSystemRefId)) return true;
-    return false;
-  });
-}, [isFinancialsTabActive, systems, part2VerifiedSystemIds, abpEligibleTrackingIdsStrict]);
+  return systems.filter((sys) => sys.part2VerificationDate !== null);
+}, [isFinancialsTabActive, systems]);
 
 // ── Financials: Revenue at Risk ─────────────────────────────────
 const financialRevenueAtRisk = useMemo(() => {
