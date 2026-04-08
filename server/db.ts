@@ -2317,23 +2317,30 @@ export async function createContractScanJob(data: {
   if (!db) throw new Error("Database unavailable");
   const id = nanoid();
   const now = new Date();
-  await withDbRetry("create contract scan job", async () => {
-    await db.insert(contractScanJobs).values({
-      id,
-      userId: data.userId,
-      status: "queued",
-      totalContracts: data.totalContracts,
-      successCount: 0,
-      failureCount: 0,
-      currentCsgId: null,
-      error: null,
-      startedAt: null,
-      stoppedAt: null,
-      completedAt: null,
-      createdAt: now,
-      updatedAt: now,
+  try {
+    await withDbRetry("create contract scan job", async () => {
+      await db.insert(contractScanJobs).values({
+        id,
+        userId: data.userId,
+        status: "queued",
+        totalContracts: data.totalContracts,
+        successCount: 0,
+        failureCount: 0,
+        currentCsgId: null,
+        error: null,
+        startedAt: null,
+        stoppedAt: null,
+        completedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      });
     });
-  });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const code = (err as { code?: string }).code;
+    console.error(`[contractScanJob] INSERT failed: code=${code} message=${msg}`, err);
+    throw new Error(`Failed to create contract scan job: ${msg}`);
+  }
   return id;
 }
 
