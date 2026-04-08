@@ -4007,6 +4007,27 @@ export default function SolarRecDashboard() {
       if (statusParts.length > 0) builder.statusText = statusParts.join(" | ");
     });
 
+    // Set Part II verification date from ABP report rows onto matching builders.
+    // The ABP report has Part_2_App_Verification_Date which solarApplications may not.
+    abpReportRows.forEach((row) => {
+      const systemId = clean(row.Application_ID) || clean(row.system_id);
+      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
+      if (!systemId && !trackingId) return;
+
+      const part2DateRaw = clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
+      const part2Date = parsePart2VerificationDate(part2DateRaw);
+      if (!part2Date) return;
+
+      // Find matching builder by systemId or trackingId
+      const key = (trackingId ? keyByTracking.get(trackingId) : undefined) ??
+        (systemId ? keyBySystemId.get(systemId) : undefined);
+      if (!key) return;
+      const builder = builders.get(key);
+      if (builder && !builder.part2VerificationDate) {
+        builder.part2VerificationDate = part2Date;
+      }
+    });
+
     // Use deliveryScheduleBase if uploaded, otherwise fall back to recDeliverySchedules
     const scheduleSourceRows =
       (datasets.deliveryScheduleBase?.rows ?? []).length > 0
