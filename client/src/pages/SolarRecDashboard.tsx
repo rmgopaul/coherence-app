@@ -2445,19 +2445,31 @@ function ScheduleBImport({
         return;
       }
 
+      // Dedupe by filename: skip PDFs already in results
+      const existingFileNames = new Set(
+        scheduleBResults.map((r) => r.extraction.fileName)
+      );
+      const newPdfFiles = pdfFiles.filter(
+        (f) => !existingFileNames.has(f.name)
+      );
+
+      if (newPdfFiles.length === 0) {
+        toast.info(`All ${pdfFiles.length} PDFs already processed`);
+        return;
+      }
+
       setScheduleBProcessing(true);
-      setScheduleBProgress({ current: 0, total: pdfFiles.length });
-      setScheduleBResults([]);
+      setScheduleBProgress({ current: 0, total: newPdfFiles.length });
 
       const { extractScheduleBData, buildAdjustedSchedule, findFirstTransferEnergyYear } =
         await import("@/lib/scheduleBScanner");
 
       const results: typeof scheduleBResults = [];
 
-      for (let i = 0; i < pdfFiles.length; i++) {
-        setScheduleBProgress({ current: i + 1, total: pdfFiles.length });
+      for (let i = 0; i < newPdfFiles.length; i++) {
+        setScheduleBProgress({ current: i + 1, total: newPdfFiles.length });
         try {
-          const extraction = await extractScheduleBData(pdfFiles[i]);
+          const extraction = await extractScheduleBData(newPdfFiles[i]);
           const firstTransferYear = extraction.gatsId
             ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
             : null;
@@ -2466,7 +2478,7 @@ function ScheduleBImport({
         } catch (err) {
           results.push({
             extraction: {
-              fileName: pdfFiles[i].name,
+              fileName: newPdfFiles[i].name,
               designatedSystemId: null,
               gatsId: null,
               acSizeKw: null,
@@ -2483,9 +2495,13 @@ function ScheduleBImport({
         }
       }
 
-      setScheduleBResults(results);
+      setScheduleBResults((prev) => [...prev, ...results]);
       setScheduleBProcessing(false);
-      toast.success(`Processed ${results.length} Schedule B PDFs`);
+      const skipped = pdfFiles.length - newPdfFiles.length;
+      const msg = skipped > 0
+        ? `Processed ${results.length} new PDFs (${skipped} already processed)`
+        : `Processed ${results.length} Schedule B PDFs`;
+      toast.success(msg);
     },
     [transferDeliveryLookup]
   );
