@@ -60,107 +60,109 @@
   --spacing-widget-inner: var(--widget-padding);
 }
 
+/* ── Light Mode ─────────────────────────────────────────────────────── */
 :root {
-  --primary: #1d65b8;
+  --primary: #D63A22;
   --primary-foreground: #ffffff;
-  --sidebar-primary: #1d65b8;
+  --sidebar-primary: #D63A22;
   --sidebar-primary-foreground: #ffffff;
-  --chart-1: #1d65b8;
-  --chart-2: #2f7ac6;
-  --chart-3: #4d93d6;
-  --chart-4: #00a95c;
-  --chart-5: #c4ced4;
+  --chart-1: #D63A22;
+  --chart-2: #D4A817;
+  --chart-3: #2196C8;
+  --chart-4: #35A850;
+  --chart-5: #9E9E9E;
   --radius: 0.65rem;
-  --background: #f2f5f8;
-  --foreground: #102847;
+  --background: #FAFAFA;
+  --foreground: #1A1A1A;
   --card: #ffffff;
-  --card-foreground: #102847;
+  --card-foreground: #1A1A1A;
   --popover: #ffffff;
-  --popover-foreground: #102847;
-  --secondary: #e6ebf1;
-  --secondary-foreground: #17365f;
-  --muted: #eef2f6;
-  --muted-foreground: #5a6f88;
-  --accent: #d9e4f2;
-  --accent-foreground: #13345f;
+  --popover-foreground: #1A1A1A;
+  --secondary: #F0F0F0;
+  --secondary-foreground: #2A2A2A;
+  --muted: #F5F5F5;
+  --muted-foreground: #6B6B6B;
+  --accent: #EBEBEB;
+  --accent-foreground: #1A1A1A;
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: #cdd7e2;
-  --input: #dbe3ec;
-  --ring: #00a95c;
-  --sidebar: #ebf1f7;
-  --sidebar-foreground: #122d4f;
-  --sidebar-accent: #d9e4f2;
-  --sidebar-accent-foreground: #13345f;
-  --sidebar-border: #c6d3e1;
-  --sidebar-ring: #00a95c;
+  --border: #E0E0E0;
+  --input: #E5E5E5;
+  --ring: #D4A817;
+  --sidebar: #F5F5F5;
+  --sidebar-foreground: #1A1A1A;
+  --sidebar-accent: #EBEBEB;
+  --sidebar-accent-foreground: #1A1A1A;
+  --sidebar-border: #E0E0E0;
+  --sidebar-ring: #D4A817;
 
   /* ── Semantic Category Colors ─────────────────────────────────────── */
-  --health: #00a95c;
-  --health-light: #dbf4e8;
-  --health-foreground: #0d5f3c;
-  --productivity: #1d65b8;
-  --productivity-light: #dbe9f8;
-  --productivity-foreground: #123e72;
-  --ai: #6f86a2;
-  --ai-light: #e5ebf2;
-  --ai-foreground: #334c69;
-  --energy: #1ca66a;
-  --energy-light: #ddf5e9;
-  --energy-foreground: #0f5e3d;
+  --health: #35A850;
+  --health-light: #E8F5E9;
+  --health-foreground: #1B5E20;
+  --productivity: #D63A22;
+  --productivity-light: #FDECEA;
+  --productivity-foreground: #7F1D0F;
+  --ai: #757575;
+  --ai-light: #F5F5F5;
+  --ai-foreground: #424242;
+  --energy: #D4A817;
+  --energy-light: #FFF8E1;
+  --energy-foreground: #7A6100;
 
   /* ── Widget Spacing ────────────────────────────────────────────────── */
   --widget-gap: 1rem;
   --widget-padding: 1.25rem;
 }
 
+/* ── Dark Mode (Primary) ───────────────────────────────────────────── */
 .dark {
-  --primary: #5ea0e7;
-  --primary-foreground: #08172b;
-  --sidebar-primary: #5ea0e7;
-  --sidebar-primary-foreground: #08172b;
-  --background: #0f1d33;
-  --foreground: #e8eef6;
-  --card: #142742;
-  --card-foreground: #e8eef6;
-  --popover: #142742;
-  --popover-foreground: #e8eef6;
-  --secondary: #1b3356;
-  --secondary-foreground: #dce7f5;
-  --muted: #162c4a;
-  --muted-foreground: #9db0c8;
-  --accent: #254f80;
-  --accent-foreground: #eef4fd;
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: rgb(51 82 118 / 55%);
-  --input: rgb(42 72 108 / 65%);
-  --ring: #22b46f;
-  --chart-1: #86bdf2;
-  --chart-2: #5ea0e7;
-  --chart-3: #3d85d4;
-  --chart-4: #22b46f;
-  --chart-5: #9fb0c4;
-  --sidebar: #0f223b;
-  --sidebar-foreground: #dde8f7;
-  --sidebar-accent: #1c3e66;
-  --sidebar-accent-foreground: #f0f6ff;
-  --sidebar-border: rgb(54 90 129 / 45%);
-  --sidebar-ring: #22b46f;
+  --primary: #E8432A;
+  --primary-foreground: #ffffff;
+  --sidebar-primary: #E8432A;
+  --sidebar-primary-foreground: #ffffff;
+  --background: #0D0D0D;
+  --foreground: #F0EFED;
+  --card: #1A1A1A;
+  --card-foreground: #F0EFED;
+  --popover: #1A1A1A;
+  --popover-foreground: #F0EFED;
+  --secondary: #252525;
+  --secondary-foreground: #E0E0E0;
+  --muted: #1F1F1F;
+  --muted-foreground: #8A8A8A;
+  --accent: #2A2A2A;
+  --accent-foreground: #F0EFED;
+  --destructive: #E8432A;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.08);
+  --input: rgba(255, 255, 255, 0.10);
+  --ring: #F5C519;
+  --chart-1: #E8432A;
+  --chart-2: #F5C519;
+  --chart-3: #2BA8E0;
+  --chart-4: #3EBF5E;
+  --chart-5: #8A8A8A;
+  --sidebar: #141414;
+  --sidebar-foreground: #E0E0E0;
+  --sidebar-accent: #252525;
+  --sidebar-accent-foreground: #F0EFED;
+  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-ring: #F5C519;
 
   /* ── Semantic Category Colors (Dark) ──────────────────────────────── */
-  --health: #35c986;
-  --health-light: #103929;
-  --health-foreground: #c7f4de;
-  --productivity: #7cb5ef;
-  --productivity-light: #163355;
-  --productivity-foreground: #d7eaff;
-  --ai: #9eb0c4;
-  --ai-light: #1b2f49;
-  --ai-foreground: #d8e3f0;
-  --energy: #45c889;
-  --energy-light: #123d2e;
-  --energy-foreground: #c7f4de;
+  --health: #3EBF5E;
+  --health-light: #1A2E1A;
+  --health-foreground: #B8F0C8;
+  --productivity: #E8432A;
+  --productivity-light: #2E1A1A;
+  --productivity-foreground: #F0C0B8;
+  --ai: #8A8A8A;
+  --ai-light: #1F1F1F;
+  --ai-foreground: #D0D0D0;
+  --energy: #F5C519;
+  --energy-light: #2E2A1A;
+  --energy-foreground: #F0E8B8;
 
   /* ── Widget Spacing (Dark) ─────────────────────────────────────────── */
   --widget-gap: 1rem;
@@ -229,9 +231,9 @@
 
 .dark body {
   background:
-    radial-gradient(1200px circle at 12% -18%, rgba(29, 101, 184, 0.32), transparent 48%),
-    radial-gradient(900px circle at 92% -8%, rgba(0, 169, 92, 0.22), transparent 42%),
-    linear-gradient(180deg, #0a1629 0%, #10213a 100%);
+    radial-gradient(1200px circle at 8% -15%, rgba(232, 67, 42, 0.12), transparent 45%),
+    radial-gradient(900px circle at 95% -5%, rgba(245, 197, 25, 0.08), transparent 40%),
+    #0D0D0D;
 }
 
 /* Dark mode overrides removed — components now use design tokens (bg-card, text-foreground, etc.) */

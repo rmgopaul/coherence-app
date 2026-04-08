@@ -53,11 +53,11 @@ function formatDate(): string {
 
 const GRADIENT_CLASSES: Record<TimeOfDay, string> = {
   morning:
-    "from-amber-50/80 via-orange-50/40 to-transparent dark:from-amber-950/30 dark:via-orange-950/15 dark:to-transparent",
+    "from-red-50/60 via-amber-50/30 to-transparent dark:from-red-950/25 dark:via-amber-950/12 dark:to-transparent",
   afternoon:
-    "from-sky-50/80 via-blue-50/40 to-transparent dark:from-sky-950/30 dark:via-blue-950/15 dark:to-transparent",
+    "from-cyan-50/60 via-sky-50/30 to-transparent dark:from-cyan-950/25 dark:via-sky-950/12 dark:to-transparent",
   evening:
-    "from-indigo-50/80 via-purple-50/40 to-transparent dark:from-indigo-950/30 dark:via-purple-950/15 dark:to-transparent",
+    "from-red-50/60 via-purple-50/30 to-transparent dark:from-red-950/20 dark:via-purple-950/12 dark:to-transparent",
 };
 
 const DEFAULT_STATS: QuickStat[] = [
