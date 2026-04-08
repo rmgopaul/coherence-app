@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
-import { useTheme } from "@/contexts/ThemeContext";
 import { cn } from "@/lib/utils";
 import {
   CheckSquare,
@@ -42,16 +41,10 @@ function formatDate(): string {
   });
 }
 
-const GREETING_IMAGES_LIGHT: Record<TimeOfDay, string> = {
+const GREETING_IMAGES: Record<TimeOfDay, string> = {
   morning: "/greeting-morning.png",
   afternoon: "/greeting-afternoon.png",
   evening: "/greeting-evening.png",
-};
-
-const GREETING_IMAGES_DARK: Record<TimeOfDay, string> = {
-  morning: "/greeting-morning-dark.svg",
-  afternoon: "/greeting-afternoon-dark.svg",
-  evening: "/greeting-evening-dark.svg",
 };
 
 const DEFAULT_STATS: QuickStat[] = [
@@ -65,11 +58,9 @@ export function DashboardHero({
   stats,
   className,
 }: DashboardHeroProps) {
-  const { theme } = useTheme();
   const timeOfDay = useMemo(() => getTimeOfDay(), []);
   const dateStr = useMemo(() => formatDate(), []);
   const displayStats = stats ?? DEFAULT_STATS;
-  const greetingImages = theme === "dark" ? GREETING_IMAGES_DARK : GREETING_IMAGES_LIGHT;
 
   return (
     <div
@@ -81,9 +72,9 @@ export function DashboardHero({
       {/* Greeting image */}
       <div className="flex justify-center px-4 pt-4 sm:px-6 sm:pt-6">
         <img
-          src={greetingImages[timeOfDay]}
+          src={GREETING_IMAGES[timeOfDay]}
           alt={`Good ${timeOfDay}`}
-          className="h-auto w-full max-w-2xl object-contain"
+          className="h-auto w-full max-w-2xl object-contain dark:mix-blend-multiply dark:brightness-110 dark:contrast-110"
           draggable={false}
         />
       </div>
