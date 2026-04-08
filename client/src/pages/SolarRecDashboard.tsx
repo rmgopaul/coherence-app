@@ -2525,7 +2525,7 @@ function ScheduleBImport({
         await import("@/lib/scheduleBScanner");
 
       const accumulated = [...scheduleBResults];
-      const PERSIST_BATCH = 10; // Save to IDB every 10 PDFs
+      const PERSIST_BATCH = 5; // Save to IDB every 5 PDFs
 
       for (let i = 0; i < newPdfFiles.length; i++) {
         setScheduleBProgress({ current: i + 1, total: newPdfFiles.length });
@@ -2537,7 +2537,12 @@ function ScheduleBImport({
             ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
             : null;
           const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
-          row = { extraction, adjustedYears, firstTransferYear };
+          // Only keep the minimal data needed (drop deliveryYears raw data to save memory)
+          row = {
+            extraction: { ...extraction, deliveryYears: [] },
+            adjustedYears,
+            firstTransferYear,
+          };
         } catch (err) {
           row = {
             extraction: {
@@ -2559,12 +2564,15 @@ function ScheduleBImport({
 
         accumulated.push(row);
 
-        // Persist to IDB periodically and yield to UI
+        // Yield to browser after every PDF to prevent UI freeze and allow GC
+        await new Promise((r) => setTimeout(r, 0));
+
+        // Persist to IDB and update React state periodically
         if ((i + 1) % PERSIST_BATCH === 0 || i === newPdfFiles.length - 1) {
           setScheduleBResults([...accumulated]);
           await persistToIdb(accumulated);
-          // Yield to browser so UI updates and doesn't freeze
-          await new Promise((r) => setTimeout(r, 0));
+          // Longer yield every batch to let GC collect PDF buffers
+          await new Promise((r) => setTimeout(r, 50));
         }
       }
 

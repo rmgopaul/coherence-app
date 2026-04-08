@@ -150,7 +150,7 @@ const readPdfPages = async (file: File): Promise<PdfPageData[]> => {
   }
 
   const buffer = await file.arrayBuffer();
-  const pdf = await getDocument({ data: buffer }).promise;
+  const pdf = await getDocument({ data: new Uint8Array(buffer) }).promise;
   const pages: PdfPageData[] = [];
 
   for (
@@ -182,7 +182,11 @@ const readPdfPages = async (file: File): Promise<PdfPageData[]> => {
     );
 
     pages.push({ pageNumber, text, items });
+    page.cleanup();
   }
+
+  // Release the PDF document and its resources
+  pdf.destroy();
 
   return pages;
 };
