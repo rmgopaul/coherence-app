@@ -6668,25 +6668,18 @@ export default function SolarRecDashboard() {
         const years = buildScheduleYearEntries(row);
         if (years.length === 0) return null;
 
-        // Override delivered values from transfer history when available
+        // When transfer history is uploaded, it is the source of truth for ALL
+        // delivered values. Every year gets overridden: transfer quantity if found,
+        // otherwise 0 (no transfers = no deliveries for that year).
         if (hasTransferHistory) {
           const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
-          if (systemTransfers) {
-            for (const year of years) {
-              if (!year.startDate) continue;
-              // Match energy year: startDate's year is the EY start year
-              // (delivery years run June 1 – May 31, same as energy years)
-              const eyStartYear = year.startDate.getFullYear();
-              const transferDelivered = systemTransfers.get(eyStartYear);
-              if (transferDelivered !== undefined) {
-                year.delivered = transferDelivered;
-              }
-            }
-          } else {
-            // System not in transfer history — zero out deliveries
-            for (const year of years) {
+          for (const year of years) {
+            if (!year.startDate) {
               year.delivered = 0;
+              continue;
             }
+            const eyStartYear = year.startDate.getFullYear();
+            year.delivered = systemTransfers?.get(eyStartYear) ?? 0;
           }
         }
 
