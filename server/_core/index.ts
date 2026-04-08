@@ -89,29 +89,37 @@ async function startServer() {
         try {
           const ctx = await createContext(opts);
           if (ctx.user) return ctx;
-        } catch { /* fall through */ }
+        } catch (err) {
+          // Main app auth failed — fall through to solar-rec auth
+          console.log("[trpc-main] Main app auth failed, trying solar-rec:", err instanceof Error ? err.message : String(err));
+        }
 
         // Fall back to solar-rec auth — map to a synthetic main-app User
-        const { authenticateSolarRecRequest } = await import("./solarRecAuth");
-        const solarRecUser = await authenticateSolarRecRequest(opts.req);
-        if (solarRecUser) {
-          const now = new Date();
-          return {
-            req: opts.req,
-            res: opts.res,
-            user: {
-              id: solarRecUser.id,
-              openId: `solar-rec:${solarRecUser.id}`,
-              name: solarRecUser.name,
-              email: solarRecUser.email,
-              loginMethod: "google",
-              role: solarRecUser.role === "owner" || solarRecUser.role === "admin" ? "admin" as const : "user" as const,
-              createdAt: now,
-              updatedAt: now,
-              lastSignedIn: now,
-            },
-            twoFactorVerified: true,
-          };
+        try {
+          const { authenticateSolarRecRequest } = await import("./solarRecAuth");
+          const solarRecUser = await authenticateSolarRecRequest(opts.req);
+          if (solarRecUser) {
+            const now = new Date();
+            console.log("[trpc-main] Authenticated via solar-rec session:", solarRecUser.email);
+            return {
+              req: opts.req,
+              res: opts.res,
+              user: {
+                id: solarRecUser.id,
+                openId: `solar-rec:${solarRecUser.id}`,
+                name: solarRecUser.name,
+                email: solarRecUser.email,
+                loginMethod: "google",
+                role: solarRecUser.role === "owner" || solarRecUser.role === "admin" ? "admin" as const : "user" as const,
+                createdAt: now,
+                updatedAt: now,
+                lastSignedIn: now,
+              },
+              twoFactorVerified: true,
+            };
+          }
+        } catch (err) {
+          console.error("[trpc-main] Solar-rec auth also failed:", err instanceof Error ? err.message : String(err));
         }
 
         // No auth at all — return null user (public procedures only)
