@@ -3627,7 +3627,41 @@ export default function SolarRecDashboard() {
       if (statusParts.length > 0) builder.statusText = statusParts.join(" | ");
     });
 
-    (datasets.recDeliverySchedules?.rows ?? []).forEach((row) => {
+    // Use deliveryScheduleBase if uploaded, otherwise fall back to recDeliverySchedules
+    const scheduleSourceRows =
+      (datasets.deliveryScheduleBase?.rows ?? []).length > 0
+        ? datasets.deliveryScheduleBase!.rows
+        : datasets.recDeliverySchedules?.rows ?? [];
+
+    // Build transfer-history-based delivered totals per unit ID
+    const transferDeliveredByUnitId = new Map<string, number>();
+    const transferHistoryRows = datasets.transferHistory?.rows ?? [];
+    for (const row of transferHistoryRows) {
+      const unitId = clean(row["Unit ID"]);
+      if (!unitId) continue;
+      const qty = parseNumber(row.Quantity) ?? 0;
+      if (qty === 0) continue;
+
+      const transferor = (clean(row.Transferor) ?? "").toLowerCase();
+      const transferee = (clean(row.Transferee) ?? "").toLowerCase();
+
+      let direction = 0;
+      const isFromCS = transferor.includes("carbon solutions");
+      const isToCS = transferee.includes("carbon solutions");
+      const transfereeIsUtility = ["comed", "ameren", "midamerican"].some((u) => transferee.includes(u));
+      const transferorIsUtility = ["comed", "ameren", "midamerican"].some((u) => transferor.includes(u));
+
+      if (isFromCS && transfereeIsUtility) direction = 1;
+      else if (transferorIsUtility && isToCS) direction = -1;
+      else continue;
+
+      const key = unitId.toLowerCase();
+      transferDeliveredByUnitId.set(key, (transferDeliveredByUnitId.get(key) ?? 0) + qty * direction);
+    }
+
+    const useTransferHistoryDeliveries = transferHistoryRows.length > 0;
+
+    scheduleSourceRows.forEach((row) => {
       const trackingSystemRefId = clean(row.tracking_system_ref_id) || null;
       if (!trackingSystemRefId) return;
       const builder = ensureBuilder(trackingSystemRefId, null);
@@ -3639,9 +3673,16 @@ export default function SolarRecDashboard() {
       }
 
       const required = sumSchedule(row, "_quantity_required");
-      const delivered = sumSchedule(row, "_quantity_delivered");
       if (required !== null) builder.scheduleRequired = required;
-      if (delivered !== null) builder.scheduleDelivered = delivered;
+
+      // Use transfer history for delivered if available; otherwise fall back to schedule
+      if (useTransferHistoryDeliveries) {
+        const transferTotal = transferDeliveredByUnitId.get(trackingSystemRefId.toLowerCase());
+        builder.scheduleDelivered = transferTotal ?? 0;
+      } else {
+        const delivered = sumSchedule(row, "_quantity_delivered");
+        if (delivered !== null) builder.scheduleDelivered = delivered;
+      }
     });
 
     (datasets.accountSolarGeneration?.rows ?? []).forEach((row) => {

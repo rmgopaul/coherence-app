@@ -5,6 +5,7 @@ export const DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS = [
   { key: "invoiceMatch", label: "Invoice Match" },
   { key: "deepUpdate", label: "Deep Update" },
   { key: "contractScanner", label: "Contract Scanner" },
+  { key: "contractScraper", label: "Contract Scraper" },
   { key: "enphaseV4", label: "Enphase v4" },
   { key: "solarEdgeApi", label: "SolarEdge API" },
   { key: "froniusApi", label: "Fronius API" },
