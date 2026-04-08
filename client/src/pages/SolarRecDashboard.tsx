@@ -14153,8 +14153,9 @@ const dataQualityUnmatched = useMemo(() => {
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">REC Production Forecast — Energy Year {FORECAST_EY_LABEL}</CardTitle>
                 <CardDescription>
-                  Projected additional RECs per contract based on estimated production from each system&apos;s latest GATS meter read date through April 30, 2026.
-                  Uses Annual Production Estimates with daily pro-rata. Floor date: June 1, 2024. 1 REC = 1,000 kWh (floored per system).
+                  Projected additional RECs per contract based on estimated production from each system&apos;s latest GATS meter read date through April 30, {FORECAST_EY_END_YEAR}.
+                  Uses Annual Production Estimates with daily pro-rata. Floor date: June 1, {FORECAST_EY_START_YEAR - 1}. 1 REC = 1,000 kWh (floored per system).
+                  Floor date advances each energy year (always June 1 of the prior energy year).
                 </CardDescription>
               </CardHeader>
             </Card>
