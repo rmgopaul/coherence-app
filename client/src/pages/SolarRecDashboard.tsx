@@ -2434,9 +2434,11 @@ function openScheduleBIdb(): Promise<IDBDatabase> {
 function ScheduleBImport({
   transferDeliveryLookup,
   onApply,
+  existingDeliverySchedule,
 }: {
   transferDeliveryLookup: Map<string, Map<number, number>>;
   onApply: (rows: CsvRow[]) => void;
+  existingDeliverySchedule: CsvRow[] | null;
 }) {
   type ScheduleBResultRow = {
     extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
@@ -2503,8 +2505,26 @@ function ScheduleBImport({
       const mapping = parseContractIdMapping(text);
       contractIdMappingRef.current = mapping;
       setContractIdMappingCount(mapping.size);
+
+      // Also patch the existing deliveryScheduleBase dataset in place
+      if (mapping.size > 0 && existingDeliverySchedule && existingDeliverySchedule.length > 0) {
+        let patched = 0;
+        const updatedRows = existingDeliverySchedule.map((row) => {
+          const gatsId = (row.tracking_system_ref_id ?? "").toUpperCase();
+          const contractId = mapping.get(gatsId);
+          if (contractId) {
+            patched++;
+            return { ...row, utility_contract_number: contractId };
+          }
+          return row;
+        });
+        if (patched > 0) {
+          onApply(updatedRows);
+          toast.success(`Updated ${patched} contract IDs in existing delivery schedule`);
+        }
+      }
     },
-    []
+    [existingDeliverySchedule, onApply]
   );
 
   const handleScheduleBFolder = useCallback(
@@ -14622,12 +14642,13 @@ const dataQualityUnmatched = useMemo(() => {
             {/* ── Schedule B PDF Import ────────────────────────── */}
             <ScheduleBImport
               transferDeliveryLookup={transferDeliveryLookup}
+              existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
               onApply={(rows) => {
                 const headers = Object.keys(rows[0] ?? {});
                 setDatasets((prev) => ({
                   ...prev,
                   deliveryScheduleBase: {
-                    fileName: "Schedule B Import",
+                    fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
                     uploadedAt: new Date(),
                     headers,
                     rows,
