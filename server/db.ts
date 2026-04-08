@@ -2464,11 +2464,40 @@ export async function insertContractScanResult(
 ) {
   const db = await getDb();
   if (!db) return;
-  await withDbRetry("insert contract scan result", async () => {
-    await db
-      .insert(contractScanResults)
-      .values({ ...data, id: data.id ?? nanoid() });
-  });
+  // Truncate milliseconds from scannedAt for TiDB timestamp compatibility
+  const scannedAt = data.scannedAt ? new Date(Math.floor(data.scannedAt.getTime() / 1000) * 1000) : new Date();
+  try {
+    await withDbRetry("insert contract scan result", async () => {
+      await db.insert(contractScanResults).values({
+        id: data.id ?? nanoid(),
+        jobId: data.jobId,
+        csgId: data.csgId,
+        systemName: data.systemName ?? null,
+        vendorFeePercent: data.vendorFeePercent ?? null,
+        additionalCollateralPercent: data.additionalCollateralPercent ?? null,
+        ccAuthorizationCompleted: data.ccAuthorizationCompleted ?? null,
+        additionalFivePercentSelected: data.additionalFivePercentSelected ?? null,
+        ccCardAsteriskCount: data.ccCardAsteriskCount ?? null,
+        paymentMethod: data.paymentMethod ?? null,
+        payeeName: data.payeeName ?? null,
+        mailingAddress1: data.mailingAddress1 ?? null,
+        mailingAddress2: data.mailingAddress2 ?? null,
+        cityStateZip: data.cityStateZip ?? null,
+        recQuantity: data.recQuantity ?? null,
+        recPrice: data.recPrice ?? null,
+        acSizeKw: data.acSizeKw ?? null,
+        dcSizeKw: data.dcSizeKw ?? null,
+        pdfUrl: data.pdfUrl ?? null,
+        pdfFileName: data.pdfFileName ?? null,
+        error: data.error ?? null,
+        scannedAt,
+      });
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[contractScanResult] INSERT failed for csgId=${data.csgId}: ${msg}`);
+    throw err;
+  }
 }
 
 export async function getCompletedCsgIdsForJob(

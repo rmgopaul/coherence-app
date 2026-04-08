@@ -197,102 +197,120 @@ export async function runContractScanJob(
     ): Promise<void> => {
       if (await checkCancelled()) return;
 
-      await updateContractScanJob(id, { currentCsgId: csgId });
-      await refreshSessionIfNeeded();
+      try {
+        await updateContractScanJob(id, { currentCsgId: csgId });
+        await refreshSessionIfNeeded();
 
-      let fetched = await client.fetchRecContractPdf(csgId);
-      const fetchError = (fetched.error ?? "").toLowerCase();
-      const shouldRetryAfterRefresh =
-        Boolean(fetchError) &&
-        (fetchError.includes("timed out") ||
-          fetchError.includes("session is not authenticated") ||
-          fetchError.includes("portal login"));
+        let fetched = await client.fetchRecContractPdf(csgId);
+        const fetchError = (fetched.error ?? "").toLowerCase();
+        const shouldRetryAfterRefresh =
+          Boolean(fetchError) &&
+          (fetchError.includes("timed out") ||
+            fetchError.includes("session is not authenticated") ||
+            fetchError.includes("portal login"));
 
-      if (shouldRetryAfterRefresh) {
+        if (shouldRetryAfterRefresh) {
+          try {
+            await client.login();
+            completedSinceLastRefresh = 0;
+          } catch (refreshErr) {
+            console.warn(
+              `[contractScanJob] Session refresh failed for ${csgId}:`,
+              refreshErr instanceof Error
+                ? refreshErr.message
+                : refreshErr
+            );
+          }
+          fetched = await client.fetchRecContractPdf(csgId);
+        }
+
+        let rowError = fetched.error;
+        let extraction: Record<string, unknown> | null = null;
+
+        if (
+          !rowError &&
+          fetched.pdfData &&
+          fetched.pdfData.length > 0
+        ) {
+          try {
+            extraction = await extractContractDataFromPdfBuffer(
+              fetched.pdfData,
+              fetched.pdfFileName ?? `contract-${csgId}.pdf`
+            );
+          } catch (error) {
+            rowError =
+              error instanceof Error
+                ? error.message
+                : "Failed to parse downloaded contract PDF.";
+          }
+        }
+
+        // Write result row to database immediately
         try {
-          await client.login();
-          completedSinceLastRefresh = 0;
-        } catch (refreshErr) {
+          await insertContractScanResult({
+            id: nanoid(),
+            jobId: id,
+            csgId,
+            systemName:
+              (extraction?.systemName as string) ?? null,
+            vendorFeePercent:
+              (extraction?.vendorFeePercent as number) ?? null,
+            additionalCollateralPercent:
+              (extraction?.additionalCollateralPercent as number) ??
+              null,
+            ccAuthorizationCompleted:
+              (extraction?.ccAuthorizationCompleted as boolean) ??
+              null,
+            additionalFivePercentSelected:
+              (extraction?.additionalFivePercentSelected as boolean) ??
+              null,
+            ccCardAsteriskCount:
+              (extraction?.ccCardAsteriskCount as number) ?? null,
+            paymentMethod:
+              (extraction?.paymentMethod as string) ?? null,
+            payeeName:
+              (extraction?.payeeName as string) ?? null,
+            mailingAddress1:
+              (extraction?.mailingAddress1 as string) ?? null,
+            mailingAddress2:
+              (extraction?.mailingAddress2 as string) ?? null,
+            cityStateZip:
+              (extraction?.cityStateZip as string) ?? null,
+            recQuantity:
+              (extraction?.recQuantity as number) ?? null,
+            recPrice: (extraction?.recPrice as number) ?? null,
+            acSizeKw: (extraction?.acSizeKw as number) ?? null,
+            dcSizeKw: (extraction?.dcSizeKw as number) ?? null,
+            pdfUrl: fetched.pdfUrl ?? null,
+            pdfFileName: fetched.pdfFileName ?? null,
+            error: rowError ?? null,
+            scannedAt: new Date(),
+          });
+        } catch (dbErr) {
           console.warn(
-            `[contractScanJob] Session refresh failed for ${csgId}:`,
-            refreshErr instanceof Error
-              ? refreshErr.message
-              : refreshErr
+            `[contractScanJob] DB insert failed for ${csgId}, skipping:`,
+            dbErr instanceof Error ? dbErr.message : dbErr
           );
         }
-        fetched = await client.fetchRecContractPdf(csgId);
-      }
 
-      let rowError = fetched.error;
-      let extraction: Record<string, unknown> | null = null;
+        // Atomic counter increment
+        if (!rowError && extraction) {
+          await incrementContractScanJobCounter(id, "successCount");
+        } else {
+          await incrementContractScanJobCounter(id, "failureCount");
+        }
 
-      if (
-        !rowError &&
-        fetched.pdfData &&
-        fetched.pdfData.length > 0
-      ) {
+        completedSinceLastRefresh += 1;
+      } catch (err) {
+        // Contract-level failure — log and skip, don't stop the job
+        console.warn(
+          `[contractScanJob] Skipping ${csgId} due to error:`,
+          err instanceof Error ? err.message : err
+        );
         try {
-          extraction = await extractContractDataFromPdfBuffer(
-            fetched.pdfData,
-            fetched.pdfFileName ?? `contract-${csgId}.pdf`
-          );
-        } catch (error) {
-          rowError =
-            error instanceof Error
-              ? error.message
-              : "Failed to parse downloaded contract PDF.";
-        }
+          await incrementContractScanJobCounter(id, "failureCount");
+        } catch { /* ignore */ }
       }
-
-      // Write result row to database immediately
-      await insertContractScanResult({
-        id: nanoid(),
-        jobId: id,
-        csgId,
-        systemName:
-          (extraction?.systemName as string) ?? null,
-        vendorFeePercent:
-          (extraction?.vendorFeePercent as number) ?? null,
-        additionalCollateralPercent:
-          (extraction?.additionalCollateralPercent as number) ??
-          null,
-        ccAuthorizationCompleted:
-          (extraction?.ccAuthorizationCompleted as boolean) ??
-          null,
-        additionalFivePercentSelected:
-          (extraction?.additionalFivePercentSelected as boolean) ??
-          null,
-        ccCardAsteriskCount:
-          (extraction?.ccCardAsteriskCount as number) ?? null,
-        paymentMethod:
-          (extraction?.paymentMethod as string) ?? null,
-        payeeName:
-          (extraction?.payeeName as string) ?? null,
-        mailingAddress1:
-          (extraction?.mailingAddress1 as string) ?? null,
-        mailingAddress2:
-          (extraction?.mailingAddress2 as string) ?? null,
-        cityStateZip:
-          (extraction?.cityStateZip as string) ?? null,
-        recQuantity:
-          (extraction?.recQuantity as number) ?? null,
-        recPrice: (extraction?.recPrice as number) ?? null,
-        acSizeKw: (extraction?.acSizeKw as number) ?? null,
-        dcSizeKw: (extraction?.dcSizeKw as number) ?? null,
-        pdfUrl: fetched.pdfUrl ?? null,
-        pdfFileName: fetched.pdfFileName ?? null,
-        error: rowError ?? null,
-        scannedAt: new Date(),
-      });
-
-      // Atomic counter increment
-      if (!rowError && extraction) {
-        await incrementContractScanJobCounter(id, "successCount");
-      } else {
-        await incrementContractScanJobCounter(id, "failureCount");
-      }
-
-      completedSinceLastRefresh += 1;
     };
 
     // ── Run concurrent workers ──────────────────────────────────
