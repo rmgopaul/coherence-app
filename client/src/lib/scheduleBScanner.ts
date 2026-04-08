@@ -131,6 +131,16 @@ const findCurrencyToRight = (
 ): number | null =>
   parseCurrency(findTextToRight(page, labelMatcher, options));
 
+// ── Full-text regex extraction ───────────────────────────────────────
+
+const extractRegex = (
+  text: string,
+  pattern: RegExp
+): string | null => {
+  const match = text.match(pattern);
+  return match?.[1]?.trim() || null;
+};
+
 // ── PDF Reading ─────────────────────────────────────────────────────
 
 const readPdfPages = async (file: File): Promise<PdfPageData[]> => {
@@ -239,59 +249,63 @@ export async function extractScheduleBData(
   try {
     const pages = await readPdfPages(file);
 
-    // Page 1: fields (a), (b)
-    const page1 = findPage(pages, /Designated\s+System\s+ID/i);
+    // Combine all page text for full-text regex extraction.
+    // pdfjs-dist splits text into small items, so multi-word label
+    // matching with findTextToRight often fails. Full-text regex is
+    // more reliable for these structured fields.
+    const fullText = pages.map((p) => p.text).join(" ");
 
-    const designatedSystemId = findTextToRight(
-      page1,
-      /Designated\s+System\s+ID/i,
-      { minXOffset: 40, yTolerance: 12 }
+    // (a) Designated System ID
+    const designatedSystemId = extractRegex(
+      fullText,
+      /Designated\s+System\s+ID[:\s]+(\d+)/i
     );
 
-    // GATS ID: look for "PJM-EIS GATS ID:" then text to the right
-    const gatsId = findTextToRight(page1, /GATS\s+ID/i, {
-      minXOffset: 20,
-      yTolerance: 12,
-    });
-
-    // Page 2: fields (j), (l), (o), (q)
-    const page2 = findPage(pages, /Date of Energization/i);
-
-    const energizationDateRaw = findTextToRight(
-      page2,
-      /Date of Energization/i,
-      { minXOffset: 40, yTolerance: 12 }
+    // (b) GATS ID
+    const gatsId = extractRegex(
+      fullText,
+      /GATS\s+ID[:\s]+([A-Z0-9]+)/i
     );
 
-    const contractPrice = findCurrencyToRight(
-      page2,
-      /Contract\s+Price/i,
-      { minXOffset: 20, yTolerance: 12 }
+    // (j) Date of Energization
+    const energizationDateRaw = extractRegex(
+      fullText,
+      /Date\s+of\s+Energization[:\s]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i
     );
 
-    // Year-1 Contract Capacity Factor — percentage value
-    const capacityFactorRaw = findNumberToRight(
-      page2,
-      /Year\s*-?\s*1\s+Contract\s+Capacity\s+Factor/i,
-      { minXOffset: 20, yTolerance: 12 }
+    // (l) Contract Price
+    const contractPriceRaw = extractRegex(
+      fullText,
+      /Contract\s+Price\s*=?\s*\$?([\d,]+\.?\d*)/i
     );
-    // Convert from percentage to decimal (e.g., 16.692555 → 0.16692555)
-    const capacityFactor =
-      capacityFactorRaw !== null ? capacityFactorRaw / 100 : null;
+    const contractPrice = contractPriceRaw
+      ? parseFloat(contractPriceRaw.replace(/,/g, ""))
+      : null;
 
-    // Contract Nameplate Capacity kW AC
-    const acSizeKw = findNumberToRight(
-      page2,
-      /Contract\s+Nameplate\s+Capacity/i,
-      { minXOffset: 20, yTolerance: 12 }
+    // (o) Year-1 Contract Capacity Factor
+    const capacityFactorRaw = extractRegex(
+      fullText,
+      /Year\s*-?\s*1\s+Contract\s+Capacity\s+Factor[:\s]+([\d.]+)\s*%/i
     );
+    const capacityFactor = capacityFactorRaw
+      ? parseFloat(capacityFactorRaw) / 100
+      : null;
 
-    // Max REC Quantity
-    const maxRecQuantity = findNumberToRight(
-      page2,
-      /Contract\s+Maximum\s+REC\s+Quantity/i,
-      { minXOffset: 20, yTolerance: 12 }
+    // (q) Contract Nameplate Capacity kW AC
+    const acSizeKwRaw = extractRegex(
+      fullText,
+      /Contract\s+Nameplate\s+Capacity[:\s]+([\d.]+)\s*kW/i
     );
+    const acSizeKw = acSizeKwRaw ? parseFloat(acSizeKwRaw) : null;
+
+    // (r) Max REC Quantity
+    const maxRecQuantityRaw = extractRegex(
+      fullText,
+      /Contract\s+Maximum\s+REC\s+Quantity\s*=?\s*([\d,]+)/i
+    );
+    const maxRecQuantity = maxRecQuantityRaw
+      ? parseInt(maxRecQuantityRaw.replace(/,/g, ""), 10)
+      : null;
 
     // Delivery schedule table (pages 4-5 typically)
     const deliveryYears = parseDeliveryTable(pages);

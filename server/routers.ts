@@ -6804,6 +6804,21 @@ export const appRouter = router({
         return { success: true };
       }),
 
+    deleteDbContractScanJob: protectedProcedure
+      .input(z.object({ jobId: z.string().min(1) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getContractScanJob, deleteContractScanJobData } = await import("./db");
+        const job = await getContractScanJob(input.jobId.trim());
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Contract scan job not found.");
+        }
+        if (job.status === "running" || job.status === "queued") {
+          throw new Error("Stop the job before deleting.");
+        }
+        await deleteContractScanJobData(job.id);
+        return { success: true };
+      }),
+
     resumeDbContractScanJob: protectedProcedure
       .input(z.object({ jobId: z.string().min(1) }))
       .mutation(async ({ ctx, input }) => {

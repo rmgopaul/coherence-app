@@ -2500,6 +2500,16 @@ export async function insertContractScanResult(
   }
 }
 
+export async function deleteContractScanJobData(jobId: string) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("delete contract scan job data", async () => {
+    await db.delete(contractScanResults).where(eq(contractScanResults.jobId, jobId));
+    await db.delete(contractScanJobCsgIds).where(eq(contractScanJobCsgIds.jobId, jobId));
+    await db.delete(contractScanJobs).where(eq(contractScanJobs.id, jobId));
+  });
+}
+
 export async function getCompletedCsgIdsForJob(
   jobId: string
 ): Promise<Set<string>> {

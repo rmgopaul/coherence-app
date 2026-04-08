@@ -100,6 +100,16 @@ export default function ContractScrapeManager() {
     onError: (err) => toast.error(err.message),
   });
 
+  const deleteMutation = trpc.abpSettlement.deleteDbContractScanJob.useMutation({
+    onSuccess: () => {
+      toast.success("Job deleted");
+      setActiveJobId(null);
+      setViewingJobId(null);
+      jobListQuery.refetch();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
   // ── Queries ───────────────────────────────────────────────────────
   const jobStatusQuery = trpc.abpSettlement.getDbJobStatus.useQuery(
     { jobId: activeJobId! },
@@ -341,6 +351,20 @@ export default function ContractScrapeManager() {
                     >
                       <RefreshCw className="h-3 w-3 mr-1" />
                       Resume
+                    </Button>
+                  )}
+                  {(job.status === "stopped" ||
+                    job.status === "failed" ||
+                    job.status === "completed") && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() =>
+                        deleteMutation.mutate({ jobId: job.id })
+                      }
+                      disabled={deleteMutation.isPending}
+                    >
+                      Delete Job
                     </Button>
                   )}
                   {job.successCount > 0 && (
