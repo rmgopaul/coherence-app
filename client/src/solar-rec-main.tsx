@@ -46,6 +46,7 @@ const SOLAR_REC_ROUTES = new Set([
   "users",
   "credentials",
   "monitoring",
+  "enphaseV2",
 ]);
 
 // Main app trpc instance (for SolarRecDashboard + meter read pages).

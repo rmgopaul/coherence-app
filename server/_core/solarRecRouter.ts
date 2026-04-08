@@ -535,12 +535,116 @@ const authRouter = t.router({
 // Compose root router
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Enphase V2 sub-router (uses team credentials from solarRecTeamCredentials)
+// ---------------------------------------------------------------------------
+
+async function getEnphaseV2TeamCredentials(): Promise<{ apiKey: string; userId: string; baseUrl?: string | null }> {
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const creds = await getSolarRecTeamCredentialsByProvider("enphase-v4"); // stored under enphase-v4 key
+  const cred = creds[0];
+  if (!cred) throw new TRPCError({ code: "NOT_FOUND", message: "No Enphase credentials configured. Add them in Settings > API Credentials." });
+
+  let apiKey = cred.accessToken ?? "";
+  let userId = "";
+  let baseUrl: string | null = null;
+
+  if (cred.metadata) {
+    try {
+      const meta = JSON.parse(cred.metadata);
+      userId = meta.userId ?? "";
+      baseUrl = meta.baseUrl ?? null;
+    } catch { /* ignore */ }
+  }
+
+  if (!apiKey || !userId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "Enphase credentials missing apiKey or userId." });
+  }
+
+  return { apiKey, userId, baseUrl };
+}
+
+const enphaseV2Router = t.router({
+  getStatus: solarRecOperatorProcedure.query(async () => {
+    try {
+      const creds = await getEnphaseV2TeamCredentials();
+      return { connected: true, userId: creds.userId, baseUrl: creds.baseUrl };
+    } catch {
+      return { connected: false, userId: null, baseUrl: null };
+    }
+  }),
+
+  connect: solarRecAdminProcedure
+    .input(z.object({ apiKey: z.string().min(1), userId: z.string().min(1), baseUrl: z.string().optional() }))
+    .mutation(async ({ ctx, input }) => {
+      const { upsertSolarRecTeamCredential } = await import("../db");
+      await upsertSolarRecTeamCredential({
+        provider: "enphase-v4",
+        connectionName: "Enphase V2",
+        accessToken: input.apiKey.trim(),
+        metadata: JSON.stringify({ userId: input.userId.trim(), baseUrl: input.baseUrl?.trim() || null }),
+        createdBy: ctx.userId,
+      });
+      return { success: true };
+    }),
+
+  disconnect: solarRecAdminProcedure.mutation(async () => {
+    const { getSolarRecTeamCredentialsByProvider, deleteSolarRecTeamCredential } = await import("../db");
+    const creds = await getSolarRecTeamCredentialsByProvider("enphase-v4");
+    for (const c of creds) await deleteSolarRecTeamCredential(c.id);
+    return { success: true };
+  }),
+
+  listSystems: solarRecOperatorProcedure.query(async () => {
+    const creds = await getEnphaseV2TeamCredentials();
+    const { listSystems } = await import("../services/enphaseV2");
+    return listSystems(creds);
+  }),
+
+  getSummary: solarRecOperatorProcedure
+    .input(z.object({ systemId: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const creds = await getEnphaseV2TeamCredentials();
+      const { getSystemSummary } = await import("../services/enphaseV2");
+      return getSystemSummary(creds, input.systemId.trim());
+    }),
+
+  getEnergyLifetime: solarRecOperatorProcedure
+    .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
+    .mutation(async ({ input }) => {
+      const creds = await getEnphaseV2TeamCredentials();
+      const { getSystemEnergyLifetime } = await import("../services/enphaseV2");
+      return getSystemEnergyLifetime(creds, input.systemId.trim(), input.startDate, input.endDate);
+    }),
+
+  getRgmStats: solarRecOperatorProcedure
+    .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
+    .mutation(async ({ input }) => {
+      const creds = await getEnphaseV2TeamCredentials();
+      const { getSystemRgmStats } = await import("../services/enphaseV2");
+      return getSystemRgmStats(creds, input.systemId.trim(), input.startDate, input.endDate);
+    }),
+
+  getProductionMeterReadings: solarRecOperatorProcedure
+    .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
+    .mutation(async ({ input }) => {
+      const creds = await getEnphaseV2TeamCredentials();
+      const { getSystemProductionMeterReadings } = await import("../services/enphaseV2");
+      return getSystemProductionMeterReadings(creds, input.systemId.trim(), input.startDate, input.endDate);
+    }),
+});
+
+// ---------------------------------------------------------------------------
+// Compose root router
+// ---------------------------------------------------------------------------
+
 export const solarRecAppRouter = t.router({
   solarRecDashboard: dashboardRouter,
   auth: authRouter,
   users: usersRouter,
   credentials: credentialsRouter,
   monitoring: monitoringRouter,
+  enphaseV2: enphaseV2Router,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
