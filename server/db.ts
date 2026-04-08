@@ -2316,12 +2316,22 @@ export async function createContractScanJob(data: {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
   const id = nanoid();
+  const now = new Date();
   await withDbRetry("create contract scan job", async () => {
     await db.insert(contractScanJobs).values({
       id,
       userId: data.userId,
       status: "queued",
       totalContracts: data.totalContracts,
+      successCount: 0,
+      failureCount: 0,
+      currentCsgId: null,
+      error: null,
+      startedAt: null,
+      stoppedAt: null,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
     });
   });
   return id;
