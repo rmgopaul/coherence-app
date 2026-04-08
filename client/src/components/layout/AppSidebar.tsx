@@ -193,7 +193,7 @@ export function AppSidebar() {
           <img
             src={APP_LOGO}
             alt="Coherence logo"
-            className="size-7 rounded-md object-cover shadow-sm ring-1 ring-[#E8432A]/60"
+            className="size-7 rounded-full object-cover bg-black ring-1 ring-[#E8432A]/60"
           />
           <span className="text-sm font-bold tracking-wide uppercase group-data-[collapsible=icon]:hidden" style={{ fontFamily: '"Permanent Marker", cursive' }}>
             Coherence

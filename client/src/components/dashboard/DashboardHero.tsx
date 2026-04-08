@@ -32,16 +32,6 @@ function getTimeOfDay(): TimeOfDay {
   return "evening";
 }
 
-function getGreeting(timeOfDay: TimeOfDay, name?: string): string {
-  const greetings: Record<TimeOfDay, string> = {
-    morning: "Good morning",
-    afternoon: "Good afternoon",
-    evening: "Good evening",
-  };
-  const greeting = greetings[timeOfDay];
-  return name ? `${greeting}, ${name}` : greeting;
-}
-
 function formatDate(): string {
   return new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -51,13 +41,10 @@ function formatDate(): string {
   });
 }
 
-const GRADIENT_CLASSES: Record<TimeOfDay, string> = {
-  morning:
-    "from-red-50/60 via-amber-50/30 to-transparent dark:from-red-950/25 dark:via-amber-950/12 dark:to-transparent",
-  afternoon:
-    "from-cyan-50/60 via-sky-50/30 to-transparent dark:from-cyan-950/25 dark:via-sky-950/12 dark:to-transparent",
-  evening:
-    "from-red-50/60 via-purple-50/30 to-transparent dark:from-red-950/20 dark:via-purple-950/12 dark:to-transparent",
+const GREETING_IMAGES: Record<TimeOfDay, string> = {
+  morning: "/greeting-morning.png",
+  afternoon: "/greeting-afternoon.png",
+  evening: "/greeting-evening.png",
 };
 
 const DEFAULT_STATS: QuickStat[] = [
@@ -68,41 +55,38 @@ const DEFAULT_STATS: QuickStat[] = [
 ];
 
 export function DashboardHero({
-  userName,
   stats,
   className,
 }: DashboardHeroProps) {
   const timeOfDay = useMemo(() => getTimeOfDay(), []);
-  const greeting = useMemo(
-    () => getGreeting(timeOfDay, userName),
-    [timeOfDay, userName]
-  );
   const dateStr = useMemo(() => formatDate(), []);
   const displayStats = stats ?? DEFAULT_STATS;
 
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-md border-2 border-primary/20 bg-card p-6 sm:p-8",
+        "relative overflow-hidden rounded-md border-2 border-primary/20 bg-card",
         className
       )}
     >
-      {/* Gradient overlay */}
-      <div
-        className={cn(
-          "absolute inset-0 bg-gradient-to-br pointer-events-none",
-          GRADIENT_CLASSES[timeOfDay]
-        )}
-      />
+      {/* Greeting image */}
+      <div className="flex justify-center px-4 pt-4 sm:px-6 sm:pt-6">
+        <img
+          src={GREETING_IMAGES[timeOfDay]}
+          alt={`Good ${timeOfDay}`}
+          className="h-auto w-full max-w-2xl object-contain"
+          draggable={false}
+        />
+      </div>
 
-      <div className="relative z-10">
-        <h1 className="text-2xl sm:text-4xl font-bold tracking-wide text-foreground" style={{ fontFamily: '"Permanent Marker", cursive' }}>
-          {greeting}
-        </h1>
-        <p className="mt-1.5 text-sm font-medium text-muted-foreground tracking-wide uppercase">{dateStr}</p>
+      {/* Date + stats */}
+      <div className="px-4 pb-4 pt-2 sm:px-6 sm:pb-6">
+        <p className="text-sm font-bold text-muted-foreground tracking-widest uppercase text-center">
+          {dateStr}
+        </p>
 
         {displayStats.length > 0 && (
-          <div className="mt-5 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-wrap justify-center gap-2">
             {displayStats.map((stat) => (
               <Badge
                 key={stat.label}

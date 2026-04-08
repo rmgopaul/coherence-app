@@ -4,7 +4,7 @@ export const APP_TITLE = import.meta.env.VITE_APP_TITLE || "App";
 
 export const APP_LOGO =
   import.meta.env.VITE_APP_LOGO ||
-  "/logo-coherence.svg";
+  "/logo-c-crown.png";
 
 // Generate Google OAuth login URL at runtime so redirect URI reflects the current origin.
 export const getLoginUrl = () => {
