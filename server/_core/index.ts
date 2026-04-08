@@ -81,7 +81,7 @@ async function startServer() {
   // via the same endpoint. Uses a hybrid context that maps the solar-rec
   // session to a main-app-compatible User object.
   app.use(
-    "/solar-rec/api/trpc-main",
+    "/solar-rec/api/main-trpc",
     createExpressMiddleware({
       router: appRouter,
       createContext: async (opts) => {

@@ -62,7 +62,7 @@ const trpcClient = trpc.createClient({
         fetch: trpcFetch,
       }),
       false: httpLink({
-        url: "/solar-rec/api/trpc-main",
+        url: "/solar-rec/api/main-trpc",
         transformer: superjson,
         fetch: trpcFetch,
       }),
