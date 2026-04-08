@@ -9642,12 +9642,13 @@ type ForecastContractRow = {
   contract: string;
   systemsTotal: number;
   systemsReporting: number;
-  projectedRecsReporting: number;
-  projectedRecsAll: number;
   requiredRecs: number;
-  deliveredRecs: number;
-  gapAfterProjection1: number;
-  gapAfterProjection2: number;
+  baselineRollingAvg: number;
+  revisedRollingAvgReporting: number;
+  revisedRollingAvgAll: number;
+  delPercent: number | null;
+  gapReporting: number;
+  gapAll: number;
 };
 
 const forecastProjections = useMemo<ForecastContractRow[]>(() => {
@@ -9661,10 +9662,10 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
     contract: string;
     systemsTotal: number;
     systemsReporting: number;
-    projectedRecsReporting: number;
-    projectedRecsAll: number;
-    requiredRecs: number;        // = sum of DY3 required (obligation)
-    deliveredRecs: number;       // = sum of 3-year rolling average (floor)
+    requiredRecs: number;
+    baselineRollingAvg: number;
+    revisedRollingAvgReporting: number;
+    revisedRollingAvgAll: number;
   }>();
 
   for (const sourceRow of performanceSourceRows) {
@@ -9680,14 +9681,14 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
     const dyThreeYear = sourceRow.years[targetYearIndex];
     if (!dyOneYear || !dyTwoYear || !dyThreeYear) continue;
 
-    // Same rolling logic as perf eval: year 3 = actual, year 1-2 = actual if targetYearIndex===2, else expected
-    const values: number[] =
-      targetYearIndex === 2
-        ? [dyOneYear.delivered, dyTwoYear.delivered, dyThreeYear.delivered]
-        : [dyOneYear.required, dyTwoYear.required, dyThreeYear.delivered];
+    // DY1 and DY2 values (same as perf eval)
+    const dy1Val = targetYearIndex === 2 ? dyOneYear.delivered : dyOneYear.required;
+    const dy2Val = targetYearIndex === 2 ? dyTwoYear.delivered : dyTwoYear.required;
+    const dy3Actual = dyThreeYear.delivered; // What's been delivered so far in DY3
+    const obligation = dyThreeYear.required;
 
-    const rollingAverage = Math.floor((values[0] + values[1] + values[2]) / 3);
-    const obligation = dyThreeYear.required; // DY3 required = this year's obligation
+    // Baseline rolling average (no projection)
+    const baselineRollingAvg = Math.floor((dy1Val + dy2Val + dy3Actual) / 3);
 
     const trackingId = sourceRow.trackingSystemRefId;
     const profile = annualProductionByTrackingId.get(trackingId);
@@ -9695,32 +9696,39 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
     const sys = systems.find(s => s.trackingSystemRefId === trackingId);
     const isReporting = sys?.isReporting ?? false;
 
-    // Determine start date: latest meter reading from GATS (Account Solar Generation)
+    // Determine start date: latest meter reading from GATS
     let meterReadDate = baseline?.date ?? null;
-    // Clamp to floor: cannot go before FORECAST_FLOOR_DATE
     if (meterReadDate && meterReadDate < FORECAST_FLOOR_DATE) {
       meterReadDate = FORECAST_FLOOR_DATE;
     }
 
-    // Calculate projected RECs for this system
+    // Calculate projected RECs for remaining EY
     let projectedRecsForSystem = 0;
     if (profile && meterReadDate) {
-      const startDate = meterReadDate;
       const endDate = FORECAST_ENERGY_YEAR_END;
-      if (startDate < endDate) {
-        const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, startDate, endDate);
+      if (meterReadDate < endDate) {
+        const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, meterReadDate, endDate);
         if (expectedWh !== null && expectedWh > 0) {
-          const expectedKwh = expectedWh / 1000;
-          projectedRecsForSystem = Math.floor(expectedKwh / 1000); // 1 REC = 1,000 kWh
+          projectedRecsForSystem = Math.floor((expectedWh / 1000) / 1000);
         }
       }
     } else if (profile && !meterReadDate) {
-      // No meter read date — use floor date for "all sites" projection
       const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, FORECAST_FLOOR_DATE, FORECAST_ENERGY_YEAR_END);
       if (expectedWh !== null && expectedWh > 0) {
         projectedRecsForSystem = Math.floor((expectedWh / 1000) / 1000);
       }
     }
+
+    // Revised DY3: plug projected RECs into the current year's delivery,
+    // then recompute the rolling average. This avoids double-counting
+    // by running the projected generation through the same /3 averaging.
+    const dy3RevisedReporting = isReporting && meterReadDate
+      ? dy3Actual + projectedRecsForSystem
+      : dy3Actual;
+    const dy3RevisedAll = dy3Actual + projectedRecsForSystem;
+
+    const revisedRollingAvgReporting = Math.floor((dy1Val + dy2Val + dy3RevisedReporting) / 3);
+    const revisedRollingAvgAll = Math.floor((dy1Val + dy2Val + dy3RevisedAll) / 3);
 
     // Accumulate by contract
     const contractId = sourceRow.contractId;
@@ -9728,38 +9736,37 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
       contract: contractId,
       systemsTotal: 0,
       systemsReporting: 0,
-      projectedRecsReporting: 0,
-      projectedRecsAll: 0,
       requiredRecs: 0,
-      deliveredRecs: 0,
+      baselineRollingAvg: 0,
+      revisedRollingAvgReporting: 0,
+      revisedRollingAvgAll: 0,
     };
 
     existing.systemsTotal++;
     if (isReporting) existing.systemsReporting++;
-    existing.projectedRecsAll += projectedRecsForSystem;
-    if (isReporting && meterReadDate) {
-      existing.projectedRecsReporting += projectedRecsForSystem;
-    }
-    existing.requiredRecs += obligation;         // DY3 required (matches perf eval obligation)
-    existing.deliveredRecs += rollingAverage;     // 3-year rolling avg (matches perf eval deliveries)
+    existing.requiredRecs += obligation;
+    existing.baselineRollingAvg += baselineRollingAvg;
+    existing.revisedRollingAvgReporting += revisedRollingAvgReporting;
+    existing.revisedRollingAvgAll += revisedRollingAvgAll;
     contractMap.set(contractId, existing);
   }
 
   return Array.from(contractMap.values())
     .map(c => ({
       ...c,
-      gapAfterProjection1: c.requiredRecs - c.deliveredRecs - c.projectedRecsReporting,
-      gapAfterProjection2: c.requiredRecs - c.deliveredRecs - c.projectedRecsAll,
+      delPercent: c.requiredRecs > 0 ? (c.baselineRollingAvg / c.requiredRecs) * 100 : null,
+      gapReporting: c.revisedRollingAvgReporting - c.requiredRecs,
+      gapAll: c.revisedRollingAvgAll - c.requiredRecs,
     }))
-    .sort((a, b) => b.gapAfterProjection1 - a.gapAfterProjection1);
+    .sort((a, b) => a.gapReporting - b.gapReporting);
 }, [isForecastTabActive, performanceSourceRows, annualProductionByTrackingId, generationBaselineByTrackingId, systems]);
 
 const forecastSummary = useMemo(() => {
   const total = forecastProjections.length;
-  const totalProjReporting = forecastProjections.reduce((a, c) => a + c.projectedRecsReporting, 0);
-  const totalProjAll = forecastProjections.reduce((a, c) => a + c.projectedRecsAll, 0);
-  const atRisk = forecastProjections.filter(c => c.gapAfterProjection1 > 0).length;
-  return { total, totalProjReporting, totalProjAll, atRisk };
+  const totalRevisedReporting = forecastProjections.reduce((a, c) => a + c.revisedRollingAvgReporting, 0);
+  const totalRevisedAll = forecastProjections.reduce((a, c) => a + c.revisedRollingAvgAll, 0);
+  const atRisk = forecastProjections.filter(c => c.gapReporting < 0).length;
+  return { total, totalRevisedReporting, totalRevisedAll, atRisk };
 }, [forecastProjections]);
 
 // ── Delivery Tracker ────────────────────────────────────────────
@@ -14154,9 +14161,9 @@ const dataQualityUnmatched = useMemo(() => {
 
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <Card><CardHeader><CardDescription>Contracts</CardDescription><CardTitle className="text-2xl">{forecastSummary.total}</CardTitle></CardHeader></Card>
-              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>Proj. RECs (Reporting)</CardDescription><CardTitle className="text-2xl text-emerald-800">{formatNumber(forecastSummary.totalProjReporting)}</CardTitle></CardHeader></Card>
-              <Card className="border-sky-200 bg-sky-50/50"><CardHeader><CardDescription>Proj. RECs (All Sites)</CardDescription><CardTitle className="text-2xl text-sky-800">{formatNumber(forecastSummary.totalProjAll)}</CardTitle></CardHeader></Card>
-              <Card className={forecastSummary.atRisk > 0 ? "border-rose-200 bg-rose-50/50" : "border-emerald-200 bg-emerald-50/50"}><CardHeader><CardDescription>Contracts At Risk</CardDescription><CardTitle className="text-2xl">{forecastSummary.atRisk}</CardTitle></CardHeader></Card>
+              <Card className="border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/30"><CardHeader><CardDescription>Revised Avg (Reporting)</CardDescription><CardTitle className="text-2xl text-emerald-800 dark:text-emerald-400">{formatNumber(forecastSummary.totalRevisedReporting)}</CardTitle></CardHeader></Card>
+              <Card className="border-sky-200 bg-sky-50/50 dark:border-sky-800 dark:bg-sky-950/30"><CardHeader><CardDescription>Revised Avg (All Sites)</CardDescription><CardTitle className="text-2xl text-sky-800 dark:text-sky-400">{formatNumber(forecastSummary.totalRevisedAll)}</CardTitle></CardHeader></Card>
+              <Card className={forecastSummary.atRisk > 0 ? "border-rose-200 bg-rose-50/50 dark:border-rose-800 dark:bg-rose-950/30" : "border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/30"}><CardHeader><CardDescription>Contracts At Risk</CardDescription><CardTitle className="text-2xl">{forecastSummary.atRisk}</CardTitle></CardHeader></Card>
             </div>
 
             <Card>
@@ -14172,13 +14179,13 @@ const dataQualityUnmatched = useMemo(() => {
                   {forecastProjections.length > 0 && (
                     <Button variant="outline" size="sm" onClick={() => {
                       const csv = buildCsv(
-                        ["contract", "systems_total", "systems_reporting", "obligation_recs", "rolling_avg_recs", "delivered_pct", "proj_recs_reporting", "proj_recs_all", "gap_after_proj1", "gap_after_proj2"],
+                        ["contract", "systems_total", "systems_reporting", "obligation_recs", "baseline_rolling_avg", "del_pct", "revised_avg_reporting", "revised_avg_all", "gap_reporting", "gap_all"],
                         forecastProjections.map(c => ({
                           contract: c.contract, systems_total: c.systemsTotal, systems_reporting: c.systemsReporting,
-                          obligation_recs: c.requiredRecs, rolling_avg_recs: c.deliveredRecs,
-                          delivered_pct: c.requiredRecs > 0 ? ((c.deliveredRecs / c.requiredRecs) * 100).toFixed(1) : "",
-                          proj_recs_reporting: c.projectedRecsReporting, proj_recs_all: c.projectedRecsAll,
-                          gap_after_proj1: c.gapAfterProjection1, gap_after_proj2: c.gapAfterProjection2,
+                          obligation_recs: c.requiredRecs, baseline_rolling_avg: c.baselineRollingAvg,
+                          del_pct: c.delPercent !== null ? c.delPercent.toFixed(1) : "",
+                          revised_avg_reporting: c.revisedRollingAvgReporting, revised_avg_all: c.revisedRollingAvgAll,
+                          gap_reporting: c.gapReporting, gap_all: c.gapAll,
                         }))
                       );
                       triggerCsvDownload(`rec-forecast-ey${FORECAST_EY_LABEL}-${timestampForCsvFileName()}.csv`, csv);
@@ -14201,10 +14208,10 @@ const dataQualityUnmatched = useMemo(() => {
                           <YAxis tick={{ fontSize: 12 }} />
                           <Tooltip />
                           <Legend />
-                          <Bar dataKey="requiredRecs" fill="#94a3b8" name="Obligation (DY3 Required)" />
-                          <Bar dataKey="deliveredRecs" fill="#16a34a" name="3-Yr Rolling Avg" />
-                          <Bar dataKey="projectedRecsReporting" fill="#0ea5e9" name="Proj. RECs (Reporting)" />
-                          <Bar dataKey="projectedRecsAll" fill="#8b5cf6" name="Proj. RECs (All Sites)" />
+                          <Bar dataKey="requiredRecs" fill="#94a3b8" name="Obligation" />
+                          <Bar dataKey="baselineRollingAvg" fill="#16a34a" name="Baseline 3-Yr Avg" />
+                          <Bar dataKey="revisedRollingAvgReporting" fill="#0ea5e9" name="Revised Avg (Reporting)" />
+                          <Bar dataKey="revisedRollingAvgAll" fill="#8b5cf6" name="Revised Avg (All)" />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -14215,33 +14222,43 @@ const dataQualityUnmatched = useMemo(() => {
                           <TableHead className="text-right">Systems</TableHead>
                           <TableHead className="text-right">Reporting</TableHead>
                           <TableHead className="text-right">Obligation</TableHead>
-                          <TableHead className="text-right">3-Yr Rolling Avg</TableHead>
+                          <TableHead className="text-right">Baseline 3-Yr Avg</TableHead>
                           <TableHead className="text-right">Del. %</TableHead>
-                          <TableHead className="text-right text-sky-700">Proj. (Reporting)</TableHead>
-                          <TableHead className="text-right text-violet-700">Proj. (All)</TableHead>
-                          <TableHead className="text-right">Gap (Proj 1)</TableHead>
-                          <TableHead className="text-right">Gap (Proj 2)</TableHead>
+                          <TableHead className="text-right text-sky-700">Revised Avg (Reporting)</TableHead>
+                          <TableHead className="text-right text-sky-700">%</TableHead>
+                          <TableHead className="text-right text-violet-700">Revised Avg (All)</TableHead>
+                          <TableHead className="text-right text-violet-700">%</TableHead>
+                          <TableHead className="text-right">Gap (Reporting)</TableHead>
+                          <TableHead className="text-right">Gap (All)</TableHead>
                         </TableRow></TableHeader>
                         <TableBody>
                           {forecastProjections.map((c) => {
-                            const delPct = c.requiredRecs > 0 ? ((c.deliveredRecs / c.requiredRecs) * 100).toFixed(1) : "N/A";
-                            const status1 = c.gapAfterProjection1 <= 0 ? "default" as const : "destructive" as const;
-                            const status2 = c.gapAfterProjection2 <= 0 ? "default" as const : "destructive" as const;
+                            const delPct = c.delPercent !== null ? c.delPercent.toFixed(1) : "N/A";
+                            const revisedPctReporting = c.requiredRecs > 0 ? ((c.revisedRollingAvgReporting / c.requiredRecs) * 100).toFixed(1) : "N/A";
+                            const revisedPctAll = c.requiredRecs > 0 ? ((c.revisedRollingAvgAll / c.requiredRecs) * 100).toFixed(1) : "N/A";
+                            const gapReportingPositive = c.gapReporting >= 0;
+                            const gapAllPositive = c.gapAll >= 0;
                             return (
                               <TableRow key={c.contract}>
                                 <TableCell className="font-medium">{c.contract}</TableCell>
                                 <TableCell className="text-right">{c.systemsTotal}</TableCell>
                                 <TableCell className="text-right">{c.systemsReporting}</TableCell>
                                 <TableCell className="text-right">{formatNumber(c.requiredRecs)}</TableCell>
-                                <TableCell className="text-right">{formatNumber(c.deliveredRecs)}</TableCell>
+                                <TableCell className="text-right">{formatNumber(c.baselineRollingAvg)}</TableCell>
                                 <TableCell className="text-right">{delPct}%</TableCell>
-                                <TableCell className="text-right font-medium text-sky-700">{formatNumber(c.projectedRecsReporting)}</TableCell>
-                                <TableCell className="text-right font-medium text-violet-700">{formatNumber(c.projectedRecsAll)}</TableCell>
+                                <TableCell className="text-right font-medium text-sky-700 dark:text-sky-400">{formatNumber(c.revisedRollingAvgReporting)}</TableCell>
+                                <TableCell className="text-right text-xs text-sky-600 dark:text-sky-500">{revisedPctReporting}%</TableCell>
+                                <TableCell className="text-right font-medium text-violet-700 dark:text-violet-400">{formatNumber(c.revisedRollingAvgAll)}</TableCell>
+                                <TableCell className="text-right text-xs text-violet-600 dark:text-violet-500">{revisedPctAll}%</TableCell>
                                 <TableCell className="text-right">
-                                  <Badge variant={status1}>{c.gapAfterProjection1 <= 0 ? `+${formatNumber(Math.abs(c.gapAfterProjection1))}` : formatNumber(c.gapAfterProjection1)}</Badge>
+                                  <Badge variant="outline" className={gapReportingPositive ? "text-emerald-700 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700" : "text-red-700 border-red-300 dark:text-red-400 dark:border-red-700"}>
+                                    {gapReportingPositive ? "+" : ""}{formatNumber(c.gapReporting)}
+                                  </Badge>
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  <Badge variant={status2}>{c.gapAfterProjection2 <= 0 ? `+${formatNumber(Math.abs(c.gapAfterProjection2))}` : formatNumber(c.gapAfterProjection2)}</Badge>
+                                  <Badge variant="outline" className={gapAllPositive ? "text-emerald-700 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700" : "text-red-700 border-red-300 dark:text-red-400 dark:border-red-700"}>
+                                    {gapAllPositive ? "+" : ""}{formatNumber(c.gapAll)}
+                                  </Badge>
                                 </TableCell>
                               </TableRow>
                             );
