@@ -78,13 +78,45 @@ async function startServer() {
   );
   // Mount main app router at solar-rec path too, so meter read pages
   // can call provider-specific routes (solarEdge.*, enphaseV4.*, etc.)
-  // via the same endpoint. The solar-rec tRPC middleware above handles
-  // solar-rec specific routes; this handles the rest.
+  // via the same endpoint. Uses a hybrid context that maps the solar-rec
+  // session to a main-app-compatible User object.
   app.use(
     "/solar-rec/api/trpc-main",
     createExpressMiddleware({
       router: appRouter,
-      createContext,
+      createContext: async (opts) => {
+        // Try main app auth first
+        try {
+          const ctx = await createContext(opts);
+          if (ctx.user) return ctx;
+        } catch { /* fall through */ }
+
+        // Fall back to solar-rec auth — map to a synthetic main-app User
+        const { authenticateSolarRecRequest } = await import("./solarRecAuth");
+        const solarRecUser = await authenticateSolarRecRequest(opts.req);
+        if (solarRecUser) {
+          const now = new Date();
+          return {
+            req: opts.req,
+            res: opts.res,
+            user: {
+              id: solarRecUser.id,
+              openId: `solar-rec:${solarRecUser.id}`,
+              name: solarRecUser.name,
+              email: solarRecUser.email,
+              loginMethod: "google",
+              role: solarRecUser.role === "owner" || solarRecUser.role === "admin" ? "admin" as const : "user" as const,
+              createdAt: now,
+              updatedAt: now,
+              lastSignedIn: now,
+            },
+            twoFactorVerified: true,
+          };
+        }
+
+        // No auth at all — return null user (public procedures only)
+        return { req: opts.req, res: opts.res, user: null, twoFactorVerified: true };
+      },
     })
   );
   // tRPC API
