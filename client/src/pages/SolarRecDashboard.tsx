@@ -2586,15 +2586,25 @@ function ScheduleBImport({
     [transferDeliveryLookup, scheduleBResults, persistToIdb]
   );
 
+  const [applyingSchedule, setApplyingSchedule] = useState(false);
+
   const handleApply = useCallback(async () => {
-    const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
-    const rows = toDeliveryScheduleBaseRows(scheduleBResults);
-    if (rows.length === 0) {
-      toast.error("No valid results to apply");
-      return;
+    setApplyingSchedule(true);
+    toast.info("Building delivery schedule from scan results...");
+    // Yield to let the toast render before heavy computation
+    await new Promise((r) => setTimeout(r, 100));
+    try {
+      const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
+      const rows = toDeliveryScheduleBaseRows(scheduleBResults);
+      if (rows.length === 0) {
+        toast.error("No valid results to apply");
+        return;
+      }
+      onApply(rows);
+      toast.success(`Applied ${rows.length} systems as Delivery Schedule`);
+    } finally {
+      setApplyingSchedule(false);
     }
-    onApply(rows);
-    toast.success(`Applied ${rows.length} systems as Delivery Schedule`);
   }, [scheduleBResults, onApply]);
 
   const handleExportCsv = useCallback(() => {
@@ -2661,8 +2671,15 @@ function ScheduleBImport({
                 <Button variant="outline" size="sm" onClick={handleExportCsv}>
                   Export CSV
                 </Button>
-                <Button size="sm" onClick={handleApply}>
-                  Apply as Delivery Schedule ({successCount})
+                <Button size="sm" onClick={handleApply} disabled={applyingSchedule}>
+                  {applyingSchedule ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                      Applying...
+                    </>
+                  ) : (
+                    `Apply as Delivery Schedule (${successCount})`
+                  )}
                 </Button>
               </>
             )}
