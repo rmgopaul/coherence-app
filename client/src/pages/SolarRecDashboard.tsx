@@ -2413,6 +2413,22 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
   }
 }
 
+// ── Schedule B IndexedDB helper ─────────────────────────────────────
+
+function openScheduleBIdb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("scheduleBScannerCache", 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains("store")) {
+        db.createObjectStore("store");
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
 // ── Schedule B PDF Import Component ─────────────────────────────────
 
 function ScheduleBImport({
@@ -2422,16 +2438,60 @@ function ScheduleBImport({
   transferDeliveryLookup: Map<string, Map<number, number>>;
   onApply: (rows: CsvRow[]) => void;
 }) {
-  const [scheduleBResults, setScheduleBResults] = useState<
-    Array<{
-      extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
-      adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
-      firstTransferYear: number | null;
-    }>
-  >([]);
+  type ScheduleBResultRow = {
+    extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
+    adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
+    firstTransferYear: number | null;
+  };
+
+  const SCHEDULE_B_IDB_KEY = "scheduleBResults";
+
+  const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
   const [scheduleBProcessing, setScheduleBProcessing] = useState(false);
   const [scheduleBProgress, setScheduleBProgress] = useState({ current: 0, total: 0 });
+  const [scheduleBHydrated, setScheduleBHydrated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Persist to / restore from IndexedDB ───────────────────────
+  const persistToIdb = useCallback(async (results: ScheduleBResultRow[]) => {
+    try {
+      const db = await openScheduleBIdb();
+      const tx = db.transaction("store", "readwrite");
+      tx.objectStore("store").put(JSON.stringify(results), SCHEDULE_B_IDB_KEY);
+      await new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+      db.close();
+    } catch {
+      // Best effort
+    }
+  }, []);
+
+  // Restore on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const db = await openScheduleBIdb();
+        const tx = db.transaction("store", "readonly");
+        const req = tx.objectStore("store").get(SCHEDULE_B_IDB_KEY);
+        const raw = await new Promise<string | undefined>((resolve, reject) => {
+          req.onsuccess = () => resolve(req.result as string | undefined);
+          req.onerror = () => reject(req.error);
+        });
+        db.close();
+        if (raw) {
+          const parsed = JSON.parse(raw) as ScheduleBResultRow[];
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setScheduleBResults(parsed);
+          }
+        }
+      } catch {
+        // Fresh start
+      }
+      setScheduleBHydrated(true);
+    })();
+  }, []);
 
   const handleScheduleBFolder = useCallback(
     async (files: FileList | null) => {
@@ -2464,19 +2524,22 @@ function ScheduleBImport({
       const { extractScheduleBData, buildAdjustedSchedule, findFirstTransferEnergyYear } =
         await import("@/lib/scheduleBScanner");
 
-      const results: typeof scheduleBResults = [];
+      const accumulated = [...scheduleBResults];
+      const PERSIST_BATCH = 10; // Save to IDB every 10 PDFs
 
       for (let i = 0; i < newPdfFiles.length; i++) {
         setScheduleBProgress({ current: i + 1, total: newPdfFiles.length });
+
+        let row: ScheduleBResultRow;
         try {
           const extraction = await extractScheduleBData(newPdfFiles[i]);
           const firstTransferYear = extraction.gatsId
             ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
             : null;
           const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
-          results.push({ extraction, adjustedYears, firstTransferYear });
+          row = { extraction, adjustedYears, firstTransferYear };
         } catch (err) {
-          results.push({
+          row = {
             extraction: {
               fileName: newPdfFiles[i].name,
               designatedSystemId: null,
@@ -2491,19 +2554,28 @@ function ScheduleBImport({
             },
             adjustedYears: [],
             firstTransferYear: null,
-          });
+          };
+        }
+
+        accumulated.push(row);
+
+        // Persist to IDB periodically and yield to UI
+        if ((i + 1) % PERSIST_BATCH === 0 || i === newPdfFiles.length - 1) {
+          setScheduleBResults([...accumulated]);
+          await persistToIdb(accumulated);
+          // Yield to browser so UI updates and doesn't freeze
+          await new Promise((r) => setTimeout(r, 0));
         }
       }
 
-      setScheduleBResults((prev) => [...prev, ...results]);
       setScheduleBProcessing(false);
       const skipped = pdfFiles.length - newPdfFiles.length;
       const msg = skipped > 0
-        ? `Processed ${results.length} new PDFs (${skipped} already processed)`
-        : `Processed ${results.length} Schedule B PDFs`;
+        ? `Processed ${newPdfFiles.length} new PDFs (${skipped} already processed)`
+        : `Processed ${newPdfFiles.length} Schedule B PDFs`;
       toast.success(msg);
     },
-    [transferDeliveryLookup]
+    [transferDeliveryLookup, scheduleBResults, persistToIdb]
   );
 
   const handleApply = useCallback(async () => {
@@ -2562,6 +2634,22 @@ function ScheduleBImport({
           <div className="flex gap-2">
             {scheduleBResults.length > 0 && (
               <>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={async () => {
+                    setScheduleBResults([]);
+                    try {
+                      const db = await openScheduleBIdb();
+                      const tx = db.transaction("store", "readwrite");
+                      tx.objectStore("store").delete("scheduleBResults");
+                      db.close();
+                    } catch { /* ignore */ }
+                    toast.info("Cleared Schedule B results");
+                  }}
+                >
+                  Clear
+                </Button>
                 <Button variant="outline" size="sm" onClick={handleExportCsv}>
                   Export CSV
                 </Button>
@@ -2601,18 +2689,25 @@ function ScheduleBImport({
             )}
           </Button>
           {scheduleBProcessing && (
-            <Progress
-              value={
-                scheduleBProgress.total > 0
-                  ? (scheduleBProgress.current / scheduleBProgress.total) * 100
-                  : 0
-              }
-              className="flex-1 h-2"
-            />
+            <div className="flex-1 space-y-1">
+              <Progress
+                value={
+                  scheduleBProgress.total > 0
+                    ? (scheduleBProgress.current / scheduleBProgress.total) * 100
+                    : 0
+                }
+                className="h-3"
+              />
+              <p className="text-xs text-muted-foreground">
+                {scheduleBProgress.current} of {scheduleBProgress.total} PDFs
+                ({Math.round((scheduleBProgress.current / Math.max(1, scheduleBProgress.total)) * 100)}%)
+                — saved every 10
+              </p>
+            </div>
           )}
           {!scheduleBProcessing && scheduleBResults.length > 0 && (
             <span className="text-xs text-muted-foreground">
-              {successCount} extracted, {errorCount} errors
+              {successCount} extracted, {errorCount} errors{scheduleBHydrated && !scheduleBProcessing ? " (restored from cache)" : ""}
             </span>
           )}
         </div>
