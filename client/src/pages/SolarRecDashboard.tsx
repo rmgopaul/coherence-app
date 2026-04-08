@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
 import jsPDF from "jspdf";
@@ -21,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
@@ -2409,6 +2411,266 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
   } catch {
     return [];
   }
+}
+
+// ── Schedule B PDF Import Component ─────────────────────────────────
+
+function ScheduleBImport({
+  transferDeliveryLookup,
+  onApply,
+}: {
+  transferDeliveryLookup: Map<string, Map<number, number>>;
+  onApply: (rows: CsvRow[]) => void;
+}) {
+  const [scheduleBResults, setScheduleBResults] = useState<
+    Array<{
+      extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
+      adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
+      firstTransferYear: number | null;
+    }>
+  >([]);
+  const [scheduleBProcessing, setScheduleBProcessing] = useState(false);
+  const [scheduleBProgress, setScheduleBProgress] = useState({ current: 0, total: 0 });
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleScheduleBFolder = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+
+      const pdfFiles = Array.from(files).filter(
+        (f) => f.name.toLowerCase().endsWith(".pdf")
+      );
+      if (pdfFiles.length === 0) {
+        toast.error("No PDF files found in selected folder");
+        return;
+      }
+
+      setScheduleBProcessing(true);
+      setScheduleBProgress({ current: 0, total: pdfFiles.length });
+      setScheduleBResults([]);
+
+      const { extractScheduleBData, buildAdjustedSchedule, findFirstTransferEnergyYear } =
+        await import("@/lib/scheduleBScanner");
+
+      const results: typeof scheduleBResults = [];
+
+      for (let i = 0; i < pdfFiles.length; i++) {
+        setScheduleBProgress({ current: i + 1, total: pdfFiles.length });
+        try {
+          const extraction = await extractScheduleBData(pdfFiles[i]);
+          const firstTransferYear = extraction.gatsId
+            ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
+            : null;
+          const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
+          results.push({ extraction, adjustedYears, firstTransferYear });
+        } catch (err) {
+          results.push({
+            extraction: {
+              fileName: pdfFiles[i].name,
+              designatedSystemId: null,
+              gatsId: null,
+              acSizeKw: null,
+              capacityFactor: null,
+              contractPrice: null,
+              energizationDate: null,
+              maxRecQuantity: null,
+              deliveryYears: [],
+              error: err instanceof Error ? err.message : "Processing failed",
+            },
+            adjustedYears: [],
+            firstTransferYear: null,
+          });
+        }
+      }
+
+      setScheduleBResults(results);
+      setScheduleBProcessing(false);
+      toast.success(`Processed ${results.length} Schedule B PDFs`);
+    },
+    [transferDeliveryLookup]
+  );
+
+  const handleApply = useCallback(async () => {
+    const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
+    const rows = toDeliveryScheduleBaseRows(scheduleBResults);
+    if (rows.length === 0) {
+      toast.error("No valid results to apply");
+      return;
+    }
+    onApply(rows);
+    toast.success(`Applied ${rows.length} systems as Delivery Schedule`);
+  }, [scheduleBResults, onApply]);
+
+  const handleExportCsv = useCallback(() => {
+    const headers = [
+      "fileName", "designatedSystemId", "gatsId", "acSizeKw",
+      "capacityFactor", "contractPrice", "energizationDate",
+      "firstTransferYear", "error",
+      ...Array.from({ length: 15 }, (_, i) => `year${i + 1}_qty`),
+    ];
+    const csvRows = scheduleBResults.map((r) => {
+      const vals: Record<string, string | number> = {
+        fileName: r.extraction.fileName,
+        designatedSystemId: r.extraction.designatedSystemId ?? "",
+        gatsId: r.extraction.gatsId ?? "",
+        acSizeKw: r.extraction.acSizeKw ?? "",
+        capacityFactor: r.extraction.capacityFactor ?? "",
+        contractPrice: r.extraction.contractPrice ?? "",
+        energizationDate: r.extraction.energizationDate ?? "",
+        firstTransferYear: r.firstTransferYear ?? "",
+        error: r.extraction.error ?? "",
+      };
+      for (let i = 0; i < 15; i++) {
+        vals[`year${i + 1}_qty`] = r.adjustedYears[i]?.recQuantity ?? "";
+      }
+      return vals;
+    });
+    const csv = buildCsv(headers, csvRows);
+    triggerCsvDownload(`schedule-b-extractions-${timestampForCsvFileName()}.csv`, csv);
+  }, [scheduleBResults]);
+
+  const successCount = scheduleBResults.filter((r) => !r.extraction.error).length;
+  const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="text-base">Schedule B PDF Import</CardTitle>
+            <CardDescription>
+              Select a folder of Schedule B PDFs to extract 15-year delivery schedules.
+              Transfer History is used to determine the first delivery year.
+            </CardDescription>
+          </div>
+          <div className="flex gap-2">
+            {scheduleBResults.length > 0 && (
+              <>
+                <Button variant="outline" size="sm" onClick={handleExportCsv}>
+                  Export CSV
+                </Button>
+                <Button size="sm" onClick={handleApply}>
+                  Apply as Delivery Schedule ({successCount})
+                </Button>
+              </>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            // @ts-expect-error webkitdirectory is not in the TS type defs
+            webkitdirectory=""
+            directory=""
+            multiple
+            accept=".pdf"
+            className="hidden"
+            onChange={(e) => handleScheduleBFolder(e.target.files)}
+          />
+          <Button
+            variant="outline"
+            disabled={scheduleBProcessing}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {scheduleBProcessing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Processing {scheduleBProgress.current}/{scheduleBProgress.total}
+              </>
+            ) : (
+              "Select Folder"
+            )}
+          </Button>
+          {scheduleBProcessing && (
+            <Progress
+              value={
+                scheduleBProgress.total > 0
+                  ? (scheduleBProgress.current / scheduleBProgress.total) * 100
+                  : 0
+              }
+              className="flex-1 h-2"
+            />
+          )}
+          {!scheduleBProcessing && scheduleBResults.length > 0 && (
+            <span className="text-xs text-muted-foreground">
+              {successCount} extracted, {errorCount} errors
+            </span>
+          )}
+        </div>
+
+        {scheduleBResults.length > 0 && (
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>ABP ID</TableHead>
+                  <TableHead>GATS ID</TableHead>
+                  <TableHead className="text-right">AC kW</TableHead>
+                  <TableHead className="text-right">Cap Factor</TableHead>
+                  <TableHead>1st Transfer EY</TableHead>
+                  {Array.from({ length: 15 }, (_, i) => (
+                    <TableHead key={i} className="text-right text-xs">
+                      Y{i + 1}
+                    </TableHead>
+                  ))}
+                  <TableHead>Error</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {scheduleBResults.slice(0, 100).map((r, idx) => (
+                  <TableRow
+                    key={idx}
+                    className={r.extraction.error ? "bg-red-50/50" : ""}
+                  >
+                    <TableCell className="font-mono text-xs">
+                      {r.extraction.designatedSystemId ?? "—"}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {r.extraction.gatsId ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right text-xs">
+                      {r.extraction.acSizeKw ?? "—"}
+                    </TableCell>
+                    <TableCell className="text-right text-xs">
+                      {r.extraction.capacityFactor != null
+                        ? `${(r.extraction.capacityFactor * 100).toFixed(2)}%`
+                        : "—"}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {r.firstTransferYear
+                        ? `${r.firstTransferYear}-${r.firstTransferYear + 1}`
+                        : "—"}
+                    </TableCell>
+                    {Array.from({ length: 15 }, (_, i) => {
+                      const year = r.adjustedYears[i];
+                      return (
+                        <TableCell
+                          key={i}
+                          className={`text-right text-xs ${
+                            year?.source === "calculated"
+                              ? "text-blue-600"
+                              : ""
+                          }`}
+                        >
+                          {year?.recQuantity ?? "—"}
+                        </TableCell>
+                      );
+                    })}
+                    <TableCell className="text-xs text-red-600 max-w-[150px] truncate">
+                      {r.extraction.error ?? ""}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export default function SolarRecDashboard() {
@@ -14157,6 +14419,22 @@ const dataQualityUnmatched = useMemo(() => {
           </TabsContent>
 
           <TabsContent value="delivery-tracker" className="space-y-4 mt-4">
+            {/* ── Schedule B PDF Import ────────────────────────── */}
+            <ScheduleBImport
+              transferDeliveryLookup={transferDeliveryLookup}
+              onApply={(rows) => {
+                const headers = Object.keys(rows[0] ?? {});
+                setDatasets((prev) => ({
+                  ...prev,
+                  deliveryScheduleBase: {
+                    fileName: "Schedule B Import",
+                    uploadedAt: new Date(),
+                    headers,
+                    rows,
+                  },
+                }));
+              }}
+            />
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <Card><CardHeader><CardDescription>Systems in Schedule</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.contracts.reduce((a, c) => a + c.systems, 0))}</CardTitle></CardHeader></Card>
               <Card><CardHeader><CardDescription>Transfers Processed</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.totalTransfers)}</CardTitle></CardHeader></Card>
