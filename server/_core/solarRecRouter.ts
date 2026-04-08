@@ -455,6 +455,47 @@ const monitoringRouter = t.router({
 
       return { provider: input.provider, dateKey };
     }),
+
+  getOverview: solarRecViewerProcedure
+    .input(
+      z.object({
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    )
+    .query(async ({ input }) => {
+      const { getMonitoringGrid } = await import("../db");
+      const { listSolarRecTeamCredentials } = await import("../db");
+
+      const [runs, creds] = await Promise.all([
+        getMonitoringGrid(input.startDate, input.endDate),
+        listSolarRecTeamCredentials(),
+      ]);
+
+      // Build credential label lookup
+      const credLabelMap = new Map<string, { name: string; provider: string }>();
+      for (const c of creds) {
+        let label = c.connectionName ?? "";
+        if (!label && c.metadata) {
+          try {
+            const meta = JSON.parse(c.metadata);
+            label =
+              meta.username ??
+              meta.account ??
+              meta.connectionName ??
+              (meta.apiKey ? `Key ...${String(meta.apiKey).slice(-6)}` : "");
+          } catch {
+            /* ignore */
+          }
+        }
+        if (!label && c.accessToken) {
+          label = `...${c.accessToken.slice(-6)}`;
+        }
+        credLabelMap.set(c.id, { name: label || "Unnamed", provider: c.provider });
+      }
+
+      return { runs, credentials: Array.from(credLabelMap.entries()).map(([id, v]) => ({ id, ...v })) };
+    }),
 });
 
 // ---------------------------------------------------------------------------

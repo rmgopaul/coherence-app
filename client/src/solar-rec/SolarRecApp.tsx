@@ -10,6 +10,9 @@ const SolarRecDashboard = lazy(() => import("../pages/SolarRecDashboard"));
 const MonitoringDashboard = lazy(
   () => import("./pages/MonitoringDashboard")
 );
+const MonitoringOverview = lazy(
+  () => import("./pages/MonitoringOverview")
+);
 const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
 
 // Meter read pages (existing, reused from main app)
@@ -80,6 +83,9 @@ function AuthenticatedApp() {
               </Route>
               <Route path="/solar-rec/monitoring">
                 <MonitoringDashboard />
+              </Route>
+              <Route path="/solar-rec/monitoringoverview">
+                <MonitoringOverview />
               </Route>
               <Route path="/solar-rec/settings">
                 <SolarRecSettings />
