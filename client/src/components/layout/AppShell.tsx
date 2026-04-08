@@ -68,7 +68,7 @@ export function AppShell({ children }: AppShellProps) {
           {pageTitle && (
             <>
               <Separator orientation="vertical" className="mx-1 h-4" />
-              <span className="text-sm font-medium text-foreground">
+              <span className="text-sm font-bold tracking-wide uppercase text-foreground">
                 {pageTitle}
               </span>
             </>

@@ -83,7 +83,7 @@ export function DashboardHero({
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border bg-card p-6 sm:p-8",
+        "relative overflow-hidden rounded-md border-2 border-primary/20 bg-card p-6 sm:p-8",
         className
       )}
     >
@@ -96,10 +96,10 @@ export function DashboardHero({
       />
 
       <div className="relative z-10">
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+        <h1 className="text-2xl sm:text-4xl font-bold tracking-wide text-foreground" style={{ fontFamily: '"Permanent Marker", cursive' }}>
           {greeting}
         </h1>
-        <p className="mt-1 text-sm text-muted-foreground">{dateStr}</p>
+        <p className="mt-1.5 text-sm font-medium text-muted-foreground tracking-wide uppercase">{dateStr}</p>
 
         {displayStats.length > 0 && (
           <div className="mt-5 flex flex-wrap gap-2">

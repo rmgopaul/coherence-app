@@ -4,9 +4,11 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Permanent Marker", cursive;
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 4px);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -71,7 +73,7 @@
   --chart-3: #2196C8;
   --chart-4: #35A850;
   --chart-5: #9E9E9E;
-  --radius: 0.65rem;
+  --radius: 0.375rem;
   --background: #FAFAFA;
   --foreground: #1A1A1A;
   --card: #ffffff;
@@ -135,8 +137,8 @@
   --accent-foreground: #F0EFED;
   --destructive: #E8432A;
   --destructive-foreground: #ffffff;
-  --border: rgba(255, 255, 255, 0.08);
-  --input: rgba(255, 255, 255, 0.10);
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.14);
   --ring: #F5C519;
   --chart-1: #E8432A;
   --chart-2: #F5C519;
@@ -177,6 +179,13 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+    letter-spacing: -0.01em;
+  }
+  h1, h2, h3 {
+    font-family: "Permanent Marker", cursive;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -231,8 +240,9 @@
 
 .dark body {
   background:
-    radial-gradient(1200px circle at 8% -15%, rgba(232, 67, 42, 0.12), transparent 45%),
-    radial-gradient(900px circle at 95% -5%, rgba(245, 197, 25, 0.08), transparent 40%),
+    radial-gradient(800px circle at 5% -10%, rgba(232, 67, 42, 0.18), transparent 40%),
+    radial-gradient(600px circle at 98% 5%, rgba(245, 197, 25, 0.10), transparent 35%),
+    radial-gradient(500px circle at 50% 100%, rgba(43, 168, 224, 0.06), transparent 35%),
     #0D0D0D;
 }
 

@@ -193,9 +193,9 @@ export function AppSidebar() {
           <img
             src={APP_LOGO}
             alt="Coherence logo"
-            className="size-7 rounded-md object-cover shadow-sm ring-1 ring-[#00a95c]/55"
+            className="size-7 rounded-md object-cover shadow-sm ring-1 ring-[#E8432A]/60"
           />
-          <span className="text-sm font-semibold tracking-tight group-data-[collapsible=icon]:hidden">
+          <span className="text-sm font-bold tracking-wide uppercase group-data-[collapsible=icon]:hidden" style={{ fontFamily: '"Permanent Marker", cursive' }}>
             Coherence
           </span>
         </a>
@@ -212,7 +212,7 @@ export function AppSidebar() {
           >
             <SidebarGroup>
               <CollapsibleTrigger asChild>
-                <SidebarGroupLabel className="cursor-pointer select-none justify-between uppercase tracking-wider text-xs">
+                <SidebarGroupLabel className="cursor-pointer select-none justify-between uppercase tracking-widest text-[10px] font-bold">
                   {section.title}
                   <ChevronDown
                     className={cn(
