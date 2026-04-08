@@ -13,7 +13,7 @@ import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
-import { registerSolarRecAuth } from "./solarRecAuth";
+import { registerSolarRecAuth, authenticateSolarRecRequest } from "./solarRecAuth";
 import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
 import { getLocalStorageRoot, isStorageProxyConfigured, LOCAL_STORAGE_ROUTE_PREFIX } from "../storage";
 
@@ -96,16 +96,18 @@ async function startServer() {
 
         // Fall back to solar-rec auth — map to a synthetic main-app User
         try {
-          const { authenticateSolarRecRequest } = await import("./solarRecAuth");
           const solarRecUser = await authenticateSolarRecRequest(opts.req);
           if (solarRecUser) {
             const now = new Date();
-            console.log("[trpc-main] Authenticated via solar-rec session:", solarRecUser.email);
+            // Map to the main app owner user (id=1) so integrations lookup works.
+            // All solar-rec users share the same team credentials via the owner's integrations.
+            const { getSolarRecOwnerUserId } = await import("./solarRecAuth");
+            const ownerUserId = getSolarRecOwnerUserId();
             return {
               req: opts.req,
               res: opts.res,
               user: {
-                id: solarRecUser.id,
+                id: ownerUserId,
                 openId: `solar-rec:${solarRecUser.id}`,
                 name: solarRecUser.name,
                 email: solarRecUser.email,
