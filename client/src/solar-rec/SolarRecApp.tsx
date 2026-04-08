@@ -98,6 +98,9 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/meter-reads/enphase-v2">
                 <EnphaseV2MeterReads />
               </Route>
+              <Route path="/solar-rec/meter-reads/enphase-v4">
+                <EnphaseV2MeterReads />
+              </Route>
               <Route path="/solar-rec/meter-reads/apsystems">
                 <APsystemsMeterReads />
               </Route>
