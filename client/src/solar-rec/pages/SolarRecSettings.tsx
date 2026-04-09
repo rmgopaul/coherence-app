@@ -247,6 +247,11 @@ function CredentialsManagement() {
   const disconnectMutation = trpc.credentials.disconnect.useMutation({
     onSuccess: () => credsQuery.refetch(),
   });
+  const migrateMutation = trpc.credentials.migrateFromMain.useMutation({
+    onSuccess: () => {
+      credsQuery.refetch();
+    },
+  });
 
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState(PROVIDERS[0].key);
@@ -273,70 +278,93 @@ function CredentialsManagement() {
               Shared credentials used by the team for monitoring APIs.
             </CardDescription>
           </div>
-          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="gap-1.5">
-                <Link className="h-3.5 w-3.5" />
-                Connect
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Connect API</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-3 pt-2">
-                <Select
-                  value={selectedProvider}
-                  onValueChange={(v) => {
-                    setSelectedProvider(v);
-                    setFormFields({});
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PROVIDERS.map((p) => (
-                      <SelectItem key={p.key} value={p.key}>
-                        {p.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Input
-                  placeholder="Connection name (optional)"
-                  value={connectionName}
-                  onChange={(e) => setConnectionName(e.target.value)}
-                />
-                {providerConfig?.fields.map((field) => (
-                  <Input
-                    key={field}
-                    placeholder={field}
-                    value={formFields[field] ?? ""}
-                    onChange={(e) =>
-                      setFormFields((prev) => ({ ...prev, [field]: e.target.value }))
-                    }
-                    type={
-                      field.toLowerCase().includes("secret") ||
-                      field.toLowerCase().includes("password")
-                        ? "password"
-                        : "text"
-                    }
-                  />
-                ))}
-                <Button
-                  onClick={handleConnect}
-                  disabled={connectMutation.isPending}
-                  className="w-full"
-                >
-                  {connectMutation.isPending ? "Connecting..." : "Save Connection"}
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => migrateMutation.mutate()}
+              disabled={migrateMutation.isPending}
+            >
+              {migrateMutation.isPending ? "Migrating..." : "Migrate from Main"}
+            </Button>
+            <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+              <DialogTrigger asChild>
+                <Button size="sm" className="gap-1.5">
+                  <Link className="h-3.5 w-3.5" />
+                  Connect
                 </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Connect API</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3 pt-2">
+                  <Select
+                    value={selectedProvider}
+                    onValueChange={(v) => {
+                      setSelectedProvider(v);
+                      setFormFields({});
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {PROVIDERS.map((p) => (
+                        <SelectItem key={p.key} value={p.key}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Input
+                    placeholder="Connection name (optional)"
+                    value={connectionName}
+                    onChange={(e) => setConnectionName(e.target.value)}
+                  />
+                  {providerConfig?.fields.map((field) => (
+                    <Input
+                      key={field}
+                      placeholder={field}
+                      value={formFields[field] ?? ""}
+                      onChange={(e) =>
+                        setFormFields((prev) => ({ ...prev, [field]: e.target.value }))
+                      }
+                      type={
+                        field.toLowerCase().includes("secret") ||
+                        field.toLowerCase().includes("password")
+                          ? "password"
+                          : "text"
+                      }
+                    />
+                  ))}
+                  <Button
+                    onClick={handleConnect}
+                    disabled={connectMutation.isPending}
+                    className="w-full"
+                  >
+                    {connectMutation.isPending ? "Connecting..." : "Save Connection"}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
+        {migrateMutation.data && (
+          <div className="mb-3 rounded-md border bg-muted/40 p-3 text-xs">
+            <p>
+              Migration complete: {migrateMutation.data.created} created,{" "}
+              {migrateMutation.data.updated} updated, {migrateMutation.data.skipped} skipped.
+            </p>
+          </div>
+        )}
+        {migrateMutation.error && (
+          <p className="mb-3 text-xs text-destructive">
+            Migration failed: {migrateMutation.error.message}
+          </p>
+        )}
         <div className="space-y-2">
           {credsQuery.data?.map((cred) => (
             <div

@@ -13,7 +13,7 @@ import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
-import { registerSolarRecAuth } from "./solarRecAuth";
+import { registerSolarRecAuth, authenticateSolarRecRequest, getSolarRecOwnerUserId } from "./solarRecAuth";
 import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
 import { getLocalStorageRoot, isStorageProxyConfigured, LOCAL_STORAGE_ROUTE_PREFIX } from "../storage";
 
@@ -68,6 +68,49 @@ async function startServer() {
     createExpressMiddleware({
       router: solarRecAppRouter,
       createContext: createSolarRecContext,
+    })
+  );
+  // Main app router mounted under /solar-rec too, so reused meter-read pages
+  // can call provider routes (enphaseV4.*, solarEdge.*, etc.) while using
+  // the Solar REC auth cookie.
+  app.use(
+    "/solar-rec/api/main-trpc",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext: async (opts) => {
+        try {
+          const ctx = await createContext(opts);
+          if (ctx.user) return ctx;
+        } catch {
+          // Fall through to Solar REC auth mapping.
+        }
+
+        const solarRecUser = await authenticateSolarRecRequest(opts.req);
+        if (!solarRecUser) {
+          return { req: opts.req, res: opts.res, user: null, twoFactorVerified: true };
+        }
+
+        const now = new Date();
+        return {
+          req: opts.req,
+          res: opts.res,
+          user: {
+            id: getSolarRecOwnerUserId(),
+            openId: `solar-rec:${solarRecUser.id}`,
+            name: solarRecUser.name,
+            email: solarRecUser.email,
+            loginMethod: "google",
+            role:
+              solarRecUser.role === "owner" || solarRecUser.role === "admin"
+                ? ("admin" as const)
+                : ("user" as const),
+            createdAt: now,
+            updatedAt: now,
+            lastSignedIn: now,
+          },
+          twoFactorVerified: true,
+        };
+      },
     })
   );
   // tRPC API

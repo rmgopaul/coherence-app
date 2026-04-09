@@ -4,6 +4,7 @@ import superjson from "superjson";
 import { z } from "zod";
 import {
   authenticateSolarRecRequest,
+  getSolarRecOwnerUserId,
   type SolarRecAuthenticatedUser,
 } from "./solarRecAuth";
 
@@ -305,8 +306,373 @@ const usersRouter = t.router({
       }
       await deactivateSolarRecUser(input.userId);
       return { success: true };
-    }),
+  }),
 });
+
+// ---------------------------------------------------------------------------
+// Credential migration helpers
+// ---------------------------------------------------------------------------
+
+type MainIntegrationRecord = {
+  provider: string;
+  accessToken: string | null;
+  refreshToken: string | null;
+  expiresAt: Date | string | null;
+  metadata: string | null;
+};
+
+type MigrationPayload = {
+  connectionName: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: Date;
+  metadata?: string;
+};
+
+function toNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function parseMetadataRecord(
+  metadata: string | null | undefined
+): Record<string, unknown> {
+  if (!metadata) return {};
+  try {
+    const parsed = JSON.parse(metadata);
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getActiveConnection(
+  metadata: Record<string, unknown>
+): Record<string, unknown> | null {
+  const rawConnections = Array.isArray(metadata.connections)
+    ? metadata.connections
+    : [];
+  const connections = rawConnections.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === "object"
+  );
+
+  if (connections.length === 0) return null;
+
+  const activeConnectionId = toNonEmptyString(metadata.activeConnectionId);
+  if (activeConnectionId) {
+    const match = connections.find(
+      (connection) => toNonEmptyString(connection.id) === activeConnectionId
+    );
+    if (match) return match;
+  }
+
+  return connections[0];
+}
+
+function toOptionalDate(value: unknown): Date | undefined {
+  if (!value) return undefined;
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function serializeMetadata(data: Record<string, unknown>): string {
+  const compact = Object.fromEntries(
+    Object.entries(data).filter(([, value]) => value !== undefined)
+  );
+  return JSON.stringify(compact);
+}
+
+function extractMigrationPayload(
+  integration: MainIntegrationRecord
+): { solarProvider: string; payload: MigrationPayload } | null {
+  const metadata = parseMetadataRecord(integration.metadata);
+  const activeConnection = getActiveConnection(metadata) ?? {};
+  const expiresAt = toOptionalDate(integration.expiresAt);
+
+  switch (integration.provider) {
+    case "solaredge-monitoring": {
+      const apiKey =
+        toNonEmptyString(activeConnection.apiKey) ??
+        toNonEmptyString(metadata.apiKey) ??
+        toNonEmptyString(integration.accessToken);
+      if (!apiKey) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "solaredge",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "SolarEdge (Migrated)",
+          accessToken: apiKey,
+          metadata: serializeMetadata({ apiKey, baseUrl }),
+        },
+      };
+    }
+
+    case "enphase-v4": {
+      const accessToken = toNonEmptyString(integration.accessToken);
+      const apiKey =
+        toNonEmptyString(activeConnection.apiKey) ??
+        toNonEmptyString(metadata.apiKey);
+      if (!accessToken || !apiKey) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      const clientId = toNonEmptyString(metadata.clientId);
+      const clientSecret = toNonEmptyString(metadata.clientSecret);
+      return {
+        solarProvider: "enphase-v4",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Enphase V4 (Migrated)",
+          accessToken,
+          refreshToken: toNonEmptyString(integration.refreshToken) ?? undefined,
+          expiresAt,
+          metadata: serializeMetadata({
+            accessToken,
+            apiKey,
+            clientId,
+            clientSecret,
+            baseUrl,
+          }),
+        },
+      };
+    }
+
+    case "fronius-solar": {
+      const accessKeyId =
+        toNonEmptyString(activeConnection.accessKeyId) ??
+        toNonEmptyString(metadata.accessKeyId) ??
+        toNonEmptyString(integration.accessToken);
+      const accessKeyValue =
+        toNonEmptyString(activeConnection.accessKeyValue) ??
+        toNonEmptyString(metadata.accessKeyValue);
+      if (!accessKeyId || !accessKeyValue) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "fronius",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Fronius (Migrated)",
+          accessToken: accessKeyId,
+          metadata: serializeMetadata({ accessKeyId, accessKeyValue, baseUrl }),
+        },
+      };
+    }
+
+    case "generac-pwrfleet": {
+      const apiKey =
+        toNonEmptyString(activeConnection.apiKey) ??
+        toNonEmptyString(metadata.apiKey) ??
+        toNonEmptyString(integration.accessToken);
+      if (!apiKey) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "generac",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Generac (Migrated)",
+          accessToken: apiKey,
+          metadata: serializeMetadata({ apiKey, baseUrl }),
+        },
+      };
+    }
+
+    case "hoymiles-smiles": {
+      const username =
+        toNonEmptyString(activeConnection.username) ??
+        toNonEmptyString(metadata.username);
+      const password =
+        toNonEmptyString(activeConnection.password) ??
+        toNonEmptyString(metadata.password);
+      if (!username || !password) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "hoymiles",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Hoymiles (Migrated)",
+          metadata: serializeMetadata({ username, password, baseUrl }),
+        },
+      };
+    }
+
+    case "goodwe-sems": {
+      const account =
+        toNonEmptyString(activeConnection.account) ??
+        toNonEmptyString(metadata.account);
+      const password =
+        toNonEmptyString(activeConnection.password) ??
+        toNonEmptyString(metadata.password);
+      if (!account || !password) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "goodwe",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "GoodWe (Migrated)",
+          metadata: serializeMetadata({ account, password, baseUrl }),
+        },
+      };
+    }
+
+    case "solis-cloud": {
+      const apiKey =
+        toNonEmptyString(activeConnection.apiKey) ??
+        toNonEmptyString(metadata.apiKey) ??
+        toNonEmptyString(integration.accessToken);
+      const apiSecret =
+        toNonEmptyString(activeConnection.apiSecret) ??
+        toNonEmptyString(metadata.apiSecret);
+      if (!apiKey || !apiSecret) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "solis",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Solis (Migrated)",
+          accessToken: apiKey,
+          metadata: serializeMetadata({ apiKey, apiSecret, baseUrl }),
+        },
+      };
+    }
+
+    case "locus-energy": {
+      const clientId =
+        toNonEmptyString(activeConnection.clientId) ??
+        toNonEmptyString(metadata.clientId);
+      const clientSecret =
+        toNonEmptyString(activeConnection.clientSecret) ??
+        toNonEmptyString(metadata.clientSecret);
+      const partnerId =
+        toNonEmptyString(activeConnection.partnerId) ??
+        toNonEmptyString(metadata.partnerId);
+      if (!clientId || !clientSecret || !partnerId) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "locus",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Locus Energy (Migrated)",
+          metadata: serializeMetadata({
+            clientId,
+            clientSecret,
+            partnerId,
+            baseUrl,
+          }),
+        },
+      };
+    }
+
+    case "apsystems-ema": {
+      const appId =
+        toNonEmptyString(activeConnection.appId) ??
+        toNonEmptyString(activeConnection.apiKey) ??
+        toNonEmptyString(metadata.appId) ??
+        toNonEmptyString(metadata.apiKey) ??
+        toNonEmptyString(integration.accessToken);
+      const appSecret =
+        toNonEmptyString(activeConnection.appSecret) ??
+        toNonEmptyString(metadata.appSecret);
+      if (!appId) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "apsystems",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "APsystems (Migrated)",
+          accessToken: appId,
+          metadata: serializeMetadata({ appId, appSecret, baseUrl }),
+        },
+      };
+    }
+
+    case "solar-log": {
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl) ??
+        toNonEmptyString(metadata.deviceUrl);
+      if (!baseUrl) return null;
+      const password =
+        toNonEmptyString(activeConnection.password) ??
+        toNonEmptyString(metadata.password);
+      return {
+        solarProvider: "solarlog",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Solar-Log (Migrated)",
+          metadata: serializeMetadata({ baseUrl, password }),
+        },
+      };
+    }
+
+    case "growatt-server": {
+      const username =
+        toNonEmptyString(activeConnection.username) ??
+        toNonEmptyString(metadata.username);
+      const password =
+        toNonEmptyString(activeConnection.password) ??
+        toNonEmptyString(metadata.password);
+      if (!username || !password) return null;
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      return {
+        solarProvider: "growatt",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "Growatt (Migrated)",
+          metadata: serializeMetadata({ username, password, baseUrl }),
+        },
+      };
+    }
+
+    case "egauge-monitoring": {
+      const baseUrl =
+        toNonEmptyString(activeConnection.baseUrl) ??
+        toNonEmptyString(metadata.baseUrl);
+      if (!baseUrl) return null;
+      const accessType =
+        toNonEmptyString(activeConnection.accessType) ??
+        toNonEmptyString(metadata.accessType);
+      const username =
+        toNonEmptyString(activeConnection.username) ??
+        toNonEmptyString(metadata.username);
+      const password =
+        toNonEmptyString(activeConnection.password) ??
+        toNonEmptyString(metadata.password) ??
+        toNonEmptyString(integration.accessToken);
+      return {
+        solarProvider: "egauge",
+        payload: {
+          connectionName:
+            toNonEmptyString(activeConnection.name) ?? "eGauge (Migrated)",
+          metadata: serializeMetadata({ baseUrl, accessType, username, password }),
+        },
+      };
+    }
+
+    default:
+      return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Team Credentials sub-router
@@ -362,6 +728,110 @@ const credentialsRouter = t.router({
       await deleteSolarRecTeamCredential(input.id);
       return { success: true };
     }),
+
+  migrateFromMain: solarRecAdminProcedure.mutation(async ({ ctx }) => {
+    const {
+      getUserIntegrations,
+      listSolarRecTeamCredentials,
+      upsertSolarRecTeamCredential,
+    } = await import("../db");
+
+    const ownerUserId = getSolarRecOwnerUserId();
+    const sourceIntegrations = (
+      await getUserIntegrations(ownerUserId)
+    ) as MainIntegrationRecord[];
+    const existingCreds = await listSolarRecTeamCredentials();
+    const existingByProvider = new Map(
+      existingCreds.map((cred) => [cred.provider, cred] as const)
+    );
+
+    const supportedMainProviders = [
+      "solaredge-monitoring",
+      "enphase-v4",
+      "fronius-solar",
+      "generac-pwrfleet",
+      "hoymiles-smiles",
+      "goodwe-sems",
+      "solis-cloud",
+      "locus-energy",
+      "apsystems-ema",
+      "solar-log",
+      "growatt-server",
+      "egauge-monitoring",
+    ] as const;
+
+    let created = 0;
+    let updated = 0;
+    const results: Array<{
+      mainProvider: string;
+      solarProvider: string | null;
+      status: "created" | "updated" | "skipped";
+      reason?: string;
+      connectionName?: string;
+      credentialId?: string;
+    }> = [];
+
+    for (const mainProvider of supportedMainProviders) {
+      const integration =
+        sourceIntegrations.find((item) => item.provider === mainProvider) ?? null;
+      if (!integration) {
+        results.push({
+          mainProvider,
+          solarProvider: null,
+          status: "skipped",
+          reason: "No main-branch integration found",
+        });
+        continue;
+      }
+
+      const extracted = extractMigrationPayload(integration);
+      if (!extracted) {
+        results.push({
+          mainProvider,
+          solarProvider: null,
+          status: "skipped",
+          reason: "Integration exists but required credential fields are missing",
+        });
+        continue;
+      }
+
+      const existing = existingByProvider.get(extracted.solarProvider);
+      const credentialId = await upsertSolarRecTeamCredential({
+        id: existing?.id,
+        provider: extracted.solarProvider,
+        connectionName: extracted.payload.connectionName,
+        accessToken: extracted.payload.accessToken,
+        refreshToken: extracted.payload.refreshToken,
+        expiresAt: extracted.payload.expiresAt,
+        metadata: extracted.payload.metadata,
+        createdBy: ctx.userId,
+      });
+
+      if (existing) {
+        updated += 1;
+      } else {
+        created += 1;
+      }
+
+      results.push({
+        mainProvider,
+        solarProvider: extracted.solarProvider,
+        status: existing ? "updated" : "created",
+        connectionName: extracted.payload.connectionName,
+        credentialId,
+      });
+    }
+
+    const skipped = results.filter((item) => item.status === "skipped").length;
+    return {
+      ownerUserId,
+      created,
+      updated,
+      skipped,
+      total: results.length,
+      results,
+    };
+  }),
 });
 
 // ---------------------------------------------------------------------------
