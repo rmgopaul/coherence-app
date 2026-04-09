@@ -229,7 +229,8 @@ export async function executeProviderRun(
 export async function executeMonitoringBatch(
   batchId: string,
   dateKey: string,
-  triggeredBy: number | null
+  triggeredBy: number | null,
+  selectedProviders?: string[]
 ): Promise<void> {
   let totalSuccess = 0;
   let totalError = 0;
@@ -238,7 +239,18 @@ export async function executeMonitoringBatch(
 
   try {
     const allCredentials = await db.listSolarRecTeamCredentials();
-    const providers = Array.from(new Set(allCredentials.map((c) => c.provider)));
+    const allProviders = Array.from(new Set(allCredentials.map((c) => c.provider)));
+    const selectedSet =
+      selectedProviders && selectedProviders.length > 0
+        ? new Set(
+            selectedProviders
+              .map((provider) => provider.trim().toLowerCase())
+              .filter((provider) => provider.length > 0)
+          )
+        : null;
+    const providers = selectedSet
+      ? allProviders.filter((provider) => selectedSet.has(provider.toLowerCase()))
+      : allProviders;
 
     await db.updateMonitoringBatchRun(batchId, {
       providersTotal: providers.length,

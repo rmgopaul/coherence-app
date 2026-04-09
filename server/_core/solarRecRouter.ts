@@ -1291,11 +1291,27 @@ const monitoringRouter = t.router({
       return getMonitoringBatchRun(input.batchId);
     }),
 
+  getConfiguredProviders: solarRecViewerProcedure.query(async () => {
+    const { listSolarRecTeamCredentials } = await import("../db");
+    const credentials = await listSolarRecTeamCredentials();
+    return Array.from(new Set(credentials.map((credential) => credential.provider)))
+      .filter((provider) => provider.trim().length > 0)
+      .sort((a, b) => a.localeCompare(b));
+  }),
+
   runAll: solarRecOperatorProcedure
-    .input(z.object({ anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }))
+    .input(
+      z.object({
+        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        providers: z.array(z.string().min(1)).optional(),
+      })
+    )
     .mutation(async ({ ctx, input }) => {
       const { createMonitoringBatchRun } = await import("../db");
       const dateKey = input.anchorDate ?? new Date().toISOString().slice(0, 10);
+      const selectedProviders = Array.from(
+        new Set((input.providers ?? []).map((provider) => provider.trim()).filter((provider) => provider.length > 0))
+      );
       const batchId = await createMonitoringBatchRun({
         dateKey,
         triggeredBy: ctx.userId,
@@ -1303,12 +1319,12 @@ const monitoringRouter = t.router({
 
       // Fire-and-forget: run the batch in background
       import("../solar/monitoring.service").then((mod) =>
-        mod.executeMonitoringBatch(batchId, dateKey, ctx.userId).catch((err) =>
+        mod.executeMonitoringBatch(batchId, dateKey, ctx.userId, selectedProviders).catch((err) =>
           console.error("[MonitoringBatch] Failed:", err)
         )
       );
 
-      return { batchId, dateKey };
+      return { batchId, dateKey, selectedProviders };
     }),
 
   runProvider: solarRecOperatorProcedure

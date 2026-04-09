@@ -240,6 +240,7 @@ export default function MonitoringDashboard() {
   const { startDate, endDate } = useMemo(() => getDateRange(daysBack), [daysBack]);
   const today = new Date().toISOString().slice(0, 10);
   const [search, setSearch] = useState("");
+  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [selectedRun, setSelectedRun] = useState<ApiRun | null>(null);
   const { isOperator } = useSolarRecAuth();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
@@ -248,6 +249,7 @@ export default function MonitoringDashboard() {
 
   const gridQuery = trpc.monitoring.getGrid.useQuery({ startDate, endDate });
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
+  const providersQuery = trpc.monitoring.getConfiguredProviders.useQuery();
   const batchStatusQuery = trpc.monitoring.getBatchStatus.useQuery(
     { batchId: activeBatchId! },
     { enabled: !!activeBatchId, refetchInterval: 2000 }
@@ -287,6 +289,18 @@ export default function MonitoringDashboard() {
   const isRunning = !!activeBatchId || runAllMutation.isPending;
 
   const dates = useMemo(() => getDatesInRange(startDate, endDate), [startDate, endDate]);
+  const providerOptions = useMemo(() => {
+    const fromConfigured = providersQuery.data ?? [];
+    const fromHealth = (healthQuery.data ?? []).map((item) => item.provider);
+    const fromGrid = (gridQuery.data ?? []).map((item) => item.provider);
+    return Array.from(new Set([...fromConfigured, ...fromHealth, ...fromGrid]))
+      .filter((provider) => provider.trim().length > 0)
+      .sort((a, b) => a.localeCompare(b));
+  }, [providersQuery.data, healthQuery.data, gridQuery.data]);
+
+  useEffect(() => {
+    setSelectedProviders((prev) => prev.filter((provider) => providerOptions.includes(provider)));
+  }, [providerOptions]);
 
   // Build grid: group runs by provider+siteId
   const gridRows = useMemo(() => {
@@ -333,7 +347,22 @@ export default function MonitoringDashboard() {
   }, [gridQuery.data, search]);
 
   const handleRunAll = () => {
-    runAllMutation.mutate({});
+    runAllMutation.mutate({ providers: [] });
+  };
+
+  const handleRunSelected = () => {
+    if (selectedProviders.length === 0) return;
+    runAllMutation.mutate({ providers: selectedProviders });
+  };
+
+  const toggleProvider = (provider: string, checked: boolean) => {
+    setSelectedProviders((prev) => {
+      if (checked) {
+        if (prev.includes(provider)) return prev;
+        return [...prev, provider].sort((a, b) => a.localeCompare(b));
+      }
+      return prev.filter((entry) => entry !== provider);
+    });
   };
 
   const handleExportCsv = () => {
@@ -385,21 +414,93 @@ export default function MonitoringDashboard() {
             CSV
           </Button>
           {isOperator && (
-            <Button
-              size="sm"
-              onClick={handleRunAll}
-              disabled={isRunning}
-            >
-              {isRunning ? (
-                <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-              ) : (
-                <Play className="h-3.5 w-3.5 mr-1" />
-              )}
-              {isRunning ? "Running..." : "Run All"}
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRunSelected}
+                disabled={isRunning || selectedProviders.length === 0}
+              >
+                {isRunning ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5 mr-1" />
+                )}
+                {isRunning ? "Running..." : `Run Selected (${selectedProviders.length})`}
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleRunAll}
+                disabled={isRunning}
+              >
+                {isRunning ? (
+                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                ) : (
+                  <Play className="h-3.5 w-3.5 mr-1" />
+                )}
+                {isRunning ? "Running..." : "Run All"}
+              </Button>
+            </>
           )}
         </div>
       </div>
+
+      {isOperator && providerOptions.length > 0 && (
+        <Card className="border-dashed">
+          <CardContent className="py-3 px-4 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                Select one or more monitoring modules, then click <span className="font-medium text-foreground">Run Selected</span>.
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  disabled={isRunning || selectedProviders.length === providerOptions.length}
+                  onClick={() => setSelectedProviders(providerOptions)}
+                >
+                  Select All
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 px-2 text-xs"
+                  disabled={isRunning || selectedProviders.length === 0}
+                  onClick={() => setSelectedProviders([])}
+                >
+                  Clear
+                </Button>
+                <Badge variant="outline" className="text-[11px]">
+                  {selectedProviders.length} selected
+                </Badge>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {providerOptions.map((provider) => {
+                const checked = selectedProviders.includes(provider);
+                return (
+                  <label
+                    key={provider}
+                    className={`inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs cursor-pointer ${
+                      checked ? "border-blue-300 bg-blue-50 text-blue-900" : "border-border bg-background"
+                    } ${isRunning ? "opacity-60 cursor-not-allowed" : ""}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={isRunning}
+                      onChange={(event) => toggleProvider(provider, event.target.checked)}
+                      className="h-3.5 w-3.5"
+                    />
+                    <span>{provider}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Progress panel */}
       {isRunning && batchStatus && (
@@ -525,7 +626,7 @@ export default function MonitoringDashboard() {
           ) : gridRows.length === 0 ? (
             <div className="text-center py-12">
               <p className="text-sm text-muted-foreground">
-                No monitoring data yet. Connect API credentials in Settings, then click "Run All".
+                No monitoring data yet. Connect API credentials in Settings, then click "Run All" or "Run Selected".
               </p>
             </div>
           ) : (
