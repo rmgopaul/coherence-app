@@ -4,7 +4,7 @@ import superjson from "superjson";
 import { z } from "zod";
 import {
   authenticateSolarRecRequest,
-  getSolarRecOwnerUserId,
+  resolveSolarRecOwnerUserId,
   type SolarRecAuthenticatedUser,
 } from "./solarRecAuth";
 
@@ -1110,7 +1110,7 @@ const credentialsRouter = t.router({
       upsertSolarRecTeamCredential,
     } = await import("../db");
 
-    const ownerUserId = getSolarRecOwnerUserId();
+    const ownerUserId = await resolveSolarRecOwnerUserId();
     const sourceIntegrations = (
       await getUserIntegrations(ownerUserId)
     ) as MainIntegrationRecord[];

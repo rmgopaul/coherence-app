@@ -199,6 +199,88 @@ export function getSolarRecOwnerUserId(): number {
   return 1;
 }
 
+const SOLAR_PROVIDER_HINTS = new Set([
+  "enphase-v4",
+  "enphase-v2",
+  "solaredge-monitoring",
+  "fronius-solar",
+  "generac-pwrfleet",
+  "hoymiles-smiles",
+  "goodwe-sems",
+  "solis-cloud",
+  "locus-energy",
+  "apsystems-ema",
+  "solar-log",
+  "growatt-server",
+  "egauge-monitoring",
+  "ennexos-cloud",
+  "sunpower",
+]);
+
+let resolvedOwnerUserIdCache: number | null = null;
+let resolvingOwnerUserIdPromise: Promise<number> | null = null;
+
+export async function resolveSolarRecOwnerUserId(): Promise<number> {
+  const configured = getSolarRecOwnerUserId();
+  if (process.env.SOLAR_REC_OWNER_USER_ID?.trim()) {
+    return configured;
+  }
+
+  if (resolvedOwnerUserIdCache) return resolvedOwnerUserIdCache;
+  if (resolvingOwnerUserIdPromise) return resolvingOwnerUserIdPromise;
+
+  resolvingOwnerUserIdPromise = (async () => {
+    try {
+      const { listUsers, getUserIntegrations } = await import("../db");
+      const users = await listUsers();
+      if (users.length === 0) return configured;
+
+      const scored = await Promise.all(
+        users.map(async (user) => {
+          const integrations = await getUserIntegrations(user.id);
+          const score = integrations.reduce((total, integration) => {
+            const provider = integration.provider ?? "";
+            if (!provider) return total;
+            if (SOLAR_PROVIDER_HINTS.has(provider)) return total + 3;
+            const lower = provider.toLowerCase();
+            if (
+              lower.includes("solar") ||
+              lower.includes("enphase") ||
+              lower.includes("fronius") ||
+              lower.includes("hoymiles") ||
+              lower.includes("apsystems") ||
+              lower.includes("growatt") ||
+              lower.includes("solis") ||
+              lower.includes("egauge") ||
+              lower.includes("locus")
+            ) {
+              return total + 1;
+            }
+            return total;
+          }, 0);
+
+          return { userId: user.id, score };
+        })
+      );
+
+      scored.sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return a.userId - b.userId;
+      });
+
+      const winner = scored[0]?.userId ?? configured;
+      resolvedOwnerUserIdCache = winner;
+      return winner;
+    } catch {
+      return configured;
+    } finally {
+      resolvingOwnerUserIdPromise = null;
+    }
+  })();
+
+  return resolvingOwnerUserIdPromise;
+}
+
 /** @deprecated - use authenticateSolarRecRequest instead */
 export function isSolarRecAuthenticated(req: express.Request): boolean {
   // Keep password-based auth as fallback during migration.

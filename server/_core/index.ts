@@ -13,7 +13,11 @@ import { startNightlySnapshotScheduler } from "./nightlySnapshotScheduler";
 import { startMonitoringScheduler } from "../solar/monitoringScheduler";
 import { registerPinGate } from "./pinGate";
 import { registerSecurityMiddleware } from "./security";
-import { registerSolarRecAuth, authenticateSolarRecRequest } from "./solarRecAuth";
+import {
+  registerSolarRecAuth,
+  authenticateSolarRecRequest,
+  resolveSolarRecOwnerUserId,
+} from "./solarRecAuth";
 import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
 import { getLocalStorageRoot, isStorageProxyConfigured, LOCAL_STORAGE_ROUTE_PREFIX } from "../storage";
 
@@ -34,6 +38,65 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
     }
   }
   throw new Error(`No available port found starting from ${startPort}`);
+}
+
+const SOLAR_REC_ROUTER_ROOTS = new Set([
+  "solarRecDashboard",
+  "auth",
+  "users",
+  "credentials",
+  "monitoring",
+  "enphaseV2",
+]);
+
+function getTrpcProcedureRoots(pathname: string): string[] {
+  const normalized = decodeURIComponent(pathname).replace(/^\/+/, "").trim();
+  if (!normalized) return [];
+  return normalized
+    .split(",")
+    .map((entry) => entry.split(".")[0]?.trim())
+    .filter((entry): entry is string => Boolean(entry));
+}
+
+async function createSolarRecMainContext(
+  opts: Parameters<typeof createContext>[0]
+) {
+  // Prefer Solar REC auth first so this endpoint never accidentally uses
+  // a separate main-app browser session tied to a different user.
+  const solarRecUser = await authenticateSolarRecRequest(opts.req);
+  if (solarRecUser) {
+    const now = new Date();
+    const ownerUserId = await resolveSolarRecOwnerUserId();
+    return {
+      req: opts.req,
+      res: opts.res,
+      user: {
+        id: ownerUserId,
+        openId: `solar-rec:${solarRecUser.id}`,
+        name: solarRecUser.name,
+        email: solarRecUser.email,
+        loginMethod: "google",
+        role:
+          solarRecUser.role === "owner" || solarRecUser.role === "admin"
+            ? ("admin" as const)
+            : ("user" as const),
+        createdAt: now,
+        updatedAt: now,
+        lastSignedIn: now,
+      },
+      twoFactorVerified: true,
+    };
+  }
+
+  // Fallback for direct non-solar-rec usage.
+  try {
+    const ctx = await createContext(opts);
+    if (ctx.user) return ctx;
+  } catch {
+    // ignore
+  }
+
+  return { req: opts.req, res: opts.res, user: null, twoFactorVerified: true };
 }
 
 async function startServer() {
@@ -63,72 +126,33 @@ async function startServer() {
   app.use("/api", oauthRouter);
   // Solar REC standalone auth + tRPC (must be before main tRPC)
   registerSolarRecAuth(app);
-  app.use(
-    "/solar-rec/api/trpc",
-    createExpressMiddleware({
-      router: solarRecAppRouter,
-      createContext: createSolarRecContext,
-      onError: ({ error }) => {
-        // Silence NOT_FOUND errors to avoid noise from fallback routing
-        if (error.code !== "NOT_FOUND") {
-          console.error("[SolarRecTRPC]", error.message);
-        }
-      },
-    })
-  );
-  // Mount main app router at solar-rec path too, so meter read pages
-  // can call provider-specific routes (solarEdge.*, enphaseV4.*, etc.)
-  // via the same endpoint. Uses a hybrid context that maps the solar-rec
-  // session to a main-app-compatible User object.
-  app.use(
-    "/solar-rec/api/main-trpc",
-    createExpressMiddleware({
-      router: appRouter,
-      createContext: async (opts) => {
-        // Try main app auth first
-        try {
-          const ctx = await createContext(opts);
-          if (ctx.user) return ctx;
-        } catch (err) {
-          // Main app auth failed — fall through to solar-rec auth
-          console.log("[trpc-main] Main app auth failed, trying solar-rec:", err instanceof Error ? err.message : String(err));
-        }
+  const solarRecTrpcHandler = createExpressMiddleware({
+    router: solarRecAppRouter,
+    createContext: createSolarRecContext,
+    onError: ({ error }) => {
+      // Silence NOT_FOUND errors to avoid noise from fallback routing
+      if (error.code !== "NOT_FOUND") {
+        console.error("[SolarRecTRPC]", error.message);
+      }
+    },
+  });
+  const solarRecMainTrpcHandler = createExpressMiddleware({
+    router: appRouter,
+    createContext: createSolarRecMainContext,
+  });
 
-        // Fall back to solar-rec auth — map to a synthetic main-app User
-        try {
-          const solarRecUser = await authenticateSolarRecRequest(opts.req);
-          if (solarRecUser) {
-            const now = new Date();
-            // Map to the main app owner user (id=1) so integrations lookup works.
-            // All solar-rec users share the same team credentials via the owner's integrations.
-            const { getSolarRecOwnerUserId } = await import("./solarRecAuth");
-            const ownerUserId = getSolarRecOwnerUserId();
-            return {
-              req: opts.req,
-              res: opts.res,
-              user: {
-                id: ownerUserId,
-                openId: `solar-rec:${solarRecUser.id}`,
-                name: solarRecUser.name,
-                email: solarRecUser.email,
-                loginMethod: "google",
-                role: solarRecUser.role === "owner" || solarRecUser.role === "admin" ? "admin" as const : "user" as const,
-                createdAt: now,
-                updatedAt: now,
-                lastSignedIn: now,
-              },
-              twoFactorVerified: true,
-            };
-          }
-        } catch (err) {
-          console.error("[trpc-main] Solar-rec auth also failed:", err instanceof Error ? err.message : String(err));
-        }
+  // Compatibility dispatcher for older Solar REC bundles that still call
+  // /solar-rec/api/trpc for provider procedures (solarEdge.*, apsystems.*, etc.).
+  app.use("/solar-rec/api/trpc", (req, res, next) => {
+    const roots = getTrpcProcedureRoots(req.path);
+    if (roots.length === 0 || roots.every((root) => SOLAR_REC_ROUTER_ROOTS.has(root))) {
+      return solarRecTrpcHandler(req, res, next);
+    }
+    return solarRecMainTrpcHandler(req, res, next);
+  });
 
-        // No auth at all — return null user (public procedures only)
-        return { req: opts.req, res: opts.res, user: null, twoFactorVerified: true };
-      },
-    })
-  );
+  // Primary endpoint for provider procedures from Solar REC.
+  app.use("/solar-rec/api/main-trpc", solarRecMainTrpcHandler);
   // tRPC API
   app.use(
     "/api/trpc",
