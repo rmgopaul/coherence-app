@@ -6,25 +6,63 @@ import {
 
 type EgaugeConnection = EgaugeApiContext & { meterId?: string | null; name?: string | null };
 
+function toNonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function normalizeBaseUrl(raw: unknown): string | null {
+  const value = toNonEmptyString(raw);
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return value;
+  return `https://${value}`;
+}
+
+function buildMeterUrlFromId(rawMeterId: unknown): string | null {
+  const meterId = toNonEmptyString(rawMeterId);
+  if (!meterId) return null;
+  return `https://${meterId}.d.egauge.net`;
+}
+
 function getConnections(credential: { accessToken?: string | null; metadata?: string | null }): EgaugeConnection[] {
+  const fallbackBaseUrl = normalizeBaseUrl(credential.accessToken);
   if (credential.metadata) {
     try {
       const meta = JSON.parse(credential.metadata);
       if (meta.connections && Array.isArray(meta.connections)) {
         return meta.connections
-          .filter((c: any) => c.baseUrl)
+          .map((c: any) => ({
+            baseUrl:
+              normalizeBaseUrl(c.baseUrl) ??
+              normalizeBaseUrl(c.deviceUrl) ??
+              buildMeterUrlFromId(c.meterId) ??
+              normalizeBaseUrl(meta.baseUrl) ??
+              normalizeBaseUrl(meta.deviceUrl) ??
+              buildMeterUrlFromId(meta.meterId) ??
+              fallbackBaseUrl,
+            accessType: c.accessType ?? meta.accessType ?? null,
+            username: c.username ?? meta.username ?? null,
+            password: c.password ?? meta.password ?? null,
+            meterId: c.meterId ?? meta.meterId ?? null,
+            name: c.name ?? meta.name ?? null,
+          }))
+          .filter((connection: { baseUrl: string | null }) => Boolean(connection.baseUrl))
           .map((c: any) => ({
             baseUrl: c.baseUrl,
-            accessType: c.accessType ?? null,
-            username: c.username ?? null,
-            password: c.password ?? null,
-            meterId: c.meterId ?? null,
-            name: c.name ?? null,
+            accessType: c.accessType,
+            username: c.username,
+            password: c.password,
+            meterId: c.meterId,
+            name: c.name,
           }));
       }
-      if (meta.baseUrl) {
+      const baseUrl =
+        normalizeBaseUrl(meta.baseUrl) ??
+        normalizeBaseUrl(meta.deviceUrl) ??
+        buildMeterUrlFromId(meta.meterId) ??
+        fallbackBaseUrl;
+      if (baseUrl) {
         return [{
-          baseUrl: meta.baseUrl,
+          baseUrl,
           accessType: meta.accessType ?? null,
           username: meta.username ?? null,
           password: meta.password ?? null,
@@ -33,6 +71,9 @@ function getConnections(credential: { accessToken?: string | null; metadata?: st
         }];
       }
     } catch {}
+  }
+  if (fallbackBaseUrl) {
+    return [{ baseUrl: fallbackBaseUrl }];
   }
   return [];
 }

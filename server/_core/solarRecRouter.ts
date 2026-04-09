@@ -1043,6 +1043,43 @@ function extractMigrationPayloads(
       ];
     }
 
+    case "tesla-powerhub": {
+      const clientId = toNonEmptyString(metadata.clientId);
+      const clientSecret =
+        toNonEmptyString(metadata.clientSecret) ??
+        toNonEmptyString(integration.accessToken);
+      if (!clientId || !clientSecret) return [];
+
+      const sourceConnectionId =
+        toNonEmptyString(metadata.groupId) ?? "primary";
+      return [
+        {
+          solarProvider: "tesla-powerhub",
+          payload: {
+            sourceConnectionId,
+            connectionName:
+              toNonEmptyString(metadata.connectionName) ??
+              "Tesla Powerhub (Migrated)",
+            accessToken: clientSecret,
+            metadata: buildSourceMetadata(
+              {
+                clientId,
+                clientSecret,
+                groupId: toNonEmptyString(metadata.groupId),
+                tokenUrl: toNonEmptyString(metadata.tokenUrl),
+                apiBaseUrl: toNonEmptyString(metadata.apiBaseUrl),
+                portalBaseUrl: toNonEmptyString(metadata.portalBaseUrl),
+                endpointUrl: toNonEmptyString(metadata.endpointUrl),
+                signal: toNonEmptyString(metadata.signal),
+              },
+              integration.provider,
+              sourceConnectionId
+            ),
+          },
+        },
+      ];
+    }
+
     default:
       return [];
   }
@@ -1146,6 +1183,7 @@ const credentialsRouter = t.router({
       "solar-log",
       "growatt-server",
       "egauge-monitoring",
+      "tesla-powerhub",
     ] as const;
 
     let created = 0;
@@ -1299,11 +1337,43 @@ const monitoringRouter = t.router({
       .sort((a, b) => a.localeCompare(b));
   }),
 
+  getConfiguredCredentials: solarRecViewerProcedure.query(async () => {
+    const { listSolarRecTeamCredentials } = await import("../db");
+    const credentials = await listSolarRecTeamCredentials();
+    return credentials
+      .map((credential) => {
+        const metadata = parseMetadataRecord(credential.metadata);
+        const metadataLabel =
+          toNonEmptyString(metadata.username) ??
+          toNonEmptyString(metadata.account) ??
+          toNonEmptyString(metadata.clientId) ??
+          toNonEmptyString(metadata.baseUrl) ??
+          toNonEmptyString(metadata.groupId) ??
+          toNonEmptyString(metadata.connectionName);
+        const label =
+          toNonEmptyString(credential.connectionName) ??
+          metadataLabel ??
+          `${credential.provider}:${credential.id.slice(-6)}`;
+        return {
+          id: credential.id,
+          provider: credential.provider,
+          connectionName: credential.connectionName ?? null,
+          label,
+        };
+      })
+      .sort((a, b) =>
+        a.provider === b.provider
+          ? a.label.localeCompare(b.label)
+          : a.provider.localeCompare(b.provider)
+      );
+  }),
+
   runAll: solarRecOperatorProcedure
     .input(
       z.object({
         anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         providers: z.array(z.string().min(1)).optional(),
+        credentialIds: z.array(z.string().min(1)).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -1312,6 +1382,9 @@ const monitoringRouter = t.router({
       const selectedProviders = Array.from(
         new Set((input.providers ?? []).map((provider) => provider.trim()).filter((provider) => provider.length > 0))
       );
+      const selectedCredentialIds = Array.from(
+        new Set((input.credentialIds ?? []).map((credentialId) => credentialId.trim()).filter((credentialId) => credentialId.length > 0))
+      );
       const batchId = await createMonitoringBatchRun({
         dateKey,
         triggeredBy: ctx.userId,
@@ -1319,12 +1392,12 @@ const monitoringRouter = t.router({
 
       // Fire-and-forget: run the batch in background
       import("../solar/monitoring.service").then((mod) =>
-        mod.executeMonitoringBatch(batchId, dateKey, ctx.userId, selectedProviders).catch((err) =>
+        mod.executeMonitoringBatch(batchId, dateKey, ctx.userId, selectedProviders, selectedCredentialIds).catch((err) =>
           console.error("[MonitoringBatch] Failed:", err)
         )
       );
 
-      return { batchId, dateKey, selectedProviders };
+      return { batchId, dateKey, selectedProviders, selectedCredentialIds };
     }),
 
   runProvider: solarRecOperatorProcedure

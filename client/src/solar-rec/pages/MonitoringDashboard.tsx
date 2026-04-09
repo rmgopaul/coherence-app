@@ -235,12 +235,20 @@ type BatchStatus = {
   noDataCount: number;
 };
 
+type ConfiguredCredential = {
+  id: string;
+  provider: string;
+  connectionName: string | null;
+  label: string;
+};
+
 export default function MonitoringDashboard() {
   const [daysBack] = useState(30);
   const { startDate, endDate } = useMemo(() => getDateRange(daysBack), [daysBack]);
   const today = new Date().toISOString().slice(0, 10);
   const [search, setSearch] = useState("");
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [selectedRun, setSelectedRun] = useState<ApiRun | null>(null);
   const { isOperator } = useSolarRecAuth();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
@@ -250,6 +258,9 @@ export default function MonitoringDashboard() {
   const gridQuery = trpc.monitoring.getGrid.useQuery({ startDate, endDate });
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
   const providersQuery = trpc.monitoring.getConfiguredProviders.useQuery();
+  const credentialsQuery = trpc.monitoring.getConfiguredCredentials.useQuery(undefined, {
+    enabled: isOperator,
+  });
   const batchStatusQuery = trpc.monitoring.getBatchStatus.useQuery(
     { batchId: activeBatchId! },
     { enabled: !!activeBatchId, refetchInterval: 2000 }
@@ -302,6 +313,17 @@ export default function MonitoringDashboard() {
     setSelectedProviders((prev) => prev.filter((provider) => providerOptions.includes(provider)));
   }, [providerOptions]);
 
+  const credentialsInSelectedProviders = useMemo(() => {
+    const credentials = (credentialsQuery.data ?? []) as ConfiguredCredential[];
+    if (selectedProviders.length === 0) return [] as ConfiguredCredential[];
+    return credentials.filter((credential) => selectedProviders.includes(credential.provider));
+  }, [credentialsQuery.data, selectedProviders]);
+
+  useEffect(() => {
+    const visibleCredentialIds = new Set(credentialsInSelectedProviders.map((credential) => credential.id));
+    setSelectedCredentialIds((prev) => prev.filter((credentialId) => visibleCredentialIds.has(credentialId)));
+  }, [credentialsInSelectedProviders]);
+
   // Build grid: group runs by provider+siteId
   const gridRows = useMemo(() => {
     const data = gridQuery.data ?? [];
@@ -352,7 +374,10 @@ export default function MonitoringDashboard() {
 
   const handleRunSelected = () => {
     if (selectedProviders.length === 0) return;
-    runAllMutation.mutate({ providers: selectedProviders });
+    runAllMutation.mutate({
+      providers: selectedProviders,
+      credentialIds: selectedCredentialIds,
+    });
   };
 
   const toggleProvider = (provider: string, checked: boolean) => {
@@ -362,6 +387,16 @@ export default function MonitoringDashboard() {
         return [...prev, provider].sort((a, b) => a.localeCompare(b));
       }
       return prev.filter((entry) => entry !== provider);
+    });
+  };
+
+  const toggleCredential = (credentialId: string, checked: boolean) => {
+    setSelectedCredentialIds((prev) => {
+      if (checked) {
+        if (prev.includes(credentialId)) return prev;
+        return [...prev, credentialId];
+      }
+      return prev.filter((id) => id !== credentialId);
     });
   };
 
@@ -498,6 +533,72 @@ export default function MonitoringDashboard() {
                 );
               })}
             </div>
+            {selectedProviders.length > 0 && (
+              <div className="space-y-2 border-t pt-2">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-muted-foreground">
+                    Optional: choose specific logins. If none are selected, all logins for selected modules will run.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      disabled={isRunning || credentialsInSelectedProviders.length === 0}
+                      onClick={() =>
+                        setSelectedCredentialIds(
+                          credentialsInSelectedProviders.map((credential) => credential.id)
+                        )
+                      }
+                    >
+                      Select All Logins
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-xs"
+                      disabled={isRunning || selectedCredentialIds.length === 0}
+                      onClick={() => setSelectedCredentialIds([])}
+                    >
+                      Clear Logins
+                    </Button>
+                    <Badge variant="outline" className="text-[11px]">
+                      {selectedCredentialIds.length === 0
+                        ? "All logins"
+                        : `${selectedCredentialIds.length} login${selectedCredentialIds.length === 1 ? "" : "s"}`}
+                    </Badge>
+                  </div>
+                </div>
+                {credentialsInSelectedProviders.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No saved logins found for the selected modules.
+                  </p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {credentialsInSelectedProviders.map((credential) => {
+                      const checked = selectedCredentialIds.includes(credential.id);
+                      return (
+                        <label
+                          key={credential.id}
+                          className={`inline-flex items-center gap-2 rounded-md border px-2 py-1 text-xs cursor-pointer ${
+                            checked ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-border bg-background"
+                          } ${isRunning ? "opacity-60 cursor-not-allowed" : ""}`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={isRunning}
+                            onChange={(event) => toggleCredential(credential.id, event.target.checked)}
+                            className="h-3.5 w-3.5"
+                          />
+                          <span>{credential.provider} • {credential.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

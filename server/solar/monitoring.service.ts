@@ -46,6 +46,9 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
   solarlog: () => import("./adapters/solarlog.adapter").then((m) => m.default),
   growatt: () => import("./adapters/growatt.adapter").then((m) => m.default),
   egauge: () => import("./adapters/egauge.adapter").then((m) => m.default),
+  "egauge-monitoring": () => import("./adapters/egauge.adapter").then((m) => m.default),
+  "tesla-powerhub": () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
+  teslapowerhub: () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
 };
 
 // ---------------------------------------------------------------------------
@@ -103,9 +106,21 @@ async function mapWithConcurrency<T, R>(
 export async function executeProviderRun(
   provider: string,
   dateKey: string,
-  triggeredBy: number | null
+  triggeredBy: number | null,
+  options?: {
+    credentialIds?: string[];
+  }
 ): Promise<{ success: number; error: number; noData: number }> {
-  const credentials = await db.getSolarRecTeamCredentialsByProvider(provider);
+  const selectedCredentialSet =
+    options?.credentialIds && options.credentialIds.length > 0
+      ? new Set(options.credentialIds)
+      : null;
+
+  let credentials = await db.getSolarRecTeamCredentialsByProvider(provider);
+  if (selectedCredentialSet) {
+    credentials = credentials.filter((credential) => selectedCredentialSet.has(credential.id));
+  }
+
   if (credentials.length === 0) {
     console.log(`[Monitoring] No credentials for provider ${provider}, skipping`);
     return { success: 0, error: 0, noData: 0 };
@@ -230,7 +245,8 @@ export async function executeMonitoringBatch(
   batchId: string,
   dateKey: string,
   triggeredBy: number | null,
-  selectedProviders?: string[]
+  selectedProviders?: string[],
+  selectedCredentialIds?: string[]
 ): Promise<void> {
   let totalSuccess = 0;
   let totalError = 0;
@@ -239,7 +255,19 @@ export async function executeMonitoringBatch(
 
   try {
     const allCredentials = await db.listSolarRecTeamCredentials();
-    const allProviders = Array.from(new Set(allCredentials.map((c) => c.provider)));
+    const selectedCredentialSet =
+      selectedCredentialIds && selectedCredentialIds.length > 0
+        ? new Set(
+            selectedCredentialIds
+              .map((credentialId) => credentialId.trim())
+              .filter((credentialId) => credentialId.length > 0)
+          )
+        : null;
+    const scopedCredentials = selectedCredentialSet
+      ? allCredentials.filter((credential) => selectedCredentialSet.has(credential.id))
+      : allCredentials;
+
+    const allProviders = Array.from(new Set(scopedCredentials.map((c) => c.provider)));
     const selectedSet =
       selectedProviders && selectedProviders.length > 0
         ? new Set(
@@ -259,8 +287,14 @@ export async function executeMonitoringBatch(
 
     let providersCompleted = 0;
     for (const provider of providers) {
+      const providerCredentials = scopedCredentials.filter((credential) => credential.provider === provider);
+      if (providerCredentials.length === 0) {
+        providersCompleted++;
+        continue;
+      }
+
       // Find credential name for this provider
-      const cred = allCredentials.find((c) => c.provider === provider);
+      const cred = providerCredentials[0];
       const credName = cred?.connectionName ?? extractCredentialLabel(cred);
 
       await db.updateMonitoringBatchRun(batchId, {
@@ -275,7 +309,10 @@ export async function executeMonitoringBatch(
       const { success, error, noData } = await executeProviderRun(
         provider,
         dateKey,
-        triggeredBy
+        triggeredBy,
+        {
+          credentialIds: providerCredentials.map((credential) => credential.id),
+        }
       );
       totalSuccess += success;
       totalError += error;
