@@ -2248,7 +2248,8 @@ export default function AbpInvoiceSettlement() {
     if (!file) return;
     startUploading("mapping");
     try {
-      const parsed = await parseTabularFile(file);
+      // Mapping exports are often split across multiple Excel sheets in 10k-row chunks.
+      const parsed = await parseTabularFile(file, { excelSheetMode: "all" });
       const rows = parseCsgSystemMapping(parsed);
       setCsgSystemMappings(rows);
       setRunInputs((current) => ({ ...current, csgSystemMappingFile: file.name }));

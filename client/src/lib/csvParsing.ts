@@ -9,6 +9,11 @@ export type ParsedTabularData = {
   matrix: string[][];
 };
 
+export type ParseTabularFileOptions = {
+  // For Excel workbooks: parse only the first sheet (default) or merge all sheets.
+  excelSheetMode?: "first" | "all";
+};
+
 export function normalizeHeader(value: string): string {
   return clean(value)
     .toLowerCase()
@@ -127,7 +132,44 @@ export function sheetToMatrix(sheet: XLSX.WorkSheet): string[][] {
   }).map((row) => row.map((entry) => clean(entry)));
 }
 
-export async function parseTabularFile(file: File): Promise<ParsedTabularData> {
+function mergeParsedTabularData(parts: ParsedTabularData[]): ParsedTabularData {
+  if (parts.length === 0) {
+    return { headers: [], rows: [], matrix: [] };
+  }
+
+  const headers: string[] = [];
+  const seenHeaders = new Set<string>();
+  parts.forEach((part) => {
+    part.headers.forEach((header) => {
+      const normalized = clean(header);
+      if (!normalized || seenHeaders.has(normalized)) return;
+      seenHeaders.add(normalized);
+      headers.push(normalized);
+    });
+  });
+
+  if (headers.length === 0) {
+    return { headers: [], rows: [], matrix: [] };
+  }
+
+  const rows = parts.flatMap((part) =>
+    part.rows.map((row) => {
+      const mergedRow: CsvRow = {};
+      headers.forEach((header) => {
+        mergedRow[header] = clean(row[header]);
+      });
+      return mergedRow;
+    })
+  );
+
+  const matrix = [headers, ...rows.map((row) => headers.map((header) => row[header] ?? ""))];
+  return { headers, rows, matrix };
+}
+
+export async function parseTabularFile(
+  file: File,
+  options: ParseTabularFileOptions = {}
+): Promise<ParsedTabularData> {
   const lowerName = file.name.toLowerCase();
 
   if (lowerName.endsWith(".csv")) {
@@ -139,12 +181,28 @@ export async function parseTabularFile(file: File): Promise<ParsedTabularData> {
   if (/(\.xlsx|\.xlsm|\.xlsb|\.xls)$/i.test(lowerName)) {
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: "array", raw: false, cellDates: false });
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet) {
+    const excelSheetMode = options.excelSheetMode ?? "first";
+
+    if (excelSheetMode === "all") {
+      const parsedSheets = workbook.SheetNames
+        .map((sheetName) => workbook.Sheets[sheetName])
+        .filter((sheet): sheet is XLSX.WorkSheet => Boolean(sheet))
+        .map((sheet) => matrixToParsedTabularData(sheetToMatrix(sheet)))
+        .filter((parsed) => parsed.headers.length > 0 || parsed.rows.length > 0);
+
+      if (parsedSheets.length === 0) {
+        return { headers: [], rows: [], matrix: [] };
+      }
+
+      return mergeParsedTabularData(parsedSheets);
+    }
+
+    const firstSheetName = workbook.SheetNames[0];
+    const firstSheet = workbook.Sheets[firstSheetName];
+    if (!firstSheet) {
       throw new Error(`Could not read worksheet from ${file.name}.`);
     }
-    const matrix = sheetToMatrix(sheet);
+    const matrix = sheetToMatrix(firstSheet);
     if (!matrix.length) return { headers: [], rows: [], matrix: [] };
 
     return matrixToParsedTabularData(matrix);
