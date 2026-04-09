@@ -330,6 +330,7 @@ type MainIntegrationRecord = {
 };
 
 type MigrationPayload = {
+  sourceConnectionId: string;
   connectionName: string;
   accessToken?: string;
   refreshToken?: string;
@@ -355,28 +356,16 @@ function parseMetadataRecord(
   }
 }
 
-function getActiveConnection(
+function getConnectionRows(
   metadata: Record<string, unknown>
-): Record<string, unknown> | null {
+): Array<Record<string, unknown>> {
   const rawConnections = Array.isArray(metadata.connections)
     ? metadata.connections
     : [];
-  const connections = rawConnections.filter(
+  return rawConnections.filter(
     (item): item is Record<string, unknown> =>
       Boolean(item) && typeof item === "object"
   );
-
-  if (connections.length === 0) return null;
-
-  const activeConnectionId = toNonEmptyString(metadata.activeConnectionId);
-  if (activeConnectionId) {
-    const match = connections.find(
-      (connection) => toNonEmptyString(connection.id) === activeConnectionId
-    );
-    if (match) return match;
-  }
-
-  return connections[0];
 }
 
 function toOptionalDate(value: unknown): Date | undefined {
@@ -392,293 +381,670 @@ function serializeMetadata(data: Record<string, unknown>): string {
   return JSON.stringify(compact);
 }
 
-function extractMigrationPayload(
+function buildSourceMetadata(
+  data: Record<string, unknown>,
+  mainProvider: string,
+  sourceConnectionId: string
+): string {
+  return serializeMetadata({
+    ...data,
+    _sourceProvider: mainProvider,
+    _sourceConnectionId: sourceConnectionId,
+  });
+}
+
+function extractMigrationPayloads(
   integration: MainIntegrationRecord
-): { solarProvider: string; payload: MigrationPayload } | null {
+): Array<{ solarProvider: string; payload: MigrationPayload }> {
   const metadata = parseMetadataRecord(integration.metadata);
-  const activeConnection = getActiveConnection(metadata) ?? {};
+  const connections = getConnectionRows(metadata);
   const expiresAt = toOptionalDate(integration.expiresAt);
 
   switch (integration.provider) {
     case "solaredge-monitoring": {
-      const apiKey =
-        toNonEmptyString(activeConnection.apiKey) ??
+      const payloads = connections
+        .map((connection, index) => {
+          const apiKey = toNonEmptyString(connection.apiKey);
+          if (!apiKey) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `solaredge-${index + 1}`;
+          const baseUrl =
+            toNonEmptyString(connection.baseUrl) ??
+            toNonEmptyString(metadata.baseUrl);
+          return {
+            solarProvider: "solaredge",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `SolarEdge ${index + 1} (Migrated)`,
+              accessToken: apiKey,
+              metadata: buildSourceMetadata(
+                { apiKey, baseUrl },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+
+      if (payloads.length > 0) return payloads;
+
+      const legacyApiKey =
         toNonEmptyString(metadata.apiKey) ??
         toNonEmptyString(integration.accessToken);
-      if (!apiKey) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "solaredge",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "SolarEdge (Migrated)",
-          accessToken: apiKey,
-          metadata: serializeMetadata({ apiKey, baseUrl }),
+      if (!legacyApiKey) return [];
+      return [
+        {
+          solarProvider: "solaredge",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "SolarEdge (Migrated)",
+            accessToken: legacyApiKey,
+            metadata: buildSourceMetadata(
+              {
+                apiKey: legacyApiKey,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "enphase-v4": {
       const accessToken = toNonEmptyString(integration.accessToken);
-      const apiKey =
-        toNonEmptyString(activeConnection.apiKey) ??
-        toNonEmptyString(metadata.apiKey);
-      if (!accessToken || !apiKey) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
+      const apiKey = toNonEmptyString(metadata.apiKey);
+      if (!accessToken || !apiKey) return [];
+      const baseUrl = toNonEmptyString(metadata.baseUrl);
       const clientId = toNonEmptyString(metadata.clientId);
       const clientSecret = toNonEmptyString(metadata.clientSecret);
-      return {
-        solarProvider: "enphase-v4",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Enphase V4 (Migrated)",
-          accessToken,
-          refreshToken: toNonEmptyString(integration.refreshToken) ?? undefined,
-          expiresAt,
-          metadata: serializeMetadata({
+      return [
+        {
+          solarProvider: "enphase-v4",
+          payload: {
+            sourceConnectionId: "primary",
+            connectionName: "Enphase V4 (Migrated)",
             accessToken,
-            apiKey,
-            clientId,
-            clientSecret,
-            baseUrl,
-          }),
+            refreshToken: toNonEmptyString(integration.refreshToken) ?? undefined,
+            expiresAt,
+            metadata: buildSourceMetadata(
+              {
+                accessToken,
+                apiKey,
+                clientId,
+                clientSecret,
+                baseUrl,
+              },
+              integration.provider,
+              "primary"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "fronius-solar": {
+      const payloads = connections
+        .map((connection, index) => {
+          const accessKeyId = toNonEmptyString(connection.accessKeyId);
+          const accessKeyValue = toNonEmptyString(connection.accessKeyValue);
+          if (!accessKeyId || !accessKeyValue) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `fronius-${index + 1}`;
+          return {
+            solarProvider: "fronius",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Fronius ${index + 1} (Migrated)`,
+              accessToken: accessKeyId,
+              metadata: buildSourceMetadata(
+                {
+                  accessKeyId,
+                  accessKeyValue,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
       const accessKeyId =
-        toNonEmptyString(activeConnection.accessKeyId) ??
         toNonEmptyString(metadata.accessKeyId) ??
         toNonEmptyString(integration.accessToken);
-      const accessKeyValue =
-        toNonEmptyString(activeConnection.accessKeyValue) ??
-        toNonEmptyString(metadata.accessKeyValue);
-      if (!accessKeyId || !accessKeyValue) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "fronius",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Fronius (Migrated)",
-          accessToken: accessKeyId,
-          metadata: serializeMetadata({ accessKeyId, accessKeyValue, baseUrl }),
+      const accessKeyValue = toNonEmptyString(metadata.accessKeyValue);
+      if (!accessKeyId || !accessKeyValue) return [];
+      return [
+        {
+          solarProvider: "fronius",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Fronius (Migrated)",
+            accessToken: accessKeyId,
+            metadata: buildSourceMetadata(
+              {
+                accessKeyId,
+                accessKeyValue,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "generac-pwrfleet": {
+      const payloads = connections
+        .map((connection, index) => {
+          const apiKey = toNonEmptyString(connection.apiKey);
+          if (!apiKey) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `generac-${index + 1}`;
+          return {
+            solarProvider: "generac",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Generac ${index + 1} (Migrated)`,
+              accessToken: apiKey,
+              metadata: buildSourceMetadata(
+                {
+                  apiKey,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
       const apiKey =
-        toNonEmptyString(activeConnection.apiKey) ??
         toNonEmptyString(metadata.apiKey) ??
         toNonEmptyString(integration.accessToken);
-      if (!apiKey) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "generac",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Generac (Migrated)",
-          accessToken: apiKey,
-          metadata: serializeMetadata({ apiKey, baseUrl }),
+      if (!apiKey) return [];
+      return [
+        {
+          solarProvider: "generac",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Generac (Migrated)",
+            accessToken: apiKey,
+            metadata: buildSourceMetadata(
+              { apiKey, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "hoymiles-smiles": {
-      const username =
-        toNonEmptyString(activeConnection.username) ??
-        toNonEmptyString(metadata.username);
-      const password =
-        toNonEmptyString(activeConnection.password) ??
-        toNonEmptyString(metadata.password);
-      if (!username || !password) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "hoymiles",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Hoymiles (Migrated)",
-          metadata: serializeMetadata({ username, password, baseUrl }),
+      const payloads = connections
+        .map((connection, index) => {
+          const username = toNonEmptyString(connection.username);
+          const password = toNonEmptyString(connection.password);
+          if (!username || !password) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `hoymiles-${index + 1}`;
+          return {
+            solarProvider: "hoymiles",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Hoymiles ${index + 1} (Migrated)`,
+              metadata: buildSourceMetadata(
+                {
+                  username,
+                  password,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
+      const username = toNonEmptyString(metadata.username);
+      const password = toNonEmptyString(metadata.password);
+      if (!username || !password) return [];
+      return [
+        {
+          solarProvider: "hoymiles",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Hoymiles (Migrated)",
+            metadata: buildSourceMetadata(
+              { username, password, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "goodwe-sems": {
-      const account =
-        toNonEmptyString(activeConnection.account) ??
-        toNonEmptyString(metadata.account);
-      const password =
-        toNonEmptyString(activeConnection.password) ??
-        toNonEmptyString(metadata.password);
-      if (!account || !password) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "goodwe",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "GoodWe (Migrated)",
-          metadata: serializeMetadata({ account, password, baseUrl }),
+      const payloads = connections
+        .map((connection, index) => {
+          const account = toNonEmptyString(connection.account);
+          const password = toNonEmptyString(connection.password);
+          if (!account || !password) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `goodwe-${index + 1}`;
+          return {
+            solarProvider: "goodwe",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `GoodWe ${index + 1} (Migrated)`,
+              metadata: buildSourceMetadata(
+                {
+                  account,
+                  password,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
+      const account = toNonEmptyString(metadata.account);
+      const password = toNonEmptyString(metadata.password);
+      if (!account || !password) return [];
+      return [
+        {
+          solarProvider: "goodwe",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "GoodWe (Migrated)",
+            metadata: buildSourceMetadata(
+              { account, password, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "solis-cloud": {
+      const payloads = connections
+        .map((connection, index) => {
+          const apiKey = toNonEmptyString(connection.apiKey);
+          const apiSecret = toNonEmptyString(connection.apiSecret);
+          if (!apiKey || !apiSecret) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `solis-${index + 1}`;
+          return {
+            solarProvider: "solis",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Solis ${index + 1} (Migrated)`,
+              accessToken: apiKey,
+              metadata: buildSourceMetadata(
+                {
+                  apiKey,
+                  apiSecret,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
       const apiKey =
-        toNonEmptyString(activeConnection.apiKey) ??
         toNonEmptyString(metadata.apiKey) ??
         toNonEmptyString(integration.accessToken);
-      const apiSecret =
-        toNonEmptyString(activeConnection.apiSecret) ??
-        toNonEmptyString(metadata.apiSecret);
-      if (!apiKey || !apiSecret) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "solis",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Solis (Migrated)",
-          accessToken: apiKey,
-          metadata: serializeMetadata({ apiKey, apiSecret, baseUrl }),
+      const apiSecret = toNonEmptyString(metadata.apiSecret);
+      if (!apiKey || !apiSecret) return [];
+      return [
+        {
+          solarProvider: "solis",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Solis (Migrated)",
+            accessToken: apiKey,
+            metadata: buildSourceMetadata(
+              { apiKey, apiSecret, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "locus-energy": {
-      const clientId =
-        toNonEmptyString(activeConnection.clientId) ??
-        toNonEmptyString(metadata.clientId);
-      const clientSecret =
-        toNonEmptyString(activeConnection.clientSecret) ??
-        toNonEmptyString(metadata.clientSecret);
-      const partnerId =
-        toNonEmptyString(activeConnection.partnerId) ??
-        toNonEmptyString(metadata.partnerId);
-      if (!clientId || !clientSecret || !partnerId) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "locus",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Locus Energy (Migrated)",
-          metadata: serializeMetadata({
-            clientId,
-            clientSecret,
-            partnerId,
-            baseUrl,
-          }),
+      const payloads = connections
+        .map((connection, index) => {
+          const clientId = toNonEmptyString(connection.clientId);
+          const clientSecret = toNonEmptyString(connection.clientSecret);
+          const partnerId = toNonEmptyString(connection.partnerId);
+          if (!clientId || !clientSecret || !partnerId) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `locus-${index + 1}`;
+          return {
+            solarProvider: "locus",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Locus Energy ${index + 1} (Migrated)`,
+              metadata: buildSourceMetadata(
+                {
+                  clientId,
+                  clientSecret,
+                  partnerId,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
+      const clientId = toNonEmptyString(metadata.clientId);
+      const clientSecret = toNonEmptyString(metadata.clientSecret);
+      const partnerId = toNonEmptyString(metadata.partnerId);
+      if (!clientId || !clientSecret || !partnerId) return [];
+      return [
+        {
+          solarProvider: "locus",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Locus Energy (Migrated)",
+            metadata: buildSourceMetadata(
+              {
+                clientId,
+                clientSecret,
+                partnerId,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "apsystems-ema": {
+      const payloads = connections
+        .map((connection, index) => {
+          const appId =
+            toNonEmptyString(connection.appId) ??
+            toNonEmptyString(connection.apiKey);
+          if (!appId) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `apsystems-${index + 1}`;
+          const appSecret = toNonEmptyString(connection.appSecret);
+          return {
+            solarProvider: "apsystems",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `APsystems ${index + 1} (Migrated)`,
+              accessToken: appId,
+              metadata: buildSourceMetadata(
+                {
+                  appId,
+                  appSecret,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
       const appId =
-        toNonEmptyString(activeConnection.appId) ??
-        toNonEmptyString(activeConnection.apiKey) ??
         toNonEmptyString(metadata.appId) ??
         toNonEmptyString(metadata.apiKey) ??
         toNonEmptyString(integration.accessToken);
-      const appSecret =
-        toNonEmptyString(activeConnection.appSecret) ??
-        toNonEmptyString(metadata.appSecret);
-      if (!appId) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "apsystems",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "APsystems (Migrated)",
-          accessToken: appId,
-          metadata: serializeMetadata({ appId, appSecret, baseUrl }),
+      if (!appId) return [];
+      return [
+        {
+          solarProvider: "apsystems",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "APsystems (Migrated)",
+            accessToken: appId,
+            metadata: buildSourceMetadata(
+              {
+                appId,
+                appSecret: toNonEmptyString(metadata.appSecret),
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "solar-log": {
+      const payloads = connections
+        .map((connection, index) => {
+          const baseUrl =
+            toNonEmptyString(connection.baseUrl) ??
+            toNonEmptyString(metadata.baseUrl) ??
+            toNonEmptyString(metadata.deviceUrl);
+          if (!baseUrl) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `solarlog-${index + 1}`;
+          return {
+            solarProvider: "solarlog",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Solar-Log ${index + 1} (Migrated)`,
+              metadata: buildSourceMetadata(
+                {
+                  baseUrl,
+                  password:
+                    toNonEmptyString(connection.password) ??
+                    toNonEmptyString(metadata.password),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
       const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
         toNonEmptyString(metadata.baseUrl) ??
         toNonEmptyString(metadata.deviceUrl);
-      if (!baseUrl) return null;
-      const password =
-        toNonEmptyString(activeConnection.password) ??
-        toNonEmptyString(metadata.password);
-      return {
-        solarProvider: "solarlog",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Solar-Log (Migrated)",
-          metadata: serializeMetadata({ baseUrl, password }),
+      if (!baseUrl) return [];
+      return [
+        {
+          solarProvider: "solarlog",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Solar-Log (Migrated)",
+            metadata: buildSourceMetadata(
+              { baseUrl, password: toNonEmptyString(metadata.password) },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "growatt-server": {
-      const username =
-        toNonEmptyString(activeConnection.username) ??
-        toNonEmptyString(metadata.username);
-      const password =
-        toNonEmptyString(activeConnection.password) ??
-        toNonEmptyString(metadata.password);
-      if (!username || !password) return null;
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      return {
-        solarProvider: "growatt",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "Growatt (Migrated)",
-          metadata: serializeMetadata({ username, password, baseUrl }),
+      const payloads = connections
+        .map((connection, index) => {
+          const username = toNonEmptyString(connection.username);
+          const password = toNonEmptyString(connection.password);
+          if (!username || !password) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `growatt-${index + 1}`;
+          return {
+            solarProvider: "growatt",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `Growatt ${index + 1} (Migrated)`,
+              metadata: buildSourceMetadata(
+                {
+                  username,
+                  password,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
+      const username = toNonEmptyString(metadata.username);
+      const password = toNonEmptyString(metadata.password);
+      if (!username || !password) return [];
+      return [
+        {
+          solarProvider: "growatt",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "Growatt (Migrated)",
+            metadata: buildSourceMetadata(
+              { username, password, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     case "egauge-monitoring": {
-      const baseUrl =
-        toNonEmptyString(activeConnection.baseUrl) ??
-        toNonEmptyString(metadata.baseUrl);
-      if (!baseUrl) return null;
-      const accessType =
-        toNonEmptyString(activeConnection.accessType) ??
-        toNonEmptyString(metadata.accessType);
-      const username =
-        toNonEmptyString(activeConnection.username) ??
-        toNonEmptyString(metadata.username);
-      const password =
-        toNonEmptyString(activeConnection.password) ??
-        toNonEmptyString(metadata.password) ??
-        toNonEmptyString(integration.accessToken);
-      return {
-        solarProvider: "egauge",
-        payload: {
-          connectionName:
-            toNonEmptyString(activeConnection.name) ?? "eGauge (Migrated)",
-          metadata: serializeMetadata({ baseUrl, accessType, username, password }),
+      const payloads = connections
+        .map((connection, index) => {
+          const baseUrl =
+            toNonEmptyString(connection.baseUrl) ??
+            toNonEmptyString(metadata.baseUrl);
+          if (!baseUrl) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `egauge-${index + 1}`;
+          return {
+            solarProvider: "egauge",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `eGauge ${index + 1} (Migrated)`,
+              metadata: buildSourceMetadata(
+                {
+                  baseUrl,
+                  accessType:
+                    toNonEmptyString(connection.accessType) ??
+                    toNonEmptyString(metadata.accessType),
+                  username:
+                    toNonEmptyString(connection.username) ??
+                    toNonEmptyString(metadata.username),
+                  password:
+                    toNonEmptyString(connection.password) ??
+                    toNonEmptyString(metadata.password) ??
+                    toNonEmptyString(integration.accessToken),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+      if (payloads.length > 0) return payloads;
+
+      const baseUrl = toNonEmptyString(metadata.baseUrl);
+      if (!baseUrl) return [];
+      return [
+        {
+          solarProvider: "egauge",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "eGauge (Migrated)",
+            metadata: buildSourceMetadata(
+              {
+                baseUrl,
+                accessType: toNonEmptyString(metadata.accessType),
+                username: toNonEmptyString(metadata.username),
+                password:
+                  toNonEmptyString(metadata.password) ??
+                  toNonEmptyString(integration.accessToken),
+              },
+              integration.provider,
+              "legacy"
+            ),
+          },
         },
-      };
+      ];
     }
 
     default:
-      return null;
+      return [];
   }
 }
 
@@ -749,9 +1115,23 @@ const credentialsRouter = t.router({
       await getUserIntegrations(ownerUserId)
     ) as MainIntegrationRecord[];
     const existingCreds = await listSolarRecTeamCredentials();
-    const existingByProvider = new Map(
-      existingCreds.map((cred) => [cred.provider, cred] as const)
-    );
+    const existingByProvider = new Map<string, typeof existingCreds>();
+    for (const cred of existingCreds) {
+      const list = existingByProvider.get(cred.provider) ?? [];
+      list.push(cred);
+      existingByProvider.set(cred.provider, list);
+    }
+    const existingBySource = new Map<string, (typeof existingCreds)[number]>();
+    for (const cred of existingCreds) {
+      const metadata = parseMetadataRecord(cred.metadata);
+      const sourceProvider = toNonEmptyString(metadata._sourceProvider);
+      const sourceConnectionId = toNonEmptyString(metadata._sourceConnectionId);
+      if (!sourceProvider || !sourceConnectionId) continue;
+      existingBySource.set(
+        `${cred.provider}::${sourceProvider}::${sourceConnectionId}`,
+        cred
+      );
+    }
 
     const supportedMainProviders = [
       "solaredge-monitoring",
@@ -770,12 +1150,14 @@ const credentialsRouter = t.router({
 
     let created = 0;
     let updated = 0;
+    const usedExistingIds = new Set<string>();
     const results: Array<{
       mainProvider: string;
       solarProvider: string | null;
       status: "created" | "updated" | "skipped";
       reason?: string;
       connectionName?: string;
+      sourceConnectionId?: string;
       credentialId?: string;
     }> = [];
 
@@ -792,8 +1174,8 @@ const credentialsRouter = t.router({
         continue;
       }
 
-      const extracted = extractMigrationPayload(integration);
-      if (!extracted) {
+      const extractedPayloads = extractMigrationPayloads(integration);
+      if (extractedPayloads.length === 0) {
         results.push({
           mainProvider,
           solarProvider: null,
@@ -803,31 +1185,56 @@ const credentialsRouter = t.router({
         continue;
       }
 
-      const existing = existingByProvider.get(extracted.solarProvider);
-      const credentialId = await upsertSolarRecTeamCredential({
-        id: existing?.id,
-        provider: extracted.solarProvider,
-        connectionName: extracted.payload.connectionName,
-        accessToken: extracted.payload.accessToken,
-        refreshToken: extracted.payload.refreshToken,
-        expiresAt: extracted.payload.expiresAt,
-        metadata: extracted.payload.metadata,
-        createdBy: ctx.userId,
-      });
+      for (let index = 0; index < extractedPayloads.length; index += 1) {
+        const extracted = extractedPayloads[index];
+        const sourceKey = `${extracted.solarProvider}::${mainProvider}::${extracted.payload.sourceConnectionId}`;
+        let existing = existingBySource.get(sourceKey);
 
-      if (existing) {
-        updated += 1;
-      } else {
-        created += 1;
+        if (existing && usedExistingIds.has(existing.id)) {
+          existing = undefined;
+        }
+
+        if (!existing) {
+          const providerExisting = (existingByProvider.get(extracted.solarProvider) ?? []).filter(
+            (cred) => !usedExistingIds.has(cred.id)
+          );
+
+          existing =
+            providerExisting.find(
+              (cred) =>
+                (cred.connectionName ?? "").trim().toLowerCase() ===
+                extracted.payload.connectionName.trim().toLowerCase()
+            ) ??
+            (index === 0 ? providerExisting[0] : undefined);
+        }
+
+        const credentialId = await upsertSolarRecTeamCredential({
+          id: existing?.id,
+          provider: extracted.solarProvider,
+          connectionName: extracted.payload.connectionName,
+          accessToken: extracted.payload.accessToken,
+          refreshToken: extracted.payload.refreshToken,
+          expiresAt: extracted.payload.expiresAt,
+          metadata: extracted.payload.metadata,
+          createdBy: ctx.userId,
+        });
+
+        if (existing) {
+          updated += 1;
+          usedExistingIds.add(existing.id);
+        } else {
+          created += 1;
+        }
+
+        results.push({
+          mainProvider,
+          solarProvider: extracted.solarProvider,
+          status: existing ? "updated" : "created",
+          connectionName: extracted.payload.connectionName,
+          sourceConnectionId: extracted.payload.sourceConnectionId,
+          credentialId,
+        });
       }
-
-      results.push({
-        mainProvider,
-        solarProvider: extracted.solarProvider,
-        status: existing ? "updated" : "created",
-        connectionName: extracted.payload.connectionName,
-        credentialId,
-      });
     }
 
     const skipped = results.filter((item) => item.status === "skipped").length;

@@ -1,7 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { solarRecTrpc } from "./solar-rec/solarRecTrpc";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { httpLink, splitLink } from "@trpc/client";
+import { httpLink } from "@trpc/client";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import SolarRecApp from "./solar-rec/SolarRecApp";
@@ -39,33 +39,15 @@ const trpcFetch: typeof fetch = async (input, init) => {
   return response;
 };
 
-// Routes handled by the solar-rec tRPC router
-const SOLAR_REC_ROUTES = new Set([
-  "solarRecDashboard",
-  "auth",
-  "users",
-  "credentials",
-  "monitoring",
-  "enphaseV2",
-]);
-
-// Main app trpc instance (for SolarRecDashboard + meter read pages).
-// Uses splitLink: solar-rec routes go to the solar-rec endpoint,
-// provider routes (solarEdge.*, enphaseV4.*, etc.) go to the main app endpoint.
+// Main app trpc instance used by meter read pages and shared dashboard helpers.
+// Route this client directly to the main-trpc endpoint to avoid split-routing
+// edge cases in production.
 const trpcClient = trpc.createClient({
   links: [
-    splitLink({
-      condition: (op) => SOLAR_REC_ROUTES.has(op.path.split(".")[0]),
-      true: httpLink({
-        url: "/solar-rec/api/trpc",
-        transformer: superjson,
-        fetch: trpcFetch,
-      }),
-      false: httpLink({
-        url: "/solar-rec/api/main-trpc",
-        transformer: superjson,
-        fetch: trpcFetch,
-      }),
+    httpLink({
+      url: "/solar-rec/api/main-trpc",
+      transformer: superjson,
+      fetch: trpcFetch,
     }),
   ],
 });
