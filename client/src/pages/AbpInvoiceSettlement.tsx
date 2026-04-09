@@ -2244,16 +2244,35 @@ export default function AbpInvoiceSettlement() {
   };
 
   const handleMappingUpload = async (fileList: FileList | null) => {
-    const file = fileList?.[0];
-    if (!file) return;
+    if (!fileList?.length) return;
+    const files = Array.from(fileList);
     startUploading("mapping");
     try {
-      // Mapping exports are often split across multiple Excel sheets in 10k-row chunks.
-      const parsed = await parseTabularFile(file, { excelSheetMode: "all" });
-      const rows = parseCsgSystemMapping(parsed);
-      setCsgSystemMappings(rows);
-      setRunInputs((current) => ({ ...current, csgSystemMappingFile: file.name }));
-      toast.success(`Loaded ${rows.length.toLocaleString("en-US")} CSG/System ID mappings.`);
+      const mergedRows: CsgSystemIdMappingRow[] = [];
+      for (const file of files) {
+        // Mapping exports are often split across multiple Excel sheets in 10k-row chunks.
+        const parsed = await parseTabularFile(file, { excelSheetMode: "all" });
+        const rows = parseCsgSystemMapping(parsed);
+        mergedRows.push(...rows);
+      }
+
+      const seen = new Set<string>();
+      const dedupedRows: CsgSystemIdMappingRow[] = [];
+      mergedRows.forEach((row) => {
+        const key = `${row.csgId}::${row.systemId}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        dedupedRows.push(row);
+      });
+
+      setCsgSystemMappings(dedupedRows);
+      setRunInputs((current) => ({
+        ...current,
+        csgSystemMappingFile: files.length === 1 ? files[0].name : `${files.length} mapping files`,
+      }));
+      toast.success(
+        `Loaded ${dedupedRows.length.toLocaleString("en-US")} CSG/System ID mappings from ${files.length.toLocaleString("en-US")} file(s).`
+      );
     } catch (error) {
       toast.error(`Failed to parse CSG/System mapping: ${toErrorMessage(error)}`);
     } finally {
@@ -3461,6 +3480,7 @@ export default function AbpInvoiceSettlement() {
                 <Input
                   id="mapping-upload"
                   type="file"
+                  multiple
                   accept=".xlsx,.xls,.xlsm,.xlsb,.csv,text/csv"
                   onChange={(event) => {
                     void handleMappingUpload(event.currentTarget.files);
