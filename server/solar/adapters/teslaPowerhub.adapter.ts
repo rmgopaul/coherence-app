@@ -25,6 +25,12 @@ function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+function extractGroupIdFromUrl(raw: string | null): string | null {
+  if (!raw) return null;
+  const match = raw.match(/\/group\/([a-zA-Z0-9-]+)/i);
+  return match?.[1]?.trim() ?? null;
+}
+
 function buildCacheKey(connection: TeslaPowerhubConnection, anchorDate: string): string {
   return [
     connection.clientId,
@@ -62,7 +68,15 @@ function parseConnections(credential: { accessToken?: string | null; metadata?: 
           toNonEmptyString(record.clientSecret) ??
           toNonEmptyString(meta.clientSecret) ??
           fallbackSecret;
-        const groupId = toNonEmptyString(record.groupId) ?? toNonEmptyString(meta.groupId);
+        const endpointUrl =
+          toNonEmptyString(record.endpointUrl) ?? toNonEmptyString(meta.endpointUrl);
+        const portalBaseUrl =
+          toNonEmptyString(record.portalBaseUrl) ?? toNonEmptyString(meta.portalBaseUrl);
+        const groupId =
+          toNonEmptyString(record.groupId) ??
+          toNonEmptyString(meta.groupId) ??
+          extractGroupIdFromUrl(endpointUrl) ??
+          extractGroupIdFromUrl(portalBaseUrl);
         if (!clientId || !clientSecret || !groupId) return null;
         return {
           clientId,
@@ -70,8 +84,8 @@ function parseConnections(credential: { accessToken?: string | null; metadata?: 
           groupId,
           tokenUrl: toNonEmptyString(record.tokenUrl) ?? toNonEmptyString(meta.tokenUrl),
           apiBaseUrl: toNonEmptyString(record.apiBaseUrl) ?? toNonEmptyString(meta.apiBaseUrl),
-          portalBaseUrl: toNonEmptyString(record.portalBaseUrl) ?? toNonEmptyString(meta.portalBaseUrl),
-          endpointUrl: toNonEmptyString(record.endpointUrl) ?? toNonEmptyString(meta.endpointUrl),
+          portalBaseUrl,
+          endpointUrl,
           signal: toNonEmptyString(record.signal) ?? toNonEmptyString(meta.signal),
         } satisfies TeslaPowerhubConnection;
       })

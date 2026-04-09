@@ -23,6 +23,14 @@ function buildMeterUrlFromId(rawMeterId: unknown): string | null {
   return `https://${meterId}.d.egauge.net`;
 }
 
+function buildMeterUrlFromConnectionName(raw: unknown): string | null {
+  const value = toNonEmptyString(raw);
+  if (!value) return null;
+  if (!/^[a-z0-9-_.]+$/i.test(value)) return null;
+  if (value.includes(" ")) return null;
+  return `https://${value}.d.egauge.net`;
+}
+
 function getConnections(credential: { accessToken?: string | null; metadata?: string | null }): EgaugeConnection[] {
   const fallbackBaseUrl = normalizeBaseUrl(credential.accessToken);
   if (credential.metadata) {
@@ -38,6 +46,7 @@ function getConnections(credential: { accessToken?: string | null; metadata?: st
               normalizeBaseUrl(meta.baseUrl) ??
               normalizeBaseUrl(meta.deviceUrl) ??
               buildMeterUrlFromId(meta.meterId) ??
+              buildMeterUrlFromConnectionName(meta.connectionName) ??
               fallbackBaseUrl,
             accessType: c.accessType ?? meta.accessType ?? null,
             username: c.username ?? meta.username ?? null,
@@ -59,6 +68,7 @@ function getConnections(credential: { accessToken?: string | null; metadata?: st
         normalizeBaseUrl(meta.baseUrl) ??
         normalizeBaseUrl(meta.deviceUrl) ??
         buildMeterUrlFromId(meta.meterId) ??
+        buildMeterUrlFromConnectionName(meta.connectionName) ??
         fallbackBaseUrl;
       if (baseUrl) {
         return [{

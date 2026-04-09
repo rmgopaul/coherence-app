@@ -230,6 +230,31 @@ export async function executeProviderRun(
       }
     } catch (err) {
       console.error(`[Monitoring] Provider ${provider} credential ${cred.id} failed:`, err);
+      const message = err instanceof Error ? err.message : String(err);
+      const credentialLabel =
+        cred.connectionName ?? extractCredentialLabel(cred) ?? `Credential ${cred.id.slice(-6)}`;
+      try {
+        await db.upsertMonitoringApiRun({
+          id: nanoid(),
+          provider,
+          connectionId: cred.id,
+          siteId: `credential:${cred.id}`,
+          siteName: credentialLabel,
+          dateKey,
+          status: "error",
+          readingsCount: 0,
+          lifetimeKwh: null,
+          errorMessage: message,
+          durationMs: null,
+          triggeredBy,
+          triggeredAt: new Date(),
+        });
+      } catch (persistError) {
+        console.error(
+          `[Monitoring] Failed to persist credential-level error row for ${provider}:${cred.id}:`,
+          persistError
+        );
+      }
       error++;
     }
   }
