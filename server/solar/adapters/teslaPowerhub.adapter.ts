@@ -31,6 +31,12 @@ function extractGroupIdFromUrl(raw: string | null): string | null {
   return match?.[1]?.trim() ?? null;
 }
 
+function extractUuidLike(raw: string | null): string | null {
+  if (!raw) return null;
+  const match = raw.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return match?.[0] ?? null;
+}
+
 function buildCacheKey(connection: TeslaPowerhubConnection, anchorDate: string): string {
   return [
     connection.clientId,
@@ -72,11 +78,20 @@ function parseConnections(credential: { accessToken?: string | null; metadata?: 
           toNonEmptyString(record.endpointUrl) ?? toNonEmptyString(meta.endpointUrl);
         const portalBaseUrl =
           toNonEmptyString(record.portalBaseUrl) ?? toNonEmptyString(meta.portalBaseUrl);
+        const connectionName =
+          toNonEmptyString(record.connectionName) ?? toNonEmptyString(meta.connectionName);
+        const sourceConnectionId =
+          toNonEmptyString(record.sourceConnectionId) ??
+          toNonEmptyString(meta.sourceConnectionId) ??
+          toNonEmptyString(record._sourceConnectionId) ??
+          toNonEmptyString(meta._sourceConnectionId);
         const groupId =
           toNonEmptyString(record.groupId) ??
           toNonEmptyString(meta.groupId) ??
           extractGroupIdFromUrl(endpointUrl) ??
-          extractGroupIdFromUrl(portalBaseUrl);
+          extractGroupIdFromUrl(portalBaseUrl) ??
+          extractUuidLike(connectionName) ??
+          extractUuidLike(sourceConnectionId);
         if (!clientId || !clientSecret || !groupId) return null;
         return {
           clientId,
@@ -138,7 +153,9 @@ const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
     const connections = parseConnections(credential);
     if (connections.length === 0) {
-      throw new Error("Tesla Powerhub requires clientId, clientSecret, and groupId in metadata.");
+      throw new Error(
+        "Tesla Powerhub setup is missing required values. Save clientId, clientSecret, and groupId (from /group/<id> URL) in Solar REC Settings > API Credentials."
+      );
     }
 
     const sitesById = new Map<string, { siteId: string; siteName: string }>();
@@ -175,7 +192,8 @@ const adapter = {
         siteName: null,
         status: "Error" as const,
         lifetimeKwh: null,
-        errorMessage: "No Tesla Powerhub credentials configured.",
+        errorMessage:
+          "Tesla Powerhub setup is missing required values. Save clientId, clientSecret, and groupId in Solar REC Settings.",
       }));
     }
 
