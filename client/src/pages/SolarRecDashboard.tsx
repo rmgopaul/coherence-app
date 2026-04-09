@@ -2421,18 +2421,144 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 
 // ── Schedule B IndexedDB helper ─────────────────────────────────────
 
+const SCHEDULE_B_DB_NAME = "scheduleBScannerCache";
+const SCHEDULE_B_DB_VERSION = 2;
+const SCHEDULE_B_METADATA_STORE = "store";
+const SCHEDULE_B_ROWS_STORE = "rows";
+const SCHEDULE_B_LEGACY_RESULTS_KEY = "scheduleBResults";
+const SCHEDULE_B_META_KEY = "scheduleBMeta";
+const SCHEDULE_B_PERSIST_BATCH = 25;
+const SCHEDULE_B_IDB_WRITE_CHUNK = 250;
+const SCHEDULE_B_YIELD_INTERVAL = 10;
+
+type ScheduleBResultRow = {
+  extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
+  adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
+  firstTransferYear: number | null;
+};
+
 function openScheduleBIdb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open("scheduleBScannerCache", 1);
+    const req = indexedDB.open(SCHEDULE_B_DB_NAME, SCHEDULE_B_DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains("store")) {
-        db.createObjectStore("store");
+      if (!db.objectStoreNames.contains(SCHEDULE_B_METADATA_STORE)) {
+        db.createObjectStore(SCHEDULE_B_METADATA_STORE);
+      }
+      if (!db.objectStoreNames.contains(SCHEDULE_B_ROWS_STORE)) {
+        db.createObjectStore(SCHEDULE_B_ROWS_STORE);
       }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+function isScheduleBResultRow(value: unknown): value is ScheduleBResultRow {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { extraction?: { fileName?: unknown } };
+  return typeof candidate.extraction?.fileName === "string";
+}
+
+async function loadScheduleBRowsFromIdb(): Promise<ScheduleBResultRow[]> {
+  const db = await openScheduleBIdb();
+  try {
+    const tx = db.transaction(SCHEDULE_B_ROWS_STORE, "readonly");
+    const rawRows = (await idbRequestToPromise(
+      tx.objectStore(SCHEDULE_B_ROWS_STORE).getAll()
+    )) as unknown[];
+
+    return Array.isArray(rawRows) ? rawRows.filter(isScheduleBResultRow) : [];
+  } finally {
+    db.close();
+  }
+}
+
+async function loadLegacyScheduleBRowsFromIdb(): Promise<ScheduleBResultRow[]> {
+  const db = await openScheduleBIdb();
+  try {
+    const tx = db.transaction(SCHEDULE_B_METADATA_STORE, "readonly");
+    const raw = (await idbRequestToPromise(
+      tx.objectStore(SCHEDULE_B_METADATA_STORE).get(SCHEDULE_B_LEGACY_RESULTS_KEY)
+    )) as string | undefined;
+
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter(isScheduleBResultRow) : [];
+  } catch {
+    return [];
+  } finally {
+    db.close();
+  }
+}
+
+async function writeScheduleBRowsToIdb(rows: ScheduleBResultRow[], totalRows: number): Promise<void> {
+  if (rows.length === 0) return;
+  const db = await openScheduleBIdb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([SCHEDULE_B_METADATA_STORE, SCHEDULE_B_ROWS_STORE], "readwrite");
+      const rowStore = tx.objectStore(SCHEDULE_B_ROWS_STORE);
+      rows.forEach((row) => {
+        rowStore.put(row, row.extraction.fileName);
+      });
+      tx.objectStore(SCHEDULE_B_METADATA_STORE).put(
+        {
+          updatedAt: new Date().toISOString(),
+          totalRows,
+        },
+        SCHEDULE_B_META_KEY
+      );
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? new Error("Failed saving Schedule B rows to IndexedDB."));
+      tx.onerror = () => reject(tx.error ?? new Error("Failed saving Schedule B rows to IndexedDB."));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function deleteLegacyScheduleBBlobFromIdb(): Promise<void> {
+  const db = await openScheduleBIdb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(SCHEDULE_B_METADATA_STORE, "readwrite");
+      tx.objectStore(SCHEDULE_B_METADATA_STORE).delete(SCHEDULE_B_LEGACY_RESULTS_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? new Error("Failed deleting Schedule B legacy cache."));
+      tx.onerror = () => reject(tx.error ?? new Error("Failed deleting Schedule B legacy cache."));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function migrateLegacyScheduleBRowsToIdb(rows: ScheduleBResultRow[]): Promise<void> {
+  for (let i = 0; i < rows.length; i += SCHEDULE_B_IDB_WRITE_CHUNK) {
+    const batch = rows.slice(i, i + SCHEDULE_B_IDB_WRITE_CHUNK);
+    await writeScheduleBRowsToIdb(batch, i + batch.length);
+    if ((i / SCHEDULE_B_IDB_WRITE_CHUNK + 1) % 2 === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  await deleteLegacyScheduleBBlobFromIdb();
+}
+
+async function clearScheduleBRowsFromIdb(): Promise<void> {
+  const db = await openScheduleBIdb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([SCHEDULE_B_METADATA_STORE, SCHEDULE_B_ROWS_STORE], "readwrite");
+      tx.objectStore(SCHEDULE_B_ROWS_STORE).clear();
+      tx.objectStore(SCHEDULE_B_METADATA_STORE).delete(SCHEDULE_B_LEGACY_RESULTS_KEY);
+      tx.objectStore(SCHEDULE_B_METADATA_STORE).delete(SCHEDULE_B_META_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? new Error("Failed clearing Schedule B cache."));
+      tx.onerror = () => reject(tx.error ?? new Error("Failed clearing Schedule B cache."));
+    });
+  } finally {
+    db.close();
+  }
 }
 
 // ── Schedule B PDF Import Component ─────────────────────────────────
@@ -2446,14 +2572,6 @@ function ScheduleBImport({
   onApply: (rows: CsvRow[]) => void;
   existingDeliverySchedule: CsvRow[] | null;
 }) {
-  type ScheduleBResultRow = {
-    extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
-    adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
-    firstTransferYear: number | null;
-  };
-
-  const SCHEDULE_B_IDB_KEY = "scheduleBResults";
-
   const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
   const [scheduleBProcessing, setScheduleBProcessing] = useState(false);
   const [scheduleBProgress, setScheduleBProgress] = useState({ current: 0, total: 0 });
@@ -2464,44 +2582,47 @@ function ScheduleBImport({
   const contractIdMappingRef = useRef<Map<string, string>>(new Map());
 
   // ── Persist to / restore from IndexedDB ───────────────────────
-  const persistToIdb = useCallback(async (results: ScheduleBResultRow[]) => {
-    try {
-      const db = await openScheduleBIdb();
-      const tx = db.transaction("store", "readwrite");
-      tx.objectStore("store").put(JSON.stringify(results), SCHEDULE_B_IDB_KEY);
-      await new Promise<void>((resolve, reject) => {
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-      db.close();
-    } catch {
-      // Best effort
+  const persistBatchToIdb = useCallback(async (rows: ScheduleBResultRow[], totalRows: number) => {
+    if (rows.length === 0) return;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await writeScheduleBRowsToIdb(rows, totalRows);
+        return;
+      } catch (error) {
+        lastError = error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 125));
+      }
     }
+    throw lastError ?? new Error("Failed to persist Schedule B rows.");
   }, []);
 
   // Restore on mount
   useEffect(() => {
+    let cancelled = false;
     (async () => {
       try {
-        const db = await openScheduleBIdb();
-        const tx = db.transaction("store", "readonly");
-        const req = tx.objectStore("store").get(SCHEDULE_B_IDB_KEY);
-        const raw = await new Promise<string | undefined>((resolve, reject) => {
-          req.onsuccess = () => resolve(req.result as string | undefined);
-          req.onerror = () => reject(req.error);
-        });
-        db.close();
-        if (raw) {
-          const parsed = JSON.parse(raw) as ScheduleBResultRow[];
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setScheduleBResults(parsed);
+        const rows = await loadScheduleBRowsFromIdb();
+        if (!cancelled && rows.length > 0) {
+          setScheduleBResults(rows);
+        } else if (!cancelled) {
+          const legacyRows = await loadLegacyScheduleBRowsFromIdb();
+          if (legacyRows.length > 0) {
+            setScheduleBResults(legacyRows);
+            void migrateLegacyScheduleBRowsToIdb(legacyRows);
           }
         }
       } catch {
         // Fresh start
+      } finally {
+        if (!cancelled) {
+          setScheduleBHydrated(true);
+        }
       }
-      setScheduleBHydrated(true);
     })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const handleContractIdMappingChange = useCallback(
@@ -2537,21 +2658,20 @@ function ScheduleBImport({
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
 
-      const pdfFiles = Array.from(files).filter(
-        (f) => f.name.toLowerCase().endsWith(".pdf")
-      );
+      const pdfFiles = Array.from(files).filter((f) => f.name.toLowerCase().endsWith(".pdf"));
       if (pdfFiles.length === 0) {
         toast.error("No PDF files found in selected folder");
         return;
       }
 
-      // Dedupe by filename: skip PDFs already in results
-      const existingFileNames = new Set(
-        scheduleBResults.map((r) => r.extraction.fileName)
-      );
-      const newPdfFiles = pdfFiles.filter(
-        (f) => !existingFileNames.has(f.name)
-      );
+      // Dedupe by filename against existing rows and duplicates in this upload.
+      const seenFileNames = new Set(scheduleBResults.map((r) => r.extraction.fileName));
+      const newPdfFiles: File[] = [];
+      for (const file of pdfFiles) {
+        if (seenFileNames.has(file.name)) continue;
+        seenFileNames.add(file.name);
+        newPdfFiles.push(file);
+      }
 
       if (newPdfFiles.length === 0) {
         toast.info(`All ${pdfFiles.length} PDFs already processed`);
@@ -2561,69 +2681,89 @@ function ScheduleBImport({
       setScheduleBProcessing(true);
       setScheduleBProgress({ current: 0, total: newPdfFiles.length });
 
-      const { extractScheduleBData, buildAdjustedSchedule, findFirstTransferEnergyYear } =
-        await import("@/lib/scheduleBScanner");
+      let cacheWriteFailed = false;
+      const baseResultCount = scheduleBResults.length;
+      try {
+        const { extractScheduleBData, buildAdjustedSchedule, findFirstTransferEnergyYear } =
+          await import("@/lib/scheduleBScanner");
+        const pendingRows: ScheduleBResultRow[] = [];
 
-      const accumulated = [...scheduleBResults];
-      const PERSIST_BATCH = 5; // Save to IDB every 5 PDFs
+        const flushPendingRows = async (processedCount: number) => {
+          if (pendingRows.length === 0) return;
+          const batch = pendingRows.splice(0, pendingRows.length);
+          setScheduleBResults((prev) => prev.concat(batch));
+          try {
+            await persistBatchToIdb(batch, baseResultCount + processedCount);
+          } catch {
+            cacheWriteFailed = true;
+          }
+        };
 
-      for (let i = 0; i < newPdfFiles.length; i++) {
-        setScheduleBProgress({ current: i + 1, total: newPdfFiles.length });
+        for (let i = 0; i < newPdfFiles.length; i += 1) {
+          setScheduleBProgress({ current: i + 1, total: newPdfFiles.length });
 
-        let row: ScheduleBResultRow;
-        try {
-          const extraction = await extractScheduleBData(newPdfFiles[i]);
-          const firstTransferYear = extraction.gatsId
-            ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
-            : null;
-          const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
-          // Only keep the minimal data needed (drop deliveryYears raw data to save memory)
-          row = {
-            extraction: { ...extraction, deliveryYears: [] },
-            adjustedYears,
-            firstTransferYear,
-          };
-        } catch (err) {
-          row = {
-            extraction: {
-              fileName: newPdfFiles[i].name,
-              designatedSystemId: null,
-              gatsId: null,
-              acSizeKw: null,
-              capacityFactor: null,
-              contractPrice: null,
-              energizationDate: null,
-              maxRecQuantity: null,
-              deliveryYears: [],
-              error: err instanceof Error ? err.message : "Processing failed",
-            },
-            adjustedYears: [],
-            firstTransferYear: null,
-          };
+          let row: ScheduleBResultRow;
+          try {
+            const extraction = await extractScheduleBData(newPdfFiles[i]);
+            const firstTransferYear = extraction.gatsId
+              ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
+              : null;
+            const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
+            // Keep only compact fields; raw delivery year table is no longer needed after adjustment.
+            row = {
+              extraction: { ...extraction, deliveryYears: [] },
+              adjustedYears,
+              firstTransferYear,
+            };
+          } catch (err) {
+            row = {
+              extraction: {
+                fileName: newPdfFiles[i].name,
+                designatedSystemId: null,
+                gatsId: null,
+                acSizeKw: null,
+                capacityFactor: null,
+                contractPrice: null,
+                energizationDate: null,
+                maxRecQuantity: null,
+                deliveryYears: [],
+                error: err instanceof Error ? err.message : "Processing failed",
+              },
+              adjustedYears: [],
+              firstTransferYear: null,
+            };
+          }
+
+          pendingRows.push(row);
+
+          if (pendingRows.length >= SCHEDULE_B_PERSIST_BATCH || i === newPdfFiles.length - 1) {
+            await flushPendingRows(i + 1);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+
+          if ((i + 1) % SCHEDULE_B_YIELD_INTERVAL === 0) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
         }
-
-        accumulated.push(row);
-
-        // Yield to browser after every PDF to prevent UI freeze and allow GC
-        await new Promise((r) => setTimeout(r, 0));
-
-        // Persist to IDB and update React state periodically
-        if ((i + 1) % PERSIST_BATCH === 0 || i === newPdfFiles.length - 1) {
-          setScheduleBResults([...accumulated]);
-          await persistToIdb(accumulated);
-          // Longer yield every batch to let GC collect PDF buffers
-          await new Promise((r) => setTimeout(r, 50));
-        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Schedule B processing failed");
+        return;
+      } finally {
+        setScheduleBProcessing(false);
       }
 
-      setScheduleBProcessing(false);
+      if (cacheWriteFailed) {
+        toast.warning("Some rows could not be cached locally. Reload may require reprocessing those PDFs.");
+      }
+
       const skipped = pdfFiles.length - newPdfFiles.length;
-      const msg = skipped > 0
-        ? `Processed ${newPdfFiles.length} new PDFs (${skipped} already processed)`
-        : `Processed ${newPdfFiles.length} Schedule B PDFs`;
+      const msg =
+        skipped > 0
+          ? `Processed ${newPdfFiles.length} new PDFs (${skipped} already processed)`
+          : `Processed ${newPdfFiles.length} Schedule B PDFs`;
       toast.success(msg);
     },
-    [transferDeliveryLookup, scheduleBResults, persistToIdb]
+    [transferDeliveryLookup, scheduleBResults, persistBatchToIdb]
   );
 
   const [applyingSchedule, setApplyingSchedule] = useState(false);
@@ -2700,11 +2840,9 @@ function ScheduleBImport({
                   size="sm"
                   onClick={async () => {
                     setScheduleBResults([]);
+                    setScheduleBProgress({ current: 0, total: 0 });
                     try {
-                      const db = await openScheduleBIdb();
-                      const tx = db.transaction("store", "readwrite");
-                      tx.objectStore("store").delete("scheduleBResults");
-                      db.close();
+                      await clearScheduleBRowsFromIdb();
                     } catch { /* ignore */ }
                     toast.info("Cleared Schedule B results");
                   }}
@@ -2769,7 +2907,7 @@ function ScheduleBImport({
               <p className="text-xs text-muted-foreground">
                 {scheduleBProgress.current} of {scheduleBProgress.total} PDFs
                 ({Math.round((scheduleBProgress.current / Math.max(1, scheduleBProgress.total)) * 100)}%)
-                — saved every 10
+                — saved every {SCHEDULE_B_PERSIST_BATCH}
               </p>
             </div>
           )}
