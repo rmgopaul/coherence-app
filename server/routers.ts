@@ -307,6 +307,114 @@ function cleanScheduleBCell(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+const SCHEDULE_B_TRANSFER_UTILITY_TOKENS = ["comed", "ameren", "midamerican"];
+
+function parseScheduleBNumber(value: unknown): number | null {
+  const cleaned = cleanScheduleBCell(value).replace(/[$,%\s]/g, "").replaceAll(",", "");
+  if (!cleaned) return null;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseScheduleBDate(value: unknown): Date | null {
+  const raw = cleanScheduleBCell(value);
+  if (!raw) return null;
+
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) {
+    const date = new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const usDateTime = raw.match(
+    /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/
+  );
+  if (usDateTime) {
+    const month = Number(usDateTime[1]) - 1;
+    const day = Number(usDateTime[2]);
+    const year = Number(usDateTime[3]) < 100 ? 2000 + Number(usDateTime[3]) : Number(usDateTime[3]);
+    let hours = usDateTime[4] ? Number(usDateTime[4]) : 0;
+    const minutes = usDateTime[5] ? Number(usDateTime[5]) : 0;
+    const meridiem = usDateTime[6]?.toUpperCase();
+
+    if (meridiem === "PM" && hours < 12) hours += 12;
+    if (meridiem === "AM" && hours === 12) hours = 0;
+
+    const date = new Date(year, month, day, hours, minutes);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const fallback = new Date(raw);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
+}
+
+function buildTransferDeliveryLookup(
+  transferRows: Array<Record<string, string>>
+): Map<string, Map<number, number>> {
+  const lookup = new Map<string, Map<number, number>>();
+
+  for (const row of transferRows) {
+    const unitId = cleanScheduleBCell(row["Unit ID"]);
+    if (!unitId) continue;
+
+    const quantity = parseScheduleBNumber(row.Quantity) ?? 0;
+    if (quantity === 0) continue;
+
+    const transferor = cleanScheduleBCell(row.Transferor).toLowerCase();
+    const transferee = cleanScheduleBCell(row.Transferee).toLowerCase();
+
+    const isFromCarbonSolutions = transferor.includes("carbon solutions");
+    const isToCarbonSolutions = transferee.includes("carbon solutions");
+    const transfereeIsUtility = SCHEDULE_B_TRANSFER_UTILITY_TOKENS.some((token) =>
+      transferee.includes(token)
+    );
+    const transferorIsUtility = SCHEDULE_B_TRANSFER_UTILITY_TOKENS.some((token) =>
+      transferor.includes(token)
+    );
+
+    let direction = 0;
+    if (isFromCarbonSolutions && transfereeIsUtility) direction = 1;
+    else if (transferorIsUtility && isToCarbonSolutions) direction = -1;
+    else continue;
+
+    const completionDate = parseScheduleBDate(row["Transfer Completion Date"]);
+    if (!completionDate) continue;
+
+    const month = completionDate.getMonth();
+    const year = completionDate.getFullYear();
+    const energyYearStart = month >= 5 ? year : year - 1;
+
+    const lookupKey = unitId.toLowerCase();
+    if (!lookup.has(lookupKey)) {
+      lookup.set(lookupKey, new Map<number, number>());
+    }
+    const yearMap = lookup.get(lookupKey)!;
+    yearMap.set(
+      energyYearStart,
+      (yearMap.get(energyYearStart) ?? 0) + quantity * direction
+    );
+  }
+
+  return lookup;
+}
+
+function findFirstTransferEnergyYear(
+  gatsId: string,
+  transferDeliveryLookup: Map<string, Map<number, number>>
+): number | null {
+  const yearMap = transferDeliveryLookup.get(gatsId.toLowerCase());
+  if (!yearMap || yearMap.size === 0) return null;
+
+  let earliest: number | null = null;
+  yearMap.forEach((quantity, year) => {
+    if (quantity > 0 && (earliest === null || year < earliest)) {
+      earliest = year;
+    }
+  });
+
+  return earliest;
+}
+
 function makeDeliveryRowKey(row: Record<string, string>, fallbackPrefix: string, index: number): string {
   const trackingId = cleanScheduleBCell(row.tracking_system_ref_id).toUpperCase();
   if (trackingId) return `tracking:${trackingId}`;
@@ -3976,6 +4084,30 @@ export const appRouter = router({
           }
         }
 
+        let transferHistoryRows: Array<Record<string, string>> = [];
+        const transferHistoryPayload = await loadDatasetPayloadByKey("transferHistory");
+        if (transferHistoryPayload) {
+          const sourceManifest = parseScheduleBRemoteSourceManifest(transferHistoryPayload);
+          if (sourceManifest && sourceManifest.length > 0) {
+            const latestSource = sourceManifest[sourceManifest.length - 1];
+            const sourcePayload = await loadDatasetPayloadByKey(latestSource.storageKey);
+            if (sourcePayload) {
+              const decoded =
+                latestSource.encoding === "base64"
+                  ? Buffer.from(sourcePayload, "base64").toString("utf8")
+                  : sourcePayload;
+              const parsedCsv = parseCsvText(decoded);
+              transferHistoryRows = parsedCsv.rows;
+            }
+          } else {
+            const parsed = parseRemoteCsvDataset(transferHistoryPayload);
+            if (parsed) {
+              transferHistoryRows = parsed.rows;
+            }
+          }
+        }
+        const transferDeliveryLookup = buildTransferDeliveryLookup(transferHistoryRows);
+
         const rawResults = await getAllScheduleBImportResults(job.id);
         const incomingRows: Array<Record<string, string>> = [];
         let conversionErrors = 0;
@@ -3993,13 +4125,17 @@ export const appRouter = router({
           }
 
           const deliveryYears = normalizeScheduleBDeliveryYears(resultRow.deliveryYearsJson);
+          const firstTransferEnergyYear = findFirstTransferEnergyYear(
+            gatsId,
+            transferDeliveryLookup
+          );
           const adjustedYears = buildAdjustedScheduleFromExtraction(
             {
               deliveryYears,
               acSizeKw: resultRow.acSizeKw ?? null,
               capacityFactor: resultRow.capacityFactor ?? null,
             },
-            null
+            firstTransferEnergyYear
           );
 
           if (adjustedYears.length === 0) {
