@@ -2425,6 +2425,8 @@ const SCHEDULE_B_UPLOAD_CHUNK_BYTES = 190_000;
 const SCHEDULE_B_MAX_SERVER_ROWS = 50_000;
 const SCHEDULE_B_UPLOAD_FILE_MAX_ATTEMPTS = 3;
 const SCHEDULE_B_UPLOAD_RETRY_BASE_MS = 700;
+const SCHEDULE_B_UPLOAD_CHUNK_READ_MAX_ATTEMPTS = 3;
+const SCHEDULE_B_UPLOAD_CHUNK_READ_RETRY_BASE_MS = 150;
 
 const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const getErrorMessage = (error: unknown): string =>
@@ -2583,15 +2585,51 @@ function ScheduleBImport({
 
   const uploadSinglePdf = useCallback(
     async (jobId: string, file: File) => {
-      const totalChunks = Math.max(1, Math.ceil(file.size / SCHEDULE_B_UPLOAD_CHUNK_BYTES));
+      const normalizedFileSize = Number.isFinite(file.size) ? Math.trunc(file.size) : 0;
+      if (normalizedFileSize < 1) {
+        return "empty_file" as const;
+      }
+
+      const totalChunks = Math.max(
+        1,
+        Math.ceil(normalizedFileSize / SCHEDULE_B_UPLOAD_CHUNK_BYTES)
+      );
       const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
 
       for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
         const start = chunkIndex * SCHEDULE_B_UPLOAD_CHUNK_BYTES;
-        const end = Math.min(file.size, start + SCHEDULE_B_UPLOAD_CHUNK_BYTES);
-        const blob = file.slice(start, end);
-        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const end = Math.min(normalizedFileSize, start + SCHEDULE_B_UPLOAD_CHUNK_BYTES);
+        const expectedBytes = Math.max(0, end - start);
+        let bytes = new Uint8Array();
+
+        for (
+          let readAttempt = 1;
+          readAttempt <= SCHEDULE_B_UPLOAD_CHUNK_READ_MAX_ATTEMPTS;
+          readAttempt += 1
+        ) {
+          const blob = file.slice(start, end);
+          bytes = new Uint8Array(await blob.arrayBuffer());
+          if (expectedBytes === 0 || bytes.length > 0) {
+            break;
+          }
+
+          if (readAttempt < SCHEDULE_B_UPLOAD_CHUNK_READ_MAX_ATTEMPTS) {
+            await waitMs(SCHEDULE_B_UPLOAD_CHUNK_READ_RETRY_BASE_MS * readAttempt);
+          }
+        }
+
+        if (expectedBytes > 0 && bytes.length === 0) {
+          throw new Error(
+            `Upload failed for ${file.name} (chunk ${chunkIndex + 1}/${totalChunks}): unable to read file bytes in browser. Re-select this folder and retry.`
+          );
+        }
+
         const chunkBase64 = bytesToBase64(bytes);
+        if (expectedBytes > 0 && chunkBase64.length === 0) {
+          throw new Error(
+            `Upload failed for ${file.name} (chunk ${chunkIndex + 1}/${totalChunks}): empty chunk payload produced in browser.`
+          );
+        }
 
         let response: Awaited<ReturnType<typeof uploadScheduleBFileChunk.mutateAsync>>;
         try {
@@ -2599,7 +2637,7 @@ function ScheduleBImport({
             jobId,
             uploadId,
             fileName: file.name,
-            fileSize: file.size,
+            fileSize: normalizedFileSize,
             chunkIndex,
             totalChunks,
             chunkBase64,
@@ -2661,17 +2699,37 @@ function ScheduleBImport({
         const knownNames = new Set(ensured.knownFileNames.map((name) => name.toLowerCase()));
         const seen = new Set<string>();
         const filesToUpload: File[] = [];
+        let alreadyKnownOrDuplicateCount = 0;
+        let emptyFileCount = 0;
 
         for (const file of pdfFiles) {
           const key = file.name.toLowerCase();
-          if (seen.has(key)) continue;
+          if (seen.has(key)) {
+            alreadyKnownOrDuplicateCount += 1;
+            continue;
+          }
           seen.add(key);
-          if (knownNames.has(key)) continue;
+          if (knownNames.has(key)) {
+            alreadyKnownOrDuplicateCount += 1;
+            continue;
+          }
+          if (!Number.isFinite(file.size) || file.size < 1) {
+            emptyFileCount += 1;
+            continue;
+          }
           filesToUpload.push(file);
         }
 
         if (filesToUpload.length === 0) {
-          toast.info(`All ${pdfFiles.length} PDFs already queued or processed`);
+          if (alreadyKnownOrDuplicateCount > 0 && emptyFileCount > 0) {
+            toast.info(
+              `${alreadyKnownOrDuplicateCount} PDFs already queued/processed, ${emptyFileCount} empty file(s) skipped`
+            );
+          } else if (alreadyKnownOrDuplicateCount > 0) {
+            toast.info(`All ${alreadyKnownOrDuplicateCount} PDFs already queued or processed`);
+          } else {
+            toast.error(`No uploadable PDFs found (${emptyFileCount} empty file(s) skipped)`);
+          }
           return;
         }
 
@@ -2710,13 +2768,14 @@ function ScheduleBImport({
           scheduleBResultsQuery.refetch(),
         ]);
 
+        const skippedExisting = alreadyKnownOrDuplicateCount + skippedCount;
+        const skippedTotal = skippedExisting + emptyFileCount;
         setScheduleBUploadSummary({
           uploaded: uploadedCount,
-          skipped: skippedCount,
+          skipped: skippedTotal,
           failed: failedCount,
         });
 
-        const skippedExisting = pdfFiles.length - filesToUpload.length + skippedCount;
         if (failedCount > 0) {
           toast.error(
             `Uploaded ${uploadedCount} of ${filesToUpload.length} PDFs. ${failedCount} failed.`
@@ -2725,10 +2784,12 @@ function ScheduleBImport({
             setScheduleBUploadError(failedMessages.slice(0, 3).join(" | "));
           }
         } else {
-          const msg =
-            skippedExisting > 0
-              ? `Queued ${uploadedCount} new PDFs (${skippedExisting} already present)`
-              : `Queued ${uploadedCount} Schedule B PDFs for background processing`;
+          const summaryParts: string[] = [];
+          if (skippedExisting > 0) summaryParts.push(`${skippedExisting} already present`);
+          if (emptyFileCount > 0) summaryParts.push(`${emptyFileCount} empty skipped`);
+          const msg = summaryParts.length
+            ? `Queued ${uploadedCount} new PDFs (${summaryParts.join(", ")})`
+            : `Queued ${uploadedCount} Schedule B PDFs for background processing`;
           toast.success(msg);
         }
       } catch (error) {
