@@ -724,6 +724,14 @@ const MAX_COMPLIANT_FILE_BYTES = 12 * 1024 * 1024;
 const MAX_SINGLE_CSV_UPLOAD_BYTES = 150 * 1024 * 1024;
 const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads", "transferHistory"]);
 const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccReport3Rows"]);
+/**
+ * Datasets whose contents are populated by an in-app workflow (e.g. the
+ * Schedule B PDF scanner on the Delivery Tracker tab), NOT by uploading a
+ * CSV in the Step 1 panel. These still render in Step 1 so the user can
+ * see row count / cloud sync status / clear them, but the file input is
+ * replaced with an explanatory badge pointing at the correct workflow.
+ */
+const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"]);
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "solarApplications",
   "abpReport",
@@ -14335,6 +14343,7 @@ const aiDataContext = useMemo(() => {
                 const dataset = datasets[key];
                 const error = uploadErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
+                const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
                 const hasCloudBackfillMarker = Boolean(
                   dataset &&
                     (dataset.fileName.toLowerCase().includes("cloud-backfill") ||
@@ -14419,45 +14428,72 @@ const aiDataContext = useMemo(() => {
 
                     {error ? <p className="text-xs text-rose-700">{error}</p> : null}
 
-                    <div className="flex items-center gap-2">
-                      <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                        <Upload className="h-4 w-4" />
-                        {isMultiAppend ? "Add CSV(s)" : (TABULAR_DATASET_KEYS.has(key) ? "Choose File" : "Choose CSV")}
-                        <input
-                          type="file"
-                          accept={TABULAR_DATASET_KEYS.has(key) ? ".csv,.xlsx,.xls,.xlsm,.xlsb,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : ".csv,text/csv"}
-                          className="hidden"
-                          multiple={isMultiAppend}
-                          onChange={(event) => {
-                            if (isMultiAppend) {
-                              const files = Array.from(event.target.files ?? []);
-                              void handleMultiCsvUploads(key, files);
-                              event.currentTarget.value = "";
-                              return;
-                            }
+                    {isScannerManaged ? (
+                      <div className="space-y-2">
+                        <p className="rounded-md border border-sky-200 bg-sky-50 px-2 py-1.5 text-xs text-sky-900">
+                          Populated by the Schedule B PDF scanner on the <strong>Delivery Tracker</strong> tab.
+                          Upload Schedule B PDFs there to (re)generate this dataset. Direct CSV upload is not
+                          supported.
+                        </p>
+                        <div className="flex items-center gap-2">
+                          {dataset ? (
+                            <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
+                              Clear
+                            </Button>
+                          ) : null}
+                          {dataset && localOnlyDatasets[key] ? (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              disabled={Boolean(forceSyncingDatasets[key])}
+                              onClick={() => queueForceDatasetSync(key)}
+                            >
+                              {forceSyncingDatasets[key] ? "Forcing..." : "Force Cloud Sync"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+                          <Upload className="h-4 w-4" />
+                          {isMultiAppend ? "Add CSV(s)" : (TABULAR_DATASET_KEYS.has(key) ? "Choose File" : "Choose CSV")}
+                          <input
+                            type="file"
+                            accept={TABULAR_DATASET_KEYS.has(key) ? ".csv,.xlsx,.xls,.xlsm,.xlsb,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" : ".csv,text/csv"}
+                            className="hidden"
+                            multiple={isMultiAppend}
+                            onChange={(event) => {
+                              if (isMultiAppend) {
+                                const files = Array.from(event.target.files ?? []);
+                                void handleMultiCsvUploads(key, files);
+                                event.currentTarget.value = "";
+                                return;
+                              }
 
-                            const file = event.target.files?.[0] ?? null;
-                            void handleUpload(key, file, "replace");
-                            event.currentTarget.value = "";
-                          }}
-                        />
-                      </label>
-                      {dataset ? (
-                        <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
-                          Remove
-                        </Button>
-                      ) : null}
-                      {dataset && localOnlyDatasets[key] ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={Boolean(forceSyncingDatasets[key])}
-                          onClick={() => queueForceDatasetSync(key)}
-                        >
-                          {forceSyncingDatasets[key] ? "Forcing..." : "Force Cloud Sync"}
-                        </Button>
-                      ) : null}
-                    </div>
+                              const file = event.target.files?.[0] ?? null;
+                              void handleUpload(key, file, "replace");
+                              event.currentTarget.value = "";
+                            }}
+                          />
+                        </label>
+                        {dataset ? (
+                          <Button variant="ghost" size="sm" onClick={() => clearDataset(key)}>
+                            Remove
+                          </Button>
+                        ) : null}
+                        {dataset && localOnlyDatasets[key] ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={Boolean(forceSyncingDatasets[key])}
+                            onClick={() => queueForceDatasetSync(key)}
+                          >
+                            {forceSyncingDatasets[key] ? "Forcing..." : "Force Cloud Sync"}
+                          </Button>
+                        ) : null}
+                      </div>
+                    )}
                   </div>
                 );
               })}
