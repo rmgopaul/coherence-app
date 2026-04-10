@@ -119,6 +119,12 @@ export function ScheduleBImport({
     lastAppliedAt: number | null;
   }>({ lastAppliedCount: 0, lastAppliedAt: null });
 
+  // Persistent diagnostic when Apply produces zero usable rows. A toast
+  // alone is too easy to miss — users were clicking Apply and seeing
+  // "no change" because they didn't notice the error toast. This banner
+  // stays visible until the user clears the scan.
+  const [applyBlockedReason, setApplyBlockedReason] = useState<string | null>(null);
+
   const ensureScheduleBImportJob = trpc.solarRecDashboard.ensureScheduleBImportJob.useMutation();
   const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
   const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
@@ -211,6 +217,29 @@ export function ScheduleBImport({
     scheduleBResultsQuery.data?.total,
     scheduleBResultsQuery,
   ]);
+
+  // Auto-refetch results when the job status transitions to a terminal
+  // state. The polling interval is tied to "running"/"queued", so once
+  // the job completes the client stops polling and any final result
+  // rows written in the last poll window are missed until the next user
+  // interaction. This effect forces one more refetch right after the
+  // status changes so the UI reflects the final state immediately.
+  const lastStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentStatus = scheduleBStatusQuery.data?.job?.status ?? null;
+    const prevStatus = lastStatusRef.current;
+    lastStatusRef.current = currentStatus;
+    if (!prevStatus || !currentStatus) return;
+    const wasActive = prevStatus === "running" || prevStatus === "queued";
+    const isTerminal =
+      currentStatus === "completed" ||
+      currentStatus === "failed" ||
+      currentStatus === "stopped";
+    if (wasActive && isTerminal) {
+      void scheduleBResultsQuery.refetch();
+      void scheduleBStatusQuery.refetch();
+    }
+  }, [scheduleBStatusQuery.data?.job?.status, scheduleBResultsQuery, scheduleBStatusQuery]);
 
   // ── Auto-apply: write new scan results into deliveryScheduleBase ─────
   //
@@ -565,6 +594,7 @@ export function ScheduleBImport({
 
   const handleApply = useCallback(async () => {
     setApplyingSchedule(true);
+    setApplyBlockedReason(null);
     toast.info("Building delivery schedule from scan results...");
     await new Promise((r) => setTimeout(r, 100));
     try {
@@ -575,38 +605,53 @@ export function ScheduleBImport({
       if (scheduleBResults.length === 0 && scheduleBStatusQuery.data?.job) {
         toast.info("Refetching latest scan results...");
         await scheduleBResultsQuery.refetch();
-        // The refetch updates scheduleBResultsQuery.data but not our local
-        // scheduleBResults state (that's driven by a separate useEffect).
-        // React will re-run this callback next render with the fresh data.
         return;
       }
 
       const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
+      const errored = scheduleBResults.filter((r) => Boolean(r.extraction.error));
       const successful = scheduleBResults.filter((r) => !r.extraction.error);
+      const noGatsId = successful.filter((r) => !r.extraction.gatsId);
+      const noDeliveryYears = successful.filter(
+        (r) => r.extraction.gatsId && (r.adjustedYears?.length ?? 0) === 0
+      );
       const rows = toDeliveryScheduleBaseRows(
         scheduleBResults,
         contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined
       );
+
       if (rows.length === 0) {
-        // Give the user a precise diagnostic instead of a generic error.
+        // Build a precise, persistent diagnostic the user can't miss.
+        const lines: string[] = [];
+        lines.push(`Apply produced 0 usable rows from ${scheduleBResults.length} scan results.`);
         if (scheduleBResults.length === 0) {
-          toast.error(
-            "No scan results loaded yet. Wait a few seconds for the scanner to finish, then try again."
-          );
-        } else if (successful.length === 0) {
-          toast.error(
-            `All ${scheduleBResults.length} scanned PDFs had parse errors. Check the errors column.`
-          );
-        } else {
-          toast.error(
-            `${successful.length} scanned PDFs parsed successfully but none had a GATS ID or delivery schedule. Check the raw extraction errors.`
+          lines.push("Reason: no scan results loaded yet. Wait a few seconds, then retry.");
+        }
+        if (errored.length > 0) {
+          const firstError = errored[0]?.extraction.error ?? "unknown";
+          lines.push(
+            `${errored.length} PDFs had server-side parse errors. First: "${firstError.slice(0, 120)}"`
           );
         }
+        if (noGatsId.length > 0) {
+          lines.push(
+            `${noGatsId.length} PDFs parsed but had no GATS ID — the scanner couldn't find a "GATS ID: NON..." line in the PDF text.`
+          );
+        }
+        if (noDeliveryYears.length > 0) {
+          lines.push(
+            `${noDeliveryYears.length} PDFs had a GATS ID but no delivery schedule table — the scanner couldn't find the "Delivery Year Expected REC Quantity" table. Often caused by PDFs missing standard font data on the server.`
+          );
+        }
+        const blockedMessage = lines.join(" ");
+        setApplyBlockedReason(blockedMessage);
+        toast.error(blockedMessage);
         return;
       }
       onApply(rows);
       autoApplyStateRef.current = { count: successful.length, time: Date.now() };
       setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
+      setApplyBlockedReason(null);
       toast.success(`Applied ${rows.length} systems as Delivery Schedule`);
     } finally {
       setApplyingSchedule(false);
@@ -684,6 +729,7 @@ export function ScheduleBImport({
                       // re-applies from zero.
                       autoApplyStateRef.current = { count: 0, time: 0 };
                       setAutoApplyStatus({ lastAppliedCount: 0, lastAppliedAt: null });
+                      setApplyBlockedReason(null);
                       // Also wipe the already-applied deliveryScheduleBase
                       // so the Delivery Tracker resets to empty. Without
                       // this, stale obligations from a previous scan linger
@@ -863,7 +909,10 @@ export function ScheduleBImport({
                 variant="outline"
                 size="sm"
                 className="h-6 px-2 text-xs"
-                disabled={scheduleBResultsQuery.isFetching || scheduleBStatusQuery.isFetching}
+                // Intentionally NOT disabled during polling — users need to
+                // be able to click this even when a background refetch is
+                // in flight (e.g. after a job transitions to completed and
+                // the next poll is 4s away).
                 onClick={async () => {
                   const [statusResult, resultsResult] = await Promise.all([
                     scheduleBStatusQuery.refetch(),
@@ -932,6 +981,24 @@ export function ScheduleBImport({
           <p className="text-xs text-red-600">
             Upload error: {scheduleBUploadError}
           </p>
+        ) : null}
+
+        {applyBlockedReason ? (
+          <div className="rounded-md border border-rose-300 bg-rose-50/60 px-3 py-2 text-xs text-rose-900 space-y-1">
+            <p className="font-semibold">Apply blocked — {applyBlockedReason}</p>
+            <p className="text-rose-800">
+              Inspect the scanned results table below for the specific error column, or click <strong>Clear</strong> and
+              re-upload if the scanner silently dropped text content (common when the server's pdfjs can't load standard
+              font data).
+            </p>
+            <button
+              type="button"
+              className="underline text-rose-900 hover:text-rose-700"
+              onClick={() => setApplyBlockedReason(null)}
+            >
+              Dismiss
+            </button>
+          </div>
         ) : null}
 
         {scheduleBResults.length > 0 && (
