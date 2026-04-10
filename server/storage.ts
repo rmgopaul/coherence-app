@@ -2,7 +2,7 @@
 // 1) Forge proxy when BUILT_IN_FORGE_API_URL + BUILT_IN_FORGE_API_KEY are present.
 // 2) Local filesystem fallback when Forge credentials are missing.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { ENV } from "./_core/env";
 
@@ -76,6 +76,11 @@ function keyToLocalUrl(key: string): string {
   return `${LOCAL_STORAGE_ROUTE_PREFIX}/${encoded}`;
 }
 
+export function resolveLocalStorageAbsolutePath(relKey: string): string {
+  const key = normalizeKey(relKey);
+  return path.join(getLocalStorageRoot(), key);
+}
+
 function toFormData(
   data: Buffer | Uint8Array | string,
   contentType: string,
@@ -143,4 +148,21 @@ export async function storageGet(relKey: string): Promise<{ key: string; url: st
     key,
     url: await buildDownloadUrl(baseUrl, key, apiKey),
   };
+}
+
+export async function storageReadBytes(relKey: string): Promise<Uint8Array> {
+  const key = normalizeKey(relKey);
+
+  if (!isStorageProxyConfigured()) {
+    const absolutePath = resolveLocalStorageAbsolutePath(key);
+    const bytes = await readFile(absolutePath);
+    return new Uint8Array(bytes);
+  }
+
+  const { url } = await storageGet(key);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Storage read failed (${response.status} ${response.statusText}).`);
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }

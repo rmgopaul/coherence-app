@@ -2423,6 +2423,12 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 
 const SCHEDULE_B_UPLOAD_CHUNK_BYTES = 190_000;
 const SCHEDULE_B_MAX_SERVER_ROWS = 50_000;
+const SCHEDULE_B_UPLOAD_FILE_MAX_ATTEMPTS = 3;
+const SCHEDULE_B_UPLOAD_RETRY_BASE_MS = 700;
+
+const waitMs = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const getErrorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : "Unknown error";
 
 type ScheduleBResultRow = {
   extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
@@ -2442,6 +2448,12 @@ function ScheduleBImport({
   const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
   const [scheduleBUploading, setScheduleBUploading] = useState(false);
   const [scheduleBProgress, setScheduleBProgress] = useState({ current: 0, total: 0 });
+  const [scheduleBUploadSummary, setScheduleBUploadSummary] = useState<{
+    uploaded: number;
+    skipped: number;
+    failed: number;
+  } | null>(null);
+  const [scheduleBUploadError, setScheduleBUploadError] = useState<string | null>(null);
   const [scheduleBHydrated, setScheduleBHydrated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [contractIdMappingText, setContractIdMappingText] = useState("");
@@ -2529,6 +2541,18 @@ function ScheduleBImport({
     transferDeliveryLookup,
   ]);
 
+  useEffect(() => {
+    const processedFiles = scheduleBStatusQuery.data?.counts?.processedFiles ?? 0;
+    const loadedResults = scheduleBResultsQuery.data?.total ?? 0;
+    if (processedFiles > loadedResults) {
+      void scheduleBResultsQuery.refetch();
+    }
+  }, [
+    scheduleBStatusQuery.data?.counts?.processedFiles,
+    scheduleBResultsQuery.data?.total,
+    scheduleBResultsQuery,
+  ]);
+
   const handleContractIdMappingChange = useCallback(
     async (text: string) => {
       setContractIdMappingText(text);
@@ -2569,15 +2593,22 @@ function ScheduleBImport({
         const bytes = new Uint8Array(await blob.arrayBuffer());
         const chunkBase64 = bytesToBase64(bytes);
 
-        const response = await uploadScheduleBFileChunk.mutateAsync({
-          jobId,
-          uploadId,
-          fileName: file.name,
-          fileSize: file.size,
-          chunkIndex,
-          totalChunks,
-          chunkBase64,
-        });
+        let response: Awaited<ReturnType<typeof uploadScheduleBFileChunk.mutateAsync>>;
+        try {
+          response = await uploadScheduleBFileChunk.mutateAsync({
+            jobId,
+            uploadId,
+            fileName: file.name,
+            fileSize: file.size,
+            chunkIndex,
+            totalChunks,
+            chunkBase64,
+          });
+        } catch (error) {
+          throw new Error(
+            `Upload failed for ${file.name} (chunk ${chunkIndex + 1}/${totalChunks}): ${getErrorMessage(error)}`
+          );
+        }
 
         if (
           response.skipped &&
@@ -2592,6 +2623,24 @@ function ScheduleBImport({
     [uploadScheduleBFileChunk]
   );
 
+  const uploadSinglePdfWithRetry = useCallback(
+    async (jobId: string, file: File) => {
+      for (let attempt = 1; attempt <= SCHEDULE_B_UPLOAD_FILE_MAX_ATTEMPTS; attempt += 1) {
+        try {
+          return await uploadSinglePdf(jobId, file);
+        } catch (error) {
+          if (attempt >= SCHEDULE_B_UPLOAD_FILE_MAX_ATTEMPTS) {
+            throw error;
+          }
+          await waitMs(SCHEDULE_B_UPLOAD_RETRY_BASE_MS * attempt);
+        }
+      }
+
+      return "uploaded" as const;
+    },
+    [uploadSinglePdf]
+  );
+
   const handleScheduleBFolder = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
@@ -2604,6 +2653,8 @@ function ScheduleBImport({
 
       setScheduleBUploading(true);
       setScheduleBProgress({ current: 0, total: 0 });
+      setScheduleBUploadSummary(null);
+      setScheduleBUploadError(null);
 
       try {
         const ensured = await ensureScheduleBImportJob.mutateAsync();
@@ -2626,14 +2677,24 @@ function ScheduleBImport({
 
         let uploadedCount = 0;
         let skippedCount = 0;
+        let failedCount = 0;
+        const failedMessages: string[] = [];
         setScheduleBProgress({ current: 0, total: filesToUpload.length });
 
         for (let index = 0; index < filesToUpload.length; index += 1) {
-          const result = await uploadSinglePdf(ensured.job.id, filesToUpload[index]);
-          if (result === "uploaded") {
-            uploadedCount += 1;
-          } else {
-            skippedCount += 1;
+          const file = filesToUpload[index];
+          try {
+            const result = await uploadSinglePdfWithRetry(ensured.job.id, file);
+            if (result === "uploaded") {
+              uploadedCount += 1;
+            } else {
+              skippedCount += 1;
+            }
+          } catch (error) {
+            failedCount += 1;
+            const message = getErrorMessage(error);
+            failedMessages.push(`${file.name}: ${message}`);
+            setScheduleBUploadError(message);
           }
           setScheduleBProgress({ current: index + 1, total: filesToUpload.length });
         }
@@ -2643,25 +2704,52 @@ function ScheduleBImport({
           scheduleBStatusQuery.refetch(),
           scheduleBResultsQuery.refetch(),
         ]);
+        await waitMs(1_500);
+        await Promise.all([
+          scheduleBStatusQuery.refetch(),
+          scheduleBResultsQuery.refetch(),
+        ]);
+
+        setScheduleBUploadSummary({
+          uploaded: uploadedCount,
+          skipped: skippedCount,
+          failed: failedCount,
+        });
 
         const skippedExisting = pdfFiles.length - filesToUpload.length + skippedCount;
-        const msg =
-          skippedExisting > 0
-            ? `Queued ${uploadedCount} new PDFs (${skippedExisting} already present)`
-            : `Queued ${uploadedCount} Schedule B PDFs for background processing`;
-        toast.success(msg);
+        if (failedCount > 0) {
+          toast.error(
+            `Uploaded ${uploadedCount} of ${filesToUpload.length} PDFs. ${failedCount} failed.`
+          );
+          if (failedMessages.length > 0) {
+            setScheduleBUploadError(failedMessages.slice(0, 3).join(" | "));
+          }
+        } else {
+          const msg =
+            skippedExisting > 0
+              ? `Queued ${uploadedCount} new PDFs (${skippedExisting} already present)`
+              : `Queued ${uploadedCount} Schedule B PDFs for background processing`;
+          toast.success(msg);
+        }
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Schedule B upload failed");
+        const message = getErrorMessage(error);
+        setScheduleBUploadError(message);
+        toast.error(message);
       } finally {
         setScheduleBUploading(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
       }
     },
     [
       ensureScheduleBImportJob,
       forceRunScheduleBImport,
       scheduleBResultsQuery,
+      setScheduleBUploadError,
+      setScheduleBUploadSummary,
       scheduleBStatusQuery,
-      uploadSinglePdf,
+      uploadSinglePdfWithRetry,
     ]
   );
 
@@ -2719,6 +2807,7 @@ function ScheduleBImport({
   const statusCounts = scheduleBStatusQuery.data?.counts;
   const serverJobStatus = scheduleBStatusQuery.data?.job?.status ?? null;
   const backgroundRunning = serverJobStatus === "running" || serverJobStatus === "queued";
+  const showUploadProgress = scheduleBProgress.total > 0 || backgroundRunning;
   const successCount = scheduleBResults.filter((r) => !r.extraction.error).length;
   const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
 
@@ -2825,7 +2914,7 @@ function ScheduleBImport({
             )}
           </Button>
 
-          {(scheduleBUploading || backgroundRunning) && (
+          {showUploadProgress && (
             <div className="flex-1 space-y-1">
               {scheduleBUploading ? (
                 <>
@@ -2843,7 +2932,7 @@ function ScheduleBImport({
                     ({Math.round((scheduleBProgress.current / Math.max(1, scheduleBProgress.total)) * 100)}%)
                   </p>
                 </>
-              ) : (
+              ) : backgroundRunning ? (
                 <>
                   <Progress
                     value={
@@ -2862,6 +2951,15 @@ function ScheduleBImport({
                       : ""}
                   </p>
                 </>
+              ) : (
+                <>
+                  <Progress value={100} className="h-3" />
+                  <p className="text-xs text-muted-foreground">
+                    Upload complete: {scheduleBUploadSummary?.uploaded ?? scheduleBProgress.current} uploaded
+                    {scheduleBUploadSummary ? `, ${scheduleBUploadSummary.skipped} skipped` : ""}
+                    {scheduleBUploadSummary ? `, ${scheduleBUploadSummary.failed} failed` : ""}
+                  </p>
+                </>
               )}
             </div>
           )}
@@ -2876,6 +2974,12 @@ function ScheduleBImport({
         {scheduleBStatusQuery.data?.job?.error ? (
           <p className="text-xs text-red-600">
             Status error: {scheduleBStatusQuery.data.job.error}
+          </p>
+        ) : null}
+
+        {scheduleBUploadError ? (
+          <p className="text-xs text-red-600">
+            Upload error: {scheduleBUploadError}
           </p>
         ) : null}
 

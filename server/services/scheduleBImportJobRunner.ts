@@ -38,7 +38,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       error: null,
     });
 
-    const { storageGet } = await import("../storage");
+    const { storageReadBytes } = await import("../storage");
     const { extractScheduleBDataFromPdfBuffer } = await import("./scheduleBScannerServer");
 
     while (true) {
@@ -76,13 +76,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
           throw new Error("Missing uploaded PDF storage key.");
         }
 
-        const { url } = await storageGet(storageKey);
-        const response = await fetch(url);
-        if (!response.ok) {
-          throw new Error(`Failed to load uploaded PDF (${response.status} ${response.statusText}).`);
-        }
-
-        const pdfBytes = new Uint8Array(await response.arrayBuffer());
+        const pdfBytes = await storageReadBytes(storageKey);
         const extraction = await extractScheduleBDataFromPdfBuffer(pdfBytes, nextFile.fileName);
 
         await upsertScheduleBImportResult({
