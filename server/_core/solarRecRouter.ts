@@ -351,7 +351,7 @@ const dashboardRouter = t.router({
       const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
       const counts = await getScheduleBImportJobCounts(job.id);
       const knownFileNames = await listScheduleBImportFileNames(job.id, {
-        includeStatuses: ["queued", "processing", "completed"],
+        includeStatuses: ["uploading", "queued", "processing"],
       });
 
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
@@ -507,11 +507,7 @@ const dashboardRouter = t.router({
       }
 
       const existing = await getScheduleBImportFile(job.id, safeFileName);
-      if (
-        existing &&
-        existing.status !== "uploading" &&
-        existing.status !== "failed"
-      ) {
+      if (existing && (existing.status === "queued" || existing.status === "processing")) {
         return {
           skipped: true,
           fileName: safeFileName,
@@ -639,11 +635,17 @@ const dashboardRouter = t.router({
 
   forceRunScheduleBImport: solarRecOperatorProcedure
     .mutation(async ({ ctx }) => {
-      const { getLatestScheduleBImportJob, updateScheduleBImportJob } = await import("../db");
+      const {
+        getLatestScheduleBImportJob,
+        updateScheduleBImportJob,
+        requeueScheduleBImportRetryableFiles,
+      } = await import("../db");
       const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
         return { success: false, reason: "no_job" as const };
       }
+
+      await requeueScheduleBImportRetryableFiles(job.id);
 
       await updateScheduleBImportJob(job.id, {
         status: "queued",

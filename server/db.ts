@@ -3059,6 +3059,44 @@ export async function requeueScheduleBImportProcessingFiles(jobId: string) {
   });
 }
 
+export async function requeueScheduleBImportRetryableFiles(jobId: string) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+
+  await withDbRetry("requeue schedule b import retryable files", async () => {
+    await db
+      .update(scheduleBImportFiles)
+      .set({
+        status: "queued",
+        error: null,
+        processedAt: null,
+      })
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, jobId),
+          eq(scheduleBImportFiles.status, "failed")
+        )
+      );
+
+    await db.execute(sql`
+      UPDATE scheduleBImportFiles f
+      JOIN scheduleBImportResults r
+        ON r.jobId = f.jobId
+       AND r.fileName = f.fileName
+      SET
+        f.status = 'queued',
+        f.error = NULL,
+        f.processedAt = NULL
+      WHERE
+        f.jobId = ${jobId}
+        AND f.status = 'completed'
+        AND r.error IS NOT NULL
+    `);
+  });
+}
+
 export async function getScheduleBImportJobCounts(jobId: string) {
   const db = await getDb();
   if (!db) {
