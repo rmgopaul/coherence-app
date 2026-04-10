@@ -3377,6 +3377,103 @@ export async function getScheduleBImportJobCounts(jobId: string) {
   });
 }
 
+function getDbExecuteAffectedRows(result: unknown): number {
+  if (!result) return 0;
+  if (Array.isArray(result) && result.length > 0) {
+    const first = result[0] as { affectedRows?: unknown };
+    if (typeof first?.affectedRows === "number") return first.affectedRows;
+  }
+  if (typeof result === "object" && "affectedRows" in result) {
+    const affected = (result as { affectedRows?: unknown }).affectedRows;
+    if (typeof affected === "number") return affected;
+  }
+  return 0;
+}
+
+export async function reconcileScheduleBImportJobState(jobId: string) {
+  const db = await getDb();
+  const emptyCounts = {
+    totalFiles: 0,
+    uploadingFiles: 0,
+    queuedFiles: 0,
+    processingFiles: 0,
+    completedFiles: 0,
+    failedFiles: 0,
+    uploadedFiles: 0,
+    processedFiles: 0,
+    successCount: 0,
+    failureCount: 0,
+    filesMarkedCompleted: 0,
+    filesRequeued: 0,
+  };
+  if (!db) return emptyCounts;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return emptyCounts;
+
+  let filesMarkedCompleted = 0;
+  let filesRequeued = 0;
+
+  await withDbRetry("reconcile schedule b import job state", async () => {
+    const now = new Date();
+    const markCompletedResult = await db.execute(sql`
+      UPDATE scheduleBImportFiles f
+      JOIN scheduleBImportResults r
+        ON r.jobId = f.jobId
+       AND r.fileName = f.fileName
+      SET
+        f.status = 'completed',
+        f.error = NULL,
+        f.processedAt = COALESCE(f.processedAt, r.scannedAt),
+        f.updatedAt = ${now}
+      WHERE
+        f.jobId = ${jobId}
+        AND (
+          f.status <> 'completed'
+          OR f.error IS NOT NULL
+        )
+    `);
+    filesMarkedCompleted = getDbExecuteAffectedRows(markCompletedResult);
+
+    const requeueResult = await db.execute(sql`
+      UPDATE scheduleBImportFiles f
+      LEFT JOIN scheduleBImportResults r
+        ON r.jobId = f.jobId
+       AND r.fileName = f.fileName
+      SET
+        f.status = 'queued',
+        f.error = NULL,
+        f.processedAt = NULL,
+        f.updatedAt = ${now}
+      WHERE
+        f.jobId = ${jobId}
+        AND f.status = 'processing'
+        AND f.storageKey IS NOT NULL
+        AND f.storageKey <> ''
+        AND f.storageKey NOT LIKE 'tmp:%'
+        AND r.id IS NULL
+    `);
+    filesRequeued = getDbExecuteAffectedRows(requeueResult);
+  });
+
+  const counts = await getScheduleBImportJobCounts(jobId);
+  await withDbRetry("sync schedule b import job counters from authoritative counts", async () => {
+    await db
+      .update(scheduleBImportJobs)
+      .set({
+        totalFiles: counts.totalFiles,
+        successCount: counts.successCount,
+        failureCount: counts.failureCount,
+      })
+      .where(eq(scheduleBImportJobs.id, jobId));
+  });
+
+  return {
+    ...counts,
+    filesMarkedCompleted,
+    filesRequeued,
+  };
+}
+
 // ── Schedule B Import Results ─────────────────────────────────────
 
 export async function upsertScheduleBImportResult(

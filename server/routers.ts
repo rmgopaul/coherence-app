@@ -47,13 +47,13 @@ function getTodayDateKey(): string {
 const SCHEDULE_B_UPLOAD_TMP_ROOT = path.resolve(process.cwd(), ".schedule_b_uploads");
 const SCHEDULE_B_UPLOAD_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
 const SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT = 320_000;
+const SCHEDULE_B_INVALID_FILENAME_CHARS = /[<>:"/\\|?*\x00-\x1F]/g;
+const SCHEDULE_B_CHUNK_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 function sanitizeScheduleBFileName(fileName: string): string {
   const trimmed = fileName.trim();
   if (!trimmed) return "schedule-b.pdf";
-  return trimmed
-    .replace(/[<>:\"/\\\\|?*\\x00-\\x1F]/g, "_")
-    .slice(0, 255);
+  return trimmed.replace(SCHEDULE_B_INVALID_FILENAME_CHARS, "_").slice(0, 255);
 }
 
 function normalizeScheduleBDeliveryYears(
@@ -83,6 +83,362 @@ function normalizeScheduleBDeliveryYears(
   } catch {
     return [];
   }
+}
+
+function parseChunkPointerPayload(payload: string): string[] | null {
+  try {
+    const parsed = JSON.parse(payload) as { _chunkedDataset?: unknown; chunkKeys?: unknown };
+    if (parsed._chunkedDataset !== true) return null;
+    if (!Array.isArray(parsed.chunkKeys) || parsed.chunkKeys.length === 0) return null;
+    const keys = parsed.chunkKeys.filter(
+      (key): key is string =>
+        typeof key === "string" && SCHEDULE_B_CHUNK_KEY_PATTERN.test(key)
+    );
+    return keys.length === parsed.chunkKeys.length ? keys : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseScheduleBRemoteSourceManifest(payload: string): Array<{
+  storageKey: string;
+  encoding: "utf8" | "base64";
+}> | null {
+  try {
+    const parsed = JSON.parse(payload) as {
+      _rawSourcesV1?: unknown;
+      version?: unknown;
+      sources?: unknown;
+    };
+    if (parsed._rawSourcesV1 !== true || parsed.version !== 1) return null;
+    if (!Array.isArray(parsed.sources)) return null;
+
+    const sources = parsed.sources
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const candidate = entry as { storageKey?: unknown; encoding?: unknown };
+        if (
+          typeof candidate.storageKey !== "string" ||
+          !SCHEDULE_B_CHUNK_KEY_PATTERN.test(candidate.storageKey)
+        ) {
+          return null;
+        }
+        const encoding =
+          candidate.encoding === "base64" || candidate.encoding === "utf8"
+            ? candidate.encoding
+            : "utf8";
+        return {
+          storageKey: candidate.storageKey,
+          encoding,
+        };
+      })
+      .filter((entry): entry is { storageKey: string; encoding: "utf8" | "base64" } => Boolean(entry));
+
+    return sources;
+  } catch {
+    return null;
+  }
+}
+
+type ParsedRemoteCsvDataset = {
+  fileName: string;
+  uploadedAt: string;
+  headers: string[];
+  rows: Array<Record<string, string>>;
+};
+
+function parseCsvText(csvText: string): { headers: string[]; rows: Array<Record<string, string>> } {
+  const lines: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < csvText.length; index += 1) {
+    const char = csvText[index];
+    if (inQuotes) {
+      if (char === '"') {
+        if (csvText[index + 1] === '"') {
+          cell += '"';
+          index += 1;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = true;
+      continue;
+    }
+
+    if (char === ",") {
+      row.push(cell);
+      cell = "";
+      continue;
+    }
+
+    if (char === "\r" || char === "\n") {
+      if (char === "\r" && csvText[index + 1] === "\n") {
+        index += 1;
+      }
+      row.push(cell);
+      cell = "";
+      if (row.some((value) => value.length > 0)) {
+        lines.push(row);
+      }
+      row = [];
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell);
+  if (row.some((value) => value.length > 0)) {
+    lines.push(row);
+  }
+
+  if (lines.length === 0) {
+    return { headers: [], rows: [] };
+  }
+
+  const headers = lines[0]
+    .map((header) => String(header ?? "").trim())
+    .filter((header) => header.length > 0);
+  if (headers.length === 0) {
+    return { headers: [], rows: [] };
+  }
+
+  const rows = lines.slice(1).map((line) => {
+    const rowObject: Record<string, string> = {};
+    headers.forEach((header, headerIndex) => {
+      rowObject[header] = String(line[headerIndex] ?? "");
+    });
+    return rowObject;
+  });
+
+  return { headers, rows };
+}
+
+function escapeCsvCell(value: string): string {
+  if (/["\r\n,]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function buildCsvText(headers: string[], rows: Array<Record<string, string>>): string {
+  const headerRow = headers.map((header) => escapeCsvCell(header)).join(",");
+  const body = rows.map((row) =>
+    headers.map((header) => escapeCsvCell(String(row[header] ?? ""))).join(",")
+  );
+  return [headerRow, ...body].join("\n");
+}
+
+function parseRemoteCsvDataset(payload: string): ParsedRemoteCsvDataset | null {
+  try {
+    const parsed = JSON.parse(payload) as {
+      fileName?: unknown;
+      uploadedAt?: unknown;
+      headers?: unknown;
+      csvText?: unknown;
+      rows?: unknown;
+    };
+
+    const fileName =
+      typeof parsed.fileName === "string" && parsed.fileName.trim().length > 0
+        ? parsed.fileName.trim()
+        : "Schedule B Import";
+    const uploadedAt =
+      typeof parsed.uploadedAt === "string" && parsed.uploadedAt.trim().length > 0
+        ? parsed.uploadedAt
+        : new Date().toISOString();
+    const parsedHeaders = Array.isArray(parsed.headers)
+      ? parsed.headers.filter((header): header is string => typeof header === "string")
+      : [];
+
+    if (typeof parsed.csvText === "string") {
+      const parsedCsv = parseCsvText(parsed.csvText);
+      return {
+        fileName,
+        uploadedAt,
+        headers: parsedCsv.headers.length > 0 ? parsedCsv.headers : parsedHeaders,
+        rows: parsedCsv.rows,
+      };
+    }
+
+    if (Array.isArray(parsed.rows)) {
+      const rowObjects = parsed.rows
+        .map((candidate) => {
+          if (!candidate || typeof candidate !== "object") return null;
+          const row = candidate as Record<string, unknown>;
+          return Object.fromEntries(
+            Object.entries(row).map(([key, value]) => [key, String(value ?? "")])
+          );
+        })
+        .filter((row): row is Record<string, string> => Boolean(row));
+      const headers =
+        parsedHeaders.length > 0
+          ? parsedHeaders
+          : Array.from(
+              rowObjects.reduce((set, row) => {
+                Object.keys(row).forEach((key) => set.add(key));
+                return set;
+              }, new Set<string>())
+            );
+      return {
+        fileName,
+        uploadedAt,
+        headers,
+        rows: rowObjects,
+      };
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function cleanScheduleBCell(value: unknown): string {
+  return String(value ?? "").trim();
+}
+
+function makeDeliveryRowKey(row: Record<string, string>, fallbackPrefix: string, index: number): string {
+  const trackingId = cleanScheduleBCell(row.tracking_system_ref_id).toUpperCase();
+  if (trackingId) return `tracking:${trackingId}`;
+  const designatedSystemId = cleanScheduleBCell(row.designated_system_id);
+  if (designatedSystemId) return `designated:${designatedSystemId}`;
+  const systemName = cleanScheduleBCell(row.system_name).toLowerCase();
+  if (systemName) return `name:${systemName}`;
+  return `${fallbackPrefix}:${index}`;
+}
+
+function scheduleRowsEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+  const allKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of Array.from(allKeys)) {
+    if (String(a[key] ?? "") !== String(b[key] ?? "")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function mergeDeliveryRows(
+  existing: Record<string, string>,
+  incoming: Record<string, string>
+): Record<string, string> {
+  const merged = { ...existing, ...incoming };
+  const preserveFields = [
+    "tracking_system_ref_id",
+    "system_name",
+    "designated_system_id",
+    "utility_contract_number",
+  ];
+
+  for (const field of preserveFields) {
+    const incomingValue = cleanScheduleBCell(incoming[field]);
+    const existingValue = cleanScheduleBCell(existing[field]);
+    if (!incomingValue && existingValue) {
+      merged[field] = existingValue;
+    }
+  }
+
+  return merged;
+}
+
+type ScheduleBAdjustedYear = {
+  yearNumber: number;
+  startYear: number;
+  recQuantity: number;
+};
+
+function calculateScheduleBRecForYear(
+  acSizeKw: number,
+  capacityFactor: number,
+  yearNumber: number
+): number {
+  let unrounded = (acSizeKw / 1000) * capacityFactor * 8760;
+  for (let year = 2; year <= yearNumber; year += 1) {
+    unrounded *= 0.995;
+  }
+  return Math.floor(unrounded);
+}
+
+function buildAdjustedScheduleFromExtraction(
+  extraction: {
+    deliveryYears: Array<{ startYear: number; recQuantity: number }>;
+    acSizeKw: number | null;
+    capacityFactor: number | null;
+  },
+  firstTransferEnergyYear: number | null
+): ScheduleBAdjustedYear[] {
+  if (!extraction.deliveryYears.length) return [];
+
+  const pdfFirstStartYear = extraction.deliveryYears[0].startYear;
+  const firstDeliveryStartYear =
+    firstTransferEnergyYear !== null ? firstTransferEnergyYear + 1 : pdfFirstStartYear;
+  const offset = Math.max(0, firstDeliveryStartYear - pdfFirstStartYear);
+  const result: ScheduleBAdjustedYear[] = [];
+
+  for (let index = 0; index < 15; index += 1) {
+    const pdfIndex = offset + index;
+    const startYear = firstDeliveryStartYear + index;
+
+    if (pdfIndex < extraction.deliveryYears.length) {
+      result.push({
+        yearNumber: index + 1,
+        startYear,
+        recQuantity: extraction.deliveryYears[pdfIndex].recQuantity,
+      });
+      continue;
+    }
+
+    if (extraction.acSizeKw === null || extraction.capacityFactor === null) {
+      continue;
+    }
+
+    result.push({
+      yearNumber: index + 1,
+      startYear,
+      recQuantity: calculateScheduleBRecForYear(
+        extraction.acSizeKw,
+        extraction.capacityFactor,
+        pdfIndex + 1
+      ),
+    });
+  }
+
+  return result;
+}
+
+function buildScheduleBDeliveryRow(params: {
+  fileName: string;
+  designatedSystemId: string | null;
+  gatsId: string;
+  contractId: string;
+  adjustedYears: ScheduleBAdjustedYear[];
+}): Record<string, string> {
+  const row: Record<string, string> = {
+    tracking_system_ref_id: params.gatsId,
+    system_name: params.designatedSystemId
+      ? `App ${params.designatedSystemId}`
+      : params.fileName,
+    designated_system_id: params.designatedSystemId ?? "",
+    utility_contract_number: params.contractId,
+  };
+
+  for (let yearIndex = 0; yearIndex < 15; yearIndex += 1) {
+    const year = params.adjustedYears[yearIndex];
+    row[`year${yearIndex + 1}_quantity_required`] = year ? String(year.recQuantity) : "0";
+    row[`year${yearIndex + 1}_start_date`] = year ? `${year.startYear}-06-01` : "";
+    row[`year${yearIndex + 1}_end_date`] = year ? `${year.startYear + 1}-05-31` : "";
+  }
+
+  return row;
 }
 
 type SupplementBottleScanInput = {
@@ -3521,6 +3877,237 @@ export const appRouter = router({
           jobId: job.id,
           rows,
           total: result.total,
+        };
+      }),
+    applyScheduleBToDeliveryObligations: protectedProcedure
+      .input(
+        z
+          .object({
+            jobId: z.string().min(1).max(64).optional(),
+          })
+          .optional()
+      )
+      .mutation(async ({ ctx, input }) => {
+        const {
+          getLatestScheduleBImportJob,
+          getScheduleBImportJob,
+          getAllScheduleBImportResults,
+          getSolarRecDashboardPayload,
+          saveSolarRecDashboardPayload,
+        } = await import("./db");
+        const { storagePut } = await import("./storage");
+
+        const requestedJobId = input?.jobId?.trim();
+        const job = requestedJobId
+          ? await getScheduleBImportJob(requestedJobId)
+          : await getLatestScheduleBImportJob(ctx.user.id);
+
+        if (!job || job.userId !== ctx.user.id) {
+          throw new Error("Schedule B import job not found.");
+        }
+
+        const loadDatasetPayloadByKey = async (key: string): Promise<string | null> => {
+          const basePayload = await getSolarRecDashboardPayload(
+            ctx.user.id,
+            `dataset:${key}`
+          );
+          if (!basePayload) return null;
+
+          const chunkKeys = parseChunkPointerPayload(basePayload);
+          if (!chunkKeys || chunkKeys.length === 0) {
+            return basePayload;
+          }
+
+          let merged = "";
+          for (const chunkKey of chunkKeys) {
+            const chunk = await getSolarRecDashboardPayload(
+              ctx.user.id,
+              `dataset:${chunkKey}`
+            );
+            if (typeof chunk !== "string") {
+              return null;
+            }
+            merged += chunk;
+          }
+          return merged;
+        };
+
+        const existingPayload = await loadDatasetPayloadByKey("deliveryScheduleBase");
+        let existingDataset: ParsedRemoteCsvDataset = {
+          fileName: "Schedule B Import",
+          uploadedAt: new Date().toISOString(),
+          headers: [],
+          rows: [],
+        };
+
+        if (existingPayload) {
+          const sourceManifest = parseScheduleBRemoteSourceManifest(existingPayload);
+          if (sourceManifest && sourceManifest.length > 0) {
+            const latestSource = sourceManifest[sourceManifest.length - 1];
+            const sourcePayload = await loadDatasetPayloadByKey(latestSource.storageKey);
+            if (sourcePayload) {
+              const decoded =
+                latestSource.encoding === "base64"
+                  ? Buffer.from(sourcePayload, "base64").toString("utf8")
+                  : sourcePayload;
+              const parsedCsv = parseCsvText(decoded);
+              existingDataset = {
+                fileName: "Schedule B Import",
+                uploadedAt: new Date().toISOString(),
+                headers: parsedCsv.headers,
+                rows: parsedCsv.rows,
+              };
+            }
+          } else {
+            const parsed = parseRemoteCsvDataset(existingPayload);
+            if (parsed) {
+              existingDataset = parsed;
+            }
+          }
+        }
+
+        const contractIdByTrackingId = new Map<string, string>();
+        for (const row of existingDataset.rows) {
+          const trackingId = cleanScheduleBCell(row.tracking_system_ref_id).toUpperCase();
+          const contractId = cleanScheduleBCell(row.utility_contract_number);
+          if (!trackingId || !contractId) continue;
+          if (!contractIdByTrackingId.has(trackingId)) {
+            contractIdByTrackingId.set(trackingId, contractId);
+          }
+        }
+
+        const rawResults = await getAllScheduleBImportResults(job.id);
+        const incomingRows: Array<Record<string, string>> = [];
+        let conversionErrors = 0;
+
+        for (const resultRow of rawResults) {
+          if (resultRow.error) {
+            conversionErrors += 1;
+            continue;
+          }
+
+          const gatsId = cleanScheduleBCell(resultRow.gatsId);
+          if (!gatsId) {
+            conversionErrors += 1;
+            continue;
+          }
+
+          const deliveryYears = normalizeScheduleBDeliveryYears(resultRow.deliveryYearsJson);
+          const adjustedYears = buildAdjustedScheduleFromExtraction(
+            {
+              deliveryYears,
+              acSizeKw: resultRow.acSizeKw ?? null,
+              capacityFactor: resultRow.capacityFactor ?? null,
+            },
+            null
+          );
+
+          if (adjustedYears.length === 0) {
+            conversionErrors += 1;
+            continue;
+          }
+
+          const existingContractId =
+            contractIdByTrackingId.get(gatsId.toUpperCase()) ?? "";
+
+          incomingRows.push(
+            buildScheduleBDeliveryRow({
+              fileName: resultRow.fileName,
+              designatedSystemId: resultRow.designatedSystemId ?? null,
+              gatsId,
+              contractId: existingContractId,
+              adjustedYears,
+            })
+          );
+        }
+
+        const mergedByKey = new Map<string, Record<string, string>>();
+        const orderedKeys: string[] = [];
+        existingDataset.rows.forEach((row, rowIndex) => {
+          const key = makeDeliveryRowKey(row, "existing", rowIndex);
+          if (mergedByKey.has(key)) return;
+          mergedByKey.set(key, row);
+          orderedKeys.push(key);
+        });
+
+        let inserted = 0;
+        let updated = 0;
+        let unchanged = 0;
+
+        incomingRows.forEach((row, rowIndex) => {
+          const key = makeDeliveryRowKey(row, "scheduleb", rowIndex);
+          const existing = mergedByKey.get(key);
+          if (!existing) {
+            mergedByKey.set(key, row);
+            orderedKeys.push(key);
+            inserted += 1;
+            return;
+          }
+
+          const merged = mergeDeliveryRows(existing, row);
+          if (scheduleRowsEqual(existing, merged)) {
+            unchanged += 1;
+          } else {
+            updated += 1;
+          }
+          mergedByKey.set(key, merged);
+        });
+
+        const mergedRows = orderedKeys
+          .map((key) => mergedByKey.get(key))
+          .filter((row): row is Record<string, string> => Boolean(row));
+
+        const mergedHeaders: string[] = [];
+        const pushHeader = (header: string) => {
+          const cleanHeader = cleanScheduleBCell(header);
+          if (!cleanHeader || mergedHeaders.includes(cleanHeader)) return;
+          mergedHeaders.push(cleanHeader);
+        };
+        existingDataset.headers.forEach(pushHeader);
+        incomingRows.forEach((row) => Object.keys(row).forEach(pushHeader));
+        mergedRows.forEach((row) => Object.keys(row).forEach(pushHeader));
+
+        const uploadedAt = new Date().toISOString();
+        const finalPayload = JSON.stringify({
+          fileName: existingDataset.fileName || "Schedule B Import",
+          uploadedAt,
+          headers: mergedHeaders,
+          csvText: buildCsvText(mergedHeaders, mergedRows),
+        });
+
+        let persistedToDatabase = false;
+        try {
+          persistedToDatabase = await saveSolarRecDashboardPayload(
+            ctx.user.id,
+            "dataset:deliveryScheduleBase",
+            finalPayload
+          );
+        } catch {
+          persistedToDatabase = false;
+        }
+
+        const storageKey = `solar-rec-dashboard/${ctx.user.id}/datasets/deliveryScheduleBase.json`;
+        let storageSynced = false;
+        try {
+          await storagePut(storageKey, finalPayload, "application/json");
+          storageSynced = true;
+        } catch (storageError) {
+          if (!persistedToDatabase) {
+            throw storageError;
+          }
+        }
+
+        return {
+          success: true,
+          jobId: job.id,
+          incoming: incomingRows.length,
+          inserted,
+          updated,
+          unchanged,
+          errors: conversionErrors,
+          totalRows: mergedRows.length,
+          persistedToDatabase,
+          storageSynced,
         };
       }),
     uploadScheduleBFileChunk: protectedProcedure

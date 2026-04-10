@@ -1,3 +1,6 @@
+import path from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 export type ScheduleBDeliveryYear = {
@@ -31,6 +34,31 @@ type PdfPageData = {
   items: PositionedText[];
 };
 
+const require = createRequire(import.meta.url);
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
+function resolvePdfjsResourceUrls():
+  | { standardFontDataUrl: string; cMapUrl: string }
+  | null {
+  try {
+    const packageJsonPath = require.resolve("pdfjs-dist/package.json");
+    const packageRoot = path.dirname(packageJsonPath);
+    return {
+      standardFontDataUrl: ensureTrailingSlash(
+        pathToFileURL(path.join(packageRoot, "standard_fonts")).href
+      ),
+      cMapUrl: ensureTrailingSlash(pathToFileURL(path.join(packageRoot, "cmaps")).href),
+    };
+  } catch {
+    return null;
+  }
+}
+
+const PDFJS_RESOURCE_URLS = resolvePdfjsResourceUrls();
+
 const normalizeText = (value: string): string =>
   value
     .replace(/\u00a0/g, " ")
@@ -42,40 +70,84 @@ const extractRegex = (text: string, pattern: RegExp): string | null => {
   return match?.[1]?.trim() || null;
 };
 
-async function readPdfPages(data: Uint8Array): Promise<PdfPageData[]> {
-  // Mirrors contractScannerServer.ts exactly. No standardFontDataUrl, no
-  // cmap options, no page.cleanup(), no pdf.destroy(). The contract
-  // scraper uses this exact config against the same pdfjs-dist legacy
-  // Node build and it parses hundreds of PDFs successfully. Font-related
-  // stderr warnings ("TT: undefined function: 32", "Unable to load font
-  // data") are emitted by pdfjs for any PDF with embedded fonts but do
-  // NOT affect text extraction — they're noise.
-  const pdf = await getDocument({ data, disableWorker: true } as any).promise;
+async function readPdfPagesWithOptions(
+  data: Uint8Array,
+  options: Record<string, unknown>
+): Promise<PdfPageData[]> {
+  const pdf = await getDocument({
+    data,
+    disableWorker: true,
+    ...options,
+  } as any).promise;
   const pages: PdfPageData[] = [];
 
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
-    const textContent = await page.getTextContent();
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
 
-    const items: PositionedText[] = textContent.items
-      .map((item) => {
-        if (!("str" in item)) return null;
-        const text = normalizeText(String(item.str ?? ""));
-        if (!text) return null;
-        const transform = Array.isArray(item.transform) ? item.transform : [0, 0, 0, 0, 0, 0];
-        return {
-          text,
-          x: Number(transform[4] ?? 0),
-          y: Number(transform[5] ?? 0),
-        };
-      })
-      .filter((item): item is PositionedText => Boolean(item));
+      const items: PositionedText[] = textContent.items
+        .map((item) => {
+          if (!("str" in item)) return null;
+          const text = normalizeText(String(item.str ?? ""));
+          if (!text) return null;
+          const transform = Array.isArray(item.transform)
+            ? item.transform
+            : [0, 0, 0, 0, 0, 0];
+          return {
+            text,
+            x: Number(transform[4] ?? 0),
+            y: Number(transform[5] ?? 0),
+          };
+        })
+        .filter((item): item is PositionedText => Boolean(item));
 
-    const text = normalizeText(items.map((item) => item.text).join(" "));
-    pages.push({ pageNumber, text, items });
+      const text = normalizeText(items.map((item) => item.text).join(" "));
+      pages.push({ pageNumber, text, items });
+      page.cleanup();
+    }
+  } finally {
+    await pdf.destroy().catch(() => undefined);
   }
 
   return pages;
+}
+
+function isFontResourceError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /font data|standardfontdataurl|foxitserif|liberationsans|cmap|invalid url/i.test(
+    message
+  );
+}
+
+async function readPdfPages(data: Uint8Array): Promise<PdfPageData[]> {
+  const primaryOptions: Record<string, unknown> = {
+    useSystemFonts: true,
+  };
+
+  if (PDFJS_RESOURCE_URLS) {
+    primaryOptions.standardFontDataUrl = PDFJS_RESOURCE_URLS.standardFontDataUrl;
+    primaryOptions.cMapUrl = PDFJS_RESOURCE_URLS.cMapUrl;
+    primaryOptions.cMapPacked = true;
+  }
+
+  try {
+    return await readPdfPagesWithOptions(data, primaryOptions);
+  } catch (primaryError) {
+    if (!isFontResourceError(primaryError)) {
+      throw primaryError;
+    }
+
+    console.warn(
+      "[scheduleBScanner] primary parse failed; retrying with fallback options:",
+      primaryError instanceof Error ? primaryError.message : primaryError
+    );
+
+    return await readPdfPagesWithOptions(data, {
+      useSystemFonts: true,
+      stopAtErrors: false,
+    });
+  }
 }
 
 function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {

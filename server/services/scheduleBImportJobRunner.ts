@@ -81,6 +81,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     getCompletedScheduleBImportFileNames,
     upsertScheduleBImportResult,
     incrementScheduleBImportJobCounter,
+    reconcileScheduleBImportJobState,
   } = await import("../db");
 
   const job = await getScheduleBImportJob(id);
@@ -109,6 +110,16 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       error: null,
     });
 
+    const initialReconciliation = await reconcileScheduleBImportJobState(id);
+    if (
+      initialReconciliation.filesMarkedCompleted > 0 ||
+      initialReconciliation.filesRequeued > 0
+    ) {
+      console.log(
+        `${LOG_PREFIX} reconciliation before run: completed=${initialReconciliation.filesMarkedCompleted} requeued=${initialReconciliation.filesRequeued}`
+      );
+    }
+
     // ── Load work list: all uploaded files minus already-processed ────
     const allFiles = await listAllUploadedScheduleBImportFiles(id);
     const completedNames = await getCompletedScheduleBImportFileNames(id);
@@ -127,6 +138,24 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     await updateScheduleBImportJob(id, { totalFiles: allFiles.length });
 
     if (pendingFiles.length === 0) {
+      const reconciled = await reconcileScheduleBImportJobState(id);
+      const remaining = Math.max(
+        0,
+        reconciled.totalFiles - (reconciled.successCount + reconciled.failureCount)
+      );
+      if (remaining > 0) {
+        console.log(
+          `${LOG_PREFIX} no immediate pending files but ${remaining} still unprocessed after reconciliation; keeping job queued`
+        );
+        await updateScheduleBImportJob(id, {
+          status: "queued",
+          currentFileName: null,
+          completedAt: null,
+          error: null,
+        });
+        return;
+      }
+
       console.log(
         `${LOG_PREFIX} no pending files for job ${id.slice(0, 8)}, marking completed`
       );
@@ -276,12 +305,29 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
         currentFileName: null,
       });
     } else {
-      await updateScheduleBImportJob(id, {
-        status: "completed",
-        completedAt: new Date(),
-        currentFileName: null,
-        error: null,
-      });
+      const reconciled = await reconcileScheduleBImportJobState(id);
+      const remaining = Math.max(
+        0,
+        reconciled.totalFiles - (reconciled.successCount + reconciled.failureCount)
+      );
+      if (remaining > 0) {
+        console.log(
+          `${LOG_PREFIX} post-run reconciliation found ${remaining} unprocessed files; re-queueing job`
+        );
+        await updateScheduleBImportJob(id, {
+          status: "queued",
+          completedAt: null,
+          currentFileName: null,
+          error: null,
+        });
+      } else {
+        await updateScheduleBImportJob(id, {
+          status: "completed",
+          completedAt: new Date(),
+          currentFileName: null,
+          error: null,
+        });
+      }
     }
   } catch (error) {
     console.warn(

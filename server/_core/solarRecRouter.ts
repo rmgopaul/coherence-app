@@ -80,13 +80,12 @@ const solarRecAdminProcedure = t.procedure.use(async ({ ctx, next }) => {
 const SCHEDULE_B_UPLOAD_TMP_ROOT = path.resolve(process.cwd(), ".schedule_b_uploads");
 const SCHEDULE_B_UPLOAD_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
 const SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT = 320_000;
+const SCHEDULE_B_INVALID_FILENAME_CHARS = /[<>:"/\\|?*\x00-\x1F]/g;
 
 function sanitizeScheduleBFileName(fileName: string): string {
   const trimmed = fileName.trim();
   if (!trimmed) return "schedule-b.pdf";
-  return trimmed
-    .replace(/[<>:\"/\\\\|?*\\x00-\\x1F]/g, "_")
-    .slice(0, 255);
+  return trimmed.replace(SCHEDULE_B_INVALID_FILENAME_CHARS, "_").slice(0, 255);
 }
 
 function normalizeScheduleBDeliveryYears(

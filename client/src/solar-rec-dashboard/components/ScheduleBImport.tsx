@@ -118,6 +118,15 @@ export function ScheduleBImport({
     lastAppliedCount: number;
     lastAppliedAt: number | null;
   }>({ lastAppliedCount: 0, lastAppliedAt: null });
+  const [lastServerApply, setLastServerApply] = useState<{
+    incoming: number;
+    inserted: number;
+    updated: number;
+    unchanged: number;
+    errors: number;
+    totalRows: number;
+    at: number;
+  } | null>(null);
 
   // Persistent diagnostic when Apply produces zero usable rows. A toast
   // alone is too easy to miss — users were clicking Apply and seeing
@@ -139,6 +148,8 @@ export function ScheduleBImport({
   const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
   const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
   const clearScheduleBImport = trpc.solarRecDashboard.clearScheduleBImport.useMutation();
+  const applyScheduleBToDeliveryObligations =
+    trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
 
   const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
     refetchInterval: 3_000,
@@ -605,68 +616,60 @@ export function ScheduleBImport({
   const handleApply = useCallback(async () => {
     setApplyingSchedule(true);
     setApplyBlockedReason(null);
-    toast.info("Building delivery schedule from scan results...");
-    await new Promise((r) => setTimeout(r, 100));
     try {
-      // If the client hasn't polled the server yet, scheduleBResults can be
-      // empty/stale even though the server has processed files. Force a
-      // refetch first so the user doesn't have to wait for the next
-      // 4-second poll tick.
-      if (scheduleBResults.length === 0 && scheduleBStatusQuery.data?.job) {
-        toast.info("Refetching latest scan results...");
-        await scheduleBResultsQuery.refetch();
-        return;
-      }
+      const activeJobId = scheduleBStatusQuery.data?.job?.id ?? undefined;
+      const serverResult = await applyScheduleBToDeliveryObligations.mutateAsync(
+        activeJobId ? { jobId: activeJobId } : undefined
+      );
 
       const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
-      const errored = scheduleBResults.filter((r) => Boolean(r.extraction.error));
       const successful = scheduleBResults.filter((r) => !r.extraction.error);
-      const noGatsId = successful.filter((r) => !r.extraction.gatsId);
-      const noDeliveryYears = successful.filter(
-        (r) => r.extraction.gatsId && (r.adjustedYears?.length ?? 0) === 0
-      );
       const rows = toDeliveryScheduleBaseRows(
         scheduleBResults,
         contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined
       );
 
-      if (rows.length === 0) {
-        // Build a precise, persistent diagnostic the user can't miss.
-        const lines: string[] = [];
-        lines.push(`Apply produced 0 usable rows from ${scheduleBResults.length} scan results.`);
-        if (scheduleBResults.length === 0) {
-          lines.push("Reason: no scan results loaded yet. Wait a few seconds, then retry.");
-        }
-        if (errored.length > 0) {
-          const firstError = errored[0]?.extraction.error ?? "unknown";
-          lines.push(
-            `${errored.length} PDFs had server-side parse errors. First: "${firstError.slice(0, 120)}"`
-          );
-        }
-        if (noGatsId.length > 0) {
-          lines.push(
-            `${noGatsId.length} PDFs parsed but had no GATS ID — the scanner couldn't find a "GATS ID: NON..." line in the PDF text.`
-          );
-        }
-        if (noDeliveryYears.length > 0) {
-          lines.push(
-            `${noDeliveryYears.length} PDFs had a GATS ID but no delivery schedule table — the scanner couldn't find the "Delivery Year Expected REC Quantity" table. Often caused by PDFs missing standard font data on the server.`
-          );
-        }
-        const blockedMessage = lines.join(" ");
-        setApplyBlockedReason(blockedMessage);
-        toast.error(blockedMessage);
-        return;
+      if (rows.length > 0) {
+        onApply(rows);
+        autoApplyStateRef.current = { count: successful.length, time: Date.now() };
+        setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
       }
-      onApply(rows);
-      autoApplyStateRef.current = { count: successful.length, time: Date.now() };
-      setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
-      setApplyBlockedReason(null);
-      toast.success(`Applied ${rows.length} systems as Delivery Schedule`);
+
+      if (serverResult.incoming === 0) {
+        setApplyBlockedReason(
+          `Server apply found 0 usable rows (${serverResult.errors} errored Schedule B result row(s)).`
+        );
+      } else {
+        setApplyBlockedReason(null);
+      }
+      setLastServerApply({
+        incoming: serverResult.incoming,
+        inserted: serverResult.inserted,
+        updated: serverResult.updated,
+        unchanged: serverResult.unchanged,
+        errors: serverResult.errors,
+        totalRows: serverResult.totalRows,
+        at: Date.now(),
+      });
+
+      toast.success(
+        `Server apply complete: ${serverResult.inserted} inserted, ${serverResult.updated} updated, ${serverResult.unchanged} unchanged, ${serverResult.errors} errors.`
+      );
+
+      await Promise.all([
+        scheduleBStatusQuery.refetch(),
+        scheduleBResultsQuery.refetch(),
+      ]);
     } finally {
       setApplyingSchedule(false);
     }
-  }, [scheduleBResults, onApply, scheduleBStatusQuery.data?.job, scheduleBResultsQuery]);
+  }, [
+    scheduleBResults,
+    onApply,
+    scheduleBStatusQuery,
+    scheduleBResultsQuery,
+    applyScheduleBToDeliveryObligations,
+  ]);
 
   const handleExportCsv = useCallback(() => {
     const headers = [
@@ -739,6 +742,7 @@ export function ScheduleBImport({
                       // re-applies from zero.
                       autoApplyStateRef.current = { count: 0, time: 0 };
                       setAutoApplyStatus({ lastAppliedCount: 0, lastAppliedAt: null });
+                      setLastServerApply(null);
                       setApplyBlockedReason(null);
                       // Also wipe the already-applied deliveryScheduleBase
                       // so the Delivery Tracker resets to empty. Without
@@ -914,6 +918,12 @@ export function ScheduleBImport({
                 {autoApplyStatus.lastAppliedAt
                   ? ` (${Math.max(0, Math.round((Date.now() - autoApplyStatus.lastAppliedAt) / 1000))}s ago)`
                   : " (never)"}
+              </span>
+              <span>
+                <strong>Server apply:</strong>{" "}
+                {lastServerApply
+                  ? `${formatNumber(lastServerApply.inserted)} inserted, ${formatNumber(lastServerApply.updated)} updated, ${formatNumber(lastServerApply.unchanged)} unchanged, ${formatNumber(lastServerApply.errors)} errors (${Math.max(0, Math.round((Date.now() - lastServerApply.at) / 1000))}s ago)`
+                  : "never"}
               </span>
               <Button
                 variant="outline"
