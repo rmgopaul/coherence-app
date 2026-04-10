@@ -156,10 +156,11 @@ export function ScheduleBImport({
     refetchOnWindowFocus: true,
   });
 
+  const activeJobId = scheduleBStatusQuery.data?.job?.id;
   const scheduleBResultsQuery = trpc.solarRecDashboard.listScheduleBImportResults.useQuery(
-    { limit: SCHEDULE_B_MAX_SERVER_ROWS, offset: 0 },
+    { jobId: activeJobId, limit: SCHEDULE_B_MAX_SERVER_ROWS, offset: 0 },
     {
-      enabled: Boolean(scheduleBStatusQuery.data?.job),
+      enabled: Boolean(activeJobId),
       refetchInterval:
         scheduleBStatusQuery.data?.job?.status === "running" ||
         scheduleBStatusQuery.data?.job?.status === "queued"
@@ -939,9 +940,10 @@ export function ScheduleBImport({
                     scheduleBResultsQuery.refetch(),
                   ]);
                   const serverTotal = resultsResult.data?.total ?? 0;
-                  const jobId = resultsResult.data?.jobId ?? "none";
+                  const resultsJobId = resultsResult.data?.jobId ?? "none";
+                  const statusJobId = statusResult.data?.job?.id ?? "none";
                   toast.info(
-                    `Refetched — server has ${serverTotal} result row(s) for job ${jobId.slice(0, 8)} (status: ${statusResult.data?.job?.status ?? "unknown"})`
+                    `Refetched — status job ${statusJobId.slice(0, 8)}, results job ${resultsJobId.slice(0, 8)}, rows ${serverTotal} (status: ${statusResult.data?.job?.status ?? "unknown"})`
                   );
                 }}
               >

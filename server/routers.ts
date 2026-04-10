@@ -3950,15 +3950,25 @@ export const appRouter = router({
       .input(
         z
           .object({
+            jobId: z.string().min(1).max(64).optional(),
             limit: z.number().int().min(1).max(50000).optional(),
             offset: z.number().int().min(0).optional(),
           })
           .optional()
       )
       .query(async ({ ctx, input }) => {
-        const { getLatestScheduleBImportJob, listScheduleBImportResults } = await import("./db");
-        const job = await getLatestScheduleBImportJob(ctx.user.id);
-        if (!job) {
+        const {
+          getLatestScheduleBImportJob,
+          getScheduleBImportJob,
+          listScheduleBImportResults,
+        } = await import("./db");
+
+        const requestedJobId = input?.jobId?.trim();
+        const job = requestedJobId
+          ? await getScheduleBImportJob(requestedJobId)
+          : await getLatestScheduleBImportJob(ctx.user.id);
+
+        if (!job || job.userId !== ctx.user.id) {
           return { jobId: null, rows: [], total: 0 };
         }
 
