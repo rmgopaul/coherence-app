@@ -1,6 +1,7 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import superjson from "superjson";
+import path from "node:path";
 import { z } from "zod";
 import {
   authenticateSolarRecRequest,
@@ -75,6 +76,47 @@ const solarRecAdminProcedure = t.procedure.use(async ({ ctx, next }) => {
 // ---------------------------------------------------------------------------
 // Dashboard sub-router (existing functionality, preserved)
 // ---------------------------------------------------------------------------
+
+const SCHEDULE_B_UPLOAD_TMP_ROOT = path.resolve(process.cwd(), ".schedule_b_uploads");
+const SCHEDULE_B_UPLOAD_ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/;
+const SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT = 320_000;
+
+function sanitizeScheduleBFileName(fileName: string): string {
+  const trimmed = fileName.trim();
+  if (!trimmed) return "schedule-b.pdf";
+  return trimmed
+    .replace(/[<>:\"/\\\\|?*\\x00-\\x1F]/g, "_")
+    .slice(0, 255);
+}
+
+function normalizeScheduleBDeliveryYears(
+  raw: string | null | undefined
+): Array<{ label: string; startYear: number; recQuantity: number }> {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) => {
+        if (!entry || typeof entry !== "object") return null;
+        const candidate = entry as Record<string, unknown>;
+        const label = typeof candidate.label === "string" ? candidate.label : "";
+        const startYear = Number(candidate.startYear);
+        const recQuantity = Number(candidate.recQuantity);
+        if (!label || !Number.isFinite(startYear) || !Number.isFinite(recQuantity)) {
+          return null;
+        }
+        return {
+          label,
+          startYear,
+          recQuantity,
+        };
+      })
+      .filter((entry): entry is { label: string; startYear: number; recQuantity: number } => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
 
 const dashboardRouter = t.router({
   getState: solarRecViewerProcedure.query(async ({ ctx }) => {
@@ -205,6 +247,336 @@ const dashboardRouter = t.router({
         }
         throw storageError;
       }
+    }),
+
+  ensureScheduleBImportJob: solarRecViewerProcedure
+    .mutation(async ({ ctx }) => {
+      const {
+        getOrCreateLatestScheduleBImportJob,
+        getScheduleBImportJobCounts,
+        listScheduleBImportFileNames,
+      } = await import("../db");
+
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
+      const counts = await getScheduleBImportJobCounts(job.id);
+      const knownFileNames = await listScheduleBImportFileNames(job.id);
+
+      const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
+        "../services/scheduleBImportJobRunner"
+      );
+      if (
+        (job.status === "queued" || job.status === "running") &&
+        !isScheduleBImportRunnerActive(job.id)
+      ) {
+        void runScheduleBImportJob(job.id);
+      }
+
+      return {
+        job: {
+          id: job.id,
+          status: job.status,
+          currentFileName: job.currentFileName,
+          error: job.error,
+          startedAt: job.startedAt ? new Date(job.startedAt).toISOString() : null,
+          completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+          createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
+          updatedAt: job.updatedAt ? new Date(job.updatedAt).toISOString() : null,
+        },
+        counts,
+        knownFileNames,
+      };
+    }),
+
+  getScheduleBImportStatus: solarRecViewerProcedure
+    .query(async ({ ctx }) => {
+      const {
+        getLatestScheduleBImportJob,
+        getScheduleBImportJobCounts,
+      } = await import("../db");
+
+      const job = await getLatestScheduleBImportJob(ctx.userId);
+      if (!job) {
+        return {
+          job: null,
+          counts: {
+            totalFiles: 0,
+            uploadingFiles: 0,
+            queuedFiles: 0,
+            processingFiles: 0,
+            completedFiles: 0,
+            failedFiles: 0,
+            uploadedFiles: 0,
+            processedFiles: 0,
+            successCount: 0,
+            failureCount: 0,
+          },
+        };
+      }
+
+      const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
+        "../services/scheduleBImportJobRunner"
+      );
+      if (
+        (job.status === "queued" || job.status === "running") &&
+        !isScheduleBImportRunnerActive(job.id)
+      ) {
+        void runScheduleBImportJob(job.id);
+      }
+
+      const counts = await getScheduleBImportJobCounts(job.id);
+      return {
+        job: {
+          id: job.id,
+          status: job.status,
+          currentFileName: job.currentFileName,
+          error: job.error,
+          startedAt: job.startedAt ? new Date(job.startedAt).toISOString() : null,
+          stoppedAt: job.stoppedAt ? new Date(job.stoppedAt).toISOString() : null,
+          completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+          createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
+          updatedAt: job.updatedAt ? new Date(job.updatedAt).toISOString() : null,
+        },
+        counts,
+      };
+    }),
+
+  listScheduleBImportResults: solarRecViewerProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().int().min(1).max(50000).optional(),
+          offset: z.number().int().min(0).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const { getLatestScheduleBImportJob, listScheduleBImportResults } = await import("../db");
+      const job = await getLatestScheduleBImportJob(ctx.userId);
+      if (!job) {
+        return { jobId: null, rows: [], total: 0 };
+      }
+
+      const result = await listScheduleBImportResults(job.id, {
+        limit: input?.limit ?? 50000,
+        offset: input?.offset ?? 0,
+      });
+
+      const rows = result.rows.map((row) => ({
+        fileName: row.fileName,
+        designatedSystemId: row.designatedSystemId,
+        gatsId: row.gatsId,
+        acSizeKw: row.acSizeKw,
+        capacityFactor: row.capacityFactor,
+        contractPrice: row.contractPrice,
+        energizationDate: row.energizationDate,
+        maxRecQuantity: row.maxRecQuantity,
+        deliveryYears: normalizeScheduleBDeliveryYears(row.deliveryYearsJson),
+        error: row.error,
+        scannedAt: row.scannedAt ? new Date(row.scannedAt).toISOString() : null,
+      }));
+
+      return {
+        jobId: job.id,
+        rows,
+        total: result.total,
+      };
+    }),
+
+  uploadScheduleBFileChunk: solarRecOperatorProcedure
+    .input(
+      z.object({
+        jobId: z.string().min(1).max(64),
+        uploadId: z.string().regex(SCHEDULE_B_UPLOAD_ID_PATTERN),
+        fileName: z.string().min(1).max(255),
+        fileSize: z.number().int().min(1).max(300 * 1024 * 1024),
+        chunkIndex: z.number().int().min(0),
+        totalChunks: z.number().int().min(1).max(500000),
+        chunkBase64: z.string().min(1).max(SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const safeFileName = sanitizeScheduleBFileName(input.fileName);
+      const {
+        getScheduleBImportJob,
+        getScheduleBImportFile,
+        upsertScheduleBImportFileUploadProgress,
+        markScheduleBImportFileQueued,
+        markScheduleBImportFileStatus,
+        updateScheduleBImportJob,
+      } = await import("../db");
+      const { storagePut } = await import("../storage");
+      const { nanoid } = await import("nanoid");
+      const { mkdir, appendFile, readFile, rm, writeFile } = await import("node:fs/promises");
+
+      const job = await getScheduleBImportJob(input.jobId.trim());
+      if (!job || job.userId !== ctx.userId) {
+        throw new Error("Schedule B import job not found.");
+      }
+
+      const existing = await getScheduleBImportFile(job.id, safeFileName);
+      if (
+        existing &&
+        existing.status !== "uploading" &&
+        existing.status !== "failed"
+      ) {
+        return {
+          skipped: true,
+          fileName: safeFileName,
+          status: existing.status,
+          reason: "already_uploaded",
+        } as const;
+      }
+
+      const tempDir = path.join(
+        SCHEDULE_B_UPLOAD_TMP_ROOT,
+        String(ctx.userId),
+        job.id
+      );
+      const tempPath = path.join(tempDir, `${input.uploadId}.part`);
+      await mkdir(tempDir, { recursive: true });
+
+      if (input.chunkIndex === 0) {
+        await writeFile(tempPath, Buffer.from(input.chunkBase64, "base64"));
+        await upsertScheduleBImportFileUploadProgress({
+          jobId: job.id,
+          fileName: safeFileName,
+          fileSize: input.fileSize,
+          uploadedChunks: 1,
+          totalChunks: input.totalChunks,
+          status: input.totalChunks === 1 ? "queued" : "uploading",
+          storageKey: `tmp:${input.uploadId}`,
+          error: null,
+        });
+      } else {
+        const currentFile = await getScheduleBImportFile(job.id, safeFileName);
+        if (!currentFile || currentFile.status !== "uploading") {
+          throw new Error(`Upload session missing for ${safeFileName}. Restart this file upload.`);
+        }
+
+        const currentUploadId = (currentFile.storageKey ?? "").startsWith("tmp:")
+          ? (currentFile.storageKey ?? "").slice(4)
+          : null;
+        if (!currentUploadId || currentUploadId !== input.uploadId) {
+          throw new Error(`Upload session changed for ${safeFileName}. Restart this file upload.`);
+        }
+
+        const expectedChunkIndex = currentFile.uploadedChunks;
+        if (input.chunkIndex < expectedChunkIndex) {
+          return {
+            skipped: true,
+            fileName: safeFileName,
+            status: "uploading" as const,
+            reason: "duplicate_chunk",
+          };
+        }
+        if (input.chunkIndex > expectedChunkIndex) {
+          throw new Error(
+            `Out-of-order chunk for ${safeFileName}. Expected ${expectedChunkIndex}, got ${input.chunkIndex}.`
+          );
+        }
+
+        await appendFile(tempPath, Buffer.from(input.chunkBase64, "base64"));
+        await upsertScheduleBImportFileUploadProgress({
+          jobId: job.id,
+          fileName: safeFileName,
+          fileSize: input.fileSize,
+          uploadedChunks: input.chunkIndex + 1,
+          totalChunks: input.totalChunks,
+          status: input.chunkIndex + 1 >= input.totalChunks ? "queued" : "uploading",
+          storageKey: `tmp:${input.uploadId}`,
+          error: null,
+        });
+      }
+
+      const completedUpload = input.chunkIndex + 1 >= input.totalChunks;
+      if (!completedUpload) {
+        return {
+          skipped: false,
+          fileName: safeFileName,
+          uploadedChunks: input.chunkIndex + 1,
+          totalChunks: input.totalChunks,
+          completedUpload: false,
+        };
+      }
+
+      try {
+        const data = await readFile(tempPath);
+        const storageKey = `solar-rec-dashboard/${ctx.userId}/schedule-b/${job.id}/${Date.now()}-${nanoid()}-${safeFileName}`;
+        await storagePut(storageKey, data, "application/pdf");
+
+        await markScheduleBImportFileQueued({
+          jobId: job.id,
+          fileName: safeFileName,
+          fileSize: input.fileSize,
+          totalChunks: input.totalChunks,
+          storageKey,
+        });
+
+        await updateScheduleBImportJob(job.id, {
+          status: "queued",
+          error: null,
+          completedAt: null,
+          stoppedAt: null,
+        });
+
+        const { runScheduleBImportJob } = await import("../services/scheduleBImportJobRunner");
+        void runScheduleBImportJob(job.id);
+
+        return {
+          skipped: false,
+          fileName: safeFileName,
+          uploadedChunks: input.totalChunks,
+          totalChunks: input.totalChunks,
+          completedUpload: true,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to finalize upload.";
+        await markScheduleBImportFileStatus({
+          jobId: job.id,
+          fileName: safeFileName,
+          status: "failed",
+          error: message,
+          processedAt: new Date(),
+        });
+        throw new Error(message);
+      } finally {
+        await rm(tempPath, { force: true }).catch(() => undefined);
+      }
+    }),
+
+  forceRunScheduleBImport: solarRecOperatorProcedure
+    .mutation(async ({ ctx }) => {
+      const { getLatestScheduleBImportJob, updateScheduleBImportJob } = await import("../db");
+      const job = await getLatestScheduleBImportJob(ctx.userId);
+      if (!job) {
+        return { success: false, reason: "no_job" as const };
+      }
+
+      await updateScheduleBImportJob(job.id, {
+        status: "queued",
+        error: null,
+        completedAt: null,
+        stoppedAt: null,
+      });
+
+      const { runScheduleBImportJob } = await import("../services/scheduleBImportJobRunner");
+      void runScheduleBImportJob(job.id);
+      return { success: true, jobId: job.id };
+    }),
+
+  clearScheduleBImport: solarRecOperatorProcedure
+    .mutation(async ({ ctx }) => {
+      const { getLatestScheduleBImportJob, deleteScheduleBImportJobData } = await import("../db");
+      const { rm } = await import("node:fs/promises");
+
+      const job = await getLatestScheduleBImportJob(ctx.userId);
+      if (job) {
+        await deleteScheduleBImportJobData(job.id);
+      }
+
+      const userTmpDir = path.join(SCHEDULE_B_UPLOAD_TMP_ROOT, String(ctx.userId));
+      await rm(userTmpDir, { recursive: true, force: true }).catch(() => undefined);
+      return { success: true };
     }),
 });
 
