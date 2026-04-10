@@ -10,12 +10,18 @@ import { createRequire } from "node:module";
 // resources, pdfjs falls back to empty glyph-to-unicode mappings and
 // parseDeliveryTable() ends up with nothing to match against — which was
 // manifesting as "N processed, 0 rows in DB" in the Schedule B scanner UI.
+//
+// IMPORTANT: pdfjs-dist's NodeStandardFontDataFactory (legacy build) does:
+//   async _fetch(url) { return fs.promises.readFile(url); }
+// where `url = baseUrl + fontName`. If we pass a `file://` prefixed URL,
+// fs.readFile treats it as a literal path and ENOENTs. Pass a plain
+// filesystem path with trailing separator instead.
 const requireFromHere = createRequire(import.meta.url);
 const pdfjsPackageJsonPath = requireFromHere.resolve("pdfjs-dist/package.json");
 const pdfjsPackageRoot = path.dirname(pdfjsPackageJsonPath);
 const PDFJS_STANDARD_FONT_DATA_URL =
-  "file://" + path.join(pdfjsPackageRoot, "standard_fonts") + path.sep;
-const PDFJS_CMAP_URL = "file://" + path.join(pdfjsPackageRoot, "cmaps") + path.sep;
+  path.join(pdfjsPackageRoot, "standard_fonts") + path.sep;
+const PDFJS_CMAP_URL = path.join(pdfjsPackageRoot, "cmaps") + path.sep;
 
 export type ScheduleBDeliveryYear = {
   label: string;
