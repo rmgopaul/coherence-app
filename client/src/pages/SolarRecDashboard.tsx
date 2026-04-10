@@ -14968,16 +14968,66 @@ const aiDataContext = useMemo(() => {
               transferDeliveryLookup={transferDeliveryLookup}
               existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
               onApply={(rows) => {
-                const headers = Object.keys(rows[0] ?? {});
-                setDatasets((prev) => ({
-                  ...prev,
-                  deliveryScheduleBase: {
-                    fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
-                    uploadedAt: new Date(),
-                    headers,
-                    rows,
-                  },
-                }));
+                const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
+                  const trackingId = clean(row.tracking_system_ref_id).toUpperCase();
+                  if (trackingId) return `tracking:${trackingId}`;
+                  const designatedSystemId = clean(row.designated_system_id);
+                  if (designatedSystemId) return `designated:${designatedSystemId}`;
+                  const systemName = clean(row.system_name).toLowerCase();
+                  if (systemName) return `name:${systemName}`;
+                  return `${fallbackPrefix}:${index}`;
+                };
+
+                setDatasets((prev) => {
+                  const existingRows = prev.deliveryScheduleBase?.rows ?? [];
+                  const mergedByKey = new Map<string, CsvRow>();
+                  const orderedKeys: string[] = [];
+
+                  existingRows.forEach((row, index) => {
+                    const key = makeDeliveryRowKey(row, "existing", index);
+                    if (mergedByKey.has(key)) return;
+                    mergedByKey.set(key, row);
+                    orderedKeys.push(key);
+                  });
+
+                  rows.forEach((row, index) => {
+                    const key = makeDeliveryRowKey(row, "scheduleb", index);
+                    const existing = mergedByKey.get(key);
+                    if (existing) {
+                      mergedByKey.set(key, { ...existing, ...row });
+                      return;
+                    }
+                    mergedByKey.set(key, row);
+                    orderedKeys.push(key);
+                  });
+
+                  const mergedRows = orderedKeys
+                    .map((key) => mergedByKey.get(key))
+                    .filter((row): row is CsvRow => Boolean(row));
+
+                  const mergedHeaders: string[] = [];
+                  const pushHeader = (header: string) => {
+                    if (!header || mergedHeaders.includes(header)) return;
+                    mergedHeaders.push(header);
+                  };
+                  (prev.deliveryScheduleBase?.headers ?? []).forEach(pushHeader);
+                  rows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
+                  mergedRows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
+
+                  return {
+                    ...prev,
+                    deliveryScheduleBase: {
+                      fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
+                      uploadedAt: new Date(),
+                      headers: mergedHeaders,
+                      rows: mergedRows,
+                    },
+                  };
+                });
+                setRemoteSourceManifests((prev) => ({ ...prev, deliveryScheduleBase: undefined }));
+                setDatasetCloudSyncBadge("deliveryScheduleBase", "pending");
+                setForceSyncingDatasets((prev) => ({ ...prev, deliveryScheduleBase: false }));
+                forcedRemoteDatasetSyncKeysRef.current.delete("deliveryScheduleBase");
               }}
             />
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
