@@ -2931,6 +2931,16 @@ function ScheduleBImport({
                     {" "}
                     ({Math.round((scheduleBProgress.current / Math.max(1, scheduleBProgress.total)) * 100)}%)
                   </p>
+                  {(statusCounts?.totalFiles ?? 0) > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      Server processed {statusCounts?.processedFiles ?? 0} of {statusCounts?.totalFiles ?? 0} queued PDFs
+                      {" "}
+                      ({Math.round(((statusCounts?.processedFiles ?? 0) / Math.max(1, statusCounts?.totalFiles ?? 0)) * 100)}%)
+                      {scheduleBStatusQuery.data?.job?.currentFileName
+                        ? ` — ${scheduleBStatusQuery.data.job.currentFileName}`
+                        : ""}
+                    </p>
+                  )}
                 </>
               ) : backgroundRunning ? (
                 <>
