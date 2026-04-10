@@ -61,9 +61,18 @@ async function mapWithConcurrency<T>(
   await Promise.all(Array.from({ length: workerCount }, () => runOne()));
 }
 
+const LOG_PREFIX = "[scheduleBImport v2_atomic_counters]";
+
 export async function runScheduleBImportJob(jobId: string): Promise<void> {
   const id = jobId.trim();
-  if (!id || activeRunners.has(id)) return;
+  if (!id) {
+    console.warn(`${LOG_PREFIX} runScheduleBImportJob called with empty jobId`);
+    return;
+  }
+  if (activeRunners.has(id)) {
+    console.log(`${LOG_PREFIX} job ${id.slice(0, 8)} already has an active runner, skipping`);
+    return;
+  }
 
   const {
     getScheduleBImportJob,
@@ -75,8 +84,18 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
   } = await import("../db");
 
   const job = await getScheduleBImportJob(id);
-  if (!job) return;
-  if (job.status === "completed" || job.status === "failed") return;
+  if (!job) {
+    console.warn(`${LOG_PREFIX} job ${id.slice(0, 8)} not found in DB`);
+    return;
+  }
+  if (job.status === "completed" || job.status === "failed") {
+    console.log(`${LOG_PREFIX} job ${id.slice(0, 8)} already ${job.status}, not re-running`);
+    return;
+  }
+
+  console.log(
+    `${LOG_PREFIX} starting runner for job ${id.slice(0, 8)} (status=${job.status}, successCount=${job.successCount ?? "undefined"}, failureCount=${job.failureCount ?? "undefined"})`
+  );
 
   activeRunners.add(id);
 
@@ -97,6 +116,10 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       (f) => !completedNames.has(f.fileName)
     );
 
+    console.log(
+      `${LOG_PREFIX} work list for job ${id.slice(0, 8)}: allFiles=${allFiles.length} alreadyCompleted=${completedNames.size} pending=${pendingFiles.length}`
+    );
+
     // Keep the totalFiles counter in sync with whatever's actually in
     // the files table. Safe to overwrite even if new uploads arrive
     // during the run — getScheduleBImportStatus only reads this for
@@ -104,6 +127,9 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     await updateScheduleBImportJob(id, { totalFiles: allFiles.length });
 
     if (pendingFiles.length === 0) {
+      console.log(
+        `${LOG_PREFIX} no pending files for job ${id.slice(0, 8)}, marking completed`
+      );
       await updateScheduleBImportJob(id, {
         status: "completed",
         completedAt: new Date(),
@@ -185,6 +211,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       }
 
       // ── ALWAYS write a result row. This is the critical invariant. ──
+      let resultWriteSucceeded = false;
       try {
         await upsertScheduleBImportResult({
           jobId: id,
@@ -200,14 +227,17 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
           error: rowError,
           scannedAt: new Date(),
         });
+        resultWriteSucceeded = true;
       } catch (dbErr) {
-        console.warn(
-          `[scheduleBImportJob] upsertScheduleBImportResult failed for ${file.fileName}:`,
-          dbErr instanceof Error ? dbErr.message : dbErr
+        // LOUD warning — this is the exact failure mode that's been
+        // blocking the user. If every file hits this branch, we see 17
+        // counter increments with 0 result rows. The Render log will
+        // show the SQL/DB error that's causing it.
+        console.error(
+          `${LOG_PREFIX} upsertScheduleBImportResult FAILED for job=${id.slice(0, 8)} file=${file.fileName}:`,
+          dbErr instanceof Error ? dbErr.message : dbErr,
+          dbErr instanceof Error && dbErr.stack ? `\n${dbErr.stack}` : ""
         );
-        // Even if the result write failed, increment the failure counter
-        // so the job can complete. The file won't show in the client
-        // table but the progress will at least advance.
         rowError = rowError ?? "Failed to persist extraction result.";
       }
 
@@ -215,12 +245,18 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       try {
         if (!rowError && extraction) {
           await incrementScheduleBImportJobCounter(id, "successCount");
+          console.log(
+            `${LOG_PREFIX} ✓ job=${id.slice(0, 8)} file=${file.fileName} success resultWritten=${resultWriteSucceeded} gatsId=${extraction.gatsId ?? "none"} years=${extraction.deliveryYears?.length ?? 0}`
+          );
         } else {
           await incrementScheduleBImportJobCounter(id, "failureCount");
+          console.log(
+            `${LOG_PREFIX} ✗ job=${id.slice(0, 8)} file=${file.fileName} failure resultWritten=${resultWriteSucceeded} error=${rowError ?? "unknown"}`
+          );
         }
       } catch (err) {
-        console.warn(
-          `[scheduleBImportJob] counter increment failed for ${file.fileName}:`,
+        console.error(
+          `${LOG_PREFIX} counter increment FAILED for job=${id.slice(0, 8)} file=${file.fileName}:`,
           err instanceof Error ? err.message : err
         );
       }

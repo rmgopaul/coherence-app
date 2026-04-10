@@ -425,6 +425,12 @@ const dashboardRouter = t.router({
       const processedFiles = successCount + failureCount;
 
       return {
+        // Version marker so the client can verify which runner is live.
+        // "v2_atomic_counters" = contract-scraper-style rewrite (b72299e+).
+        // If the client sees the old shape without this field, the deploy
+        // hasn't finished yet and the OLD file-status-counting runner is
+        // still serving requests.
+        _runnerVersion: "v2_atomic_counters",
         job: {
           id: job.id,
           status: job.status,
@@ -448,6 +454,130 @@ const dashboardRouter = t.router({
           successCount,
           failureCount,
         },
+      };
+    }),
+
+  /**
+   * Debug-only: returns the raw state of the user's latest Schedule B
+   * import job for diagnostic purposes. Used by the "Raw DB state"
+   * button in the ScheduleBImport card to skip every layer of my
+   * client-side interpretation and show what's actually in the DB.
+   */
+  debugScheduleBImportRaw: solarRecViewerProcedure
+    .query(async ({ ctx }) => {
+      const { getLatestScheduleBImportJob, getDb } = await import("../db");
+      const { scheduleBImportFiles, scheduleBImportResults } = await import(
+        "../../drizzle/schema"
+      );
+      const { eq, and, sql } = await import("drizzle-orm");
+
+      const job = await getLatestScheduleBImportJob(ctx.userId);
+      if (!job) {
+        return {
+          _runnerVersion: "v2_atomic_counters",
+          hasJob: false as const,
+          job: null,
+          fileCountsByStatus: {},
+          resultRowTotal: 0,
+          firstResultRows: [],
+          sampleFilesWithNoResult: [],
+        };
+      }
+
+      const db = await getDb();
+      if (!db) {
+        return {
+          _runnerVersion: "v2_atomic_counters",
+          hasJob: true as const,
+          dbUnavailable: true as const,
+          job: {
+            id: job.id,
+            status: job.status,
+            totalFiles: job.totalFiles ?? 0,
+            successCount: job.successCount ?? 0,
+            failureCount: job.failureCount ?? 0,
+            error: job.error,
+          },
+          fileCountsByStatus: {},
+          resultRowTotal: 0,
+          firstResultRows: [],
+          sampleFilesWithNoResult: [],
+        };
+      }
+
+      // Count files by status for this job.
+      const fileRows = await db
+        .select({
+          status: scheduleBImportFiles.status,
+          fileName: scheduleBImportFiles.fileName,
+          storageKey: scheduleBImportFiles.storageKey,
+          error: scheduleBImportFiles.error,
+        })
+        .from(scheduleBImportFiles)
+        .where(eq(scheduleBImportFiles.jobId, job.id));
+
+      const fileCountsByStatus: Record<string, number> = {};
+      for (const row of fileRows) {
+        fileCountsByStatus[row.status] = (fileCountsByStatus[row.status] ?? 0) + 1;
+      }
+
+      // Result row total + first 5 raw rows for this job.
+      const resultCount = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportResults)
+        .where(eq(scheduleBImportResults.jobId, job.id));
+      const resultRowTotal = resultCount[0]?.count ?? 0;
+
+      const firstResultRows = await db
+        .select({
+          fileName: scheduleBImportResults.fileName,
+          gatsId: scheduleBImportResults.gatsId,
+          error: scheduleBImportResults.error,
+        })
+        .from(scheduleBImportResults)
+        .where(eq(scheduleBImportResults.jobId, job.id))
+        .limit(5);
+
+      // Sample up to 5 fileNames that exist in scheduleBImportFiles but
+      // NOT in scheduleBImportResults. These are the "files marked
+      // processed but no result row" divergence cases.
+      const allFileNames = new Set(fileRows.map((r) => r.fileName));
+      const allResultNames = await db
+        .select({ fileName: scheduleBImportResults.fileName })
+        .from(scheduleBImportResults)
+        .where(eq(scheduleBImportResults.jobId, job.id));
+      const resultNameSet = new Set(allResultNames.map((r) => r.fileName));
+      const sampleFilesWithNoResult = Array.from(allFileNames)
+        .filter((name) => !resultNameSet.has(name))
+        .slice(0, 10)
+        .map((name) => {
+          const f = fileRows.find((r) => r.fileName === name);
+          return {
+            fileName: name,
+            status: f?.status ?? "unknown",
+            storageKey: f?.storageKey ?? null,
+            error: f?.error ?? null,
+          };
+        });
+
+      return {
+        _runnerVersion: "v2_atomic_counters",
+        hasJob: true as const,
+        job: {
+          id: job.id,
+          status: job.status,
+          totalFiles: job.totalFiles ?? 0,
+          successCount: job.successCount ?? 0,
+          failureCount: job.failureCount ?? 0,
+          error: job.error,
+          startedAt: job.startedAt ? new Date(job.startedAt).toISOString() : null,
+          completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+        },
+        fileCountsByStatus,
+        filesTotal: fileRows.length,
+        resultRowTotal,
+        firstResultRows,
+        sampleFilesWithNoResult,
       };
     }),
 

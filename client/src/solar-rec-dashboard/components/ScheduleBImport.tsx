@@ -125,6 +125,16 @@ export function ScheduleBImport({
   // stays visible until the user clears the scan.
   const [applyBlockedReason, setApplyBlockedReason] = useState<string | null>(null);
 
+  // Raw DB debug dump returned by trpc.solarRecDashboard.debugScheduleBImportRaw.
+  // Populated on-demand when the user clicks the "Raw DB state" button in
+  // the diagnostic block. Shows the truth from the server's DB instead of
+  // any client-side interpretation.
+  const [rawDebugDump, setRawDebugDump] = useState<string | null>(null);
+  const debugScheduleBImportRawQuery = trpc.solarRecDashboard.debugScheduleBImportRaw.useQuery(
+    undefined,
+    { enabled: false }
+  );
+
   const ensureScheduleBImportJob = trpc.solarRecDashboard.ensureScheduleBImportJob.useMutation();
   const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
   const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
@@ -927,7 +937,47 @@ export function ScheduleBImport({
               >
                 Refresh Now
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={async () => {
+                  const result = await debugScheduleBImportRawQuery.refetch();
+                  if (result.data) {
+                    setRawDebugDump(JSON.stringify(result.data, null, 2));
+                    const runnerVersion =
+                      (result.data as { _runnerVersion?: string })._runnerVersion ?? "unknown";
+                    toast.info(`Raw DB state fetched — server runner: ${runnerVersion}`);
+                  } else if (result.error) {
+                    toast.error(
+                      `Debug fetch failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
+                    );
+                  }
+                }}
+              >
+                Raw DB state
+              </Button>
+              <span className="text-[10px] text-slate-500">
+                server runner:{" "}
+                {(scheduleBStatusQuery.data as { _runnerVersion?: string } | undefined)
+                  ?._runnerVersion ?? "(old/unknown)"}
+              </span>
             </div>
+            {rawDebugDump ? (
+              <div className="rounded border border-slate-300 bg-white px-2 py-2 text-[10px] font-mono text-slate-800 max-h-64 overflow-auto">
+                <div className="flex items-center justify-between mb-1">
+                  <strong>Raw DB state:</strong>
+                  <button
+                    type="button"
+                    className="text-slate-500 hover:text-slate-800 underline"
+                    onClick={() => setRawDebugDump(null)}
+                  >
+                    dismiss
+                  </button>
+                </div>
+                <pre className="whitespace-pre-wrap break-words">{rawDebugDump}</pre>
+              </div>
+            ) : null}
             {scheduleBResultsQuery.error ? (
               <div className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-[11px] text-rose-900">
                 <strong>Results query error:</strong>{" "}

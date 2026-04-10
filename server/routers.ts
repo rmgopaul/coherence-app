@@ -3377,11 +3377,9 @@ export const appRouter = router({
           getOrCreateLatestScheduleBImportJob,
           getScheduleBImportJobCounts,
           listScheduleBImportFileNames,
-          failScheduleBImportFilesWithInvalidStorage,
         } = await import("./db");
 
         const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);
-        await failScheduleBImportFilesWithInvalidStorage(job.id);
         const counts = await getScheduleBImportJobCounts(job.id);
         const knownFileNames = await listScheduleBImportFileNames(job.id, {
           includeStatuses: ["uploading", "queued", "processing"],
@@ -3414,15 +3412,12 @@ export const appRouter = router({
       }),
     getScheduleBImportStatus: protectedProcedure
       .query(async ({ ctx }) => {
-        const {
-          getLatestScheduleBImportJob,
-          getScheduleBImportJobCounts,
-          failScheduleBImportFilesWithInvalidStorage,
-        } = await import("./db");
+        const { getLatestScheduleBImportJob } = await import("./db");
 
         const job = await getLatestScheduleBImportJob(ctx.user.id);
         if (!job) {
           return {
+            _runnerVersion: "v2_atomic_counters" as const,
             job: null,
             counts: {
               totalFiles: 0,
@@ -3438,8 +3433,13 @@ export const appRouter = router({
             },
           };
         }
-        await failScheduleBImportFilesWithInvalidStorage(job.id);
 
+        // v2_atomic_counters: read counters directly from the job row.
+        // The new runner maintains successCount/failureCount/totalFiles
+        // via atomic increments after every processed file, mirroring
+        // the contract scraper. This replaces 8 COUNT(*) queries over
+        // scheduleBImportFiles that were racing with the runner's
+        // own status updates.
         const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
           "./services/scheduleBImportJobRunner"
         );
@@ -3450,8 +3450,13 @@ export const appRouter = router({
           void runScheduleBImportJob(job.id);
         }
 
-        const counts = await getScheduleBImportJobCounts(job.id);
+        const totalFiles = job.totalFiles ?? 0;
+        const successCount = job.successCount ?? 0;
+        const failureCount = job.failureCount ?? 0;
+        const processedFiles = successCount + failureCount;
+
         return {
+          _runnerVersion: "v2_atomic_counters" as const,
           job: {
             id: job.id,
             status: job.status,
@@ -3463,7 +3468,18 @@ export const appRouter = router({
             createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
             updatedAt: job.updatedAt ? new Date(job.updatedAt).toISOString() : null,
           },
-          counts,
+          counts: {
+            totalFiles,
+            uploadingFiles: Math.max(0, totalFiles - processedFiles),
+            queuedFiles: Math.max(0, totalFiles - processedFiles),
+            processingFiles: 0,
+            completedFiles: successCount,
+            failedFiles: failureCount,
+            uploadedFiles: totalFiles,
+            processedFiles,
+            successCount,
+            failureCount,
+          },
         };
       }),
     listScheduleBImportResults: protectedProcedure
@@ -3565,7 +3581,12 @@ export const appRouter = router({
             fileSize: input.fileSize,
             uploadedChunks: 1,
             totalChunks: input.totalChunks,
-            status: input.totalChunks === 1 ? "queued" : "uploading",
+            // Keep status="uploading" until the permanent storageKey is
+            // written by markScheduleBImportFileQueued below. Transitioning
+            // to "queued" here creates a race window where the status poll
+            // or the runner's work list picks up a file with storageKey
+            // still "tmp:..." and marks it failed / writes an error row.
+            status: "uploading",
             storageKey: `tmp:${input.uploadId}`,
             error: null,
           });
@@ -3604,7 +3625,9 @@ export const appRouter = router({
             fileSize: input.fileSize,
             uploadedChunks: input.chunkIndex + 1,
             totalChunks: input.totalChunks,
-            status: input.chunkIndex + 1 >= input.totalChunks ? "queued" : "uploading",
+            // Same reasoning as chunk-0: stay in "uploading" until
+            // markScheduleBImportFileQueued sets the permanent storageKey.
+            status: "uploading",
             storageKey: `tmp:${input.uploadId}`,
             error: null,
           });
@@ -3671,14 +3694,12 @@ export const appRouter = router({
           getLatestScheduleBImportJob,
           updateScheduleBImportJob,
           requeueScheduleBImportRetryableFiles,
-          failScheduleBImportFilesWithInvalidStorage,
         } = await import("./db");
         const job = await getLatestScheduleBImportJob(ctx.user.id);
         if (!job) {
           return { success: false, reason: "no_job" as const };
         }
 
-        await failScheduleBImportFilesWithInvalidStorage(job.id);
         await requeueScheduleBImportRetryableFiles(job.id);
 
         await updateScheduleBImportJob(job.id, {
@@ -3705,6 +3726,122 @@ export const appRouter = router({
         const userTmpDir = path.join(SCHEDULE_B_UPLOAD_TMP_ROOT, String(ctx.user.id));
         await rm(userTmpDir, { recursive: true, force: true }).catch(() => undefined);
         return { success: true };
+      }),
+    /**
+     * Debug-only: returns the raw state of the user's latest Schedule B
+     * job. Wired to the "Raw DB state" button in the ScheduleBImport
+     * card. Shows the actual DB counts instead of any client-side
+     * interpretation so we can diagnose counter-vs-result divergence.
+     */
+    debugScheduleBImportRaw: protectedProcedure
+      .query(async ({ ctx }) => {
+        const { getLatestScheduleBImportJob, getDb } = await import("./db");
+        const { scheduleBImportFiles, scheduleBImportResults } = await import(
+          "../drizzle/schema"
+        );
+        const { eq, sql } = await import("drizzle-orm");
+
+        const job = await getLatestScheduleBImportJob(ctx.user.id);
+        if (!job) {
+          return {
+            _runnerVersion: "v2_atomic_counters" as const,
+            hasJob: false as const,
+            job: null,
+            fileCountsByStatus: {},
+            filesTotal: 0,
+            resultRowTotal: 0,
+            firstResultRows: [],
+            sampleFilesWithNoResult: [],
+          };
+        }
+
+        const db = await getDb();
+        if (!db) {
+          return {
+            _runnerVersion: "v2_atomic_counters" as const,
+            hasJob: true as const,
+            dbUnavailable: true as const,
+            job: {
+              id: job.id,
+              status: job.status,
+              totalFiles: job.totalFiles ?? 0,
+              successCount: job.successCount ?? 0,
+              failureCount: job.failureCount ?? 0,
+              error: job.error,
+            },
+            fileCountsByStatus: {},
+            filesTotal: 0,
+            resultRowTotal: 0,
+            firstResultRows: [],
+            sampleFilesWithNoResult: [],
+          };
+        }
+
+        const fileRows = await db
+          .select({
+            status: scheduleBImportFiles.status,
+            fileName: scheduleBImportFiles.fileName,
+            storageKey: scheduleBImportFiles.storageKey,
+            error: scheduleBImportFiles.error,
+          })
+          .from(scheduleBImportFiles)
+          .where(eq(scheduleBImportFiles.jobId, job.id));
+
+        const fileCountsByStatus: Record<string, number> = {};
+        for (const row of fileRows) {
+          fileCountsByStatus[row.status] = (fileCountsByStatus[row.status] ?? 0) + 1;
+        }
+
+        const resultCount = await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(scheduleBImportResults)
+          .where(eq(scheduleBImportResults.jobId, job.id));
+        const resultRowTotal = resultCount[0]?.count ?? 0;
+
+        const firstResultRows = await db
+          .select({
+            fileName: scheduleBImportResults.fileName,
+            gatsId: scheduleBImportResults.gatsId,
+            error: scheduleBImportResults.error,
+          })
+          .from(scheduleBImportResults)
+          .where(eq(scheduleBImportResults.jobId, job.id))
+          .limit(5);
+
+        const allResultNames = await db
+          .select({ fileName: scheduleBImportResults.fileName })
+          .from(scheduleBImportResults)
+          .where(eq(scheduleBImportResults.jobId, job.id));
+        const resultNameSet = new Set(allResultNames.map((r) => r.fileName));
+        const sampleFilesWithNoResult = fileRows
+          .filter((f) => !resultNameSet.has(f.fileName))
+          .slice(0, 10)
+          .map((f) => ({
+            fileName: f.fileName,
+            status: f.status,
+            storageKey: f.storageKey,
+            error: f.error,
+          }));
+
+        return {
+          _runnerVersion: "v2_atomic_counters" as const,
+          hasJob: true as const,
+          job: {
+            id: job.id,
+            status: job.status,
+            totalFiles: job.totalFiles ?? 0,
+            successCount: job.successCount ?? 0,
+            failureCount: job.failureCount ?? 0,
+            error: job.error,
+            startedAt: job.startedAt ? new Date(job.startedAt).toISOString() : null,
+            completedAt: job.completedAt ? new Date(job.completedAt).toISOString() : null,
+          },
+          fileCountsByStatus,
+          filesTotal: fileRows.length,
+          resultRowTotal,
+          firstResultRows,
+          sampleFilesWithNoResult,
+        };
       }),
     askTabQuestion: protectedProcedure
       .input(
