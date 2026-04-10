@@ -249,6 +249,97 @@ const dashboardRouter = t.router({
       }
     }),
 
+  askTabQuestion: solarRecViewerProcedure
+    .input(
+      z.object({
+        tabId: z.string().min(1).max(64),
+        question: z.string().min(1).max(4000),
+        dataContext: z.string().max(200000),
+        conversationHistory: z
+          .array(z.object({ role: z.enum(["user", "assistant"]), content: z.string() }))
+          .max(20),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { getIntegrationByProvider } = await import("../db");
+      const { resolveSolarRecOwnerUserId } = await import("./solarRecAuth");
+      const ownerUserId = await resolveSolarRecOwnerUserId();
+      const integration = await getIntegrationByProvider(ownerUserId, "anthropic");
+      const apiKey = integration?.accessToken?.trim() || "";
+      if (!apiKey) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Anthropic API key not configured. Go to the main app Settings and connect your Anthropic account.",
+        });
+      }
+
+      let model = "claude-sonnet-4-20250514";
+      if (integration?.metadata) {
+        try {
+          const meta = JSON.parse(integration.metadata);
+          if (meta.model && typeof meta.model === "string") model = meta.model;
+        } catch {
+          /* ignore */
+        }
+      }
+
+      const systemPrompt = [
+        `You are a solar REC portfolio analyst assistant for the Coherence platform.`,
+        `You have access to data from the "${input.tabId}" tab of the Portfolio Analytics dashboard.`,
+        `\nDATA CONTEXT:\n${input.dataContext}`,
+        `\nINSTRUCTIONS:`,
+        `- Answer using ONLY the provided data. Do not make up numbers.`,
+        `- Be specific: cite system names, tracking IDs, contract numbers, and exact figures.`,
+        `- Use markdown tables when comparing multiple systems or contracts.`,
+        `- Keep answers concise but thorough.`,
+        `- If the data doesn't contain enough info to answer, say so.`,
+        `- REC = Renewable Energy Credit. 1 REC = 1 MWh = 1,000 kWh.`,
+        `- Energy years run June 1 through May 31 (e.g., EY 2025-2026 = June 1 2025 – May 31 2026).`,
+      ].join("\n");
+
+      const messages = [
+        ...input.conversationHistory.map((msg) => ({
+          role: msg.role as "user" | "assistant",
+          content: msg.content,
+        })),
+        { role: "user" as const, content: input.question },
+      ];
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        signal: AbortSignal.timeout(60_000),
+        body: JSON.stringify({ model, max_tokens: 4096, system: systemPrompt, messages }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => "");
+        let message = "Claude API error";
+        try {
+          message = (JSON.parse(errorBody) as { error?: { message?: string } })?.error?.message ?? message;
+        } catch {
+          /* */
+        }
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `Claude API error (${response.status}): ${message}`,
+        });
+      }
+
+      const payload = (await response.json()) as { content?: Array<{ type: string; text?: string }> };
+      const text =
+        payload.content
+          ?.filter((b) => b.type === "text" && b.text)
+          .map((b) => b.text)
+          .join("\n") ?? "";
+      if (!text) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Empty response from Claude." });
+      return { answer: text };
+    }),
+
   ensureScheduleBImportJob: solarRecViewerProcedure
     .mutation(async ({ ctx }) => {
       const {
