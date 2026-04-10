@@ -759,6 +759,12 @@ export const scheduleBImportJobs = mysqlTable(
     userId: int("userId").notNull(),
     status: varchar("status", { length: 32 }).default("queued").notNull(),
     currentFileName: varchar("currentFileName", { length: 255 }),
+    // Atomic counters mirroring contractScanJobs. The runner increments
+    // these after each processed file so the UI can show progress from
+    // a single job-row query instead of COUNT(*) over a file-state table.
+    totalFiles: int("totalFiles").default(0).notNull(),
+    successCount: int("successCount").default(0).notNull(),
+    failureCount: int("failureCount").default(0).notNull(),
     error: text("error"),
     startedAt: timestamp("startedAt"),
     stoppedAt: timestamp("stoppedAt"),

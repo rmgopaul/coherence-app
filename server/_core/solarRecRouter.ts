@@ -346,11 +346,9 @@ const dashboardRouter = t.router({
         getOrCreateLatestScheduleBImportJob,
         getScheduleBImportJobCounts,
         listScheduleBImportFileNames,
-        failScheduleBImportFilesWithInvalidStorage,
       } = await import("../db");
 
       const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
-      await failScheduleBImportFilesWithInvalidStorage(job.id);
       const counts = await getScheduleBImportJobCounts(job.id);
       const knownFileNames = await listScheduleBImportFileNames(job.id, {
         includeStatuses: ["uploading", "queued", "processing"],
@@ -384,11 +382,7 @@ const dashboardRouter = t.router({
 
   getScheduleBImportStatus: solarRecViewerProcedure
     .query(async ({ ctx }) => {
-      const {
-        getLatestScheduleBImportJob,
-        getScheduleBImportJobCounts,
-        failScheduleBImportFilesWithInvalidStorage,
-      } = await import("../db");
+      const { getLatestScheduleBImportJob } = await import("../db");
 
       const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
@@ -408,8 +402,13 @@ const dashboardRouter = t.router({
           },
         };
       }
-      await failScheduleBImportFilesWithInvalidStorage(job.id);
 
+      // Rewrite: read counters directly from the job row. The new runner
+      // maintains successCount/failureCount/totalFiles via atomic
+      // increments after every processed file, mirroring the contract
+      // scraper's approach. This replaces the previous 8 COUNT(*)
+      // queries over scheduleBImportFiles and eliminates the
+      // "files marked processed without result rows" divergence bug.
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
         "../services/scheduleBImportJobRunner"
       );
@@ -420,7 +419,11 @@ const dashboardRouter = t.router({
         void runScheduleBImportJob(job.id);
       }
 
-      const counts = await getScheduleBImportJobCounts(job.id);
+      const totalFiles = job.totalFiles ?? 0;
+      const successCount = job.successCount ?? 0;
+      const failureCount = job.failureCount ?? 0;
+      const processedFiles = successCount + failureCount;
+
       return {
         job: {
           id: job.id,
@@ -433,7 +436,18 @@ const dashboardRouter = t.router({
           createdAt: job.createdAt ? new Date(job.createdAt).toISOString() : null,
           updatedAt: job.updatedAt ? new Date(job.updatedAt).toISOString() : null,
         },
-        counts,
+        counts: {
+          totalFiles,
+          uploadingFiles: Math.max(0, totalFiles - processedFiles),
+          queuedFiles: Math.max(0, totalFiles - processedFiles),
+          processingFiles: 0,
+          completedFiles: successCount,
+          failedFiles: failureCount,
+          uploadedFiles: totalFiles,
+          processedFiles,
+          successCount,
+          failureCount,
+        },
       };
     }),
 

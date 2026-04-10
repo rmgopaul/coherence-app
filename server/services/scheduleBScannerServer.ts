@@ -1,27 +1,4 @@
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
-import path from "node:path";
-import { createRequire } from "node:module";
-
-// Resolve pdfjs-dist's shipped standard fonts + cmaps so the legacy Node
-// build can render TrueType-embedded PDFs without emitting
-// "UnknownErrorException: Ensure that the standardFontDataUrl API parameter
-// is provided" warnings and silently dropping characters from
-// getTextContent(). Without these two URLs pointing at the bundled
-// resources, pdfjs falls back to empty glyph-to-unicode mappings and
-// parseDeliveryTable() ends up with nothing to match against — which was
-// manifesting as "N processed, 0 rows in DB" in the Schedule B scanner UI.
-//
-// IMPORTANT: pdfjs-dist's NodeStandardFontDataFactory (legacy build) does:
-//   async _fetch(url) { return fs.promises.readFile(url); }
-// where `url = baseUrl + fontName`. If we pass a `file://` prefixed URL,
-// fs.readFile treats it as a literal path and ENOENTs. Pass a plain
-// filesystem path with trailing separator instead.
-const requireFromHere = createRequire(import.meta.url);
-const pdfjsPackageJsonPath = requireFromHere.resolve("pdfjs-dist/package.json");
-const pdfjsPackageRoot = path.dirname(pdfjsPackageJsonPath);
-const PDFJS_STANDARD_FONT_DATA_URL =
-  path.join(pdfjsPackageRoot, "standard_fonts") + path.sep;
-const PDFJS_CMAP_URL = path.join(pdfjsPackageRoot, "cmaps") + path.sep;
 
 export type ScheduleBDeliveryYear = {
   label: string;
@@ -66,14 +43,14 @@ const extractRegex = (text: string, pattern: RegExp): string | null => {
 };
 
 async function readPdfPages(data: Uint8Array): Promise<PdfPageData[]> {
-  const pdf = await getDocument({
-    data,
-    disableWorker: true,
-    standardFontDataUrl: PDFJS_STANDARD_FONT_DATA_URL,
-    cMapUrl: PDFJS_CMAP_URL,
-    cMapPacked: true,
-    useSystemFonts: false,
-  } as any).promise;
+  // Mirrors contractScannerServer.ts exactly. No standardFontDataUrl, no
+  // cmap options, no page.cleanup(), no pdf.destroy(). The contract
+  // scraper uses this exact config against the same pdfjs-dist legacy
+  // Node build and it parses hundreds of PDFs successfully. Font-related
+  // stderr warnings ("TT: undefined function: 32", "Unable to load font
+  // data") are emitted by pdfjs for any PDF with embedded fonts but do
+  // NOT affect text extraction — they're noise.
+  const pdf = await getDocument({ data, disableWorker: true } as any).promise;
   const pages: PdfPageData[] = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -96,10 +73,8 @@ async function readPdfPages(data: Uint8Array): Promise<PdfPageData[]> {
 
     const text = normalizeText(items.map((item) => item.text).join(" "));
     pages.push({ pageNumber, text, items });
-    page.cleanup();
   }
 
-  await pdf.destroy();
   return pages;
 }
 

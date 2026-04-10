@@ -275,6 +275,9 @@ async function ensureScheduleBImportTables() {
         userId int NOT NULL,
         status varchar(32) NOT NULL DEFAULT 'queued',
         currentFileName varchar(255) DEFAULT NULL,
+        totalFiles int NOT NULL DEFAULT 0,
+        successCount int NOT NULL DEFAULT 0,
+        failureCount int NOT NULL DEFAULT 0,
         error text,
         startedAt timestamp NULL DEFAULT NULL,
         stoppedAt timestamp NULL DEFAULT NULL,
@@ -285,6 +288,21 @@ async function ensureScheduleBImportTables() {
         KEY schedule_b_import_jobs_user_idx (userId),
         KEY schedule_b_import_jobs_status_idx (status)
       )
+    `);
+
+    // Add counter columns to pre-existing installs that created the table
+    // before the contract-scraper-style rewrite. Idempotent IF NOT EXISTS.
+    await db.execute(sql`
+      ALTER TABLE scheduleBImportJobs
+      ADD COLUMN IF NOT EXISTS totalFiles int NOT NULL DEFAULT 0
+    `);
+    await db.execute(sql`
+      ALTER TABLE scheduleBImportJobs
+      ADD COLUMN IF NOT EXISTS successCount int NOT NULL DEFAULT 0
+    `);
+    await db.execute(sql`
+      ALTER TABLE scheduleBImportJobs
+      ADD COLUMN IF NOT EXISTS failureCount int NOT NULL DEFAULT 0
     `);
 
     await db.execute(sql`
@@ -2782,6 +2800,9 @@ export async function updateScheduleBImportJob(
     startedAt: Date | null;
     stoppedAt: Date | null;
     completedAt: Date | null;
+    totalFiles: number;
+    successCount: number;
+    failureCount: number;
   }>
 ) {
   const db = await getDb();
@@ -2792,6 +2813,30 @@ export async function updateScheduleBImportJob(
     await db
       .update(scheduleBImportJobs)
       .set(data)
+      .where(eq(scheduleBImportJobs.id, jobId));
+  });
+}
+
+/**
+ * Atomically increment a counter column on the Schedule B job row. Mirrors
+ * `incrementContractScanJobCounter` — the contract scraper's pattern for
+ * tracking progress without relying on derived COUNT(*) queries over a
+ * file-state table.
+ */
+export async function incrementScheduleBImportJobCounter(
+  jobId: string,
+  field: "successCount" | "failureCount" | "totalFiles"
+) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  await withDbRetry("increment schedule b import job counter", async () => {
+    await db
+      .update(scheduleBImportJobs)
+      .set({
+        [field]: sql`${scheduleBImportJobs[field]} + 1`,
+      })
       .where(eq(scheduleBImportJobs.id, jobId));
   });
 }
@@ -3038,6 +3083,53 @@ export async function listPendingScheduleBImportFiles(jobId: string, limit = 100
   );
 }
 
+/**
+ * List every file in the job that has a permanent storage key (i.e. the
+ * chunked upload finished and storagePut succeeded). Used by the new
+ * runner to build its work list without caring about file.status — which
+ * the previous runner's counter logic depended on and got wrong in
+ * multiple race conditions.
+ */
+export async function listAllUploadedScheduleBImportFiles(jobId: string) {
+  const db = await getDb();
+  if (!db) return [] as Array<{ fileName: string; storageKey: string | null }>;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return [] as Array<{ fileName: string; storageKey: string | null }>;
+  return withDbRetry("list all uploaded schedule b import files", async () => {
+    const rows = await db
+      .select({
+        fileName: scheduleBImportFiles.fileName,
+        storageKey: scheduleBImportFiles.storageKey,
+      })
+      .from(scheduleBImportFiles)
+      .where(eq(scheduleBImportFiles.jobId, jobId))
+      .orderBy(asc(scheduleBImportFiles.fileName));
+    return rows;
+  });
+}
+
+/**
+ * Return the set of fileNames that already have a row in
+ * scheduleBImportResults for the given job. Used by the runner to skip
+ * already-processed files on resume (mirrors getCompletedCsgIdsForJob
+ * in the contract scraper).
+ */
+export async function getCompletedScheduleBImportFileNames(
+  jobId: string
+): Promise<Set<string>> {
+  const db = await getDb();
+  if (!db) return new Set();
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return new Set();
+  return withDbRetry("get completed schedule b file names", async () => {
+    const rows = await db
+      .select({ fileName: scheduleBImportResults.fileName })
+      .from(scheduleBImportResults)
+      .where(eq(scheduleBImportResults.jobId, jobId));
+    return new Set(rows.map((r) => r.fileName));
+  });
+}
+
 export async function requeueScheduleBImportProcessingFiles(jobId: string) {
   const db = await getDb();
   if (!db) return;
@@ -3059,88 +3151,16 @@ export async function requeueScheduleBImportProcessingFiles(jobId: string) {
   });
 }
 
-export async function failScheduleBImportFilesWithInvalidStorage(jobId: string) {
-  const db = await getDb();
-  if (!db) return;
-  const ensured = await ensureScheduleBImportTables();
-  if (!ensured) return;
-
-  // Two-step so the client diagnostic counters line up:
-  //   1. SELECT the filenames we're about to fail (so we can write result rows)
-  //   2. UPDATE them to status='failed' + create matching result rows
-  //
-  // Before this change, the UPDATE ran in isolation: files were marked
-  // failed without corresponding rows in scheduleBImportResults. That
-  // caused the "Server: N processed, 0 rows in DB" pattern the user hit,
-  // because `processedFiles = completedFiles + failedFiles` incremented
-  // but `listScheduleBImportResults` returned nothing.
-  await withDbRetry("fail schedule b import files with invalid storage", async () => {
-    const stale = await db
-      .select({
-        fileName: scheduleBImportFiles.fileName,
-      })
-      .from(scheduleBImportFiles)
-      .where(
-        and(
-          eq(scheduleBImportFiles.jobId, jobId),
-          sql`${scheduleBImportFiles.status} IN ('queued', 'processing')`,
-          sql`(${scheduleBImportFiles.storageKey} IS NULL OR ${scheduleBImportFiles.storageKey} = '' OR ${scheduleBImportFiles.storageKey} LIKE 'tmp:%')`
-        )
-      );
-
-    if (stale.length === 0) return;
-
-    await db.execute(sql`
-      UPDATE scheduleBImportFiles
-      SET
-        status = 'failed',
-        error = COALESCE(error, 'Upload session expired; please re-upload this PDF.'),
-        processedAt = COALESCE(processedAt, NOW()),
-        updatedAt = NOW()
-      WHERE
-        jobId = ${jobId}
-        AND status IN ('queued', 'processing')
-        AND (
-          storageKey IS NULL
-          OR storageKey = ''
-          OR storageKey LIKE 'tmp:%'
-        )
-    `);
-
-    // Write a matching result row for each failed file so the client
-    // diagnostic + results table surface the error. Skip any fileName
-    // that already has a result row (defensive idempotency).
-    const now = new Date();
-    for (const { fileName } of stale) {
-      const existing = await db
-        .select({ id: scheduleBImportResults.id })
-        .from(scheduleBImportResults)
-        .where(
-          and(
-            eq(scheduleBImportResults.jobId, jobId),
-            eq(scheduleBImportResults.fileName, fileName)
-          )
-        )
-        .limit(1);
-      if (existing.length > 0) continue;
-
-      await db.insert(scheduleBImportResults).values({
-        id: nanoid(),
-        jobId,
-        fileName,
-        designatedSystemId: null,
-        gatsId: null,
-        acSizeKw: null,
-        capacityFactor: null,
-        contractPrice: null,
-        energizationDate: null,
-        maxRecQuantity: null,
-        deliveryYearsJson: "[]",
-        error: "Upload session expired before permanent storage was assigned; please re-upload this PDF.",
-        scannedAt: now,
-      });
-    }
-  });
+/**
+ * DEPRECATED — retained as a no-op so any cached caller (e.g. already-
+ * deployed clients polling the old getScheduleBImportStatus) continues
+ * to function. The new runner handles stale "tmp:" storage keys
+ * explicitly per-file (writing an error result row) rather than
+ * sweeping with a global UPDATE that could race with in-flight uploads.
+ */
+export async function failScheduleBImportFilesWithInvalidStorage(_jobId: string) {
+  // Intentionally empty. See the rewritten scheduleBImportJobRunner for
+  // the new per-file "storageKey missing / tmp:" error handling.
 }
 
 export async function requeueScheduleBImportRetryableFiles(jobId: string) {
