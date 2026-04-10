@@ -2989,16 +2989,31 @@ export async function markScheduleBImportFileStatus(
   });
 }
 
-export async function listScheduleBImportFileNames(jobId: string) {
+export async function listScheduleBImportFileNames(
+  jobId: string,
+  opts?: { includeStatuses?: ScheduleBImportFileStatus[] }
+) {
   const db = await getDb();
   if (!db) return [];
   const ensured = await ensureScheduleBImportTables();
   if (!ensured) return [];
   return withDbRetry("list schedule b import file names", async () => {
+    const statuses = opts?.includeStatuses;
+    const whereCondition =
+      Array.isArray(statuses) && statuses.length > 0
+        ? and(
+            eq(scheduleBImportFiles.jobId, jobId),
+            sql`${scheduleBImportFiles.status} IN (${sql.join(
+              statuses.map((status) => sql`${status}`),
+              sql`, `
+            )})`
+          )
+        : eq(scheduleBImportFiles.jobId, jobId);
+
     const rows = await db
       .select({ fileName: scheduleBImportFiles.fileName })
       .from(scheduleBImportFiles)
-      .where(eq(scheduleBImportFiles.jobId, jobId));
+      .where(whereCondition);
     return rows.map((row) => row.fileName);
   });
 }

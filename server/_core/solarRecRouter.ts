@@ -259,7 +259,9 @@ const dashboardRouter = t.router({
 
       const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
       const counts = await getScheduleBImportJobCounts(job.id);
-      const knownFileNames = await listScheduleBImportFileNames(job.id);
+      const knownFileNames = await listScheduleBImportFileNames(job.id, {
+        includeStatuses: ["queued", "processing", "completed"],
+      });
 
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
         "../services/scheduleBImportJobRunner"
