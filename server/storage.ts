@@ -11,8 +11,27 @@ type StorageConfig = { baseUrl: string; apiKey: string };
 export const LOCAL_STORAGE_ROUTE_PREFIX = "/_local_uploads";
 const DEFAULT_LOCAL_STORAGE_ROOT = path.resolve(process.cwd(), ".local_uploads");
 
+function normalizeEnvValue(value: string | undefined): string {
+  const normalized = (value ?? "").trim();
+  if (!normalized) return "";
+  if (/^(undefined|null|none|false)$/i.test(normalized)) return "";
+  return normalized;
+}
+
+function hasValidStorageProxyConfig(): boolean {
+  const baseUrl = normalizeEnvValue(ENV.forgeApiUrl);
+  const apiKey = normalizeEnvValue(ENV.forgeApiKey);
+  if (!baseUrl || !apiKey) return false;
+  try {
+    new URL(ensureTrailingSlash(baseUrl));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isStorageProxyConfigured(): boolean {
-  return Boolean(ENV.forgeApiUrl && ENV.forgeApiKey);
+  return hasValidStorageProxyConfig();
 }
 
 export function getLocalStorageRoot(): string {
@@ -21,12 +40,20 @@ export function getLocalStorageRoot(): string {
 }
 
 function getStorageConfig(): StorageConfig {
-  const baseUrl = ENV.forgeApiUrl;
-  const apiKey = ENV.forgeApiKey;
+  const baseUrl = normalizeEnvValue(ENV.forgeApiUrl);
+  const apiKey = normalizeEnvValue(ENV.forgeApiKey);
 
   if (!baseUrl || !apiKey) {
     throw new Error(
       "Storage proxy credentials missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY"
+    );
+  }
+
+  try {
+    new URL(ensureTrailingSlash(baseUrl));
+  } catch {
+    throw new Error(
+      "Storage proxy URL is invalid: check BUILT_IN_FORGE_API_URL"
     );
   }
 
