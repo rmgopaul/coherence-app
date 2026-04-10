@@ -346,9 +346,11 @@ const dashboardRouter = t.router({
         getOrCreateLatestScheduleBImportJob,
         getScheduleBImportJobCounts,
         listScheduleBImportFileNames,
+        failScheduleBImportFilesWithInvalidStorage,
       } = await import("../db");
 
       const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
+      await failScheduleBImportFilesWithInvalidStorage(job.id);
       const counts = await getScheduleBImportJobCounts(job.id);
       const knownFileNames = await listScheduleBImportFileNames(job.id, {
         includeStatuses: ["uploading", "queued", "processing"],
@@ -385,6 +387,7 @@ const dashboardRouter = t.router({
       const {
         getLatestScheduleBImportJob,
         getScheduleBImportJobCounts,
+        failScheduleBImportFilesWithInvalidStorage,
       } = await import("../db");
 
       const job = await getLatestScheduleBImportJob(ctx.userId);
@@ -405,6 +408,7 @@ const dashboardRouter = t.router({
           },
         };
       }
+      await failScheduleBImportFilesWithInvalidStorage(job.id);
 
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
         "../services/scheduleBImportJobRunner"
@@ -639,12 +643,14 @@ const dashboardRouter = t.router({
         getLatestScheduleBImportJob,
         updateScheduleBImportJob,
         requeueScheduleBImportRetryableFiles,
+        failScheduleBImportFilesWithInvalidStorage,
       } = await import("../db");
       const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
         return { success: false, reason: "no_job" as const };
       }
 
+      await failScheduleBImportFilesWithInvalidStorage(job.id);
       await requeueScheduleBImportRetryableFiles(job.id);
 
       await updateScheduleBImportJob(job.id, {

@@ -13,6 +13,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     updateScheduleBImportJob,
     listPendingScheduleBImportFiles,
     requeueScheduleBImportProcessingFiles,
+    failScheduleBImportFilesWithInvalidStorage,
     upsertScheduleBImportResult,
     getScheduleBImportJobCounts,
     markScheduleBImportFileStatus,
@@ -29,6 +30,8 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
   try {
     // Recover any files left in "processing" from a prior crash/restart.
     await requeueScheduleBImportProcessingFiles(id);
+    // Do not attempt to process stale queue entries that never finalized upload.
+    await failScheduleBImportFilesWithInvalidStorage(id);
 
     await updateScheduleBImportJob(id, {
       status: "running",

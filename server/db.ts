@@ -3059,6 +3059,32 @@ export async function requeueScheduleBImportProcessingFiles(jobId: string) {
   });
 }
 
+export async function failScheduleBImportFilesWithInvalidStorage(jobId: string) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+
+  await withDbRetry("fail schedule b import files with invalid storage", async () => {
+    await db.execute(sql`
+      UPDATE scheduleBImportFiles
+      SET
+        status = 'failed',
+        error = COALESCE(error, 'Upload session expired; please re-upload this PDF.'),
+        processedAt = COALESCE(processedAt, NOW()),
+        updatedAt = NOW()
+      WHERE
+        jobId = ${jobId}
+        AND status IN ('queued', 'processing')
+        AND (
+          storageKey IS NULL
+          OR storageKey = ''
+          OR storageKey LIKE 'tmp:%'
+        )
+    `);
+  });
+}
+
 export async function requeueScheduleBImportRetryableFiles(jobId: string) {
   const db = await getDb();
   if (!db) return;
@@ -3076,7 +3102,10 @@ export async function requeueScheduleBImportRetryableFiles(jobId: string) {
       .where(
         and(
           eq(scheduleBImportFiles.jobId, jobId),
-          eq(scheduleBImportFiles.status, "failed")
+          eq(scheduleBImportFiles.status, "failed"),
+          sql`${scheduleBImportFiles.storageKey} IS NOT NULL`,
+          sql`${scheduleBImportFiles.storageKey} <> ''`,
+          sql`${scheduleBImportFiles.storageKey} NOT LIKE 'tmp:%'`
         )
       );
 
