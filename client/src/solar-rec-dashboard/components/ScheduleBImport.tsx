@@ -47,6 +47,9 @@ import type { CsvRow } from "../state/types";
 import { bytesToBase64 } from "../lib/binaryEncoding";
 import { buildCsv, timestampForCsvFileName, triggerCsvDownload } from "../lib/csvIo";
 
+const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+const formatNumber = (value: number): string => NUMBER_FORMATTER.format(value);
+
 // ── Constants (private to this component) ──────────────────────────
 const SCHEDULE_B_UPLOAD_CHUNK_BYTES = 190_000;
 const SCHEDULE_B_MAX_SERVER_ROWS = 50_000;
@@ -71,12 +74,26 @@ export type ScheduleBImportProps = {
   transferDeliveryLookup: Map<string, Map<number, number>>;
   onApply: (rows: CsvRow[]) => void;
   existingDeliverySchedule: CsvRow[] | null;
+  /**
+   * Called when the user clicks "Clear". The parent should wipe the
+   * applied deliveryScheduleBase dataset so the tracker starts fresh.
+   * Without this, a stale previous-scan's obligations would still show
+   * in the tracker after the user clears the scan queue.
+   */
+  onClearAppliedSchedule?: () => void;
 };
+
+// Minimum time between auto-applies during a running scan. Each call
+// triggers setDatasets in the parent, which triggers a debounced cloud
+// sync — we don't want one sync per poll cycle (every 12s) when the
+// scanner is working through a 500-PDF batch.
+const AUTO_APPLY_MIN_INTERVAL_MS = 30_000;
 
 export function ScheduleBImport({
   transferDeliveryLookup,
   onApply,
   existingDeliverySchedule,
+  onClearAppliedSchedule,
 }: ScheduleBImportProps) {
   const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
   const [scheduleBUploading, setScheduleBUploading] = useState(false);
@@ -93,13 +110,22 @@ export function ScheduleBImport({
   const [contractIdMappingCount, setContractIdMappingCount] = useState(0);
   const contractIdMappingRef = useRef<Map<string, string>>(new Map());
 
+  // Auto-apply bookkeeping: track the last-applied row count + timestamp
+  // so we can rate-limit repeated setDatasets calls while the scanner is
+  // running. Surfaced in a badge so the user can see "N auto-applied".
+  const autoApplyStateRef = useRef<{ count: number; time: number }>({ count: 0, time: 0 });
+  const [autoApplyStatus, setAutoApplyStatus] = useState<{
+    lastAppliedCount: number;
+    lastAppliedAt: number | null;
+  }>({ lastAppliedCount: 0, lastAppliedAt: null });
+
   const ensureScheduleBImportJob = trpc.solarRecDashboard.ensureScheduleBImportJob.useMutation();
   const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
   const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
   const clearScheduleBImport = trpc.solarRecDashboard.clearScheduleBImport.useMutation();
 
   const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
-    refetchInterval: 5_000,
+    refetchInterval: 3_000,
     refetchOnWindowFocus: true,
   });
 
@@ -110,7 +136,7 @@ export function ScheduleBImport({
       refetchInterval:
         scheduleBStatusQuery.data?.job?.status === "running" ||
         scheduleBStatusQuery.data?.job?.status === "queued"
-          ? 12_000
+          ? 4_000
           : false,
       refetchOnWindowFocus: true,
     }
@@ -185,6 +211,66 @@ export function ScheduleBImport({
     scheduleBResultsQuery.data?.total,
     scheduleBResultsQuery,
   ]);
+
+  // ── Auto-apply: write new scan results into deliveryScheduleBase ─────
+  //
+  // Previously the user had to manually click "Apply as Delivery Schedule
+  // (N)" after every scan. When the scanner processes 500 PDFs in the
+  // background, that meant no tracker visibility until the scan finished
+  // AND the user remembered to click Apply. Now:
+  //
+  //   1. As new successful results arrive from the server (polled every
+  //      12s while the job is running), schedule a debounced apply.
+  //   2. Respect AUTO_APPLY_MIN_INTERVAL_MS between applies so we don't
+  //      trigger a cloud-sync storm on every 12s poll.
+  //   3. On job completion transition, force a final apply to flush any
+  //      results that arrived inside the debounce window.
+  //   4. Never auto-apply zero rows (first load, or all-errors case).
+  //
+  // The user can still click "Apply as Delivery Schedule" to force-apply
+  // immediately without waiting for the debounce.
+  useEffect(() => {
+    const successful = scheduleBResults.filter((r) => !r.extraction.error);
+    if (successful.length === 0) return;
+    if (successful.length <= autoApplyStateRef.current.count) return;
+
+    const now = Date.now();
+    const elapsed = now - autoApplyStateRef.current.time;
+    const delay = Math.max(0, AUTO_APPLY_MIN_INTERVAL_MS - elapsed);
+
+    const jobStatus = scheduleBStatusQuery.data?.job?.status;
+    const jobIsComplete =
+      jobStatus === "completed" ||
+      jobStatus === "succeeded" ||
+      jobStatus === "failed" ||
+      jobStatus === null ||
+      jobStatus === undefined;
+    const effectiveDelay = jobIsComplete ? 0 : delay;
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      if (cancelled) return;
+      try {
+        const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
+        const mapping = contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined;
+        const rows = toDeliveryScheduleBaseRows(successful, mapping);
+        if (rows.length === 0) return;
+        onApply(rows);
+        autoApplyStateRef.current = { count: successful.length, time: Date.now() };
+        setAutoApplyStatus({
+          lastAppliedCount: rows.length,
+          lastAppliedAt: Date.now(),
+        });
+      } catch {
+        // Best-effort — manual Apply button is still available.
+      }
+    }, effectiveDelay);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [scheduleBResults, scheduleBStatusQuery.data?.job?.status, onApply]);
 
   const handleContractIdMappingChange = useCallback(
     async (text: string) => {
@@ -370,6 +456,21 @@ export function ScheduleBImport({
         const failedMessages: string[] = [];
         setScheduleBProgress({ current: 0, total: filesToUpload.length });
 
+        // Tuning for large batches (500+ PDFs):
+        //   - Yield to the event loop every UPLOAD_YIELD_EVERY files so
+        //     the UI stays responsive and the browser can GC temporary
+        //     chunk buffers. Without this, big batches eat RAM and
+        //     eventually crash the tab.
+        //   - Force-refetch results every UPLOAD_REFETCH_EVERY files so
+        //     the user sees the Apply count climbing in real time instead
+        //     of waiting for the 4s polling interval.
+        //   - Force-run the background import job every UPLOAD_KICK_EVERY
+        //     files so the server starts processing the partial batch
+        //     instead of waiting until every upload finishes.
+        const UPLOAD_YIELD_EVERY = 10;
+        const UPLOAD_REFETCH_EVERY = 25;
+        const UPLOAD_KICK_EVERY = 50;
+
         for (let index = 0; index < filesToUpload.length; index += 1) {
           const file = filesToUpload[index];
           try {
@@ -386,6 +487,21 @@ export function ScheduleBImport({
             setScheduleBUploadError(message);
           }
           setScheduleBProgress({ current: index + 1, total: filesToUpload.length });
+
+          const completedSoFar = index + 1;
+          if (completedSoFar % UPLOAD_YIELD_EVERY === 0) {
+            // Explicit event-loop yield so GC can reclaim chunk buffers
+            // before the next iteration pins more memory.
+            await waitMs(0);
+          }
+          if (completedSoFar % UPLOAD_KICK_EVERY === 0) {
+            // Don't await — fire-and-forget so uploads aren't blocked.
+            void forceRunScheduleBImport.mutateAsync().catch(() => ({ success: false }));
+          }
+          if (completedSoFar % UPLOAD_REFETCH_EVERY === 0) {
+            void scheduleBStatusQuery.refetch();
+            void scheduleBResultsQuery.refetch();
+          }
         }
 
         await forceRunScheduleBImport.mutateAsync().catch(() => ({ success: false }));
@@ -452,21 +568,50 @@ export function ScheduleBImport({
     toast.info("Building delivery schedule from scan results...");
     await new Promise((r) => setTimeout(r, 100));
     try {
+      // If the client hasn't polled the server yet, scheduleBResults can be
+      // empty/stale even though the server has processed files. Force a
+      // refetch first so the user doesn't have to wait for the next
+      // 4-second poll tick.
+      if (scheduleBResults.length === 0 && scheduleBStatusQuery.data?.job) {
+        toast.info("Refetching latest scan results...");
+        await scheduleBResultsQuery.refetch();
+        // The refetch updates scheduleBResultsQuery.data but not our local
+        // scheduleBResults state (that's driven by a separate useEffect).
+        // React will re-run this callback next render with the fresh data.
+        return;
+      }
+
       const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
+      const successful = scheduleBResults.filter((r) => !r.extraction.error);
       const rows = toDeliveryScheduleBaseRows(
         scheduleBResults,
         contractIdMappingRef.current.size > 0 ? contractIdMappingRef.current : undefined
       );
       if (rows.length === 0) {
-        toast.error("No valid results to apply");
+        // Give the user a precise diagnostic instead of a generic error.
+        if (scheduleBResults.length === 0) {
+          toast.error(
+            "No scan results loaded yet. Wait a few seconds for the scanner to finish, then try again."
+          );
+        } else if (successful.length === 0) {
+          toast.error(
+            `All ${scheduleBResults.length} scanned PDFs had parse errors. Check the errors column.`
+          );
+        } else {
+          toast.error(
+            `${successful.length} scanned PDFs parsed successfully but none had a GATS ID or delivery schedule. Check the raw extraction errors.`
+          );
+        }
         return;
       }
       onApply(rows);
+      autoApplyStateRef.current = { count: successful.length, time: Date.now() };
+      setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
       toast.success(`Applied ${rows.length} systems as Delivery Schedule`);
     } finally {
       setApplyingSchedule(false);
     }
-  }, [scheduleBResults, onApply]);
+  }, [scheduleBResults, onApply, scheduleBStatusQuery.data?.job, scheduleBResultsQuery]);
 
   const handleExportCsv = useCallback(() => {
     const headers = [
@@ -502,6 +647,8 @@ export function ScheduleBImport({
   const showUploadProgress = scheduleBProgress.total > 0 || backgroundRunning;
   const successCount = scheduleBResults.filter((r) => !r.extraction.error).length;
   const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
+  const serverProcessedCount = statusCounts?.processedFiles ?? 0;
+  const serverTotalCount = statusCounts?.totalFiles ?? 0;
 
   return (
     <Card>
@@ -533,7 +680,17 @@ export function ScheduleBImport({
                       ]);
                       setScheduleBResults([]);
                       setScheduleBProgress({ current: 0, total: 0 });
-                      toast.info("Cleared Schedule B results");
+                      // Reset auto-apply bookkeeping so the next scan
+                      // re-applies from zero.
+                      autoApplyStateRef.current = { count: 0, time: 0 };
+                      setAutoApplyStatus({ lastAppliedCount: 0, lastAppliedAt: null });
+                      // Also wipe the already-applied deliveryScheduleBase
+                      // so the Delivery Tracker resets to empty. Without
+                      // this, stale obligations from a previous scan linger
+                      // after Clear, creating the illusion that the scanner
+                      // isn't working.
+                      onClearAppliedSchedule?.();
+                      toast.info("Cleared Schedule B results and applied delivery schedule");
                     } catch (error) {
                       toast.error(error instanceof Error ? error.message : "Failed to clear Schedule B results");
                     }
@@ -672,6 +829,37 @@ export function ScheduleBImport({
             </span>
           )}
         </div>
+
+        {/* Diagnostics — always visible when a job exists so the user can
+            see exactly what's in flight. Covers: the common "Apply shows 0"
+            confusion (client hasn't polled yet, or all results errored). */}
+        {(scheduleBStatusQuery.data?.job || scheduleBResults.length > 0) && (
+          <div className="rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-700">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span>
+                <strong>Server:</strong> {formatNumber(serverProcessedCount)} / {formatNumber(serverTotalCount)} processed
+                {serverJobStatus ? ` (${serverJobStatus})` : ""}
+              </span>
+              <span>
+                <strong>Client:</strong> {formatNumber(scheduleBResults.length)} loaded
+                {scheduleBResults.length > 0
+                  ? ` — ${formatNumber(successCount)} ok, ${formatNumber(errorCount)} errors`
+                  : ""}
+              </span>
+              <span>
+                <strong>Applied to tracker:</strong> {formatNumber(autoApplyStatus.lastAppliedCount)}
+                {autoApplyStatus.lastAppliedAt
+                  ? ` (${Math.max(0, Math.round((Date.now() - autoApplyStatus.lastAppliedAt) / 1000))}s ago)`
+                  : " (never)"}
+              </span>
+              {scheduleBResults.length < serverProcessedCount ? (
+                <span className="text-amber-700">
+                  ⚠ Client behind server by {formatNumber(serverProcessedCount - scheduleBResults.length)} rows — refetch pending
+                </span>
+              ) : null}
+            </div>
+          </div>
+        )}
 
         {scheduleBStatusQuery.data?.job?.error ? (
           <p className="text-xs text-red-600">

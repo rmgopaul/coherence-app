@@ -14010,6 +14010,14 @@ const aiDataContext = useMemo(() => {
             <ScheduleBImport
               transferDeliveryLookup={transferDeliveryLookup}
               existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
+              onClearAppliedSchedule={() => {
+                // Phase 1a follow-up: Clear on the Schedule B card wipes
+                // the applied deliveryScheduleBase dataset so the tracker
+                // starts fresh. Also reset the stale signature ref so
+                // the next apply always fires a genuine cloud sync.
+                delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
+                clearDataset("deliveryScheduleBase");
+              }}
               onApply={(rows) => {
                 const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
                   const trackingId = clean(row.tracking_system_ref_id).toUpperCase();
