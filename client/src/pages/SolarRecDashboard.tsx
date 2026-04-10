@@ -14036,6 +14036,8 @@ const aiDataContext = useMemo(() => {
                 // local-only:... (silent-drop branch).
                 delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
 
+                const beforeRowCount = datasets.deliveryScheduleBase?.rows.length ?? 0;
+
                 setDatasets((prev) => {
                   const existingRows = prev.deliveryScheduleBase?.rows ?? [];
                   const mergedByKey = new Map<string, CsvRow>();
@@ -14048,15 +14050,19 @@ const aiDataContext = useMemo(() => {
                     orderedKeys.push(key);
                   });
 
+                  let incomingNewCount = 0;
+                  let incomingMergedCount = 0;
                   rows.forEach((row, index) => {
                     const key = makeDeliveryRowKey(row, "scheduleb", index);
                     const existing = mergedByKey.get(key);
                     if (existing) {
                       mergedByKey.set(key, { ...existing, ...row });
+                      incomingMergedCount += 1;
                       return;
                     }
                     mergedByKey.set(key, row);
                     orderedKeys.push(key);
+                    incomingNewCount += 1;
                   });
 
                   const mergedRows = orderedKeys
@@ -14071,6 +14077,17 @@ const aiDataContext = useMemo(() => {
                   (prev.deliveryScheduleBase?.headers ?? []).forEach(pushHeader);
                   rows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
                   mergedRows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
+
+                  // Diagnostic toast so the user can see exactly what
+                  // happened: rows received, new vs. merged-into-existing,
+                  // dataset size before/after. Without this the UX is
+                  // opaque when "Apply says success but tracker count
+                  // doesn't change" (usually because the new rows all
+                  // collided with existing tracking IDs).
+                  toast.info(
+                    `Apply: ${rows.length} incoming (${incomingNewCount} new, ${incomingMergedCount} merged). Dataset ${beforeRowCount} → ${mergedRows.length} rows.`,
+                    { duration: 8000 }
+                  );
 
                   return {
                     ...prev,

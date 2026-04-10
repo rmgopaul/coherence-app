@@ -851,7 +851,10 @@ export function ScheduleBImport({
                   : ""}
               </span>
               <span>
-                <strong>Applied to tracker:</strong> {formatNumber(autoApplyStatus.lastAppliedCount)}
+                <strong>Dataset has:</strong> {formatNumber(existingDeliverySchedule?.length ?? 0)} rows
+              </span>
+              <span>
+                <strong>Last apply:</strong> {formatNumber(autoApplyStatus.lastAppliedCount)}
                 {autoApplyStatus.lastAppliedAt
                   ? ` (${Math.max(0, Math.round((Date.now() - autoApplyStatus.lastAppliedAt) / 1000))}s ago)`
                   : " (never)"}
