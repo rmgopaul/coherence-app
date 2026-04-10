@@ -834,14 +834,18 @@ export function ScheduleBImport({
             see exactly what's in flight. Covers: the common "Apply shows 0"
             confusion (client hasn't polled yet, or all results errored). */}
         {(scheduleBStatusQuery.data?.job || scheduleBResults.length > 0) && (
-          <div className="rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-700">
+          <div className="rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-700 space-y-1.5">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span>
                 <strong>Server:</strong> {formatNumber(serverProcessedCount)} / {formatNumber(serverTotalCount)} processed
                 {serverJobStatus ? ` (${serverJobStatus})` : ""}
               </span>
               <span>
-                <strong>Client:</strong> {formatNumber(scheduleBResults.length)} loaded
+                <strong>Server returned:</strong> {formatNumber(scheduleBResultsQuery.data?.total ?? 0)} rows
+                {scheduleBResultsQuery.isFetching ? " (fetching…)" : ""}
+              </span>
+              <span>
+                <strong>Client mapped:</strong> {formatNumber(scheduleBResults.length)} loaded
                 {scheduleBResults.length > 0
                   ? ` — ${formatNumber(successCount)} ok, ${formatNumber(errorCount)} errors`
                   : ""}
@@ -852,12 +856,66 @@ export function ScheduleBImport({
                   ? ` (${Math.max(0, Math.round((Date.now() - autoApplyStatus.lastAppliedAt) / 1000))}s ago)`
                   : " (never)"}
               </span>
-              {scheduleBResults.length < serverProcessedCount ? (
-                <span className="text-amber-700">
-                  ⚠ Client behind server by {formatNumber(serverProcessedCount - scheduleBResults.length)} rows — refetch pending
-                </span>
-              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                disabled={scheduleBResultsQuery.isFetching || scheduleBStatusQuery.isFetching}
+                onClick={async () => {
+                  const [statusResult, resultsResult] = await Promise.all([
+                    scheduleBStatusQuery.refetch(),
+                    scheduleBResultsQuery.refetch(),
+                  ]);
+                  const serverTotal = resultsResult.data?.total ?? 0;
+                  const jobId = resultsResult.data?.jobId ?? "none";
+                  toast.info(
+                    `Refetched — server has ${serverTotal} result row(s) for job ${jobId.slice(0, 8)} (status: ${statusResult.data?.job?.status ?? "unknown"})`
+                  );
+                }}
+              >
+                Refresh Now
+              </Button>
             </div>
+            {scheduleBResultsQuery.error ? (
+              <div className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-[11px] text-rose-900">
+                <strong>Results query error:</strong>{" "}
+                {scheduleBResultsQuery.error instanceof Error
+                  ? scheduleBResultsQuery.error.message
+                  : String(scheduleBResultsQuery.error)}
+              </div>
+            ) : null}
+            {scheduleBStatusQuery.error ? (
+              <div className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-[11px] text-rose-900">
+                <strong>Status query error:</strong>{" "}
+                {scheduleBStatusQuery.error instanceof Error
+                  ? scheduleBStatusQuery.error.message
+                  : String(scheduleBStatusQuery.error)}
+              </div>
+            ) : null}
+            {(scheduleBResultsQuery.data?.total ?? 0) > 0 &&
+            scheduleBResults.length < (scheduleBResultsQuery.data?.total ?? 0) ? (
+              <div className="text-amber-700">
+                ⚠ Server returned {formatNumber(scheduleBResultsQuery.data?.total ?? 0)} rows but client has mapped only{" "}
+                {formatNumber(scheduleBResults.length)}. Client-side mapping stalled — try Refresh Now or reload the page.
+              </div>
+            ) : null}
+            {scheduleBResults.length === 0 && serverProcessedCount > 0 && (scheduleBResultsQuery.data?.total ?? 0) === 0 ? (
+              <div className="text-amber-700">
+                ⚠ Server reports {formatNumber(serverProcessedCount)} files processed but 0 result rows in DB. The
+                processing job may have written file-status updates without creating result rows — this is a
+                server-side job-runner issue. Click <strong>Refresh Now</strong>, then if nothing changes,
+                click <strong>Clear</strong> and re-upload.
+              </div>
+            ) : null}
+            {scheduleBResults.length < serverProcessedCount &&
+            (scheduleBResultsQuery.data?.total ?? 0) >= scheduleBResults.length &&
+            (scheduleBResultsQuery.data?.total ?? 0) < serverProcessedCount ? (
+              <div className="text-amber-700">
+                ⚠ Server processed {formatNumber(serverProcessedCount)} files but only{" "}
+                {formatNumber(scheduleBResultsQuery.data?.total ?? 0)} result rows were written to the DB. This
+                usually means some files failed during extraction before a result row could be inserted.
+              </div>
+            ) : null}
           </div>
         )}
 
