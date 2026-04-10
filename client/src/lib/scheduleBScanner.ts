@@ -499,6 +499,16 @@ export function toDeliveryScheduleBaseRows(
         row[`year${i + 1}_quantity_required`] = year
           ? String(year.recQuantity)
           : "0";
+        // Energy year boundary: June 1 of startYear through May 31 of startYear+1.
+        // Downstream memos (deliveryTrackerData, transferDeliveryLookup, etc.)
+        // require these dates to bucket transfers into the correct delivery year.
+        if (year) {
+          row[`year${i + 1}_start_date`] = `${year.startYear}-06-01`;
+          row[`year${i + 1}_end_date`] = `${year.startYear + 1}-05-31`;
+        } else {
+          row[`year${i + 1}_start_date`] = "";
+          row[`year${i + 1}_end_date`] = "";
+        }
       }
 
       return row;
