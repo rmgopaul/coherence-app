@@ -147,13 +147,14 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       try {
         await updateScheduleBImportJob(id, { currentFileName: file.fileName });
 
+        // listAllUploadedScheduleBImportFiles already filters to files
+        // with a permanent storageKey (not tmp:, not null, not empty),
+        // so this is purely a defensive null-check for TypeScript's
+        // benefit. If it triggers, something unexpected upstream has
+        // passed us a half-uploaded file.
         const storageKey = (file.storageKey ?? "").trim();
-        if (!storageKey) {
-          rowError = "Missing uploaded PDF storage key.";
-        } else if (storageKey.startsWith("tmp:")) {
-          // Upload never finalized (crashed mid-chunk). Surface it as
-          // an error row so the user can see it and re-upload.
-          rowError = "Upload did not finalize (temporary storage key). Please re-upload this PDF.";
+        if (!storageKey || storageKey.startsWith("tmp:")) {
+          rowError = "Upload did not finalize before processing began. Re-upload this PDF.";
         } else {
           try {
             const pdfBytes = await storageReadBytes(storageKey);

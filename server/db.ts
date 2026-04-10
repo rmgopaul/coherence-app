@@ -290,20 +290,42 @@ async function ensureScheduleBImportTables() {
       )
     `);
 
-    // Add counter columns to pre-existing installs that created the table
-    // before the contract-scraper-style rewrite. Idempotent IF NOT EXISTS.
-    await db.execute(sql`
-      ALTER TABLE scheduleBImportJobs
-      ADD COLUMN IF NOT EXISTS totalFiles int NOT NULL DEFAULT 0
-    `);
-    await db.execute(sql`
-      ALTER TABLE scheduleBImportJobs
-      ADD COLUMN IF NOT EXISTS successCount int NOT NULL DEFAULT 0
-    `);
-    await db.execute(sql`
-      ALTER TABLE scheduleBImportJobs
-      ADD COLUMN IF NOT EXISTS failureCount int NOT NULL DEFAULT 0
-    `);
+    // Add counter columns to pre-existing installs that created the
+    // table before the contract-scraper-style rewrite. We use an
+    // information_schema check instead of `ADD COLUMN IF NOT EXISTS`
+    // because that syntax is only supported on MySQL 8.0.29+ and
+    // recent TiDB — older installs would reject the ALTER outright
+    // and cause the whole ensureScheduleBImportTables to throw,
+    // breaking the entire scanner at startup.
+    const addColumnIfMissing = async (columnName: string, columnDef: string) => {
+      const result = (await db.execute(sql`
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'scheduleBImportJobs'
+          AND column_name = ${columnName}
+      `)) as unknown as Array<Array<{ cnt: number }>>;
+      const rows = Array.isArray(result) ? result[0] : [];
+      const exists = Array.isArray(rows) && rows[0]?.cnt > 0;
+      if (exists) return;
+      await db.execute(
+        sql.raw(`ALTER TABLE scheduleBImportJobs ADD COLUMN ${columnName} ${columnDef}`)
+      );
+    };
+    try {
+      await addColumnIfMissing("totalFiles", "int NOT NULL DEFAULT 0");
+      await addColumnIfMissing("successCount", "int NOT NULL DEFAULT 0");
+      await addColumnIfMissing("failureCount", "int NOT NULL DEFAULT 0");
+    } catch (migrationError) {
+      // Best-effort migration: if any ALTER fails we log it and continue.
+      // The new runner will still function on fresh installs (CREATE TABLE
+      // above defines the columns), and existing installs can apply the
+      // ALTER manually if needed.
+      console.warn(
+        "[db] scheduleBImportJobs counter column migration failed:",
+        migrationError instanceof Error ? migrationError.message : migrationError
+      );
+    }
 
     await db.execute(sql`
       CREATE TABLE IF NOT EXISTS scheduleBImportFiles (
@@ -3085,10 +3107,16 @@ export async function listPendingScheduleBImportFiles(jobId: string, limit = 100
 
 /**
  * List every file in the job that has a permanent storage key (i.e. the
- * chunked upload finished and storagePut succeeded). Used by the new
- * runner to build its work list without caring about file.status — which
- * the previous runner's counter logic depended on and got wrong in
- * multiple race conditions.
+ * chunked upload finished and storagePut succeeded). Files still being
+ * uploaded chunk-by-chunk have storageKey = 'tmp:...' and are
+ * deliberately excluded — processing them would write an "upload did
+ * not finalize" error result row that then permanently masks the file
+ * after upload actually completes (because the runner skips any
+ * fileName already in the results table on resume).
+ *
+ * Files with NULL or empty storageKey are also excluded for the same
+ * reason. The runner will pick them up on a subsequent invocation once
+ * markScheduleBImportFileQueued has assigned a permanent key.
  */
 export async function listAllUploadedScheduleBImportFiles(jobId: string) {
   const db = await getDb();
@@ -3102,7 +3130,16 @@ export async function listAllUploadedScheduleBImportFiles(jobId: string) {
         storageKey: scheduleBImportFiles.storageKey,
       })
       .from(scheduleBImportFiles)
-      .where(eq(scheduleBImportFiles.jobId, jobId))
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, jobId),
+          // Exclude tmp:, NULL, and empty — i.e. any file whose upload
+          // has not yet been finalized into permanent storage.
+          sql`${scheduleBImportFiles.storageKey} IS NOT NULL`,
+          sql`${scheduleBImportFiles.storageKey} <> ''`,
+          sql`${scheduleBImportFiles.storageKey} NOT LIKE 'tmp:%'`
+        )
+      )
       .orderBy(asc(scheduleBImportFiles.fileName));
     return rows;
   });
