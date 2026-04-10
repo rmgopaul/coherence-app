@@ -536,7 +536,13 @@ const dashboardRouter = t.router({
           fileSize: input.fileSize,
           uploadedChunks: 1,
           totalChunks: input.totalChunks,
-          status: input.totalChunks === 1 ? "queued" : "uploading",
+          // Keep status="uploading" until the permanent storageKey is
+          // written by markScheduleBImportFileQueued below. Transitioning
+          // to "queued" here creates a race window where the status poll's
+          // failScheduleBImportFilesWithInvalidStorage sweep matches
+          // (status IN ('queued', 'processing') AND storageKey LIKE 'tmp:%')
+          // and marks the file failed before we can finalize the upload.
+          status: "uploading",
           storageKey: `tmp:${input.uploadId}`,
           error: null,
         });
@@ -575,7 +581,14 @@ const dashboardRouter = t.router({
           fileSize: input.fileSize,
           uploadedChunks: input.chunkIndex + 1,
           totalChunks: input.totalChunks,
-          status: input.chunkIndex + 1 >= input.totalChunks ? "queued" : "uploading",
+          // Same reasoning as the chunk-0 path: stay "uploading" until
+          // markScheduleBImportFileQueued writes the permanent storageKey.
+          // The race window between "queued + tmp:" and the finalization
+          // is what causes the sweeping failScheduleBImportFilesWithInvalidStorage
+          // to mark legitimate uploads as failed with no result row,
+          // which in turn manifests as "N processed, 0 rows in DB" on the
+          // client diagnostic.
+          status: "uploading",
           storageKey: `tmp:${input.uploadId}`,
           error: null,
         });

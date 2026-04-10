@@ -3065,7 +3065,31 @@ export async function failScheduleBImportFilesWithInvalidStorage(jobId: string) 
   const ensured = await ensureScheduleBImportTables();
   if (!ensured) return;
 
+  // Two-step so the client diagnostic counters line up:
+  //   1. SELECT the filenames we're about to fail (so we can write result rows)
+  //   2. UPDATE them to status='failed' + create matching result rows
+  //
+  // Before this change, the UPDATE ran in isolation: files were marked
+  // failed without corresponding rows in scheduleBImportResults. That
+  // caused the "Server: N processed, 0 rows in DB" pattern the user hit,
+  // because `processedFiles = completedFiles + failedFiles` incremented
+  // but `listScheduleBImportResults` returned nothing.
   await withDbRetry("fail schedule b import files with invalid storage", async () => {
+    const stale = await db
+      .select({
+        fileName: scheduleBImportFiles.fileName,
+      })
+      .from(scheduleBImportFiles)
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, jobId),
+          sql`${scheduleBImportFiles.status} IN ('queued', 'processing')`,
+          sql`(${scheduleBImportFiles.storageKey} IS NULL OR ${scheduleBImportFiles.storageKey} = '' OR ${scheduleBImportFiles.storageKey} LIKE 'tmp:%')`
+        )
+      );
+
+    if (stale.length === 0) return;
+
     await db.execute(sql`
       UPDATE scheduleBImportFiles
       SET
@@ -3082,6 +3106,40 @@ export async function failScheduleBImportFilesWithInvalidStorage(jobId: string) 
           OR storageKey LIKE 'tmp:%'
         )
     `);
+
+    // Write a matching result row for each failed file so the client
+    // diagnostic + results table surface the error. Skip any fileName
+    // that already has a result row (defensive idempotency).
+    const now = new Date();
+    for (const { fileName } of stale) {
+      const existing = await db
+        .select({ id: scheduleBImportResults.id })
+        .from(scheduleBImportResults)
+        .where(
+          and(
+            eq(scheduleBImportResults.jobId, jobId),
+            eq(scheduleBImportResults.fileName, fileName)
+          )
+        )
+        .limit(1);
+      if (existing.length > 0) continue;
+
+      await db.insert(scheduleBImportResults).values({
+        id: nanoid(),
+        jobId,
+        fileName,
+        designatedSystemId: null,
+        gatsId: null,
+        acSizeKw: null,
+        capacityFactor: null,
+        contractPrice: null,
+        energizationDate: null,
+        maxRecQuantity: null,
+        deliveryYearsJson: "[]",
+        error: "Upload session expired before permanent storage was assigned; please re-upload this PDF.",
+        scannedAt: now,
+      });
+    }
   });
 }
 
