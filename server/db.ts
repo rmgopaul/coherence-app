@@ -59,6 +59,12 @@ import {
   contractScanJobCsgIds,
   contractScanResults,
   InsertContractScanResult,
+  scheduleBImportJobs,
+  InsertScheduleBImportJob,
+  scheduleBImportFiles,
+  InsertScheduleBImportFile,
+  scheduleBImportResults,
+  InsertScheduleBImportResult,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
@@ -66,6 +72,7 @@ import { nanoid } from 'nanoid';
 let _db: ReturnType<typeof drizzle> | null = null;
 let _solarRecDashboardTableEnsured = false;
 let _userFeedbackTableEnsured = false;
+let _scheduleBImportTablesEnsured = false;
 const SOLAR_REC_DB_CHUNK_CHARS = 900_000;
 
 const RETRYABLE_DB_ERROR_CODES = new Set([
@@ -253,6 +260,84 @@ async function ensureUserFeedbackTable() {
   });
 
   _userFeedbackTableEnsured = true;
+  return true;
+}
+
+async function ensureScheduleBImportTables() {
+  const db = await getDb();
+  if (!db) return false;
+  if (_scheduleBImportTablesEnsured) return true;
+
+  await withDbRetry("ensure schedule b import tables", async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS scheduleBImportJobs (
+        id varchar(64) NOT NULL,
+        userId int NOT NULL,
+        status varchar(32) NOT NULL DEFAULT 'queued',
+        currentFileName varchar(255) DEFAULT NULL,
+        error text,
+        startedAt timestamp NULL DEFAULT NULL,
+        stoppedAt timestamp NULL DEFAULT NULL,
+        completedAt timestamp NULL DEFAULT NULL,
+        createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY schedule_b_import_jobs_user_idx (userId),
+        KEY schedule_b_import_jobs_status_idx (status)
+      )
+    `);
+
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS scheduleBImportFiles (
+        id varchar(64) NOT NULL,
+        jobId varchar(64) NOT NULL,
+        fileName varchar(255) NOT NULL,
+        fileSize int DEFAULT NULL,
+        storageKey varchar(512) DEFAULT NULL,
+        status varchar(32) NOT NULL DEFAULT 'uploading',
+        uploadedChunks int NOT NULL DEFAULT 0,
+        totalChunks int NOT NULL DEFAULT 0,
+        error text,
+        processedAt timestamp NULL DEFAULT NULL,
+        createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY schedule_b_import_files_job_file_idx (jobId, fileName),
+        KEY schedule_b_import_files_job_status_idx (jobId, status),
+        KEY schedule_b_import_files_job_created_idx (jobId, createdAt)
+      )
+    `);
+
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS scheduleBImportResults (
+        id varchar(64) NOT NULL,
+        jobId varchar(64) NOT NULL,
+        fileName varchar(255) NOT NULL,
+        designatedSystemId varchar(64) DEFAULT NULL,
+        gatsId varchar(64) DEFAULT NULL,
+        acSizeKw double DEFAULT NULL,
+        capacityFactor double DEFAULT NULL,
+        contractPrice double DEFAULT NULL,
+        energizationDate varchar(32) DEFAULT NULL,
+        maxRecQuantity int DEFAULT NULL,
+        deliveryYearsJson mediumtext,
+        error text,
+        scannedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY schedule_b_import_results_job_file_idx (jobId, fileName),
+        KEY schedule_b_import_results_job_idx (jobId),
+        KEY schedule_b_import_results_gats_idx (gatsId)
+      )
+    `);
+
+    // Ensure older installs have sufficient space for delivery-year payload JSON.
+    await db.execute(sql`
+      ALTER TABLE scheduleBImportResults
+      MODIFY COLUMN deliveryYearsJson MEDIUMTEXT
+    `);
+  });
+
+  _scheduleBImportTablesEnsured = true;
   return true;
 }
 
@@ -2609,4 +2694,644 @@ export async function getLatestScanResultsByCsgIds(csgIds: string[]) {
     }
   }
   return deduped;
+}
+
+// ── Schedule B Import Jobs ─────────────────────────────────────────
+
+export type ScheduleBImportJobStatus =
+  | "queued"
+  | "running"
+  | "stopping"
+  | "stopped"
+  | "completed"
+  | "failed";
+
+export type ScheduleBImportFileStatus =
+  | "uploading"
+  | "queued"
+  | "processing"
+  | "completed"
+  | "failed";
+
+export async function createScheduleBImportJob(
+  data: {
+    userId: number;
+  }
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) throw new Error("Schedule B import table initialization failed");
+
+  const id = nanoid();
+  const now = new Date();
+  await withDbRetry("create schedule b import job", async () => {
+    await db.insert(scheduleBImportJobs).values({
+      id,
+      userId: data.userId,
+      status: "queued",
+      currentFileName: null,
+      error: null,
+      startedAt: null,
+      stoppedAt: null,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+  return id;
+}
+
+export async function getScheduleBImportJob(jobId: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return null;
+  return withDbRetry("get schedule b import job", async () => {
+    const [row] = await db
+      .select()
+      .from(scheduleBImportJobs)
+      .where(eq(scheduleBImportJobs.id, jobId))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function getLatestScheduleBImportJob(userId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return null;
+  return withDbRetry("get latest schedule b import job", async () => {
+    const [row] = await db
+      .select()
+      .from(scheduleBImportJobs)
+      .where(eq(scheduleBImportJobs.userId, userId))
+      .orderBy(desc(scheduleBImportJobs.createdAt))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function updateScheduleBImportJob(
+  jobId: string,
+  data: Partial<{
+    status: ScheduleBImportJobStatus;
+    currentFileName: string | null;
+    error: string | null;
+    startedAt: Date | null;
+    stoppedAt: Date | null;
+    completedAt: Date | null;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  await withDbRetry("update schedule b import job", async () => {
+    await db
+      .update(scheduleBImportJobs)
+      .set(data)
+      .where(eq(scheduleBImportJobs.id, jobId));
+  });
+}
+
+export async function getOrCreateLatestScheduleBImportJob(userId: number) {
+  const existing = await getLatestScheduleBImportJob(userId);
+  if (existing) return existing;
+  const id = await createScheduleBImportJob({ userId });
+  const created = await getScheduleBImportJob(id);
+  if (!created) {
+    throw new Error("Failed to create Schedule B import job.");
+  }
+  return created;
+}
+
+// ── Schedule B Import Files ───────────────────────────────────────
+
+export async function getScheduleBImportFile(jobId: string, fileName: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return null;
+  return withDbRetry("get schedule b import file", async () => {
+    const [row] = await db
+      .select()
+      .from(scheduleBImportFiles)
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, jobId),
+          eq(scheduleBImportFiles.fileName, fileName)
+        )
+      )
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function upsertScheduleBImportFileUploadProgress(
+  data: {
+    jobId: string;
+    fileName: string;
+    fileSize: number;
+    uploadedChunks: number;
+    totalChunks: number;
+    status: ScheduleBImportFileStatus;
+    storageKey?: string | null;
+    error?: string | null;
+  }
+) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  const now = new Date();
+
+  await withDbRetry("upsert schedule b import file upload progress", async () => {
+    const existing = await db
+      .select({ id: scheduleBImportFiles.id })
+      .from(scheduleBImportFiles)
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, data.jobId),
+          eq(scheduleBImportFiles.fileName, data.fileName)
+        )
+      )
+      .limit(1);
+
+    if (existing.length > 0) {
+      await db
+        .update(scheduleBImportFiles)
+        .set({
+          fileSize: data.fileSize,
+          uploadedChunks: data.uploadedChunks,
+          totalChunks: data.totalChunks,
+          status: data.status,
+          storageKey:
+            data.storageKey !== undefined
+              ? data.storageKey
+              : sql`${scheduleBImportFiles.storageKey}`,
+          error: data.error ?? null,
+          updatedAt: now,
+        })
+        .where(eq(scheduleBImportFiles.id, existing[0].id));
+      return;
+    }
+
+    await db.insert(scheduleBImportFiles).values({
+      id: nanoid(),
+      jobId: data.jobId,
+      fileName: data.fileName,
+      fileSize: data.fileSize,
+      storageKey: data.storageKey ?? null,
+      status: data.status,
+      uploadedChunks: data.uploadedChunks,
+      totalChunks: data.totalChunks,
+      error: data.error ?? null,
+      processedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function markScheduleBImportFileQueued(
+  data: {
+    jobId: string;
+    fileName: string;
+    fileSize: number;
+    totalChunks: number;
+    storageKey: string;
+  }
+) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  const now = new Date();
+
+  await withDbRetry("mark schedule b import file queued", async () => {
+    const existing = await db
+      .select({ id: scheduleBImportFiles.id })
+      .from(scheduleBImportFiles)
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, data.jobId),
+          eq(scheduleBImportFiles.fileName, data.fileName)
+        )
+      )
+      .limit(1);
+
+    if (existing.length > 0) {
+      await db
+        .update(scheduleBImportFiles)
+        .set({
+          fileSize: data.fileSize,
+          totalChunks: data.totalChunks,
+          uploadedChunks: data.totalChunks,
+          storageKey: data.storageKey,
+          status: "queued",
+          error: null,
+          updatedAt: now,
+        })
+        .where(eq(scheduleBImportFiles.id, existing[0].id));
+      return;
+    }
+
+    await db.insert(scheduleBImportFiles).values({
+      id: nanoid(),
+      jobId: data.jobId,
+      fileName: data.fileName,
+      fileSize: data.fileSize,
+      totalChunks: data.totalChunks,
+      uploadedChunks: data.totalChunks,
+      storageKey: data.storageKey,
+      status: "queued",
+      error: null,
+      processedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function markScheduleBImportFileStatus(
+  data: {
+    jobId: string;
+    fileName: string;
+    status: ScheduleBImportFileStatus;
+    error?: string | null;
+    processedAt?: Date | null;
+  }
+) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  await withDbRetry("mark schedule b import file status", async () => {
+    await db
+      .update(scheduleBImportFiles)
+      .set({
+        status: data.status,
+        error: data.error ?? null,
+        processedAt:
+          data.processedAt ??
+          (data.status === "completed" || data.status === "failed"
+            ? new Date()
+            : null),
+      })
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, data.jobId),
+          eq(scheduleBImportFiles.fileName, data.fileName)
+        )
+      );
+  });
+}
+
+export async function listScheduleBImportFileNames(jobId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return [];
+  return withDbRetry("list schedule b import file names", async () => {
+    const rows = await db
+      .select({ fileName: scheduleBImportFiles.fileName })
+      .from(scheduleBImportFiles)
+      .where(eq(scheduleBImportFiles.jobId, jobId));
+    return rows.map((row) => row.fileName);
+  });
+}
+
+export async function listPendingScheduleBImportFiles(jobId: string, limit = 100) {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return [];
+  return withDbRetry("list pending schedule b import files", async () =>
+    db
+      .select()
+      .from(scheduleBImportFiles)
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, jobId),
+          eq(scheduleBImportFiles.status, "queued")
+        )
+      )
+      .orderBy(asc(scheduleBImportFiles.createdAt))
+      .limit(limit)
+  );
+}
+
+export async function requeueScheduleBImportProcessingFiles(jobId: string) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  await withDbRetry("requeue schedule b import processing files", async () => {
+    await db
+      .update(scheduleBImportFiles)
+      .set({
+        status: "queued",
+        error: null,
+      })
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, jobId),
+          eq(scheduleBImportFiles.status, "processing")
+        )
+      );
+  });
+}
+
+export async function getScheduleBImportJobCounts(jobId: string) {
+  const db = await getDb();
+  if (!db) {
+    return {
+      totalFiles: 0,
+      uploadingFiles: 0,
+      queuedFiles: 0,
+      processingFiles: 0,
+      completedFiles: 0,
+      failedFiles: 0,
+      uploadedFiles: 0,
+      processedFiles: 0,
+      successCount: 0,
+      failureCount: 0,
+    };
+  }
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) {
+    return {
+      totalFiles: 0,
+      uploadingFiles: 0,
+      queuedFiles: 0,
+      processingFiles: 0,
+      completedFiles: 0,
+      failedFiles: 0,
+      uploadedFiles: 0,
+      processedFiles: 0,
+      successCount: 0,
+      failureCount: 0,
+    };
+  }
+
+  return withDbRetry("get schedule b import job counts", async () => {
+    const [
+      totalFilesResult,
+      uploadingResult,
+      queuedResult,
+      processingResult,
+      completedResult,
+      failedResult,
+      successResult,
+      extractionFailedResult,
+    ] = await Promise.all([
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportFiles)
+        .where(eq(scheduleBImportFiles.jobId, jobId)),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportFiles)
+        .where(
+          and(
+            eq(scheduleBImportFiles.jobId, jobId),
+            eq(scheduleBImportFiles.status, "uploading")
+          )
+        ),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportFiles)
+        .where(
+          and(
+            eq(scheduleBImportFiles.jobId, jobId),
+            eq(scheduleBImportFiles.status, "queued")
+          )
+        ),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportFiles)
+        .where(
+          and(
+            eq(scheduleBImportFiles.jobId, jobId),
+            eq(scheduleBImportFiles.status, "processing")
+          )
+        ),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportFiles)
+        .where(
+          and(
+            eq(scheduleBImportFiles.jobId, jobId),
+            eq(scheduleBImportFiles.status, "completed")
+          )
+        ),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportFiles)
+        .where(
+          and(
+            eq(scheduleBImportFiles.jobId, jobId),
+            eq(scheduleBImportFiles.status, "failed")
+          )
+        ),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportResults)
+        .where(
+          and(
+            eq(scheduleBImportResults.jobId, jobId),
+            sql`${scheduleBImportResults.error} IS NULL`
+          )
+        ),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportResults)
+        .where(
+          and(
+            eq(scheduleBImportResults.jobId, jobId),
+            sql`${scheduleBImportResults.error} IS NOT NULL`
+          )
+        ),
+    ]);
+
+    const totalFiles = totalFilesResult[0]?.count ?? 0;
+    const uploadingFiles = uploadingResult[0]?.count ?? 0;
+    const queuedFiles = queuedResult[0]?.count ?? 0;
+    const processingFiles = processingResult[0]?.count ?? 0;
+    const completedFiles = completedResult[0]?.count ?? 0;
+    const failedFiles = failedResult[0]?.count ?? 0;
+    const successCount = successResult[0]?.count ?? 0;
+    const extractionFailedCount = extractionFailedResult[0]?.count ?? 0;
+
+    return {
+      totalFiles,
+      uploadingFiles,
+      queuedFiles,
+      processingFiles,
+      completedFiles,
+      failedFiles,
+      uploadedFiles: Math.max(0, totalFiles - uploadingFiles),
+      processedFiles: completedFiles + failedFiles,
+      successCount,
+      failureCount: extractionFailedCount + failedFiles,
+    };
+  });
+}
+
+// ── Schedule B Import Results ─────────────────────────────────────
+
+export async function upsertScheduleBImportResult(
+  data: {
+    jobId: string;
+    fileName: string;
+    designatedSystemId: string | null;
+    gatsId: string | null;
+    acSizeKw: number | null;
+    capacityFactor: number | null;
+    contractPrice: number | null;
+    energizationDate: string | null;
+    maxRecQuantity: number | null;
+    deliveryYearsJson: string;
+    error: string | null;
+    scannedAt: Date;
+  }
+) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+
+  const scannedAt = data.scannedAt
+    ? new Date(Math.floor(data.scannedAt.getTime() / 1000) * 1000)
+    : new Date();
+  const now = new Date();
+
+  await withDbRetry("upsert schedule b import result", async () => {
+    const existing = await db
+      .select({ id: scheduleBImportResults.id })
+      .from(scheduleBImportResults)
+      .where(
+        and(
+          eq(scheduleBImportResults.jobId, data.jobId),
+          eq(scheduleBImportResults.fileName, data.fileName)
+        )
+      )
+      .limit(1);
+
+    if (existing.length > 0) {
+      await db
+        .update(scheduleBImportResults)
+        .set({
+          designatedSystemId: data.designatedSystemId,
+          gatsId: data.gatsId,
+          acSizeKw: data.acSizeKw,
+          capacityFactor: data.capacityFactor,
+          contractPrice: data.contractPrice,
+          energizationDate: data.energizationDate,
+          maxRecQuantity: data.maxRecQuantity,
+          deliveryYearsJson: data.deliveryYearsJson,
+          error: data.error,
+          scannedAt,
+        })
+        .where(eq(scheduleBImportResults.id, existing[0].id));
+      return;
+    }
+
+    await db.insert(scheduleBImportResults).values({
+      id: nanoid(),
+      jobId: data.jobId,
+      fileName: data.fileName,
+      designatedSystemId: data.designatedSystemId,
+      gatsId: data.gatsId,
+      acSizeKw: data.acSizeKw,
+      capacityFactor: data.capacityFactor,
+      contractPrice: data.contractPrice,
+      energizationDate: data.energizationDate,
+      maxRecQuantity: data.maxRecQuantity,
+      deliveryYearsJson: data.deliveryYearsJson,
+      error: data.error,
+      scannedAt,
+    });
+  });
+
+  await withDbRetry("mark schedule b file completed after result upsert", async () => {
+    await db
+      .update(scheduleBImportFiles)
+      .set({
+        status: "completed",
+        error: null,
+        processedAt: scannedAt,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(scheduleBImportFiles.jobId, data.jobId),
+          eq(scheduleBImportFiles.fileName, data.fileName)
+        )
+      );
+  });
+}
+
+export async function listScheduleBImportResults(
+  jobId: string,
+  opts: { limit?: number; offset?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return { rows: [], total: 0 };
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return { rows: [], total: 0 };
+
+  const limit = opts.limit ?? 500;
+  const offset = opts.offset ?? 0;
+
+  return withDbRetry("list schedule b import results", async () => {
+    const [rows, countResult] = await Promise.all([
+      db
+        .select()
+        .from(scheduleBImportResults)
+        .where(eq(scheduleBImportResults.jobId, jobId))
+        .orderBy(asc(scheduleBImportResults.fileName))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(scheduleBImportResults)
+        .where(eq(scheduleBImportResults.jobId, jobId)),
+    ]);
+    return { rows, total: countResult[0]?.count ?? 0 };
+  });
+}
+
+export async function getAllScheduleBImportResults(jobId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return [];
+  return withDbRetry("get all schedule b import results", async () =>
+    db
+      .select()
+      .from(scheduleBImportResults)
+      .where(eq(scheduleBImportResults.jobId, jobId))
+      .orderBy(asc(scheduleBImportResults.fileName))
+  );
+}
+
+export async function deleteScheduleBImportJobData(jobId: string) {
+  const db = await getDb();
+  if (!db) return;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return;
+  await withDbRetry("delete schedule b import job data", async () => {
+    await db
+      .delete(scheduleBImportResults)
+      .where(eq(scheduleBImportResults.jobId, jobId));
+    await db
+      .delete(scheduleBImportFiles)
+      .where(eq(scheduleBImportFiles.jobId, jobId));
+    await db
+      .delete(scheduleBImportJobs)
+      .where(eq(scheduleBImportJobs.id, jobId));
+  });
 }

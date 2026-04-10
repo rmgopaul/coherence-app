@@ -750,3 +750,94 @@ export const contractScanResults = mysqlTable(
 export type ContractScanResult = typeof contractScanResults.$inferSelect;
 export type InsertContractScanResult =
   typeof contractScanResults.$inferInsert;
+
+// Tracks server-backed Schedule B PDF import jobs.
+export const scheduleBImportJobs = mysqlTable(
+  "scheduleBImportJobs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    status: varchar("status", { length: 32 }).default("queued").notNull(),
+    currentFileName: varchar("currentFileName", { length: 255 }),
+    error: text("error"),
+    startedAt: timestamp("startedAt"),
+    stoppedAt: timestamp("stoppedAt"),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userIdx: index("schedule_b_import_jobs_user_idx").on(table.userId),
+    statusIdx: index("schedule_b_import_jobs_status_idx").on(table.status),
+  })
+);
+
+export type ScheduleBImportJob = typeof scheduleBImportJobs.$inferSelect;
+export type InsertScheduleBImportJob = typeof scheduleBImportJobs.$inferInsert;
+
+// Tracks each uploaded Schedule B PDF within a job.
+export const scheduleBImportFiles = mysqlTable(
+  "scheduleBImportFiles",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    fileName: varchar("fileName", { length: 255 }).notNull(),
+    fileSize: int("fileSize"),
+    storageKey: varchar("storageKey", { length: 512 }),
+    status: varchar("status", { length: 32 }).default("uploading").notNull(),
+    uploadedChunks: int("uploadedChunks").default(0).notNull(),
+    totalChunks: int("totalChunks").default(0).notNull(),
+    error: text("error"),
+    processedAt: timestamp("processedAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    jobFileIdx: uniqueIndex("schedule_b_import_files_job_file_idx").on(
+      table.jobId,
+      table.fileName
+    ),
+    jobStatusIdx: index("schedule_b_import_files_job_status_idx").on(
+      table.jobId,
+      table.status
+    ),
+    jobCreatedIdx: index("schedule_b_import_files_job_created_idx").on(
+      table.jobId,
+      table.createdAt
+    ),
+  })
+);
+
+export type ScheduleBImportFile = typeof scheduleBImportFiles.$inferSelect;
+export type InsertScheduleBImportFile = typeof scheduleBImportFiles.$inferInsert;
+
+// Extraction output per Schedule B PDF.
+export const scheduleBImportResults = mysqlTable(
+  "scheduleBImportResults",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    fileName: varchar("fileName", { length: 255 }).notNull(),
+    designatedSystemId: varchar("designatedSystemId", { length: 64 }),
+    gatsId: varchar("gatsId", { length: 64 }),
+    acSizeKw: double("acSizeKw"),
+    capacityFactor: double("capacityFactor"),
+    contractPrice: double("contractPrice"),
+    energizationDate: varchar("energizationDate", { length: 32 }),
+    maxRecQuantity: int("maxRecQuantity"),
+    deliveryYearsJson: text("deliveryYearsJson"),
+    error: text("error"),
+    scannedAt: timestamp("scannedAt").defaultNow(),
+  },
+  (table) => ({
+    jobFileIdx: uniqueIndex("schedule_b_import_results_job_file_idx").on(
+      table.jobId,
+      table.fileName
+    ),
+    jobIdx: index("schedule_b_import_results_job_idx").on(table.jobId),
+    gatsIdx: index("schedule_b_import_results_gats_idx").on(table.gatsId),
+  })
+);
+
+export type ScheduleBImportResult = typeof scheduleBImportResults.$inferSelect;
+export type InsertScheduleBImportResult = typeof scheduleBImportResults.$inferInsert;

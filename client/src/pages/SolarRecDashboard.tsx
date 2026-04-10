@@ -2419,149 +2419,16 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
   }
 }
 
-// ── Schedule B IndexedDB helper ─────────────────────────────────────
+// ── Schedule B PDF Import Component ─────────────────────────────────
 
-const SCHEDULE_B_DB_NAME = "scheduleBScannerCache";
-const SCHEDULE_B_DB_VERSION = 2;
-const SCHEDULE_B_METADATA_STORE = "store";
-const SCHEDULE_B_ROWS_STORE = "rows";
-const SCHEDULE_B_LEGACY_RESULTS_KEY = "scheduleBResults";
-const SCHEDULE_B_META_KEY = "scheduleBMeta";
-const SCHEDULE_B_PERSIST_BATCH = 25;
-const SCHEDULE_B_IDB_WRITE_CHUNK = 250;
-const SCHEDULE_B_YIELD_INTERVAL = 10;
+const SCHEDULE_B_UPLOAD_CHUNK_BYTES = 190_000;
+const SCHEDULE_B_MAX_SERVER_ROWS = 50_000;
 
 type ScheduleBResultRow = {
   extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
   adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
   firstTransferYear: number | null;
 };
-
-function openScheduleBIdb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(SCHEDULE_B_DB_NAME, SCHEDULE_B_DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(SCHEDULE_B_METADATA_STORE)) {
-        db.createObjectStore(SCHEDULE_B_METADATA_STORE);
-      }
-      if (!db.objectStoreNames.contains(SCHEDULE_B_ROWS_STORE)) {
-        db.createObjectStore(SCHEDULE_B_ROWS_STORE);
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-function isScheduleBResultRow(value: unknown): value is ScheduleBResultRow {
-  if (!value || typeof value !== "object") return false;
-  const candidate = value as { extraction?: { fileName?: unknown } };
-  return typeof candidate.extraction?.fileName === "string";
-}
-
-async function loadScheduleBRowsFromIdb(): Promise<ScheduleBResultRow[]> {
-  const db = await openScheduleBIdb();
-  try {
-    const tx = db.transaction(SCHEDULE_B_ROWS_STORE, "readonly");
-    const rawRows = (await idbRequestToPromise(
-      tx.objectStore(SCHEDULE_B_ROWS_STORE).getAll()
-    )) as unknown[];
-
-    return Array.isArray(rawRows) ? rawRows.filter(isScheduleBResultRow) : [];
-  } finally {
-    db.close();
-  }
-}
-
-async function loadLegacyScheduleBRowsFromIdb(): Promise<ScheduleBResultRow[]> {
-  const db = await openScheduleBIdb();
-  try {
-    const tx = db.transaction(SCHEDULE_B_METADATA_STORE, "readonly");
-    const raw = (await idbRequestToPromise(
-      tx.objectStore(SCHEDULE_B_METADATA_STORE).get(SCHEDULE_B_LEGACY_RESULTS_KEY)
-    )) as string | undefined;
-
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? parsed.filter(isScheduleBResultRow) : [];
-  } catch {
-    return [];
-  } finally {
-    db.close();
-  }
-}
-
-async function writeScheduleBRowsToIdb(rows: ScheduleBResultRow[], totalRows: number): Promise<void> {
-  if (rows.length === 0) return;
-  const db = await openScheduleBIdb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction([SCHEDULE_B_METADATA_STORE, SCHEDULE_B_ROWS_STORE], "readwrite");
-      const rowStore = tx.objectStore(SCHEDULE_B_ROWS_STORE);
-      rows.forEach((row) => {
-        rowStore.put(row, row.extraction.fileName);
-      });
-      tx.objectStore(SCHEDULE_B_METADATA_STORE).put(
-        {
-          updatedAt: new Date().toISOString(),
-          totalRows,
-        },
-        SCHEDULE_B_META_KEY
-      );
-      tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(tx.error ?? new Error("Failed saving Schedule B rows to IndexedDB."));
-      tx.onerror = () => reject(tx.error ?? new Error("Failed saving Schedule B rows to IndexedDB."));
-    });
-  } finally {
-    db.close();
-  }
-}
-
-async function deleteLegacyScheduleBBlobFromIdb(): Promise<void> {
-  const db = await openScheduleBIdb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(SCHEDULE_B_METADATA_STORE, "readwrite");
-      tx.objectStore(SCHEDULE_B_METADATA_STORE).delete(SCHEDULE_B_LEGACY_RESULTS_KEY);
-      tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(tx.error ?? new Error("Failed deleting Schedule B legacy cache."));
-      tx.onerror = () => reject(tx.error ?? new Error("Failed deleting Schedule B legacy cache."));
-    });
-  } finally {
-    db.close();
-  }
-}
-
-async function migrateLegacyScheduleBRowsToIdb(rows: ScheduleBResultRow[]): Promise<void> {
-  for (let i = 0; i < rows.length; i += SCHEDULE_B_IDB_WRITE_CHUNK) {
-    const batch = rows.slice(i, i + SCHEDULE_B_IDB_WRITE_CHUNK);
-    await writeScheduleBRowsToIdb(batch, i + batch.length);
-    if ((i / SCHEDULE_B_IDB_WRITE_CHUNK + 1) % 2 === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    }
-  }
-  await deleteLegacyScheduleBBlobFromIdb();
-}
-
-async function clearScheduleBRowsFromIdb(): Promise<void> {
-  const db = await openScheduleBIdb();
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction([SCHEDULE_B_METADATA_STORE, SCHEDULE_B_ROWS_STORE], "readwrite");
-      tx.objectStore(SCHEDULE_B_ROWS_STORE).clear();
-      tx.objectStore(SCHEDULE_B_METADATA_STORE).delete(SCHEDULE_B_LEGACY_RESULTS_KEY);
-      tx.objectStore(SCHEDULE_B_METADATA_STORE).delete(SCHEDULE_B_META_KEY);
-      tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(tx.error ?? new Error("Failed clearing Schedule B cache."));
-      tx.onerror = () => reject(tx.error ?? new Error("Failed clearing Schedule B cache."));
-    });
-  } finally {
-    db.close();
-  }
-}
-
-// ── Schedule B PDF Import Component ─────────────────────────────────
 
 function ScheduleBImport({
   transferDeliveryLookup,
@@ -2573,7 +2440,7 @@ function ScheduleBImport({
   existingDeliverySchedule: CsvRow[] | null;
 }) {
   const [scheduleBResults, setScheduleBResults] = useState<ScheduleBResultRow[]>([]);
-  const [scheduleBProcessing, setScheduleBProcessing] = useState(false);
+  const [scheduleBUploading, setScheduleBUploading] = useState(false);
   const [scheduleBProgress, setScheduleBProgress] = useState({ current: 0, total: 0 });
   const [scheduleBHydrated, setScheduleBHydrated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -2581,49 +2448,86 @@ function ScheduleBImport({
   const [contractIdMappingCount, setContractIdMappingCount] = useState(0);
   const contractIdMappingRef = useRef<Map<string, string>>(new Map());
 
-  // ── Persist to / restore from IndexedDB ───────────────────────
-  const persistBatchToIdb = useCallback(async (rows: ScheduleBResultRow[], totalRows: number) => {
-    if (rows.length === 0) return;
-    let lastError: unknown;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        await writeScheduleBRowsToIdb(rows, totalRows);
-        return;
-      } catch (error) {
-        lastError = error;
-        await new Promise((resolve) => setTimeout(resolve, attempt * 125));
-      }
-    }
-    throw lastError ?? new Error("Failed to persist Schedule B rows.");
-  }, []);
+  const ensureScheduleBImportJob = trpc.solarRecDashboard.ensureScheduleBImportJob.useMutation();
+  const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
+  const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
+  const clearScheduleBImport = trpc.solarRecDashboard.clearScheduleBImport.useMutation();
 
-  // Restore on mount
+  const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
+    refetchInterval: 5_000,
+    refetchOnWindowFocus: true,
+  });
+
+  const scheduleBResultsQuery = trpc.solarRecDashboard.listScheduleBImportResults.useQuery(
+    { limit: SCHEDULE_B_MAX_SERVER_ROWS, offset: 0 },
+    {
+      enabled: Boolean(scheduleBStatusQuery.data?.job),
+      refetchInterval:
+        scheduleBStatusQuery.data?.job?.status === "running" ||
+        scheduleBStatusQuery.data?.job?.status === "queued"
+          ? 12_000
+          : false,
+      refetchOnWindowFocus: true,
+    }
+  );
+
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const rows = await loadScheduleBRowsFromIdb();
-        if (!cancelled && rows.length > 0) {
-          setScheduleBResults(rows);
-        } else if (!cancelled) {
-          const legacyRows = await loadLegacyScheduleBRowsFromIdb();
-          if (legacyRows.length > 0) {
-            setScheduleBResults(legacyRows);
-            void migrateLegacyScheduleBRowsToIdb(legacyRows);
-          }
-        }
-      } catch {
-        // Fresh start
-      } finally {
-        if (!cancelled) {
-          setScheduleBHydrated(true);
+
+    const rows = scheduleBResultsQuery.data?.rows;
+    if (!rows) {
+      if (!scheduleBStatusQuery.isLoading && !cancelled) {
+        setScheduleBHydrated(true);
+        if (!scheduleBStatusQuery.data?.job) {
+          setScheduleBResults([]);
         }
       }
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    (async () => {
+      const { buildAdjustedSchedule, findFirstTransferEnergyYear } = await import("@/lib/scheduleBScanner");
+      const mapped: ScheduleBResultRow[] = rows.map((row) => {
+        const extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction = {
+          fileName: row.fileName,
+          designatedSystemId: row.designatedSystemId ?? null,
+          gatsId: row.gatsId ?? null,
+          acSizeKw: row.acSizeKw ?? null,
+          capacityFactor: row.capacityFactor ?? null,
+          contractPrice: row.contractPrice ?? null,
+          energizationDate: row.energizationDate ?? null,
+          maxRecQuantity: row.maxRecQuantity ?? null,
+          deliveryYears: row.deliveryYears ?? [],
+          error: row.error ?? null,
+        };
+        const firstTransferYear = extraction.gatsId
+          ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
+          : null;
+        const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
+        return {
+          extraction,
+          adjustedYears,
+          firstTransferYear,
+        };
+      });
+
+      if (!cancelled) {
+        setScheduleBResults(mapped);
+        setScheduleBHydrated(true);
+      }
     })();
+
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [
+    scheduleBResultsQuery.data?.rows,
+    scheduleBStatusQuery.data?.job,
+    scheduleBStatusQuery.isLoading,
+    transferDeliveryLookup,
+  ]);
 
   const handleContractIdMappingChange = useCallback(
     async (text: string) => {
@@ -2633,7 +2537,6 @@ function ScheduleBImport({
       contractIdMappingRef.current = mapping;
       setContractIdMappingCount(mapping.size);
 
-      // Also patch the existing deliveryScheduleBase dataset in place
       if (mapping.size > 0 && existingDeliverySchedule && existingDeliverySchedule.length > 0) {
         let patched = 0;
         const updatedRows = existingDeliverySchedule.map((row) => {
@@ -2654,6 +2557,41 @@ function ScheduleBImport({
     [existingDeliverySchedule, onApply]
   );
 
+  const uploadSinglePdf = useCallback(
+    async (jobId: string, file: File) => {
+      const totalChunks = Math.max(1, Math.ceil(file.size / SCHEDULE_B_UPLOAD_CHUNK_BYTES));
+      const uploadId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+        const start = chunkIndex * SCHEDULE_B_UPLOAD_CHUNK_BYTES;
+        const end = Math.min(file.size, start + SCHEDULE_B_UPLOAD_CHUNK_BYTES);
+        const blob = file.slice(start, end);
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        const chunkBase64 = bytesToBase64(bytes);
+
+        const response = await uploadScheduleBFileChunk.mutateAsync({
+          jobId,
+          uploadId,
+          fileName: file.name,
+          fileSize: file.size,
+          chunkIndex,
+          totalChunks,
+          chunkBase64,
+        });
+
+        if (
+          response.skipped &&
+          (response.reason === "already_uploaded" || response.reason === "duplicate_chunk")
+        ) {
+          return response.reason;
+        }
+      }
+
+      return "uploaded";
+    },
+    [uploadScheduleBFileChunk]
+  );
+
   const handleScheduleBFolder = useCallback(
     async (files: FileList | null) => {
       if (!files || files.length === 0) return;
@@ -2664,106 +2602,67 @@ function ScheduleBImport({
         return;
       }
 
-      // Dedupe by filename against existing rows and duplicates in this upload.
-      const seenFileNames = new Set(scheduleBResults.map((r) => r.extraction.fileName));
-      const newPdfFiles: File[] = [];
-      for (const file of pdfFiles) {
-        if (seenFileNames.has(file.name)) continue;
-        seenFileNames.add(file.name);
-        newPdfFiles.push(file);
-      }
+      setScheduleBUploading(true);
+      setScheduleBProgress({ current: 0, total: 0 });
 
-      if (newPdfFiles.length === 0) {
-        toast.info(`All ${pdfFiles.length} PDFs already processed`);
-        return;
-      }
-
-      setScheduleBProcessing(true);
-      setScheduleBProgress({ current: 0, total: newPdfFiles.length });
-
-      let cacheWriteFailed = false;
-      const baseResultCount = scheduleBResults.length;
       try {
-        const { extractScheduleBData, buildAdjustedSchedule, findFirstTransferEnergyYear } =
-          await import("@/lib/scheduleBScanner");
-        const pendingRows: ScheduleBResultRow[] = [];
+        const ensured = await ensureScheduleBImportJob.mutateAsync();
+        const knownNames = new Set(ensured.knownFileNames.map((name) => name.toLowerCase()));
+        const seen = new Set<string>();
+        const filesToUpload: File[] = [];
 
-        const flushPendingRows = async (processedCount: number) => {
-          if (pendingRows.length === 0) return;
-          const batch = pendingRows.splice(0, pendingRows.length);
-          setScheduleBResults((prev) => prev.concat(batch));
-          try {
-            await persistBatchToIdb(batch, baseResultCount + processedCount);
-          } catch {
-            cacheWriteFailed = true;
-          }
-        };
-
-        for (let i = 0; i < newPdfFiles.length; i += 1) {
-          setScheduleBProgress({ current: i + 1, total: newPdfFiles.length });
-
-          let row: ScheduleBResultRow;
-          try {
-            const extraction = await extractScheduleBData(newPdfFiles[i]);
-            const firstTransferYear = extraction.gatsId
-              ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
-              : null;
-            const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
-            // Keep only compact fields; raw delivery year table is no longer needed after adjustment.
-            row = {
-              extraction: { ...extraction, deliveryYears: [] },
-              adjustedYears,
-              firstTransferYear,
-            };
-          } catch (err) {
-            row = {
-              extraction: {
-                fileName: newPdfFiles[i].name,
-                designatedSystemId: null,
-                gatsId: null,
-                acSizeKw: null,
-                capacityFactor: null,
-                contractPrice: null,
-                energizationDate: null,
-                maxRecQuantity: null,
-                deliveryYears: [],
-                error: err instanceof Error ? err.message : "Processing failed",
-              },
-              adjustedYears: [],
-              firstTransferYear: null,
-            };
-          }
-
-          pendingRows.push(row);
-
-          if (pendingRows.length >= SCHEDULE_B_PERSIST_BATCH || i === newPdfFiles.length - 1) {
-            await flushPendingRows(i + 1);
-            await new Promise((resolve) => setTimeout(resolve, 0));
-          }
-
-          if ((i + 1) % SCHEDULE_B_YIELD_INTERVAL === 0) {
-            await new Promise((resolve) => setTimeout(resolve, 0));
-          }
+        for (const file of pdfFiles) {
+          const key = file.name.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (knownNames.has(key)) continue;
+          filesToUpload.push(file);
         }
+
+        if (filesToUpload.length === 0) {
+          toast.info(`All ${pdfFiles.length} PDFs already queued or processed`);
+          return;
+        }
+
+        let uploadedCount = 0;
+        let skippedCount = 0;
+        setScheduleBProgress({ current: 0, total: filesToUpload.length });
+
+        for (let index = 0; index < filesToUpload.length; index += 1) {
+          const result = await uploadSinglePdf(ensured.job.id, filesToUpload[index]);
+          if (result === "uploaded") {
+            uploadedCount += 1;
+          } else {
+            skippedCount += 1;
+          }
+          setScheduleBProgress({ current: index + 1, total: filesToUpload.length });
+        }
+
+        await forceRunScheduleBImport.mutateAsync().catch(() => ({ success: false }));
+        await Promise.all([
+          scheduleBStatusQuery.refetch(),
+          scheduleBResultsQuery.refetch(),
+        ]);
+
+        const skippedExisting = pdfFiles.length - filesToUpload.length + skippedCount;
+        const msg =
+          skippedExisting > 0
+            ? `Queued ${uploadedCount} new PDFs (${skippedExisting} already present)`
+            : `Queued ${uploadedCount} Schedule B PDFs for background processing`;
+        toast.success(msg);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : "Schedule B processing failed");
-        return;
+        toast.error(error instanceof Error ? error.message : "Schedule B upload failed");
       } finally {
-        setScheduleBProcessing(false);
+        setScheduleBUploading(false);
       }
-
-      if (cacheWriteFailed) {
-        toast.warning("Some rows could not be cached locally. Reload may require reprocessing those PDFs.");
-      }
-
-      const skipped = pdfFiles.length - newPdfFiles.length;
-      const msg =
-        skipped > 0
-          ? `Processed ${newPdfFiles.length} new PDFs (${skipped} already processed)`
-          : `Processed ${newPdfFiles.length} Schedule B PDFs`;
-      toast.success(msg);
     },
-    [transferDeliveryLookup, scheduleBResults, persistBatchToIdb]
+    [
+      ensureScheduleBImportJob,
+      forceRunScheduleBImport,
+      scheduleBResultsQuery,
+      scheduleBStatusQuery,
+      uploadSinglePdf,
+    ]
   );
 
   const [applyingSchedule, setApplyingSchedule] = useState(false);
@@ -2771,7 +2670,6 @@ function ScheduleBImport({
   const handleApply = useCallback(async () => {
     setApplyingSchedule(true);
     toast.info("Building delivery schedule from scan results...");
-    // Yield to let the toast render before heavy computation
     await new Promise((r) => setTimeout(r, 100));
     try {
       const { toDeliveryScheduleBaseRows } = await import("@/lib/scheduleBScanner");
@@ -2818,6 +2716,9 @@ function ScheduleBImport({
     triggerCsvDownload(`schedule-b-extractions-${timestampForCsvFileName()}.csv`, csv);
   }, [scheduleBResults]);
 
+  const statusCounts = scheduleBStatusQuery.data?.counts;
+  const serverJobStatus = scheduleBStatusQuery.data?.job?.status ?? null;
+  const backgroundRunning = serverJobStatus === "running" || serverJobStatus === "queued";
   const successCount = scheduleBResults.filter((r) => !r.extraction.error).length;
   const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
 
@@ -2826,28 +2727,57 @@ function ScheduleBImport({
       <CardHeader>
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle className="text-base">Schedule B PDF Import</CardTitle>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Schedule B PDF Import</CardTitle>
+              <Badge variant="secondary">Cloud-backed</Badge>
+              {backgroundRunning ? <Badge variant="outline">Processing in background</Badge> : null}
+            </div>
             <CardDescription>
               Select a folder of Schedule B PDFs to extract 15-year delivery schedules.
-              Transfer History is used to determine the first delivery year.
+              Uploads and processing persist on the server, so parsing continues if the browser crashes.
             </CardDescription>
           </div>
           <div className="flex gap-2">
-            {scheduleBResults.length > 0 && (
+            {(scheduleBResults.length > 0 || scheduleBStatusQuery.data?.job) && (
               <>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={async () => {
-                    setScheduleBResults([]);
-                    setScheduleBProgress({ current: 0, total: 0 });
                     try {
-                      await clearScheduleBRowsFromIdb();
-                    } catch { /* ignore */ }
-                    toast.info("Cleared Schedule B results");
+                      await clearScheduleBImport.mutateAsync();
+                      await Promise.all([
+                        scheduleBStatusQuery.refetch(),
+                        scheduleBResultsQuery.refetch(),
+                      ]);
+                      setScheduleBResults([]);
+                      setScheduleBProgress({ current: 0, total: 0 });
+                      toast.info("Cleared Schedule B results");
+                    } catch (error) {
+                      toast.error(error instanceof Error ? error.message : "Failed to clear Schedule B results");
+                    }
                   }}
                 >
                   Clear
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async () => {
+                    await forceRunScheduleBImport.mutateAsync().catch(() => ({ success: false }));
+                    await scheduleBStatusQuery.refetch();
+                    toast.success("Triggered Schedule B background sync");
+                  }}
+                  disabled={forceRunScheduleBImport.isPending}
+                >
+                  {forceRunScheduleBImport.isPending ? (
+                    <>
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                      Syncing...
+                    </>
+                  ) : (
+                    "Force Sync"
+                  )}
                 </Button>
                 <Button variant="outline" size="sm" onClick={handleExportCsv}>
                   Export CSV
@@ -2882,43 +2812,73 @@ function ScheduleBImport({
           />
           <Button
             variant="outline"
-            disabled={scheduleBProcessing}
+            disabled={scheduleBUploading}
             onClick={() => fileInputRef.current?.click()}
           >
-            {scheduleBProcessing ? (
+            {scheduleBUploading ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                Processing {scheduleBProgress.current}/{scheduleBProgress.total}
+                Uploading {scheduleBProgress.current}/{scheduleBProgress.total}
               </>
             ) : (
               "Select Folder"
             )}
           </Button>
-          {scheduleBProcessing && (
+
+          {(scheduleBUploading || backgroundRunning) && (
             <div className="flex-1 space-y-1">
-              <Progress
-                value={
-                  scheduleBProgress.total > 0
-                    ? (scheduleBProgress.current / scheduleBProgress.total) * 100
-                    : 0
-                }
-                className="h-3"
-              />
-              <p className="text-xs text-muted-foreground">
-                {scheduleBProgress.current} of {scheduleBProgress.total} PDFs
-                ({Math.round((scheduleBProgress.current / Math.max(1, scheduleBProgress.total)) * 100)}%)
-                — saved every {SCHEDULE_B_PERSIST_BATCH}
-              </p>
+              {scheduleBUploading ? (
+                <>
+                  <Progress
+                    value={
+                      scheduleBProgress.total > 0
+                        ? (scheduleBProgress.current / scheduleBProgress.total) * 100
+                        : 0
+                    }
+                    className="h-3"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Uploaded {scheduleBProgress.current} of {scheduleBProgress.total} PDFs
+                    {" "}
+                    ({Math.round((scheduleBProgress.current / Math.max(1, scheduleBProgress.total)) * 100)}%)
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Progress
+                    value={
+                      (statusCounts?.totalFiles ?? 0) > 0
+                        ? ((statusCounts?.processedFiles ?? 0) / Math.max(1, statusCounts?.totalFiles ?? 0)) * 100
+                        : 0
+                    }
+                    className="h-3"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Processed {statusCounts?.processedFiles ?? 0} of {statusCounts?.totalFiles ?? 0} PDFs
+                    {" "}
+                    ({Math.round(((statusCounts?.processedFiles ?? 0) / Math.max(1, statusCounts?.totalFiles ?? 0)) * 100)}%)
+                    {scheduleBStatusQuery.data?.job?.currentFileName
+                      ? ` — ${scheduleBStatusQuery.data.job.currentFileName}`
+                      : ""}
+                  </p>
+                </>
+              )}
             </div>
           )}
-          {!scheduleBProcessing && scheduleBResults.length > 0 && (
+
+          {!scheduleBUploading && scheduleBResults.length > 0 && (
             <span className="text-xs text-muted-foreground">
-              {successCount} extracted, {errorCount} errors{scheduleBHydrated && !scheduleBProcessing ? " (restored from cache)" : ""}
+              {successCount} extracted, {errorCount} errors{scheduleBHydrated ? " (restored from cloud)" : ""}
             </span>
           )}
         </div>
 
-        {/* Contract ID Mapping */}
+        {scheduleBStatusQuery.data?.job?.error ? (
+          <p className="text-xs text-red-600">
+            Status error: {scheduleBStatusQuery.data.job.error}
+          </p>
+        ) : null}
+
         {scheduleBResults.length > 0 && (
           <div className="rounded-md border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between">
@@ -2965,7 +2925,7 @@ function ScheduleBImport({
               <TableBody>
                 {scheduleBResults.slice(0, 100).map((r, idx) => (
                   <TableRow
-                    key={idx}
+                    key={`${r.extraction.fileName}-${idx}`}
                     className={r.extraction.error ? "bg-red-50/50" : ""}
                   >
                     <TableCell className="font-mono text-xs">
