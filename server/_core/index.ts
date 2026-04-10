@@ -40,8 +40,20 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
   throw new Error(`No available port found starting from ${startPort}`);
 }
 
+// Roots that belong to the standalone Solar REC tRPC router
+// (server/_core/solarRecRouter.ts). Any request to /solar-rec/api/trpc
+// whose procedure root is in this set gets handled by that router;
+// anything else falls through to the main router in server/routers.ts.
+//
+// NOTE: "solarRecDashboard" was removed from this set on 2026-04-10
+// because the dashboardRouter inside _core/solarRecRouter.ts is dead
+// code — no client calls solarRecTrpc.solarRecDashboard.*. Any legacy
+// request to /solar-rec/api/trpc/solarRecDashboard.* now routes to
+// server/routers.ts (the live copy), matching the modern solar-rec
+// client which goes through /solar-rec/api/main-trpc. See the
+// 2026-04-10 entry in SESSIONS_POSTMORTEM.md and
+// productivity-hub/docs/server-routing.md for the full story.
 const SOLAR_REC_ROUTER_ROOTS = new Set([
-  "solarRecDashboard",
   "auth",
   "users",
   "credentials",

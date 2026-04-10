@@ -118,6 +118,45 @@ function normalizeScheduleBDeliveryYears(
   }
 }
 
+// ============================================================================
+// ⚠ DEAD CODE — DO NOT EDIT ⚠
+//
+// This `dashboardRouter` is a legacy duplicate of the `solarRecDashboard`
+// sub-router defined in `productivity-hub/server/routers.ts`.
+//
+// It is NOT reachable by any current client:
+//
+//   - The only client that imports `solarRecTrpc` is the standalone
+//     solar-rec app (`client/src/solar-rec-main.tsx`), and the three
+//     pages under `client/src/solar-rec/pages/` that use it only call
+//     `trpc.monitoring.*` and `trpc.users.*` — never
+//     `trpc.solarRecDashboard.*`.
+//
+//   - The HTTP dispatcher at `server/_core/index.ts:146` used to route
+//     `/solar-rec/api/trpc/solarRecDashboard.*` here, but the
+//     "solarRecDashboard" entry was removed from `SOLAR_REC_ROUTER_ROOTS`
+//     on 2026-04-10, so any legacy request to that URL now falls through
+//     to `server/routers.ts` (the live `appRouter`).
+//
+//   - The `SolarRecDashboard.tsx` page (used by BOTH the main app and
+//     the /solar-rec/ standalone app) uses the `trpc` client from
+//     `@/lib/trpc`, which is typed against `server/routers.ts`'s
+//     `AppRouter`. The solar-rec standalone app routes this client to
+//     `/solar-rec/api/main-trpc` which hits `server/routers.ts`, not
+//     this file.
+//
+// EDIT `server/routers.ts` INSTEAD. Changes here have no effect and will
+// drift away from the live implementation, causing false-positive
+// debugging. See `SESSIONS_POSTMORTEM.md` at the project root and
+// `productivity-hub/docs/server-routing.md` for the full story of how
+// this cost an 8-hour session on 2026-04-10.
+//
+// TODO: once this file's non-dead sub-routers (monitoringRouter,
+// usersRouter, authRouter, credentialsRouter, enphaseV2Router) are
+// either deleted or migrated to a properly-namespaced module,
+// `dashboardRouter` and its related definitions at the top of this
+// file should be deleted entirely.
+// ============================================================================
 const dashboardRouter = t.router({
   getState: solarRecViewerProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.userId}/state.json`;
