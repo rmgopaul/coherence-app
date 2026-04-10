@@ -41,13 +41,14 @@ import {
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 import { parseTabularFile } from "@/lib/csvParsing";
 import {
-  mergeScheduleRows,
-  type ScheduleMergeConflict,
-} from "@/solar-rec-dashboard/lib/mergeScheduleRows";
-import {
   buildDeliveryTrackerData,
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
+import {
+  buildTransferDeliveryLookup,
+  getDeliveredForYear,
+  getDeliveredLifetime,
+} from "@/solar-rec-dashboard/lib/transferHistoryDeliveries";
 import type { CsvRow } from "@/solar-rec-dashboard/state/types";
 import {
   buildCsv,
@@ -63,7 +64,6 @@ import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImpor
 type DatasetKey =
   | "solarApplications"
   | "abpReport"
-  | "recDeliverySchedules"
   | "generationEntry"
   | "accountSolarGeneration"
   | "contractedDate"
@@ -537,11 +537,6 @@ const DATASET_DEFINITIONS: Record<
       ["Part_2_App_Verification_Date", "system_id"],
     ],
   },
-  recDeliverySchedules: {
-    label: "REC Delivery Schedules",
-    description: "Contracted and delivered RECs by contract year.",
-    requiredHeaderSets: [["tracking_system_ref_id", "year1_quantity_required", "year1_quantity_delivered"]],
-  },
   generationEntry: {
     label: "Generation Entry",
     description: "Generation status and latest month of generation by GATS unit.",
@@ -637,9 +632,9 @@ const DATASET_DEFINITIONS: Record<
     ],
   },
   deliveryScheduleBase: {
-    label: "Delivery Schedule (Obligations)",
+    label: "Delivery Schedule (Schedule B)",
     description:
-      "REC delivery obligations per system per year. Same format as REC Delivery Schedules but delivered quantities are computed from Transfer History uploads.",
+      "REC delivery obligations per system per year, populated automatically by the Schedule B PDF scraper in the Delivery Tracker tab. Delivered quantities are computed from Transfer History uploads.",
     requiredHeaderSets: [
       ["tracking_system_ref_id", "year1_quantity_required"],
     ],
@@ -732,7 +727,6 @@ const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccRe
 const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "solarApplications",
   "abpReport",
-  "recDeliverySchedules",
   "generationEntry",
   "accountSolarGeneration",
 ];
@@ -3545,39 +3539,12 @@ export default function SolarRecDashboard() {
       }
     });
 
-    // Use deliveryScheduleBase if uploaded, otherwise fall back to recDeliverySchedules
-    const scheduleSourceRows =
-      (datasets.deliveryScheduleBase?.rows ?? []).length > 0
-        ? datasets.deliveryScheduleBase!.rows
-        : datasets.recDeliverySchedules?.rows ?? [];
-
-    // Build transfer-history-based delivered totals per unit ID
-    const transferDeliveredByUnitId = new Map<string, number>();
-    const transferHistoryRows = datasets.transferHistory?.rows ?? [];
-    for (const row of transferHistoryRows) {
-      const unitId = clean(row["Unit ID"]);
-      if (!unitId) continue;
-      const qty = parseNumber(row.Quantity) ?? 0;
-      if (qty === 0) continue;
-
-      const transferor = (clean(row.Transferor) ?? "").toLowerCase();
-      const transferee = (clean(row.Transferee) ?? "").toLowerCase();
-
-      let direction = 0;
-      const isFromCS = transferor.includes("carbon solutions");
-      const isToCS = transferee.includes("carbon solutions");
-      const transfereeIsUtility = ["comed", "ameren", "midamerican"].some((u) => transferee.includes(u));
-      const transferorIsUtility = ["comed", "ameren", "midamerican"].some((u) => transferor.includes(u));
-
-      if (isFromCS && transfereeIsUtility) direction = 1;
-      else if (transferorIsUtility && isToCS) direction = -1;
-      else continue;
-
-      const key = unitId.toLowerCase();
-      transferDeliveredByUnitId.set(key, (transferDeliveredByUnitId.get(key) ?? 0) + qty * direction);
-    }
-
-    const useTransferHistoryDeliveries = transferHistoryRows.length > 0;
+    // Phase 1a: obligations come exclusively from deliveryScheduleBase
+    // (Schedule B scrape output). Deliveries come exclusively from
+    // transferHistory, aggregated lifetime-total per tracking ID via
+    // the shared buildTransferDeliveryLookup helper.
+    const scheduleSourceRows = datasets.deliveryScheduleBase?.rows ?? [];
+    const transferLookup = buildTransferDeliveryLookup(datasets.transferHistory?.rows ?? []);
 
     scheduleSourceRows.forEach((row) => {
       const trackingSystemRefId = clean(row.tracking_system_ref_id) || null;
@@ -3593,14 +3560,9 @@ export default function SolarRecDashboard() {
       const required = sumSchedule(row, "_quantity_required");
       if (required !== null) builder.scheduleRequired = required;
 
-      // Use transfer history for delivered if available; otherwise fall back to schedule
-      if (useTransferHistoryDeliveries) {
-        const transferTotal = transferDeliveredByUnitId.get(trackingSystemRefId.toLowerCase());
-        builder.scheduleDelivered = transferTotal ?? 0;
-      } else {
-        const delivered = sumSchedule(row, "_quantity_delivered");
-        if (delivered !== null) builder.scheduleDelivered = delivered;
-      }
+      // Delivered is always transferHistory-derived. No more fallback
+      // to the (now-deleted) year{N}_quantity_delivered column on RDS.
+      builder.scheduleDelivered = getDeliveredLifetime(transferLookup, trackingSystemRefId);
     });
 
     (datasets.accountSolarGeneration?.rows ?? []).forEach((row) => {
@@ -6079,11 +6041,14 @@ export default function SolarRecDashboard() {
     return lookup;
   }, [datasets.transferHistory]);
 
-  const hasTransferHistory = (datasets.transferHistory?.rows ?? []).length > 0;
-
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
     if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
-    return (datasets.recDeliverySchedules?.rows ?? [])
+    // Phase 1a: obligations come from deliveryScheduleBase exclusively.
+    // Deliveries are always derived from transferDeliveryLookup (which
+    // is itself derived from transferHistory). No more conditional
+    // override — if transferHistory is empty, delivered = 0 across
+    // the board, which matches the user's expectation.
+    return (datasets.deliveryScheduleBase?.rows ?? [])
       .map((row, rowIndex) => {
         const trackingSystemRefId = clean(row.tracking_system_ref_id);
         if (!trackingSystemRefId || !eligibleTrackingIds.has(trackingSystemRefId)) return null;
@@ -6091,19 +6056,15 @@ export default function SolarRecDashboard() {
         const years = buildScheduleYearEntries(row);
         if (years.length === 0) return null;
 
-        // When transfer history is uploaded, it is the source of truth for ALL
-        // delivered values. Every year gets overridden: transfer quantity if found,
-        // otherwise 0 (no transfers = no deliveries for that year).
-        if (hasTransferHistory) {
-          const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
-          for (const year of years) {
-            if (!year.startDate) {
-              year.delivered = 0;
-              continue;
-            }
-            const eyStartYear = year.startDate.getFullYear();
-            year.delivered = systemTransfers?.get(eyStartYear) ?? 0;
+        // transferHistory is always the source of truth for delivered values.
+        const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
+        for (const year of years) {
+          if (!year.startDate) {
+            year.delivered = 0;
+            continue;
           }
+          const eyStartYear = year.startDate.getFullYear();
+          year.delivered = systemTransfers?.get(eyStartYear) ?? 0;
         }
 
         return {
@@ -6118,7 +6079,7 @@ export default function SolarRecDashboard() {
         } satisfies PerformanceSourceRow;
       })
       .filter((row): row is PerformanceSourceRow => row !== null);
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId, hasTransferHistory, transferDeliveryLookup]);
+  }, [datasets.deliveryScheduleBase, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId, transferDeliveryLookup]);
 
   const performanceContractOptions = useMemo(
     () =>
@@ -6516,7 +6477,9 @@ export default function SolarRecDashboard() {
       }
     >();
 
-    (datasets.recDeliverySchedules?.rows ?? []).forEach((row) => {
+    // Phase 1a: obligations from deliveryScheduleBase, delivered values
+    // from transferDeliveryLookup bucketed into the year1 energy year.
+    (datasets.deliveryScheduleBase?.rows ?? []).forEach((row) => {
       const trackingId = clean(row.tracking_system_ref_id);
       if (!trackingId || !eligibleTrackingIds.has(trackingId)) return;
 
@@ -6526,7 +6489,9 @@ export default function SolarRecDashboard() {
 
       const deliveryStartDate = parseDate(deliveryStartRaw);
       const required = parseNumber(row.year1_quantity_required) ?? 0;
-      const delivered = parseNumber(row.year1_quantity_delivered) ?? 0;
+      const delivered = deliveryStartDate
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear())
+        : 0;
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
       const dateKey = deliveryStartDate
@@ -6585,7 +6550,7 @@ export default function SolarRecDashboard() {
         if (aTime !== bTime) return aTime - bTime;
         return a.contractId.localeCompare(b.contractId);
       });
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isAnnualReviewTabActive, recPriceByTrackingId, systemsByTrackingId]);
+  }, [datasets.deliveryScheduleBase, eligibleTrackingIds, isAnnualReviewTabActive, recPriceByTrackingId, systemsByTrackingId, transferDeliveryLookup]);
 
   const annualVintageRows = useMemo<AnnualVintageAggregate[]>(() => {
     if (!isAnnualReviewTabActive) return [];
@@ -6792,7 +6757,9 @@ export default function SolarRecDashboard() {
       }
     >();
 
-    (datasets.recDeliverySchedules?.rows ?? []).forEach((row) => {
+    // Phase 1a: obligations from deliveryScheduleBase, delivered values
+    // from transferDeliveryLookup bucketed into the year1 energy year.
+    (datasets.deliveryScheduleBase?.rows ?? []).forEach((row) => {
       const contractId = clean(row.utility_contract_number) || "Unassigned";
       const trackingId = clean(row.tracking_system_ref_id);
       if (!trackingId || !eligibleTrackingIds.has(trackingId)) return;
@@ -6802,7 +6769,9 @@ export default function SolarRecDashboard() {
 
       const deliveryStartDate = parseDate(deliveryStartRaw);
       const required = parseNumber(row.year1_quantity_required) ?? 0;
-      const delivered = parseNumber(row.year1_quantity_delivered) ?? 0;
+      const delivered = deliveryStartDate
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear())
+        : 0;
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
       const dateKey = deliveryStartDate
@@ -6859,7 +6828,7 @@ export default function SolarRecDashboard() {
         const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
         return aTime - bTime;
       });
-  }, [datasets.recDeliverySchedules, eligibleTrackingIds, isContractsTabActive, recPriceByTrackingId]);
+  }, [datasets.deliveryScheduleBase, eligibleTrackingIds, isContractsTabActive, recPriceByTrackingId, transferDeliveryLookup]);
 
   const contractSummaryRows = useMemo(() => {
     if (!isContractsTabActive) return [];
@@ -9003,10 +8972,12 @@ const trendTopSiteIds = useMemo(() => {
 }, [trendProductionMoM]);
 
 // ── Trends: Delivery Pace ──────────────────────────────────────
+// Phase 1a: obligations from deliveryScheduleBase (Schedule B scrape),
+// delivered values from transferDeliveryLookup bucketed per energy year.
 const trendDeliveryPace = useMemo(() => {
   if (!isTrendsTabActive) return [];
   const now = new Date();
-  const scheduleRows = datasets.recDeliverySchedules?.rows ?? [];
+  const scheduleRows = datasets.deliveryScheduleBase?.rows ?? [];
   if (scheduleRows.length === 0) return [];
 
   // Group by utility contract, find active delivery year
@@ -9014,18 +8985,23 @@ const trendDeliveryPace = useMemo(() => {
 
   for (const row of scheduleRows) {
     const contractId = row.utility_contract_number || "Unknown";
+    const trackingId = clean(row.tracking_system_ref_id);
 
     for (let y = 1; y <= 15; y++) {
       const startRaw = row[`year${y}_start_date`];
       const endRaw = row[`year${y}_end_date`];
       const required = parseFloat(row[`year${y}_quantity_required`] || "0") || 0;
-      const delivered = parseFloat(row[`year${y}_quantity_delivered`] || "0") || 0;
       if (!startRaw || required === 0) continue;
 
       const start = new Date(startRaw);
       const end = endRaw ? new Date(endRaw) : new Date(start.getFullYear() + 1, start.getMonth(), start.getDate());
       if (isNaN(start.getTime()) || isNaN(end.getTime())) continue;
       if (now < start || now > end) continue; // Not active
+
+      // Delivered for this (system, year) comes from the transfer lookup.
+      const delivered = trackingId
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, start.getFullYear())
+        : 0;
 
       const totalMs = end.getTime() - start.getTime();
       const elapsedMs = now.getTime() - start.getTime();
@@ -9046,7 +9022,7 @@ const trendDeliveryPace = useMemo(() => {
   }
 
   return Array.from(contractPace.values()).sort((a, b) => a.contract.localeCompare(b.contract));
-}, [isTrendsTabActive, datasets.recDeliverySchedules]);
+}, [isTrendsTabActive, datasets.deliveryScheduleBase, transferDeliveryLookup]);
 
 // ── Forecast: REC Performance-Based Projections (dynamic energy year) ──
 // Energy year runs May 1 – April 30. After May 31, shift to next energy year.
@@ -9192,40 +9168,27 @@ const forecastSummary = useMemo(() => {
 }, [forecastProjections]);
 
 // ── Delivery Tracker ────────────────────────────────────────────
-// Merges recDeliverySchedules (the canonical CSV-uploaded schedule) and
-// deliveryScheduleBase (rows synthesized from Schedule B PDF imports) by
-// tracking_system_ref_id, surfaces conflicts, and derives the rest of the
-// tracker state via the pure buildDeliveryTrackerData pipeline.
+// Phase 1a: obligations come exclusively from deliveryScheduleBase (the
+// Schedule B scrape output). recDeliverySchedules has been removed from
+// the entire dashboard. Deliveries come exclusively from transferHistory
+// via buildDeliveryTrackerData's internal transfer-matching logic.
 //
-// Previous implementation used an either/or ternary that hid
-// recDeliverySchedules the moment deliveryScheduleBase had any rows; see
-// mergeScheduleRows.ts for the full fix rationale.
+// The tracker now also surfaces `transfersMissingObligation` — distinct
+// tracking IDs that have transfers but no matching Schedule B PDF yet,
+// so the user can see exactly which systems still need scraping.
 const deliveryTrackerData = useMemo(() => {
   if (!isDeliveryTrackerTabActive) {
-    return {
-      ...EMPTY_DELIVERY_TRACKER_DATA,
-      conflicts: [] as ScheduleMergeConflict[],
-    };
+    return EMPTY_DELIVERY_TRACKER_DATA;
   }
 
-  // Schedule B is authoritative: if a GATS ID appears in both sources,
-  // the freshly-extracted Schedule B row wins on field conflicts.
-  // recDeliverySchedules fills in systems Schedule B doesn't cover and
-  // provides fallback fields Schedule B left empty.
-  const merged = mergeScheduleRows(
-    datasets.deliveryScheduleBase?.rows ?? [],
-    datasets.recDeliverySchedules?.rows ?? []
-  );
-  const data = buildDeliveryTrackerData({
-    scheduleRows: merged.rows,
+  return buildDeliveryTrackerData({
+    scheduleRows: datasets.deliveryScheduleBase?.rows ?? [],
     transferRows: datasets.transferHistory?.rows ?? [],
   });
-  return { ...data, conflicts: merged.conflicts };
 }, [
   isDeliveryTrackerTabActive,
   datasets.deliveryScheduleBase,
   datasets.transferHistory,
-  datasets.recDeliverySchedules,
 ]);
 
 // ── Alerts ──────────────────────────────────────────────────────
@@ -9581,13 +9544,14 @@ const dataQualityFreshness = useMemo(() => {
   const DATASET_LABELS: Record<string, string> = {
     solarApplications: "Solar Applications",
     abpReport: "ABP Report",
-    recDeliverySchedules: "REC Delivery Schedules",
     generationEntry: "Generation Entry",
     accountSolarGeneration: "Account Solar Generation",
     contractedDate: "Contracted Date",
     annualProductionEstimates: "Annual Production Estimates",
     generatorDetails: "Generator Details",
     convertedReads: "Converted Reads",
+    deliveryScheduleBase: "Delivery Schedule (Schedule B)",
+    transferHistory: "Transfer History (GATS)",
   };
 
   return Object.entries(DATASET_LABELS).map(([key, label]) => {
@@ -9606,7 +9570,10 @@ const dataQualityUnmatched = useMemo(() => {
   const scheduleIds = new Set<string>();
   const monitoringIds = new Set<string>();
 
-  (datasets.recDeliverySchedules?.rows ?? []).forEach(row => {
+  // Phase 1a: the Delivery Tracker / Performance Eval obligations now come
+  // from deliveryScheduleBase (Schedule B scrape), so we reconcile tracking
+  // IDs against that dataset instead of the removed recDeliverySchedules.
+  (datasets.deliveryScheduleBase?.rows ?? []).forEach(row => {
     const id = row.tracking_system_ref_id || row.system_id || "";
     if (id) scheduleIds.add(id.toLowerCase());
   });
@@ -9624,7 +9591,7 @@ const dataQualityUnmatched = useMemo(() => {
   const matchedPercent = toPercentValue(matched, totalUnique);
 
   return { inScheduleNotMonitoring, inMonitoringNotSchedule, matchedPercent };
-}, [isDataQualityTabActive, datasets.recDeliverySchedules, datasets.convertedReads]);
+}, [isDataQualityTabActive, datasets.deliveryScheduleBase, datasets.convertedReads]);
 
 // ── AI Data Context per Tab ─────────────────────────────────────
 const aiDataContext = useMemo(() => {
@@ -10984,15 +10951,9 @@ const aiDataContext = useMemo(() => {
                 <CardDescription>
                   Mirrors the REC Performance Evaluation model: rolling average by system, expected delivery, surplus
                   allocation, and drawdown payments.
-                  {hasTransferHistory ? (
-                    <span className="ml-2 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
-                      Deliveries from Transfer History
-                    </span>
-                  ) : (
-                    <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                      Deliveries from CSV
-                    </span>
-                  )}
+                  <span className="ml-2 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-700">
+                    Deliveries from Transfer History
+                  </span>
                 </CardDescription>
               </CardHeader>
             </Card>
@@ -11002,8 +10963,8 @@ const aiDataContext = useMemo(() => {
                 <CardHeader>
                   <CardTitle className="text-base">No Performance Data Available</CardTitle>
                   <CardDescription>
-                    Upload ABP Report, Solar Applications, and REC Delivery Schedules to calculate performance
-                    evaluation metrics.
+                    Upload ABP Report and Solar Applications, then scrape Schedule B PDFs in the Delivery
+                    Tracker tab to populate obligations, to calculate performance evaluation metrics.
                   </CardDescription>
                 </CardHeader>
               </Card>
@@ -13456,7 +13417,7 @@ const aiDataContext = useMemo(() => {
               </CardHeader>
               <CardContent>
                 {trendDeliveryPace.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-4 text-center">Upload REC Delivery Schedules to see delivery pace.</p>
+                  <p className="text-sm text-slate-500 py-4 text-center">Scrape Schedule B PDFs in the Delivery Tracker tab and upload Transfer History to see delivery pace.</p>
                 ) : (
                   <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
                     <ResponsiveContainer width="100%" height="100%">
@@ -13577,7 +13538,7 @@ const aiDataContext = useMemo(() => {
               <CardContent>
                 {forecastProjections.length === 0 ? (
                   <p className="text-sm text-slate-500 py-4 text-center">
-                    Upload REC Delivery Schedules, Account Solar Generation, and Annual Production Estimates to see forecasts.
+                    Scrape Schedule B PDFs, upload Transfer History, Account Solar Generation, and Annual Production Estimates to see forecasts.
                   </p>
                 ) : (
                   <>
@@ -14134,18 +14095,19 @@ const aiDataContext = useMemo(() => {
               </Card>
             )}
 
-            {deliveryTrackerData.conflicts.length > 0 && (
-              <Card className="border-sky-200 bg-sky-50/40">
+            {deliveryTrackerData.transfersMissingObligation.length > 0 && (
+              <Card className="border-amber-200 bg-amber-50/40">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between gap-2">
                     <div>
-                      <CardTitle className="text-base text-sky-900">
-                        Schedule B Overrides ({formatNumber(deliveryTrackerData.conflicts.length)})
+                      <CardTitle className="text-base text-amber-900">
+                        Missing Schedule B Coverage ({formatNumber(deliveryTrackerData.transfersMissingObligation.length)})
                       </CardTitle>
-                      <CardDescription className="text-sky-800">
-                        These tracking IDs appear in both the freshly-extracted Schedule B PDFs and the older
-                        REC Delivery Schedules CSV with differing values. The Schedule B extraction is authoritative
-                        and is winning on every field listed below. Export the CSV if you want to audit the diffs.
+                      <CardDescription className="text-amber-800">
+                        These tracking IDs have transfers recorded in GATS Transfer History but no matching
+                        Schedule B PDF has been scraped yet. Their obligations are therefore unknown and they
+                        are not counted in the contract summary below. Upload and scrape the corresponding
+                        Schedule B PDFs to restore coverage.
                       </CardDescription>
                     </div>
                     <Button
@@ -14153,28 +14115,13 @@ const aiDataContext = useMemo(() => {
                       size="sm"
                       onClick={() => {
                         const csv = buildCsv(
-                          [
-                            "tracking_system_ref_id",
-                            "differing_fields",
-                            "schedule_b_values",
-                            "rec_delivery_schedules_values",
-                          ],
-                          deliveryTrackerData.conflicts.map((c) => ({
-                            tracking_system_ref_id: c.trackingSystemRefId,
-                            differing_fields: c.differingFields.join("; "),
-                            // After the Phase 1 precedence swap, `primaryRow`
-                            // holds the Schedule B values (winning) and
-                            // `secondaryRow` holds the older CSV values.
-                            schedule_b_values: c.differingFields
-                              .map((f) => `${f}=${clean(c.primaryRow[f])}`)
-                              .join("; "),
-                            rec_delivery_schedules_values: c.differingFields
-                              .map((f) => `${f}=${clean(c.secondaryRow[f])}`)
-                              .join("; "),
+                          ["tracking_system_ref_id"],
+                          deliveryTrackerData.transfersMissingObligation.map((id) => ({
+                            tracking_system_ref_id: id,
                           }))
                         );
                         triggerCsvDownload(
-                          `delivery-schedule-conflicts-${timestampForCsvFileName()}.csv`,
+                          `delivery-tracker-missing-schedule-b-${timestampForCsvFileName()}.csv`,
                           csv
                         );
                       }}
@@ -14184,28 +14131,26 @@ const aiDataContext = useMemo(() => {
                   </div>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <div className="max-h-48 overflow-y-auto rounded border border-rose-200 bg-white">
+                  <div className="max-h-48 overflow-y-auto rounded border border-amber-200 bg-white">
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead>Tracking ID</TableHead>
-                          <TableHead>Differing Fields</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {deliveryTrackerData.conflicts.slice(0, 10).map((c) => (
-                          <TableRow key={c.trackingSystemRefId}>
-                            <TableCell className="font-mono text-xs">{c.trackingSystemRefId}</TableCell>
-                            <TableCell className="text-xs">{c.differingFields.join(", ")}</TableCell>
+                        {deliveryTrackerData.transfersMissingObligation.slice(0, 20).map((id) => (
+                          <TableRow key={id}>
+                            <TableCell className="font-mono text-xs">{id}</TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
                     </Table>
                   </div>
-                  {deliveryTrackerData.conflicts.length > 10 && (
-                    <p className="text-xs text-rose-700 mt-2">
-                      Showing first 10 of {formatNumber(deliveryTrackerData.conflicts.length)} conflicts. Export CSV for
-                      full list.
+                  {deliveryTrackerData.transfersMissingObligation.length > 20 && (
+                    <p className="text-xs text-amber-700 mt-2">
+                      Showing first 20 of {formatNumber(deliveryTrackerData.transfersMissingObligation.length)}{" "}
+                      missing tracking IDs. Export CSV for the full list.
                     </p>
                   )}
                 </CardContent>
@@ -14218,7 +14163,7 @@ const aiDataContext = useMemo(() => {
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle className="text-base">Delivery by Contract</CardTitle>
-                    <CardDescription>Obligations from Delivery Schedule Base, actuals computed from Transfer History uploads.</CardDescription>
+                    <CardDescription>Obligations from Schedule B PDFs, actuals computed from Transfer History uploads.</CardDescription>
                   </div>
                   {deliveryTrackerData.contracts.length > 0 && (
                     <Button variant="outline" size="sm" onClick={() => {
@@ -14238,7 +14183,7 @@ const aiDataContext = useMemo(() => {
               <CardContent>
                 {deliveryTrackerData.contracts.length === 0 ? (
                   <p className="text-sm text-slate-500 py-4 text-center">
-                    Upload Delivery Schedule (Obligations) and Transfer History to see delivery tracking.
+                    Import Schedule B PDFs above and upload Transfer History (GATS) in Step 1 to see delivery tracking.
                   </p>
                 ) : (
                   <>

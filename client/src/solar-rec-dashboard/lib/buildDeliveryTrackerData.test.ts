@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildDeliveryTrackerData } from "./buildDeliveryTrackerData";
-import type { CsvRow } from "./mergeScheduleRows";
+import type { CsvRow } from "../state/types";
 
 const scheduleRow = (overrides: Partial<CsvRow> = {}): CsvRow => ({
   tracking_system_ref_id: "NON100",
@@ -120,5 +120,26 @@ describe("buildDeliveryTrackerData", () => {
     expect(data.totalTransfers).toBe(1);
     expect(data.unmatchedTransfers).toBe(1);
     expect(data.rows[0].delivered).toBe(0);
+  });
+
+  it("surfaces transfer unit IDs that lack a Schedule B obligation", () => {
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [scheduleRow({ tracking_system_ref_id: "NON100" })],
+      transferRows: [
+        transferRow({ "Unit ID": "NON100" }), // matched
+        transferRow({ "Unit ID": "NON999" }), // unmatched
+        transferRow({ "Unit ID": "NON888" }), // unmatched
+        transferRow({ "Unit ID": "NON999" }), // duplicate, should dedupe
+      ],
+    });
+    expect(data.transfersMissingObligation).toEqual(["NON888", "NON999"]);
+  });
+
+  it("does not list matched systems in transfersMissingObligation", () => {
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [scheduleRow()],
+      transferRows: [transferRow()],
+    });
+    expect(data.transfersMissingObligation).toEqual([]);
   });
 });

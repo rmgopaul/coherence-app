@@ -1,21 +1,18 @@
 /**
  * Pure function that builds the Delivery Tracker's derived state from
- * pre-merged schedule rows and transfer history rows.
+ * Schedule B obligation rows and GATS transfer history rows.
  *
- * Extracted verbatim from the deliveryTrackerData useMemo in
- * SolarRecDashboard.tsx:10068-10216 during Phase 0 of the dashboard rebuild.
+ * Phase 1a update: the caller now passes ONLY `deliveryScheduleBase.rows`
+ * as `scheduleRows`. There is no longer a merge with `recDeliverySchedules`
+ * — that dataset has been removed from the entire dashboard. Schedule B
+ * is the single source of truth for obligations; transfer history is the
+ * single source of truth for deliveries.
  *
- * Differences from the original memo:
- *   1. The caller is responsible for merging recDeliverySchedules and
- *      deliveryScheduleBase via mergeScheduleRows — this function takes a
- *      single `scheduleRows` input rather than reading datasets state.
- *   2. The `year.yearStart || year.yearEnd` null-skip at the original
- *      line 10144 is loosened to `!year.yearStart` only. Combined with
- *      the scheduleBScanner fix that now emits year dates, this is
- *      belt-and-suspenders against any future partial-date row.
- *
- * Everything else — contract aggregation, direction detection, energy-year
- * fallback matching, diagnostics — is a line-for-line copy.
+ * The function also surfaces a diagnostic `unmatchedTransferUnitIds` list:
+ * tracking IDs that appear in transfer history but do NOT have a Schedule
+ * B obligation. After Phase 1a these are visible in the UI so the user
+ * can tell exactly which Schedule B PDFs still need to be scraped to
+ * restore full coverage.
  */
 
 import {
@@ -26,7 +23,7 @@ import {
   toPercentValue,
 } from "./parsers";
 import { UTILITY_PATTERNS } from "./constants";
-import type { CsvRow } from "./mergeScheduleRows";
+import type { CsvRow } from "../state/types";
 
 export type DeliveryTrackerRow = {
   systemName: string;
@@ -57,6 +54,14 @@ export type DeliveryTrackerData = {
   scheduleIdSample: string[];
   transferIdSample: string[];
   scheduleCount: number;
+  /**
+   * Distinct tracking IDs that have at least one transfer in the provided
+   * transfer history rows but NO matching Schedule B obligation. These are
+   * systems the user still needs to scrape Schedule B PDFs for in order
+   * to see obligations in the tracker. Populated only when transfer
+   * history exists.
+   */
+  transfersMissingObligation: string[];
 };
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
@@ -67,6 +72,7 @@ export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   scheduleIdSample: [],
   transferIdSample: [],
   scheduleCount: 0,
+  transfersMissingObligation: [],
 }) as DeliveryTrackerData;
 
 type YearSlot = {
@@ -128,6 +134,10 @@ export function buildDeliveryTrackerData(input: {
   // Process transfers: allocate to energy years
   let totalTransfers = 0;
   let unmatchedTransfers = 0;
+  // Tracking IDs that have at least one utility transfer but no matching
+  // Schedule B obligation. Surfaced in the UI so the user can see which
+  // Schedule B PDFs still need scraping.
+  const transfersMissingObligationSet = new Set<string>();
 
   for (const row of transferRows) {
     const unitId = clean(row["Unit ID"]);
@@ -160,6 +170,7 @@ export function buildDeliveryTrackerData(input: {
     const schedule = systemSchedules.get(unitId.toLowerCase());
     if (!schedule) {
       unmatchedTransfers++;
+      transfersMissingObligationSet.add(unitId);
       continue;
     }
 
@@ -258,5 +269,6 @@ export function buildDeliveryTrackerData(input: {
     scheduleIdSample,
     transferIdSample,
     scheduleCount: systemSchedules.size,
+    transfersMissingObligation: Array.from(transfersMissingObligationSet).sort(),
   };
 }
