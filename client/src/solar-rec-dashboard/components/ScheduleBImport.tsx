@@ -148,6 +148,8 @@ export function ScheduleBImport({
   const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
   const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
   const clearScheduleBImport = trpc.solarRecDashboard.clearScheduleBImport.useMutation();
+  const clearScheduleBImportStuckUploads =
+    trpc.solarRecDashboard.clearScheduleBImportStuckUploads.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
 
@@ -828,6 +830,46 @@ export function ScheduleBImport({
                 </>
               ) : (
                 "Force Sync"
+              )}
+            </Button>
+            {/* Deletes rows stuck in status='uploading' with a tmp:
+                storageKey. These are upload sessions the browser never
+                finalized (crash, page reload, retry exhausted). They
+                block the job from finalizing because they count toward
+                totalFiles but are invisible to the work list. Safe to
+                click — does NOT touch already-processed results. */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                try {
+                  const result =
+                    await clearScheduleBImportStuckUploads.mutateAsync();
+                  await scheduleBStatusQuery.refetch();
+                  if (result.deleted > 0) {
+                    toast.success(
+                      `Cleared ${result.deleted} stuck upload${result.deleted === 1 ? "" : "s"}`
+                    );
+                  } else {
+                    toast.info("No stuck uploads found");
+                  }
+                } catch (error) {
+                  toast.error(
+                    error instanceof Error
+                      ? error.message
+                      : "Failed to clear stuck uploads"
+                  );
+                }
+              }}
+              disabled={clearScheduleBImportStuckUploads.isPending}
+            >
+              {clearScheduleBImportStuckUploads.isPending ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  Clearing...
+                </>
+              ) : (
+                "Clear stuck uploads"
               )}
             </Button>
             <Button variant="outline" size="sm" onClick={handleExportCsv}>

@@ -4500,6 +4500,77 @@ export const appRouter = router({
         return { success: true };
       }),
     /**
+     * Surgical cleanup endpoint for dangling upload sessions that got
+     * stranded with status='uploading' + storageKey='tmp:...'. Wired to
+     * the "Clear stuck uploads" admin button so the user can unstick a
+     * job without losing the already-processed results (unlike the
+     * broader clearScheduleBImport which wipes everything). Also removes
+     * any orphaned temp chunk files on disk for the user's workspace.
+     *
+     * Calls reconcileScheduleBImportJobState and runScheduleBImportJob
+     * afterwards so the job row's totalFiles counter catches up and the
+     * runner re-evaluates whether to finalize as 'completed'.
+     */
+    clearScheduleBImportStuckUploads: protectedProcedure
+      .mutation(async ({ ctx }) => {
+        const {
+          getLatestScheduleBImportJob,
+          clearScheduleBImportStuckUploads: clearStuckUploads,
+          reconcileScheduleBImportJobState,
+        } = await import("./db");
+
+        const job = await getLatestScheduleBImportJob(ctx.user.id);
+        if (!job) {
+          return {
+            _checkpoint: "clear-stuck-uploads-2026-04-11" as const,
+            jobId: null,
+            deleted: 0,
+            reconciled: null,
+          };
+        }
+
+        const deleted = await clearStuckUploads(job.id);
+
+        // Best-effort cleanup of any orphaned temp chunk files in the
+        // user's workspace. The DELETE above already made the DB rows
+        // invisible; leaving the .part files behind wastes disk but is
+        // not a correctness issue, so we swallow errors here.
+        const { rm } = await import("node:fs/promises");
+        const userJobTmpDir = path.join(
+          SCHEDULE_B_UPLOAD_TMP_ROOT,
+          String(ctx.user.id),
+          job.id
+        );
+        await rm(userJobTmpDir, { recursive: true, force: true }).catch(
+          () => undefined
+        );
+
+        const reconciled = await reconcileScheduleBImportJobState(job.id);
+
+        // Kick the runner so it re-evaluates completion. If remaining is
+        // now 0 the next runner pass will transition the job to
+        // 'completed'.
+        const { runScheduleBImportJob, isScheduleBImportRunnerActive } = await import(
+          "./services/scheduleBImportJobRunner"
+        );
+        if (!isScheduleBImportRunnerActive(job.id)) {
+          void runScheduleBImportJob(job.id);
+        }
+
+        return {
+          _checkpoint: "clear-stuck-uploads-2026-04-11" as const,
+          jobId: job.id,
+          deleted,
+          reconciled: {
+            totalFiles: reconciled.totalFiles,
+            successCount: reconciled.successCount,
+            failureCount: reconciled.failureCount,
+            filesMarkedCompleted: reconciled.filesMarkedCompleted,
+            filesRequeued: reconciled.filesRequeued,
+          },
+        };
+      }),
+    /**
      * Debug-only: returns the raw state of the user's latest Schedule B
      * job. Wired to the "Raw DB state" button in the ScheduleBImport
      * card. Shows the actual DB counts instead of any client-side

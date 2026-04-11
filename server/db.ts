@@ -3253,6 +3253,46 @@ export async function requeueScheduleBImportRetryableFiles(jobId: string) {
   });
 }
 
+/**
+ * Delete rows that are stuck in 'uploading' status with a NULL / empty /
+ * 'tmp:%' storageKey, i.e. upload sessions the client started but never
+ * finalized (browser crash, page reload, retry loop exhausted, etc.).
+ *
+ * These rows are invisible to listAllUploadedScheduleBImportFiles (which
+ * excludes tmp: keys) so they never get processed, but they DO count
+ * toward the job's totalFiles tally — which means the runner's
+ * "remaining = totalFiles - processed" check never reaches 0 and the
+ * job stays wedged in 'queued' forever.
+ *
+ * After calling this, the caller should invoke
+ * reconcileScheduleBImportJobState to resync the job-row counters and
+ * runScheduleBImportJob to re-evaluate the completion state.
+ *
+ * Returns the number of rows deleted.
+ */
+export async function clearScheduleBImportStuckUploads(
+  jobId: string
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return 0;
+
+  return withDbRetry("clear schedule b import stuck uploads", async () => {
+    const result = await db.execute(sql`
+      DELETE FROM scheduleBImportFiles
+      WHERE jobId = ${jobId}
+        AND status = 'uploading'
+        AND (
+          storageKey IS NULL
+          OR storageKey = ''
+          OR storageKey LIKE 'tmp:%'
+        )
+    `);
+    return getDbExecuteAffectedRows(result);
+  });
+}
+
 export async function getScheduleBImportJobCounts(jobId: string) {
   const db = await getDb();
   if (!db) {
