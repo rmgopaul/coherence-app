@@ -3427,6 +3427,15 @@ export async function reconcileScheduleBImportJobState(jobId: string) {
 
   await withDbRetry("reconcile schedule b import job state", async () => {
     const now = new Date();
+    // IMPORTANT: exclude in-flight uploads (NULL / empty / 'tmp:%'
+    // storageKey) from the markCompleted sweep. Without this guard the
+    // reconciler flips a row from 'uploading' -> 'completed' whenever a
+    // matching result row exists from a prior scan of the same filename
+    // (e.g. a re-upload), which causes the next chunk of the in-flight
+    // upload to fail with "Upload session missing ...". The requeue
+    // step below already has the same guard; this aligns the
+    // markCompleted step with the invariant enforced by
+    // listAllUploadedScheduleBImportFiles.
     const markCompletedResult = await db.execute(sql`
       UPDATE scheduleBImportFiles f
       JOIN scheduleBImportResults r
@@ -3439,6 +3448,9 @@ export async function reconcileScheduleBImportJobState(jobId: string) {
         f.updatedAt = ${now}
       WHERE
         f.jobId = ${jobId}
+        AND f.storageKey IS NOT NULL
+        AND f.storageKey <> ''
+        AND f.storageKey NOT LIKE 'tmp:%'
         AND (
           f.status <> 'completed'
           OR f.error IS NOT NULL

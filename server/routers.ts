@@ -3882,6 +3882,7 @@ export const appRouter = router({
         if (!job) {
           return {
             _runnerVersion: "v2_atomic_counters" as const,
+            _reconcileGuard: "tmp-exclude-2026-04-11" as const,
             job: null,
             counts: {
               totalFiles: 0,
@@ -3921,6 +3922,7 @@ export const appRouter = router({
 
         return {
           _runnerVersion: "v2_atomic_counters" as const,
+          _reconcileGuard: "tmp-exclude-2026-04-11" as const,
           job: {
             id: job.id,
             status: job.status,
@@ -4515,6 +4517,7 @@ export const appRouter = router({
         if (!job) {
           return {
             _runnerVersion: "v2_atomic_counters" as const,
+            _reconcileGuard: "tmp-exclude-2026-04-11" as const,
             hasJob: false as const,
             job: null,
             fileCountsByStatus: {},
@@ -4529,6 +4532,7 @@ export const appRouter = router({
         if (!db) {
           return {
             _runnerVersion: "v2_atomic_counters" as const,
+            _reconcileGuard: "tmp-exclude-2026-04-11" as const,
             hasJob: true as const,
             dbUnavailable: true as const,
             job: {
@@ -4595,6 +4599,7 @@ export const appRouter = router({
 
         return {
           _runnerVersion: "v2_atomic_counters" as const,
+          _reconcileGuard: "tmp-exclude-2026-04-11" as const,
           hasJob: true as const,
           job: {
             id: job.id,
