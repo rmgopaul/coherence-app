@@ -1,5 +1,39 @@
 # Database migration repair — 2026-04-10 finding
 
+> **STATUS: COMPLETED 2026-04-10 via admin endpoint.**
+>
+> The repair was executed in production by clicking the
+> `Run migration repair` button on the Schedule B card, which calls
+> `trpc.solarRecDashboard.repairScheduleBMigrationLedger` (an
+> `adminProcedure` added in commit `f539cb5`). Report:
+> ```
+> totalSteps: 14
+> applied: 9
+> skipped: 5
+> failed: 0
+> ```
+> All phases 2-5 ran cleanly:
+> - 0012 `productionReadings` — created
+> - 0013 `integrations.metadata` — converted text → mediumtext
+> - 0014 `supplementPriceLogs` — created
+> - 0015 (5 tables) — already existed, ledger rows inserted
+> - 0016 monitoring uniqueness — deduplicated rows, dropped old
+>   index, created new unique index on
+>   (provider, connectionId, siteId, dateKey)
+>
+> The one-shot endpoint + `Run migration repair` button can be
+> removed in a follow-up cleanup commit. The SESSIONS_POSTMORTEM.md
+> entry for 2026-04-10 records the full context.
+>
+> **Remaining follow-up**: the 0016 ledger row is a synthetic hash
+> (`synthetic:repair-2026-04-10:0016_monitoring_uniqueness_connectionId`).
+> When `drizzle-kit generate` is run next to create the real
+> `0016_*.sql` file, either:
+>   1. `DELETE FROM __drizzle_migrations WHERE hash LIKE 'synthetic:%'`
+>      before applying, or
+>   2. Update the hash on the synthetic row to match the real
+>      file's sha256.
+
 ## Context
 
 User's automated review found on 2026-04-10:
