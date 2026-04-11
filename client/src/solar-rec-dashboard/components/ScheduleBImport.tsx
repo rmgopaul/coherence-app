@@ -737,93 +737,112 @@ export function ScheduleBImport({
               size="sm"
               className="h-7 px-2 text-xs"
               onClick={async () => {
-                const result = await debugScheduleBImportRawQuery.refetch();
-                if (result.data) {
+                try {
+                  const result = await debugScheduleBImportRawQuery.refetch();
+                  // ALWAYS produce visible output, no matter what. The
+                  // previous silent-early-return path was hiding real
+                  // errors from the user.
+                  if (result.error) {
+                    const errMsg =
+                      result.error instanceof Error
+                        ? result.error.message
+                        : String(result.error);
+                    setRawDebugDump(
+                      `ERROR: Debug query failed.\n\n${errMsg}\n\nFull error object:\n${JSON.stringify(result.error, null, 2)}`
+                    );
+                    toast.error(`Debug fetch failed: ${errMsg}`);
+                    return;
+                  }
+                  if (result.data === undefined || result.data === null) {
+                    setRawDebugDump(
+                      `ERROR: Debug query returned no data and no error.\n\nQuery state:\n- isLoading: ${result.isLoading}\n- isFetching: ${result.isFetching}\n- isError: ${result.isError}\n- status: ${result.status}\n- dataUpdatedAt: ${result.dataUpdatedAt}\n\nThis usually means the query was aborted or the tRPC request never reached the server. Check Network tab for the request.`
+                    );
+                    toast.error("Debug query returned no data — see panel for state");
+                    return;
+                  }
                   setRawDebugDump(JSON.stringify(result.data, null, 2));
                   const runnerVersion =
                     (result.data as { _runnerVersion?: string })._runnerVersion ?? "unknown";
                   toast.info(`Raw DB state fetched — server runner: ${runnerVersion}`);
-                } else if (result.error) {
-                  toast.error(
-                    `Debug fetch failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
+                } catch (err) {
+                  // Last-resort catch for anything the React Query layer
+                  // doesn't surface via result.error.
+                  const errMsg = err instanceof Error ? err.message : String(err);
+                  setRawDebugDump(
+                    `FATAL: exception thrown from refetch().\n\n${errMsg}\n\n${err instanceof Error && err.stack ? err.stack : ""}`
                   );
+                  toast.error(`Raw DB state exception: ${errMsg}`);
                 }
               }}
             >
               Raw DB state
             </Button>
-            {/* Scan-contextual buttons — only meaningful when there's a
-                scan to act on. Clear wipes state, Force Sync re-triggers
-                the runner, Export CSV dumps scan results, Apply writes
-                to the delivery schedule. */}
-            {(scheduleBResults.length > 0 || scheduleBStatusQuery.data?.job) && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={async () => {
-                    try {
-                      await clearScheduleBImport.mutateAsync();
-                      await Promise.all([
-                        scheduleBStatusQuery.refetch(),
-                        scheduleBResultsQuery.refetch(),
-                      ]);
-                      setScheduleBResults([]);
-                      setScheduleBProgress({ current: 0, total: 0 });
-                      // Reset auto-apply bookkeeping so the next scan
-                      // re-applies from zero.
-                      autoApplyStateRef.current = { count: 0, time: 0 };
-                      setAutoApplyStatus({ lastAppliedCount: 0, lastAppliedAt: null });
-                      setLastServerApply(null);
-                      setApplyBlockedReason(null);
-                      // Also wipe the already-applied deliveryScheduleBase
-                      // so the Delivery Tracker resets to empty. Without
-                      // this, stale obligations from a previous scan linger
-                      // after Clear, creating the illusion that the scanner
-                      // isn't working.
-                      onClearAppliedSchedule?.();
-                      toast.info("Cleared Schedule B results and applied delivery schedule");
-                    } catch (error) {
-                      toast.error(error instanceof Error ? error.message : "Failed to clear Schedule B results");
-                    }
-                  }}
-                >
-                  Clear
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    await forceRunScheduleBImport.mutateAsync().catch(() => ({ success: false }));
-                    await scheduleBStatusQuery.refetch();
-                    toast.success("Triggered Schedule B background sync");
-                  }}
-                  disabled={forceRunScheduleBImport.isPending}
-                >
-                  {forceRunScheduleBImport.isPending ? (
-                    <>
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                      Syncing...
-                    </>
-                  ) : (
-                    "Force Sync"
-                  )}
-                </Button>
-                <Button variant="outline" size="sm" onClick={handleExportCsv}>
-                  Export CSV
-                </Button>
-                <Button size="sm" onClick={handleApply} disabled={applyingSchedule}>
-                  {applyingSchedule ? (
-                    <>
-                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                      Applying...
-                    </>
-                  ) : (
-                    `Apply as Delivery Schedule (${successCount})`
-                  )}
-                </Button>
-              </>
-            )}
+            {/* All action buttons below are ALWAYS visible. Previously
+                they were gated on (scheduleBResults.length > 0 ||
+                scheduleBStatusQuery.data?.job) which made them vanish
+                during uploads when the status query hadn't resolved yet,
+                or if it was silently erroring. The buttons are safe to
+                expose unconditionally — each one handles the no-scan
+                case gracefully. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                try {
+                  await clearScheduleBImport.mutateAsync();
+                  await Promise.all([
+                    scheduleBStatusQuery.refetch(),
+                    scheduleBResultsQuery.refetch(),
+                  ]);
+                  setScheduleBResults([]);
+                  setScheduleBProgress({ current: 0, total: 0 });
+                  autoApplyStateRef.current = { count: 0, time: 0 };
+                  setAutoApplyStatus({ lastAppliedCount: 0, lastAppliedAt: null });
+                  setLastServerApply(null);
+                  setApplyBlockedReason(null);
+                  onClearAppliedSchedule?.();
+                  toast.info("Cleared Schedule B results and applied delivery schedule");
+                } catch (error) {
+                  toast.error(
+                    error instanceof Error ? error.message : "Failed to clear Schedule B results"
+                  );
+                }
+              }}
+            >
+              Clear
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={async () => {
+                await forceRunScheduleBImport.mutateAsync().catch(() => ({ success: false }));
+                await scheduleBStatusQuery.refetch();
+                toast.success("Triggered Schedule B background sync");
+              }}
+              disabled={forceRunScheduleBImport.isPending}
+            >
+              {forceRunScheduleBImport.isPending ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  Syncing...
+                </>
+              ) : (
+                "Force Sync"
+              )}
+            </Button>
+            <Button variant="outline" size="sm" onClick={handleExportCsv}>
+              Export CSV
+            </Button>
+            <Button size="sm" onClick={handleApply} disabled={applyingSchedule}>
+              {applyingSchedule ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  Applying...
+                </>
+              ) : (
+                `Apply as Delivery Schedule (${successCount})`
+              )}
+            </Button>
           </div>
         </div>
       </CardHeader>
@@ -940,11 +959,76 @@ export function ScheduleBImport({
           )}
         </div>
 
-        {/* Diagnostics — always visible when a job exists so the user can
-            see exactly what's in flight. Covers: the common "Apply shows 0"
-            confusion (client hasn't polled yet, or all results errored). */}
-        {(scheduleBStatusQuery.data?.job || scheduleBResults.length > 0) && (
+        {/* Diagnostics — ALWAYS visible, regardless of scan state.
+            Previously gated on (scheduleBStatusQuery.data?.job ||
+            scheduleBResults.length > 0) which disappeared when the
+            status query was still loading or silently erroring. Now
+            unconditional so the user always has a ground-truth readout
+            of what the server and client think is happening. */}
+        {true && (
           <div className="rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-700 space-y-1.5">
+            {/* Query state readout — proves whether the polling queries
+                are actually connecting to the server. If any of these
+                show "error" or stay "loading" forever, we know the
+                diagnostic counts below are unreliable. */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-slate-500">
+              <span>
+                <strong>status query:</strong>{" "}
+                <span
+                  className={
+                    scheduleBStatusQuery.isError
+                      ? "text-rose-700 font-semibold"
+                      : scheduleBStatusQuery.isSuccess
+                        ? "text-emerald-700"
+                        : "text-amber-700"
+                  }
+                >
+                  {scheduleBStatusQuery.isError
+                    ? "error"
+                    : scheduleBStatusQuery.isSuccess
+                      ? "ok"
+                      : scheduleBStatusQuery.isLoading
+                        ? "loading"
+                        : "idle"}
+                </span>
+                {scheduleBStatusQuery.isFetching ? " (fetching…)" : ""}
+                {scheduleBStatusQuery.dataUpdatedAt
+                  ? ` last:${Math.max(0, Math.round((Date.now() - scheduleBStatusQuery.dataUpdatedAt) / 1000))}s ago`
+                  : ""}
+              </span>
+              <span>
+                <strong>results query:</strong>{" "}
+                <span
+                  className={
+                    scheduleBResultsQuery.isError
+                      ? "text-rose-700 font-semibold"
+                      : scheduleBResultsQuery.isSuccess
+                        ? "text-emerald-700"
+                        : "text-amber-700"
+                  }
+                >
+                  {scheduleBResultsQuery.isError
+                    ? "error"
+                    : scheduleBResultsQuery.isSuccess
+                      ? "ok"
+                      : scheduleBResultsQuery.isLoading
+                        ? "loading"
+                        : "idle"}
+                </span>
+                {scheduleBResultsQuery.isFetching ? " (fetching…)" : ""}
+              </span>
+              <span>
+                <strong>job id:</strong>{" "}
+                <code className="font-mono">
+                  {scheduleBStatusQuery.data?.job?.id?.slice(0, 12) ?? "(none)"}
+                </code>
+              </span>
+              {scheduleBUploading ? (
+                <span className="text-emerald-700">
+                  <strong>uploading:</strong> {scheduleBProgress.current}/{scheduleBProgress.total}
+                </span>
+              ) : null}
+            </div>
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <span>
                 <strong>Server:</strong> {formatNumber(serverProcessedCount)} / {formatNumber(serverTotalCount)} processed
