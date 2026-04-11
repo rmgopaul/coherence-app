@@ -734,7 +734,55 @@ export function ScheduleBImport({
               Uploads and processing persist on the server, so parsing continues if the browser crashes.
             </CardDescription>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2 items-center justify-end">
+            {/* Admin tools — ALWAYS visible regardless of scan state. These
+                were previously nested inside the scan-dependent block and
+                vanished whenever the user had no active job. */}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              onClick={async () => {
+                const result = await debugScheduleBImportRawQuery.refetch();
+                if (result.data) {
+                  setRawDebugDump(JSON.stringify(result.data, null, 2));
+                  const runnerVersion =
+                    (result.data as { _runnerVersion?: string })._runnerVersion ?? "unknown";
+                  toast.info(`Raw DB state fetched — server runner: ${runnerVersion}`);
+                } else if (result.error) {
+                  toast.error(
+                    `Debug fetch failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
+                  );
+                }
+              }}
+            >
+              Raw DB state
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs border-amber-400 text-amber-900 hover:bg-amber-50"
+              disabled={repairScheduleBMigrationLedger.isPending}
+              onClick={async () => {
+                try {
+                  const result = await repairScheduleBMigrationLedger.mutateAsync();
+                  setRepairReport(JSON.stringify(result, null, 2));
+                  toast.success(
+                    `Migration repair complete: ${result.summary.applied} applied, ${result.summary.skipped} skipped, ${result.summary.failed} failed.`
+                  );
+                } catch (err) {
+                  toast.error(
+                    `Migration repair failed: ${err instanceof Error ? err.message : String(err)}`
+                  );
+                }
+              }}
+            >
+              {repairScheduleBMigrationLedger.isPending ? "Running repair…" : "Run migration repair"}
+            </Button>
+            {/* Scan-contextual buttons — only meaningful when there's a
+                scan to act on. Clear wipes state, Force Sync re-triggers
+                the runner, Export CSV dumps scan results, Apply writes
+                to the delivery schedule. */}
             {(scheduleBResults.length > 0 || scheduleBStatusQuery.data?.job) && (
               <>
                 <Button
@@ -807,6 +855,39 @@ export function ScheduleBImport({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        {/* Admin output panels — rendered unconditionally so they show
+            regardless of scan state (e.g. after Clear, when you just want
+            to run the migration repair). */}
+        {rawDebugDump ? (
+          <div className="rounded border border-slate-300 bg-white px-2 py-2 text-[10px] font-mono text-slate-800 max-h-64 overflow-auto">
+            <div className="flex items-center justify-between mb-1">
+              <strong>Raw DB state:</strong>
+              <button
+                type="button"
+                className="text-slate-500 hover:text-slate-800 underline"
+                onClick={() => setRawDebugDump(null)}
+              >
+                dismiss
+              </button>
+            </div>
+            <pre className="whitespace-pre-wrap break-words">{rawDebugDump}</pre>
+          </div>
+        ) : null}
+        {repairReport ? (
+          <div className="rounded border border-amber-400 bg-amber-50/60 px-2 py-2 text-[10px] font-mono text-amber-900 max-h-96 overflow-auto">
+            <div className="flex items-center justify-between mb-1">
+              <strong>Migration repair report:</strong>
+              <button
+                type="button"
+                className="text-amber-700 hover:text-amber-900 underline"
+                onClick={() => setRepairReport(null)}
+              >
+                dismiss
+              </button>
+            </div>
+            <pre className="whitespace-pre-wrap break-words">{repairReport}</pre>
+          </div>
+        ) : null}
         <div className="flex items-center gap-3">
           <input
             ref={fileInputRef}
@@ -959,85 +1040,12 @@ export function ScheduleBImport({
               >
                 Refresh Now
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={async () => {
-                  const result = await debugScheduleBImportRawQuery.refetch();
-                  if (result.data) {
-                    setRawDebugDump(JSON.stringify(result.data, null, 2));
-                    const runnerVersion =
-                      (result.data as { _runnerVersion?: string })._runnerVersion ?? "unknown";
-                    toast.info(`Raw DB state fetched — server runner: ${runnerVersion}`);
-                  } else if (result.error) {
-                    toast.error(
-                      `Debug fetch failed: ${result.error instanceof Error ? result.error.message : String(result.error)}`
-                    );
-                  }
-                }}
-              >
-                Raw DB state
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs border-amber-400 text-amber-900 hover:bg-amber-50"
-                disabled={repairScheduleBMigrationLedger.isPending}
-                onClick={async () => {
-                  try {
-                    const result = await repairScheduleBMigrationLedger.mutateAsync();
-                    setRepairReport(JSON.stringify(result, null, 2));
-                    toast.success(
-                      `Migration repair complete: ${result.summary.applied} applied, ${result.summary.skipped} skipped, ${result.summary.failed} failed.`
-                    );
-                  } catch (err) {
-                    toast.error(
-                      `Migration repair failed: ${err instanceof Error ? err.message : String(err)}`
-                    );
-                  }
-                }}
-              >
-                {repairScheduleBMigrationLedger.isPending
-                  ? "Running repair…"
-                  : "Run migration repair"}
-              </Button>
               <span className="text-[10px] text-slate-500">
                 server runner:{" "}
                 {(scheduleBStatusQuery.data as { _runnerVersion?: string } | undefined)
                   ?._runnerVersion ?? "(old/unknown)"}
               </span>
             </div>
-            {rawDebugDump ? (
-              <div className="rounded border border-slate-300 bg-white px-2 py-2 text-[10px] font-mono text-slate-800 max-h-64 overflow-auto">
-                <div className="flex items-center justify-between mb-1">
-                  <strong>Raw DB state:</strong>
-                  <button
-                    type="button"
-                    className="text-slate-500 hover:text-slate-800 underline"
-                    onClick={() => setRawDebugDump(null)}
-                  >
-                    dismiss
-                  </button>
-                </div>
-                <pre className="whitespace-pre-wrap break-words">{rawDebugDump}</pre>
-              </div>
-            ) : null}
-            {repairReport ? (
-              <div className="rounded border border-amber-400 bg-amber-50/60 px-2 py-2 text-[10px] font-mono text-amber-900 max-h-96 overflow-auto">
-                <div className="flex items-center justify-between mb-1">
-                  <strong>Migration repair report:</strong>
-                  <button
-                    type="button"
-                    className="text-amber-700 hover:text-amber-900 underline"
-                    onClick={() => setRepairReport(null)}
-                  >
-                    dismiss
-                  </button>
-                </div>
-                <pre className="whitespace-pre-wrap break-words">{repairReport}</pre>
-              </div>
-            ) : null}
             {scheduleBResultsQuery.error ? (
               <div className="rounded border border-rose-300 bg-rose-50 px-2 py-1 text-[11px] text-rose-900">
                 <strong>Results query error:</strong>{" "}
