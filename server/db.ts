@@ -2286,13 +2286,25 @@ export async function upsertMonitoringApiRun(data: InsertMonitoringApiRun) {
   const db = await getDb();
   if (!db) return;
   await withDbRetry("upsert monitoring api run", async () => {
-    // Try to find existing row by unique index
+    // Lookup now matches the updated unique index
+    // (provider, connectionId, siteId, dateKey). Previously the upsert
+    // ignored connectionId and one run would overwrite another when
+    // multiple credentials managed the same provider+site+date.
+    //
+    // connectionId is nullable in the schema, but legacy rows exist with
+    // NULL. We use `IS NULL`-safe matching for that case.
+    const connectionIdPredicate =
+      data.connectionId === null || data.connectionId === undefined
+        ? sql`${monitoringApiRuns.connectionId} IS NULL`
+        : eq(monitoringApiRuns.connectionId, data.connectionId);
+
     const [existing] = await db
       .select({ id: monitoringApiRuns.id })
       .from(monitoringApiRuns)
       .where(
         and(
           eq(monitoringApiRuns.provider, data.provider),
+          connectionIdPredicate,
           eq(monitoringApiRuns.siteId, data.siteId),
           eq(monitoringApiRuns.dateKey, data.dateKey)
         )

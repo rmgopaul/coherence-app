@@ -610,11 +610,14 @@ export const monitoringApiRuns = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow(),
   },
   (table) => ({
-    providerSiteDateIdx: uniqueIndex("monitoring_api_runs_provider_site_date_idx").on(
-      table.provider,
-      table.siteId,
-      table.dateKey
-    ),
+    // Previously: unique on (provider, siteId, dateKey). That collided when
+    // multiple logins for the same provider managed the same site on the
+    // same day — the second run overwrote the first. connectionId is now
+    // part of the unique key so each (provider, connection, site, date)
+    // combination owns its own row.
+    providerConnectionSiteDateIdx: uniqueIndex(
+      "monitoring_api_runs_provider_conn_site_date_idx"
+    ).on(table.provider, table.connectionId, table.siteId, table.dateKey),
     dateKeyIdx: index("monitoring_api_runs_date_key_idx").on(table.dateKey),
     providerDateIdx: index("monitoring_api_runs_provider_date_idx").on(table.provider, table.dateKey),
     statusDateIdx: index("monitoring_api_runs_status_date_idx").on(table.status, table.dateKey),

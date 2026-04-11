@@ -637,11 +637,21 @@ const dashboardRouter = t.router({
       } = await import("../db");
 
       const requestedJobId = input?.jobId?.trim();
-      const job = requestedJobId
+      let job = requestedJobId
         ? await getScheduleBImportJob(requestedJobId)
         : await getLatestScheduleBImportJob(ctx.userId);
 
-      if (!job || job.userId !== ctx.userId) {
+      // Number()-coerce both sides before comparing (mysql2 driver can
+      // return userId as BigInt/string). Fall back to latest job for the
+      // caller if the requested job doesn't belong to them.
+      if (job && Number(job.userId) !== Number(ctx.userId)) {
+        console.warn(
+          `[listScheduleBImportResults _core] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.userId}; falling back`
+        );
+        job = await getLatestScheduleBImportJob(ctx.userId);
+      }
+
+      if (!job) {
         return { jobId: null, rows: [], total: 0 };
       }
 

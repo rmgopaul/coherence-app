@@ -3964,18 +3964,46 @@ export const appRouter = router({
         } = await import("./db");
 
         const requestedJobId = input?.jobId?.trim();
-        const job = requestedJobId
+        let job = requestedJobId
           ? await getScheduleBImportJob(requestedJobId)
           : await getLatestScheduleBImportJob(ctx.user.id);
 
-        if (!job || job.userId !== ctx.user.id) {
-          return { jobId: null, rows: [], total: 0 };
+        // Defensive: Number()-coerce both sides before comparing in case the
+        // mysql2 driver returns job.userId as a BigInt or string for any
+        // reason. The previous strict `!==` check caused "0 rows returned"
+        // ghost behavior while the DB actually held 800+ result rows; the
+        // apply mutation worked because it uses a different resolution path.
+        // If the requested job doesn't belong to this user, transparently
+        // fall back to the latest job for the user instead of returning
+        // empty — it's safer to show the user their own data than pretend
+        // there isn't any.
+        if (job && Number(job.userId) !== Number(ctx.user.id)) {
+          console.warn(
+            `[listScheduleBImportResults] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.user.id}; falling back to latest job for caller`
+          );
+          job = await getLatestScheduleBImportJob(ctx.user.id);
+        }
+
+        if (!job) {
+          console.warn(
+            `[listScheduleBImportResults] no job found for user ${ctx.user.id} (requestedJobId=${requestedJobId ?? "none"})`
+          );
+          return { jobId: null, rows: [], total: 0, debug: { requestedJobId: requestedJobId ?? null, resolvedJobId: null } };
         }
 
         const result = await listScheduleBImportResults(job.id, {
           limit: input?.limit ?? 50000,
           offset: input?.offset ?? 0,
         });
+
+        // Ship one-shot instrumentation so we can see in Render logs what
+        // this query is actually returning for the production client when
+        // the UI disagrees with the debug proc. Safe to leave for a while.
+        if (result.total === 0) {
+          console.log(
+            `[listScheduleBImportResults] jobId=${job.id} userId=${job.userId} ctxUserId=${ctx.user.id} returned 0 rows`
+          );
+        }
 
         const rows = result.rows.map((row) => ({
           fileName: row.fileName,
@@ -4016,11 +4044,20 @@ export const appRouter = router({
         const { storagePut } = await import("./storage");
 
         const requestedJobId = input?.jobId?.trim();
-        const job = requestedJobId
+        let job = requestedJobId
           ? await getScheduleBImportJob(requestedJobId)
           : await getLatestScheduleBImportJob(ctx.user.id);
 
-        if (!job || job.userId !== ctx.user.id) {
+        // Same Number()-coercion + latest-job fallback as
+        // listScheduleBImportResults above — mysql2 driver occasionally
+        // returns job.userId as a string/bigint and strict !== fails.
+        if (job && Number(job.userId) !== Number(ctx.user.id)) {
+          console.warn(
+            `[applyScheduleBToDeliveryObligations] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.user.id}; falling back to latest job for caller`
+          );
+          job = await getLatestScheduleBImportJob(ctx.user.id);
+        }
+        if (!job) {
           throw new Error("Schedule B import job not found.");
         }
 
