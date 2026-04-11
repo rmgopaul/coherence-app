@@ -837,6 +837,13 @@ export const scheduleBImportResults = mysqlTable(
     deliveryYearsJson: text("deliveryYearsJson"),
     error: text("error"),
     scannedAt: timestamp("scannedAt").defaultNow(),
+    // NULL = not yet applied to deliveryScheduleBase. Set to NOW() by
+    // applyScheduleBToDeliveryObligations after a successful merge. The
+    // "Apply as Delivery Schedule (N)" button counter binds to
+    // COUNT(*) WHERE appliedAt IS NULL, so it decreases on apply and
+    // survives navigation/reload (solves the "counter grows forever"
+    // UX bug).
+    appliedAt: timestamp("appliedAt"),
   },
   (table) => ({
     jobFileIdx: uniqueIndex("schedule_b_import_results_job_file_idx").on(
@@ -845,6 +852,12 @@ export const scheduleBImportResults = mysqlTable(
     ),
     jobIdx: index("schedule_b_import_results_job_idx").on(table.jobId),
     gatsIdx: index("schedule_b_import_results_gats_idx").on(table.gatsId),
+    // Supports the pendingApplyCount query in getScheduleBImportStatus:
+    // SELECT COUNT(*) WHERE jobId=? AND error IS NULL AND appliedAt IS NULL.
+    jobAppliedIdx: index("schedule_b_import_results_job_applied_idx").on(
+      table.jobId,
+      table.appliedAt
+    ),
   })
 );
 

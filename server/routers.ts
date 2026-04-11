@@ -3876,13 +3876,15 @@ export const appRouter = router({
       }),
     getScheduleBImportStatus: protectedProcedure
       .query(async ({ ctx }) => {
-        const { getLatestScheduleBImportJob } = await import("./db");
+        const { getLatestScheduleBImportJob, getPendingScheduleBImportApplyCount } =
+          await import("./db");
 
         const job = await getLatestScheduleBImportJob(ctx.user.id);
         if (!job) {
           return {
             _runnerVersion: "v2_atomic_counters" as const,
             _reconcileGuard: "tmp-exclude-2026-04-11" as const,
+            _applyTracking: "apply-track-v1" as const,
             job: null,
             counts: {
               totalFiles: 0,
@@ -3895,6 +3897,7 @@ export const appRouter = router({
               processedFiles: 0,
               successCount: 0,
               failureCount: 0,
+              pendingApplyCount: 0,
             },
           };
         }
@@ -3920,9 +3923,18 @@ export const appRouter = router({
         const failureCount = job.failureCount ?? 0;
         const processedFiles = successCount + failureCount;
 
+        // pendingApplyCount drives the "Apply as Delivery Schedule (N)"
+        // button counter. Server-authoritative so it survives
+        // navigation, reload, and tRPC refetches without a client-side
+        // filter-set race. See markScheduleBImportResultsApplied.
+        const pendingApplyCount = await getPendingScheduleBImportApplyCount(
+          job.id
+        );
+
         return {
           _runnerVersion: "v2_atomic_counters" as const,
           _reconcileGuard: "tmp-exclude-2026-04-11" as const,
+          _applyTracking: "apply-track-v1" as const,
           job: {
             id: job.id,
             status: job.status,
@@ -3945,6 +3957,7 @@ export const appRouter = router({
             processedFiles,
             successCount,
             failureCount,
+            pendingApplyCount,
           },
         };
       }),
@@ -4042,6 +4055,7 @@ export const appRouter = router({
           getAllScheduleBImportResults,
           getSolarRecDashboardPayload,
           saveSolarRecDashboardPayload,
+          markScheduleBImportResultsApplied,
         } = await import("./db");
         const { storagePut } = await import("./storage");
 
@@ -4159,6 +4173,14 @@ export const appRouter = router({
 
         const rawResults = await getAllScheduleBImportResults(job.id);
         const incomingRows: Array<Record<string, string>> = [];
+        // incomingFileNames is a parallel array to incomingRows — index
+        // N of incomingFileNames holds the Schedule B result fileName
+        // that produced incomingRows[N]. Tracked separately because
+        // buildScheduleBDeliveryRow doesn't persist fileName onto the
+        // delivery row itself. Used after the merge to
+        // (a) mark scheduleBImportResults rows as applied and
+        // (b) populate the "already in database" feedback list.
+        const incomingFileNames: string[] = [];
         let conversionErrors = 0;
 
         for (const resultRow of rawResults) {
@@ -4204,6 +4226,7 @@ export const appRouter = router({
               adjustedYears,
             })
           );
+          incomingFileNames.push(resultRow.fileName);
         }
 
         const mergedByKey = new Map<string, Record<string, string>>();
@@ -4218,8 +4241,24 @@ export const appRouter = router({
         let inserted = 0;
         let updated = 0;
         let unchanged = 0;
+        // appliedFileNames = every incoming row's source filename that
+        // reached the merge (regardless of branch). Used to mark rows
+        // as applied in scheduleBImportResults so the pending-apply
+        // counter decreases.
+        // alreadyInDatabaseFileNames = the subset whose tracking key
+        // matched a pre-existing row — i.e. the "tracking ID is
+        // already in the database" feedback the user asked for. This
+        // is keyed off `existing !== undefined`, which is broader than
+        // the `unchanged` bucket (an `updated` row also matched an
+        // existing key, it just had changed field values).
+        const appliedFileNames: string[] = [];
+        const alreadyInDatabaseFileNames: string[] = [];
 
         incomingRows.forEach((row, rowIndex) => {
+          const sourceFileName = incomingFileNames[rowIndex] ?? "";
+          if (sourceFileName) {
+            appliedFileNames.push(sourceFileName);
+          }
           const key = makeDeliveryRowKey(row, "scheduleb", rowIndex);
           const existing = mergedByKey.get(key);
           if (!existing) {
@@ -4227,6 +4266,10 @@ export const appRouter = router({
             orderedKeys.push(key);
             inserted += 1;
             return;
+          }
+
+          if (sourceFileName) {
+            alreadyInDatabaseFileNames.push(sourceFileName);
           }
 
           const merged = mergeDeliveryRows(existing, row);
@@ -4282,8 +4325,30 @@ export const appRouter = router({
           }
         }
 
+        // Mark the consumed result rows as applied so the Apply
+        // counter drops to 0 (or to whatever genuinely-new results
+        // have since landed). Only run if at least one persistence
+        // path succeeded — otherwise we'd "forget" that these rows
+        // still need to be applied. Non-fatal: swallow errors so a
+        // successful merge still returns success to the client.
+        let markedAppliedCount = 0;
+        if (persistedToDatabase || storageSynced) {
+          try {
+            markedAppliedCount = await markScheduleBImportResultsApplied(
+              job.id,
+              appliedFileNames
+            );
+          } catch (markErr) {
+            console.warn(
+              `[applyScheduleBToDeliveryObligations] failed to mark rows applied for job ${job.id}:`,
+              markErr
+            );
+          }
+        }
+
         return {
           success: true,
+          _checkpoint: "apply-track-v1" as const,
           jobId: job.id,
           incoming: incomingRows.length,
           inserted,
@@ -4293,6 +4358,9 @@ export const appRouter = router({
           totalRows: mergedRows.length,
           persistedToDatabase,
           storageSynced,
+          appliedFileNames,
+          alreadyInDatabaseFileNames,
+          markedAppliedCount,
         };
       }),
     uploadScheduleBFileChunk: protectedProcedure
@@ -4578,7 +4646,11 @@ export const appRouter = router({
      */
     debugScheduleBImportRaw: protectedProcedure
       .query(async ({ ctx }) => {
-        const { getLatestScheduleBImportJob, getDb } = await import("./db");
+        const {
+          getLatestScheduleBImportJob,
+          getDb,
+          getPendingScheduleBImportApplyCount,
+        } = await import("./db");
         const { scheduleBImportFiles, scheduleBImportResults } = await import(
           "../drizzle/schema"
         );
@@ -4589,11 +4661,13 @@ export const appRouter = router({
           return {
             _runnerVersion: "v2_atomic_counters" as const,
             _reconcileGuard: "tmp-exclude-2026-04-11" as const,
+            _applyTracking: "apply-track-v1" as const,
             hasJob: false as const,
             job: null,
             fileCountsByStatus: {},
             filesTotal: 0,
             resultRowTotal: 0,
+            pendingApplyCount: 0,
             firstResultRows: [],
             sampleFilesWithNoResult: [],
           };
@@ -4604,6 +4678,7 @@ export const appRouter = router({
           return {
             _runnerVersion: "v2_atomic_counters" as const,
             _reconcileGuard: "tmp-exclude-2026-04-11" as const,
+            _applyTracking: "apply-track-v1" as const,
             hasJob: true as const,
             dbUnavailable: true as const,
             job: {
@@ -4617,6 +4692,7 @@ export const appRouter = router({
             fileCountsByStatus: {},
             filesTotal: 0,
             resultRowTotal: 0,
+            pendingApplyCount: 0,
             firstResultRows: [],
             sampleFilesWithNoResult: [],
           };
@@ -4648,6 +4724,7 @@ export const appRouter = router({
             fileName: scheduleBImportResults.fileName,
             gatsId: scheduleBImportResults.gatsId,
             error: scheduleBImportResults.error,
+            appliedAt: scheduleBImportResults.appliedAt,
           })
           .from(scheduleBImportResults)
           .where(eq(scheduleBImportResults.jobId, job.id))
@@ -4668,9 +4745,12 @@ export const appRouter = router({
             error: f.error,
           }));
 
+        const pendingApplyCount = await getPendingScheduleBImportApplyCount(job.id);
+
         return {
           _runnerVersion: "v2_atomic_counters" as const,
           _reconcileGuard: "tmp-exclude-2026-04-11" as const,
+          _applyTracking: "apply-track-v1" as const,
           hasJob: true as const,
           job: {
             id: job.id,
@@ -4685,6 +4765,7 @@ export const appRouter = router({
           fileCountsByStatus,
           filesTotal: fileRows.length,
           resultRowTotal,
+          pendingApplyCount,
           firstResultRows,
           sampleFilesWithNoResult,
         };

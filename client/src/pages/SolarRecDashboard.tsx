@@ -14018,6 +14018,59 @@ const aiDataContext = useMemo(() => {
                 delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
                 clearDataset("deliveryScheduleBase");
               }}
+              // apply-track-v1: after the server-side apply mutation
+              // lands, reload deliveryScheduleBase from the cloud so
+              // local state mirrors the server's post-apply truth. This
+              // eliminates the "Dataset has: N stays flat" bug caused by
+              // the client doing an independent parallel merge
+              // (see the deprecated onApply handler below). The server
+              // writes the same flat {fileName,uploadedAt,headers,csvText}
+              // shape at server/routers.ts:4299-4304 which
+              // deserializeRemoteDatasetPayload accepts as-is.
+              onApplyComplete={async () => {
+                try {
+                  const response = await getRemoteDatasetRef.current
+                    .mutateAsync({ key: "deliveryScheduleBase" })
+                    .catch(() => null);
+                  if (!response?.payload) {
+                    console.warn(
+                      "[onApplyComplete] getRemoteDataset returned no payload; leaving local state untouched"
+                    );
+                    return;
+                  }
+                  const loaded = deserializeRemoteDatasetPayload(
+                    response.payload
+                  );
+                  if (!loaded) {
+                    console.warn(
+                      "[onApplyComplete] deserializeRemoteDatasetPayload returned null; the server may have written a source-manifest shape this path doesn't handle"
+                    );
+                    return;
+                  }
+                  setDatasets((prev) => ({
+                    ...prev,
+                    deliveryScheduleBase: loaded,
+                  }));
+                  // Sync the signature ref to match the freshly loaded
+                  // dataset so the sync effect at ~line 7565 doesn't
+                  // immediately re-upload the same payload (would be a
+                  // harmless redundant round-trip, but still wasteful).
+                  remoteDatasetSignatureRef.current.deliveryScheduleBase = `${loaded.fileName}|${loaded.uploadedAt.toISOString()}|${loaded.rows.length}|${loaded.sources?.length ?? 0}`;
+                  setDatasetCloudSyncStatus((prev) => ({
+                    ...prev,
+                    deliveryScheduleBase: "synced",
+                  }));
+                } catch (err) {
+                  console.error(
+                    "[onApplyComplete] failed to reload deliveryScheduleBase",
+                    err
+                  );
+                }
+              }}
+              // @deprecated apply-track-v1: the parallel client-side
+              // merge below is superseded by onApplyComplete's cloud
+              // reload. Kept for backward compatibility during rollout;
+              // delete in a follow-up after verifying prod behavior.
               onApply={(rows) => {
                 const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
                   const trackingId = clean(row.tracking_system_ref_id).toUpperCase();

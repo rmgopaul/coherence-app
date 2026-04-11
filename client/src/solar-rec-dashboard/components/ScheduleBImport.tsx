@@ -68,11 +68,34 @@ type ScheduleBResultRow = {
   extraction: import("@/lib/scheduleBScanner").ScheduleBExtraction;
   adjustedYears: import("@/lib/scheduleBScanner").AdjustedScheduleYear[];
   firstTransferYear: number | null;
+  // NULL = not yet applied to deliveryScheduleBase. Populated from the
+  // server's scheduleBImportResults.appliedAt column (see
+  // apply-track-v1 in server/routers.ts). Used to compute the
+  // "Apply as Delivery Schedule (N)" button counter without a
+  // client-side filter-set race.
+  appliedAt: Date | null;
 };
 
 export type ScheduleBImportProps = {
   transferDeliveryLookup: Map<string, Map<number, number>>;
+  /**
+   * @deprecated Kept for backward compatibility during the
+   * apply-track-v1 rollout. New code should prefer onApplyComplete,
+   * which signals the parent to reload deliveryScheduleBase from the
+   * server (the authoritative source) instead of running a parallel
+   * client-side merge. Safe to remove once onApplyComplete is
+   * battle-tested in prod.
+   */
   onApply: (rows: CsvRow[]) => void;
+  /**
+   * Called after a successful server-side apply mutation. The parent
+   * should reload datasets.deliveryScheduleBase from the cloud so
+   * local state matches the server. Eliminates the client/server
+   * merge divergence that made "Dataset has: N" stale and
+   * unpredictable. If omitted, the component falls back to onApply
+   * for the transition period.
+   */
+  onApplyComplete?: () => Promise<void> | void;
   existingDeliverySchedule: CsvRow[] | null;
   /**
    * Called when the user clicks "Clear". The parent should wipe the
@@ -92,6 +115,7 @@ const AUTO_APPLY_MIN_INTERVAL_MS = 30_000;
 export function ScheduleBImport({
   transferDeliveryLookup,
   onApply,
+  onApplyComplete,
   existingDeliverySchedule,
   onClearAppliedSchedule,
 }: ScheduleBImportProps) {
@@ -127,6 +151,22 @@ export function ScheduleBImport({
     totalRows: number;
     at: number;
   } | null>(null);
+  // apply-track-v1: persistent panel showing the last apply's
+  // breakdown + the list of files whose tracking ID was already in
+  // the delivery dataset. This replaces the easy-to-miss toast with
+  // an always-visible summary the user can dismiss.
+  const [lastApplyPanel, setLastApplyPanel] = useState<{
+    at: number;
+    incoming: number;
+    inserted: number;
+    updated: number;
+    unchanged: number;
+    alreadyInDatabase: number;
+    errors: number;
+    totalRows: number;
+    alreadyInDatabaseFileNames: string[];
+  } | null>(null);
+  const [showAlreadyInDatabase, setShowAlreadyInDatabase] = useState(false);
 
   // Persistent diagnostic when Apply produces zero usable rows. A toast
   // alone is too easy to miss — users were clicking Apply and seeing
@@ -207,10 +247,23 @@ export function ScheduleBImport({
           ? findFirstTransferEnergyYear(extraction.gatsId, transferDeliveryLookup)
           : null;
         const adjustedYears = buildAdjustedSchedule(extraction, firstTransferYear);
+        // appliedAt comes from scheduleBImportResults.appliedAt (server
+        // marks this NOW() after a successful merge). tRPC + superjson
+        // serialize it as Date; guard against older server builds that
+        // don't return the field yet.
+        const rawApplied = (row as { appliedAt?: Date | string | null })
+          .appliedAt;
+        const appliedAt =
+          rawApplied instanceof Date
+            ? rawApplied
+            : typeof rawApplied === "string"
+              ? new Date(rawApplied)
+              : null;
         return {
           extraction,
           adjustedYears,
           firstTransferYear,
+          appliedAt,
         };
       });
 
@@ -638,6 +691,27 @@ export function ScheduleBImport({
         setAutoApplyStatus({ lastAppliedCount: rows.length, lastAppliedAt: Date.now() });
       }
 
+      // apply-track-v1: fire onApplyComplete UNCONDITIONALLY after a
+      // successful mutation, even if the client-side toDeliveryScheduleBaseRows
+      // produced zero rows. The server may legitimately have merged rows
+      // that the client's filter dropped (e.g. rows without gatsId after
+      // toDeliveryScheduleBaseRows but present in the DB via other paths),
+      // and in any case the parent needs to reload the cloud dataset to
+      // stay in sync with the server's post-apply state.
+      if (onApplyComplete) {
+        try {
+          await onApplyComplete();
+        } catch (applyCompleteErr) {
+          console.error(
+            "[ScheduleBImport] onApplyComplete failed",
+            applyCompleteErr
+          );
+          toast.error(
+            "Applied on server but failed to reload the local dataset. Refresh the page to see the latest state."
+          );
+        }
+      }
+
       if (serverResult.incoming === 0) {
         setApplyBlockedReason(
           `Server apply found 0 usable rows (${serverResult.errors} errored Schedule B result row(s)).`
@@ -655,6 +729,31 @@ export function ScheduleBImport({
         at: Date.now(),
       });
 
+      // apply-track-v1: populate the persistent Last Apply panel.
+      // Prefer the server's richer response (appliedFileNames +
+      // alreadyInDatabaseFileNames) when available; fall back to the
+      // older response shape if the client is ahead of the server.
+      const serverResultV1 = serverResult as typeof serverResult & {
+        _checkpoint?: string;
+        appliedFileNames?: string[];
+        alreadyInDatabaseFileNames?: string[];
+      };
+      setLastApplyPanel({
+        at: Date.now(),
+        incoming: serverResult.incoming,
+        inserted: serverResult.inserted,
+        updated: serverResult.updated,
+        unchanged: serverResult.unchanged,
+        alreadyInDatabase:
+          serverResultV1.alreadyInDatabaseFileNames?.length ??
+          serverResult.unchanged,
+        errors: serverResult.errors,
+        totalRows: serverResult.totalRows,
+        alreadyInDatabaseFileNames:
+          serverResultV1.alreadyInDatabaseFileNames ?? [],
+      });
+      setShowAlreadyInDatabase(false);
+
       toast.success(
         `Server apply complete: ${serverResult.inserted} inserted, ${serverResult.updated} updated, ${serverResult.unchanged} unchanged, ${serverResult.errors} errors.`
       );
@@ -669,6 +768,7 @@ export function ScheduleBImport({
   }, [
     scheduleBResults,
     onApply,
+    onApplyComplete,
     scheduleBStatusQuery,
     scheduleBResultsQuery,
     applyScheduleBToDeliveryObligations,
@@ -710,7 +810,22 @@ export function ScheduleBImport({
     scheduleBResultsQuery.isFetching ||
     scheduleBResultsQuery.isRefetching;
   const showUploadProgress = scheduleBProgress.total > 0 || backgroundRunning;
-  const successCount = scheduleBResults.filter((r) => !r.extraction.error).length;
+  // apply-track-v1: successCount drives the "Apply as Delivery
+  // Schedule (N)" button counter. Prefer the server's
+  // pendingApplyCount (authoritative, survives navigation/reload)
+  // when present, otherwise fall back to filtering scheduleBResults
+  // by appliedAt locally. Fall back further to the raw successful
+  // count only if the server response predates apply-track-v1.
+  const serverPendingApplyCount =
+    (statusCounts as { pendingApplyCount?: number } | undefined)
+      ?.pendingApplyCount;
+  const localPendingCount = scheduleBResults.filter(
+    (r) => !r.extraction.error && r.appliedAt == null
+  ).length;
+  const successCount =
+    typeof serverPendingApplyCount === "number"
+      ? serverPendingApplyCount
+      : localPendingCount;
   const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
   const serverProcessedCount = statusCounts?.processedFiles ?? 0;
   const serverTotalCount = statusCounts?.totalFiles ?? 0;
@@ -801,6 +916,8 @@ export function ScheduleBImport({
                   autoApplyStateRef.current = { count: 0, time: 0 };
                   setAutoApplyStatus({ lastAppliedCount: 0, lastAppliedAt: null });
                   setLastServerApply(null);
+                  setLastApplyPanel(null);
+                  setShowAlreadyInDatabase(false);
                   setApplyBlockedReason(null);
                   onClearAppliedSchedule?.();
                   toast.info("Cleared Schedule B results and applied delivery schedule");
@@ -905,6 +1022,88 @@ export function ScheduleBImport({
               </button>
             </div>
             <pre className="whitespace-pre-wrap break-words">{rawDebugDump}</pre>
+          </div>
+        ) : null}
+        {/* apply-track-v1: persistent Last Apply panel. Replaces the
+            easy-to-miss toast so the user can always see what the most
+            recent Apply actually did, including the list of files whose
+            tracking ID was already in the delivery dataset (the feedback
+            they explicitly asked for). */}
+        {lastApplyPanel ? (
+          <div className="rounded border border-emerald-200 bg-emerald-50/50 px-3 py-2 text-xs text-slate-800">
+            <div className="flex items-center justify-between mb-1">
+              <strong>
+                Last apply (
+                {Math.max(
+                  0,
+                  Math.round((Date.now() - lastApplyPanel.at) / 1000)
+                )}
+                s ago):
+              </strong>
+              <button
+                type="button"
+                className="text-slate-500 hover:text-slate-800 underline"
+                onClick={() => {
+                  setLastApplyPanel(null);
+                  setShowAlreadyInDatabase(false);
+                }}
+              >
+                dismiss
+              </button>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-0.5">
+              <div>
+                <span className="text-slate-500">Inserted:</span>{" "}
+                <strong>{formatNumber(lastApplyPanel.inserted)}</strong>
+              </div>
+              <div>
+                <span className="text-slate-500">Updated:</span>{" "}
+                <strong>{formatNumber(lastApplyPanel.updated)}</strong>
+              </div>
+              <div>
+                <span className="text-slate-500">Already in DB:</span>{" "}
+                <strong>
+                  {formatNumber(lastApplyPanel.alreadyInDatabase)}
+                </strong>
+              </div>
+              <div>
+                <span className="text-slate-500">Errors:</span>{" "}
+                <strong>{formatNumber(lastApplyPanel.errors)}</strong>
+              </div>
+              <div className="col-span-2 md:col-span-4 text-slate-500">
+                Dataset now has{" "}
+                <strong>{formatNumber(lastApplyPanel.totalRows)}</strong> rows
+                on the server.
+              </div>
+            </div>
+            {lastApplyPanel.alreadyInDatabaseFileNames.length > 0 ? (
+              <div className="mt-1">
+                <button
+                  type="button"
+                  className="text-slate-600 hover:text-slate-900 underline"
+                  onClick={() => setShowAlreadyInDatabase((v) => !v)}
+                >
+                  {showAlreadyInDatabase ? "▾" : "▸"}{" "}
+                  {formatNumber(
+                    lastApplyPanel.alreadyInDatabaseFileNames.length
+                  )}{" "}
+                  file
+                  {lastApplyPanel.alreadyInDatabaseFileNames.length === 1
+                    ? ""
+                    : "s"}{" "}
+                  already represented in the database
+                </button>
+                {showAlreadyInDatabase ? (
+                  <ul className="mt-1 max-h-32 overflow-auto rounded border border-emerald-100 bg-white px-2 py-1 font-mono text-[10px] text-slate-700">
+                    {lastApplyPanel.alreadyInDatabaseFileNames.map((name) => (
+                      <li key={name} className="truncate">
+                        {name}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
         <div className="flex items-center gap-3">

@@ -363,10 +363,12 @@ async function ensureScheduleBImportTables() {
         deliveryYearsJson mediumtext,
         error text,
         scannedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        appliedAt timestamp NULL DEFAULT NULL,
         PRIMARY KEY (id),
         UNIQUE KEY schedule_b_import_results_job_file_idx (jobId, fileName),
         KEY schedule_b_import_results_job_idx (jobId),
-        KEY schedule_b_import_results_gats_idx (gatsId)
+        KEY schedule_b_import_results_gats_idx (gatsId),
+        KEY schedule_b_import_results_job_applied_idx (jobId, appliedAt)
       )
     `);
 
@@ -375,6 +377,57 @@ async function ensureScheduleBImportTables() {
       ALTER TABLE scheduleBImportResults
       MODIFY COLUMN deliveryYearsJson MEDIUMTEXT
     `);
+
+    // apply-track-v1: add appliedAt column + supporting index to
+    // pre-existing installs that created scheduleBImportResults before
+    // this migration. Same information_schema pattern as the counter
+    // columns above so we don't require MySQL 8.0.29+ syntax.
+    const resultsColumnExists = async (columnName: string): Promise<boolean> => {
+      const result = (await db.execute(sql`
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE()
+          AND table_name = 'scheduleBImportResults'
+          AND column_name = ${columnName}
+      `)) as unknown as Array<Array<{ cnt: number }>>;
+      const rows = Array.isArray(result) ? result[0] : [];
+      return Array.isArray(rows) && rows[0]?.cnt > 0;
+    };
+    const resultsIndexExists = async (indexName: string): Promise<boolean> => {
+      const result = (await db.execute(sql`
+        SELECT COUNT(*) AS cnt
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE()
+          AND table_name = 'scheduleBImportResults'
+          AND index_name = ${indexName}
+      `)) as unknown as Array<Array<{ cnt: number }>>;
+      const rows = Array.isArray(result) ? result[0] : [];
+      return Array.isArray(rows) && rows[0]?.cnt > 0;
+    };
+    try {
+      if (!(await resultsColumnExists("appliedAt"))) {
+        await db.execute(
+          sql.raw(
+            "ALTER TABLE scheduleBImportResults ADD COLUMN appliedAt timestamp NULL DEFAULT NULL"
+          )
+        );
+      }
+      if (!(await resultsIndexExists("schedule_b_import_results_job_applied_idx"))) {
+        await db.execute(
+          sql.raw(
+            "CREATE INDEX schedule_b_import_results_job_applied_idx ON scheduleBImportResults (jobId, appliedAt)"
+          )
+        );
+      }
+    } catch (migrationError) {
+      // Best-effort — a failure here disables the pendingApplyCount
+      // feature but does not break the rest of the scanner. Log and
+      // continue so the server still comes up.
+      console.warn(
+        "[db] scheduleBImportResults appliedAt migration failed:",
+        migrationError instanceof Error ? migrationError.message : migrationError
+      );
+    }
   });
 
   _scheduleBImportTablesEnsured = true;
@@ -3674,6 +3727,80 @@ export async function getAllScheduleBImportResults(jobId: string) {
       .where(eq(scheduleBImportResults.jobId, jobId))
       .orderBy(asc(scheduleBImportResults.fileName))
   );
+}
+
+/**
+ * Mark a set of schedule B import result rows as applied to the
+ * deliveryScheduleBase dataset. Called by
+ * applyScheduleBToDeliveryObligations after a successful merge +
+ * persist. The "Apply as Delivery Schedule (N)" button counter binds
+ * to the resulting pendingApplyCount so it decreases automatically.
+ *
+ * Safe to call with an empty fileNames array (no-op).
+ *
+ * Returns the number of rows affected.
+ */
+export async function markScheduleBImportResultsApplied(
+  jobId: string,
+  fileNames: string[]
+): Promise<number> {
+  if (fileNames.length === 0) return 0;
+  const db = await getDb();
+  if (!db) return 0;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return 0;
+
+  return withDbRetry("mark schedule b import results applied", async () => {
+    // Chunk the UPDATE so we don't build an unbounded IN list if the
+    // caller hands us tens of thousands of filenames. MySQL/TiDB handle
+    // large IN lists but the query planner stays fastest at ~1k.
+    const CHUNK_SIZE = 500;
+    const now = new Date();
+    let totalAffected = 0;
+    for (let start = 0; start < fileNames.length; start += CHUNK_SIZE) {
+      const chunk = fileNames.slice(start, start + CHUNK_SIZE);
+      const result = await db.execute(sql`
+        UPDATE scheduleBImportResults
+        SET appliedAt = ${now}
+        WHERE jobId = ${jobId}
+          AND fileName IN (${sql.join(
+            chunk.map((name) => sql`${name}`),
+            sql`, `
+          )})
+      `);
+      totalAffected += getDbExecuteAffectedRows(result);
+    }
+    return totalAffected;
+  });
+}
+
+/**
+ * COUNT(*) of scheduleBImportResults rows for the job that have no
+ * error AND have not been applied yet. This is the authoritative count
+ * behind the "Apply as Delivery Schedule (N)" button label.
+ *
+ * Uses the (jobId, appliedAt) index.
+ */
+export async function getPendingScheduleBImportApplyCount(
+  jobId: string
+): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return 0;
+  return withDbRetry("get pending schedule b apply count", async () => {
+    const rows = await db
+      .select({ count: sql<number>`COUNT(*)` })
+      .from(scheduleBImportResults)
+      .where(
+        and(
+          eq(scheduleBImportResults.jobId, jobId),
+          sql`${scheduleBImportResults.error} IS NULL`,
+          sql`${scheduleBImportResults.appliedAt} IS NULL`
+        )
+      );
+    return rows[0]?.count ?? 0;
+  });
 }
 
 export async function deleteScheduleBImportJobData(jobId: string) {
