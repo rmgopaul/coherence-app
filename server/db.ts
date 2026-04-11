@@ -2758,7 +2758,21 @@ export async function getAllContractScanResultsForJob(jobId: string) {
   );
 }
 
-export async function getLatestScanResultsByCsgIds(csgIds: string[]) {
+/**
+ * Returns the latest successful contractScanResults row per csgId,
+ * filtered to scan jobs owned by the given user.
+ *
+ * IMPORTANT: contractScanResults has no userId column of its own — it
+ * links to a user via contractScanJobs.userId. Earlier versions of
+ * this function omitted the JOIN and returned ANY user's scan
+ * results matching the csgIds, which was a cross-tenant data
+ * leakage bug AND an obstacle to correctly attributing data on the
+ * Financials tab. The userId parameter is now required.
+ */
+export async function getLatestScanResultsByCsgIds(
+  userId: number,
+  csgIds: string[]
+) {
   const db = await getDb();
   if (!db) return [];
   if (csgIds.length === 0) return [];
@@ -2773,10 +2787,41 @@ export async function getLatestScanResultsByCsgIds(csgIds: string[]) {
       `get latest scan results batch ${i}`,
       async () =>
         db
-          .select()
+          .select({
+            id: contractScanResults.id,
+            jobId: contractScanResults.jobId,
+            csgId: contractScanResults.csgId,
+            systemName: contractScanResults.systemName,
+            vendorFeePercent: contractScanResults.vendorFeePercent,
+            additionalCollateralPercent:
+              contractScanResults.additionalCollateralPercent,
+            ccAuthorizationCompleted:
+              contractScanResults.ccAuthorizationCompleted,
+            additionalFivePercentSelected:
+              contractScanResults.additionalFivePercentSelected,
+            ccCardAsteriskCount: contractScanResults.ccCardAsteriskCount,
+            paymentMethod: contractScanResults.paymentMethod,
+            payeeName: contractScanResults.payeeName,
+            mailingAddress1: contractScanResults.mailingAddress1,
+            mailingAddress2: contractScanResults.mailingAddress2,
+            cityStateZip: contractScanResults.cityStateZip,
+            recQuantity: contractScanResults.recQuantity,
+            recPrice: contractScanResults.recPrice,
+            acSizeKw: contractScanResults.acSizeKw,
+            dcSizeKw: contractScanResults.dcSizeKw,
+            pdfUrl: contractScanResults.pdfUrl,
+            pdfFileName: contractScanResults.pdfFileName,
+            error: contractScanResults.error,
+            scannedAt: contractScanResults.scannedAt,
+          })
           .from(contractScanResults)
+          .innerJoin(
+            contractScanJobs,
+            eq(contractScanResults.jobId, contractScanJobs.id)
+          )
           .where(
             and(
+              eq(contractScanJobs.userId, userId),
               sql`${contractScanResults.csgId} IN (${sql.join(
                 batch.map((id) => sql`${id}`),
                 sql`, `

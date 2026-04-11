@@ -8826,9 +8826,16 @@ export const appRouter = router({
           csgIds: z.array(z.string().min(1).max(64)).min(1).max(5000),
         })
       )
-      .query(async ({ input }) => {
+      .query(async ({ ctx, input }) => {
+        // user-isolation fix 2026-04-11: previously this called
+        // getLatestScanResultsByCsgIds(input.csgIds) without a user
+        // filter, which returned ANY user's contract scan results
+        // matching those csgIds (cross-tenant data leakage).
+        // contractScanResults links to a user via contractScanJobs.userId,
+        // so the helper now requires a userId param and JOINs through
+        // the jobs table.
         const { getLatestScanResultsByCsgIds } = await import("./db");
-        return getLatestScanResultsByCsgIds(input.csgIds);
+        return getLatestScanResultsByCsgIds(ctx.user.id, input.csgIds);
       }),
 
     cleanMailingData: protectedProcedure
