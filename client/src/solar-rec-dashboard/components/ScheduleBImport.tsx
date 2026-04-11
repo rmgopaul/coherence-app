@@ -144,12 +144,18 @@ export function ScheduleBImport({
     { enabled: false }
   );
 
+  // One-shot migration-ledger repair report. Populated when the admin
+  // clicks "Run migration repair" below. Stays visible until dismissed.
+  const [repairReport, setRepairReport] = useState<string | null>(null);
+
   const ensureScheduleBImportJob = trpc.solarRecDashboard.ensureScheduleBImportJob.useMutation();
   const uploadScheduleBFileChunk = trpc.solarRecDashboard.uploadScheduleBFileChunk.useMutation();
   const forceRunScheduleBImport = trpc.solarRecDashboard.forceRunScheduleBImport.useMutation();
   const clearScheduleBImport = trpc.solarRecDashboard.clearScheduleBImport.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
+  const repairScheduleBMigrationLedger =
+    trpc.solarRecDashboard.repairScheduleBMigrationLedger.useMutation();
 
   const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
     refetchInterval: 3_000,
@@ -973,6 +979,29 @@ export function ScheduleBImport({
               >
                 Raw DB state
               </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs border-amber-400 text-amber-900 hover:bg-amber-50"
+                disabled={repairScheduleBMigrationLedger.isPending}
+                onClick={async () => {
+                  try {
+                    const result = await repairScheduleBMigrationLedger.mutateAsync();
+                    setRepairReport(JSON.stringify(result, null, 2));
+                    toast.success(
+                      `Migration repair complete: ${result.summary.applied} applied, ${result.summary.skipped} skipped, ${result.summary.failed} failed.`
+                    );
+                  } catch (err) {
+                    toast.error(
+                      `Migration repair failed: ${err instanceof Error ? err.message : String(err)}`
+                    );
+                  }
+                }}
+              >
+                {repairScheduleBMigrationLedger.isPending
+                  ? "Running repair…"
+                  : "Run migration repair"}
+              </Button>
               <span className="text-[10px] text-slate-500">
                 server runner:{" "}
                 {(scheduleBStatusQuery.data as { _runnerVersion?: string } | undefined)
@@ -992,6 +1021,21 @@ export function ScheduleBImport({
                   </button>
                 </div>
                 <pre className="whitespace-pre-wrap break-words">{rawDebugDump}</pre>
+              </div>
+            ) : null}
+            {repairReport ? (
+              <div className="rounded border border-amber-400 bg-amber-50/60 px-2 py-2 text-[10px] font-mono text-amber-900 max-h-96 overflow-auto">
+                <div className="flex items-center justify-between mb-1">
+                  <strong>Migration repair report:</strong>
+                  <button
+                    type="button"
+                    className="text-amber-700 hover:text-amber-900 underline"
+                    onClick={() => setRepairReport(null)}
+                  >
+                    dismiss
+                  </button>
+                </div>
+                <pre className="whitespace-pre-wrap break-words">{repairReport}</pre>
               </div>
             ) : null}
             {scheduleBResultsQuery.error ? (
