@@ -14018,35 +14018,108 @@ const aiDataContext = useMemo(() => {
                 delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
                 clearDataset("deliveryScheduleBase");
               }}
-              // apply-track-v1: after the server-side apply mutation
-              // lands, reload deliveryScheduleBase from the cloud so
-              // local state mirrors the server's post-apply truth. This
-              // eliminates the "Dataset has: N stays flat" bug caused by
-              // the client doing an independent parallel merge
-              // (see the deprecated onApply handler below). The server
-              // writes the same flat {fileName,uploadedAt,headers,csvText}
-              // shape at server/routers.ts:4299-4304 which
-              // deserializeRemoteDatasetPayload accepts as-is.
+              // apply-track-v1 + contract-id-mapping-v1: after a
+              // server-side apply or mapping mutation lands, reload
+              // deliveryScheduleBase from the cloud so local state
+              // mirrors the server's post-apply truth. This eliminates
+              // the "Dataset has: N stays flat" bug caused by the
+              // client doing an independent parallel merge (see the
+              // deprecated onApply handler below).
+              //
+              // Hardening pass 2026-04-11: previously this had silent
+              // console.warn bail-outs on "no payload" and "null
+              // deserialize" that left the user staring at stale data
+              // with no error indication. Now every bail-out surfaces a
+              // toast, logs enough shape info to diagnose, AND falls
+              // back to the source-manifest path if the flat-payload
+              // deserializer can't handle what the server wrote.
               onApplyComplete={async () => {
                 try {
                   const response = await getRemoteDatasetRef.current
                     .mutateAsync({ key: "deliveryScheduleBase" })
-                    .catch(() => null);
+                    .catch((fetchErr) => {
+                      console.error(
+                        "[onApplyComplete] getRemoteDataset threw",
+                        fetchErr
+                      );
+                      return null;
+                    });
                   if (!response?.payload) {
+                    toast.error(
+                      "Apply landed on the server but the cloud reload returned no payload. Refresh the page if the Delivery Tracker doesn't update."
+                    );
                     console.warn(
                       "[onApplyComplete] getRemoteDataset returned no payload; leaving local state untouched"
                     );
                     return;
                   }
-                  const loaded = deserializeRemoteDatasetPayload(
+
+                  // Primary path: flat {fileName,uploadedAt,headers,csvText}
+                  // shape (what applyScheduleBToDeliveryObligations and
+                  // applyScheduleBContractIdMapping both write).
+                  let loaded = deserializeRemoteDatasetPayload(
                     response.payload
                   );
+
+                  // Fallback path: source-manifest shape. If the cloud
+                  // has an older {_rawSourcesV1: true, sources: [...]}
+                  // payload (from a pre-apply-track-v1 era), resolve
+                  // the latest source's storageKey and parse that.
+                  // Mirrors the main rehydration path in
+                  // loadRemoteDatasets at ~line 7167.
                   if (!loaded) {
-                    console.warn(
-                      "[onApplyComplete] deserializeRemoteDatasetPayload returned null; the server may have written a source-manifest shape this path doesn't handle"
+                    const sourceManifest = parseRemoteSourceManifestPayload(
+                      response.payload
+                    );
+                    if (sourceManifest && sourceManifest.sources.length > 0) {
+                      try {
+                        const latest =
+                          sourceManifest.sources[
+                            sourceManifest.sources.length - 1
+                          ];
+                        const sourceResponse =
+                          await getRemoteDatasetRef.current
+                            .mutateAsync({ key: latest.storageKey })
+                            .catch(() => null);
+                        if (sourceResponse?.payload) {
+                          const decoded =
+                            latest.encoding === "base64"
+                              ? new TextDecoder().decode(
+                                  base64ToBytes(sourceResponse.payload)
+                                )
+                              : sourceResponse.payload;
+                          const parsedCsv = await parseCsvTextAsync(decoded);
+                          loaded = {
+                            fileName: latest.fileName || "Schedule B Import",
+                            uploadedAt: new Date(latest.uploadedAt),
+                            headers: parsedCsv.headers,
+                            rows: parsedCsv.rows,
+                          };
+                        }
+                      } catch (manifestErr) {
+                        console.error(
+                          "[onApplyComplete] source-manifest fallback failed",
+                          manifestErr
+                        );
+                      }
+                    }
+                  }
+
+                  if (!loaded) {
+                    // Still null — log the payload shape prefix so we
+                    // can diagnose from the browser console without
+                    // another deploy round-trip.
+                    const preview = response.payload.slice(0, 200);
+                    toast.error(
+                      "Apply landed on the server but the local dataset couldn't be refreshed. Open DevTools console for details, or refresh the page."
+                    );
+                    console.error(
+                      "[onApplyComplete] deserializeRemoteDatasetPayload and source-manifest fallback both returned null. Payload preview:",
+                      preview
                     );
                     return;
                   }
+
                   setDatasets((prev) => ({
                     ...prev,
                     deliveryScheduleBase: loaded,
@@ -14060,10 +14133,18 @@ const aiDataContext = useMemo(() => {
                     ...prev,
                     deliveryScheduleBase: "synced",
                   }));
+                  console.log(
+                    `[onApplyComplete] reloaded deliveryScheduleBase: ${loaded.rows.length} rows, uploadedAt=${loaded.uploadedAt.toISOString()}`
+                  );
                 } catch (err) {
                   console.error(
                     "[onApplyComplete] failed to reload deliveryScheduleBase",
                     err
+                  );
+                  toast.error(
+                    err instanceof Error
+                      ? `Cloud reload failed: ${err.message}`
+                      : "Cloud reload failed"
                   );
                 }
               }}

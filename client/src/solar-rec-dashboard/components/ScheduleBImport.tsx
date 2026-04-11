@@ -198,6 +198,17 @@ export function ScheduleBImport({
     trpc.solarRecDashboard.linkScheduleBDriveFolder.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
+  // contract-id-mapping-v1: server-persisted GATS ID → Contract ID
+  // mapping. The query hydrates the textarea on mount; the mutation
+  // saves the text + patches deliveryScheduleBase server-side + returns
+  // counts for the status panel.
+  const getScheduleBContractIdMappingQuery =
+    trpc.solarRecDashboard.getScheduleBContractIdMapping.useQuery(undefined, {
+      refetchOnWindowFocus: false,
+      staleTime: Infinity,
+    });
+  const applyScheduleBContractIdMapping =
+    trpc.solarRecDashboard.applyScheduleBContractIdMapping.useMutation();
 
   const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
     refetchInterval: 3_000,
@@ -301,6 +312,29 @@ export function ScheduleBImport({
     scheduleBResultsQuery,
   ]);
 
+  // contract-id-mapping-v1: hydrate the textarea from cloud on mount.
+  // Only fires once, guarded by hydratedMappingRef so subsequent
+  // refetches (e.g. after a save) don't clobber user edits in
+  // progress. Also populates contractIdMappingRef/count so downstream
+  // logic (auto-apply on scheduleBResults change) sees the mapping.
+  const hydratedMappingRef = useRef(false);
+  useEffect(() => {
+    if (hydratedMappingRef.current) return;
+    const savedText = getScheduleBContractIdMappingQuery.data?.mappingText;
+    if (typeof savedText !== "string" || savedText.length === 0) return;
+    hydratedMappingRef.current = true;
+    setContractIdMappingText(savedText);
+    // Parse synchronously to populate the ref + count without waiting
+    // for the user to touch the textarea. Uses the same client-side
+    // parser as handleContractIdMappingChange.
+    void (async () => {
+      const { parseContractIdMapping } = await import("@/lib/scheduleBScanner");
+      const mapping = parseContractIdMapping(savedText);
+      contractIdMappingRef.current = mapping;
+      setContractIdMappingCount(mapping.size);
+    })();
+  }, [getScheduleBContractIdMappingQuery.data?.mappingText]);
+
   // Auto-refetch results when the job status transitions to a terminal
   // state. The polling interval is tied to "running"/"queued", so once
   // the job completes the client stops polling and any final result
@@ -384,6 +418,17 @@ export function ScheduleBImport({
     };
   }, [scheduleBResults, scheduleBStatusQuery.data?.job?.status, onApply]);
 
+  // contract-id-mapping-v1: onChange is now a LOCAL-ONLY state update.
+  // It parses the text into a Map for in-memory use (so Apply can
+  // pass the mapping through toDeliveryScheduleBaseRows for new
+  // scans) but does NOT trigger any server-side persistence or local
+  // dataset merge. Persistence happens only when the user clicks the
+  // explicit "Save & Apply mapping" button (handleSaveAndApplyContractIdMapping).
+  //
+  // The previous behavior — calling onApply(updatedRows) on every
+  // keystroke — was broken: it went through the deprecated local-merge
+  // path, didn't persist to cloud reliably, and on refresh the 24k
+  // mapping was lost entirely.
   const handleContractIdMappingChange = useCallback(
     async (text: string) => {
       setContractIdMappingText(text);
@@ -391,26 +436,58 @@ export function ScheduleBImport({
       const mapping = parseContractIdMapping(text);
       contractIdMappingRef.current = mapping;
       setContractIdMappingCount(mapping.size);
+    },
+    []
+  );
 
-      if (mapping.size > 0 && existingDeliverySchedule && existingDeliverySchedule.length > 0) {
-        let patched = 0;
-        const updatedRows = existingDeliverySchedule.map((row) => {
-          const gatsId = (row.tracking_system_ref_id ?? "").toUpperCase();
-          const contractId = mapping.get(gatsId);
-          if (contractId) {
-            patched++;
-            return { ...row, utility_contract_number: contractId };
-          }
-          return row;
-        });
-        if (patched > 0) {
-          onApply(updatedRows);
-          toast.success(`Updated ${patched} contract IDs in existing delivery schedule`);
+  // contract-id-mapping-v1: explicit "Save & Apply mapping" action.
+  // Calls the server mutation (persists text + patches
+  // deliveryScheduleBase in cloud storage) and then fires
+  // onApplyComplete so the parent reloads the dataset from cloud.
+  // After this, the mapping survives refresh and the patched
+  // contract IDs are visible in the REC Performance Eval dropdown.
+  const handleSaveAndApplyContractIdMapping = useCallback(async () => {
+    if (contractIdMappingText.trim().length === 0) {
+      toast.error("Paste a mapping into the textarea first.");
+      return;
+    }
+    try {
+      const result = await applyScheduleBContractIdMapping.mutateAsync({
+        mappingText: contractIdMappingText,
+      });
+      if (onApplyComplete) {
+        try {
+          await onApplyComplete();
+        } catch (reloadErr) {
+          console.error(
+            "[ScheduleBImport] onApplyComplete after mapping save failed",
+            reloadErr
+          );
+          toast.error(
+            "Mapping saved on server but failed to reload the local dataset. Refresh the page to see the latest state."
+          );
+          return;
         }
       }
-    },
-    [existingDeliverySchedule, onApply]
-  );
+      if (result.totalRows === 0) {
+        toast.info(
+          `Saved mapping (${formatNumber(result.mappingSize)} entries). No delivery schedule dataset exists yet — patches will apply once you run Apply as Delivery Schedule.`
+        );
+      } else {
+        toast.success(
+          `Mapping applied: ${formatNumber(result.patched)} row${result.patched === 1 ? "" : "s"} patched, ${formatNumber(result.unchanged)} unchanged. Dataset has ${formatNumber(result.totalRows)} rows on the server.`
+        );
+      }
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save contract ID mapping"
+      );
+    }
+  }, [
+    contractIdMappingText,
+    applyScheduleBContractIdMapping,
+    onApplyComplete,
+  ]);
 
   const uploadSinglePdf = useCallback(
     async (jobId: string, file: File) => {
@@ -1464,18 +1541,28 @@ export function ScheduleBImport({
           </div>
         ) : null}
 
-        {scheduleBResults.length > 0 && (
+        {/* contract-id-mapping-v1: mapping textarea is now ALWAYS
+            visible as long as there's something to map against —
+            either an active scan, an existing applied delivery
+            schedule, or a previously-saved mapping that should be
+            editable. The Save & Apply button calls
+            applyScheduleBContractIdMapping which persists the text
+            server-side and patches utility_contract_number on the
+            cloud dataset, then reloads via onApplyComplete. */}
+        {(scheduleBResults.length > 0 ||
+          (existingDeliverySchedule?.length ?? 0) > 0 ||
+          contractIdMappingText.length > 0) && (
           <div className="rounded-md border border-border/60 p-3 space-y-2">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs font-bold uppercase tracking-wider">GATS ID to Contract ID Mapping</p>
                 <p className="text-xs text-muted-foreground">
-                  Paste two columns: GATS ID and Contract Number (CSV, tab, or one per line).
+                  Paste two columns: GATS ID and Contract Number (CSV, tab, or one per line). Saved server-side so it persists across refreshes.
                 </p>
               </div>
               {contractIdMappingCount > 0 && (
                 <span className="text-xs font-semibold text-green-600 dark:text-green-400">
-                  {contractIdMappingCount} mapped
+                  {formatNumber(contractIdMappingCount)} parsed
                 </span>
               )}
             </div>
@@ -1486,6 +1573,32 @@ export function ScheduleBImport({
               rows={3}
               className="w-full rounded-sm border bg-background px-2 py-1.5 text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
             />
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[10px] text-muted-foreground">
+                {getScheduleBContractIdMappingQuery.data?.mappingText &&
+                getScheduleBContractIdMappingQuery.data.mappingText.length > 0
+                  ? "Loaded from server."
+                  : "Not yet saved to server."}
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSaveAndApplyContractIdMapping}
+                disabled={
+                  applyScheduleBContractIdMapping.isPending ||
+                  contractIdMappingText.trim().length === 0
+                }
+              >
+                {applyScheduleBContractIdMapping.isPending ? (
+                  <>
+                    <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    Saving & applying…
+                  </>
+                ) : (
+                  "Save & Apply mapping"
+                )}
+              </Button>
+            </div>
           </div>
         )}
 

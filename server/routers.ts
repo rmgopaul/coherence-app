@@ -4454,6 +4454,276 @@ export const appRouter = router({
           markedAppliedCount,
         };
       }),
+    /**
+     * contract-id-mapping-v1: persist a GATS ID → Contract ID mapping
+     * server-side and patch utility_contract_number across the
+     * deliveryScheduleBase rows in cloud storage.
+     *
+     * Previously the client-side handleContractIdMappingChange path
+     * patched local state and relied on the deprecated onApply merge
+     * handler + flaky signature-ref cloud sync. That meant 24k-entry
+     * mappings were lost on refresh and never reached the server.
+     *
+     * This mutation:
+     *   1. Saves the raw mapping TEXT to cloud (so the textarea
+     *      hydrates on next mount via getScheduleBContractIdMapping).
+     *   2. Parses the text into a Map<gatsId, contractId> (same
+     *      grammar as client/src/lib/scheduleBScanner.ts::parseContractIdMapping).
+     *   3. Loads the current cloud deliveryScheduleBase payload via
+     *      the same loadDatasetPayloadByKey helper that
+     *      applyScheduleBToDeliveryObligations uses.
+     *   4. Iterates rows and patches utility_contract_number wherever
+     *      tracking_system_ref_id (uppercased) has a mapping entry.
+     *   5. Writes the patched dataset back to cloud (DB + S3) using
+     *      the same flat {fileName,uploadedAt,headers,csvText} shape.
+     *   6. Returns counts + checkpoint so the client can display a
+     *      "Last mapping: X patched, Y unchanged" panel and so
+     *      onApplyComplete can reload the dataset from cloud.
+     */
+    getScheduleBContractIdMapping: protectedProcedure.query(async ({ ctx }) => {
+      const { getSolarRecDashboardPayload } = await import("./db");
+      const mappingText = await getSolarRecDashboardPayload(
+        ctx.user.id,
+        "dashboard:schedule_b_contract_id_mapping"
+      );
+      return {
+        _checkpoint: "contract-id-mapping-v1" as const,
+        mappingText: mappingText ?? "",
+      };
+    }),
+    applyScheduleBContractIdMapping: protectedProcedure
+      .input(
+        z.object({
+          // 24k entries × ~30 bytes/line = ~720KB. Cap at 5 MB to
+          // leave headroom for much larger lists without blowing up
+          // the tRPC request.
+          mappingText: z.string().max(5_000_000),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const {
+          getSolarRecDashboardPayload,
+          saveSolarRecDashboardPayload,
+        } = await import("./db");
+        const { storagePut } = await import("./storage");
+
+        // ── Step 1: Persist the raw text so the textarea rehydrates
+        //    on next mount. Do this FIRST so even if the patch step
+        //    fails the user doesn't lose their pasted mapping.
+        await saveSolarRecDashboardPayload(
+          ctx.user.id,
+          "dashboard:schedule_b_contract_id_mapping",
+          input.mappingText
+        );
+
+        // ── Step 2: Parse (duplicates parseContractIdMapping from
+        //    client/src/lib/scheduleBScanner.ts verbatim — kept
+        //    separate to avoid introducing a shared module just for
+        //    this and to keep the server independent of the client's
+        //    bundle structure).
+        const parseMapping = (text: string): Map<string, string> => {
+          const mapping = new Map<string, string>();
+          const lines = text.split(/\r?\n/);
+          for (const line of lines) {
+            const parts = line.split(/[,\t]+/).map((s) => s.trim());
+            if (parts.length < 2) continue;
+            let gatsId = "";
+            let contractId = "";
+            for (const part of parts) {
+              const cleaned = part.replace(/^["']|["']$/g, "");
+              if (!cleaned) continue;
+              if (/^[A-Z]{2,5}\d{4,10}$/i.test(cleaned) && !gatsId) {
+                gatsId = cleaned.toUpperCase();
+              } else if (/^\d{1,5}$/.test(cleaned) && !contractId) {
+                contractId = cleaned;
+              }
+            }
+            if (gatsId && contractId) {
+              mapping.set(gatsId, contractId);
+            }
+          }
+          return mapping;
+        };
+        const mapping = parseMapping(input.mappingText);
+
+        if (mapping.size === 0) {
+          return {
+            _checkpoint: "contract-id-mapping-v1" as const,
+            mappingSize: 0,
+            patched: 0,
+            unchanged: 0,
+            totalRows: 0,
+            mappingTextSaved: true,
+          };
+        }
+
+        // ── Step 3: Load the current cloud deliveryScheduleBase.
+        //    Reuses the exact same inline helper as
+        //    applyScheduleBToDeliveryObligations to handle both flat
+        //    and source-manifest payload shapes.
+        const loadDatasetPayloadByKey = async (
+          key: string
+        ): Promise<string | null> => {
+          const basePayload = await getSolarRecDashboardPayload(
+            ctx.user.id,
+            `dataset:${key}`
+          );
+          if (!basePayload) return null;
+          const chunkKeys = parseChunkPointerPayload(basePayload);
+          if (!chunkKeys || chunkKeys.length === 0) {
+            return basePayload;
+          }
+          let merged = "";
+          for (const chunkKey of chunkKeys) {
+            const chunk = await getSolarRecDashboardPayload(
+              ctx.user.id,
+              `dataset:${chunkKey}`
+            );
+            if (typeof chunk !== "string") {
+              return null;
+            }
+            merged += chunk;
+          }
+          return merged;
+        };
+
+        const existingPayload = await loadDatasetPayloadByKey(
+          "deliveryScheduleBase"
+        );
+        if (!existingPayload) {
+          // No dataset yet. Text is saved, but there's nothing to
+          // patch. Return early so the client doesn't trigger a
+          // cloud reload that would show 0 rows.
+          return {
+            _checkpoint: "contract-id-mapping-v1" as const,
+            mappingSize: mapping.size,
+            patched: 0,
+            unchanged: 0,
+            totalRows: 0,
+            mappingTextSaved: true,
+          };
+        }
+
+        let existingDataset: ParsedRemoteCsvDataset = {
+          fileName: "Schedule B Import",
+          uploadedAt: new Date().toISOString(),
+          headers: [],
+          rows: [],
+        };
+
+        const sourceManifest =
+          parseScheduleBRemoteSourceManifest(existingPayload);
+        if (sourceManifest && sourceManifest.length > 0) {
+          const latestSource = sourceManifest[sourceManifest.length - 1];
+          const sourcePayload = await loadDatasetPayloadByKey(
+            latestSource.storageKey
+          );
+          if (sourcePayload) {
+            const decoded =
+              latestSource.encoding === "base64"
+                ? Buffer.from(sourcePayload, "base64").toString("utf8")
+                : sourcePayload;
+            const parsedCsv = parseCsvText(decoded);
+            existingDataset = {
+              fileName: "Schedule B Import",
+              uploadedAt: new Date().toISOString(),
+              headers: parsedCsv.headers,
+              rows: parsedCsv.rows,
+            };
+          }
+        } else {
+          const parsed = parseRemoteCsvDataset(existingPayload);
+          if (parsed) {
+            existingDataset = parsed;
+          }
+        }
+
+        // ── Step 4: Patch utility_contract_number on matching rows.
+        let patched = 0;
+        let unchanged = 0;
+        const patchedRows = existingDataset.rows.map((row) => {
+          const trackingId = cleanScheduleBCell(
+            row.tracking_system_ref_id
+          ).toUpperCase();
+          if (!trackingId) {
+            unchanged += 1;
+            return row;
+          }
+          const newContractId = mapping.get(trackingId);
+          if (!newContractId) {
+            unchanged += 1;
+            return row;
+          }
+          const currentContractId = cleanScheduleBCell(
+            row.utility_contract_number
+          );
+          if (currentContractId === newContractId) {
+            // Already set to the mapped value — count as unchanged
+            // so the user sees accurate "patched" totals.
+            unchanged += 1;
+            return row;
+          }
+          patched += 1;
+          return {
+            ...row,
+            utility_contract_number: newContractId,
+          };
+        });
+
+        // Make sure the headers include utility_contract_number so
+        // the column appears on any rows that didn't have it before.
+        const mergedHeaders: string[] = [];
+        const pushHeader = (header: string) => {
+          const cleanHeader = cleanScheduleBCell(header);
+          if (!cleanHeader || mergedHeaders.includes(cleanHeader)) return;
+          mergedHeaders.push(cleanHeader);
+        };
+        existingDataset.headers.forEach(pushHeader);
+        pushHeader("utility_contract_number");
+        patchedRows.forEach((row) => Object.keys(row).forEach(pushHeader));
+
+        // ── Step 5: Write back to cloud (DB + S3).
+        const uploadedAt = new Date().toISOString();
+        const finalPayload = JSON.stringify({
+          fileName: existingDataset.fileName || "Schedule B Import",
+          uploadedAt,
+          headers: mergedHeaders,
+          csvText: buildCsvText(mergedHeaders, patchedRows),
+        });
+
+        let persistedToDatabase = false;
+        try {
+          persistedToDatabase = await saveSolarRecDashboardPayload(
+            ctx.user.id,
+            "dataset:deliveryScheduleBase",
+            finalPayload
+          );
+        } catch {
+          persistedToDatabase = false;
+        }
+
+        const storageKey = `solar-rec-dashboard/${ctx.user.id}/datasets/deliveryScheduleBase.json`;
+        let storageSynced = false;
+        try {
+          await storagePut(storageKey, finalPayload, "application/json");
+          storageSynced = true;
+        } catch (storageError) {
+          if (!persistedToDatabase) {
+            throw storageError;
+          }
+        }
+
+        return {
+          _checkpoint: "contract-id-mapping-v1" as const,
+          mappingSize: mapping.size,
+          patched,
+          unchanged,
+          totalRows: patchedRows.length,
+          persistedToDatabase,
+          storageSynced,
+          mappingTextSaved: true,
+        };
+      }),
     uploadScheduleBFileChunk: protectedProcedure
       .input(
         z.object({
