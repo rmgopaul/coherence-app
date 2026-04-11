@@ -3087,6 +3087,109 @@ export async function markScheduleBImportFileQueued(
   });
 }
 
+/**
+ * Bulk-insert scheduleBImportFiles rows for a drive-link-v1 batch.
+ *
+ * Each row is stored with `storageKey = "drive:<fileId>"` and
+ * `status = "queued"` so the existing scheduleBImportJobRunner picks
+ * them up immediately — the drive branch inside processSingleFile
+ * downloads from Google Drive based on the prefix. No chunk lifecycle
+ * (uploadedChunks = totalChunks = 1) because drive files are
+ * finalized from the moment the row exists.
+ *
+ * Deduplicates by fileName against the job's existing rows before
+ * inserting — collisions are silently counted as `skipped` so the
+ * mutation can report "X new, Y already in queue" to the user.
+ *
+ * Chunks the actual INSERT into batches of 500 to keep the SQL
+ * statement size manageable on TiDB/MySQL and to keep withDbRetry
+ * units small.
+ *
+ * Returns { inserted, skipped }.
+ */
+export async function bulkInsertScheduleBDriveFiles(
+  jobId: string,
+  files: Array<{
+    fileName: string;
+    fileSize: number | null;
+    driveFileId: string;
+  }>
+): Promise<{ inserted: number; skipped: number }> {
+  if (files.length === 0) return { inserted: 0, skipped: 0 };
+  const db = await getDb();
+  if (!db) return { inserted: 0, skipped: 0 };
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return { inserted: 0, skipped: 0 };
+
+  // 1. Load all existing filenames for this job so we can filter
+  //    duplicates in-memory (the (jobId, fileName) unique index would
+  //    reject them anyway, but pre-filtering keeps the INSERT clean).
+  const knownFileNamesRows = await withDbRetry(
+    "list schedule b file names for bulk drive insert",
+    async () =>
+      db
+        .select({ fileName: scheduleBImportFiles.fileName })
+        .from(scheduleBImportFiles)
+        .where(eq(scheduleBImportFiles.jobId, jobId))
+  );
+  const knownFileNames = new Set(
+    knownFileNamesRows.map((row) => row.fileName)
+  );
+
+  // 2. Partition into "new" and "skip".
+  const fresh: typeof files = [];
+  let skipped = 0;
+  const seenThisBatch = new Set<string>();
+  for (const file of files) {
+    if (knownFileNames.has(file.fileName)) {
+      skipped += 1;
+      continue;
+    }
+    // Also skip duplicates WITHIN this batch (two Drive files with
+    // the same name in the same folder would trip the unique index
+    // otherwise).
+    if (seenThisBatch.has(file.fileName)) {
+      skipped += 1;
+      continue;
+    }
+    seenThisBatch.add(file.fileName);
+    fresh.push(file);
+  }
+
+  if (fresh.length === 0) {
+    return { inserted: 0, skipped };
+  }
+
+  // 3. Chunked multi-row insert. 500 rows/chunk is a conservative
+  //    balance between throughput and statement size.
+  const CHUNK_SIZE = 500;
+  let inserted = 0;
+  for (let start = 0; start < fresh.length; start += CHUNK_SIZE) {
+    const chunk = fresh.slice(start, start + CHUNK_SIZE);
+    const now = new Date();
+    const rows = chunk.map((file) => ({
+      id: nanoid(),
+      jobId,
+      fileName: file.fileName,
+      fileSize: file.fileSize ?? 0,
+      storageKey: `drive:${file.driveFileId}`,
+      status: "queued" as const,
+      uploadedChunks: 1,
+      totalChunks: 1,
+      error: null,
+      processedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    }));
+    await withDbRetry("bulk insert schedule b drive files chunk", async () => {
+      await db.insert(scheduleBImportFiles).values(rows);
+    });
+    inserted += rows.length;
+  }
+
+  return { inserted, skipped };
+}
+
 export async function markScheduleBImportFileStatus(
   data: {
     jobId: string;

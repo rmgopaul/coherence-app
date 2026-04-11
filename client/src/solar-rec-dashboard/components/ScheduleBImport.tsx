@@ -167,6 +167,10 @@ export function ScheduleBImport({
     alreadyInDatabaseFileNames: string[];
   } | null>(null);
   const [showAlreadyInDatabase, setShowAlreadyInDatabase] = useState(false);
+  // drive-link-v1: URL input for "Link Google Drive folder". Stays in
+  // component state so the user can edit/paste before clicking the
+  // button; cleared on successful link.
+  const [driveFolderUrl, setDriveFolderUrl] = useState("");
 
   // Persistent diagnostic when Apply produces zero usable rows. A toast
   // alone is too easy to miss — users were clicking Apply and seeing
@@ -190,6 +194,8 @@ export function ScheduleBImport({
   const clearScheduleBImport = trpc.solarRecDashboard.clearScheduleBImport.useMutation();
   const clearScheduleBImportStuckUploads =
     trpc.solarRecDashboard.clearScheduleBImportStuckUploads.useMutation();
+  const linkScheduleBDriveFolder =
+    trpc.solarRecDashboard.linkScheduleBDriveFolder.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
 
@@ -1106,6 +1112,58 @@ export function ScheduleBImport({
             ) : null}
           </div>
         ) : null}
+        {/* drive-link-v1: paste a Google Drive folder URL and the
+            server enumerates + downloads the PDFs directly. Eliminates
+            browser memory pressure for large batches (the 18k+ file
+            crash we diagnosed earlier). Files must be directly in the
+            folder — subfolders are not recursed in v1. */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={driveFolderUrl}
+            onChange={(e) => setDriveFolderUrl(e.target.value)}
+            placeholder="Or paste a Google Drive folder URL (top-level PDFs only)…"
+            className="flex-1 rounded-sm border bg-background px-2 py-1.5 text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            disabled={linkScheduleBDriveFolder.isPending}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={
+              linkScheduleBDriveFolder.isPending ||
+              driveFolderUrl.trim().length === 0
+            }
+            onClick={async () => {
+              try {
+                const result = await linkScheduleBDriveFolder.mutateAsync({
+                  folderUrl: driveFolderUrl.trim(),
+                });
+                toast.success(
+                  `Linked ${formatNumber(result.newFiles)} new PDF${
+                    result.newFiles === 1 ? "" : "s"
+                  } from Drive (${formatNumber(result.discovered)} discovered, ${formatNumber(result.skippedExisting)} already in queue). Processing will start automatically.`
+                );
+                setDriveFolderUrl("");
+                await scheduleBStatusQuery.refetch();
+              } catch (err) {
+                toast.error(
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to link Drive folder"
+                );
+              }
+            }}
+          >
+            {linkScheduleBDriveFolder.isPending ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                Linking…
+              </>
+            ) : (
+              "Link Drive folder"
+            )}
+          </Button>
+        </div>
         <div className="flex items-center gap-3">
           <input
             ref={fileInputRef}

@@ -3874,6 +3874,97 @@ export const appRouter = router({
           knownFileNames,
         };
       }),
+    /**
+     * drive-link-v1: paste a Google Drive folder URL, server enumerates
+     * all PDFs, creates scheduleBImportFiles rows with storageKey
+     * "drive:<fileId>", and kicks off the existing runner. The runner's
+     * processSingleFile branches on the prefix and downloads from Drive
+     * instead of S3. Every downstream flow — progress, results, Apply,
+     * Last Apply panel — works unchanged because drive-linked files
+     * write to the same DB tables as local-upload files.
+     *
+     * Response carries _checkpoint: "drive-link-v1" for deploy
+     * verification per docs/server-routing.md.
+     */
+    linkScheduleBDriveFolder: protectedProcedure
+      .input(
+        z.object({
+          folderUrl: z.string().min(1).max(500),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { parseGoogleDriveFolderId, listGoogleDrivePdfsInFolder } =
+          await import("./services/google");
+
+        const folderId = parseGoogleDriveFolderId(input.folderUrl);
+        if (!folderId) {
+          throw new Error(
+            "Could not parse a Google Drive folder ID from that URL. Expected something like https://drive.google.com/drive/folders/..."
+          );
+        }
+
+        const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
+        const accessToken = await getValidGoogleToken(ctx.user.id);
+
+        const discovered = await listGoogleDrivePdfsInFolder(
+          accessToken,
+          folderId,
+          { maxFiles: 100_000 }
+        );
+
+        if (discovered.length === 0) {
+          throw new Error(
+            "No PDFs found in that Drive folder. Make sure the folder contains Schedule B PDFs directly (subfolders are not recursed in v1) and that your Google account has access."
+          );
+        }
+
+        const {
+          getOrCreateLatestScheduleBImportJob,
+          bulkInsertScheduleBDriveFiles,
+          updateScheduleBImportJob,
+        } = await import("./db");
+
+        const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);
+
+        const { inserted, skipped } = await bulkInsertScheduleBDriveFiles(
+          job.id,
+          discovered.map((f) => ({
+            fileName: f.name,
+            fileSize: f.size,
+            driveFileId: f.id,
+          }))
+        );
+
+        // Reset job state to 'queued' so the runner re-evaluates the
+        // work list. Clears any prior 'completed'/'stopped' terminal
+        // state left over from a previous run of the same job. No-op
+        // if inserted === 0 and the job is already running.
+        if (inserted > 0) {
+          await updateScheduleBImportJob(job.id, {
+            status: "queued",
+            error: null,
+            completedAt: null,
+            stoppedAt: null,
+          });
+        }
+
+        const {
+          runScheduleBImportJob,
+          isScheduleBImportRunnerActive,
+        } = await import("./services/scheduleBImportJobRunner");
+        if (inserted > 0 && !isScheduleBImportRunnerActive(job.id)) {
+          void runScheduleBImportJob(job.id);
+        }
+
+        return {
+          _checkpoint: "drive-link-v1" as const,
+          jobId: job.id,
+          folderId,
+          discovered: discovered.length,
+          newFiles: inserted,
+          skippedExisting: skipped,
+        };
+      }),
     getScheduleBImportStatus: protectedProcedure
       .query(async ({ ctx }) => {
         const { getLatestScheduleBImportJob, getPendingScheduleBImportApplyCount } =

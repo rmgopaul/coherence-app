@@ -212,7 +212,37 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
           rowError = "Upload did not finalize before processing began. Re-upload this PDF.";
         } else {
           try {
-            const pdfBytes = await storageReadBytes(storageKey);
+            // drive-link-v1: branch on the storageKey prefix. Local
+            // uploads get `solar-rec-dashboard/...` (via storagePut)
+            // and download from S3/local filesystem. Drive-linked
+            // files get `drive:<fileId>` and download from Google
+            // Drive via the user's OAuth token. Per-file token refresh
+            // is the simplest reliable pattern for a long-running
+            // runner — see the drive-link-v1 plan for rationale.
+            let pdfBytes: Uint8Array;
+            if (storageKey.startsWith("drive:")) {
+              const fileId = storageKey.slice("drive:".length);
+              const { getValidGoogleToken } = await import(
+                "../helpers/tokenRefresh"
+              );
+              const { downloadGoogleDriveFile } = await import("./google");
+              try {
+                const accessToken = await getValidGoogleToken(job.userId);
+                pdfBytes = await downloadGoogleDriveFile(accessToken, fileId);
+              } catch (driveErr) {
+                // Re-throw with a prefix so the user's error row
+                // reads "Drive download failed: ..." rather than a
+                // generic extraction error. Matches how the outer
+                // catch writes the message into rowError verbatim.
+                const msg =
+                  driveErr instanceof Error
+                    ? driveErr.message
+                    : "Unknown Drive error";
+                throw new Error(`Drive download failed: ${msg}`);
+              }
+            } else {
+              pdfBytes = await storageReadBytes(storageKey);
+            }
             extraction = await extractScheduleBDataFromPdfBuffer(
               pdfBytes,
               file.fileName

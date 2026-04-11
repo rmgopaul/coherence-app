@@ -362,3 +362,209 @@ export async function refreshGoogleToken(
 
   return response.json();
 }
+
+// ────────────────────────────────────────────────────────────────────
+// Google Drive folder-linking helpers (drive-link-v1)
+//
+// Used by server/routers.ts linkScheduleBDriveFolder + the drive branch
+// in server/services/scheduleBImportJobRunner.ts. The whole feature
+// lives in the server so the browser never has to touch the PDF bytes
+// — that's the entire point. See docs in the plan file
+// .claude/plans/wise-stargazing-peacock.md.
+// ────────────────────────────────────────────────────────────────────
+
+const DRIVE_FOLDER_URL_REGEX = /\/folders\/([a-zA-Z0-9_-]+)/;
+const DRIVE_RAW_ID_REGEX = /^[a-zA-Z0-9_-]{10,}$/;
+
+/**
+ * Parse a Google Drive folder ID out of any of these inputs:
+ *  - https://drive.google.com/drive/folders/ABC123_-def
+ *  - https://drive.google.com/drive/folders/ABC123_-def?usp=sharing
+ *  - https://drive.google.com/drive/u/0/folders/ABC123_-def
+ *  - raw ID like ABC123_-def
+ *
+ * Returns null if the input can't be interpreted as a folder ID.
+ */
+export function parseGoogleDriveFolderId(input: string): string | null {
+  const trimmed = (input ?? "").trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(DRIVE_FOLDER_URL_REGEX);
+  if (match) return match[1];
+  if (DRIVE_RAW_ID_REGEX.test(trimmed)) return trimmed;
+  return null;
+}
+
+/**
+ * List every PDF in a Drive folder (top-level only, no recursion).
+ * Paginates via nextPageToken until the folder is fully enumerated,
+ * then returns a flat array of {id, name, size}. Mirrors the pagination
+ * pattern used by getGmailMessages above.
+ *
+ * Supports both My Drive and Shared Drives — supportsAllDrives +
+ * includeItemsFromAllDrives are set defensively so the call works
+ * across either source with no behavioral difference on My Drive.
+ *
+ * Throws if the running total exceeds opts.maxFiles (default 100_000)
+ * so we never block the server on a pathological folder.
+ *
+ * The caller MUST pass a token that was produced by getValidGoogleToken
+ * (or otherwise freshly refreshed) — this helper doesn't know how to
+ * recover from 401.
+ */
+export async function listGoogleDrivePdfsInFolder(
+  accessToken: string,
+  folderId: string,
+  opts: { maxFiles?: number } = {}
+): Promise<Array<{ id: string; name: string; size: number | null }>> {
+  const maxFiles = opts.maxFiles ?? 100_000;
+  const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`;
+  const results: Array<{ id: string; name: string; size: number | null }> = [];
+
+  let pageToken: string | undefined = undefined;
+  // Drive API limit is 1000 per page; we use the max to minimize the
+  // number of round-trips.
+  const pageSize = 1000;
+
+  // Cap the number of pagination iterations as a belt-and-suspenders
+  // safety net; maxFiles/pageSize + 1 is the theoretical max.
+  const maxIterations = Math.ceil(maxFiles / pageSize) + 2;
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    const params = new URLSearchParams({
+      q: query,
+      pageSize: String(pageSize),
+      fields: "files(id,name,size),nextPageToken",
+      orderBy: "name",
+      supportsAllDrives: "true",
+      includeItemsFromAllDrives: "true",
+    });
+    if (pageToken) {
+      params.set("pageToken", pageToken);
+    }
+
+    const response = await makeGoogleApiCall(
+      `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+      accessToken
+    );
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(
+        `Drive folder list failed: ${response.status} ${response.statusText}${
+          body ? ` — ${body.slice(0, 300)}` : ""
+        }`
+      );
+    }
+
+    const data = (await response.json()) as {
+      files?: Array<{ id?: string; name?: string; size?: string }>;
+      nextPageToken?: string;
+    };
+
+    const files = Array.isArray(data.files) ? data.files : [];
+    for (const f of files) {
+      if (!f.id || !f.name) continue;
+      const sizeNum =
+        typeof f.size === "string" && f.size.length > 0
+          ? Number(f.size)
+          : null;
+      results.push({
+        id: f.id,
+        name: f.name,
+        size: Number.isFinite(sizeNum as number) ? (sizeNum as number) : null,
+      });
+
+      if (results.length > maxFiles) {
+        throw new Error(
+          `Drive folder contains more than ${maxFiles.toLocaleString()} PDFs. Please use a smaller folder or split the batch.`
+        );
+      }
+    }
+
+    pageToken = data.nextPageToken;
+    if (!pageToken) break;
+  }
+
+  return results;
+}
+
+/**
+ * Download a single Drive file's raw bytes via alt=media.
+ *
+ * Uses its own `fetch` (not `makeGoogleApiCall`) so we can set a
+ * download-appropriate timeout of 60 seconds — the shared wrapper's
+ * 15s ceiling is too tight for larger PDFs on slow networks. Retries
+ * network errors up to 3 times with linear backoff, and handles
+ * rate-limit (429) with Retry-After once before failing.
+ *
+ * Throws on 4xx/5xx with a diagnosable message; the runner wraps this
+ * in its per-file try/catch and writes a failed result row.
+ *
+ * The caller MUST pass a fresh access token — 401 is not auto-refreshed.
+ */
+export async function downloadGoogleDriveFile(
+  accessToken: string,
+  fileId: string
+): Promise<Uint8Array> {
+  const url = `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+    fileId
+  )}?alt=media&supportsAllDrives=true`;
+
+  const doFetch = async (): Promise<Response> => {
+    return fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      signal: AbortSignal.timeout(60_000),
+    });
+  };
+
+  const maxNetworkRetries = 3;
+  let lastNetworkError: unknown = null;
+  let sawRateLimit = false;
+
+  for (let attempt = 0; attempt < maxNetworkRetries; attempt += 1) {
+    let response: Response;
+    try {
+      response = await doFetch();
+    } catch (err) {
+      lastNetworkError = err;
+      if (attempt === maxNetworkRetries - 1) break;
+      await new Promise((resolve) =>
+        setTimeout(resolve, 1000 * (attempt + 1))
+      );
+      continue;
+    }
+
+    if (response.ok) {
+      const arrayBuffer = await response.arrayBuffer();
+      return new Uint8Array(arrayBuffer);
+    }
+
+    // Specific 429 handling: parse Retry-After and try exactly once
+    // more. A second 429 in a row fails the file.
+    if (response.status === 429 && !sawRateLimit) {
+      sawRateLimit = true;
+      const retryAfterHeader = response.headers.get("retry-after");
+      const retryAfterSec = retryAfterHeader
+        ? Math.max(0, Math.min(60, Number(retryAfterHeader) || 0))
+        : 2;
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(retryAfterSec, 1) * 1000)
+      );
+      continue;
+    }
+
+    // Any other non-ok status: throw with a diagnosable message.
+    const body = await response.text().catch(() => "");
+    throw new Error(
+      `Drive download failed: ${response.status} ${response.statusText}${
+        body ? ` — ${body.slice(0, 300)}` : ""
+      }`
+    );
+  }
+
+  throw lastNetworkError instanceof Error
+    ? lastNetworkError
+    : new Error("Drive download failed after network retries");
+}
