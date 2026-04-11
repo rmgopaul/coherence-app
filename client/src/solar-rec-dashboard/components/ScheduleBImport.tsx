@@ -703,6 +703,10 @@ export function ScheduleBImport({
   const statusCounts = scheduleBStatusQuery.data?.counts;
   const serverJobStatus = scheduleBStatusQuery.data?.job?.status ?? null;
   const backgroundRunning = serverJobStatus === "running" || serverJobStatus === "queued";
+  const resultsFetchInFlight =
+    scheduleBResultsQuery.isLoading ||
+    scheduleBResultsQuery.isFetching ||
+    scheduleBResultsQuery.isRefetching;
   const showUploadProgress = scheduleBProgress.total > 0 || backgroundRunning;
   const successCount = scheduleBResults.filter((r) => !r.extraction.error).length;
   const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
@@ -1013,7 +1017,10 @@ export function ScheduleBImport({
                 {formatNumber(scheduleBResults.length)}. Client-side mapping stalled — try Refresh Now or reload the page.
               </div>
             ) : null}
-            {scheduleBResults.length === 0 && serverProcessedCount > 0 && (scheduleBResultsQuery.data?.total ?? 0) === 0 ? (
+            {!resultsFetchInFlight &&
+            scheduleBResults.length === 0 &&
+            serverProcessedCount > 0 &&
+            (scheduleBResultsQuery.data?.total ?? 0) === 0 ? (
               <div className="text-amber-700">
                 ⚠ Server reports {formatNumber(serverProcessedCount)} files processed but 0 result rows in DB. The
                 processing job may have written file-status updates without creating result rows — this is a
@@ -1021,7 +1028,8 @@ export function ScheduleBImport({
                 click <strong>Clear</strong> and re-upload.
               </div>
             ) : null}
-            {scheduleBResults.length < serverProcessedCount &&
+            {!resultsFetchInFlight &&
+            scheduleBResults.length < serverProcessedCount &&
             (scheduleBResultsQuery.data?.total ?? 0) >= scheduleBResults.length &&
             (scheduleBResultsQuery.data?.total ?? 0) < serverProcessedCount ? (
               <div className="text-amber-700">

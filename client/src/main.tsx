@@ -79,6 +79,7 @@ const trpcClient = trpc.createClient({
       },
       true: httpLink({
         url: "/api/trpc",
+        methodOverride: "POST",
         transformer: superjson,
         fetch: trpcFetch,
       }),

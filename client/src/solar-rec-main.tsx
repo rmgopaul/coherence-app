@@ -46,6 +46,7 @@ const trpcClient = trpc.createClient({
   links: [
     httpLink({
       url: "/solar-rec/api/main-trpc",
+      methodOverride: "POST",
       transformer: superjson,
       fetch: trpcFetch,
     }),
@@ -57,6 +58,7 @@ const solarRecTrpcClient = solarRecTrpc.createClient({
   links: [
     httpLink({
       url: "/solar-rec/api/trpc",
+      methodOverride: "POST",
       transformer: superjson,
       fetch: trpcFetch,
     }),
