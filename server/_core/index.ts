@@ -138,9 +138,17 @@ async function startServer() {
   app.use("/api", oauthRouter);
   // Solar REC standalone auth + tRPC (must be before main tRPC)
   registerSolarRecAuth(app);
+  // allowMethodOverride: true is REQUIRED because the client's httpLink
+  // instances (client/src/main.tsx + client/src/solar-rec-main.tsx) all
+  // use `methodOverride: "POST"`. Without this flag the tRPC server
+  // rejects POST to query procedures with
+  // "Unsupported POST-request to query procedure at path ...".
+  // See commit a6a1186 (2026-04-10) for the client-side change this
+  // pairs with.
   const solarRecTrpcHandler = createExpressMiddleware({
     router: solarRecAppRouter,
     createContext: createSolarRecContext,
+    allowMethodOverride: true,
     onError: ({ error }) => {
       // Silence NOT_FOUND errors to avoid noise from fallback routing
       if (error.code !== "NOT_FOUND") {
@@ -151,6 +159,7 @@ async function startServer() {
   const solarRecMainTrpcHandler = createExpressMiddleware({
     router: appRouter,
     createContext: createSolarRecMainContext,
+    allowMethodOverride: true,
   });
 
   // Compatibility dispatcher for older Solar REC bundles that still call
@@ -166,11 +175,16 @@ async function startServer() {
   // Primary endpoint for provider procedures from Solar REC.
   app.use("/solar-rec/api/main-trpc", solarRecMainTrpcHandler);
   // tRPC API
+  // allowMethodOverride: true — see the comment on solarRecTrpcHandler
+  // above. Main app's splitLink sends solarRecDashboard.* as POST via
+  // httpLink(methodOverride: "POST"); httpBatchLink branch is unaffected
+  // because enabling method override only widens the accepted methods.
   app.use(
     "/api/trpc",
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      allowMethodOverride: true,
     })
   );
   // development mode uses Vite, production mode uses static files
