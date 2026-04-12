@@ -9427,25 +9427,30 @@ const financialProfitData = useMemo<{
 
   // Build ICC Report 3 lookup by applicationId → grossContractValue
   const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
+  // 2026-04-11: replaced raw parseFloat with parseNumber (line 793)
+  // which strips $, commas, %, and whitespace before parsing. The ICC
+  // Report 3 CSV uses currency-formatted values like "$1,234.56" that
+  // parseFloat can't handle — every row returned NaN, gross was
+  // always 0, and no appIds made it into iccByAppId.
   const iccByAppId = new Map<string, { grossContractValue: number; recQuantity: number; recPrice: number }>();
   for (const row of iccRows) {
     const appId = (
       row["Application ID"] || row.Application_ID || row.application_id || ""
     ).trim();
     if (!appId) continue;
-    const gcv = parseFloat(
-      row["Total REC Delivery Contract Value"] ||
-      row["REC Delivery Contract Value"] ||
-      row["Total Contract Value"] ||
-      "0"
-    );
-    const rq = parseFloat(
-      row["Total Quantity of RECs Contracted"] ||
-      row["Contracted SRECs"] ||
-      row.SRECs ||
-      "0"
-    );
-    const rp = parseFloat(row["REC Price"] || "0");
+    const gcv =
+      parseNumber(
+        row["Total REC Delivery Contract Value"] ||
+        row["REC Delivery Contract Value"] ||
+        row["Total Contract Value"]
+      ) ?? 0;
+    const rq =
+      parseNumber(
+        row["Total Quantity of RECs Contracted"] ||
+        row["Contracted SRECs"] ||
+        row.SRECs
+      ) ?? 0;
+    const rp = parseNumber(row["REC Price"]) ?? 0;
     const gross = gcv > 0 ? gcv : rq * rp;
     if (gross > 0) {
       iccByAppId.set(appId, { grossContractValue: gross, recQuantity: rq, recPrice: rp });
@@ -9578,28 +9583,30 @@ const financialProfitDebug = useMemo(() => {
     scanByCsgId.set(r.csgId, r);
   }
 
-  // Step 3: ICC by appId — match the same field-name fallbacks as
-  // financialProfitData so we don't undercount due to a different
-  // column name resolution.
+  // Step 3: ICC by appId — match the same field-name fallbacks AND
+  // use parseNumber (not parseFloat) to mirror the fix in
+  // financialProfitData. Raw parseFloat chokes on currency-formatted
+  // strings like "$1,234.56", making every row's gross === 0 and
+  // dropping the appId entirely.
   const iccAppIds = new Set<string>();
   for (const row of iccRows) {
     const appId = (
       row["Application ID"] || row.Application_ID || row.application_id || ""
     ).trim();
     if (!appId) continue;
-    const gcv = parseFloat(
-      row["Total REC Delivery Contract Value"] ||
-        row["REC Delivery Contract Value"] ||
-        row["Total Contract Value"] ||
-        "0"
-    );
-    const rq = parseFloat(
-      row["Total Quantity of RECs Contracted"] ||
-        row["Contracted SRECs"] ||
-        row.SRECs ||
-        "0"
-    );
-    const rp = parseFloat(row["REC Price"] || "0");
+    const gcv =
+      parseNumber(
+        row["Total REC Delivery Contract Value"] ||
+          row["REC Delivery Contract Value"] ||
+          row["Total Contract Value"]
+      ) ?? 0;
+    const rq =
+      parseNumber(
+        row["Total Quantity of RECs Contracted"] ||
+          row["Contracted SRECs"] ||
+          row.SRECs
+      ) ?? 0;
+    const rp = parseNumber(row["REC Price"]) ?? 0;
     const gross = gcv > 0 ? gcv : rq * rp;
     if (gross > 0) iccAppIds.add(appId);
   }
