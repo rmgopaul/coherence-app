@@ -2402,6 +2402,24 @@ export default function SolarRecDashboard() {
   const [offlineDetailPage, setOfflineDetailPage] = useState(1);
   const [compliantSourcePage, setCompliantSourcePage] = useState(1);
   const [compliantReportPage, setCompliantReportPage] = useState(1);
+  // Financials table sort/filter state. Mirrors changeOwnership pattern.
+  type FinancialSortKey =
+    | "systemName"
+    | "grossContractValue"
+    | "vendorFeePercent"
+    | "vendorFeeAmount"
+    | "utilityCollateral"
+    | "additionalCollateralPercent"
+    | "additionalCollateralAmount"
+    | "ccAuth5Percent"
+    | "applicationFee"
+    | "totalDeductions"
+    | "profit"
+    | "totalCollateralization";
+  const [financialSortBy, setFinancialSortBy] = useState<FinancialSortKey>("profit");
+  const [financialSortDir, setFinancialSortDir] = useState<"asc" | "desc">("desc");
+  const [financialSearch, setFinancialSearch] = useState("");
+  const [financialFilter, setFinancialFilter] = useState<"all" | "needs-review" | "ok">("all");
   const [uploadsExpanded, setUploadsExpanded] = useState(false);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
     () => loadPersistedCompliantSources()
@@ -9392,6 +9410,9 @@ type ProfitRow = {
   totalDeductions: number;
   profit: number;
   totalCollateralization: number;
+  // Validation: flag rows where collateral exceeds 30% of GCV.
+  needsReview: boolean;
+  reviewReason: string;
 };
 
 const financialProfitData = useMemo<{
@@ -9516,6 +9537,13 @@ const financialProfitData = useMemo<{
     const profit = vendorFeeAmount;
     const totalCollateralization = roundMoney(utilityCollateral + additionalCollateralAmount + ccAuth5Percent);
 
+    // Validation: flag rows where collateral > 30% of GCV.
+    const collateralPercent = gcv > 0 ? totalCollateralization / gcv : 0;
+    const needsReview = collateralPercent > 0.30;
+    const reviewReason = needsReview
+      ? `Collateral is ${(collateralPercent * 100).toFixed(1)}% of GCV`
+      : "";
+
     profitRows.push({
       systemName: scan.systemName ?? appId,
       applicationId: appId,
@@ -9531,6 +9559,8 @@ const financialProfitData = useMemo<{
       totalDeductions,
       profit,
       totalCollateralization,
+      needsReview,
+      reviewReason,
     });
   }
 
@@ -9738,6 +9768,59 @@ const financialProfitDebug = useMemo(() => {
   datasets.abpCsgSystemMapping,
   datasets.abpIccReport3Rows,
 ]);
+
+// ── Financials: filtered + sorted rows for interactive table ────
+const filteredFinancialRows = useMemo(() => {
+  if (!isFinancialsTabActive) return [];
+  let rows = financialProfitData.rows;
+
+  // Filter by review status
+  if (financialFilter === "needs-review") {
+    rows = rows.filter((r) => r.needsReview);
+  } else if (financialFilter === "ok") {
+    rows = rows.filter((r) => !r.needsReview);
+  }
+
+  // Filter by search term (system name, app ID, csg ID)
+  const needle = financialSearch.trim().toLowerCase();
+  if (needle) {
+    rows = rows.filter((r) =>
+      [r.systemName, r.applicationId, r.csgId]
+        .join(" ")
+        .toLowerCase()
+        .includes(needle)
+    );
+  }
+
+  // Sort by selected column
+  const dir = financialSortDir === "asc" ? 1 : -1;
+  rows = [...rows].sort((a, b) => {
+    const key = financialSortBy;
+    if (key === "systemName") {
+      return (
+        a.systemName.localeCompare(b.systemName, undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }) * dir
+      );
+    }
+    return ((a[key] as number) - (b[key] as number)) * dir;
+  });
+
+  return rows;
+}, [
+  isFinancialsTabActive,
+  financialProfitData.rows,
+  financialFilter,
+  financialSearch,
+  financialSortBy,
+  financialSortDir,
+]);
+
+const financialFlaggedCount = useMemo(
+  () => financialProfitData.rows.filter((r) => r.needsReview).length,
+  [financialProfitData.rows]
+);
 
 // ── Data Quality: Freshness ─────────────────────────────────────
 const dataQualityFreshness = useMemo(() => {
@@ -10251,7 +10334,7 @@ const aiDataContext = useMemo(() => {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="size" className="space-y-4 mt-4">
             <Card>
@@ -10387,7 +10470,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
 		          <TabsContent value="value" className="space-y-4 mt-4">
             <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
@@ -10550,7 +10633,7 @@ const aiDataContext = useMemo(() => {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
 	          <TabsContent value="contracts" className="space-y-4 mt-4">
 	            <Card>
@@ -10763,7 +10846,7 @@ const aiDataContext = useMemo(() => {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="annual-review" className="space-y-4 mt-4">
             <Card>
@@ -11144,7 +11227,7 @@ const aiDataContext = useMemo(() => {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="performance-eval" className="space-y-4 mt-4">
             <Card>
@@ -11512,7 +11595,7 @@ const aiDataContext = useMemo(() => {
                 </Card>
               </>
             )}
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="change-ownership" className="space-y-4 mt-4">
             <Card>
@@ -11727,7 +11810,7 @@ const aiDataContext = useMemo(() => {
                 </Table>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="ownership" className="space-y-4 mt-4">
             <Card>
@@ -11804,7 +11887,7 @@ const aiDataContext = useMemo(() => {
                 </Table>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="offline-monitoring" className="space-y-4 mt-4">
             <Card id="offline-overview" className="scroll-mt-24">
@@ -12343,7 +12426,7 @@ const aiDataContext = useMemo(() => {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="meter-reads" className="space-y-4 mt-4">
             <Card>
@@ -12447,7 +12530,7 @@ const aiDataContext = useMemo(() => {
                 </CardContent>
               </Card>
             ) : null}
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="performance-ratio" className="space-y-4 mt-4">
             <Card>
@@ -13008,7 +13091,7 @@ const aiDataContext = useMemo(() => {
                 </Card>
               </>
             )}
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="snapshot-log" className="space-y-4 mt-4">
             <div className="grid gap-4 md:grid-cols-3">
@@ -13318,7 +13401,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="app-pipeline" className="space-y-4 mt-4">
             {/* ====== Application Pipeline (Count) ====== */}
@@ -13609,7 +13692,7 @@ const aiDataContext = useMemo(() => {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="trends" className="space-y-4 mt-4">
             <Card>
@@ -13689,7 +13772,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="forecast" className="space-y-4 mt-4">
             <Card className="border-sky-200 bg-sky-50/30">
@@ -13814,7 +13897,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="alerts" className="space-y-4 mt-4">
             <div className="grid grid-cols-3 gap-3">
@@ -13858,7 +13941,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="comparisons" className="space-y-4 mt-4">
             <Card>
@@ -13961,7 +14044,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="financials" className="space-y-4 mt-4">
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
@@ -14030,10 +14113,11 @@ const aiDataContext = useMemo(() => {
 
             {/* ── Profit & Collateralization Section ───────────── */}
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>Total Profit</CardDescription><CardTitle className="text-2xl text-emerald-800">${formatNumber(financialProfitData.totalProfit)}</CardTitle></CardHeader></Card>
+              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>Total Profit (Vendor Fee)</CardDescription><CardTitle className="text-2xl text-emerald-800">${formatNumber(financialProfitData.totalProfit)}</CardTitle></CardHeader></Card>
               <Card><CardHeader><CardDescription>Avg Profit / System</CardDescription><CardTitle className="text-2xl">${formatNumber(financialProfitData.avgProfit)}</CardTitle></CardHeader></Card>
               <Card><CardHeader><CardDescription>Total Collateralization</CardDescription><CardTitle className="text-2xl">${formatNumber(financialProfitData.totalCollateralization)}</CardTitle></CardHeader></Card>
               <Card><CardHeader><CardDescription>Systems w/ Data</CardDescription><CardTitle className="text-2xl">{financialProfitData.systemsWithData}</CardTitle></CardHeader></Card>
+              <Card className={financialFlaggedCount > 0 ? "border-amber-200 bg-amber-50/50" : ""}><CardHeader><CardDescription>Needs Review (&gt;30% Coll.)</CardDescription><CardTitle className={`text-2xl ${financialFlaggedCount > 0 ? "text-amber-800" : ""}`}>{financialFlaggedCount}</CardTitle></CardHeader></Card>
             </div>
 
             {financialProfitData.rows.length === 0 && financialCsgIds.length === 0 && (
@@ -14254,13 +14338,49 @@ const aiDataContext = useMemo(() => {
               </Card>
             )}
 
-            {financialProfitData.rows.length > 0 && (
+            {financialProfitData.rows.length > 0 && (() => {
+              // Sortable header helper — renders a clickable <TableHead>
+              // that toggles the sort column / direction.
+              const SortTh = ({
+                col,
+                label,
+                right,
+              }: {
+                col: FinancialSortKey;
+                label: string;
+                right?: boolean;
+              }) => (
+                <TableHead
+                  className={`cursor-pointer select-none hover:bg-slate-50 ${
+                    right ? "text-right" : ""
+                  }`}
+                  onClick={() => {
+                    if (financialSortBy === col) {
+                      setFinancialSortDir((d) =>
+                        d === "asc" ? "desc" : "asc"
+                      );
+                    } else {
+                      setFinancialSortBy(col);
+                      setFinancialSortDir("desc");
+                    }
+                  }}
+                >
+                  {label}{" "}
+                  {financialSortBy === col
+                    ? financialSortDir === "asc"
+                      ? "▲"
+                      : "▼"
+                    : ""}
+                </TableHead>
+              );
+
+              return (
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div>
                       <CardTitle className="text-base">Profit & Collateralization by System</CardTitle>
-                      <CardDescription>Part II verified systems only. All percentages applied to Gross Contract Value from ICC Report 3.</CardDescription>
+                      <CardDescription>Part II verified systems only. Profit = vendor fee. Collateral &gt; 30% of GCV flagged for review.</CardDescription>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => {
                       const csv = buildCsv(
@@ -14269,7 +14389,7 @@ const aiDataContext = useMemo(() => {
                           "vendor_fee_percent", "vendor_fee_amount", "utility_5pct_collateral",
                           "additional_collateral_percent", "additional_collateral_amount",
                           "cc_auth_5pct", "application_fee", "total_deductions", "profit",
-                          "total_collateralization",
+                          "total_collateralization", "needs_review", "review_reason",
                         ],
                         financialProfitData.rows.map(r => ({
                           system_name: r.systemName,
@@ -14286,36 +14406,93 @@ const aiDataContext = useMemo(() => {
                           total_deductions: r.totalDeductions,
                           profit: r.profit,
                           total_collateralization: r.totalCollateralization,
+                          needs_review: r.needsReview ? "Yes" : "",
+                          review_reason: r.reviewReason,
                         }))
                       );
                       triggerCsvDownload(`profit-collateralization-${timestampForCsvFileName()}.csv`, csv);
                     }}>Export CSV</Button>
                   </div>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-3">
+                  {/* ── Filter / search controls ───────────────────── */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="text"
+                      value={financialSearch}
+                      onChange={(e) => setFinancialSearch(e.target.value)}
+                      placeholder="Search system, app ID, CSG ID…"
+                      className="flex-1 min-w-[180px] rounded-sm border bg-background px-2 py-1.5 text-xs placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                    <select
+                      value={financialFilter}
+                      onChange={(e) =>
+                        setFinancialFilter(
+                          e.target.value as "all" | "needs-review" | "ok"
+                        )
+                      }
+                      className="rounded-sm border bg-background px-2 py-1.5 text-xs"
+                    >
+                      <option value="all">
+                        All ({formatNumber(financialProfitData.rows.length)})
+                      </option>
+                      <option value="needs-review">
+                        Needs Review ({formatNumber(financialFlaggedCount)})
+                      </option>
+                      <option value="ok">
+                        OK (
+                        {formatNumber(
+                          financialProfitData.rows.length -
+                            financialFlaggedCount
+                        )}
+                        )
+                      </option>
+                    </select>
+                    <span className="text-xs text-muted-foreground">
+                      Showing{" "}
+                      {formatNumber(
+                        Math.min(100, filteredFinancialRows.length)
+                      )}{" "}
+                      of {formatNumber(filteredFinancialRows.length)}
+                    </span>
+                  </div>
+                  {/* ── Table ────────────────────────────────────────── */}
                   <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>System</TableHead>
+                          <SortTh col="systemName" label="System" />
                           <TableHead>App ID</TableHead>
-                          <TableHead className="text-right">Gross Contract</TableHead>
-                          <TableHead className="text-right">Vendor Fee %</TableHead>
-                          <TableHead className="text-right">Vendor Fee $</TableHead>
-                          <TableHead className="text-right">Utility 5%</TableHead>
-                          <TableHead className="text-right">Add. Coll. %</TableHead>
-                          <TableHead className="text-right">Add. Coll. $</TableHead>
-                          <TableHead className="text-right">CC Auth 5%</TableHead>
-                          <TableHead className="text-right">App Fee</TableHead>
-                          <TableHead className="text-right">Total Deductions</TableHead>
-                          <TableHead className="text-right">Profit</TableHead>
-                          <TableHead className="text-right">Total Coll.</TableHead>
+                          <SortTh col="grossContractValue" label="Gross Contract" right />
+                          <SortTh col="vendorFeePercent" label="Vendor Fee %" right />
+                          <SortTh col="vendorFeeAmount" label="Vendor Fee $" right />
+                          <SortTh col="utilityCollateral" label="Utility 5%" right />
+                          <SortTh col="additionalCollateralPercent" label="Add. Coll. %" right />
+                          <SortTh col="additionalCollateralAmount" label="Add. Coll. $" right />
+                          <SortTh col="ccAuth5Percent" label="CC Auth 5%" right />
+                          <SortTh col="applicationFee" label="App Fee" right />
+                          <SortTh col="totalDeductions" label="Total Ded." right />
+                          <SortTh col="profit" label="Profit" right />
+                          <SortTh col="totalCollateralization" label="Total Coll." right />
+                          <TableHead>Status</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {financialProfitData.rows.slice(0, 100).map((r) => (
-                          <TableRow key={r.csgId}>
-                            <TableCell className="font-medium text-xs max-w-[160px] truncate">{r.systemName}</TableCell>
+                        {filteredFinancialRows.slice(0, 100).map((r) => (
+                          <TableRow
+                            key={r.csgId}
+                            className={
+                              r.needsReview
+                                ? "bg-amber-50/60 border-l-2 border-amber-400"
+                                : ""
+                            }
+                          >
+                            <TableCell className="font-medium text-xs max-w-[160px] truncate">
+                              {r.needsReview && (
+                                <span className="text-amber-600 mr-1" title={r.reviewReason}>⚠</span>
+                              )}
+                              {r.systemName}
+                            </TableCell>
                             <TableCell className="text-xs">{r.applicationId}</TableCell>
                             <TableCell className="text-right">${formatNumber(r.grossContractValue)}</TableCell>
                             <TableCell className="text-right">{r.vendorFeePercent}%</TableCell>
@@ -14328,20 +14505,30 @@ const aiDataContext = useMemo(() => {
                             <TableCell className="text-right font-medium">${formatNumber(r.totalDeductions)}</TableCell>
                             <TableCell className="text-right font-semibold text-emerald-700">${formatNumber(r.profit)}</TableCell>
                             <TableCell className="text-right">${formatNumber(r.totalCollateralization)}</TableCell>
+                            <TableCell>
+                              {r.needsReview ? (
+                                <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-200 text-[10px]">
+                                  Review
+                                </Badge>
+                              ) : (
+                                <Badge variant="secondary" className="text-[10px]">OK</Badge>
+                              )}
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
                     </Table>
                   </div>
-                  {financialProfitData.rows.length > 100 && (
-                    <p className="text-xs text-muted-foreground mt-2 text-center">
-                      Showing 100 of {financialProfitData.rows.length} systems. Export CSV for full data.
+                  {filteredFinancialRows.length > 100 && (
+                    <p className="text-xs text-muted-foreground text-center">
+                      Showing 100 of {formatNumber(filteredFinancialRows.length)} systems. Export CSV for full data.
                     </p>
                   )}
                 </CardContent>
               </Card>
-            )}
-          </TabsContent>
+              );
+            })()}
+          </div>)}
 
           <TabsContent value="data-quality" className="space-y-4 mt-4">
             <Card>
@@ -14403,7 +14590,7 @@ const aiDataContext = useMemo(() => {
                 )}
               </CardContent>
             </Card>
-          </TabsContent>
+          </div>)}
 
           <TabsContent value="delivery-tracker" className="space-y-4 mt-4">
             {/* ── Schedule B PDF Import ────────────────────────── */}
@@ -14850,7 +15037,7 @@ const aiDataContext = useMemo(() => {
                 </CardContent>
               </Card>
             )}
-          </TabsContent>
+          </div>)}
           {/* AI Data Assistant — shared across all tabs */}
           <div className="mt-4">
             <Suspense fallback={null}>
