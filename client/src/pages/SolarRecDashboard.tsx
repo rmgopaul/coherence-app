@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -817,20 +817,6 @@ function resolvePart2ProjectIdentity(row: CsvRow, index: number) {
 
 function isDashboardTabId(value: string): value is DashboardTabId {
   return DASHBOARD_TAB_VALUE_SET.has(value);
-}
-
-function splitLocationPath(locationValue: string): { pathname: string; search: string } {
-  const queryIndex = locationValue.indexOf("?");
-  if (queryIndex < 0) {
-    return {
-      pathname: locationValue || "/",
-      search: "",
-    };
-  }
-  return {
-    pathname: locationValue.slice(0, queryIndex) || "/",
-    search: locationValue.slice(queryIndex),
-  };
 }
 
 function getTabFromSearch(search: string): DashboardTabId | null {
@@ -2355,6 +2341,7 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 
 export default function SolarRecDashboard() {
   const [location, setLocation] = useLocation();
+  const search = useSearch();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
   const [datasetsHydrated, setDatasetsHydrated] = useState(false);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
@@ -2493,12 +2480,8 @@ export default function SolarRecDashboard() {
       movedOutBreakdown: string;
     }>
   >([]);
-  const { pathname: currentPathname, search: currentSearch } = useMemo(
-    () => splitLocationPath(location),
-    [location]
-  );
   const [activeTab, setActiveTab] = useState<DashboardTabId>(
-    () => getTabFromSearch(splitLocationPath(location).search) ?? DEFAULT_DASHBOARD_TAB
+    () => getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
   );
   const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
   const [pipelineKwRange, setPipelineKwRange] = useState<"3year" | "12month">("3year");
@@ -2522,7 +2505,7 @@ export default function SolarRecDashboard() {
       if (!isDashboardTabId(nextTabValue)) return;
       setActiveTab(nextTabValue);
 
-      const params = new URLSearchParams(currentSearch.startsWith("?") ? currentSearch.slice(1) : currentSearch);
+      const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
       if (nextTabValue === DEFAULT_DASHBOARD_TAB) {
         params.delete("tab");
       } else {
@@ -2530,13 +2513,13 @@ export default function SolarRecDashboard() {
       }
 
       const nextSearch = params.toString();
-      const nextLocation = `${currentPathname}${nextSearch ? `?${nextSearch}` : ""}`;
-      const currentLocation = `${currentPathname}${currentSearch}`;
+      const nextLocation = `${location}${nextSearch ? `?${nextSearch}` : ""}`;
+      const currentLocation = `${location}${search ? `?${search}` : ""}`;
       if (nextLocation !== currentLocation) {
         setLocation(nextLocation);
       }
     },
-    [currentPathname, currentSearch, setLocation]
+    [location, search, setLocation]
   );
   const [selectedSystemKey, setSelectedSystemKey] = useState<string | null>(null);
 
@@ -2569,12 +2552,12 @@ export default function SolarRecDashboard() {
   );
 
   useEffect(() => {
-    const tabFromQuery = getTabFromSearch(currentSearch);
+    const tabFromQuery = getTabFromSearch(search);
     const nextTab = tabFromQuery ?? DEFAULT_DASHBOARD_TAB;
     if (nextTab !== activeTab) {
       setActiveTab(nextTab);
     }
-  }, [activeTab, currentSearch]);
+  }, [activeTab, search]);
 
   const ensureCsvParserWorker = useCallback(() => {
     if (typeof window === "undefined" || typeof Worker === "undefined") return null;
