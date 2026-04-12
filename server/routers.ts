@@ -3939,7 +3939,7 @@ export const appRouter = router({
 
         if (discovered.length === 0) {
           throw new Error(
-            "No PDFs found in that Drive folder. Make sure the folder contains Schedule B PDFs directly (subfolders are not recursed in v1) and that your Google account has access."
+            "No PDFs found in that Drive folder (subfolders are scanned up to 10 levels deep). Make sure the folder contains Schedule B PDFs and that your Google account has access."
           );
         }
 

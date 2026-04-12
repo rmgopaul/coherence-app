@@ -414,77 +414,103 @@ export function parseGoogleDriveFolderId(input: string): string | null {
 export async function listGoogleDrivePdfsInFolder(
   accessToken: string,
   folderId: string,
-  opts: { maxFiles?: number } = {}
+  opts: { maxFiles?: number; maxDepth?: number } = {}
 ): Promise<Array<{ id: string; name: string; size: number | null }>> {
   const maxFiles = opts.maxFiles ?? 100_000;
-  const query = `'${folderId}' in parents and mimeType='application/pdf' and trashed=false`;
+  const maxDepth = opts.maxDepth ?? 10;
   const results: Array<{ id: string; name: string; size: number | null }> = [];
 
-  let pageToken: string | undefined = undefined;
-  // Drive API limit is 1000 per page; we use the max to minimize the
-  // number of round-trips.
-  const pageSize = 1000;
+  const listItemsInFolder = async (
+    parentId: string,
+    mimeFilter: string,
+    fieldsSpec: string
+  ): Promise<Array<Record<string, unknown>>> => {
+    const query = `'${parentId}' in parents and ${mimeFilter} and trashed=false`;
+    const items: Array<Record<string, unknown>> = [];
+    let pageToken: string | undefined = undefined;
+    const pageSize = 1000;
+    const maxIterations = Math.ceil(maxFiles / pageSize) + 2;
 
-  // Cap the number of pagination iterations as a belt-and-suspenders
-  // safety net; maxFiles/pageSize + 1 is the theoretical max.
-  const maxIterations = Math.ceil(maxFiles / pageSize) + 2;
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      const params = new URLSearchParams({
+        q: query,
+        pageSize: String(pageSize),
+        fields: fieldsSpec,
+        orderBy: "name",
+        supportsAllDrives: "true",
+        includeItemsFromAllDrives: "true",
+      });
+      if (pageToken) params.set("pageToken", pageToken);
 
-  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-    const params = new URLSearchParams({
-      q: query,
-      pageSize: String(pageSize),
-      fields: "files(id,name,size),nextPageToken",
-      orderBy: "name",
-      supportsAllDrives: "true",
-      includeItemsFromAllDrives: "true",
-    });
-    if (pageToken) {
-      params.set("pageToken", pageToken);
+      const response = await makeGoogleApiCall(
+        `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
+        accessToken
+      );
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(
+          `Drive folder list failed: ${response.status} ${response.statusText}${
+            body ? ` — ${body.slice(0, 300)}` : ""
+          }`
+        );
+      }
+
+      const data = (await response.json()) as {
+        files?: Array<Record<string, unknown>>;
+        nextPageToken?: string;
+      };
+      const files = Array.isArray(data.files) ? data.files : [];
+      items.push(...files);
+
+      pageToken = data.nextPageToken;
+      if (!pageToken) break;
     }
 
-    const response = await makeGoogleApiCall(
-      `https://www.googleapis.com/drive/v3/files?${params.toString()}`,
-      accessToken
+    return items;
+  };
+
+  const scanFolder = async (currentFolderId: string, depth: number): Promise<void> => {
+    // List PDFs in this folder
+    const pdfItems = await listItemsInFolder(
+      currentFolderId,
+      "mimeType='application/pdf'",
+      "files(id,name,size),nextPageToken"
     );
 
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(
-        `Drive folder list failed: ${response.status} ${response.statusText}${
-          body ? ` — ${body.slice(0, 300)}` : ""
-        }`
-      );
-    }
-
-    const data = (await response.json()) as {
-      files?: Array<{ id?: string; name?: string; size?: string }>;
-      nextPageToken?: string;
-    };
-
-    const files = Array.isArray(data.files) ? data.files : [];
-    for (const f of files) {
+    for (const f of pdfItems) {
       if (!f.id || !f.name) continue;
-      const sizeNum =
-        typeof f.size === "string" && f.size.length > 0
-          ? Number(f.size)
-          : null;
+      const sizeStr = typeof f.size === "string" ? f.size : null;
+      const sizeNum = sizeStr ? Number(sizeStr) : null;
       results.push({
-        id: f.id,
-        name: f.name,
+        id: f.id as string,
+        name: f.name as string,
         size: Number.isFinite(sizeNum as number) ? (sizeNum as number) : null,
       });
 
       if (results.length > maxFiles) {
         throw new Error(
-          `Drive folder contains more than ${maxFiles.toLocaleString()} PDFs. Please use a smaller folder or split the batch.`
+          `Drive folder tree contains more than ${maxFiles.toLocaleString()} PDFs. Please use a smaller folder.`
         );
       }
     }
 
-    pageToken = data.nextPageToken;
-    if (!pageToken) break;
-  }
+    // Recurse into subfolders (if within depth limit)
+    if (depth < maxDepth) {
+      const subfolders = await listItemsInFolder(
+        currentFolderId,
+        "mimeType='application/vnd.google-apps.folder'",
+        "files(id,name),nextPageToken"
+      );
 
+      for (const sf of subfolders) {
+        if (!sf.id) continue;
+        await scanFolder(sf.id as string, depth + 1);
+      }
+    }
+  };
+
+  await scanFolder(folderId, 0);
   return results;
 }
 
