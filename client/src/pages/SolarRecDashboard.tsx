@@ -739,6 +739,31 @@ const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "accountSolarGeneration",
 ];
 const STALE_UPLOAD_DAYS = 14;
+const DASHBOARD_TAB_VALUES = [
+  "overview",
+  "size",
+  "value",
+  "contracts",
+  "annual-review",
+  "performance-eval",
+  "change-ownership",
+  "ownership",
+  "offline-monitoring",
+  "meter-reads",
+  "performance-ratio",
+  "snapshot-log",
+  "app-pipeline",
+  "trends",
+  "forecast",
+  "alerts",
+  "comparisons",
+  "financials",
+  "data-quality",
+  "delivery-tracker",
+] as const;
+type DashboardTabId = (typeof DASHBOARD_TAB_VALUES)[number];
+const DEFAULT_DASHBOARD_TAB: DashboardTabId = "overview";
+const DASHBOARD_TAB_VALUE_SET = new Set<string>(DASHBOARD_TAB_VALUES);
 
 const GENERATION_BASELINE_VALUE_HEADERS = [
   "Last Meter Read (kWh)",
@@ -788,6 +813,31 @@ function resolvePart2ProjectIdentity(row: CsvRow, index: number) {
     projectNameKey,
     dedupeKey,
   };
+}
+
+function isDashboardTabId(value: string): value is DashboardTabId {
+  return DASHBOARD_TAB_VALUE_SET.has(value);
+}
+
+function splitLocationPath(locationValue: string): { pathname: string; search: string } {
+  const queryIndex = locationValue.indexOf("?");
+  if (queryIndex < 0) {
+    return {
+      pathname: locationValue || "/",
+      search: "",
+    };
+  }
+  return {
+    pathname: locationValue.slice(0, queryIndex) || "/",
+    search: locationValue.slice(queryIndex),
+  };
+}
+
+function getTabFromSearch(search: string): DashboardTabId | null {
+  const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
+  const tab = params.get("tab");
+  if (!tab || !isDashboardTabId(tab)) return null;
+  return tab;
 }
 
 function parseNumber(value: string | undefined): number | null {
@@ -2304,7 +2354,7 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 
 
 export default function SolarRecDashboard() {
-  const [, setLocation] = useLocation();
+  const [location, setLocation] = useLocation();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
   const [datasetsHydrated, setDatasetsHydrated] = useState(false);
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
@@ -2443,7 +2493,13 @@ export default function SolarRecDashboard() {
       movedOutBreakdown: string;
     }>
   >([]);
-  const [activeTab, setActiveTab] = useState("overview");
+  const { pathname: currentPathname, search: currentSearch } = useMemo(
+    () => splitLocationPath(location),
+    [location]
+  );
+  const [activeTab, setActiveTab] = useState<DashboardTabId>(
+    () => getTabFromSearch(splitLocationPath(location).search) ?? DEFAULT_DASHBOARD_TAB
+  );
   const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
   const [pipelineKwRange, setPipelineKwRange] = useState<"3year" | "12month">("3year");
   const [pipelineInterconnectedRange, setPipelineInterconnectedRange] = useState<"3year" | "12month">("3year");
@@ -2461,6 +2517,27 @@ export default function SolarRecDashboard() {
   const isFinancialsTabActive = activeTab === "financials";
   const isDataQualityTabActive = activeTab === "data-quality";
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
+  const handleActiveTabChange = useCallback(
+    (nextTabValue: string) => {
+      if (!isDashboardTabId(nextTabValue)) return;
+      setActiveTab(nextTabValue);
+
+      const params = new URLSearchParams(currentSearch.startsWith("?") ? currentSearch.slice(1) : currentSearch);
+      if (nextTabValue === DEFAULT_DASHBOARD_TAB) {
+        params.delete("tab");
+      } else {
+        params.set("tab", nextTabValue);
+      }
+
+      const nextSearch = params.toString();
+      const nextLocation = `${currentPathname}${nextSearch ? `?${nextSearch}` : ""}`;
+      const currentLocation = `${currentPathname}${currentSearch}`;
+      if (nextLocation !== currentLocation) {
+        setLocation(nextLocation);
+      }
+    },
+    [currentPathname, currentSearch, setLocation]
+  );
   const [selectedSystemKey, setSelectedSystemKey] = useState<string | null>(null);
 
   // Helper: make system names clickable to open detail sheet
@@ -2481,7 +2558,6 @@ export default function SolarRecDashboard() {
   logEntriesRef.current = logEntries;
   const datasetsHydratedRef = useRef(false);
   const remoteStateHydratedRef = useRef(false);
-  const remoteStatusRef = useRef(remoteDashboardStateQuery.status);
   const remoteLogsSignatureRef = useRef<string>("0");
   const remoteLogsChunkKeysRef = useRef<string[]>([]);
   const localDatasetSignatureRef = useRef<string>("");
@@ -2491,6 +2567,14 @@ export default function SolarRecDashboard() {
   const csvParserPendingRef = useRef(
     new Map<number, { resolve: (value: { headers: string[]; rows: CsvRow[] }) => void; reject: (error: Error) => void }>()
   );
+
+  useEffect(() => {
+    const tabFromQuery = getTabFromSearch(currentSearch);
+    const nextTab = tabFromQuery ?? DEFAULT_DASHBOARD_TAB;
+    if (nextTab !== activeTab) {
+      setActiveTab(nextTab);
+    }
+  }, [activeTab, currentSearch]);
 
   const ensureCsvParserWorker = useCallback(() => {
     if (typeof window === "undefined" || typeof Worker === "undefined") return null;
@@ -7065,10 +7149,6 @@ export default function SolarRecDashboard() {
   }, [remoteStateHydrated]);
 
   useEffect(() => {
-    remoteStatusRef.current = remoteDashboardStateQuery.status;
-  }, [remoteDashboardStateQuery.status]);
-
-  useEffect(() => {
     let cancelled = false;
     void (async () => {
       try {
@@ -7115,7 +7195,11 @@ export default function SolarRecDashboard() {
           let combined = "";
           for (const chunkKey of chunkKeys) {
             if (cancelled) return null;
-            const chunkResponse = await getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }).catch(() => null);
+            const chunkResponse = await withRetry(
+              () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
+              3,
+              250
+            ).catch(() => null);
             if (!chunkResponse?.payload) return null;
             combined += chunkResponse.payload;
           }
@@ -7127,7 +7211,11 @@ export default function SolarRecDashboard() {
           payload: string;
           chunkKeys: string[];
         } | null> => {
-          const response = await getRemoteDatasetRef.current.mutateAsync({ key }).catch(() => null);
+          const response = await withRetry(
+            () => getRemoteDatasetRef.current.mutateAsync({ key }),
+            3,
+            250
+          ).catch(() => null);
           if (!response?.payload) return null;
           const chunkKeys = parseChunkPointerPayload(response.payload);
           if (chunkKeys && chunkKeys.length > 0) {
@@ -7316,7 +7404,11 @@ export default function SolarRecDashboard() {
 
         if (keysToLoad.size === 0) {
           try {
-            const manifestResponse = await getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_DATASET_KEY_MANIFEST });
+            const manifestResponse = await withRetry(
+              () => getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_DATASET_KEY_MANIFEST }),
+              3,
+              250
+            );
             if (manifestResponse?.payload) {
               parseDatasetKeyManifestPayload(manifestResponse.payload).forEach((key) => keysToLoad.add(key));
             }
@@ -7330,7 +7422,11 @@ export default function SolarRecDashboard() {
 
         let loadedCloudLogs: DashboardLogEntry[] = [];
         try {
-          const logsResponse = await getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY });
+          const logsResponse = await withRetry(
+            () => getRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY }),
+            3,
+            250
+          );
           if (logsResponse?.payload) {
             let logsPayload = logsResponse.payload;
             const chunkKeys = parseChunkPointerPayload(logsResponse.payload);
@@ -7343,9 +7439,11 @@ export default function SolarRecDashboard() {
                   allLogsChunksLoaded = false;
                   break;
                 }
-                const chunkResponse = await getRemoteDatasetRef.current
-                  .mutateAsync({ key: chunkKey })
-                  .catch(() => null);
+                const chunkResponse = await withRetry(
+                  () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
+                  3,
+                  250
+                ).catch(() => null);
                 if (!chunkResponse?.payload) {
                   allLogsChunksLoaded = false;
                   break;
@@ -7461,8 +7559,7 @@ export default function SolarRecDashboard() {
 
   useEffect(() => {
     const flushLocalPersistence = () => {
-      if (remoteStatusRef.current === "pending") return;
-      if (!datasetsHydratedRef.current || !remoteStateHydratedRef.current) return;
+      if (!datasetsHydratedRef.current && Object.keys(datasetsRef.current).length === 0) return;
 
       void (async () => {
         try {
@@ -7501,8 +7598,7 @@ export default function SolarRecDashboard() {
   }, []);
 
   useEffect(() => {
-    if (remoteDashboardStateQuery.status === "pending") return;
-    if (!datasetsHydrated || !remoteStateHydrated) return;
+    if (!datasetsHydrated && Object.keys(datasets).length === 0) return;
 
     // Debounced local persistence — defers heavy JSON.stringify off the render path
     const localSaveTimeout = window.setTimeout(() => {
@@ -7526,6 +7622,12 @@ export default function SolarRecDashboard() {
         }
       })();
     }, 250);
+
+    if (!datasetsHydrated || !remoteStateHydrated) {
+      return () => {
+        window.clearTimeout(localSaveTimeout);
+      };
+    }
 
     if (remoteDashboardStateQuery.status === "error") {
       setStorageNotice(null);
@@ -10111,7 +10213,7 @@ const aiDataContext = useMemo(() => {
           </Card>
         ) : null}
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <Tabs value={activeTab} onValueChange={handleActiveTabChange}>
           <TabsList className="flex h-auto w-full flex-wrap justify-start gap-1 overflow-visible whitespace-normal p-0">
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="overview">Overview</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="size">Size + Reporting</TabsTrigger>
@@ -10258,7 +10360,7 @@ const aiDataContext = useMemo(() => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => setActiveTab("offline-monitoring")}
+                    onClick={() => handleActiveTabChange("offline-monitoring")}
                     title="View offline systems"
                     className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
                   >
