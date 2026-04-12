@@ -832,6 +832,7 @@ export const scheduleBImportResults = mysqlTable(
     acSizeKw: double("acSizeKw"),
     capacityFactor: double("capacityFactor"),
     contractPrice: double("contractPrice"),
+    contractNumber: varchar("contractNumber", { length: 32 }),
     energizationDate: varchar("energizationDate", { length: 32 }),
     maxRecQuantity: int("maxRecQuantity"),
     deliveryYearsJson: text("deliveryYearsJson"),
@@ -863,3 +864,22 @@ export const scheduleBImportResults = mysqlTable(
 
 export type ScheduleBImportResult = typeof scheduleBImportResults.$inferSelect;
 export type InsertScheduleBImportResult = typeof scheduleBImportResults.$inferInsert;
+
+export const scheduleBImportCsgIds = mysqlTable(
+  "scheduleBImportCsgIds",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }).notNull(),
+    nonId: varchar("nonId", { length: 64 }),
+    abpId: varchar("abpId", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow(),
+  },
+  (table) => ({
+    jobCsgIdx: uniqueIndex("schedule_b_csg_ids_job_csg_idx").on(
+      table.jobId,
+      table.csgId
+    ),
+    jobIdx: index("schedule_b_csg_ids_job_idx").on(table.jobId),
+  })
+);
