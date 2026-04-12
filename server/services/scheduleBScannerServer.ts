@@ -207,10 +207,18 @@ export async function extractScheduleBDataFromPdfBuffer(
 
     const gatsId = extractRegex(fullText, /GATS\s+ID[:\s]+([A-Z0-9]+)/i);
 
-    const energizationDateRaw = extractRegex(
-      fullText,
-      /Date\s+of\s+Energization[:\s]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i
-    );
+    // Match both slash format (9/18/2020) and spelled-out month
+    // (September 18, 2020). Try slash format first (more specific),
+    // fall back to spelled-out month.
+    const energizationDateRaw =
+      extractRegex(
+        fullText,
+        /Date\s+of\s+Energization[:\s]+(\d{1,2}\/\d{1,2}\/\d{2,4})/i
+      ) ??
+      extractRegex(
+        fullText,
+        /Date\s+of\s+Energization[:\s]+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4})/i
+      );
 
     const contractPriceRaw = extractRegex(
       fullText,
@@ -220,10 +228,17 @@ export async function extractScheduleBDataFromPdfBuffer(
       ? parseFloat(contractPriceRaw.replace(/,/g, ""))
       : null;
 
-    const capacityFactorRaw = extractRegex(
-      fullText,
-      /Year\s*-?\s*1\s+Contract\s+Capacity\s+Factor[:\s]+([\d.]+)\s*%/i
-    );
+    // Match "Year-1 Contract Capacity Factor: X%" (standard) or
+    // standalone "Capacity Factor: X%" (older Schedule B format).
+    const capacityFactorRaw =
+      extractRegex(
+        fullText,
+        /Year\s*-?\s*1\s+Contract\s+Capacity\s+Factor[:\s]+([\d.]+)\s*%/i
+      ) ??
+      extractRegex(
+        fullText,
+        /Capacity\s+Factor[:\s]+([\d.]+)\s*%/i
+      );
     const capacityFactor = capacityFactorRaw
       ? parseFloat(capacityFactorRaw) / 100
       : null;
@@ -244,6 +259,27 @@ export async function extractScheduleBDataFromPdfBuffer(
 
     const deliveryYears = parseDeliveryTable(pages);
 
+    // Build a diagnostic summary for failed extractions so the user
+    // can understand what the parser saw without downloading the PDF.
+    let error: string | null = null;
+    if (deliveryYears.length === 0) {
+      const foundFields: string[] = [];
+      if (designatedSystemId) foundFields.push("designatedSystemId");
+      if (gatsId) foundFields.push("gatsId");
+      if (acSizeKwRaw) foundFields.push("acSizeKw");
+      if (capacityFactorRaw) foundFields.push("capacityFactor");
+      if (contractPriceRaw) foundFields.push("contractPrice");
+      if (energizationDateRaw) foundFields.push("energizationDate");
+      if (maxRecQuantityRaw) foundFields.push("maxRecQuantity");
+
+      const pageSnippet = pages[0]?.text?.slice(0, 200) ?? "(empty)";
+      error =
+        `Could not parse delivery schedule table. ` +
+        `Pages: ${pages.length}. ` +
+        `Fields found: ${foundFields.join(", ") || "none"}. ` +
+        `Page 1 preview: "${pageSnippet}"`;
+    }
+
     return {
       fileName,
       designatedSystemId: designatedSystemId?.replace(/\D/g, "") || null,
@@ -254,10 +290,7 @@ export async function extractScheduleBDataFromPdfBuffer(
       energizationDate: energizationDateRaw?.trim() || null,
       maxRecQuantity,
       deliveryYears,
-      error:
-        deliveryYears.length === 0
-          ? "Could not parse delivery schedule table"
-          : null,
+      error,
     };
   } catch (err) {
     return {

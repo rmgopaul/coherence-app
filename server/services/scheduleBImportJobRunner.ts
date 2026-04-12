@@ -36,7 +36,13 @@
  */
 
 const activeRunners = new Set<string>();
-const SCHEDULE_B_IMPORT_CONCURRENCY = 3;
+const SCHEDULE_B_IMPORT_CONCURRENCY = Math.max(
+  1,
+  Math.min(12, Number(process.env.SCHEDULE_B_CONCURRENCY) || 6)
+);
+const FILE_PROCESSING_TIMEOUT_MS = 120_000; // 2 minutes per file
+const JOB_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours max
+const TOKEN_REFRESH_INTERVAL = 100; // refresh OAuth token every N files
 
 export function isScheduleBImportRunnerActive(jobId: string): boolean {
   return activeRunners.has(jobId.trim());
@@ -171,8 +177,17 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     // ── Cancellation support ──────────────────────────────────────────
     let cancelled = false;
     let cancelCheckCounter = 0;
+    const jobStartTime = Date.now();
     const checkCancelled = async (): Promise<boolean> => {
       if (cancelled) return true;
+      // Job-level timeout watchdog: prevent jobs from running forever
+      if (Date.now() - jobStartTime > JOB_TIMEOUT_MS) {
+        console.warn(
+          `${LOG_PREFIX} job ${id.slice(0, 8)} exceeded ${JOB_TIMEOUT_MS / 3_600_000}h timeout, stopping gracefully`
+        );
+        cancelled = true;
+        return true;
+      }
       cancelCheckCounter += 1;
       if (cancelCheckCounter % 3 !== 0) return false;
       const fresh = await getScheduleBImportJob(id);
@@ -187,6 +202,22 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     const { extractScheduleBDataFromPdfBuffer } = await import(
       "./scheduleBScannerServer"
     );
+
+    // Cache the Google OAuth token across workers instead of
+    // hitting the DB on every single file. Refreshes every
+    // TOKEN_REFRESH_INTERVAL files (token has 1h TTL from Google).
+    let cachedDriveToken: string | null = null;
+    let tokenFetchCount = 0;
+    const getCachedDriveToken = async (): Promise<string> => {
+      tokenFetchCount += 1;
+      if (!cachedDriveToken || tokenFetchCount % TOKEN_REFRESH_INTERVAL === 0) {
+        const { getValidGoogleToken } = await import(
+          "../helpers/tokenRefresh"
+        );
+        cachedDriveToken = await getValidGoogleToken(job.userId);
+      }
+      return cachedDriveToken;
+    };
 
     const processSingleFile = async (file: {
       fileName: string;
@@ -222,14 +253,14 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
             let pdfBytes: Uint8Array;
             if (storageKey.startsWith("drive:")) {
               const fileId = storageKey.slice("drive:".length);
-              const { getValidGoogleToken } = await import(
-                "../helpers/tokenRefresh"
-              );
               const { downloadGoogleDriveFile } = await import("./google");
               try {
-                const accessToken = await getValidGoogleToken(job.userId);
+                const accessToken = await getCachedDriveToken();
                 pdfBytes = await downloadGoogleDriveFile(accessToken, fileId);
               } catch (driveErr) {
+                // Invalidate cached token on auth errors so the next
+                // file gets a fresh one
+                cachedDriveToken = null;
                 // Re-throw with a prefix so the user's error row
                 // reads "Drive download failed: ..." rather than a
                 // generic extraction error. Matches how the outer
@@ -243,10 +274,22 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
             } else {
               pdfBytes = await storageReadBytes(storageKey);
             }
-            extraction = await extractScheduleBDataFromPdfBuffer(
-              pdfBytes,
-              file.fileName
-            );
+            // Per-file timeout: prevent hung extractions from
+            // permanently blocking a worker slot.
+            extraction = await Promise.race([
+              extractScheduleBDataFromPdfBuffer(pdfBytes, file.fileName),
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () =>
+                    reject(
+                      new Error(
+                        `File processing timed out after ${FILE_PROCESSING_TIMEOUT_MS / 1000}s`
+                      )
+                    ),
+                  FILE_PROCESSING_TIMEOUT_MS
+                )
+              ),
+            ]);
             // The extractor returns an object whose `.error` field is
             // populated if the delivery table wasn't found. Treat that
             // as a row-level error for counter purposes, but still
@@ -326,6 +369,29 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       SCHEDULE_B_IMPORT_CONCURRENCY,
       processSingleFile
     );
+
+    // ── Automatic retry pass for transient failures ──────────────────
+    // Re-process files that failed with retryable errors (Drive
+    // timeouts, network blips, etc.) exactly once. The upsert on
+    // (jobId, fileName) overwrites the old error row on success.
+    // Reconciliation afterward fixes any counter drift.
+    if (!cancelled) {
+      const { listRetryableScheduleBImportResults } = await import("../db");
+      const retryableFiles = await listRetryableScheduleBImportResults(id);
+      if (retryableFiles.length > 0) {
+        console.log(
+          `${LOG_PREFIX} retrying ${retryableFiles.length} files with transient errors`
+        );
+        await mapWithConcurrency(
+          retryableFiles,
+          SCHEDULE_B_IMPORT_CONCURRENCY,
+          processSingleFile
+        );
+        // Reconcile counters after retry — some failures may now be
+        // successes and the atomic counters will have drifted.
+        await reconcileScheduleBImportJobState(id);
+      }
+    }
 
     // ── Final status ──────────────────────────────────────────────────
     if (cancelled) {

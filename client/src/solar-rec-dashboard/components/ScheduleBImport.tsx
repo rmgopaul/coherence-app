@@ -19,7 +19,7 @@
  * a shared module because nothing else in the dashboard uses them.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 
@@ -167,6 +167,13 @@ export function ScheduleBImport({
     alreadyInDatabaseFileNames: string[];
   } | null>(null);
   const [showAlreadyInDatabase, setShowAlreadyInDatabase] = useState(false);
+
+  // Results table controls: filter, sort, pagination
+  const [resultFilter, setResultFilter] = useState<"all" | "errors" | "success">("all");
+  const [resultSortField, setResultSortField] = useState<"fileName" | "gatsId" | "error" | null>(null);
+  const [resultSortDir, setResultSortDir] = useState<"asc" | "desc">("asc");
+  const [resultPage, setResultPage] = useState(0);
+  const RESULTS_PAGE_SIZE = 100;
   // drive-link-v1: URL input for "Link Google Drive folder". Stays in
   // component state so the user can edit/paste before clicking the
   // button; cleared on successful link.
@@ -211,7 +218,14 @@ export function ScheduleBImport({
     trpc.solarRecDashboard.applyScheduleBContractIdMapping.useMutation();
 
   const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
-    refetchInterval: 3_000,
+    refetchInterval: (query) => {
+      const status = query.state.data?.job?.status;
+      if (status === "running" || status === "queued") return 3_000;
+      if (status === "completed" || status === "failed" || status === "stopped")
+        return false;
+      // No job or unknown status — slow poll to detect new jobs
+      return 15_000;
+    },
     refetchOnWindowFocus: true,
   });
 
@@ -220,11 +234,10 @@ export function ScheduleBImport({
     { jobId: activeJobId, limit: SCHEDULE_B_MAX_SERVER_ROWS, offset: 0 },
     {
       enabled: Boolean(activeJobId),
-      refetchInterval:
-        scheduleBStatusQuery.data?.job?.status === "running" ||
-        scheduleBStatusQuery.data?.job?.status === "queued"
-          ? 4_000
-          : false,
+      // Results are refetched on-demand when processedCount changes
+      // (see useEffect below), not on a fixed timer. This avoids
+      // re-fetching 50k rows every 4s when nothing has changed.
+      refetchInterval: false,
       refetchOnWindowFocus: true,
     }
   );
@@ -912,6 +925,52 @@ export function ScheduleBImport({
   const errorCount = scheduleBResults.filter((r) => !!r.extraction.error).length;
   const serverProcessedCount = statusCounts?.processedFiles ?? 0;
   const serverTotalCount = statusCounts?.totalFiles ?? 0;
+
+  // ── Filtered, sorted, paginated results for the table ─────────────
+  const filteredSortedResults = useMemo(() => {
+    let filtered = scheduleBResults;
+    if (resultFilter === "errors") {
+      filtered = filtered.filter((r) => !!r.extraction.error);
+    } else if (resultFilter === "success") {
+      filtered = filtered.filter((r) => !r.extraction.error);
+    }
+    if (resultSortField) {
+      filtered = [...filtered].sort((a, b) => {
+        let aVal: string | null = null;
+        let bVal: string | null = null;
+        if (resultSortField === "fileName") {
+          aVal = a.extraction.fileName;
+          bVal = b.extraction.fileName;
+        } else if (resultSortField === "gatsId") {
+          aVal = a.extraction.gatsId;
+          bVal = b.extraction.gatsId;
+        } else if (resultSortField === "error") {
+          aVal = a.extraction.error;
+          bVal = b.extraction.error;
+        }
+        const cmp = (aVal ?? "").localeCompare(bVal ?? "");
+        return resultSortDir === "desc" ? -cmp : cmp;
+      });
+    }
+    return filtered;
+  }, [scheduleBResults, resultFilter, resultSortField, resultSortDir]);
+
+  const resultTotalPages = Math.max(1, Math.ceil(filteredSortedResults.length / RESULTS_PAGE_SIZE));
+  const safePage = Math.min(resultPage, resultTotalPages - 1);
+  const pagedResults = filteredSortedResults.slice(
+    safePage * RESULTS_PAGE_SIZE,
+    (safePage + 1) * RESULTS_PAGE_SIZE
+  );
+
+  const handleSortToggle = useCallback((field: "fileName" | "gatsId" | "error") => {
+    if (resultSortField === field) {
+      setResultSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setResultSortField(field);
+      setResultSortDir("asc");
+    }
+    setResultPage(0);
+  }, [resultSortField]);
 
   return (
     <Card>
@@ -1603,70 +1662,131 @@ export function ScheduleBImport({
         )}
 
         {scheduleBResults.length > 0 && (
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>ABP ID</TableHead>
-                  <TableHead>GATS ID</TableHead>
-                  <TableHead className="text-right">AC kW</TableHead>
-                  <TableHead className="text-right">Cap Factor</TableHead>
-                  <TableHead>1st Transfer EY</TableHead>
-                  {Array.from({ length: 15 }, (_, i) => (
-                    <TableHead key={i} className="text-right text-xs">
-                      Y{i + 1}
-                    </TableHead>
-                  ))}
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {scheduleBResults.slice(0, 100).map((r, idx) => (
-                  <TableRow
-                    key={`${r.extraction.fileName}-${idx}`}
-                    className={r.extraction.error ? "bg-red-50/50" : ""}
+          <div className="space-y-2">
+            {/* Filter & pagination controls */}
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-1">
+                {(["all", "errors", "success"] as const).map((f) => (
+                  <Button
+                    key={f}
+                    variant={resultFilter === f ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => { setResultFilter(f); setResultPage(0); }}
                   >
-                    <TableCell className="font-mono text-xs">
-                      {r.extraction.designatedSystemId ?? "—"}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">
-                      {r.extraction.gatsId ?? "—"}
-                    </TableCell>
-                    <TableCell className="text-right text-xs">
-                      {r.extraction.acSizeKw ?? "—"}
-                    </TableCell>
-                    <TableCell className="text-right text-xs">
-                      {r.extraction.capacityFactor != null
-                        ? `${(r.extraction.capacityFactor * 100).toFixed(2)}%`
-                        : "—"}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      {r.firstTransferYear
-                        ? `${r.firstTransferYear}-${r.firstTransferYear + 1}`
-                        : "—"}
-                    </TableCell>
-                    {Array.from({ length: 15 }, (_, i) => {
-                      const year = r.adjustedYears[i];
-                      return (
-                        <TableCell
-                          key={i}
-                          className={`text-right text-xs ${
-                            year?.source === "calculated"
-                              ? "text-blue-600"
-                              : ""
-                          }`}
-                        >
-                          {year?.recQuantity ?? "—"}
-                        </TableCell>
-                      );
-                    })}
-                    <TableCell className="text-xs text-red-600 max-w-[150px] truncate">
-                      {r.extraction.error ?? ""}
-                    </TableCell>
-                  </TableRow>
+                    {f === "all"
+                      ? `All (${formatNumber(scheduleBResults.length)})`
+                      : f === "errors"
+                        ? `Errors (${formatNumber(errorCount)})`
+                        : `Success (${formatNumber(scheduleBResults.length - errorCount)})`}
+                  </Button>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+              {resultTotalPages > 1 && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={safePage === 0}
+                    onClick={() => setResultPage((p) => Math.max(0, p - 1))}
+                  >
+                    Prev
+                  </Button>
+                  <span>
+                    Page {safePage + 1} of {formatNumber(resultTotalPages)}{" "}
+                    ({formatNumber(filteredSortedResults.length)} rows)
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={safePage >= resultTotalPages - 1}
+                    onClick={() => setResultPage((p) => Math.min(resultTotalPages - 1, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead
+                      className="cursor-pointer select-none"
+                      onClick={() => handleSortToggle("fileName")}
+                    >
+                      ABP ID {resultSortField === "fileName" ? (resultSortDir === "asc" ? "▲" : "▼") : ""}
+                    </TableHead>
+                    <TableHead
+                      className="cursor-pointer select-none"
+                      onClick={() => handleSortToggle("gatsId")}
+                    >
+                      GATS ID {resultSortField === "gatsId" ? (resultSortDir === "asc" ? "▲" : "▼") : ""}
+                    </TableHead>
+                    <TableHead className="text-right">AC kW</TableHead>
+                    <TableHead className="text-right">Cap Factor</TableHead>
+                    <TableHead>1st Transfer EY</TableHead>
+                    {Array.from({ length: 15 }, (_, i) => (
+                      <TableHead key={i} className="text-right text-xs">
+                        Y{i + 1}
+                      </TableHead>
+                    ))}
+                    <TableHead
+                      className="cursor-pointer select-none"
+                      onClick={() => handleSortToggle("error")}
+                    >
+                      Error {resultSortField === "error" ? (resultSortDir === "asc" ? "▲" : "▼") : ""}
+                    </TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pagedResults.map((r, idx) => (
+                    <TableRow
+                      key={`${r.extraction.fileName}-${safePage}-${idx}`}
+                      className={r.extraction.error ? "bg-red-50/50" : ""}
+                    >
+                      <TableCell className="font-mono text-xs">
+                        {r.extraction.designatedSystemId ?? "—"}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {r.extraction.gatsId ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right text-xs">
+                        {r.extraction.acSizeKw ?? "—"}
+                      </TableCell>
+                      <TableCell className="text-right text-xs">
+                        {r.extraction.capacityFactor != null
+                          ? `${(r.extraction.capacityFactor * 100).toFixed(2)}%`
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {r.firstTransferYear
+                          ? `${r.firstTransferYear}-${r.firstTransferYear + 1}`
+                          : "—"}
+                      </TableCell>
+                      {Array.from({ length: 15 }, (_, i) => {
+                        const year = r.adjustedYears[i];
+                        return (
+                          <TableCell
+                            key={i}
+                            className={`text-right text-xs ${
+                              year?.source === "calculated"
+                                ? "text-blue-600"
+                                : ""
+                            }`}
+                          >
+                            {year?.recQuantity ?? "—"}
+                          </TableCell>
+                        );
+                      })}
+                      <TableCell className="text-xs text-red-600 max-w-[250px] truncate" title={r.extraction.error ?? ""}>
+                        {r.extraction.error ?? ""}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           </div>
         )}
       </CardContent>

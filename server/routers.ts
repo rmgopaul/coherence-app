@@ -4006,6 +4006,26 @@ export const appRouter = router({
           (job.status === "queued" || job.status === "running") &&
           !isScheduleBImportRunnerActive(job.id)
         ) {
+          // Stale-runner watchdog: if the job has been "running" for
+          // >24h with no active in-process runner, it crashed without
+          // updating the DB. Reset to "queued" so it can resume.
+          const STALE_RUNNER_MS = 24 * 60 * 60 * 1000;
+          if (
+            job.status === "running" &&
+            job.startedAt &&
+            Date.now() - new Date(job.startedAt).getTime() > STALE_RUNNER_MS
+          ) {
+            console.warn(
+              `[scheduleBImport] stale runner detected for job ${job.id.slice(0, 8)} ` +
+                `(started ${job.startedAt}, no active runner). Resetting to queued.`
+            );
+            const { updateScheduleBImportJob } = await import("./db");
+            await updateScheduleBImportJob(job.id, {
+              status: "queued",
+              completedAt: null,
+              error: null,
+            });
+          }
           void runScheduleBImportJob(job.id);
         }
 

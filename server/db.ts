@@ -3878,6 +3878,40 @@ export async function getAllScheduleBImportResults(jobId: string) {
 }
 
 /**
+ * Get files from the results table that failed with transient,
+ * retryable errors (Drive download failures, timeouts, network
+ * errors). Used by the job runner's automatic retry pass.
+ */
+export async function listRetryableScheduleBImportResults(
+  jobId: string
+): Promise<Array<{ fileName: string; storageKey: string | null }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return [];
+
+  return withDbRetry("list retryable schedule b results", async () => {
+    const rows = await db.execute(sql`
+      SELECT r.fileName, f.storageKey
+      FROM scheduleBImportResults r
+      JOIN scheduleBImportFiles f
+        ON f.jobId = r.jobId AND f.fileName = r.fileName
+      WHERE r.jobId = ${jobId}
+        AND r.error IS NOT NULL
+        AND (
+          r.error LIKE 'Drive download failed%'
+          OR r.error LIKE '%timed out%'
+          OR r.error LIKE '%network%'
+          OR r.error LIKE '%ECONNRESET%'
+          OR r.error LIKE '%ETIMEDOUT%'
+          OR r.error LIKE '%socket hang up%'
+        )
+    `);
+    return (rows as any)[0] ?? [];
+  });
+}
+
+/**
  * Mark a set of schedule B import result rows as applied to the
  * deliveryScheduleBase dataset. Called by
  * applyScheduleBToDeliveryObligations after a successful merge +
