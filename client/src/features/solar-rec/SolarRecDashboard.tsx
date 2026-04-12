@@ -7804,7 +7804,13 @@ export default function SolarRecDashboard() {
           );
           const shouldKeepLocalOnly =
             !forceSyncRequested && estimatedRemotePayloadChars > MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS;
-          const syncSignature = shouldKeepLocalOnly ? `local-only:${baseSignature}` : baseSignature;
+          // 2026-04-12 fix: Always use the same signature regardless of
+          // local-only status. The `local-only:` prefix caused a race where
+          // force-synced data got a "normal" signature, then the next auto-sync
+          // created a different "local-only:" signature for the SAME content,
+          // bypassing the "no change" guard and triggering the destructive
+          // clear path that wiped all chunk payloads.
+          const syncSignature = baseSignature;
           nextSignatures[key] = syncSignature;
           if (shouldKeepLocalOnly) {
             nextLocalOnlyDatasets[key] = true;
@@ -7820,26 +7826,18 @@ export default function SolarRecDashboard() {
           }
 
           if (shouldKeepLocalOnly) {
-            const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
-            try {
-              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
-              for (const chunkKey of previousChunkKeys) {
-                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
-              }
-              remoteDatasetChunkKeysRef.current[key] = [];
-              remoteDatasetSignatureRef.current[key] = syncSignature;
-              setDatasetCloudSyncBadge(key, undefined);
-              if (!previousSyncSignature.startsWith("local-only:")) {
-                setStorageNotice(
-                  `${DATASET_DEFINITIONS[key].label} is currently too large for cloud sync and will stay local-only. Use Force Cloud Sync to override.`
-                );
-              }
-            } catch {
-              setDatasetCloudSyncBadge(key, "failed");
+            // 2026-04-12 fix: NEVER write empty payloads to clear remote
+            // data. The previous code here wrote empty strings to the main
+            // key and all chunk keys, which destroyed force-synced data
+            // when the auto-sync timer fired after the force-sync flag
+            // was cleared. Stale cloud data is infinitely better than
+            // no cloud data. Users can Force Cloud Sync to update.
+            remoteDatasetSignatureRef.current[key] = syncSignature;
+            setDatasetCloudSyncBadge(key, undefined);
+            if (!previousSyncSignature || !remoteDatasetChunkKeysRef.current[key]?.length) {
               setStorageNotice(
-                `Could not mark ${DATASET_DEFINITIONS[key].label} as local-only. Local persistence is still active.`
+                `${DATASET_DEFINITIONS[key].label} is too large for auto sync (${(estimatedRemotePayloadChars / 1_000_000).toFixed(1)} MB). Use Force Cloud Sync to update.`
               );
-              return;
             }
             continue;
           }
