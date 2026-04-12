@@ -540,12 +540,13 @@ export default function Dashboard() {
   });
   const {
     data: todoistCompletedToday,
+    isLoading: todoistCompletedLoading,
     refetch: refetchTodoistCompletedToday,
   } = trpc.todoist.getCompletedCount.useQuery(
     { dateKey: todayKey, timezoneOffsetMinutes: new Date().getTimezoneOffset() },
     {
       enabled: !!user && hasTodoist,
-      retry: false,
+      retry: 2,
       staleTime: 0,
       refetchInterval: 60_000,
       refetchOnWindowFocus: true,
@@ -1572,7 +1573,8 @@ export default function Dashboard() {
       fallbackLocation = ""
     ): Promise<void> => {
       const weatherResponse = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=3`
+        `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=3`,
+        { signal: AbortSignal.timeout(15000) }
       );
       if (!weatherResponse.ok) {
         throw new Error(`Weather request failed (${weatherResponse.status})`);
@@ -1633,7 +1635,8 @@ export default function Dashboard() {
       }
 
       const searchResponse = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityGuess)}&count=1&language=en`
+        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(cityGuess)}&count=1&language=en`,
+        { signal: AbortSignal.timeout(15000) }
       );
       if (!searchResponse.ok) {
         throw new Error(`Location lookup failed (${searchResponse.status})`);
@@ -1649,22 +1652,24 @@ export default function Dashboard() {
     };
 
     const run = async () => {
-      if (navigator.geolocation) {
-        try {
-          const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-            navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
-          });
-          await fetchWeatherForCoordinates(position.coords.latitude, position.coords.longitude);
-          return;
-        } catch {
-          // Fallback to timezone-based lookup.
-        }
-      }
-
       try {
+        if (navigator.geolocation) {
+          try {
+            const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+              navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
+            });
+            await fetchWeatherForCoordinates(position.coords.latitude, position.coords.longitude);
+            return;
+          } catch {
+            // Geolocation failed — fall through to timezone fallback.
+          }
+        }
+
         await fetchWeatherByTimezoneFallback();
       } catch (error) {
-        setWeatherError(error instanceof Error ? error.message : "Weather fetch failed");
+        if (!cancelled) {
+          setWeatherError(error instanceof Error ? error.message : "Weather unavailable");
+        }
       }
     };
 
@@ -2019,7 +2024,7 @@ export default function Dashboard() {
             { label: "Tasks", value: (allTodoistTasks || []).filter((t: any) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
             { label: "Events", value: todayEventCount, icon: Calendar },
             { label: "Recovery", value: whoopSummary?.recoveryScore != null ? `${Math.round(whoopSummary.recoveryScore)}%` : "--", icon: HeartPulse },
-            { label: "Completed", value: todoistCompletedToday?.count ?? "--", icon: CheckSquare },
+            { label: "Completed", value: todoistCompletedLoading ? "..." : (todoistCompletedToday?.count ?? 0), icon: CheckSquare },
           ]}
         />
       </div>

@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { trpc } from "@/lib/trpc";
@@ -9822,6 +9822,18 @@ const financialFlaggedCount = useMemo(
   [financialProfitData.rows]
 );
 
+// ── Financials: sortable header helper (used in JSX below) ──────
+const financialSortIndicator = (col: FinancialSortKey) =>
+  financialSortBy === col ? (financialSortDir === "asc" ? " ▲" : " ▼") : "";
+const handleFinancialSort = (col: FinancialSortKey) => {
+  if (financialSortBy === col) {
+    setFinancialSortDir((d) => (d === "asc" ? "desc" : "asc"));
+  } else {
+    setFinancialSortBy(col);
+    setFinancialSortDir("desc");
+  }
+};
+
 // ── Data Quality: Freshness ─────────────────────────────────────
 const dataQualityFreshness = useMemo(() => {
   if (!isDataQualityTabActive) return [];
@@ -10125,7 +10137,7 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="overview" className="space-y-4 mt-4">
+          {activeTab === "overview" && (<div className="space-y-4 mt-4">
             {/* Row 1: System counts — compact, short values */}
             <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
               <Card>
@@ -10336,7 +10348,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="size" className="space-y-4 mt-4">
+          {activeTab === "size" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Size Bucket Reporting Matrix</CardTitle>
@@ -10472,7 +10484,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-		          <TabsContent value="value" className="space-y-4 mt-4">
+		          {activeTab === "value" && (<div className="space-y-4 mt-4">
             <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
               <Card>
                 <CardHeader>
@@ -10635,7 +10647,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-	          <TabsContent value="contracts" className="space-y-4 mt-4">
+	          {activeTab === "contracts" && (<div className="space-y-4 mt-4">
 	            <Card>
               <CardHeader>
                 <CardTitle className="text-base">Utility Contract ID Tracking</CardTitle>
@@ -10848,7 +10860,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="annual-review" className="space-y-4 mt-4">
+          {activeTab === "annual-review" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Annual REC Delivery Obligation Review</CardTitle>
@@ -11229,7 +11241,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="performance-eval" className="space-y-4 mt-4">
+          {activeTab === "performance-eval" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">3-Year Rolling Average Annual Report Logic</CardTitle>
@@ -11597,7 +11609,7 @@ const aiDataContext = useMemo(() => {
             )}
           </div>)}
 
-          <TabsContent value="change-ownership" className="space-y-4 mt-4">
+          {activeTab === "change-ownership" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Change of Ownership Logic</CardTitle>
@@ -11812,7 +11824,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="ownership" className="space-y-4 mt-4">
+          {activeTab === "ownership" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Ownership Status Classifier</CardTitle>
@@ -11889,7 +11901,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="offline-monitoring" className="space-y-4 mt-4">
+          {activeTab === "offline-monitoring" && (<div className="space-y-4 mt-4">
             <Card id="offline-overview" className="scroll-mt-24">
               <CardHeader>
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -12428,7 +12440,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="meter-reads" className="space-y-4 mt-4">
+          {activeTab === "meter-reads" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Meter Read Workbook Converter</CardTitle>
@@ -12532,7 +12544,7 @@ const aiDataContext = useMemo(() => {
             ) : null}
           </div>)}
 
-          <TabsContent value="performance-ratio" className="space-y-4 mt-4">
+          {activeTab === "performance-ratio" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Converted Reads Performance Ratio</CardTitle>
@@ -13093,7 +13105,7 @@ const aiDataContext = useMemo(() => {
             )}
           </div>)}
 
-          <TabsContent value="snapshot-log" className="space-y-4 mt-4">
+          {activeTab === "snapshot-log" && (<div className="space-y-4 mt-4">
             <div className="grid gap-4 md:grid-cols-3">
               <Card>
                 <CardHeader>
@@ -13403,7 +13415,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="app-pipeline" className="space-y-4 mt-4">
+          {activeTab === "app-pipeline" && (<div className="space-y-4 mt-4">
             {/* ====== Application Pipeline (Count) ====== */}
             <Card>
               <CardHeader>
@@ -13694,7 +13706,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="trends" className="space-y-4 mt-4">
+          {activeTab === "trends" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Delivery Pace by Contract</CardTitle>
@@ -13774,7 +13786,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="forecast" className="space-y-4 mt-4">
+          {activeTab === "forecast" && (<div className="space-y-4 mt-4">
             <Card className="border-sky-200 bg-sky-50/30">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">REC Production Forecast — Energy Year {FORECAST_EY_LABEL}</CardTitle>
@@ -13899,7 +13911,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="alerts" className="space-y-4 mt-4">
+          {activeTab === "alerts" && (<div className="space-y-4 mt-4">
             <div className="grid grid-cols-3 gap-3">
               <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Critical</CardDescription><CardTitle className="text-2xl text-rose-800">{alertSummary.critical}</CardTitle></CardHeader></Card>
               <Card className="border-amber-200 bg-amber-50/50"><CardHeader><CardDescription>Warning</CardDescription><CardTitle className="text-2xl text-amber-800">{alertSummary.warning}</CardTitle></CardHeader></Card>
@@ -13943,7 +13955,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="comparisons" className="space-y-4 mt-4">
+          {activeTab === "comparisons" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -14046,7 +14058,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="financials" className="space-y-4 mt-4">
+          {activeTab === "financials" && (<div className="space-y-4 mt-4">
             <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
               <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Revenue at Risk</CardDescription><CardTitle className="text-2xl text-rose-800">${formatNumber(financialRevenueAtRisk.total)}</CardTitle></CardHeader></Card>
               <Card><CardHeader><CardDescription>% of Portfolio</CardDescription><CardTitle className="text-2xl">{financialRevenueAtRisk.percent !== null ? `${financialRevenueAtRisk.percent.toFixed(1)}%` : "N/A"}</CardTitle></CardHeader></Card>
@@ -14338,43 +14350,7 @@ const aiDataContext = useMemo(() => {
               </Card>
             )}
 
-            {financialProfitData.rows.length > 0 && (() => {
-              // Sortable header helper — renders a clickable <TableHead>
-              // that toggles the sort column / direction.
-              const SortTh = ({
-                col,
-                label,
-                right,
-              }: {
-                col: FinancialSortKey;
-                label: string;
-                right?: boolean;
-              }) => (
-                <TableHead
-                  className={`cursor-pointer select-none hover:bg-slate-50 ${
-                    right ? "text-right" : ""
-                  }`}
-                  onClick={() => {
-                    if (financialSortBy === col) {
-                      setFinancialSortDir((d) =>
-                        d === "asc" ? "desc" : "asc"
-                      );
-                    } else {
-                      setFinancialSortBy(col);
-                      setFinancialSortDir("desc");
-                    }
-                  }}
-                >
-                  {label}{" "}
-                  {financialSortBy === col
-                    ? financialSortDir === "asc"
-                      ? "▲"
-                      : "▼"
-                    : ""}
-                </TableHead>
-              );
-
-              return (
+            {financialProfitData.rows.length > 0 && (
               <Card>
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -14461,19 +14437,19 @@ const aiDataContext = useMemo(() => {
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <SortTh col="systemName" label="System" />
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleFinancialSort("systemName")}>System{financialSortIndicator("systemName")}</TableHead>
                           <TableHead>App ID</TableHead>
-                          <SortTh col="grossContractValue" label="Gross Contract" right />
-                          <SortTh col="vendorFeePercent" label="Vendor Fee %" right />
-                          <SortTh col="vendorFeeAmount" label="Vendor Fee $" right />
-                          <SortTh col="utilityCollateral" label="Utility 5%" right />
-                          <SortTh col="additionalCollateralPercent" label="Add. Coll. %" right />
-                          <SortTh col="additionalCollateralAmount" label="Add. Coll. $" right />
-                          <SortTh col="ccAuth5Percent" label="CC Auth 5%" right />
-                          <SortTh col="applicationFee" label="App Fee" right />
-                          <SortTh col="totalDeductions" label="Total Ded." right />
-                          <SortTh col="profit" label="Profit" right />
-                          <SortTh col="totalCollateralization" label="Total Coll." right />
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("grossContractValue")}>Gross Contract{financialSortIndicator("grossContractValue")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("vendorFeePercent")}>Vendor Fee %{financialSortIndicator("vendorFeePercent")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("vendorFeeAmount")}>Vendor Fee ${financialSortIndicator("vendorFeeAmount")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("utilityCollateral")}>Utility 5%{financialSortIndicator("utilityCollateral")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("additionalCollateralPercent")}>Add. Coll. %{financialSortIndicator("additionalCollateralPercent")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("additionalCollateralAmount")}>Add. Coll. ${financialSortIndicator("additionalCollateralAmount")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("ccAuth5Percent")}>CC Auth 5%{financialSortIndicator("ccAuth5Percent")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("applicationFee")}>App Fee{financialSortIndicator("applicationFee")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("totalDeductions")}>Total Ded.{financialSortIndicator("totalDeductions")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("profit")}>Profit{financialSortIndicator("profit")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("totalCollateralization")}>Total Coll.{financialSortIndicator("totalCollateralization")}</TableHead>
                           <TableHead>Status</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -14526,11 +14502,10 @@ const aiDataContext = useMemo(() => {
                   )}
                 </CardContent>
               </Card>
-              );
-            })()}
+            )}
           </div>)}
 
-          <TabsContent value="data-quality" className="space-y-4 mt-4">
+          {activeTab === "data-quality" && (<div className="space-y-4 mt-4">
             <Card>
               <CardHeader><CardTitle className="text-base">Dataset Freshness</CardTitle><CardDescription>Upload status and age for each required dataset.</CardDescription></CardHeader>
               <CardContent>
@@ -14592,7 +14567,7 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          <TabsContent value="delivery-tracker" className="space-y-4 mt-4">
+          {activeTab === "delivery-tracker" && (<div className="space-y-4 mt-4">
             {/* ── Schedule B PDF Import ────────────────────────── */}
             <ScheduleBImport
               transferDeliveryLookup={transferDeliveryLookup}

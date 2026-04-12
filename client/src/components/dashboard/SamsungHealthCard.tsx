@@ -128,15 +128,34 @@ export function SamsungHealthCard({
           </div>
         ) : (
           <>
-            <p className="text-xs text-muted-foreground">
-              Source: {snapshot.sourceProvider}.{" "}
-              {snapshot.receivedAt
-                ? `Last sync ${new Date(snapshot.receivedAt).toLocaleTimeString("en-US", {
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}.`
-                : "No sync timestamp."}
-            </p>
+            {(() => {
+              const isStale = snapshot.receivedAt
+                ? Date.now() - new Date(snapshot.receivedAt).getTime() > 24 * 60 * 60 * 1000
+                : false;
+              const ageLabel = snapshot.receivedAt
+                ? (() => {
+                    const diffMs = Date.now() - new Date(snapshot.receivedAt).getTime();
+                    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+                    if (diffDays >= 1) return `${diffDays}d ago`;
+                    const diffHrs = Math.floor(diffMs / (60 * 60 * 1000));
+                    if (diffHrs >= 1) return `${diffHrs}h ago`;
+                    return "just now";
+                  })()
+                : null;
+              return (
+                <>
+                  {isStale && (
+                    <div className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 px-2 py-1 rounded mb-2">
+                      Data Stale ({ageLabel}) — Check Sync App
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Source: {snapshot.sourceProvider}.{" "}
+                    {ageLabel ? `Last sync ${ageLabel}.` : "No sync timestamp."}
+                  </p>
+                </>
+              );
+            })()}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               <MetricTile label="Steps" value={snapshot.steps !== null ? Math.round(snapshot.steps).toLocaleString() : "-"} />
               <MetricTile label="Sleep" value={snapshot.sleepTotalMinutes !== null ? formatHoursAndMinutes(snapshot.sleepTotalMinutes) : "-"} />

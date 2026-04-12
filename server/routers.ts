@@ -3737,7 +3737,7 @@ export const appRouter = router({
       try {
         const { storageGet } = await import("./storage");
         const { url } = await storageGet(key);
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (!response.ok) return null;
         const payload = await response.text();
         if (!payload) return null;
@@ -3796,7 +3796,7 @@ export const appRouter = router({
         try {
           const { storageGet } = await import("./storage");
           const { url } = await storageGet(key);
-          const response = await fetch(url);
+          const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
           if (!response.ok) return null;
           const payload = await response.text();
           if (!payload) return null;

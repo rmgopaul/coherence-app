@@ -260,7 +260,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <div className="flex items-center gap-2">
               <Calendar className="h-4 w-4 text-emerald-600" />
-              <CardTitle className="text-base">Today's Events</CardTitle>
+              <CardTitle className="text-base">Upcoming Events</CardTitle>
             </div>
             <div className="flex items-center gap-1">
               <SectionRating sectionId="section-calendar" currentRating={sectionRatingMap["section-calendar"] as any} />

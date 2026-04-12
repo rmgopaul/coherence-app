@@ -87,7 +87,7 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/monitoring">
                 <MonitoringDashboard />
               </Route>
-              <Route path="/solar-rec/monitoringoverview">
+              <Route path="/solar-rec/monitoring-overview">
                 <MonitoringOverview />
               </Route>
               <Route path="/solar-rec/settings">

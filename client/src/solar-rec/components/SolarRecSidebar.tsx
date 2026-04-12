@@ -123,8 +123,8 @@ export default function SolarRecSidebar({
               </SidebarMenuItem>
               <SidebarMenuItem>
                 <SidebarMenuButton
-                  onClick={() => setLocation("/solar-rec/monitoringoverview")}
-                  isActive={location === "/solar-rec/monitoringoverview"}
+                  onClick={() => setLocation("/solar-rec/monitoring-overview")}
+                  isActive={location === "/solar-rec/monitoring-overview"}
                 >
                   <Activity className="h-4 w-4" />
                   <span>Monitoring Overview</span>
