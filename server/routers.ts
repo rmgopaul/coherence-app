@@ -6,7 +6,7 @@ import { systemRouter } from "./_core/systemRouter";
 import { adminProcedure, publicProcedure, protectedProcedure, twoFactorPendingProcedure, router } from "./_core/trpc";
 import { sdk } from "./_core/sdk";
 import { z } from "zod";
-import { callLlmForAddressCleaning, sanitizeMailingFields, toNonEmptyString } from "./services/addressCleaning";
+import { callLlmForAddressCleaning, sanitizeMailingFields, toNonEmptyString } from "./services/core/addressCleaning";
 
 const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
 
@@ -589,10 +589,10 @@ async function performSupplementBottleScanForUser(
   existed: boolean;
   definitionId: string;
   definition: Awaited<ReturnType<typeof import("./db").getSupplementDefinitionById>>;
-  extracted: Awaited<ReturnType<typeof import("./services/supplements").extractSupplementFromBottleImage>>;
+  extracted: Awaited<ReturnType<typeof import("./services/integrations/supplements").extractSupplementFromBottleImage>>;
   imageUrl: string;
   priceCheck:
-    | Awaited<ReturnType<typeof import("./services/supplements").checkSupplementPrice>>
+    | Awaited<ReturnType<typeof import("./services/integrations/supplements").checkSupplementPrice>>
     | null;
   priceCheckError: string | null;
   priceLogCreated: boolean;
@@ -612,7 +612,7 @@ async function performSupplementBottleScanForUser(
     extractSupplementFromBottleImage,
     findExistingSupplementMatch,
     sourceDomainFromUrl,
-  } = await import("./services/supplements");
+  } = await import("./services/integrations/supplements");
 
   const anthropicIntegration = await getIntegrationByProvider(userId, "anthropic");
   const apiKey = toNonEmptyString(anthropicIntegration?.accessToken);
@@ -1481,7 +1481,7 @@ function launchTeslaPowerhubProductionJobWorker(
     );
 
     try {
-      const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
+      const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/solar/teslaPowerhub");
       const result = await getTeslaPowerhubGroupProductionMetrics(
         {
           clientId: context.clientId,
@@ -1758,8 +1758,8 @@ async function runAbpSettlementContractScanJob(jobId: string): Promise<void> {
       { persist: true }
     );
 
-    const { extractContractDataFromPdfBuffer } = await import("./services/contractScannerServer");
-    const { CsgPortalClient } = await import("./services/csgPortal");
+    const { extractContractDataFromPdfBuffer } = await import("./services/core/contractScannerServer");
+    const { CsgPortalClient } = await import("./services/integrations/csgPortal");
     const client = new CsgPortalClient({
       email: resolvedEmail,
       password: resolvedPassword,
@@ -2571,7 +2571,7 @@ async function getEnphaseV4Context(userId: number): Promise<{
     if (!integration.refreshToken) {
       throw new Error("Enphase token expired and no refresh token is available. Reconnect first.");
     }
-    const { refreshEnphaseV4AccessToken } = await import("./services/enphaseV4");
+    const { refreshEnphaseV4AccessToken } = await import("./services/solar/enphaseV4");
     const refreshed = await refreshEnphaseV4AccessToken({
       clientId: metadata.clientId,
       clientSecret: metadata.clientSecret,
@@ -3591,9 +3591,9 @@ export const appRouter = router({
           return cachedData;
         }
 
-        const { fetchMarketQuotes } = await import("./services/marketData");
-        const { fetchNewsHeadlines } = await import("./services/newsHeadlines");
-        const { fetchTrumpApprovalRatings } = await import("./services/approvalRatings");
+        const { fetchMarketQuotes } = await import("./services/integrations/marketData");
+        const { fetchNewsHeadlines } = await import("./services/integrations/newsHeadlines");
+        const { fetchTrumpApprovalRatings } = await import("./services/core/approvalRatings");
 
         try {
           const [quotesResult, headlinesResult, approvalResult] = await Promise.allSettled([
@@ -3675,7 +3675,7 @@ export const appRouter = router({
         }
 
         try {
-          const { fetchMNSportsGames } = await import("./services/sports");
+          const { fetchMNSportsGames } = await import("./services/integrations/sports");
           const games = await fetchMNSportsGames();
           cachedGames = games;
           const hasLive = games.some(g => g.status === "in" || g.status === "halftime");
@@ -3875,7 +3875,7 @@ export const appRouter = router({
         });
 
         const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
-          "./services/scheduleBImportJobRunner"
+          "./services/core/scheduleBImportJobRunner"
         );
         if (
           (job.status === "queued" || job.status === "running") &&
@@ -3919,7 +3919,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { parseGoogleDriveFolderId, listGoogleDrivePdfsInFolder } =
-          await import("./services/google");
+          await import("./services/integrations/google");
 
         const folderId = parseGoogleDriveFolderId(input.folderUrl);
         if (!folderId) {
@@ -3976,7 +3976,7 @@ export const appRouter = router({
         const {
           runScheduleBImportJob,
           isScheduleBImportRunnerActive,
-        } = await import("./services/scheduleBImportJobRunner");
+        } = await import("./services/core/scheduleBImportJobRunner");
         if (inserted > 0 && !isScheduleBImportRunnerActive(job.id)) {
           void runScheduleBImportJob(job.id);
         }
@@ -4025,7 +4025,7 @@ export const appRouter = router({
         // scheduleBImportFiles that were racing with the runner's
         // own status updates.
         const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
-          "./services/scheduleBImportJobRunner"
+          "./services/core/scheduleBImportJobRunner"
         );
         if (
           (job.status === "queued" || job.status === "running") &&
@@ -4905,7 +4905,7 @@ export const appRouter = router({
             stoppedAt: null,
           });
 
-          const { runScheduleBImportJob } = await import("./services/scheduleBImportJobRunner");
+          const { runScheduleBImportJob } = await import("./services/core/scheduleBImportJobRunner");
           void runScheduleBImportJob(job.id);
 
           return {
@@ -4950,7 +4950,7 @@ export const appRouter = router({
           stoppedAt: null,
         });
 
-        const { runScheduleBImportJob } = await import("./services/scheduleBImportJobRunner");
+        const { runScheduleBImportJob } = await import("./services/core/scheduleBImportJobRunner");
         void runScheduleBImportJob(job.id);
         return { success: true, jobId: job.id };
       }),
@@ -5020,7 +5020,7 @@ export const appRouter = router({
         // now 0 the next runner pass will transition the job to
         // 'completed'.
         const { runScheduleBImportJob, isScheduleBImportRunnerActive } = await import(
-          "./services/scheduleBImportJobRunner"
+          "./services/core/scheduleBImportJobRunner"
         );
         if (!isScheduleBImportRunnerActive(job.id)) {
           void runScheduleBImportJob(job.id);
@@ -5285,7 +5285,7 @@ export const appRouter = router({
     }),
     listSystems: protectedProcedure.query(async ({ ctx }) => {
       const credentials = await getEnphaseV2Credentials(ctx.user.id);
-      const { listSystems } = await import("./services/enphaseV2");
+      const { listSystems } = await import("./services/solar/enphaseV2");
       return listSystems(credentials);
     }),
     getSummary: protectedProcedure
@@ -5296,7 +5296,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const credentials = await getEnphaseV2Credentials(ctx.user.id);
-        const { getSystemSummary } = await import("./services/enphaseV2");
+        const { getSystemSummary } = await import("./services/solar/enphaseV2");
         return getSystemSummary(credentials, input.systemId.trim());
       }),
     getEnergyLifetime: protectedProcedure
@@ -5309,7 +5309,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const credentials = await getEnphaseV2Credentials(ctx.user.id);
-        const { getSystemEnergyLifetime } = await import("./services/enphaseV2");
+        const { getSystemEnergyLifetime } = await import("./services/solar/enphaseV2");
         return getSystemEnergyLifetime(
           credentials,
           input.systemId.trim(),
@@ -5327,7 +5327,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const credentials = await getEnphaseV2Credentials(ctx.user.id);
-        const { getSystemRgmStats } = await import("./services/enphaseV2");
+        const { getSystemRgmStats } = await import("./services/solar/enphaseV2");
         return getSystemRgmStats(credentials, input.systemId.trim(), input.startDate, input.endDate);
       }),
     getProductionMeterReadings: protectedProcedure
@@ -5340,7 +5340,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const credentials = await getEnphaseV2Credentials(ctx.user.id);
-        const { getSystemProductionMeterReadings } = await import("./services/enphaseV2");
+        const { getSystemProductionMeterReadings } = await import("./services/solar/enphaseV2");
         return getSystemProductionMeterReadings(
           credentials,
           input.systemId.trim(),
@@ -5378,7 +5378,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { exchangeEnphaseV4AuthorizationCode } = await import("./services/enphaseV4");
+        const { exchangeEnphaseV4AuthorizationCode } = await import("./services/solar/enphaseV4");
 
         const tokenData = await exchangeEnphaseV4AuthorizationCode({
           clientId: input.clientId.trim(),
@@ -5422,7 +5422,7 @@ export const appRouter = router({
     }),
     listSystems: protectedProcedure.query(async ({ ctx }) => {
       const context = await getEnphaseV4Context(ctx.user.id);
-      const { listSystems } = await import("./services/enphaseV4");
+      const { listSystems } = await import("./services/solar/enphaseV4");
       return listSystems(context);
     }),
     getSummary: protectedProcedure
@@ -5433,7 +5433,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnphaseV4Context(ctx.user.id);
-        const { getSystemSummary } = await import("./services/enphaseV4");
+        const { getSystemSummary } = await import("./services/solar/enphaseV4");
         return getSystemSummary(context, input.systemId.trim());
       }),
     getEnergyLifetime: protectedProcedure
@@ -5446,7 +5446,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnphaseV4Context(ctx.user.id);
-        const { getSystemEnergyLifetime } = await import("./services/enphaseV4");
+        const { getSystemEnergyLifetime } = await import("./services/solar/enphaseV4");
         return getSystemEnergyLifetime(context, input.systemId.trim(), input.startDate, input.endDate);
       }),
     getRgmStats: protectedProcedure
@@ -5459,7 +5459,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnphaseV4Context(ctx.user.id);
-        const { getSystemRgmStats } = await import("./services/enphaseV4");
+        const { getSystemRgmStats } = await import("./services/solar/enphaseV4");
         return getSystemRgmStats(context, input.systemId.trim(), input.startDate, input.endDate);
       }),
     getProductionMeterReadings: protectedProcedure
@@ -5472,7 +5472,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnphaseV4Context(ctx.user.id);
-        const { getSystemProductionMeterTelemetry } = await import("./services/enphaseV4");
+        const { getSystemProductionMeterTelemetry } = await import("./services/solar/enphaseV4");
         return getSystemProductionMeterTelemetry(
           context,
           input.systemId.trim(),
@@ -5490,7 +5490,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const context = await getEnphaseV4Context(ctx.user.id);
         const { listSystems, getSystemProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEnphase } =
-          await import("./services/enphaseV4");
+          await import("./services/solar/enphaseV4");
 
         const uniqueSystemIds = Array.from(
           new Set(input.systemIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -5710,7 +5710,7 @@ export const appRouter = router({
     }),
     listSites: protectedProcedure.query(async ({ ctx }) => {
       const context = await getSolarEdgeContext(ctx.user.id);
-      const { listSites } = await import("./services/solarEdge");
+      const { listSites } = await import("./services/solar/solarEdge");
       return listSites(context);
     }),
     getOverview: protectedProcedure
@@ -5721,7 +5721,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteOverview } = await import("./services/solarEdge");
+        const { getSiteOverview } = await import("./services/solar/solarEdge");
         return getSiteOverview(context, input.siteId.trim());
       }),
     getDetails: protectedProcedure
@@ -5732,7 +5732,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteDetails } = await import("./services/solarEdge");
+        const { getSiteDetails } = await import("./services/solar/solarEdge");
         return getSiteDetails(context, input.siteId.trim());
       }),
     getEnergy: protectedProcedure
@@ -5746,7 +5746,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteEnergy } = await import("./services/solarEdge");
+        const { getSiteEnergy } = await import("./services/solar/solarEdge");
         return getSiteEnergy(context, input.siteId.trim(), input.startDate, input.endDate, input.timeUnit);
       }),
     getProductionMeterReadings: protectedProcedure
@@ -5760,7 +5760,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteEnergyDetails } = await import("./services/solarEdge");
+        const { getSiteEnergyDetails } = await import("./services/solar/solarEdge");
         return getSiteEnergyDetails(
           context,
           input.siteId.trim(),
@@ -5780,7 +5780,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteMeters } = await import("./services/solarEdge");
+        const { getSiteMeters } = await import("./services/solar/solarEdge");
         return getSiteMeters(context, input.siteId.trim(), input.startDate, input.endDate);
       }),
     getInverterProduction: protectedProcedure
@@ -5793,7 +5793,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteInverterProduction } = await import("./services/solarEdge");
+        const { getSiteInverterProduction } = await import("./services/solar/solarEdge");
         return getSiteInverterProduction(context, input.siteId.trim(), input.startDate, input.endDate);
       }),
     getProductionSnapshot: protectedProcedure
@@ -5805,7 +5805,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getSolarEdgeContext(ctx.user.id);
-        const { getSiteProductionSnapshot } = await import("./services/solarEdge");
+        const { getSiteProductionSnapshot } = await import("./services/solar/solarEdge");
         return getSiteProductionSnapshot(context, input.siteId.trim(), input.anchorDate);
       }),
     getProductionSnapshots: protectedProcedure
@@ -5818,7 +5818,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getSiteProductionSnapshot } = await import("./services/solarEdge");
+        const { getSiteProductionSnapshot } = await import("./services/solar/solarEdge");
 
         const uniqueSiteIds = Array.from(
           new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
@@ -5968,7 +5968,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getSiteMeterSnapshot } = await import("./services/solarEdge");
+        const { getSiteMeterSnapshot } = await import("./services/solar/solarEdge");
 
         const uniqueSiteIds = Array.from(
           new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
@@ -6080,7 +6080,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getSiteInverterSnapshot } = await import("./services/solarEdge");
+        const { getSiteInverterSnapshot } = await import("./services/solar/solarEdge");
 
         const uniqueSiteIds = Array.from(
           new Set(input.siteIds.map((siteId) => siteId.trim()).filter((siteId) => siteId.length > 0))
@@ -6351,7 +6351,7 @@ export const appRouter = router({
     }),
     listPvSystems: protectedProcedure.query(async ({ ctx }) => {
       const context = await getFroniusContext(ctx.user.id);
-      const { listPvSystems } = await import("./services/fronius");
+      const { listPvSystems } = await import("./services/solar/fronius");
       return listPvSystems(context);
     }),
     getPvSystemDetails: protectedProcedure
@@ -6362,7 +6362,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
-        const { getPvSystemDetails } = await import("./services/fronius");
+        const { getPvSystemDetails } = await import("./services/solar/fronius");
         return getPvSystemDetails(context, input.pvSystemId.trim());
       }),
     getDevices: protectedProcedure
@@ -6373,7 +6373,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
-        const { getPvSystemDevices } = await import("./services/fronius");
+        const { getPvSystemDevices } = await import("./services/solar/fronius");
         return getPvSystemDevices(context, input.pvSystemId.trim());
       }),
     getAggData: protectedProcedure
@@ -6387,7 +6387,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
-        const { getAggrData } = await import("./services/fronius");
+        const { getAggrData } = await import("./services/solar/fronius");
         return getAggrData(context, input.pvSystemId.trim(), input.from, input.to);
       }),
     getFlowData: protectedProcedure
@@ -6398,7 +6398,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
-        const { getFlowData } = await import("./services/fronius");
+        const { getFlowData } = await import("./services/solar/fronius");
         return getFlowData(context, input.pvSystemId.trim());
       }),
     getProductionSnapshot: protectedProcedure
@@ -6410,8 +6410,8 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getFroniusContext(ctx.user.id);
-        const { getPvSystemProductionSnapshot, extractPvSystems } = await import("./services/fronius");
-        const { getPvSystemDetails } = await import("./services/fronius");
+        const { getPvSystemProductionSnapshot, extractPvSystems } = await import("./services/solar/fronius");
+        const { getPvSystemDetails } = await import("./services/solar/fronius");
         let systemName: string | null = null;
         try {
           const details = await getPvSystemDetails(context, input.pvSystemId.trim());
@@ -6432,7 +6432,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getPvSystemProductionSnapshot, listPvSystems, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
+        const { getPvSystemProductionSnapshot, listPvSystems, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/solar/fronius");
 
         const uniquePvSystemIds = Array.from(
           new Set(input.pvSystemIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -6604,7 +6604,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getPvSystemDeviceSnapshot, listPvSystems, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/fronius");
+        const { getPvSystemDeviceSnapshot, listPvSystems, mapWithConcurrency: mapWithConcurrencyFronius } = await import("./services/solar/fronius");
 
         const uniquePvSystemIds = Array.from(
           new Set(input.pvSystemIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -6912,7 +6912,7 @@ export const appRouter = router({
     }),
     listPlants: protectedProcedure.query(async ({ ctx }) => {
       const context = await getEnnexOsContext(ctx.user.id);
-      const { listPlants } = await import("./services/ennexos");
+      const { listPlants } = await import("./services/solar/ennexos");
       return listPlants(context);
     }),
     getPlantDetails: protectedProcedure
@@ -6923,7 +6923,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnnexOsContext(ctx.user.id);
-        const { getPlantDetails } = await import("./services/ennexos");
+        const { getPlantDetails } = await import("./services/solar/ennexos");
         return getPlantDetails(context, input.plantId.trim());
       }),
     getDevices: protectedProcedure
@@ -6934,7 +6934,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnnexOsContext(ctx.user.id);
-        const { getPlantDevices } = await import("./services/ennexos");
+        const { getPlantDevices } = await import("./services/solar/ennexos");
         return getPlantDevices(context, input.plantId.trim());
       }),
     getAggData: protectedProcedure
@@ -6948,7 +6948,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnnexOsContext(ctx.user.id);
-        const { getPlantMeasurements } = await import("./services/ennexos");
+        const { getPlantMeasurements } = await import("./services/solar/ennexos");
         const normalizedPeriod =
           input.period === "Years"
             ? "Year"
@@ -6981,7 +6981,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnnexOsContext(ctx.user.id);
-        const { getPlantMeasurements } = await import("./services/ennexos");
+        const { getPlantMeasurements } = await import("./services/solar/ennexos");
         const raw = await getPlantMeasurements(
           context,
           input.plantId.trim(),
@@ -7008,7 +7008,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnnexOsContext(ctx.user.id);
-        const { getPlantMeasurements } = await import("./services/ennexos");
+        const { getPlantMeasurements } = await import("./services/solar/ennexos");
         return getPlantMeasurements(
           context,
           input.plantId.trim(),
@@ -7026,7 +7026,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getEnnexOsContext(ctx.user.id);
-        const { getPlantProductionSnapshot } = await import("./services/ennexos");
+        const { getPlantProductionSnapshot } = await import("./services/solar/ennexos");
         return getPlantProductionSnapshot(context, input.plantId.trim(), input.anchorDate);
       }),
     getProductionSnapshots: protectedProcedure
@@ -7039,7 +7039,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getPlantProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEnnexOs } = await import("./services/ennexos");
+        const { getPlantProductionSnapshot, mapWithConcurrency: mapWithConcurrencyEnnexOs } = await import("./services/solar/ennexos");
 
         const uniquePlantIds = Array.from(
           new Set(input.plantIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -7059,7 +7059,7 @@ export const appRouter = router({
         const targetConnections = scope === "all" ? allConnections : [activeConnection];
 
         // Fetch plant names once upfront to include in snapshot results.
-        const { listPlants: listPlantsEnnexOs } = await import("./services/ennexos");
+        const { listPlants: listPlantsEnnexOs } = await import("./services/solar/ennexos");
         const plantNameMap = new Map<string, string>();
         try {
           const { plants } = await listPlantsEnnexOs({
@@ -7204,7 +7204,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getPlantDeviceSnapshot, mapWithConcurrency: mapWithConcurrencyEnnexOs } = await import("./services/ennexos");
+        const { getPlantDeviceSnapshot, mapWithConcurrency: mapWithConcurrencyEnnexOs } = await import("./services/solar/ennexos");
 
         const uniquePlantIds = Array.from(
           new Set(input.plantIds.map((id) => id.trim()).filter((id) => id.length > 0))
@@ -7329,7 +7329,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { normalizeZendeskSubdomainInput } = await import("./services/zendesk");
+        const { normalizeZendeskSubdomainInput } = await import("./services/integrations/zendesk");
         const existingIntegration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
         const existingMetadata = parseZendeskMetadata(existingIntegration?.metadata);
 
@@ -7421,7 +7421,7 @@ export const appRouter = router({
         const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
         const metadata = parseZendeskMetadata(integration?.metadata);
         const zendeskContext = await getZendeskContext(ctx.user.id);
-        const { getZendeskTicketMetricsByAssignee } = await import("./services/zendesk");
+        const { getZendeskTicketMetricsByAssignee } = await import("./services/integrations/zendesk");
         return getZendeskTicketMetricsByAssignee(zendeskContext, {
           maxTickets: input?.maxTickets ?? 10000,
           periodStartDate: input?.periodStartDate,
@@ -7475,7 +7475,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { normalizeEgaugeBaseUrl, normalizeEgaugePortfolioBaseUrl } = await import("./services/egauge");
+        const { normalizeEgaugeBaseUrl, normalizeEgaugePortfolioBaseUrl } = await import("./services/solar/egauge");
 
         const accessType: EgaugeAccessType = input.accessType;
         const username = toNonEmptyString(input.username);
@@ -7676,7 +7676,7 @@ export const appRouter = router({
       if (context.accessType === "portfolio_login") {
         throw new Error("System Info is meter-level. Use Fetch Portfolio Systems for portfolio access.");
       }
-      const { getEgaugeSystemInfo } = await import("./services/egauge");
+      const { getEgaugeSystemInfo } = await import("./services/solar/egauge");
       return getEgaugeSystemInfo(context);
     }),
     getLocalData: protectedProcedure.mutation(async ({ ctx }) => {
@@ -7684,7 +7684,7 @@ export const appRouter = router({
       if (context.accessType === "portfolio_login") {
         throw new Error("Local Data is meter-level. Use Fetch Portfolio Systems for portfolio access.");
       }
-      const { getEgaugeLocalData } = await import("./services/egauge");
+      const { getEgaugeLocalData } = await import("./services/solar/egauge");
       return getEgaugeLocalData(context);
     }),
     getRegisterLatest: protectedProcedure
@@ -7701,7 +7701,7 @@ export const appRouter = router({
         if (context.accessType === "portfolio_login") {
           throw new Error("Register Latest is meter-level. Use Fetch Portfolio Systems for portfolio access.");
         }
-        const { getEgaugeRegisterLatest } = await import("./services/egauge");
+        const { getEgaugeRegisterLatest } = await import("./services/solar/egauge");
         return getEgaugeRegisterLatest(context, {
           register: input?.register,
           includeRate: input?.includeRate,
@@ -7722,7 +7722,7 @@ export const appRouter = router({
         if (context.accessType === "portfolio_login") {
           throw new Error("Register History is meter-level. Use Fetch Portfolio Systems for portfolio access.");
         }
-        const { getEgaugeRegisterHistory } = await import("./services/egauge");
+        const { getEgaugeRegisterHistory } = await import("./services/solar/egauge");
         return getEgaugeRegisterHistory(context, {
           startDate: input.startDate,
           endDate: input.endDate,
@@ -7745,7 +7745,7 @@ export const appRouter = router({
         if (context.accessType !== "portfolio_login") {
           throw new Error("Switch access type to Portfolio Login, then run Fetch Portfolio Systems.");
         }
-        const { getEgaugePortfolioSystems } = await import("./services/egauge");
+        const { getEgaugePortfolioSystems } = await import("./services/solar/egauge");
         return getEgaugePortfolioSystems(context, {
           filter: input?.filter,
           groupId: input?.groupId,
@@ -7775,7 +7775,7 @@ export const appRouter = router({
           getEgaugePortfolioSystems,
           getMeterProductionSnapshot,
           mapWithConcurrency: mapWithConcurrencyEgauge,
-        } = await import("./services/egauge");
+        } = await import("./services/solar/egauge");
 
         const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
         const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
@@ -7922,7 +7922,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { getEgaugePortfolioSystems } = await import("./services/egauge");
+        const { getEgaugePortfolioSystems } = await import("./services/solar/egauge");
 
         const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
         const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
@@ -8048,12 +8048,12 @@ export const appRouter = router({
     }),
     listProducts: protectedProcedure.query(async ({ ctx }) => {
       const context = await getTeslaSolarContext(ctx.user.id);
-      const { listTeslaProducts } = await import("./services/teslaSolar");
+      const { listTeslaProducts } = await import("./services/solar/teslaSolar");
       return listTeslaProducts(context);
     }),
     listSites: protectedProcedure.query(async ({ ctx }) => {
       const context = await getTeslaSolarContext(ctx.user.id);
-      const { listTeslaProducts } = await import("./services/teslaSolar");
+      const { listTeslaProducts } = await import("./services/solar/teslaSolar");
       const result = await listTeslaProducts(context);
       return {
         sites: result.energySites,
@@ -8067,7 +8067,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getTeslaSolarContext(ctx.user.id);
-        const { getTeslaEnergySiteLiveStatus } = await import("./services/teslaSolar");
+        const { getTeslaEnergySiteLiveStatus } = await import("./services/solar/teslaSolar");
         return getTeslaEnergySiteLiveStatus(context, input.siteId.trim());
       }),
     getSiteInfo: protectedProcedure
@@ -8078,7 +8078,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getTeslaSolarContext(ctx.user.id);
-        const { getTeslaEnergySiteInfo } = await import("./services/teslaSolar");
+        const { getTeslaEnergySiteInfo } = await import("./services/solar/teslaSolar");
         return getTeslaEnergySiteInfo(context, input.siteId.trim());
       }),
     getHistory: protectedProcedure
@@ -8093,7 +8093,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const context = await getTeslaSolarContext(ctx.user.id);
-        const { getTeslaEnergySiteHistory } = await import("./services/teslaSolar");
+        const { getTeslaEnergySiteHistory } = await import("./services/solar/teslaSolar");
         return getTeslaEnergySiteHistory(context, input.siteId.trim(), {
           kind: input.kind,
           period: input.period,
@@ -8148,7 +8148,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { normalizeTeslaPowerhubUrl } = await import("./services/teslaPowerhub");
+        const { normalizeTeslaPowerhubUrl } = await import("./services/solar/teslaPowerhub");
         const existing = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
         const existingMetadata = parseTeslaPowerhubMetadata(existing?.metadata);
 
@@ -8357,7 +8357,7 @@ export const appRouter = router({
         const context = await getTeslaPowerhubContext(ctx.user.id);
         const groupId = input.groupId.trim();
 
-        const { getTeslaPowerhubGroupUsers } = await import("./services/teslaPowerhub");
+        const { getTeslaPowerhubGroupUsers } = await import("./services/solar/teslaPowerhub");
         return getTeslaPowerhubGroupUsers(
           {
             clientId: context.clientId,
@@ -8384,7 +8384,7 @@ export const appRouter = router({
         const context = await getTeslaPowerhubContext(ctx.user.id);
         const groupId = input.groupId.trim();
 
-        const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/teslaPowerhub");
+        const { getTeslaPowerhubGroupProductionMetrics } = await import("./services/solar/teslaPowerhub");
         return getTeslaPowerhubGroupProductionMetrics(
           {
             clientId: context.clientId,
@@ -8477,7 +8477,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { testCsgPortalCredentials } = await import("./services/csgPortal");
+        const { testCsgPortalCredentials } = await import("./services/integrations/csgPortal");
 
         const existing = await getIntegrationByProvider(ctx.user.id, CSG_PORTAL_PROVIDER);
         const existingMetadata = parseCsgPortalMetadata(existing?.metadata);
@@ -8684,7 +8684,7 @@ export const appRouter = router({
 
         await bulkInsertContractScanJobCsgIds(jobId, uniqueIds);
 
-        const { runContractScanJob } = await import("./services/contractScanJobRunner");
+        const { runContractScanJob } = await import("./services/core/contractScanJobRunner");
         void runContractScanJob(jobId);
 
         return { jobId, status: "queued" as const, total: uniqueIds.length };
@@ -8741,7 +8741,7 @@ export const appRouter = router({
           currentCsgId: null,
         });
 
-        const { runContractScanJob } = await import("./services/contractScanJobRunner");
+        const { runContractScanJob } = await import("./services/core/contractScanJobRunner");
         void runContractScanJob(job.id);
 
         return { success: true, pendingCount };
@@ -8758,13 +8758,13 @@ export const appRouter = router({
 
         // Auto-resume if runner died
         const { isContractScanRunnerActive } = await import(
-          "./services/contractScanJobRunner"
+          "./services/core/contractScanJobRunner"
         );
         if (
           (job.status === "queued" || job.status === "running") &&
           !isContractScanRunnerActive(job.id)
         ) {
-          const { runContractScanJob } = await import("./services/contractScanJobRunner");
+          const { runContractScanJob } = await import("./services/core/contractScanJobRunner");
           void runContractScanJob(job.id);
         }
 
@@ -8908,7 +8908,7 @@ export const appRouter = router({
       )
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider } = await import("./db");
-        const { cleanAddressBatch } = await import("./services/addressCleaner");
+        const { cleanAddressBatch } = await import("./services/core/addressCleaner");
 
         // ── 1. Deterministic cleaning pass ───────────────────────
         const sourceRows = input.rows.map((row) => {
@@ -9110,7 +9110,7 @@ export const appRouter = router({
           throw new Error("USPS API not configured. Set USPS_CLIENT_ID and USPS_CLIENT_SECRET environment variables (from developers.usps.com).");
         }
 
-        const { verifyAddressBatch } = await import("./services/uspsAddressValidation");
+        const { verifyAddressBatch } = await import("./services/integrations/uspsAddressValidation");
         const results = await verifyAddressBatch(uspsClientId, uspsClientSecret, input.addresses);
 
         const confirmed = results.filter((r) => r.verdict === "CONFIRMED").length;
@@ -9149,7 +9149,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const { getIntegrationByProvider, upsertIntegration } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { getClockifyCurrentUser, listClockifyWorkspaces } = await import("./services/clockify");
+        const { getClockifyCurrentUser, listClockifyWorkspaces } = await import("./services/integrations/clockify");
 
         const existingIntegration = await getIntegrationByProvider(ctx.user.id, CLOCKIFY_PROVIDER);
         const existingMetadata = parseClockifyMetadata(existingIntegration?.metadata);
@@ -9218,7 +9218,7 @@ export const appRouter = router({
     }),
     getCurrentEntry: protectedProcedure.query(async ({ ctx }) => {
       const context = await getClockifyContext(ctx.user.id);
-      const { getClockifyInProgressTimeEntry } = await import("./services/clockify");
+      const { getClockifyInProgressTimeEntry } = await import("./services/integrations/clockify");
       return getClockifyInProgressTimeEntry(
         context.apiKey,
         context.workspaceId,
@@ -9235,7 +9235,7 @@ export const appRouter = router({
       )
       .query(async ({ ctx, input }) => {
         const context = await getClockifyContext(ctx.user.id);
-        const { getClockifyRecentTimeEntries } = await import("./services/clockify");
+        const { getClockifyRecentTimeEntries } = await import("./services/integrations/clockify");
         return getClockifyRecentTimeEntries(
           context.apiKey,
           context.workspaceId,
@@ -9253,7 +9253,7 @@ export const appRouter = router({
       .mutation(async ({ ctx, input }) => {
         const context = await getClockifyContext(ctx.user.id);
         const { getClockifyInProgressTimeEntry, startClockifyTimeEntry } = await import(
-          "./services/clockify"
+          "./services/integrations/clockify"
         );
 
         const currentEntry = await getClockifyInProgressTimeEntry(
@@ -9272,7 +9272,7 @@ export const appRouter = router({
       }),
     stopTimer: protectedProcedure.mutation(async ({ ctx }) => {
       const context = await getClockifyContext(ctx.user.id);
-      const { stopClockifyInProgressTimeEntry } = await import("./services/clockify");
+      const { stopClockifyInProgressTimeEntry } = await import("./services/integrations/clockify");
       const stoppedEntry = await stopClockifyInProgressTimeEntry(
         context.apiKey,
         context.workspaceId,
@@ -9315,7 +9315,7 @@ export const appRouter = router({
         if (!integration?.accessToken) {
           throw new Error("Todoist not connected");
         }
-        const { getTodoistTasks } = await import("./services/todoist");
+        const { getTodoistTasks } = await import("./services/integrations/todoist");
         return getTodoistTasks(integration.accessToken, input?.filter);
       }),
     getProjects: protectedProcedure.query(async ({ ctx }) => {
@@ -9324,7 +9324,7 @@ export const appRouter = router({
       if (!integration?.accessToken) {
         throw new Error("Todoist not connected");
       }
-      const { getTodoistProjects } = await import("./services/todoist");
+      const { getTodoistProjects } = await import("./services/integrations/todoist");
       return getTodoistProjects(integration.accessToken);
     }),
     getCompletedCount: protectedProcedure
@@ -9342,7 +9342,7 @@ export const appRouter = router({
         if (!integration?.accessToken) {
           throw new Error("Todoist not connected");
         }
-        const { getTodoistCompletedTaskCount } = await import("./services/todoist");
+        const { getTodoistCompletedTaskCount } = await import("./services/integrations/todoist");
         const dateKey = input?.dateKey ?? getTodayDateKey();
         const count = await getTodoistCompletedTaskCount(
           integration.accessToken,
@@ -9366,7 +9366,7 @@ export const appRouter = router({
         if (!integration?.accessToken) {
           throw new Error("Todoist not connected");
         }
-        const { getTodoistCompletedTasks } = await import("./services/todoist");
+        const { getTodoistCompletedTasks } = await import("./services/integrations/todoist");
         const dateKey = input?.dateKey ?? getTodayDateKey();
         const tasks = await getTodoistCompletedTasks(
           integration.accessToken,
@@ -9429,7 +9429,7 @@ export const appRouter = router({
         if (!integration?.accessToken) {
           throw new Error("Todoist not connected");
         }
-        const { createTodoistTask } = await import("./services/todoist");
+        const { createTodoistTask } = await import("./services/integrations/todoist");
         return createTodoistTask(
           integration.accessToken,
           input.content,
@@ -9448,7 +9448,7 @@ export const appRouter = router({
         if (!integration?.accessToken) {
           throw new Error("Todoist not connected");
         }
-        const { completeTodoistTask } = await import("./services/todoist");
+        const { completeTodoistTask } = await import("./services/integrations/todoist");
         await completeTodoistTask(integration.accessToken, input.taskId);
         return { success: true };
       }),
@@ -9464,7 +9464,7 @@ export const appRouter = router({
         if (!integration?.accessToken) {
           throw new Error("Todoist not connected");
         }
-        const { createTodoistTask, getTodoistProjects } = await import("./services/todoist");
+        const { createTodoistTask, getTodoistProjects } = await import("./services/integrations/todoist");
         
         // Find the Inbox project
         const projects = await getTodoistProjects(integration.accessToken);
@@ -9653,7 +9653,7 @@ export const appRouter = router({
           try {
             const { getValidWhoopToken } = await import("./helpers/tokenRefresh");
             const accessToken = await getValidWhoopToken(ctx.user.id);
-            const { getWhoopSummary } = await import("./services/whoop");
+            const { getWhoopSummary } = await import("./services/integrations/whoop");
             const whoop = await getWhoopSummary(accessToken);
 
             const recovery = safeNumber(whoop.recoveryScore);
@@ -9895,7 +9895,7 @@ Generate the pipeline analysis report now.`,
         const todoistIntegration = await getIntegrationByProvider(ctx.user.id, "todoist");
         if (todoistIntegration?.accessToken) {
           try {
-            const { getTodoistTasks, getTodoistProjects } = await import("./services/todoist");
+            const { getTodoistTasks, getTodoistProjects } = await import("./services/integrations/todoist");
             const [tasks, projects] = await Promise.all([
               getTodoistTasks(todoistIntegration.accessToken),
               getTodoistProjects(todoistIntegration.accessToken)
@@ -9918,7 +9918,7 @@ Generate the pipeline analysis report now.`,
         const googleIntegration = await getIntegrationByProvider(ctx.user.id, "google");
         if (googleIntegration?.accessToken) {
           try {
-            const { getGoogleCalendarEvents } = await import("./services/google");
+            const { getGoogleCalendarEvents } = await import("./services/integrations/google");
             const events = await getGoogleCalendarEvents(googleIntegration.accessToken);
             
             const eventList = events.slice(0, 20).map(e => {
@@ -9936,7 +9936,7 @@ Generate the pipeline analysis report now.`,
         // Gmail context
         if (googleIntegration?.accessToken) {
           try {
-            const { getGmailMessages } = await import("./services/google");
+            const { getGmailMessages } = await import("./services/integrations/google");
             const messages = await getGmailMessages(googleIntegration.accessToken, 10);
             
             const emailList = messages.map(m => {
@@ -10022,7 +10022,7 @@ Generate the pipeline analysis report now.`,
         try {
           const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
           const accessToken = await getValidGoogleToken(ctx.user.id);
-          const { getGoogleCalendarEvents } = await import("./services/google");
+          const { getGoogleCalendarEvents } = await import("./services/integrations/google");
           const events = await getGoogleCalendarEvents(accessToken, {
             startIso: input?.startIso,
             endIso: input?.endIso,
@@ -10041,7 +10041,7 @@ Generate the pipeline analysis report now.`,
       .query(async ({ ctx, input }) => {
       const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
       const accessToken = await getValidGoogleToken(ctx.user.id);
-      const { getGmailMessages } = await import("./services/google");
+      const { getGmailMessages } = await import("./services/integrations/google");
       return getGmailMessages(accessToken, input?.maxResults ?? 50);
     }),
     getGmailWaitingOn: protectedProcedure
@@ -10049,7 +10049,7 @@ Generate the pipeline analysis report now.`,
       .query(async ({ ctx, input }) => {
         const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
         const accessToken = await getValidGoogleToken(ctx.user.id);
-        const { getGmailWaitingOn } = await import("./services/google");
+        const { getGmailWaitingOn } = await import("./services/integrations/google");
         return getGmailWaitingOn(accessToken, input?.maxResults ?? 25);
       }),
     markGmailAsRead: protectedProcedure
@@ -10057,7 +10057,7 @@ Generate the pipeline analysis report now.`,
       .mutation(async ({ ctx, input }) => {
         const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
         const accessToken = await getValidGoogleToken(ctx.user.id);
-        const { markGmailMessageAsRead } = await import("./services/google");
+        const { markGmailMessageAsRead } = await import("./services/integrations/google");
         await markGmailMessageAsRead(accessToken, input.messageId);
         return { success: true };
       }),
@@ -10065,7 +10065,7 @@ Generate the pipeline analysis report now.`,
       try {
         const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
         const accessToken = await getValidGoogleToken(ctx.user.id);
-        const { getGoogleDriveFiles } = await import("./services/google");
+        const { getGoogleDriveFiles } = await import("./services/integrations/google");
         const files = await getGoogleDriveFiles(accessToken);
         console.log(`[Google Drive] Fetched ${files.length} files`);
         return files;
@@ -10080,7 +10080,7 @@ Generate the pipeline analysis report now.`,
         try {
           const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
           const accessToken = await getValidGoogleToken(ctx.user.id);
-          const { createGoogleSpreadsheet } = await import("./services/google");
+          const { createGoogleSpreadsheet } = await import("./services/integrations/google");
           const result = await createGoogleSpreadsheet(accessToken, input.title);
           console.log(`[Google Sheets] Created spreadsheet: ${input.title}`);
           return result;
@@ -10095,7 +10095,7 @@ Generate the pipeline analysis report now.`,
         try {
           const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
           const accessToken = await getValidGoogleToken(ctx.user.id);
-          const { searchGoogleDrive } = await import("./services/google");
+          const { searchGoogleDrive } = await import("./services/integrations/google");
           const files = await searchGoogleDrive(accessToken, input.query);
           console.log(`[Google Drive Search] Found ${files.length} files for query: ${input.query}`);
           return files;
@@ -10110,7 +10110,7 @@ Generate the pipeline analysis report now.`,
     getSummary: protectedProcedure.query(async ({ ctx }) => {
       const { getValidWhoopToken } = await import("./helpers/tokenRefresh");
       const accessToken = await getValidWhoopToken(ctx.user.id);
-      const { getWhoopSummary } = await import("./services/whoop");
+      const { getWhoopSummary } = await import("./services/integrations/whoop");
       return getWhoopSummary(accessToken);
     }),
   }),
@@ -10281,7 +10281,7 @@ Generate the pipeline analysis report now.`,
       )
       .mutation(async ({ ctx, input }) => {
         const dateKey = input?.dateKey ?? getTodayDateKey();
-        const { captureDailySnapshotForUser } = await import("./services/dailySnapshot");
+        const { captureDailySnapshotForUser } = await import("./services/notifications/dailySnapshot");
         await captureDailySnapshotForUser(ctx.user.id, dateKey);
 
         return { success: true, dateKey };
@@ -10321,7 +10321,7 @@ Generate the pipeline analysis report now.`,
         let todoistTasks: any[] = [];
         if (todoistIntegration?.accessToken) {
           try {
-            const { getTodoistTasks } = await import("./services/todoist");
+            const { getTodoistTasks } = await import("./services/integrations/todoist");
             todoistTasks = await getTodoistTasks(todoistIntegration.accessToken);
           } catch (error) {
             console.warn("[Search] Failed to load Todoist tasks:", error);
@@ -10334,7 +10334,7 @@ Generate the pipeline analysis report now.`,
           try {
             const { getValidGoogleToken } = await import("./helpers/tokenRefresh");
             const accessToken = await getValidGoogleToken(ctx.user.id);
-            const { getGoogleCalendarEvents, searchGoogleDrive } = await import("./services/google");
+            const { getGoogleCalendarEvents, searchGoogleDrive } = await import("./services/integrations/google");
             const [events, files] = await Promise.all([
               getGoogleCalendarEvents(accessToken, { daysAhead: 120, maxResults: 250 }),
               searchGoogleDrive(accessToken, input.query),
@@ -10585,7 +10585,7 @@ Generate the pipeline analysis report now.`,
           updateSupplementDefinition,
         } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { checkSupplementPrice, sourceDomainFromUrl } = await import("./services/supplements");
+        const { checkSupplementPrice, sourceDomainFromUrl } = await import("./services/integrations/supplements");
 
         const definition = await getSupplementDefinitionById(ctx.user.id, input.definitionId);
         if (!definition) {
@@ -10664,7 +10664,7 @@ Generate the pipeline analysis report now.`,
       .mutation(async ({ ctx, input }) => {
         const { addSupplementPriceLog, getSupplementDefinitionById } = await import("./db");
         const { nanoid } = await import("nanoid");
-        const { sourceDomainFromUrl } = await import("./services/supplements");
+        const { sourceDomainFromUrl } = await import("./services/integrations/supplements");
 
         const definition = await getSupplementDefinitionById(ctx.user.id, input.definitionId);
         if (!definition) {
@@ -11402,7 +11402,7 @@ Generate the pipeline analysis report now.`,
         try {
           const todoistIntegration = await getIntegrationByProvider(ctx.user.id, "todoist");
           if (todoistIntegration?.accessToken) {
-            const { getTodoistCompletedTasksInRange } = await import("./services/todoist");
+            const { getTodoistCompletedTasksInRange } = await import("./services/integrations/todoist");
             const todayDateKey = getTodayDateKey();
             const startDate = new Date(`${todayDateKey}T00:00:00`);
             startDate.setDate(startDate.getDate() - (limit - 1));
@@ -11775,7 +11775,7 @@ Generate the pipeline analysis report now.`,
             );
             
             if (!response.ok) {
-              const { getTodoistTasks } = await import("./services/todoist");
+              const { getTodoistTasks } = await import("./services/integrations/todoist");
               const tasks = await getTodoistTasks(todoistIntegration.accessToken);
               const task = tasks.find((t) => t.id === taskId);
               return { title: task?.content || "Task" };
@@ -12019,8 +12019,8 @@ Generate the pipeline analysis report now.`,
       return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length };
     }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, SOLIS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getSolisContext(ctx.user.id); const { listStations } = await import("./services/solis"); return listStations(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getSolisContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/solis"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getSolisContext(ctx.user.id); const { listStations } = await import("./services/solar/solis"); return listStations(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getSolisContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/solar/solis"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12032,8 +12032,8 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); if (!integration) throw new Error("GoodWe is not connected."); const ms = parseGoodWeMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected GoodWe profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GOODWE_PROVIDER, accessToken: ac.account, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGoodWeMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); if (!integration) throw new Error("GoodWe is not connected."); const ms = parseGoodWeMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GOODWE_PROVIDER, accessToken: nac.account, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGoodWeMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GOODWE_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getGoodWeContext(ctx.user.id); const { listStations } = await import("./services/goodwe"); return listStations(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGoodWeContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/goodwe"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getGoodWeContext(ctx.user.id); const { listStations } = await import("./services/solar/goodwe"); return listStations(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGoodWeContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/solar/goodwe"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12045,8 +12045,8 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); if (!integration) throw new Error("Generac is not connected."); const ms = parseGeneracMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Generac profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GENERAC_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGeneracMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); if (!integration) throw new Error("Generac is not connected."); const ms = parseGeneracMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GENERAC_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGeneracMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GENERAC_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getGeneracContext(ctx.user.id); const { listSystems } = await import("./services/generac"); return listSystems(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGeneracContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/generac"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
+    listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getGeneracContext(ctx.user.id); const { listSystems } = await import("./services/solar/generac"); return listSystems(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGeneracContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/solar/generac"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12058,8 +12058,8 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); if (!integration) throw new Error("Locus is not connected."); const ms = parseLocusMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Locus profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: LOCUS_PROVIDER, accessToken: ac.clientId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeLocusMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); if (!integration) throw new Error("Locus is not connected."); const ms = parseLocusMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: LOCUS_PROVIDER, accessToken: nac.clientId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeLocusMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, LOCUS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listSites: protectedProcedure.query(async ({ ctx }) => { const context = await getLocusContext(ctx.user.id); const { listSites } = await import("./services/locus"); return listSites(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ siteId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getLocusContext(ctx.user.id); const { getSiteProductionSnapshot } = await import("./services/locus"); return getSiteProductionSnapshot(context, input.siteId.trim(), input.anchorDate); }),
+    listSites: protectedProcedure.query(async ({ ctx }) => { const context = await getLocusContext(ctx.user.id); const { listSites } = await import("./services/solar/locus"); return listSites(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ siteId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getLocusContext(ctx.user.id); const { getSiteProductionSnapshot } = await import("./services/solar/locus"); return getSiteProductionSnapshot(context, input.siteId.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12071,8 +12071,8 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); if (!integration) throw new Error("Growatt is not connected."); const ms = parseGrowattMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Growatt profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GROWATT_PROVIDER, accessToken: ac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGrowattMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); if (!integration) throw new Error("Growatt is not connected."); const ms = parseGrowattMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: GROWATT_PROVIDER, accessToken: nac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeGrowattMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, GROWATT_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listPlants: protectedProcedure.query(async ({ ctx }) => { const context = await getGrowattContext(ctx.user.id); const { listPlants } = await import("./services/growatt"); return listPlants(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ plantId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGrowattContext(ctx.user.id); const { getPlantProductionSnapshot } = await import("./services/growatt"); return getPlantProductionSnapshot(context, input.plantId.trim(), input.anchorDate); }),
+    listPlants: protectedProcedure.query(async ({ ctx }) => { const context = await getGrowattContext(ctx.user.id); const { listPlants } = await import("./services/solar/growatt"); return listPlants(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ plantId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getGrowattContext(ctx.user.id); const { getPlantProductionSnapshot } = await import("./services/solar/growatt"); return getPlantProductionSnapshot(context, input.plantId.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12084,8 +12084,8 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected APsystems profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: ac.appId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nac.appId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getAPsystemsContext(ctx.user.id); const { listSystems } = await import("./services/apsystems"); return listSystems(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
+    listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getAPsystemsContext(ctx.user.id); const { listSystems } = await import("./services/solar/apsystems"); return listSystems(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/solar/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12097,7 +12097,7 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); if (!integration) throw new Error("EKM is not connected."); const ms = parseEkmMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected EKM profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: EKM_PROVIDER, accessToken: ac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeEkmMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); if (!integration) throw new Error("EKM is not connected."); const ms = parseEkmMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: EKM_PROVIDER, accessToken: nac.apiKey, refreshToken: null, expiresAt: null, scope: null, metadata: serializeEkmMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, EKM_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ meterNumber: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getEkmContext(ctx.user.id); const { getMeterProductionSnapshot } = await import("./services/ekm"); return getMeterProductionSnapshot(context, input.meterNumber.trim(), input.anchorDate); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ meterNumber: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getEkmContext(ctx.user.id); const { getMeterProductionSnapshot } = await import("./services/solar/ekm"); return getMeterProductionSnapshot(context, input.meterNumber.trim(), input.anchorDate); }),
   }),
 
   // =========================================================================
@@ -12109,10 +12109,10 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (!integration) throw new Error("Hoymiles is not connected."); const ms = parseHoymilesMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Hoymiles profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: HOYMILES_PROVIDER, accessToken: ac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeHoymilesMetadata(ms.connections, ac.id, ac.baseUrl ?? ms.baseUrl) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (!integration) throw new Error("Hoymiles is not connected."); const ms = parseHoymilesMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: HOYMILES_PROVIDER, accessToken: nac.username, refreshToken: null, expiresAt: null, scope: null, metadata: serializeHoymilesMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getHoymilesContext(ctx.user.id); const { listStations } = await import("./services/hoymiles"); return listStations(context); }),
+    listStations: protectedProcedure.query(async ({ ctx }) => { const context = await getHoymilesContext(ctx.user.id); const { listStations } = await import("./services/solar/hoymiles"); return listStations(context); }),
     listAllStations: protectedProcedure.mutation(async ({ ctx }) => {
       const { getIntegrationByProvider } = await import("./db");
-      const { listStations } = await import("./services/hoymiles");
+      const { listStations } = await import("./services/solar/hoymiles");
       const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER);
       const metadata = parseHoymilesMetadata(integration?.metadata);
       if (metadata.connections.length === 0) throw new Error("No Hoymiles profiles saved.");
@@ -12136,10 +12136,10 @@ Generate the pipeline analysis report now.`,
       const deduped = allStations.filter((s) => { if (seen.has(s.stationId)) return false; seen.add(s.stationId); return true; });
       return { stations: deduped, perProfile, totalProfiles: metadata.connections.length };
     }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getHoymilesContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/hoymiles"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getHoymilesContext(ctx.user.id); const { getStationProductionSnapshot } = await import("./services/solar/hoymiles"); return getStationProductionSnapshot(context, input.stationId.trim(), input.anchorDate); }),
     getProductionSnapshotAllProfiles: protectedProcedure.input(z.object({ stationId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => {
       const { getIntegrationByProvider } = await import("./db");
-      const { getStationProductionSnapshot } = await import("./services/hoymiles");
+      const { getStationProductionSnapshot } = await import("./services/solar/hoymiles");
       const integration = await getIntegrationByProvider(ctx.user.id, HOYMILES_PROVIDER);
       const metadata = parseHoymilesMetadata(integration?.metadata);
       if (metadata.connections.length === 0) throw new Error("No Hoymiles profiles saved.");
@@ -12167,8 +12167,8 @@ Generate the pipeline analysis report now.`,
     setActiveConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); if (!integration) throw new Error("Solar-Log is not connected."); const ms = parseSolarLogMetadata(integration.metadata); const ac = ms.connections.find((c) => c.id === input.connectionId); if (!ac) throw new Error("Selected Solar-Log profile was not found."); await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLAR_LOG_PROVIDER, accessToken: ac.baseUrl, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolarLogMetadata(ms.connections, ac.id) }); return { success: true, activeConnectionId: ac.id }; }),
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); if (!integration) throw new Error("Solar-Log is not connected."); const ms = parseSolarLogMetadata(integration.metadata); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: SOLAR_LOG_PROVIDER, accessToken: nac.baseUrl, refreshToken: null, expiresAt: null, scope: null, metadata: serializeSolarLogMetadata(next, nac.id) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, SOLAR_LOG_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
-    listDevices: protectedProcedure.query(async ({ ctx }) => { const context = await getSolarLogContext(ctx.user.id); const { listDevices } = await import("./services/solarLog"); return listDevices(context); }),
-    getProductionSnapshot: protectedProcedure.input(z.object({ deviceId: z.string().optional(), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getSolarLogContext(ctx.user.id); const { getDeviceProductionSnapshot } = await import("./services/solarLog"); return getDeviceProductionSnapshot(context, input.deviceId ?? "solar-log-1", input.anchorDate); }),
+    listDevices: protectedProcedure.query(async ({ ctx }) => { const context = await getSolarLogContext(ctx.user.id); const { listDevices } = await import("./services/solar/solarLog"); return listDevices(context); }),
+    getProductionSnapshot: protectedProcedure.input(z.object({ deviceId: z.string().optional(), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getSolarLogContext(ctx.user.id); const { getDeviceProductionSnapshot } = await import("./services/solar/solarLog"); return getDeviceProductionSnapshot(context, input.deviceId ?? "solar-log-1", input.anchorDate); }),
   }),
 });
 

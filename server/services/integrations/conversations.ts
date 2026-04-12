@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { protectedProcedure, router } from "../_core/trpc";
+import { protectedProcedure, router } from "../../_core/trpc";
 import {
   createConversation,
   getConversations,
   getConversationMessages,
   deleteConversation,
-} from "../db";
+} from "../../db";
 
 export const conversationsRouter = router({
   // List all conversations for the current user

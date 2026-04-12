@@ -5,7 +5,7 @@ import {
   listSites as seListSites,
   getSiteProductionSnapshot,
   type SolarEdgeApiContext,
-} from "../../services/solarEdge";
+} from "../../services/solar/solarEdge";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolarEdgeApiContext[] {
   if (credential.metadata) {

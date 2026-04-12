@@ -393,7 +393,7 @@ const dashboardRouter = t.router({
       });
 
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
-        "../services/scheduleBImportJobRunner"
+        "../services/core/scheduleBImportJobRunner"
       );
       if (
         (job.status === "queued" || job.status === "running") &&
@@ -448,7 +448,7 @@ const dashboardRouter = t.router({
       // queries over scheduleBImportFiles and eliminates the
       // "files marked processed without result rows" divergence bug.
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
-        "../services/scheduleBImportJobRunner"
+        "../services/core/scheduleBImportJobRunner"
       );
       if (
         (job.status === "queued" || job.status === "running") &&
@@ -827,7 +827,7 @@ const dashboardRouter = t.router({
           stoppedAt: null,
         });
 
-        const { runScheduleBImportJob } = await import("../services/scheduleBImportJobRunner");
+        const { runScheduleBImportJob } = await import("../services/core/scheduleBImportJobRunner");
         void runScheduleBImportJob(job.id);
 
         return {
@@ -875,7 +875,7 @@ const dashboardRouter = t.router({
         stoppedAt: null,
       });
 
-      const { runScheduleBImportJob } = await import("../services/scheduleBImportJobRunner");
+      const { runScheduleBImportJob } = await import("../services/core/scheduleBImportJobRunner");
       void runScheduleBImportJob(job.id);
       return { success: true, jobId: job.id };
     }),
@@ -2251,7 +2251,7 @@ const enphaseV2Router = t.router({
 
   listSystems: solarRecOperatorProcedure.query(async () => {
     const creds = await getEnphaseV2TeamCredentials();
-    const { listSystems } = await import("../services/enphaseV2");
+    const { listSystems } = await import("../services/solar/enphaseV2");
     return listSystems(creds);
   }),
 
@@ -2259,7 +2259,7 @@ const enphaseV2Router = t.router({
     .input(z.object({ systemId: z.string().min(1) }))
     .mutation(async ({ input }) => {
       const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemSummary } = await import("../services/enphaseV2");
+      const { getSystemSummary } = await import("../services/solar/enphaseV2");
       return getSystemSummary(creds, input.systemId.trim());
     }),
 
@@ -2267,7 +2267,7 @@ const enphaseV2Router = t.router({
     .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
     .mutation(async ({ input }) => {
       const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemEnergyLifetime } = await import("../services/enphaseV2");
+      const { getSystemEnergyLifetime } = await import("../services/solar/enphaseV2");
       return getSystemEnergyLifetime(creds, input.systemId.trim(), input.startDate, input.endDate);
     }),
 
@@ -2275,7 +2275,7 @@ const enphaseV2Router = t.router({
     .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
     .mutation(async ({ input }) => {
       const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemRgmStats } = await import("../services/enphaseV2");
+      const { getSystemRgmStats } = await import("../services/solar/enphaseV2");
       return getSystemRgmStats(creds, input.systemId.trim(), input.startDate, input.endDate);
     }),
 
@@ -2283,7 +2283,7 @@ const enphaseV2Router = t.router({
     .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
     .mutation(async ({ input }) => {
       const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemProductionMeterReadings } = await import("../services/enphaseV2");
+      const { getSystemProductionMeterReadings } = await import("../services/solar/enphaseV2");
       return getSystemProductionMeterReadings(creds, input.systemId.trim(), input.startDate, input.endDate);
     }),
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchRecContractsForCsgIds, testCsgPortalCredentials } from "./services/csgPortal";
+import { fetchRecContractsForCsgIds, testCsgPortalCredentials } from "./services/integrations/csgPortal";
 
 function htmlResponse(html: string, status = 200, extraHeaders?: Record<string, string>): Response {
   const headers = new Headers({ "content-type": "text/html; charset=utf-8", ...(extraHeaders ?? {}) });

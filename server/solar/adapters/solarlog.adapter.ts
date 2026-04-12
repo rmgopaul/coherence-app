@@ -2,7 +2,7 @@ import {
   listDevices,
   getDeviceProductionSnapshot,
   type SolarLogApiContext,
-} from "../../services/solarLog";
+} from "../../services/solar/solarLog";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolarLogApiContext[] {
   if (credential.metadata) {

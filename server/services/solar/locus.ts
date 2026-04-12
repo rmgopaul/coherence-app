@@ -1,4 +1,4 @@
-import { fetchJson } from "./httpClient";
+import { fetchJson } from "../core/httpClient";
 
 export const LOCUS_DEFAULT_BASE_URL = "https://api.locusenergy.com/v3";
 

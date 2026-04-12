@@ -2,7 +2,7 @@ import {
   listSystems,
   getSystemProductionSnapshot,
   type GeneracApiContext,
-} from "../../services/generac";
+} from "../../services/solar/generac";
 
 function parseMetadata(metadata: string | null | undefined): GeneracApiContext | null {
   if (!metadata) return null;

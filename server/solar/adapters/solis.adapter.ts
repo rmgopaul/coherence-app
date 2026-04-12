@@ -2,7 +2,7 @@ import {
   listStations,
   getStationProductionSnapshot,
   type SolisApiContext,
-} from "../../services/solis";
+} from "../../services/solar/solis";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolisApiContext[] {
   if (credential.metadata) {

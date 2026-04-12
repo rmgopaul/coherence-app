@@ -2,7 +2,7 @@ import {
   listPlants,
   getPlantProductionSnapshot,
   type GrowattApiContext,
-} from "../../services/growatt";
+} from "../../services/solar/growatt";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): GrowattApiContext[] {
   if (credential.metadata) {

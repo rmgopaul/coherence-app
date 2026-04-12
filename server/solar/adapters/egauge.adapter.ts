@@ -2,7 +2,7 @@ import {
   getEgaugeSystemInfo,
   getMeterProductionSnapshot,
   type EgaugeApiContext,
-} from "../../services/egauge";
+} from "../../services/solar/egauge";
 
 type EgaugeConnection = EgaugeApiContext & { meterId?: string | null; name?: string | null };
 

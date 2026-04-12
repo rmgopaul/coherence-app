@@ -2,7 +2,7 @@ import {
   getTeslaPowerhubGroupProductionMetrics,
   type TeslaPowerhubApiContext,
   type TeslaPowerhubSiteProductionMetrics,
-} from "../../services/teslaPowerhub";
+} from "../../services/solar/teslaPowerhub";
 
 type TeslaPowerhubConnection = TeslaPowerhubApiContext & {
   groupId: string;

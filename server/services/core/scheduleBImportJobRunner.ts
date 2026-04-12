@@ -88,7 +88,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     upsertScheduleBImportResult,
     incrementScheduleBImportJobCounter,
     reconcileScheduleBImportJobState,
-  } = await import("../db");
+  } = await import("../../db");
 
   const job = await getScheduleBImportJob(id);
   if (!job) {
@@ -198,7 +198,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     };
 
     // ── Per-file processing ───────────────────────────────────────────
-    const { storageReadBytes } = await import("../storage");
+    const { storageReadBytes } = await import("../../storage");
     const { extractScheduleBDataFromPdfBuffer } = await import(
       "./scheduleBScannerServer"
     );
@@ -212,7 +212,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
       tokenFetchCount += 1;
       if (!cachedDriveToken || tokenFetchCount % TOKEN_REFRESH_INTERVAL === 0) {
         const { getValidGoogleToken } = await import(
-          "../helpers/tokenRefresh"
+          "../../helpers/tokenRefresh"
         );
         cachedDriveToken = await getValidGoogleToken(job.userId);
       }
@@ -253,7 +253,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
             let pdfBytes: Uint8Array;
             if (storageKey.startsWith("drive:")) {
               const fileId = storageKey.slice("drive:".length);
-              const { downloadGoogleDriveFile } = await import("./google");
+              const { downloadGoogleDriveFile } = await import("../integrations/google");
               try {
                 const accessToken = await getCachedDriveToken();
                 pdfBytes = await downloadGoogleDriveFile(accessToken, fileId);
@@ -376,7 +376,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     // (jobId, fileName) overwrites the old error row on success.
     // Reconciliation afterward fixes any counter drift.
     if (!cancelled) {
-      const { listRetryableScheduleBImportResults } = await import("../db");
+      const { listRetryableScheduleBImportResults } = await import("../../db");
       const retryableFiles = await listRetryableScheduleBImportResults(id);
       if (retryableFiles.length > 0) {
         console.log(

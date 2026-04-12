@@ -1,7 +1,7 @@
 import { Suspense, lazy } from "react";
 import SolarRecAuthGate from "./components/SolarRecAuthGate";
 
-const SolarRecDashboard = lazy(() => import("./pages/SolarRecDashboard"));
+const SolarRecDashboard = lazy(() => import("./features/solar-rec/SolarRecDashboard"));
 
 function RouteFallback() {
   return (

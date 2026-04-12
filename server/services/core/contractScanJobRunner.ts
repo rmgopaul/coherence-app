@@ -53,7 +53,7 @@ export async function runContractScanJob(
     insertContractScanResult,
     getCompletedCsgIdsForJob,
     getIntegrationByProvider,
-  } = await import("../db");
+  } = await import("../../db");
 
   const job = await getContractScanJob(id);
   if (!job) return;
@@ -104,7 +104,7 @@ export async function runContractScanJob(
     const { extractContractDataFromPdfBuffer } = await import(
       "./contractScannerServer"
     );
-    const { CsgPortalClient } = await import("./csgPortal");
+    const { CsgPortalClient } = await import("../integrations/csgPortal");
     const client = new CsgPortalClient({
       email: resolvedEmail,
       password: resolvedPassword,
@@ -116,9 +116,9 @@ export async function runContractScanJob(
     const completedIds = await getCompletedCsgIdsForJob(id);
 
     // Load the full CSG ID list from the job's input table
-    const { getDb } = await import("../db");
+    const { getDb } = await import("../../db");
     const { contractScanJobCsgIds } = await import(
-      "../../drizzle/schema"
+      "../../../drizzle/schema"
     );
     const { eq, asc } = await import("drizzle-orm");
     const db = await getDb();

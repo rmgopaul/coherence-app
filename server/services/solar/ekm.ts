@@ -1,4 +1,4 @@
-import { fetchJson } from "./httpClient";
+import { fetchJson } from "../core/httpClient";
 
 export const EKM_DEFAULT_BASE_URL = "https://io.ekmpush.com";
 

@@ -6,7 +6,7 @@ import SolarRecSidebar from "./components/SolarRecSidebar";
 import SolarRecLoginPage from "./SolarRecLoginPage";
 
 // Lazy-load pages
-const SolarRecDashboard = lazy(() => import("../pages/SolarRecDashboard"));
+const SolarRecDashboard = lazy(() => import("../features/solar-rec/SolarRecDashboard"));
 const MonitoringDashboard = lazy(
   () => import("./pages/MonitoringDashboard")
 );
@@ -17,51 +17,51 @@ const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
 
 // Meter read pages (existing, reused from main app)
 const SolarEdgeMeterReads = lazy(
-  () => import("../pages/SolarEdgeMeterReads")
+  () => import("../features/solar-readings/SolarEdgeMeterReads")
 );
 const EnphaseV2MeterReadsPage = lazy(
-  () => import("../pages/EnphaseV2MeterReadsPage")
+  () => import("../features/solar-readings/EnphaseV2MeterReadsPage")
 );
 const EnphaseV4MeterReads = lazy(
-  () => import("../pages/EnphaseV2MeterReads")
+  () => import("../features/solar-readings/EnphaseV2MeterReads")
 );
 const APsystemsMeterReads = lazy(
-  () => import("../pages/APsystemsMeterReads")
+  () => import("../features/solar-readings/APsystemsMeterReads")
 );
 const HoymilesMeterReads = lazy(
-  () => import("../pages/HoymilesMeterReads")
+  () => import("../features/solar-readings/HoymilesMeterReads")
 );
 const FroniusMeterReads = lazy(
-  () => import("../pages/FroniusMeterReads")
+  () => import("../features/solar-readings/FroniusMeterReads")
 );
 const GeneracMeterReads = lazy(
-  () => import("../pages/GeneracMeterReads")
+  () => import("../features/solar-readings/GeneracMeterReads")
 );
 const GoodWeMeterReads = lazy(
-  () => import("../pages/GoodWeMeterReads")
+  () => import("../features/solar-readings/GoodWeMeterReads")
 );
 const SolisMeterReads = lazy(
-  () => import("../pages/SolisMeterReads")
+  () => import("../features/solar-readings/SolisMeterReads")
 );
 const LocusMeterReads = lazy(
-  () => import("../pages/LocusMeterReads")
+  () => import("../features/solar-readings/LocusMeterReads")
 );
 const GrowattMeterReads = lazy(
-  () => import("../pages/GrowattMeterReads")
+  () => import("../features/solar-readings/GrowattMeterReads")
 );
 const SolarLogMeterReads = lazy(
-  () => import("../pages/SolarLogMeterReads")
+  () => import("../features/solar-readings/SolarLogMeterReads")
 );
-const EkmMeterReads = lazy(() => import("../pages/EkmMeterReads"));
+const EkmMeterReads = lazy(() => import("../features/solar-readings/EkmMeterReads"));
 const EnnexOsMeterReads = lazy(
-  () => import("../pages/EnnexOsMeterReads")
+  () => import("../features/solar-readings/EnnexOsMeterReads")
 );
-const EGaugeApi = lazy(() => import("../pages/EGaugeApi"));
+const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
 const SunpowerReadings = lazy(
-  () => import("../pages/SunpowerReadings")
+  () => import("../features/solar-readings/SunpowerReadings")
 );
-const TeslaSolarApi = lazy(() => import("../pages/TeslaSolarApi"));
-const TeslaPowerhubApi = lazy(() => import("../pages/TeslaPowerhubApi"));
+const TeslaSolarApi = lazy(() => import("../features/solar-readings/TeslaSolarApi"));
+const TeslaPowerhubApi = lazy(() => import("../features/solar-readings/TeslaPowerhubApi"));
 
 function PageLoader() {
   return (

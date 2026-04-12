@@ -1,4 +1,4 @@
-import { captureDailySnapshotForAllUsers } from "../services/dailySnapshot";
+import { captureDailySnapshotForAllUsers } from "../services/notifications/dailySnapshot";
 
 let intervalId: NodeJS.Timeout | null = null;
 let lastRunDateKey: string | null = null;

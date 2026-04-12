@@ -2,7 +2,7 @@ import {
   listStations,
   getStationProductionSnapshot,
   type GoodWeApiContext,
-} from "../../services/goodwe";
+} from "../../services/solar/goodwe";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): GoodWeApiContext[] {
   if (credential.metadata) {

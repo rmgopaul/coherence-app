@@ -16,6 +16,8 @@
     "baseUrl": ".",
     "types": ["node", "vite/client"],
     "paths": {
+      "@client/*": ["./client/src/*"],
+      "@server/*": ["./server/*"],
       "@/*": ["./client/src/*"],
       "@shared/*": ["./shared/*"]
     }

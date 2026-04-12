@@ -1,6 +1,6 @@
 import { getIntegrationByProvider, upsertIntegration, getOAuthCredential } from "../db";
-import { refreshGoogleToken } from "../services/google";
-import { refreshWhoopToken } from "../services/whoop";
+import { refreshGoogleToken } from "../services/integrations/google";
+import { refreshWhoopToken } from "../services/integrations/whoop";
 
 export async function getValidGoogleToken(userId: number): Promise<string> {
   const integration = await getIntegrationByProvider(userId, "google");

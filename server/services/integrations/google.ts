@@ -367,7 +367,7 @@ export async function refreshGoogleToken(
 // Google Drive folder-linking helpers (drive-link-v1)
 //
 // Used by server/routers.ts linkScheduleBDriveFolder + the drive branch
-// in server/services/scheduleBImportJobRunner.ts. The whole feature
+// in server/services/core/scheduleBImportJobRunner.ts. The whole feature
 // lives in the server so the browser never has to touch the PDF bytes
 // — that's the entire point. See docs in the plan file
 // .claude/plans/wise-stargazing-peacock.md.

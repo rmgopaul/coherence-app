@@ -1,4 +1,4 @@
-import { fetchJson } from "./httpClient";
+import { fetchJson } from "../core/httpClient";
 
 export const GENERAC_DEFAULT_BASE_URL = "https://pwrfleet.generac.com/api/v1";
 

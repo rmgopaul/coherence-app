@@ -1,8 +1,8 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
 import { upsertIntegration, getOAuthCredential, getIntegrationByProvider, addSamsungSyncPayload } from "./db";
-import { exchangeGoogleCode } from "./services/google";
-import { exchangeWhoopCode } from "./services/whoop";
+import { exchangeGoogleCode } from "./services/integrations/google";
+import { exchangeWhoopCode } from "./services/integrations/whoop";
 import { sdk } from "./_core/sdk";
 import { ENV } from "./_core/env";
 import crypto from "crypto";

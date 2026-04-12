@@ -1288,6 +1288,56 @@ function buildRecReviewDeliveryYearLabel(start: Date | null, end: Date | null, s
   return buildDeliveryYearLabel(start, end, startRaw, endRaw);
 }
 
+type RecPerformanceThreeYearValues = {
+  scheduleYearNumber: number;
+  deliveryYearOne: number;
+  deliveryYearTwo: number;
+  deliveryYearThree: number;
+  deliveryYearOneSource: "Actual" | "Expected";
+  deliveryYearTwoSource: "Actual" | "Expected";
+  deliveryYearThreeSource: "Actual" | "Expected";
+  rollingAverage: number;
+  expectedRecs: number;
+};
+
+function deriveRecPerformanceThreeYearValues(
+  sourceRow: PerformanceSourceRow,
+  targetYearIndex: number
+): RecPerformanceThreeYearValues | null {
+  // REC Performance Eval rule: only include systems in their 3rd schedule year or later.
+  if (targetYearIndex < 2) return null;
+
+  const dyOneYear = sourceRow.years[targetYearIndex - 2];
+  const dyTwoYear = sourceRow.years[targetYearIndex - 1];
+  const dyThreeYear = sourceRow.years[targetYearIndex];
+  if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
+
+  const isThirdDeliveryYear = targetYearIndex === 2;
+  const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
+    ? [
+        { value: dyOneYear.delivered, source: "Actual" },
+        { value: dyTwoYear.delivered, source: "Actual" },
+        { value: dyThreeYear.delivered, source: "Actual" },
+      ]
+    : [
+        { value: dyOneYear.required, source: "Expected" },
+        { value: dyTwoYear.required, source: "Expected" },
+        { value: dyThreeYear.delivered, source: "Actual" },
+      ];
+
+  return {
+    scheduleYearNumber: dyThreeYear.yearIndex,
+    deliveryYearOne: values[0].value,
+    deliveryYearTwo: values[1].value,
+    deliveryYearThree: values[2].value,
+    deliveryYearOneSource: values[0].source,
+    deliveryYearTwoSource: values[1].source,
+    deliveryYearThreeSource: values[2].source,
+    rollingAverage: Math.floor((values[0].value + values[1].value + values[2].value) / 3),
+    expectedRecs: dyThreeYear.required,
+  };
+}
+
 function buildScheduleYearEntries(row: CsvRow): ScheduleYearEntry[] {
   const entries: ScheduleYearEntry[] = [];
 
@@ -2578,7 +2628,7 @@ export default function SolarRecDashboard() {
     if (typeof window === "undefined" || typeof Worker === "undefined") return null;
     if (csvParserWorkerRef.current) return csvParserWorkerRef.current;
 
-    const worker = new Worker(new URL("../workers/csvParser.worker.ts", import.meta.url), {
+    const worker = new Worker(new URL("../../workers/csvParser.worker.ts", import.meta.url), {
       type: "module",
     });
 
@@ -6292,38 +6342,11 @@ export default function SolarRecDashboard() {
       .map((row) => {
         const targetYearIndex = row.years.findIndex((year) => year.key === effectivePerformanceDeliveryYearKey);
         if (targetYearIndex === -1) return null;
-        // Do not include projects that are not in their 3rd delivery year or later.
-        if (targetYearIndex < 2) return null;
 
-        const dyOneYear = row.years[targetYearIndex - 2];
-        const dyTwoYear = row.years[targetYearIndex - 1];
-        const dyThreeYear = row.years[targetYearIndex];
-        if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
+        const recWindow = deriveRecPerformanceThreeYearValues(row, targetYearIndex);
+        if (!recWindow) return null;
 
-        const isThirdDeliveryYear = targetYearIndex === 2;
-        const isFourthOrLaterDeliveryYear = targetYearIndex >= 3;
-
-        const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
-          ? [
-              { value: dyOneYear.delivered, source: "Actual" },
-              { value: dyTwoYear.delivered, source: "Actual" },
-              { value: dyThreeYear.delivered, source: "Actual" },
-            ]
-          : isFourthOrLaterDeliveryYear
-            ? [
-                { value: dyOneYear.required, source: "Expected" },
-                { value: dyTwoYear.required, source: "Expected" },
-                { value: dyThreeYear.delivered, source: "Actual" },
-              ]
-            : [
-                { value: dyOneYear.required, source: "Expected" },
-                { value: dyTwoYear.required, source: "Expected" },
-                { value: dyThreeYear.required, source: "Expected" },
-              ];
-
-        const rollingAverage = Math.floor((values[0].value + values[1].value + values[2].value) / 3);
-        const expectedRecs = dyThreeYear.required;
-        const surplusShortfall = rollingAverage - expectedRecs;
+        const surplusShortfall = recWindow.rollingAverage - recWindow.expectedRecs;
 
         return {
           key: row.key,
@@ -6332,16 +6355,16 @@ export default function SolarRecDashboard() {
           batchId: row.batchId ?? "N/A",
           systemName: row.systemName,
           contractId: row.contractId,
-          scheduleYearNumber: dyThreeYear.yearIndex, // Which year in this system's schedule
-          deliveryYearOne: values[0]?.value ?? 0,
-          deliveryYearTwo: values[1]?.value ?? 0,
-          deliveryYearThree: values[2]?.value ?? 0,
-          deliveryYearOneSource: values[0]?.source ?? "Expected",
-          deliveryYearTwoSource: values[1]?.source ?? "Expected",
-          deliveryYearThreeSource: values[2]?.source ?? "Expected",
-          rollingAverage,
+          scheduleYearNumber: recWindow.scheduleYearNumber, // Which year in this system's schedule
+          deliveryYearOne: recWindow.deliveryYearOne,
+          deliveryYearTwo: recWindow.deliveryYearTwo,
+          deliveryYearThree: recWindow.deliveryYearThree,
+          deliveryYearOneSource: recWindow.deliveryYearOneSource,
+          deliveryYearTwoSource: recWindow.deliveryYearTwoSource,
+          deliveryYearThreeSource: recWindow.deliveryYearThreeSource,
+          rollingAverage: recWindow.rollingAverage,
           contractPrice: row.recPrice,
-          expectedRecs,
+          expectedRecs: recWindow.expectedRecs,
           surplusShortfall,
           allocatedRecs: 0,
           drawdownPayment: 0,
@@ -6453,28 +6476,17 @@ export default function SolarRecDashboard() {
     performanceSourceRows.forEach((row) => {
       const contractId = clean(row.contractId) || "Unassigned";
       const targetYearIndex = row.years.findIndex((year) => year.key === effectivePerformanceDeliveryYearKey);
-      if (targetYearIndex < 2) return;
+      const recWindow = deriveRecPerformanceThreeYearValues(row, targetYearIndex);
+      if (!recWindow) return;
 
-      const dyOneYear = row.years[targetYearIndex - 2];
-      const dyTwoYear = row.years[targetYearIndex - 1];
-      const dyThreeYear = row.years[targetYearIndex];
-      if (!dyOneYear || !dyTwoYear || !dyThreeYear) return;
-
-      const values: number[] =
-        targetYearIndex === 2
-          ? [dyOneYear.delivered, dyTwoYear.delivered, dyThreeYear.delivered]
-          : [dyOneYear.required, dyTwoYear.required, dyThreeYear.delivered];
-
-      const rollingAverage = Math.floor((values[0] + values[1] + values[2]) / 3);
-      const expectedRecs = dyThreeYear.required;
-      const recDelta = rollingAverage - expectedRecs;
-      const shortfall = Math.max(0, expectedRecs - rollingAverage);
+      const recDelta = recWindow.rollingAverage - recWindow.expectedRecs;
+      const shortfall = Math.max(0, recWindow.expectedRecs - recWindow.rollingAverage);
       const drawdownAmount = shortfall * (row.recPrice ?? 0);
 
       const summary = getOrCreate(contractId);
       summary.systemsInThreeYearReview += 1;
-      summary.totalRecDeliveryObligation += expectedRecs;
-      summary.totalDeliveriesFromThreeYearReview += rollingAverage;
+      summary.totalRecDeliveryObligation += recWindow.expectedRecs;
+      summary.totalDeliveriesFromThreeYearReview += recWindow.rollingAverage;
       summary.recDelta += recDelta;
       summary.totalDrawdownAmount += drawdownAmount;
     });
@@ -9206,24 +9218,19 @@ const forecastProjections = useMemo<ForecastContractRow[]>(() => {
   for (const sourceRow of performanceSourceRows) {
     // Find the target year matching the energy year label (same logic as perf eval)
     const targetYearIndex = sourceRow.years.findIndex((year) => {
-      const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+      const label = buildRecReviewDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
       return label === FORECAST_EY_LABEL;
     });
-    if (targetYearIndex < 2) continue; // Must be in 3rd delivery year or later
+    const recWindow = deriveRecPerformanceThreeYearValues(sourceRow, targetYearIndex);
+    if (!recWindow) continue; // Must be in 3rd delivery year or later
 
-    const dyOneYear = sourceRow.years[targetYearIndex - 2];
-    const dyTwoYear = sourceRow.years[targetYearIndex - 1];
-    const dyThreeYear = sourceRow.years[targetYearIndex];
-    if (!dyOneYear || !dyTwoYear || !dyThreeYear) continue;
-
-    // DY1 and DY2 values (same as perf eval)
-    const dy1Val = targetYearIndex === 2 ? dyOneYear.delivered : dyOneYear.required;
-    const dy2Val = targetYearIndex === 2 ? dyTwoYear.delivered : dyTwoYear.required;
-    const dy3Actual = dyThreeYear.delivered; // What's been delivered so far in DY3
-    const obligation = dyThreeYear.required;
+    const dy1Val = recWindow.deliveryYearOne;
+    const dy2Val = recWindow.deliveryYearTwo;
+    const dy3Actual = recWindow.deliveryYearThree; // What's been delivered so far in DY3
+    const obligation = recWindow.expectedRecs;
 
     // Baseline rolling average (no projection)
-    const baselineRollingAvg = Math.floor((dy1Val + dy2Val + dy3Actual) / 3);
+    const baselineRollingAvg = recWindow.rollingAverage;
 
     const trackingId = sourceRow.trackingSystemRefId;
     const profile = annualProductionByTrackingId.get(trackingId);
@@ -11636,7 +11643,6 @@ const aiDataContext = useMemo(() => {
                         <TableRow>
                           <TableHead>Application ID</TableHead>
                           <TableHead>Unit ID</TableHead>
-                          <TableHead>Batch ID</TableHead>
                           <TableHead>System</TableHead>
                           <TableHead>Yr</TableHead>
                           <TableHead>DY 1 (RECs)</TableHead>
@@ -11658,7 +11664,6 @@ const aiDataContext = useMemo(() => {
                           <TableRow key={row.key}>
                             <TableCell>{row.applicationId}</TableCell>
                             <TableCell>{row.unitId}</TableCell>
-                            <TableCell>{row.batchId}</TableCell>
                             <TableCell className="font-medium">{row.systemName}</TableCell>
                             <TableCell className="text-center text-xs text-slate-500">{row.scheduleYearNumber}</TableCell>
                             <TableCell>{formatNumber(row.deliveryYearOne)}</TableCell>

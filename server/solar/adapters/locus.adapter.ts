@@ -2,7 +2,7 @@ import {
   listSites as locusList,
   getSiteProductionSnapshot,
   type LocusApiContext,
-} from "../../services/locus";
+} from "../../services/solar/locus";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): LocusApiContext[] {
   if (credential.metadata) {

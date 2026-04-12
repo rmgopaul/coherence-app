@@ -2,7 +2,7 @@ import {
   listStations,
   getStationProductionSnapshot,
   type HoymilesApiContext,
-} from "../../services/hoymiles";
+} from "../../services/solar/hoymiles";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): HoymilesApiContext[] {
   if (credential.metadata) {

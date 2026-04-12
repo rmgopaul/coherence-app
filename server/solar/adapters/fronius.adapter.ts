@@ -2,7 +2,7 @@ import {
   listPvSystems,
   getPvSystemProductionSnapshot,
   type FroniusApiContext,
-} from "../../services/fronius";
+} from "../../services/solar/fronius";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): FroniusApiContext[] {
   if (credential.metadata) {

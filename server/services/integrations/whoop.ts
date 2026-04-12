@@ -1,4 +1,4 @@
-import { AuthError, fetchJson } from "./httpClient";
+import { AuthError, fetchJson } from "../core/httpClient";
 
 const WHOOP_BASE = "https://api.prod.whoop.com/developer";
 

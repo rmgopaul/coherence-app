@@ -2,7 +2,7 @@ import {
   listSystems,
   getSystemProductionSnapshot,
   type APsystemsApiContext,
-} from "../../services/apsystems";
+} from "../../services/solar/apsystems";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): APsystemsApiContext[] {
   if (credential.metadata) {

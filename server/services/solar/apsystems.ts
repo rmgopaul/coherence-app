@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { fetchJson } from "./httpClient";
+import { fetchJson } from "../core/httpClient";
 
 export const APSYSTEMS_DEFAULT_BASE_URL = "https://api.apsystemsema.com:9282";
 

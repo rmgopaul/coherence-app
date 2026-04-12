@@ -2,7 +2,7 @@ import {
   listSystems,
   getSystemProductionSnapshot,
   type EnphaseV4ApiContext,
-} from "../../services/enphaseV4";
+} from "../../services/solar/enphaseV4";
 
 /**
  * EnphaseV4 metadata format is different from other providers:
