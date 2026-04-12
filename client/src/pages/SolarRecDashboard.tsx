@@ -1273,6 +1273,21 @@ function buildDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: 
   return "Unknown";
 }
 
+function buildRecReviewDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: string, endRaw: string): string {
+  // REC review rule: a schedule year that starts on June 1 is labeled as the
+  // following delivery-year pair (for example, 2024-06-01 => 2025-2026).
+  if (start) {
+    const deliveryYearStart = start.getFullYear() + 1;
+    return `${deliveryYearStart}-${deliveryYearStart + 1}`;
+  }
+  const isoStartMatch = startRaw.match(/^(\d{4})-\d{2}-\d{2}$/);
+  if (isoStartMatch) {
+    const deliveryYearStart = Number(isoStartMatch[1]) + 1;
+    return `${deliveryYearStart}-${deliveryYearStart + 1}`;
+  }
+  return buildDeliveryYearLabel(start, end, startRaw, endRaw);
+}
+
 function buildScheduleYearEntries(row: CsvRow): ScheduleYearEntry[] {
   const entries: ScheduleYearEntry[] = [];
 
@@ -6204,7 +6219,7 @@ export default function SolarRecDashboard() {
       .forEach((row) => {
         row.years.forEach((year) => {
           const existing = byKey.get(year.key);
-          const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
+          const label = buildRecReviewDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
           if (existing) return;
           byKey.set(year.key, {
             key: year.key,
@@ -6384,7 +6399,7 @@ export default function SolarRecDashboard() {
   ]);
 
   const recPerformanceContractYearSummaryRows = useMemo<RecPerformanceContractYearSummaryRow[]>(() => {
-    if (!isPerformanceEvalTabActive || !performanceSelectedDeliveryYearLabel || performanceSelectedDeliveryYearLabel === "N/A") {
+    if (!isPerformanceEvalTabActive || !effectivePerformanceDeliveryYearKey) {
       return [];
     }
 
@@ -6423,10 +6438,7 @@ export default function SolarRecDashboard() {
 
     performanceSourceRows.forEach((row) => {
       const contractId = clean(row.contractId) || "Unassigned";
-      const targetYearIndex = row.years.findIndex((year) => {
-        const label = buildDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
-        return label === performanceSelectedDeliveryYearLabel;
-      });
+      const targetYearIndex = row.years.findIndex((year) => year.key === effectivePerformanceDeliveryYearKey);
       if (targetYearIndex < 2) return;
 
       const dyOneYear = row.years[targetYearIndex - 2];
@@ -6460,9 +6472,9 @@ export default function SolarRecDashboard() {
       }))
       .sort((a, b) => a.contractId.localeCompare(b.contractId, undefined, { numeric: true, sensitivity: "base" }));
   }, [
+    effectivePerformanceDeliveryYearKey,
     isPerformanceEvalTabActive,
     performanceContractOptions,
-    performanceSelectedDeliveryYearLabel,
     performanceSourceRows,
   ]);
 
