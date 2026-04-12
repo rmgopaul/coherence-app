@@ -9654,10 +9654,42 @@ const financialProfitDebug = useMemo(() => {
     5
   );
 
+  // ICC Report headers: surface the actual column names from the CSV
+  // so the user can see if the expected field names (Application ID,
+  // Total REC Delivery Contract Value, etc.) match what's in the file.
+  const iccHeaders = datasets.abpIccReport3Rows?.headers ?? [];
+  const iccFirstRow = iccRows.length > 0 ? iccRows[0] : null;
+  // Try ALL known variants of the appId field to show which one works.
+  const iccAppIdFieldFound =
+    iccFirstRow
+      ? ["Application ID", "Application_ID", "application_id"]
+          .filter((key) => key in iccFirstRow && (iccFirstRow[key] ?? "").trim().length > 0)
+      : [];
+  const iccContractValueFieldFound =
+    iccFirstRow
+      ? [
+          "Total REC Delivery Contract Value",
+          "REC Delivery Contract Value",
+          "Total Contract Value",
+        ].filter(
+          (key) =>
+            key in iccFirstRow &&
+            (iccFirstRow[key] ?? "").trim().length > 0
+        )
+      : [];
+  const queryError = contractScanResultsQuery.error;
+  const queryErrorMessage =
+    queryError instanceof Error
+      ? queryError.message
+      : queryError
+        ? String(queryError)
+        : null;
+
   return {
     queryStatus: contractScanResultsQuery.status,
     queryFetching: contractScanResultsQuery.isFetching,
     queryEnabled: isFinancialsTabActive && financialCsgIds.length > 0,
+    queryErrorMessage,
     counts: {
       part2VerifiedAbpRows: part2VerifiedAbpRows.length,
       mappingRows: mappingRows.length,
@@ -9679,6 +9711,11 @@ const financialProfitDebug = useMemo(() => {
       mappingAppIds: mappingAppIdSamples,
       iccAppIds: iccAppIdSamples,
       part2AppIds: part2AppIdSamples,
+    },
+    icc: {
+      headers: iccHeaders.slice(0, 20),
+      appIdFieldFound: iccAppIdFieldFound,
+      contractValueFieldFound: iccContractValueFieldFound,
     },
   };
 }, [
@@ -14037,8 +14074,24 @@ const aiDataContext = useMemo(() => {
                               {String(financialProfitDebug.queryEnabled)}
                             </span>
                           </li>
-                          <li>query status: {financialProfitDebug.queryStatus}</li>
+                          <li>
+                            query status:{" "}
+                            <span
+                              className={
+                                financialProfitDebug.queryStatus === "error"
+                                  ? "text-rose-700 font-bold"
+                                  : ""
+                              }
+                            >
+                              {financialProfitDebug.queryStatus}
+                            </span>
+                          </li>
                           <li>query fetching: {String(financialProfitDebug.queryFetching)}</li>
+                          {financialProfitDebug.queryErrorMessage && (
+                            <li className="text-rose-700">
+                              error: {financialProfitDebug.queryErrorMessage}
+                            </li>
+                          )}
                         </ul>
                       </div>
                       <div>
@@ -14130,6 +14183,55 @@ const aiDataContext = useMemo(() => {
                             part2 verified appIds: [
                             {financialProfitDebug.samples.part2AppIds.join(", ") || "(empty)"}
                             ]
+                          </li>
+                        </ul>
+                      </div>
+                      <div>
+                        <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
+                          ICC Report 3 column analysis
+                        </p>
+                        <ul className="space-y-0.5">
+                          <li>
+                            CSV headers (first 20):{" "}
+                            {financialProfitDebug.icc.headers.length > 0
+                              ? `[${financialProfitDebug.icc.headers.join(", ")}]`
+                              : "(no headers)"}
+                          </li>
+                          <li>
+                            appId field match:{" "}
+                            <span
+                              className={
+                                financialProfitDebug.icc.appIdFieldFound
+                                  .length > 0
+                                  ? "text-emerald-700"
+                                  : "text-rose-700 font-bold"
+                              }
+                            >
+                              {financialProfitDebug.icc.appIdFieldFound
+                                .length > 0
+                                ? financialProfitDebug.icc.appIdFieldFound.join(
+                                    ", "
+                                  )
+                                : "NONE — expected 'Application ID', 'Application_ID', or 'application_id'"}
+                            </span>
+                          </li>
+                          <li>
+                            contract value field match:{" "}
+                            <span
+                              className={
+                                financialProfitDebug.icc
+                                  .contractValueFieldFound.length > 0
+                                  ? "text-emerald-700"
+                                  : "text-rose-700 font-bold"
+                              }
+                            >
+                              {financialProfitDebug.icc
+                                .contractValueFieldFound.length > 0
+                                ? financialProfitDebug.icc.contractValueFieldFound.join(
+                                    ", "
+                                  )
+                                : "NONE — expected 'Total REC Delivery Contract Value', 'REC Delivery Contract Value', or 'Total Contract Value'"}
+                            </span>
                           </li>
                         </ul>
                       </div>

@@ -8823,7 +8823,15 @@ export const appRouter = router({
     getContractScanResultsByCsgIds: protectedProcedure
       .input(
         z.object({
-          csgIds: z.array(z.string().min(1).max(64)).min(1).max(5000),
+          // 2026-04-11: bumped from max(5000) to max(50000). Users
+          // with large ABP portfolios can have 28k+ CSG IDs in the
+          // abpCsgSystemMapping dataset; the old 5000 cap caused a
+          // Zod validation error that surfaced as query status: error
+          // on the Financials debug panel. The underlying DB helper
+          // (getLatestScanResultsByCsgIds) already batches the IN
+          // clause at 500 per query, so the server handles the volume
+          // fine — only the Zod guard was blocking.
+          csgIds: z.array(z.string().min(1).max(64)).min(1).max(50000),
         })
       )
       .query(async ({ ctx, input }) => {
