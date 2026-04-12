@@ -6248,7 +6248,7 @@ export default function SolarRecDashboard() {
   );
 
   const effectivePerformanceContractId =
-    performanceContractOptions.includes(performanceContractId)
+    performanceContractId === "__ALL__" || performanceContractOptions.includes(performanceContractId)
       ? performanceContractId
       : (performanceContractOptions[0] ?? "");
 
@@ -6265,7 +6265,7 @@ export default function SolarRecDashboard() {
     >();
 
     performanceSourceRows
-      .filter((row) => row.contractId === effectivePerformanceContractId)
+      .filter((row) => effectivePerformanceContractId === "__ALL__" || row.contractId === effectivePerformanceContractId)
       .forEach((row) => {
         row.years.forEach((year) => {
           const existing = byKey.get(year.key);
@@ -6338,7 +6338,7 @@ export default function SolarRecDashboard() {
       };
     }
     const baseRows: RecPerformanceResultRow[] = performanceSourceRows
-      .filter((row) => row.contractId === effectivePerformanceContractId)
+      .filter((row) => effectivePerformanceContractId === "__ALL__" || row.contractId === effectivePerformanceContractId)
       .map((row) => {
         const targetYearIndex = row.years.findIndex((year) => year.key === effectivePerformanceDeliveryYearKey);
         if (targetYearIndex === -1) return null;
@@ -11398,6 +11398,7 @@ const aiDataContext = useMemo(() => {
                         value={effectivePerformanceContractId}
                         onChange={(event) => setPerformanceContractId(event.target.value)}
                       >
+                        <option value="__ALL__">All Contracts</option>
                         {performanceContractOptions.map((contractId) => (
                           <option key={contractId} value={contractId}>
                             {contractId}
@@ -11448,7 +11449,7 @@ const aiDataContext = useMemo(() => {
                   <Card>
                     <CardHeader>
                       <CardDescription>Contract ID</CardDescription>
-                      <CardTitle className="text-2xl">{effectivePerformanceContractId || "N/A"}</CardTitle>
+                      <CardTitle className="text-2xl">{effectivePerformanceContractId === "__ALL__" ? "All Contracts" : (effectivePerformanceContractId || "N/A")}</CardTitle>
                     </CardHeader>
                   </Card>
                   <Card>
@@ -11619,11 +11620,54 @@ const aiDataContext = useMemo(() => {
                 </Card>
 
                 <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Results by System</CardTitle>
-                    <CardDescription>
-                      Columns follow the REC Performance Evaluation workbook structure.
-                    </CardDescription>
+                  <CardHeader className="flex flex-row items-start justify-between">
+                    <div>
+                      <CardTitle className="text-base">Results by System</CardTitle>
+                      <CardDescription>
+                        Columns follow the REC Performance Evaluation workbook structure.
+                      </CardDescription>
+                    </div>
+                    {recPerformanceEvaluation.rows.length > 0 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          const csv = buildCsv(
+                            [
+                              "application_id", "unit_id", "system_name", "contract_id",
+                              "schedule_year", "dy1_recs", "dy1_source",
+                              "dy2_recs", "dy2_source", "dy3_recs", "dy3_source",
+                              "three_year_avg_floor", "contract_price",
+                              "expected_recs", "surplus_shortfall",
+                              "recs_allocated", "drawdown_payment",
+                            ],
+                            recPerformanceEvaluation.rows.map((r) => ({
+                              application_id: r.applicationId,
+                              unit_id: r.unitId,
+                              system_name: r.systemName,
+                              contract_id: r.contractId,
+                              schedule_year: r.scheduleYearNumber,
+                              dy1_recs: r.deliveryYearOne,
+                              dy1_source: r.deliveryYearOneSource,
+                              dy2_recs: r.deliveryYearTwo,
+                              dy2_source: r.deliveryYearTwoSource,
+                              dy3_recs: r.deliveryYearThree,
+                              dy3_source: r.deliveryYearThreeSource,
+                              three_year_avg_floor: r.rollingAverage,
+                              contract_price: r.contractPrice,
+                              expected_recs: r.expectedRecs,
+                              surplus_shortfall: r.surplusShortfall,
+                              recs_allocated: r.allocatedRecs,
+                              drawdown_payment: r.drawdownPayment,
+                            }))
+                          );
+                          const contractSlug = effectivePerformanceContractId === "__ALL__" ? "all-contracts" : `contract-${effectivePerformanceContractId}`;
+                          triggerCsvDownload(
+                            `rec-performance-eval-${contractSlug}-dy${performanceSelectedDeliveryYearLabel}-${timestampForCsvFileName()}.csv`,
+                            csv
+                          );
+                        }}>Export CSV</Button>
+                    )}
                   </CardHeader>
                   <CardContent className="space-y-3">
                     <div className="flex items-center justify-between text-xs text-slate-600">
