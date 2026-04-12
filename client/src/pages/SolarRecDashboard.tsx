@@ -9510,7 +9510,10 @@ const financialProfitData = useMemo<{
     const totalDeductions = roundMoney(
       vendorFeeAmount + utilityCollateral + additionalCollateralAmount + ccAuth5Percent + applicationFee
     );
-    const profit = roundMoney(gcv - totalDeductions);
+    // 2026-04-12: profit = vendor fee (what Carbon Solutions earns),
+    // NOT gross minus all deductions. The vendor fee is the revenue;
+    // the rest (collateral, app fees) are borne by the project.
+    const profit = vendorFeeAmount;
     const totalCollateralization = roundMoney(utilityCollateral + additionalCollateralAmount + ccAuth5Percent);
 
     profitRows.push({
