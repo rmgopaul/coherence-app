@@ -150,16 +150,11 @@ async function readPdfPages(data: Uint8Array): Promise<PdfPageData[]> {
   }
 }
 
-function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {
-  const schedulePage = pages.find((page) =>
-    /Delivery\s+Year\s+Expected\s+REC\s+Quantity/i.test(page.text)
-  );
-  if (!schedulePage) return [];
-
+function extractYearsFromPage(page: PdfPageData): ScheduleBDeliveryYear[] {
   const years: ScheduleBDeliveryYear[] = [];
   const yearPattern = /^(\d{4})\s*-\s*(\d{4})$/;
 
-  for (const item of schedulePage.items) {
+  for (const item of page.items) {
     const match = item.text.match(yearPattern);
     if (!match) continue;
 
@@ -169,7 +164,7 @@ function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {
     if (startYear < 2010 || startYear > 2060) continue;
 
     const yTolerance = 8;
-    const numberItems = schedulePage.items.filter((other) => {
+    const numberItems = page.items.filter((other) => {
       if (Math.abs(other.y - item.y) > yTolerance) return false;
       if (other.x <= item.x) return false;
       return /^\d+$/.test(other.text.trim());
@@ -192,6 +187,25 @@ function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {
   return years;
 }
 
+function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {
+  // Prefer the page with the canonical header text.
+  const schedulePage = pages.find((page) =>
+    /Delivery\s+Year\s+Expected\s+REC\s+Quantity/i.test(page.text)
+  );
+  if (schedulePage) {
+    return extractYearsFromPage(schedulePage);
+  }
+
+  // Fallback: some PDFs have form-fill text only (labels are in the
+  // background layer and invisible to pdfjs). Scan ALL pages for
+  // year-quantity patterns and return the best match.
+  for (const page of pages) {
+    const years = extractYearsFromPage(page);
+    if (years.length >= 5) return years; // credible delivery table
+  }
+  return [];
+}
+
 export async function extractScheduleBDataFromPdfBuffer(
   data: Uint8Array,
   fileName: string
@@ -200,16 +214,23 @@ export async function extractScheduleBDataFromPdfBuffer(
     const pages = await readPdfPages(data);
     const fullText = pages.map((p) => p.text).join(" ");
 
-    const designatedSystemId = extractRegex(
-      fullText,
-      /Designated\s+System\s+ID[:\s]+(\d+)/i
-    );
+    const designatedSystemId =
+      extractRegex(fullText, /Designated\s+System\s+ID[:\s]+(\d+)/i) ??
+      // Fallback: numeric-only filenames ARE the system ID
+      ((/^\d+\.pdf$/i.test(fileName))
+        ? fileName.replace(/\.pdf$/i, "")
+        : null);
 
-    const gatsId = extractRegex(fullText, /GATS\s+ID[:\s]+([A-Z0-9]+)/i);
+    const gatsId =
+      extractRegex(fullText, /GATS\s+ID[:\s]+([A-Z0-9]+)/i) ??
+      // Fallback: match NON + digits anywhere (GATS tracking IDs)
+      extractRegex(fullText, /\b(NON\d{5,})\b/);
 
     // Match both slash format (9/18/2020) and spelled-out month
     // (September 18, 2020). Try slash format first (more specific),
-    // fall back to spelled-out month.
+    // fall back to spelled-out month. Final fallback: bare
+    // "Month DD, YYYY" without label (form-fill-only PDFs).
+    const MONTH_NAMES = "(?:January|February|March|April|May|June|July|August|September|October|November|December)";
     const energizationDateRaw =
       extractRegex(
         fullText,
@@ -217,8 +238,17 @@ export async function extractScheduleBDataFromPdfBuffer(
       ) ??
       extractRegex(
         fullText,
-        /Date\s+of\s+Energization[:\s]+((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4})/i
-      );
+        new RegExp(`Date\\s+of\\s+Energization[:\\s]+(${MONTH_NAMES}\\s+\\d{1,2},?\\s+\\d{4})`, "i")
+      ) ??
+      // Fallback for label-free PDFs: page 2 starts with the
+      // energization date as first text. Use page 2's first line
+      // if it looks like a date.
+      (pages[1]
+        ? extractRegex(
+            pages[1].text,
+            new RegExp(`^(${MONTH_NAMES}\\s+\\d{1,2},?\\s+\\d{4})`, "i")
+          )
+        : null);
 
     const contractPriceRaw = extractRegex(
       fullText,
@@ -230,6 +260,8 @@ export async function extractScheduleBDataFromPdfBuffer(
 
     // Match "Year-1 Contract Capacity Factor: X%" (standard) or
     // standalone "Capacity Factor: X%" (older Schedule B format).
+    // Final fallback: bare high-precision percentage on page 2
+    // (form-fill-only PDFs have "12.430000%" without a label).
     const capacityFactorRaw =
       extractRegex(
         fullText,
@@ -238,15 +270,24 @@ export async function extractScheduleBDataFromPdfBuffer(
       extractRegex(
         fullText,
         /Capacity\s+Factor[:\s]+([\d.]+)\s*%/i
-      );
+      ) ??
+      // Fallback: 6+ decimal-digit percentage (e.g. "12.430000%")
+      // is distinctive enough to be a capacity factor, not a
+      // degradation factor (which is typically "0.5%").
+      (pages[1]
+        ? extractRegex(pages[1].text, /\b(\d{1,3}\.\d{4,})\s*%/)
+        : null);
     const capacityFactor = capacityFactorRaw
       ? parseFloat(capacityFactorRaw) / 100
       : null;
 
-    const acSizeKwRaw = extractRegex(
-      fullText,
-      /Contract\s+Nameplate\s+Capacity[:\s]+([\d.]+)\s*kW/i
-    );
+    const acSizeKwRaw =
+      extractRegex(
+        fullText,
+        /Contract\s+Nameplate\s+Capacity[:\s]+([\d.]+)\s*kW/i
+      ) ??
+      // Fallback: bare "X.XXXX kW (AC Rating)" without label
+      extractRegex(fullText, /([\d.]+)\s*kW\s*\(AC\s*Rating\)/i);
     const acSizeKw = acSizeKwRaw ? parseFloat(acSizeKwRaw) : null;
 
     const maxRecQuantityRaw = extractRegex(
