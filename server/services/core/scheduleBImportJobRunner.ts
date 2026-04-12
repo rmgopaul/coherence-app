@@ -323,6 +323,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
           acSizeKw: extraction?.acSizeKw ?? null,
           capacityFactor: extraction?.capacityFactor ?? null,
           contractPrice: extraction?.contractPrice ?? null,
+          contractNumber: extraction?.contractNumber ?? null,
           energizationDate: extraction?.energizationDate ?? null,
           maxRecQuantity: extraction?.maxRecQuantity ?? null,
           deliveryYearsJson: JSON.stringify(extraction?.deliveryYears ?? []),

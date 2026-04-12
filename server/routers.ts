@@ -4370,8 +4370,12 @@ export const appRouter = router({
             continue;
           }
 
+          // Contract ID priority: (1) existing mapping, (2) PDF footer
+          // extraction ("Contract 153"), (3) empty.
           const existingContractId =
-            contractIdByTrackingId.get(gatsId.toUpperCase()) ?? "";
+            contractIdByTrackingId.get(gatsId.toUpperCase()) ||
+            resultRow.contractNumber ||
+            "";
 
           incomingRows.push(
             buildScheduleBDeliveryRow({

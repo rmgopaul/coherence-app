@@ -16,6 +16,7 @@ export type ScheduleBExtraction = {
   acSizeKw: number | null;
   capacityFactor: number | null;
   contractPrice: number | null;
+  contractNumber: string | null;
   energizationDate: string | null;
   maxRecQuantity: number | null;
   deliveryYears: ScheduleBDeliveryYear[];
@@ -219,7 +220,10 @@ export async function extractScheduleBDataFromPdfBuffer(
       // Fallback: numeric-only filenames ARE the system ID
       ((/^\d+\.pdf$/i.test(fileName))
         ? fileName.replace(/\.pdf$/i, "")
-        : null);
+        : null) ??
+      // Fallback: "CS Part II Schedule B - ... - NNNN.pdf" format
+      // (last numeric segment before .pdf is the system ID)
+      extractRegex(fileName, /[-_\s](\d{2,6})\.pdf$/i);
 
     const gatsId =
       extractRegex(fullText, /GATS\s+ID[:\s]+([A-Z0-9]+)/i) ??
@@ -298,6 +302,12 @@ export async function extractScheduleBDataFromPdfBuffer(
       ? parseInt(maxRecQuantityRaw.replace(/,/g, ""), 10)
       : null;
 
+    // Contract number from footer text ("Contract 153") or
+    // "REC Contract No." labels. Try most specific patterns first.
+    const contractNumber =
+      extractRegex(fullText, /\bContract\s+(?:No\.?\s+)?(\d{1,5})\s*$/im) ??
+      extractRegex(fullText, /\bContract\s+(\d{1,5})\b/i);
+
     const deliveryYears = parseDeliveryTable(pages);
 
     // Build a diagnostic summary for failed extractions so the user
@@ -310,6 +320,7 @@ export async function extractScheduleBDataFromPdfBuffer(
       if (acSizeKwRaw) foundFields.push("acSizeKw");
       if (capacityFactorRaw) foundFields.push("capacityFactor");
       if (contractPriceRaw) foundFields.push("contractPrice");
+      if (contractNumber) foundFields.push("contractNumber");
       if (energizationDateRaw) foundFields.push("energizationDate");
       if (maxRecQuantityRaw) foundFields.push("maxRecQuantity");
 
@@ -328,6 +339,7 @@ export async function extractScheduleBDataFromPdfBuffer(
       acSizeKw,
       capacityFactor,
       contractPrice,
+      contractNumber: contractNumber?.trim() || null,
       energizationDate: energizationDateRaw?.trim() || null,
       maxRecQuantity,
       deliveryYears,
@@ -341,6 +353,7 @@ export async function extractScheduleBDataFromPdfBuffer(
       acSizeKw: null,
       capacityFactor: null,
       contractPrice: null,
+      contractNumber: null,
       energizationDate: null,
       maxRecQuantity: null,
       deliveryYears: [],

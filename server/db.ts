@@ -412,6 +412,13 @@ async function ensureScheduleBImportTables() {
           )
         );
       }
+      if (!(await resultsColumnExists("contractNumber"))) {
+        await db.execute(
+          sql.raw(
+            "ALTER TABLE scheduleBImportResults ADD COLUMN contractNumber varchar(32) DEFAULT NULL"
+          )
+        );
+      }
       if (!(await resultsIndexExists("schedule_b_import_results_job_applied_idx"))) {
         await db.execute(
           sql.raw(
@@ -3750,6 +3757,7 @@ export async function upsertScheduleBImportResult(
     acSizeKw: number | null;
     capacityFactor: number | null;
     contractPrice: number | null;
+    contractNumber: string | null;
     energizationDate: string | null;
     maxRecQuantity: number | null;
     deliveryYearsJson: string;
@@ -3788,6 +3796,7 @@ export async function upsertScheduleBImportResult(
           acSizeKw: data.acSizeKw,
           capacityFactor: data.capacityFactor,
           contractPrice: data.contractPrice,
+          contractNumber: data.contractNumber,
           energizationDate: data.energizationDate,
           maxRecQuantity: data.maxRecQuantity,
           deliveryYearsJson: data.deliveryYearsJson,
@@ -3807,6 +3816,7 @@ export async function upsertScheduleBImportResult(
       acSizeKw: data.acSizeKw,
       capacityFactor: data.capacityFactor,
       contractPrice: data.contractPrice,
+      contractNumber: data.contractNumber,
       energizationDate: data.energizationDate,
       maxRecQuantity: data.maxRecQuantity,
       deliveryYearsJson: data.deliveryYearsJson,
