@@ -217,12 +217,15 @@ export async function extractScheduleBDataFromPdfBuffer(
 
     const designatedSystemId =
       extractRegex(fullText, /Designated\s+System\s+ID[:\s]+(\d+)/i) ??
-      // Fallback: numeric-only filenames ARE the system ID
+      // Fallback 1: numeric-only filenames ARE the system ID (e.g. "48199.pdf")
       ((/^\d+\.pdf$/i.test(fileName))
         ? fileName.replace(/\.pdf$/i, "")
         : null) ??
-      // Fallback: "CS Part II Schedule B - ... - NNNN.pdf" format
-      // (last numeric segment before .pdf is the system ID)
+      // Fallback 2: "ScheduleB_NNNN_timestamp.pdf" — system ID is FIRST number
+      extractRegex(fileName, /^ScheduleB[_-](\d{2,6})[_-]/i) ??
+      // Fallback 3: "System_NNNN_" or "System NNNN_" in filename
+      extractRegex(fileName, /System[_\s](\d{2,6})[_\s]/i) ??
+      // Fallback 4: "CS Part II Schedule B - ... - NNNN.pdf" — last number before .pdf
       extractRegex(fileName, /[-_\s](\d{2,6})\.pdf$/i);
 
     const gatsId =
