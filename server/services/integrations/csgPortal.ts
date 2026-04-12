@@ -135,6 +135,27 @@ function extractAnyPdfLikeUrl(baseUrl: string, html: string): string | null {
   return fallback ? resolveUrl(baseUrl, fallback) : null;
 }
 
+function extractScheduleBFileUrl(baseUrl: string, html: string): string | null {
+  const lower = html.toLowerCase();
+  const anchor = lower.indexOf("schedule b");
+
+  const pick = (candidates: string[]): string | null => {
+    const preferred = candidates.find((href) => /\.pdf($|[?#])/i.test(href));
+    if (preferred) return resolveUrl(baseUrl, preferred);
+    // Schedule B files can be images (JPEG, PNG, etc.) — also accept download/file/upload links
+    const fallback = candidates.find((href) => /download|file|upload/i.test(href));
+    return fallback ? resolveUrl(baseUrl, fallback) : null;
+  };
+
+  if (anchor >= 0) {
+    const snippet = html.slice(Math.max(0, anchor - 4000), Math.min(html.length, anchor + 12000));
+    const fromSnippet = pick(findHrefCandidates(snippet));
+    if (fromSnippet) return fromSnippet;
+  }
+
+  return null;
+}
+
 function extractRecContractPdfUrl(baseUrl: string, html: string): string | null {
   const lower = html.toLowerCase();
   const anchor = lower.indexOf("rec contract (pdf)");
@@ -678,6 +699,159 @@ export class CsgPortalClient {
         pdfFileName: pdfResult.fileName,
         pdfData: pdfResult.data,
         error: null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown portal error.";
+      return {
+        csgId,
+        systemPageUrl,
+        pdfUrl: null,
+        pdfFileName: null,
+        pdfData: null,
+        error: message,
+      };
+    }
+  }
+  /**
+   * Fetch the Schedule B file for a CSG system from the portal.
+   * Similar to fetchRecContractPdf but anchors on the "Schedule B"
+   * label instead of "REC Contract (PDF)". Returns error for
+   * non-PDF files (images) since only PDFs can be parsed.
+   */
+  async fetchScheduleBFile(csgId: string): Promise<CsgPortalFetchResult> {
+    const systemPageUrl = resolveUrl(
+      this.baseUrl,
+      `/admin/solar_panel_system/${encodeURIComponent(csgId)}/edit?step=2.4`
+    );
+
+    try {
+      let page = await this.request(systemPageUrl, {
+        headers: { Referer: `${this.baseUrl}/admin` },
+      });
+
+      if (looksLikeLoginPage(page.url, page.text)) {
+        await this.login();
+        page = await this.request(systemPageUrl, {
+          headers: { Referer: `${this.baseUrl}/admin` },
+        });
+        if (looksLikeLoginPage(page.url, page.text)) {
+          return {
+            csgId,
+            systemPageUrl,
+            pdfUrl: null,
+            pdfFileName: null,
+            pdfData: null,
+            error: "Session is not authenticated while fetching system page.",
+          };
+        }
+      }
+
+      if (page.status >= 400) {
+        return {
+          csgId,
+          systemPageUrl,
+          pdfUrl: null,
+          pdfFileName: null,
+          pdfData: null,
+          error: `System page request failed (${page.status}).`,
+        };
+      }
+
+      const fileUrl = extractScheduleBFileUrl(this.baseUrl, page.text);
+      if (!fileUrl) {
+        return {
+          csgId,
+          systemPageUrl,
+          pdfUrl: null,
+          pdfFileName: null,
+          pdfData: null,
+          error: "No Schedule B file link found on the system page.",
+        };
+      }
+
+      const download = await this.requestBinary(fileUrl, {
+        headers: { Referer: systemPageUrl },
+      });
+
+      if (download.status >= 400) {
+        return {
+          csgId,
+          systemPageUrl,
+          pdfUrl: fileUrl,
+          pdfFileName: null,
+          pdfData: null,
+          error: `Schedule B file download failed (${download.status}).`,
+        };
+      }
+
+      const contentType = clean(download.headers.get("content-type")).toLowerCase();
+      const contentDisposition = download.headers.get("content-disposition");
+      const fileName = derivePdfFileName({
+        responseUrl: download.url,
+        contentDisposition,
+        fallbackBaseName: `csg-portal/schedule-b-${csgId}.pdf`,
+      });
+
+      // Check if it's a PDF
+      if (
+        contentType.includes("pdf") ||
+        fileName.toLowerCase().endsWith(".pdf") ||
+        looksLikePdfBinary(download.data)
+      ) {
+        return {
+          csgId,
+          systemPageUrl,
+          pdfUrl: fileUrl,
+          pdfFileName: fileName,
+          pdfData: download.data,
+          error: null,
+        };
+      }
+
+      // If it's an image, we can't parse it
+      if (/image\/(jpeg|jpg|png|heic|tiff|bmp|webp)/i.test(contentType)) {
+        return {
+          csgId,
+          systemPageUrl,
+          pdfUrl: fileUrl,
+          pdfFileName: fileName,
+          pdfData: null,
+          error: `Schedule B file is an image (${contentType}), not a PDF. Only PDF files can be parsed.`,
+        };
+      }
+
+      // If it's HTML (login redirect), retry after re-auth
+      const asText = decodeBinaryAsText(download.data);
+      if (asText && looksLikeLoginPage(download.url, asText)) {
+        await this.login();
+        const retry = await this.requestBinary(fileUrl, {
+          headers: { Referer: systemPageUrl },
+        });
+        const retryContentType = clean(retry.headers.get("content-type")).toLowerCase();
+        if (retry.status < 400 && (retryContentType.includes("pdf") || looksLikePdfBinary(retry.data))) {
+          const retryFileName = derivePdfFileName({
+            responseUrl: retry.url,
+            contentDisposition: retry.headers.get("content-disposition"),
+            fallbackBaseName: `csg-portal/schedule-b-${csgId}.pdf`,
+          });
+          return {
+            csgId,
+            systemPageUrl,
+            pdfUrl: fileUrl,
+            pdfFileName: retryFileName,
+            pdfData: retry.data,
+            error: null,
+          };
+        }
+      }
+
+      return {
+        csgId,
+        systemPageUrl,
+        pdfUrl: fileUrl,
+        pdfFileName: null,
+        pdfData: null,
+        error: `Downloaded file is not a PDF (content-type: ${contentType || "unknown"}).`,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown portal error.";

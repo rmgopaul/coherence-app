@@ -65,6 +65,7 @@ import {
   InsertScheduleBImportFile,
   scheduleBImportResults,
   InsertScheduleBImportResult,
+  scheduleBImportCsgIds,
 } from "../drizzle/schema";
 import { ENV } from './_core/env';
 import { nanoid } from 'nanoid';
@@ -4011,4 +4012,89 @@ export async function deleteScheduleBImportJobData(jobId: string) {
       .delete(scheduleBImportJobs)
       .where(eq(scheduleBImportJobs.id, jobId));
   });
+}
+
+// ── Schedule B CSG Portal Import ──────────────────────────────────
+
+let _scheduleBCsgIdsTableEnsured = false;
+
+async function ensureScheduleBImportCsgIdsTable() {
+  const db = await getDb();
+  if (!db) return false;
+  if (_scheduleBCsgIdsTableEnsured) return true;
+
+  await withDbRetry("ensure schedule b csg ids table", async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS scheduleBImportCsgIds (
+        id varchar(64) NOT NULL,
+        jobId varchar(64) NOT NULL,
+        csgId varchar(64) NOT NULL,
+        nonId varchar(64) DEFAULT NULL,
+        abpId varchar(64) DEFAULT NULL,
+        createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY schedule_b_csg_ids_job_csg_idx (jobId, csgId),
+        KEY schedule_b_csg_ids_job_idx (jobId)
+      )
+    `);
+  });
+
+  _scheduleBCsgIdsTableEnsured = true;
+  return true;
+}
+
+export async function bulkInsertScheduleBImportCsgIds(
+  jobId: string,
+  items: Array<{ csgId: string; nonId?: string; abpId?: string }>
+): Promise<{ inserted: number; skipped: number }> {
+  const db = await getDb();
+  if (!db) return { inserted: 0, skipped: items.length };
+  const ensured = await ensureScheduleBImportCsgIdsTable();
+  if (!ensured) return { inserted: 0, skipped: items.length };
+
+  let inserted = 0;
+  let skipped = 0;
+
+  for (const item of items) {
+    try {
+      await db.insert(scheduleBImportCsgIds).values({
+        id: nanoid(),
+        jobId,
+        csgId: item.csgId,
+        nonId: item.nonId ?? null,
+        abpId: item.abpId ?? null,
+      });
+      inserted += 1;
+    } catch (err) {
+      // Duplicate key → skip
+      const message = err instanceof Error ? err.message : "";
+      if (message.includes("Duplicate") || message.includes("duplicate")) {
+        skipped += 1;
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  return { inserted, skipped };
+}
+
+export async function getScheduleBImportCsgIdsForJob(
+  jobId: string
+): Promise<Array<{ csgId: string; nonId: string | null; abpId: string | null }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const ensured = await ensureScheduleBImportCsgIdsTable();
+  if (!ensured) return [];
+
+  return withDbRetry("get schedule b csg ids for job", async () =>
+    db
+      .select({
+        csgId: scheduleBImportCsgIds.csgId,
+        nonId: scheduleBImportCsgIds.nonId,
+        abpId: scheduleBImportCsgIds.abpId,
+      })
+      .from(scheduleBImportCsgIds)
+      .where(eq(scheduleBImportCsgIds.jobId, jobId))
+  );
 }

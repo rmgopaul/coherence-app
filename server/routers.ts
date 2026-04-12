@@ -3990,6 +3990,73 @@ export const appRouter = router({
           skippedExisting: skipped,
         };
       }),
+    importScheduleBFromCsgPortal: protectedProcedure
+      .input(
+        z.object({
+          csgIds: z.array(z.string().min(1).max(64)).min(1).max(1000),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        // 1. Validate CSG portal credentials
+        const { getIntegrationByProvider, getOrCreateLatestScheduleBImportJob, bulkInsertScheduleBImportCsgIds, updateScheduleBImportJob } =
+          await import("./db");
+        const integration = await getIntegrationByProvider(ctx.user.id, "csg-portal");
+        if (!integration?.accessToken) {
+          throw new Error("CSG portal credentials not configured. Go to Settings to add your portal email and password.");
+        }
+
+        // 2. Deduplicate
+        const uniqueIds = Array.from(new Set(input.csgIds.map((v) => v.trim()).filter(Boolean)));
+        if (uniqueIds.length === 0) throw new Error("No valid CSG IDs provided.");
+
+        // 3. Get/create job
+        const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);
+
+        // 4. Insert CSG IDs
+        const { inserted, skipped } = await bulkInsertScheduleBImportCsgIds(
+          job.id,
+          uniqueIds.map((csgId) => ({ csgId }))
+        );
+
+        // 5. Update totalFiles (additive)
+        if (inserted > 0) {
+          const { sql } = await import("drizzle-orm");
+          const { getDb } = await import("./db");
+          const { scheduleBImportJobs } = await import("../drizzle/schema");
+          const { eq } = await import("drizzle-orm");
+          const db = await getDb();
+          if (db) {
+            await db
+              .update(scheduleBImportJobs)
+              .set({
+                status: "queued",
+                error: null,
+                completedAt: null,
+                stoppedAt: null,
+              })
+              .where(eq(scheduleBImportJobs.id, job.id));
+            // Increment totalFiles by the number of new CSG IDs
+            await db.execute(
+              sql`UPDATE scheduleBImportJobs SET totalFiles = COALESCE(totalFiles, 0) + ${inserted} WHERE id = ${job.id}`
+            );
+          }
+        }
+
+        // 6. Start the CSG-specific runner
+        const { runCsgScheduleBImportJob, isCsgScheduleBImportRunnerActive } =
+          await import("./services/core/csgScheduleBImportJobRunner");
+        if (!isCsgScheduleBImportRunnerActive(job.id)) {
+          void runCsgScheduleBImportJob(job.id);
+        }
+
+        return {
+          _checkpoint: "csg-schedule-b-v1" as const,
+          jobId: job.id,
+          total: uniqueIds.length,
+          newCsgIds: inserted,
+          skippedExisting: skipped,
+        };
+      }),
     getScheduleBImportStatus: protectedProcedure
       .query(async ({ ctx }) => {
         const { getLatestScheduleBImportJob, getPendingScheduleBImportApplyCount } =

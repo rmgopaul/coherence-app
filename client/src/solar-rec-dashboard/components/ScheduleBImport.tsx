@@ -50,6 +50,46 @@ import { buildCsv, timestampForCsvFileName, triggerCsvDownload } from "../lib/cs
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 const formatNumber = (value: number): string => NUMBER_FORMATTER.format(value);
 
+/**
+ * Parse CSG IDs from freeform user input. Handles:
+ * - One ID per line
+ * - Comma-separated IDs
+ * - CSV rows with a "CSG ID" column
+ * - Portal URLs (extracts numeric ID from path)
+ * Returns deduplicated, non-empty numeric strings.
+ */
+function parseCsgIdsFromInput(input: string): string[] {
+  const ids = new Set<string>();
+  const lines = input.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
+
+  for (const line of lines) {
+    // Skip header-like lines
+    if (/^(csg|non|abp|portal)/i.test(line) && /id|link/i.test(line)) continue;
+
+    // Try extracting from portal URL
+    const urlMatch = line.match(/solar_panel_system\/(\d+)/);
+    if (urlMatch) {
+      ids.add(urlMatch[1]);
+      continue;
+    }
+
+    // CSV row: try to find a column that looks like a CSG ID (short numeric)
+    const cells = line.split(",").map((s) => s.trim().replace(/^["']|["']$/g, ""));
+    for (const cell of cells) {
+      if (/^\d{1,6}$/.test(cell)) {
+        ids.add(cell);
+      }
+    }
+
+    // Bare numeric ID
+    if (/^\d{1,6}$/.test(line)) {
+      ids.add(line);
+    }
+  }
+
+  return Array.from(ids);
+}
+
 // ── Constants (private to this component) ──────────────────────────
 const SCHEDULE_B_UPLOAD_CHUNK_BYTES = 190_000;
 const SCHEDULE_B_MAX_SERVER_ROWS = 50_000;
@@ -178,6 +218,7 @@ export function ScheduleBImport({
   // component state so the user can edit/paste before clicking the
   // button; cleared on successful link.
   const [driveFolderUrl, setDriveFolderUrl] = useState("");
+  const [csgIdsInput, setCsgIdsInput] = useState("");
 
   // Persistent diagnostic when Apply produces zero usable rows. A toast
   // alone is too easy to miss — users were clicking Apply and seeing
@@ -203,6 +244,8 @@ export function ScheduleBImport({
     trpc.solarRecDashboard.clearScheduleBImportStuckUploads.useMutation();
   const linkScheduleBDriveFolder =
     trpc.solarRecDashboard.linkScheduleBDriveFolder.useMutation();
+  const importFromCsgPortal =
+    trpc.solarRecDashboard.importScheduleBFromCsgPortal.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
   // contract-id-mapping-v1: server-persisted GATS ID → Contract ID
@@ -1297,6 +1340,57 @@ export function ScheduleBImport({
               </>
             ) : (
               "Link Drive folder"
+            )}
+          </Button>
+        </div>
+        {/* CSG Portal Schedule B import */}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={csgIdsInput}
+            onChange={(e) => setCsgIdsInput(e.target.value)}
+            placeholder="Or paste CSG IDs (comma-separated, one per line, or CSV rows with CSG ID column)…"
+            className="flex-1 rounded-sm border bg-background px-2 py-1.5 text-xs font-mono placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+            disabled={importFromCsgPortal.isPending}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={
+              importFromCsgPortal.isPending ||
+              csgIdsInput.trim().length === 0
+            }
+            onClick={async () => {
+              const csgIds = parseCsgIdsFromInput(csgIdsInput);
+              if (csgIds.length === 0) {
+                toast.error("No CSG IDs found in the input.");
+                return;
+              }
+              try {
+                const result = await importFromCsgPortal.mutateAsync({ csgIds });
+                toast.success(
+                  `Queued ${formatNumber(result.newCsgIds)} CSG system${
+                    result.newCsgIds === 1 ? "" : "s"
+                  } for Schedule B import from portal (${formatNumber(result.skippedExisting)} already queued).`
+                );
+                setCsgIdsInput("");
+                await scheduleBStatusQuery.refetch();
+              } catch (err) {
+                toast.error(
+                  err instanceof Error
+                    ? err.message
+                    : "Failed to start CSG portal import"
+                );
+              }
+            }}
+          >
+            {importFromCsgPortal.isPending ? (
+              <>
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                Importing…
+              </>
+            ) : (
+              "Import from CSG Portal"
             )}
           </Button>
         </div>
