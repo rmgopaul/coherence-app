@@ -3997,6 +3997,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+        console.log(`[importScheduleBFromCsgPortal] called with ${input.csgIds.length} CSG IDs for user ${ctx.user.id}`);
         // 1. Validate CSG portal credentials
         const { getIntegrationByProvider, getOrCreateLatestScheduleBImportJob, bulkInsertScheduleBImportCsgIds, updateScheduleBImportJob } =
           await import("./db");
@@ -4018,28 +4019,15 @@ export const appRouter = router({
           uniqueIds.map((csgId) => ({ csgId }))
         );
 
-        // 5. Update totalFiles (additive)
+        // 5. Update job status and totalFiles (additive)
         if (inserted > 0) {
-          const { sql } = await import("drizzle-orm");
-          const { getDb } = await import("./db");
-          const { scheduleBImportJobs } = await import("../drizzle/schema");
-          const { eq } = await import("drizzle-orm");
-          const db = await getDb();
-          if (db) {
-            await db
-              .update(scheduleBImportJobs)
-              .set({
-                status: "queued",
-                error: null,
-                completedAt: null,
-                stoppedAt: null,
-              })
-              .where(eq(scheduleBImportJobs.id, job.id));
-            // Increment totalFiles by the number of new CSG IDs
-            await db.execute(
-              sql`UPDATE scheduleBImportJobs SET totalFiles = COALESCE(totalFiles, 0) + ${inserted} WHERE id = ${job.id}`
-            );
-          }
+          await updateScheduleBImportJob(job.id, {
+            status: "queued",
+            error: null,
+            completedAt: null,
+            stoppedAt: null,
+            totalFiles: (job.totalFiles ?? 0) + inserted,
+          });
         }
 
         // 6. Start the CSG-specific runner
