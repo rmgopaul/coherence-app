@@ -6237,20 +6237,34 @@ export default function SolarRecDashboard() {
     });
   }, [effectivePerformanceContractId, isPerformanceEvalTabActive, performanceSourceRows]);
 
-  // Default to the current energy year instead of the last year in the schedule.
-  // Current EY: if month >= June (5), use this year's June 1; otherwise last year's June 1.
-  const currentEyStartKey = (() => {
+  const defaultPerformanceDeliveryYearKey = useMemo(() => {
+    if (performanceDeliveryYearOptions.length === 0) return "";
     const now = new Date();
-    const eyStartYear = now.getMonth() >= 5 ? now.getFullYear() : now.getFullYear() - 1;
-    return `${eyStartYear}-06-01`;
-  })();
+    const nowMs = now.getTime();
+
+    // Prefer the currently-active schedule year window for this contract.
+    const activeOption = performanceDeliveryYearOptions.find((option) => {
+      if (!option.startDate || !option.endDate) return false;
+      return nowMs >= option.startDate.getTime() && nowMs <= option.endDate.getTime();
+    });
+    if (activeOption) return activeOption.key;
+
+    // Fallback to the most recent year that has already started.
+    const startedOptions = performanceDeliveryYearOptions.filter(
+      (option) => option.startDate && option.startDate.getTime() <= nowMs
+    );
+    if (startedOptions.length > 0) {
+      return startedOptions[startedOptions.length - 1]!.key;
+    }
+
+    // Final fallback: earliest available year.
+    return performanceDeliveryYearOptions[0]!.key;
+  }, [performanceDeliveryYearOptions]);
 
   const effectivePerformanceDeliveryYearKey =
     performanceDeliveryYearOptions.some((option) => option.key === performanceDeliveryYearKey)
       ? performanceDeliveryYearKey
-      : (performanceDeliveryYearOptions.find((option) => option.key === currentEyStartKey)?.key
-        ?? performanceDeliveryYearOptions[performanceDeliveryYearOptions.length - 1]?.key
-        ?? "");
+      : defaultPerformanceDeliveryYearKey;
 
   const performanceSelectedDeliveryYearLabel =
     performanceDeliveryYearOptions.find((option) => option.key === effectivePerformanceDeliveryYearKey)?.label ??
