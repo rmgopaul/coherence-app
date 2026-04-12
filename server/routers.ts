@@ -307,6 +307,31 @@ function cleanScheduleBCell(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+/** Parse a NON-ID → Contract-ID mapping text (one pair per line, comma/tab separated). */
+function parseContractIdMappingText(text: string): Map<string, string> {
+  const mapping = new Map<string, string>();
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const parts = line.split(/[,\t]+/).map((s) => s.trim());
+    if (parts.length < 2) continue;
+    let gatsId = "";
+    let contractId = "";
+    for (const part of parts) {
+      const cleaned = part.replace(/^["']|["']$/g, "");
+      if (!cleaned) continue;
+      if (/^[A-Z]{2,5}\d{4,10}$/i.test(cleaned) && !gatsId) {
+        gatsId = cleaned.toUpperCase();
+      } else if (/^\d{1,5}$/.test(cleaned) && !contractId) {
+        contractId = cleaned;
+      }
+    }
+    if (gatsId && contractId) {
+      mapping.set(gatsId, contractId);
+    }
+  }
+  return mapping;
+}
+
 const SCHEDULE_B_TRANSFER_UTILITY_TOKENS = ["comed", "ameren", "midamerican"];
 
 function parseScheduleBNumber(value: unknown): number | null {
@@ -4258,6 +4283,26 @@ export const appRouter = router({
           }
         }
 
+        // Augment with saved NON-ID → Contract-ID mapping so new rows
+        // get their contract ID even when the delivery tracker was cleared.
+        // Existing row assignments take priority (already in the map).
+        try {
+          const savedMappingText = await getSolarRecDashboardPayload(
+            ctx.user.id,
+            "dashboard:schedule_b_contract_id_mapping"
+          );
+          if (savedMappingText) {
+            const savedMapping = parseContractIdMappingText(savedMappingText);
+            for (const [gatsId, cId] of Array.from(savedMapping.entries())) {
+              if (!contractIdByTrackingId.has(gatsId)) {
+                contractIdByTrackingId.set(gatsId, cId);
+              }
+            }
+          }
+        } catch {
+          // Mapping unavailable — proceed without it.
+        }
+
         let transferHistoryRows: Array<Record<string, string>> = [];
         const transferHistoryPayload = await loadDatasetPayloadByKey("transferHistory");
         if (transferHistoryPayload) {
@@ -4536,35 +4581,10 @@ export const appRouter = router({
           input.mappingText
         );
 
-        // ── Step 2: Parse (duplicates parseContractIdMapping from
-        //    client/src/lib/scheduleBScanner.ts verbatim — kept
-        //    separate to avoid introducing a shared module just for
-        //    this and to keep the server independent of the client's
-        //    bundle structure).
-        const parseMapping = (text: string): Map<string, string> => {
-          const mapping = new Map<string, string>();
-          const lines = text.split(/\r?\n/);
-          for (const line of lines) {
-            const parts = line.split(/[,\t]+/).map((s) => s.trim());
-            if (parts.length < 2) continue;
-            let gatsId = "";
-            let contractId = "";
-            for (const part of parts) {
-              const cleaned = part.replace(/^["']|["']$/g, "");
-              if (!cleaned) continue;
-              if (/^[A-Z]{2,5}\d{4,10}$/i.test(cleaned) && !gatsId) {
-                gatsId = cleaned.toUpperCase();
-              } else if (/^\d{1,5}$/.test(cleaned) && !contractId) {
-                contractId = cleaned;
-              }
-            }
-            if (gatsId && contractId) {
-              mapping.set(gatsId, contractId);
-            }
-          }
-          return mapping;
-        };
-        const mapping = parseMapping(input.mappingText);
+        // ── Step 2: Parse using shared helper (same logic used by
+        //    applyScheduleBToDeliveryObligations when loading the
+        //    saved mapping during merge).
+        const mapping = parseContractIdMappingText(input.mappingText);
 
         if (mapping.size === 0) {
           return {
