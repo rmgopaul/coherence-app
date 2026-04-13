@@ -2518,6 +2518,10 @@ export default function SolarRecDashboard() {
   const [financialSortDir, setFinancialSortDir] = useState<"asc" | "desc">("desc");
   const [financialSearch, setFinancialSearch] = useState("");
   const [financialFilter, setFinancialFilter] = useState<"all" | "needs-review" | "ok">("all");
+  type RescanStatus = { status: "queued" | "active" | "completed" | "error"; changes?: string; error?: string };
+  const [rescanStatuses, setRescanStatuses] = useState<Map<string, RescanStatus>>(new Map());
+  const [batchRescanRunning, setBatchRescanRunning] = useState(false);
+  const batchRescanCancelledRef = useRef(false);
   const [uploadsExpanded, setUploadsExpanded] = useState(false);
   const [compliantSourceEntries, setCompliantSourceEntries] = useState<CompliantSourceEntry[]>(
     () => loadPersistedCompliantSources()
@@ -9960,6 +9964,63 @@ const handleFinancialSort = (col: FinancialSortKey) => {
   }
 };
 
+const handleBatchRescan = async () => {
+  const rowsToScan = filteredFinancialRows;
+  if (rowsToScan.length === 0) return;
+
+  batchRescanCancelledRef.current = false;
+  setBatchRescanRunning(true);
+
+  const initial = new Map<string, RescanStatus>();
+  for (const row of rowsToScan) {
+    initial.set(row.csgId, { status: "queued" });
+  }
+  setRescanStatuses(initial);
+
+  for (const row of rowsToScan) {
+    if (batchRescanCancelledRef.current) break;
+
+    setRescanStatuses((prev) => {
+      const next = new Map(prev);
+      next.set(row.csgId, { status: "active" });
+      return next;
+    });
+
+    try {
+      const result = await rescanSingleContract.mutateAsync({ csgId: row.csgId });
+
+      const changes: string[] = [];
+      if (result.vendorFeePercent != null && result.vendorFeePercent !== row.vendorFeePercent) {
+        changes.push(`Vendor Fee: ${row.vendorFeePercent}% \u2192 ${result.vendorFeePercent}%`);
+      }
+      if (result.additionalCollateralPercent != null && result.additionalCollateralPercent !== row.additionalCollateralPercent) {
+        changes.push(`Collateral: ${row.additionalCollateralPercent}% \u2192 ${result.additionalCollateralPercent}%`);
+      }
+
+      setRescanStatuses((prev) => {
+        const next = new Map(prev);
+        next.set(row.csgId, {
+          status: "completed",
+          changes: changes.length > 0 ? changes.join("; ") : "No changes",
+        });
+        return next;
+      });
+    } catch (err) {
+      setRescanStatuses((prev) => {
+        const next = new Map(prev);
+        next.set(row.csgId, {
+          status: "error",
+          error: err instanceof Error ? err.message : "Failed",
+        });
+        return next;
+      });
+    }
+  }
+
+  await contractScanResultsQuery.refetch();
+  setBatchRescanRunning(false);
+};
+
 // ── Data Quality: Freshness ─────────────────────────────────────
 const dataQualityFreshness = useMemo(() => {
   if (!isDataQualityTabActive) return [];
@@ -14599,7 +14660,70 @@ const aiDataContext = useMemo(() => {
                       )}{" "}
                       of {formatNumber(filteredFinancialRows.length)}
                     </span>
+                    {!batchRescanRunning ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs"
+                        disabled={filteredFinancialRows.length === 0}
+                        onClick={handleBatchRescan}
+                      >
+                        Re-scan All Filtered ({formatNumber(filteredFinancialRows.length)})
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-xs border-red-300 text-red-700"
+                        onClick={() => {
+                          batchRescanCancelledRef.current = true;
+                        }}
+                      >
+                        Stop Batch
+                      </Button>
+                    )}
                   </div>
+                  {/* ── Batch rescan progress ───────────────────────── */}
+                  {rescanStatuses.size > 0 && (
+                    <div className="flex items-center gap-3 text-xs">
+                      <Progress
+                        value={
+                          rescanStatuses.size > 0
+                            ? (Array.from(rescanStatuses.values()).filter(
+                                (s) => s.status === "completed" || s.status === "error"
+                              ).length /
+                              rescanStatuses.size) *
+                              100
+                            : 0
+                        }
+                        className="h-2 flex-1"
+                      />
+                      <span className="text-muted-foreground whitespace-nowrap">
+                        {formatNumber(
+                          Array.from(rescanStatuses.values()).filter(
+                            (s) => s.status === "completed" || s.status === "error"
+                          ).length
+                        )}
+                        {" / "}
+                        {formatNumber(rescanStatuses.size)} scanned
+                        {Array.from(rescanStatuses.values()).filter((s) => s.status === "error").length > 0 && (
+                          <span className="text-red-600 ml-1">
+                            ({Array.from(rescanStatuses.values()).filter((s) => s.status === "error").length} errors)
+                          </span>
+                        )}
+                      </span>
+                      {!batchRescanRunning && rescanStatuses.size > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-5 px-2 text-[10px] text-muted-foreground"
+                          onClick={() => setRescanStatuses(new Map())}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                  )}
                   {/* ── Table ────────────────────────────────────────── */}
                   <div className="overflow-x-auto">
                     <Table>
@@ -14620,6 +14744,12 @@ const aiDataContext = useMemo(() => {
                           <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("totalCollateralization")}>Total Coll.{financialSortIndicator("totalCollateralization")}</TableHead>
                           <TableHead>Status</TableHead>
                           <TableHead>Actions</TableHead>
+                          {rescanStatuses.size > 0 && (
+                            <>
+                              <TableHead>Scan Status</TableHead>
+                              <TableHead>Changes</TableHead>
+                            </>
+                          )}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -14703,6 +14833,36 @@ const aiDataContext = useMemo(() => {
                                 </Button>
                               </div>
                             </TableCell>
+                            {rescanStatuses.size > 0 && (() => {
+                              const entry = rescanStatuses.get(r.csgId);
+                              return (
+                                <>
+                                  <TableCell>
+                                    {!entry && <span className="text-xs text-muted-foreground">—</span>}
+                                    {entry?.status === "queued" && (
+                                      <Badge variant="secondary" className="bg-gray-100 text-gray-700 text-[10px]">Queued</Badge>
+                                    )}
+                                    {entry?.status === "active" && (
+                                      <Badge variant="secondary" className="bg-blue-100 text-blue-700 text-[10px]">
+                                        <Loader2 className="h-3 w-3 animate-spin mr-1 inline" />Scanning
+                                      </Badge>
+                                    )}
+                                    {entry?.status === "completed" && (
+                                      <Badge variant="secondary" className="bg-green-100 text-green-700 text-[10px]">Done</Badge>
+                                    )}
+                                    {entry?.status === "error" && (
+                                      <Badge variant="secondary" className="bg-red-100 text-red-700 text-[10px]" title={entry.error}>Error</Badge>
+                                    )}
+                                  </TableCell>
+                                  <TableCell className="text-xs max-w-[200px] truncate" title={entry?.changes || entry?.error || ""}>
+                                    {entry?.status === "completed" && (entry.changes || "No changes")}
+                                    {entry?.status === "error" && (
+                                      <span className="text-red-600">{entry.error}</span>
+                                    )}
+                                  </TableCell>
+                                </>
+                              );
+                            })()}
                           </TableRow>
                         ))}
                       </TableBody>
