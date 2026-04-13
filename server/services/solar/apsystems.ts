@@ -368,6 +368,9 @@ async function fetchSystemsFromEndpoint(
     const data = asRecord(root.data);
     const total = toNullableNumber(data.total) ?? 0;
     totalCount = total;
+    // Use the API's actual page size, not our requested size —
+    // some endpoints cap lower than 50 (e.g. partnerSystems may use 10)
+    const actualSize = toNullableNumber(data.size) ?? size;
     const systemsList = asRecordArray(data.systems);
 
     for (const row of systemsList) {
@@ -390,7 +393,7 @@ async function fetchSystemsFromEndpoint(
       });
     }
 
-    totalPages = Math.ceil(total / size);
+    totalPages = Math.ceil(total / actualSize);
     page++;
 
     // Safety cap to avoid runaway pagination
