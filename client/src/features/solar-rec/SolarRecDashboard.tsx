@@ -255,6 +255,11 @@ type PerformanceSourceRow = {
   batchId: string | null;
   recPrice: number | null;
   years: ScheduleYearEntry[];
+  // The energy year of the system's first positive REC transfer to a
+  // utility, derived from transferDeliveryLookup. null = no transfers found.
+  // Used to determine which delivery year the system is actually in
+  // (independent of the Schedule B's yearIndex, which may not be adjusted).
+  firstTransferEnergyYear: number | null;
 };
 
 type RecPerformanceResultRow = {
@@ -1297,7 +1302,7 @@ function deriveRecPerformanceThreeYearValues(
   sourceRow: PerformanceSourceRow,
   targetYearIndex: number
 ): RecPerformanceThreeYearValues | null {
-  // REC Performance Eval rule: only include systems in their 3rd schedule year or later.
+  // Array bounds: need at least 2 prior years for the rolling average.
   if (targetYearIndex < 2) return null;
 
   const dyOneYear = sourceRow.years[targetYearIndex - 2];
@@ -1305,10 +1310,31 @@ function deriveRecPerformanceThreeYearValues(
   const dyThreeYear = sourceRow.years[targetYearIndex];
   if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
 
-  // Use the actual schedule year number (1-15), not the array index,
-  // because empty years can be filtered out by buildScheduleYearEntries,
-  // shifting array indices. yearIndex 3 = third delivery year.
-  const isThirdDeliveryYear = dyThreeYear.yearIndex === 3;
+  // Eligibility check: only include systems in their 3rd+ ACTUAL delivery
+  // year, determined by the first REC transfer to a utility. The schedule's
+  // yearIndex can be wrong if the Schedule B wasn't adjusted by the first
+  // transfer date (e.g., transfer history wasn't uploaded at apply time).
+  //
+  // Rule: first transfer EY + 1 = first delivery year. The target schedule
+  // year's EY must be >= firstDeliveryYear + 2 (i.e., 3rd year or later).
+  if (sourceRow.firstTransferEnergyYear !== null && dyThreeYear.startDate) {
+    const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
+    const targetEnergyYear = dyThreeYear.startDate.getFullYear();
+    const actualDeliveryYearNumber = targetEnergyYear - firstDeliveryYear + 1;
+    if (actualDeliveryYearNumber < 3) return null;
+  }
+
+  // Determine if this is the system's 3rd actual delivery year (use
+  // transfer-based calculation, not schedule yearIndex).
+  let isThirdDeliveryYear = false;
+  if (sourceRow.firstTransferEnergyYear !== null && dyThreeYear.startDate) {
+    const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
+    const targetEnergyYear = dyThreeYear.startDate.getFullYear();
+    isThirdDeliveryYear = (targetEnergyYear - firstDeliveryYear + 1) === 3;
+  } else {
+    // Fallback to schedule yearIndex if no transfer data
+    isThirdDeliveryYear = dyThreeYear.yearIndex === 3;
+  }
   const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
     ? [
         { value: dyOneYear.delivered, source: "Actual" },
@@ -6222,6 +6248,17 @@ export default function SolarRecDashboard() {
         // The delivery year label matches the schedule start year's energy
         // year directly (2023-06-01 → "2023-2024" → EY 2023 transfers).
         const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
+
+        // Find the earliest energy year with a positive transfer (delivery to utility).
+        let firstTransferEnergyYear: number | null = null;
+        if (systemTransfers) {
+          systemTransfers.forEach((qty, ey) => {
+            if (qty > 0 && (firstTransferEnergyYear === null || ey < firstTransferEnergyYear)) {
+              firstTransferEnergyYear = ey;
+            }
+          });
+        }
+
         for (const year of years) {
           if (!year.startDate) {
             year.delivered = 0;
@@ -6240,6 +6277,7 @@ export default function SolarRecDashboard() {
           batchId: clean(row.batch_id) || clean(row.state_certification_number) || null,
           recPrice: system?.recPrice ?? null,
           years,
+          firstTransferEnergyYear,
         } satisfies PerformanceSourceRow;
       })
       .filter((row): row is PerformanceSourceRow => row !== null);
