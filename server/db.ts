@@ -2789,6 +2789,9 @@ export async function getLatestScanResultsByCsgIds(
   if (!db) return [];
   if (csgIds.length === 0) return [];
 
+  // Ensure override columns exist before querying them
+  await ensureContractScanOverrideColumns();
+
   // Query in batches to avoid oversized IN clauses
   const batchSize = 500;
   const allResults: (typeof contractScanResults.$inferSelect)[] = [];
