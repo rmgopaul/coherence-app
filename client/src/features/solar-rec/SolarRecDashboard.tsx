@@ -2597,6 +2597,7 @@ export default function SolarRecDashboard() {
   const isForecastTabActive = activeTab === "forecast";
   const isAlertsTabActive = activeTab === "alerts";
   const isComparisonsTabActive = activeTab === "comparisons";
+  const isOverviewTabActive = activeTab === "overview";
   const isPipelineTabActive = activeTab === "app-pipeline";
   const isFinancialsTabActive = activeTab === "financials";
   const isDataQualityTabActive = activeTab === "data-quality";
@@ -9601,7 +9602,7 @@ const financialRevenueAtRisk = useMemo(() => {
 
 // ── Financials: Profit & Collateralization ──────────────────────
 const financialCsgIds = useMemo(() => {
-  if (!isFinancialsTabActive && !isPipelineTabActive) return [];
+  if (!isFinancialsTabActive && !isPipelineTabActive && !isOverviewTabActive) return [];
   const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
   const ids = new Set<string>();
   for (const row of mappingRows) {
@@ -9609,11 +9610,11 @@ const financialCsgIds = useMemo(() => {
     if (csgId) ids.add(csgId);
   }
   return Array.from(ids);
-}, [isFinancialsTabActive, isPipelineTabActive, datasets.abpCsgSystemMapping]);
+}, [isFinancialsTabActive, isPipelineTabActive, isOverviewTabActive, datasets.abpCsgSystemMapping]);
 
 const contractScanResultsQuery = trpc.abpSettlement.getContractScanResultsByCsgIds.useQuery(
   { csgIds: financialCsgIds },
-  { enabled: (isFinancialsTabActive || isPipelineTabActive) && financialCsgIds.length > 0 }
+  { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
 );
 const updateContractOverride = trpc.abpSettlement.updateContractOverride.useMutation();
 const rescanSingleContract = trpc.abpSettlement.rescanSingleContract.useMutation();
@@ -9651,10 +9652,13 @@ const financialProfitData = useMemo<{
   totalProfit: number;
   avgProfit: number;
   totalCollateralization: number;
+  totalUtilityCollateral: number;
+  totalAdditionalCollateral: number;
+  totalCcAuth: number;
   systemsWithData: number;
 }>(() => {
-  const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, systemsWithData: 0 };
-  if (!isFinancialsTabActive) return empty;
+  const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, totalUtilityCollateral: 0, totalAdditionalCollateral: 0, totalCcAuth: 0, systemsWithData: 0 };
+  if (!isFinancialsTabActive && !isOverviewTabActive) return empty;
 
   const scanResults = contractScanResultsQuery.data ?? [];
   if (scanResults.length === 0) return empty;
@@ -9800,16 +9804,23 @@ const financialProfitData = useMemo<{
 
   const totalProfit = profitRows.reduce((a, r) => a + r.profit, 0);
   const totalColl = profitRows.reduce((a, r) => a + r.totalCollateralization, 0);
+  const totalUtilColl = profitRows.reduce((a, r) => a + r.utilityCollateral, 0);
+  const totalAddlColl = profitRows.reduce((a, r) => a + r.additionalCollateralAmount, 0);
+  const totalCcAuthColl = profitRows.reduce((a, r) => a + r.ccAuth5Percent, 0);
 
   return {
     rows: profitRows.sort((a, b) => b.profit - a.profit),
     totalProfit: roundMoney(totalProfit),
     avgProfit: profitRows.length > 0 ? roundMoney(totalProfit / profitRows.length) : 0,
     totalCollateralization: roundMoney(totalColl),
+    totalUtilityCollateral: roundMoney(totalUtilColl),
+    totalAdditionalCollateral: roundMoney(totalAddlColl),
+    totalCcAuth: roundMoney(totalCcAuthColl),
     systemsWithData: profitRows.length,
   };
 }, [
   isFinancialsTabActive,
+  isOverviewTabActive,
   part2VerifiedAbpRows,
   contractScanResultsQuery.data,
   datasets.abpCsgSystemMapping,
@@ -10598,6 +10609,33 @@ const aiDataContext = useMemo(() => {
                 <CardHeader>
                   <CardDescription>Cumulative kW DC (Part II Verified)</CardDescription>
                   <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+            {/* Row 3: Financial totals from Profit & Collateralization */}
+            <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
+              <Card>
+                <CardHeader>
+                  <CardDescription>Total Vendor Fee</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalProfit)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Total Utility Collateral</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalUtilityCollateral)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Total Additional Collateral</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalAdditionalCollateral)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardDescription>Total CC Auth Collateral</CardDescription>
+                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalCcAuth)}</CardTitle>
                 </CardHeader>
               </Card>
             </div>
