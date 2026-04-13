@@ -4061,8 +4061,9 @@ export async function bulkInsertScheduleBImportCsgIds(
         id: nanoid(),
         jobId,
         csgId: item.csgId,
-        nonId: item.nonId ?? null,
-        abpId: item.abpId ?? null,
+        nonId: item.nonId || null,
+        abpId: item.abpId || null,
+        createdAt: new Date(),
       });
       inserted += 1;
     } catch (err) {
