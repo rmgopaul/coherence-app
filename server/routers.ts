@@ -9143,12 +9143,27 @@ export const appRouter = router({
                 ambiguousRows
               );
 
-              // Merge LLM results into deterministic results
+              // Merge LLM results into deterministic results,
+              // re-sanitizing to catch LLM output errors (e.g. "IL 62814" in city)
               for (const llmRow of llmCleaned) {
                 if (ambiguousKeys.has(llmRow.key)) {
+                  const sanitized = sanitizeMailingFields({
+                    payeeName: llmRow.payeeName,
+                    mailingAddress1: llmRow.mailingAddress1,
+                    mailingAddress2: llmRow.mailingAddress2,
+                    city: llmRow.city,
+                    state: llmRow.state,
+                    zip: llmRow.zip,
+                  });
                   resultByKey.set(llmRow.key, {
-                    ...llmRow,
+                    key: llmRow.key,
+                    payeeName: sanitized.payeeName,
+                    mailingAddress1: sanitized.mailingAddress1,
+                    mailingAddress2: sanitized.mailingAddress2,
                     cityStateZip: resultByKey.get(llmRow.key)?.cityStateZip ?? null,
+                    city: sanitized.city,
+                    state: sanitized.state,
+                    zip: sanitized.zip,
                     ambiguous: false,
                     ambiguousReason: "",
                   });

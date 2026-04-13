@@ -8,7 +8,7 @@ const ADDRESS_CLEANING_SYSTEM_PROMPT = [
   "2. payeeName: Title-case. Preserve LLC/Inc/Corp.",
   "3. mailingAddress1: street address ONLY. Never a name, phone, city, or state.",
   "4. mailingAddress2: ONLY secondary unit (Apt/Ste/Unit/PO Box). Empty string if none.",
-  "5. city: city name ONLY. Never zip, phone, state, 'IL', 'USA'.",
+  "5. city: city name ONLY. Never zip, phone, state abbreviation, 'IL', or 'USA'. If city is 'IL 62814' or similar (state+zip), set city to empty string.",
   "6. state: 2-letter uppercase. Do NOT default to 'IL' — mailing may be any US state.",
   "7. zip: 5-digit or ZIP+4 ONLY.",
   "8. Standardize: Street→St, Avenue→Ave, Road→Rd, Drive→Dr, Lane→Ln, Court→Ct.",
@@ -16,6 +16,16 @@ const ADDRESS_CLEANING_SYSTEM_PROMPT = [
   "10. Remove phone numbers, placeholders (N/A, TBD), duplicate fields.",
   "11. Use cityStateZip as fallback when city/state/zip are empty.",
   "12. Do NOT invent data. Empty string if uncertain.",
+  "",
+  "COMMON ERROR PATTERNS — you MUST fix these:",
+  "13. SPLIT ORDINALS: Source data often splits ordinal suffixes. '55 Th'→'55th', '145 Th'→'145th', '92 Nd'→'92nd', '3 Rd'→'3rd', '1 St'→'1st' (when ordinal, not Street/Road). '16 Th St'→'16th St', '120 Th Av'→'120th Av'.",
+  "14. NUMBER-ONLY ADDRESS + STREET-IN-CITY: When mailingAddress1 is ONLY a number (e.g. '4009') and city contains a street name fused with the city (e.g. 'Navaho Circle Pinckneyville'), split them: addr1='4009 Navaho Cir', city='Pinckneyville'. Examples: '301'+'N Grant St Oblong'→addr1='301 N Grant St', city='Oblong'. '337'+'Slingerland Drive Schaumburg'→addr1='337 Slingerland Dr', city='Schaumburg'. '1638'+'G Road Prairie Du Rocher'→addr1='1638 G Rd', city='Prairie Du Rocher'.",
+  "15. STATE+ZIP IN CITY: When city is 'IL 62814', 'IL. 60502', 'IL 62549', etc. (a state abbreviation + zip), extract state and zip, set city to EMPTY STRING. The real city name is unknown — do not guess.",
+  "16. CRAMMED ADDRESS: When mailingAddress1 contains the full address including city/state (e.g. '1034 145th Ave Joy IL' or '1805 N Main Georgetown Il'), split: addr1='1034 145th Ave', city='Joy', state='IL'.",
+  "17. GARBAGE IN CITY: Values like 'Payee Contact Email Address:', email addresses, column headers, or phone numbers in city are data errors. Set city to empty string.",
+  "18. ZIP-STATE VALIDATION: Illinois zips are 60000–62999. If zip is in that range but state is wrong (e.g. state='LA' with zip='60012'), correct state to 'IL'. Apply similar logic for other states.",
+  "19. CITY CONTAINS CITY+STATE+ZIP: Parse 'Jacksonville Il, 62650'→city='Jacksonville', state='IL', zip='62650'. Also: 'Hillsboro, Il. 62049'→city='Hillsboro', state='IL', zip='62049'. 'Marion Il, 62959'→city='Marion', state='IL', zip='62959'.",
+  "20. CITY MISSPELLINGS: Fix obvious misspellings — 'Hillsde'→'Hillside', 'Ofallon'→\"O'Fallon\", 'Milledgville'→'Milledgeville', 'Lagrange Park'→'La Grange Park'. Preserve proper capitalization: 'Dekalb'→'DeKalb', 'Mchenry'→'McHenry'.",
 ].join("\n");
 
 export async function callLlmForAddressCleaning(

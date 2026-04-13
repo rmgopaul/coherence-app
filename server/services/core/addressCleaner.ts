@@ -144,6 +144,19 @@ function fixSpacing(value: string): string {
   return result;
 }
 
+/**
+ * Rejoin split ordinal suffixes: "55 Th" → "55th", "92 Nd" → "92nd".
+ * fixSpacing() can create these from "55TH" → "55 TH", so this must run after.
+ * Only handles unambiguous suffixes (Th, Nd). Rd/St are ambiguous with Road/Street.
+ */
+function normalizeOrdinals(value: string): string {
+  // "55 Th" → "55th", "145 Th" → "145th" — Th is always ordinal after a number
+  let result = value.replace(/(\d+)\s+[Tt][Hh]\b/g, "$1th");
+  // "92 Nd" → "92nd", "2 Nd" → "2nd" — Nd is always ordinal after a number
+  result = result.replace(/(\d+)\s+[Nn][Dd]\b/g, "$1nd");
+  return result;
+}
+
 function looksLikeStreetAddress(value: string): boolean {
   // Has digits + text = probably a street address
   return /\d/.test(value) && /[a-zA-Z]/.test(value) && !isZip(value) && !isPhone(value);
@@ -315,6 +328,11 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
   if (addr2) addr2 = fixSpacing(addr2);
   if (city) city = fixSpacing(city);
 
+  // ── Rejoin split ordinals: "55 Th" → "55th" ────────────────
+  if (addr1) addr1 = normalizeOrdinals(addr1);
+  if (addr2) addr2 = normalizeOrdinals(addr2);
+  if (city) city = normalizeOrdinals(city);
+
   // ── Remove backticks, stray punctuation ──────────────────────
   addr1 = addr1.replace(/[`]/g, "").trim();
   addr2 = addr2.replace(/[`]/g, "").trim();
@@ -329,6 +347,12 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
       ambiguousReasons.push(`Invalid state '${state}'`);
       state = "";
     }
+  }
+
+  // ── Garbage in city field ─────────────────────────────────────
+  // Column headers, email labels, or other non-city text
+  if (city && /\b(payee|contact|email|address|phone|fax|account|invoice)\b/i.test(city)) {
+    city = "";
   }
 
   // ── Zip in city field ────────────────────────────────────────
@@ -395,6 +419,30 @@ export function cleanAddressRow(row: AddressRow): CleanedAddressRow {
       if (!city) city = extracted.city;
       if (!state) state = extracted.state;
       if (!zip) zip = extracted.zip;
+    }
+  }
+
+  // ── addr1 is bare number, city has street suffix + city fused ─
+  // e.g. addr1="4009", city="Navaho Circle Pinckneyville"
+  //   → addr1="4009 Navaho Circle", city="Pinckneyville"
+  if (addr1 && city) {
+    const noStreetSuffix = !/\b(St|Ave|Rd|Dr|Ln|Ct|Cir|Pl|Ter|Trl|Blvd|Hwy|Way|Pkwy)\b/i.test(addr1);
+    if (/^\d/.test(addr1) && noStreetSuffix) {
+      const sfx = "(?:St|Ave|Rd|Dr|Ln|Ct|Cir|Pl|Ter|Trl|Blvd|Hwy|Way|Pkwy|Street|Avenue|Road|Drive|Lane|Court|Circle|Place|Terrace|Trail|Boulevard|Highway|Parkway)";
+      // "Navaho Circle Pinckneyville" → streetPart + cityName
+      const splitRe = new RegExp(`^(.+?\\b${sfx})\\.?\\s+([A-Z][A-Za-z\\s'-]+)$`, "i");
+      const splitMatch = city.match(splitRe);
+      if (splitMatch) {
+        addr1 = `${addr1} ${splitMatch[1].replace(/\.$/, "")}`;
+        city = splitMatch[2].trim();
+      } else {
+        // City is ONLY a street name with no city after: "Shellbark Ct"
+        const justStreetRe = new RegExp(`^[A-Za-z0-9\\s.'-]+\\b${sfx}\\.?$`, "i");
+        if (justStreetRe.test(city)) {
+          addr1 = `${addr1} ${city.replace(/\.$/, "")}`;
+          city = "";
+        }
+      }
     }
   }
 
