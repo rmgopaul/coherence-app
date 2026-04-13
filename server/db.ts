@@ -2662,6 +2662,8 @@ export async function insertContractScanResult(
 ) {
   const db = await getDb();
   if (!db) return;
+  // Ensure override columns exist before inserting (they're part of the Drizzle schema now)
+  await ensureContractScanOverrideColumns();
   // Truncate milliseconds from scannedAt for TiDB timestamp compatibility
   const scannedAt = data.scannedAt ? new Date(Math.floor(data.scannedAt.getTime() / 1000) * 1000) : new Date();
   try {
