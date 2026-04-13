@@ -64,7 +64,6 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
 
   const job = await getScheduleBImportJob(id);
   if (!job) return;
-  if (job.status === "completed" || job.status === "failed") return;
 
   activeRunners.add(id);
 

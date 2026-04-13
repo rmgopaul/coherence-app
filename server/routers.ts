@@ -4035,16 +4035,15 @@ export const appRouter = router({
           uniqueIds.map((csgId) => ({ csgId }))
         );
 
-        // 5. Update job status and totalFiles (additive)
-        if (inserted > 0) {
-          await updateScheduleBImportJob(job.id, {
-            status: "queued",
-            error: null,
-            completedAt: null,
-            stoppedAt: null,
-            totalFiles: (job.totalFiles ?? 0) + inserted,
-          });
-        }
+        // 5. Ensure the job can run even when all IDs already existed in the table
+        // (for example, retrying previously failed CSG IDs in a completed job).
+        await updateScheduleBImportJob(job.id, {
+          status: "queued",
+          error: null,
+          completedAt: null,
+          stoppedAt: null,
+          ...(inserted > 0 ? { totalFiles: (job.totalFiles ?? 0) + inserted } : {}),
+        });
 
         // 6. Start the CSG-specific runner
         const { runCsgScheduleBImportJob, isCsgScheduleBImportRunnerActive } =
