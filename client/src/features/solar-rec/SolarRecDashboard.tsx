@@ -6250,7 +6250,7 @@ export default function SolarRecDashboard() {
         const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
 
         // Find the earliest energy year with a positive transfer (delivery to utility).
-        let firstTransferEnergyYear: number | null = null;
+        let firstTransferEnergyYear = null as number | null;
         if (systemTransfers) {
           systemTransfers.forEach((qty, ey) => {
             if (qty > 0 && (firstTransferEnergyYear === null || ey < firstTransferEnergyYear)) {
