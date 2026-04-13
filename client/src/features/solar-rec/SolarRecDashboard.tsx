@@ -1312,7 +1312,10 @@ function deriveRecPerformanceThreeYearValues(
   const dyThreeYear = sourceRow.years[targetYearIndex];
   if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
 
-  const isThirdDeliveryYear = targetYearIndex === 2;
+  // Use the actual schedule year number (1-15), not the array index,
+  // because empty years can be filtered out by buildScheduleYearEntries,
+  // shifting array indices. yearIndex 3 = third delivery year.
+  const isThirdDeliveryYear = dyThreeYear.yearIndex === 3;
   const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
     ? [
         { value: dyOneYear.delivered, source: "Actual" },
@@ -6215,13 +6218,17 @@ export default function SolarRecDashboard() {
         if (years.length === 0) return null;
 
         // transferHistory is always the source of truth for delivered values.
+        // The delivery year convention adds +1 to the schedule start year
+        // (e.g. schedule start 2024-06-01 = delivery year 2025-2026), so
+        // transfers must be looked up in EY start+1 to match. Without the
+        // +1, delivered values are one year behind the label.
         const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
         for (const year of years) {
           if (!year.startDate) {
             year.delivered = 0;
             continue;
           }
-          const eyStartYear = year.startDate.getFullYear();
+          const eyStartYear = year.startDate.getFullYear() + 1;
           year.delivered = systemTransfers?.get(eyStartYear) ?? 0;
         }
 
@@ -6621,7 +6628,7 @@ export default function SolarRecDashboard() {
       const deliveryStartDate = parseDate(deliveryStartRaw);
       const required = parseNumber(row.year1_quantity_required) ?? 0;
       const delivered = deliveryStartDate
-        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear())
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear() + 1)
         : 0;
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
@@ -6901,7 +6908,7 @@ export default function SolarRecDashboard() {
       const deliveryStartDate = parseDate(deliveryStartRaw);
       const required = parseNumber(row.year1_quantity_required) ?? 0;
       const delivered = deliveryStartDate
-        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear())
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear() + 1)
         : 0;
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
@@ -9146,8 +9153,9 @@ const trendDeliveryPace = useMemo(() => {
       if (now < start || now > end) continue; // Not active
 
       // Delivered for this (system, year) comes from the transfer lookup.
+      // +1 aligns with delivery year convention (schedule start 2024-06-01 = DY 2025-2026).
       const delivered = trackingId
-        ? getDeliveredForYear(transferDeliveryLookup, trackingId, start.getFullYear())
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, start.getFullYear() + 1)
         : 0;
 
       const totalMs = end.getTime() - start.getTime();
