@@ -2527,6 +2527,31 @@ export default function SolarRecDashboard() {
   const [annualContractVintagePage, setAnnualContractVintagePage] = useState(1);
   const [annualContractSummaryPage, setAnnualContractSummaryPage] = useState(1);
   const [recPerformanceResultsPage, setRecPerformanceResultsPage] = useState(1);
+  type RecPerfSortKey =
+    | "applicationId"
+    | "unitId"
+    | "systemName"
+    | "scheduleYearNumber"
+    | "rollingAverage"
+    | "contractPrice"
+    | "expectedRecs"
+    | "surplusShortfall"
+    | "allocatedRecs"
+    | "drawdownPayment";
+  const [recPerfSortBy, setRecPerfSortBy] = useState<RecPerfSortKey>("applicationId");
+  const [recPerfSortDir, setRecPerfSortDir] = useState<"asc" | "desc">("asc");
+  const [recPerfSearch, setRecPerfSearch] = useState("");
+  const [recPerfStatusFilter, setRecPerfStatusFilter] = useState<"all" | "surplus" | "shortfall">("all");
+  const handleRecPerfSort = (col: RecPerfSortKey) => {
+    if (recPerfSortBy === col) {
+      setRecPerfSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setRecPerfSortBy(col);
+      setRecPerfSortDir("desc");
+    }
+  };
+  const recPerfSortIndicator = (col: RecPerfSortKey) =>
+    recPerfSortBy === col ? (recPerfSortDir === "asc" ? " ▲" : " ▼") : "";
   const [offlineDetailPage, setOfflineDetailPage] = useState(1);
   const [compliantSourcePage, setCompliantSourcePage] = useState(1);
   const [compliantReportPage, setCompliantReportPage] = useState(1);
@@ -7116,9 +7141,35 @@ export default function SolarRecDashboard() {
     [annualContractSummaryPageEndIndex, annualContractSummaryPageStartIndex, annualContractSummaryRows]
   );
 
+  const filteredRecPerformanceRows = useMemo(() => {
+    let rows = recPerformanceEvaluation.rows;
+    if (recPerfSearch) {
+      const q = recPerfSearch.toLowerCase();
+      rows = rows.filter(
+        (r) =>
+          r.applicationId.toLowerCase().includes(q) ||
+          r.unitId.toLowerCase().includes(q) ||
+          r.systemName.toLowerCase().includes(q)
+      );
+    }
+    if (recPerfStatusFilter === "surplus") rows = rows.filter((r) => r.surplusShortfall > 0);
+    else if (recPerfStatusFilter === "shortfall") rows = rows.filter((r) => r.surplusShortfall < 0);
+    const dir = recPerfSortDir === "asc" ? 1 : -1;
+    rows = [...rows].sort((a, b) => {
+      const key = recPerfSortBy;
+      if (key === "applicationId" || key === "unitId" || key === "systemName") {
+        return a[key].localeCompare(b[key], undefined, { numeric: true, sensitivity: "base" }) * dir;
+      }
+      const aVal = key === "contractPrice" ? (a[key] ?? Infinity) : a[key];
+      const bVal = key === "contractPrice" ? (b[key] ?? Infinity) : b[key];
+      return ((aVal as number) - (bVal as number)) * dir;
+    });
+    return rows;
+  }, [recPerformanceEvaluation.rows, recPerfSearch, recPerfStatusFilter, recPerfSortBy, recPerfSortDir]);
+
   const recPerformanceResultsTotalPages = Math.max(
     1,
-    Math.ceil(recPerformanceEvaluation.rows.length / REC_PERFORMANCE_RESULTS_PAGE_SIZE)
+    Math.ceil(filteredRecPerformanceRows.length / REC_PERFORMANCE_RESULTS_PAGE_SIZE)
   );
   const recPerformanceResultsCurrentPage = Math.min(recPerformanceResultsPage, recPerformanceResultsTotalPages);
   const recPerformanceResultsPageStartIndex =
@@ -7126,8 +7177,8 @@ export default function SolarRecDashboard() {
   const recPerformanceResultsPageEndIndex =
     recPerformanceResultsPageStartIndex + REC_PERFORMANCE_RESULTS_PAGE_SIZE;
   const visibleRecPerformanceRows = useMemo(
-    () => recPerformanceEvaluation.rows.slice(recPerformanceResultsPageStartIndex, recPerformanceResultsPageEndIndex),
-    [recPerformanceEvaluation.rows, recPerformanceResultsPageEndIndex, recPerformanceResultsPageStartIndex]
+    () => filteredRecPerformanceRows.slice(recPerformanceResultsPageStartIndex, recPerformanceResultsPageEndIndex),
+    [filteredRecPerformanceRows, recPerformanceResultsPageEndIndex, recPerformanceResultsPageStartIndex]
   );
 
   const offlineDetailTotalPages = Math.max(1, Math.ceil(filteredOfflineSystems.length / OFFLINE_DETAIL_PAGE_SIZE));
@@ -7171,7 +7222,7 @@ export default function SolarRecDashboard() {
 
   useEffect(() => {
     setRecPerformanceResultsPage(1);
-  }, [effectivePerformanceContractId, effectivePerformanceDeliveryYearKey]);
+  }, [effectivePerformanceContractId, effectivePerformanceDeliveryYearKey, recPerfSearch, recPerfStatusFilter, recPerfSortBy, recPerfSortDir]);
 
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
@@ -11963,7 +12014,7 @@ const aiDataContext = useMemo(() => {
                         Columns follow the REC Performance Evaluation workbook structure.
                       </CardDescription>
                     </div>
-                    {recPerformanceEvaluation.rows.length > 0 && (
+                    {filteredRecPerformanceRows.length > 0 && (
                       <Button
                         variant="outline"
                         size="sm"
@@ -11977,7 +12028,7 @@ const aiDataContext = useMemo(() => {
                               "expected_recs", "surplus_shortfall",
                               "recs_allocated", "drawdown_payment",
                             ],
-                            recPerformanceEvaluation.rows.map((r) => ({
+                            filteredRecPerformanceRows.map((r) => ({
                               application_id: r.applicationId,
                               unit_id: r.unitId,
                               system_name: r.systemName,
@@ -12006,10 +12057,32 @@ const aiDataContext = useMemo(() => {
                     )}
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        className="h-8 rounded-md border border-slate-300 bg-white px-2.5 text-sm placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        style={{ width: 280 }}
+                        placeholder="Search system, application ID, unit ID…"
+                        value={recPerfSearch}
+                        onChange={(e) => setRecPerfSearch(e.target.value)}
+                      />
+                      <select
+                        className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        value={recPerfStatusFilter}
+                        onChange={(e) => setRecPerfStatusFilter(e.target.value as "all" | "surplus" | "shortfall")}
+                      >
+                        <option value="all">All statuses</option>
+                        <option value="surplus">Surplus only</option>
+                        <option value="shortfall">Shortfall only</option>
+                      </select>
+                    </div>
                     <div className="flex items-center justify-between text-xs text-slate-600">
                       <span>
                         Showing {formatNumber(visibleRecPerformanceRows.length)} of{" "}
-                        {formatNumber(recPerformanceEvaluation.rows.length)} rows
+                        {formatNumber(filteredRecPerformanceRows.length)} rows
+                        {filteredRecPerformanceRows.length !== recPerformanceEvaluation.rows.length && (
+                          <> ({formatNumber(recPerformanceEvaluation.rows.length)} total)</>
+                        )}
                       </span>
                       <span>
                         Page {formatNumber(recPerformanceResultsCurrentPage)} of{" "}
@@ -12019,19 +12092,19 @@ const aiDataContext = useMemo(() => {
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Application ID</TableHead>
-                          <TableHead>Unit ID</TableHead>
-                          <TableHead>System</TableHead>
-                          <TableHead>Yr</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("applicationId")}>Application ID{recPerfSortIndicator("applicationId")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("unitId")}>Unit ID{recPerfSortIndicator("unitId")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("systemName")}>System{recPerfSortIndicator("systemName")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("scheduleYearNumber")}>Yr{recPerfSortIndicator("scheduleYearNumber")}</TableHead>
                           <TableHead>DY 1 (RECs)</TableHead>
                           <TableHead>DY 2 (RECs)</TableHead>
                           <TableHead>DY 3 (RECs)</TableHead>
-                          <TableHead>3-Year Avg (Floor)</TableHead>
-                          <TableHead>Contract Price ($/REC)</TableHead>
-                          <TableHead>Expected RECs</TableHead>
-                          <TableHead>Surplus / (Shortfall)</TableHead>
-                          <TableHead>RECs Allocated</TableHead>
-                          <TableHead>Drawdown Payment</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("rollingAverage")}>3-Year Avg (Floor){recPerfSortIndicator("rollingAverage")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("contractPrice")}>Contract Price ($/REC){recPerfSortIndicator("contractPrice")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("expectedRecs")}>Expected RECs{recPerfSortIndicator("expectedRecs")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("surplusShortfall")}>Surplus / (Shortfall){recPerfSortIndicator("surplusShortfall")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("allocatedRecs")}>RECs Allocated{recPerfSortIndicator("allocatedRecs")}</TableHead>
+                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleRecPerfSort("drawdownPayment")}>Drawdown Payment{recPerfSortIndicator("drawdownPayment")}</TableHead>
                           <TableHead>DY 1 Source</TableHead>
                           <TableHead>DY 2 Source</TableHead>
                           <TableHead>DY 3 Source</TableHead>
