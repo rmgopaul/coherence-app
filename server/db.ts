@@ -4178,6 +4178,47 @@ export async function bulkInsertScheduleBImportCsgIds(
   let inserted = 0;
   let skipped = 0;
 
+  const isDuplicateEntryError = (error: unknown): boolean => {
+    const seen = new Set<unknown>();
+    const stack: unknown[] = [error];
+
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current || seen.has(current)) continue;
+      seen.add(current);
+
+      if (typeof current === "string") {
+        if (/duplicate/i.test(current) || current.includes("ER_DUP_ENTRY")) return true;
+        continue;
+      }
+
+      if (typeof current !== "object") continue;
+
+      const maybeError = current as {
+        code?: unknown;
+        message?: unknown;
+        cause?: unknown;
+        sqlMessage?: unknown;
+      };
+
+      if (maybeError.code === "ER_DUP_ENTRY") return true;
+      if (typeof maybeError.message === "string") {
+        if (/duplicate/i.test(maybeError.message) || maybeError.message.includes("ER_DUP_ENTRY")) {
+          return true;
+        }
+      }
+      if (typeof maybeError.sqlMessage === "string") {
+        if (/duplicate/i.test(maybeError.sqlMessage) || maybeError.sqlMessage.includes("ER_DUP_ENTRY")) {
+          return true;
+        }
+      }
+
+      if (maybeError.cause) stack.push(maybeError.cause);
+    }
+
+    return false;
+  };
+
   for (const item of items) {
     try {
       await db.insert(scheduleBImportCsgIds).values({
@@ -4191,8 +4232,7 @@ export async function bulkInsertScheduleBImportCsgIds(
       inserted += 1;
     } catch (err) {
       // Duplicate key → skip
-      const message = err instanceof Error ? err.message : "";
-      if (message.includes("Duplicate") || message.includes("duplicate")) {
+      if (isDuplicateEntryError(err)) {
         skipped += 1;
       } else {
         throw err;
