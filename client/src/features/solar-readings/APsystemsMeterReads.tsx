@@ -463,7 +463,12 @@ export default function APsystemsMeterReads() {
         }
         ids = systems.map((s) => s.systemId);
         const profileSummary = result.perProfile
-          .map((p) => `${p.connectionName}: ${p.systemCount}${p.error ? ` (error: ${p.error})` : ""}`)
+          .map((p) => {
+            const parts = [`${p.connectionName}: ${p.systemCount}`];
+            if ("ownCount" in p) parts.push(`(${p.ownCount}/${p.ownTotal} own, ${p.partnerCount}/${p.partnerTotal} partner)`);
+            if (p.error) parts.push(`(${p.error})`);
+            return parts.join(" ");
+          })
           .join(", ");
         label = `All Profiles (${result.totalProfiles}) — ${ids.length} SIDs [${profileSummary}]`;
       } else {

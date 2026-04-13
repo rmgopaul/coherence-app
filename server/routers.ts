@@ -12301,11 +12301,20 @@ Generate the pipeline analysis report now.`,
             const context = { appId: conn.appId, appSecret: conn.appSecret, baseUrl: conn.baseUrl ?? metadata.baseUrl };
             const result = await listSystems(context);
             const systems: TaggedSystem[] = result.systems.map((s) => ({ ...s, connectionId: conn.id, connectionName: conn.name }));
-            const rawInfo = result.raw as Record<string, unknown>;
-            return { connectionId: conn.id, connectionName: conn.name, systemCount: result.systems.length, error: (rawInfo.ownError || rawInfo.partnerError) ? `own: ${rawInfo.ownError ?? "ok"}, partner: ${rawInfo.partnerError ?? "ok"}` : null, systems };
+            const raw = result.raw as Record<string, unknown>;
+            return {
+              connectionId: conn.id, connectionName: conn.name,
+              systemCount: result.systems.length,
+              ownCount: (raw.fetchedOwn as number) ?? 0,
+              ownTotal: (raw.ownSystems as number) ?? 0,
+              partnerCount: (raw.fetchedPartner as number) ?? 0,
+              partnerTotal: (raw.partnerSystems as number) ?? 0,
+              error: (raw.ownError || raw.partnerError) ? `own: ${raw.ownError ?? "ok"}, partner: ${raw.partnerError ?? "ok"}` : null,
+              systems,
+            };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            return { connectionId: conn.id, connectionName: conn.name, systemCount: 0, error: msg, systems: [] as TaggedSystem[] };
+            return { connectionId: conn.id, connectionName: conn.name, systemCount: 0, ownCount: 0, ownTotal: 0, partnerCount: 0, partnerTotal: 0, error: msg, systems: [] as TaggedSystem[] };
           }
         })
       );
