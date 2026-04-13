@@ -63,6 +63,28 @@ const parseNumber = (value: string | null): number | null => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+/**
+ * Parse a percentage value from text. Prefers a number followed by %, but
+ * falls back to any number in the 0-100 range. This prevents dollar amounts
+ * like "$108,999.43" from being misread as a percentage.
+ */
+const parsePercentage = (value: string | null): number | null => {
+  if (!value) return null;
+  const stripped = value.replace(/,/g, "");
+  // Prefer explicit percentage sign
+  const pctMatch = stripped.match(/(-?\d+(?:\.\d+)?)\s*%/);
+  if (pctMatch) {
+    const parsed = Number(pctMatch[1]);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  // Fallback: extract number but validate it's a plausible percentage (0-100)
+  const numMatch = stripped.match(/-?\d+(?:\.\d+)?/);
+  if (!numMatch) return null;
+  const parsed = Number(numMatch[0]);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) return null;
+  return parsed;
+};
+
 const parseCurrency = (value: string | null): number | null => {
   if (!value) return null;
   const match = value.replace(/,/g, "").match(/\$?\s*(-?\d+(?:\.\d+)?)/);
@@ -111,6 +133,15 @@ const findNumberToRight = (
     yTolerance?: number;
   }
 ): number | null => parseNumber(findTextToRight(page, labelMatcher, options));
+
+const findPercentageToRight = (
+  page: PdfPageData | null,
+  labelMatcher: RegExp,
+  options?: {
+    minXOffset?: number;
+    yTolerance?: number;
+  }
+): number | null => parsePercentage(findTextToRight(page, labelMatcher, options));
 
 const findCurrencyToRight = (
   page: PdfPageData | null,
@@ -395,7 +426,7 @@ export async function extractContractDataFromPdfBuffer(data: Uint8Array, fileNam
   const additionalFivePercentSelected = detectAdditionalFivePercentSelected(creditCardPage);
 
   const systemName = findTextToRight(coverSheetA, /System Name/i, { minXOffset: 80, yTolerance: 10 });
-  const vendorFeePercent = findNumberToRight(coverSheetA, /Buyer Approved Vendor Fee %/i, {
+  const vendorFeePercent = findPercentageToRight(coverSheetA, /Buyer Approved Vendor Fee %/i, {
     minXOffset: 80,
     yTolerance: 12,
   });
@@ -407,7 +438,7 @@ export async function extractContractDataFromPdfBuffer(data: Uint8Array, fileNam
   const acSizeKw = findNumberToLeft(coverSheetA, /kW \(AC\)/i, { maxXDistance: 80, yTolerance: 12 });
   const dcSizeKw = findNumberToLeft(coverSheetA, /kW \(DC\)/i, { maxXDistance: 80, yTolerance: 12 });
 
-  const additionalCollateralPercent = findNumberToRight(coverSheetB, /Total Contract Value \* _____% Additional/i, {
+  const additionalCollateralPercent = findPercentageToRight(coverSheetB, /Total Contract Value \* _____% Additional/i, {
     minXOffset: 120,
     yTolerance: 14,
   });
