@@ -1310,31 +1310,21 @@ function deriveRecPerformanceThreeYearValues(
   const dyThreeYear = sourceRow.years[targetYearIndex];
   if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
 
-  // Eligibility check: only include systems in their 3rd+ ACTUAL delivery
-  // year, determined by the first REC transfer to a utility. The schedule's
-  // yearIndex can be wrong if the Schedule B wasn't adjusted by the first
-  // transfer date (e.g., transfer history wasn't uploaded at apply time).
-  //
-  // Rule: first transfer EY + 1 = first delivery year. The target schedule
-  // year's EY must be >= firstDeliveryYear + 2 (i.e., 3rd year or later).
-  if (sourceRow.firstTransferEnergyYear !== null && dyThreeYear.startDate) {
-    const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
-    const targetEnergyYear = dyThreeYear.startDate.getFullYear();
-    const actualDeliveryYearNumber = targetEnergyYear - firstDeliveryYear + 1;
-    if (actualDeliveryYearNumber < 3) return null;
+  // Every contract start date is determined by the first REC transfer in
+  // GATS. No fallback to PDF dates. If there's no transfer data, the
+  // system is not eligible for performance evaluation.
+  if (sourceRow.firstTransferEnergyYear === null || !dyThreeYear.startDate) {
+    return null;
   }
 
-  // Determine if this is the system's 3rd actual delivery year (use
-  // transfer-based calculation, not schedule yearIndex).
-  let isThirdDeliveryYear = false;
-  if (sourceRow.firstTransferEnergyYear !== null && dyThreeYear.startDate) {
-    const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
-    const targetEnergyYear = dyThreeYear.startDate.getFullYear();
-    isThirdDeliveryYear = (targetEnergyYear - firstDeliveryYear + 1) === 3;
-  } else {
-    // Fallback to schedule yearIndex if no transfer data
-    isThirdDeliveryYear = dyThreeYear.yearIndex === 3;
-  }
+  const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
+  const targetEnergyYear = dyThreeYear.startDate.getFullYear();
+  const actualDeliveryYearNumber = targetEnergyYear - firstDeliveryYear + 1;
+
+  // Only include systems in their 3rd+ actual delivery year.
+  if (actualDeliveryYearNumber < 3) return null;
+
+  const isThirdDeliveryYear = actualDeliveryYearNumber === 3;
   const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
     ? [
         { value: dyOneYear.delivered, source: "Actual" },
