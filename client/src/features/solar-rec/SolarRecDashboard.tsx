@@ -1274,17 +1274,10 @@ function buildDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: 
 }
 
 function buildRecReviewDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: string, endRaw: string): string {
-  // REC review rule: a schedule year that starts on June 1 is labeled as the
-  // following delivery-year pair (for example, 2024-06-01 => 2025-2026).
-  if (start) {
-    const deliveryYearStart = start.getFullYear() + 1;
-    return `${deliveryYearStart}-${deliveryYearStart + 1}`;
-  }
-  const isoStartMatch = startRaw.match(/^(\d{4})-\d{2}-\d{2}$/);
-  if (isoStartMatch) {
-    const deliveryYearStart = Number(isoStartMatch[1]) + 1;
-    return `${deliveryYearStart}-${deliveryYearStart + 1}`;
-  }
+  // Delivery year label matches the energy year of the schedule start
+  // date: schedule start 2023-06-01 → "2023-2024" (the June-to-May
+  // energy year). No +1 offset — the schedule start IS the delivery
+  // year start.
   return buildDeliveryYearLabel(start, end, startRaw, endRaw);
 }
 
@@ -6218,17 +6211,15 @@ export default function SolarRecDashboard() {
         if (years.length === 0) return null;
 
         // transferHistory is always the source of truth for delivered values.
-        // The delivery year convention adds +1 to the schedule start year
-        // (e.g. schedule start 2024-06-01 = delivery year 2025-2026), so
-        // transfers must be looked up in EY start+1 to match. Without the
-        // +1, delivered values are one year behind the label.
+        // The delivery year label matches the schedule start year's energy
+        // year directly (2023-06-01 → "2023-2024" → EY 2023 transfers).
         const systemTransfers = transferDeliveryLookup.get(trackingSystemRefId.toLowerCase());
         for (const year of years) {
           if (!year.startDate) {
             year.delivered = 0;
             continue;
           }
-          const eyStartYear = year.startDate.getFullYear() + 1;
+          const eyStartYear = year.startDate.getFullYear();
           year.delivered = systemTransfers?.get(eyStartYear) ?? 0;
         }
 
@@ -6628,7 +6619,7 @@ export default function SolarRecDashboard() {
       const deliveryStartDate = parseDate(deliveryStartRaw);
       const required = parseNumber(row.year1_quantity_required) ?? 0;
       const delivered = deliveryStartDate
-        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear() + 1)
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear())
         : 0;
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
@@ -6908,7 +6899,7 @@ export default function SolarRecDashboard() {
       const deliveryStartDate = parseDate(deliveryStartRaw);
       const required = parseNumber(row.year1_quantity_required) ?? 0;
       const delivered = deliveryStartDate
-        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear() + 1)
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, deliveryStartDate.getFullYear())
         : 0;
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
@@ -9153,9 +9144,8 @@ const trendDeliveryPace = useMemo(() => {
       if (now < start || now > end) continue; // Not active
 
       // Delivered for this (system, year) comes from the transfer lookup.
-      // +1 aligns with delivery year convention (schedule start 2024-06-01 = DY 2025-2026).
       const delivered = trackingId
-        ? getDeliveredForYear(transferDeliveryLookup, trackingId, start.getFullYear() + 1)
+        ? getDeliveredForYear(transferDeliveryLookup, trackingId, start.getFullYear())
         : 0;
 
       const totalMs = end.getTime() - start.getTime();
