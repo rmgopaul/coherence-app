@@ -12294,23 +12294,25 @@ Generate the pipeline analysis report now.`,
       const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER);
       const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
       if (metadata.connections.length === 0) throw new Error("No APsystems profiles saved.");
-      const allSystems: Array<{ systemId: string; name: string; capacity: number | null; address: string | null; status: string | null; connectionId: string; connectionName: string }> = [];
-      const perProfile: Array<{ connectionId: string; connectionName: string; systemCount: number; error: string | null }> = [];
-      for (const conn of metadata.connections) {
-        try {
-          const context = { appId: conn.appId, appSecret: conn.appSecret, baseUrl: conn.baseUrl ?? metadata.baseUrl };
-          const result = await listSystems(context);
-          for (const s of result.systems) {
-            allSystems.push({ ...s, connectionId: conn.id, connectionName: conn.name });
+      type TaggedSystem = { systemId: string; name: string; capacity: number | null; address: string | null; status: string | null; connectionId: string; connectionName: string };
+      const profileResults = await Promise.all(
+        metadata.connections.map(async (conn) => {
+          try {
+            const context = { appId: conn.appId, appSecret: conn.appSecret, baseUrl: conn.baseUrl ?? metadata.baseUrl };
+            const result = await listSystems(context);
+            const systems: TaggedSystem[] = result.systems.map((s) => ({ ...s, connectionId: conn.id, connectionName: conn.name }));
+            const rawInfo = result.raw as Record<string, unknown>;
+            return { connectionId: conn.id, connectionName: conn.name, systemCount: result.systems.length, error: (rawInfo.ownError || rawInfo.partnerError) ? `own: ${rawInfo.ownError ?? "ok"}, partner: ${rawInfo.partnerError ?? "ok"}` : null, systems };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            return { connectionId: conn.id, connectionName: conn.name, systemCount: 0, error: msg, systems: [] as TaggedSystem[] };
           }
-          perProfile.push({ connectionId: conn.id, connectionName: conn.name, systemCount: result.systems.length, error: null });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          perProfile.push({ connectionId: conn.id, connectionName: conn.name, systemCount: 0, error: msg });
-        }
-      }
+        })
+      );
+      const allSystems = profileResults.flatMap((r) => r.systems);
       const seen = new Set<string>();
       const deduped = allSystems.filter((s) => { if (seen.has(s.systemId)) return false; seen.add(s.systemId); return true; });
+      const perProfile = profileResults.map(({ systems: _s, ...rest }) => rest);
       return { systems: deduped, perProfile, totalProfiles: metadata.connections.length };
     }),
     getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/solar/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),

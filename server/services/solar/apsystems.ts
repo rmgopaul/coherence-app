@@ -158,6 +158,20 @@ function isNotFoundError(error: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Collection helpers
+// ---------------------------------------------------------------------------
+
+function deduplicateById<T>(items: T[], keyFn: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = keyFn(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Concurrency helper
 // ---------------------------------------------------------------------------
 
@@ -319,62 +333,67 @@ export function extractSystems(payload: unknown): APsystemsSystem[] {
 async function fetchSystemsFromEndpoint(
   context: APsystemsApiContext,
   endpointPath: string
-): Promise<{ systems: APsystemsSystem[]; total: number }> {
+): Promise<{ systems: APsystemsSystem[]; total: number; error: string | null }> {
   const allSystems: APsystemsSystem[] = [];
   let page = 1;
   const size = 50; // max page size per API docs
   let totalPages = 1;
   let totalCount = 0;
+  let lastError: string | null = null;
 
-  try {
-    while (page <= totalPages) {
-      const raw = await postAPsystemsJson(endpointPath, context, {
-        page,
-        size,
-      });
+  while (page <= totalPages) {
+    let raw: unknown;
+    try {
+      raw = await postAPsystemsJson(endpointPath, context, { page, size });
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      // First page failure → endpoint doesn't exist for this account type
+      if (page === 1) return { systems: [], total: 0, error: lastError };
+      // Later page failure → return what we have so far with the error
+      break;
+    }
 
-      const root = asRecord(raw);
-      const code = toNullableNumber(root.code);
-      if (code !== 0) break;
+    const root = asRecord(raw);
+    const code = toNullableNumber(root.code);
+    if (code !== 0) {
+      lastError = `API returned code ${code}`;
+      if (page === 1) return { systems: [], total: 0, error: lastError };
+      break;
+    }
 
-      const data = asRecord(root.data);
-      const total = toNullableNumber(data.total) ?? 0;
-      totalCount = total;
-      const systemsList = asRecordArray(data.systems);
+    const data = asRecord(root.data);
+    const total = toNullableNumber(data.total) ?? 0;
+    totalCount = total;
+    const systemsList = asRecordArray(data.systems);
 
-      for (const row of systemsList) {
-        const sid = toNullableString(row.sid);
-        if (!sid) continue;
+    for (const row of systemsList) {
+      const sid = toNullableString(row.sid);
+      if (!sid) continue;
 
-        const capacityKw = toNullableNumber(row.capacity);
-        const systemType = toNullableNumber(row.type);
-        const typeLabel =
+      const systemType = toNullableNumber(row.type);
+
+      allSystems.push({
+        systemId: sid,
+        name: sid,
+        capacity: toNullableNumber(row.capacity),
+        address: toNullableString(row.timezone),
+        status:
           systemType === 2
             ? "Storage"
             : systemType === 3
               ? "PV & Storage"
-              : "PV";
-
-        allSystems.push({
-          systemId: sid,
-          name: sid,
-          capacity: capacityKw,
-          address: toNullableString(row.timezone),
-          status: typeLabel,
-        });
-      }
-
-      totalPages = Math.ceil(total / size);
-      page++;
-
-      // Safety cap to avoid runaway pagination
-      if (page > 200) break;
+              : "PV",
+      });
     }
-  } catch {
-    // Endpoint may not exist for this account type
+
+    totalPages = Math.ceil(total / size);
+    page++;
+
+    // Safety cap to avoid runaway pagination
+    if (page > 200) break;
   }
 
-  return { systems: allSystems, total: totalCount };
+  return { systems: allSystems, total: totalCount, error: lastError };
 }
 
 // ---------------------------------------------------------------------------
@@ -392,26 +411,31 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
   ]);
 
   // Deduplicate by SID (own systems take priority)
-  const seen = new Set<string>();
-  const deduped: APsystemsSystem[] = [];
-  for (const s of [...own.systems, ...partner.systems]) {
-    if (seen.has(s.systemId)) continue;
-    seen.add(s.systemId);
-    deduped.push(s);
-  }
+  const deduped = deduplicateById(
+    [...own.systems, ...partner.systems],
+    (s) => s.systemId
+  );
+
+  const parts: string[] = [];
+  parts.push(`${own.systems.length} own`);
+  if (own.error) parts.push(`own error: ${own.error}`);
+  parts.push(`${partner.systems.length} partner`);
+  if (partner.error) parts.push(`partner error: ${partner.error}`);
 
   return {
     systems: deduped,
     raw: {
       ownSystems: own.total,
+      ownError: own.error,
       partnerSystems: partner.total,
+      partnerError: partner.error,
       fetchedOwn: own.systems.length,
       fetchedPartner: partner.systems.length,
       totalDeduped: deduped.length,
       message:
         deduped.length > 0
-          ? `Found ${deduped.length} SID(s) (${own.systems.length} own + ${partner.systems.length} partner, deduplicated).`
-          : "No systems found. Upload a CSV with System IDs instead.",
+          ? `Found ${deduped.length} SID(s) (${parts.join(", ")}).`
+          : `No systems found.${own.error || partner.error ? ` Errors: ${[own.error, partner.error].filter(Boolean).join("; ")}` : ""} Upload a CSV with System IDs instead.`,
     },
   };
 }
