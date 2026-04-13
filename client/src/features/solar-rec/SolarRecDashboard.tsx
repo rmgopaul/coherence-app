@@ -2520,6 +2520,10 @@ export default function SolarRecDashboard() {
   const [financialFilter, setFinancialFilter] = useState<"all" | "needs-review" | "ok">("all");
   type RescanStatus = { status: "queued" | "active" | "completed" | "error"; changes?: string; error?: string };
   const [rescanStatuses, setRescanStatuses] = useState<Map<string, RescanStatus>>(new Map());
+  // Optimistic override cache: applied immediately after saving so the table
+  // updates instantly without waiting for the 28K-CSG-ID refetch (~20s+).
+  // Cleared when the refetch completes (the DB data then includes the overrides).
+  const [localOverrides, setLocalOverrides] = useState<Map<string, { vfp: number; acp: number }>>(new Map());
   const [batchRescanRunning, setBatchRescanRunning] = useState(false);
   const batchRescanCancelledRef = useRef(false);
   const [uploadsExpanded, setUploadsExpanded] = useState(false);
@@ -9634,11 +9638,12 @@ const financialProfitData = useMemo<{
     if (!scan || !icc) continue;
 
     const gcv = icc.grossContractValue;
-    const hasOverride = scan.overriddenAt != null;
-    const vfp = scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
+    const localOv = localOverrides.get(csgId);
+    const hasOverride = localOv != null || scan.overriddenAt != null;
+    const vfp = localOv?.vfp ?? scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
     const vendorFeeAmount = roundMoney(gcv * (vfp / 100));
     const utilityCollateral = roundMoney(gcv * 0.05);
-    const acp = scan.overrideAdditionalCollateralPercent ?? scan.additionalCollateralPercent ?? 0;
+    const acp = localOv?.acp ?? scan.overrideAdditionalCollateralPercent ?? scan.additionalCollateralPercent ?? 0;
     const additionalCollateralAmount = roundMoney(gcv * (acp / 100));
 
     // CC auth 5%: if CC auth not completed AND not absent from contract, apply 5%
@@ -9711,6 +9716,7 @@ const financialProfitData = useMemo<{
   datasets.abpCsgSystemMapping,
   datasets.abpIccReport3Rows,
   datasets.abpReport,
+  localOverrides,
 ]);
 
 // ── Financials: debug panel data (drive the collapsible diagnostic
@@ -14951,8 +14957,30 @@ const aiDataContext = useMemo(() => {
                                   notes: editingFinancialRow.notes || null,
                                 });
                                 toast.success(`Override saved for CSG ${editingFinancialRow.csgId}`);
+                                // Optimistically update local state so the table updates
+                                // instantly (the full 28K-CSG-ID refetch takes 20s+).
+                                const savedCsgId = editingFinancialRow.csgId;
+                                const newVfp = editingFinancialRow.vendorFeePercent
+                                  ? parseFloat(editingFinancialRow.vendorFeePercent)
+                                  : 0;
+                                const newAcp = editingFinancialRow.additionalCollateralPercent
+                                  ? parseFloat(editingFinancialRow.additionalCollateralPercent)
+                                  : 0;
+                                setLocalOverrides((prev) => {
+                                  const next = new Map(prev);
+                                  next.set(savedCsgId, { vfp: newVfp, acp: newAcp });
+                                  return next;
+                                });
                                 setEditingFinancialRow(null);
-                                await contractScanResultsQuery.refetch();
+                                // Background refetch to sync authoritative DB data, then clear
+                                // local overrides (the DB data now includes them).
+                                contractScanResultsQuery.refetch().then(() => {
+                                  setLocalOverrides((prev) => {
+                                    const next = new Map(prev);
+                                    next.delete(savedCsgId);
+                                    return next;
+                                  });
+                                });
                               } catch (err) {
                                 toast.error(err instanceof Error ? err.message : "Failed to save override");
                               }
