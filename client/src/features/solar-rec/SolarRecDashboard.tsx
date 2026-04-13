@@ -9990,11 +9990,15 @@ const handleBatchRescan = async () => {
       const result = await rescanSingleContract.mutateAsync({ csgId: row.csgId });
 
       const changes: string[] = [];
-      if (result.vendorFeePercent != null && result.vendorFeePercent !== row.vendorFeePercent) {
-        changes.push(`Vendor Fee: ${row.vendorFeePercent}% \u2192 ${result.vendorFeePercent}%`);
+      const oldVfp = row.vendorFeePercent;
+      const newVfp = result.vendorFeePercent ?? 0;
+      if (newVfp !== oldVfp) {
+        changes.push(`Vendor Fee: ${oldVfp}% \u2192 ${newVfp}%`);
       }
-      if (result.additionalCollateralPercent != null && result.additionalCollateralPercent !== row.additionalCollateralPercent) {
-        changes.push(`Collateral: ${row.additionalCollateralPercent}% \u2192 ${result.additionalCollateralPercent}%`);
+      const oldAcp = row.additionalCollateralPercent;
+      const newAcp = result.additionalCollateralPercent ?? 0;
+      if (newAcp !== oldAcp) {
+        changes.push(`Collateral: ${oldAcp}% \u2192 ${newAcp}%`);
       }
 
       setRescanStatuses((prev) => {
