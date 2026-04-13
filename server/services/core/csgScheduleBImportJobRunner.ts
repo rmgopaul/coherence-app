@@ -58,7 +58,7 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
     incrementScheduleBImportJobCounter,
     upsertScheduleBImportResult,
     getScheduleBImportCsgIdsForJob,
-    getCompletedScheduleBImportFileNames,
+    getSuccessfulScheduleBImportFileNames,
     getIntegrationByProvider,
   } = await import("../../db");
 
@@ -100,12 +100,12 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
 
     // ── Determine pending CSG IDs ───────────────────────────────
     const allCsgIds = await getScheduleBImportCsgIdsForJob(id);
-    const completedNames = await getCompletedScheduleBImportFileNames(id);
+    const successfulNames = await getSuccessfulScheduleBImportFileNames(id);
 
     // CSG-sourced filenames use the pattern "csg-portal/schedule-b-{csgId}.pdf"
     const makeCsgFileName = (csgId: string) => `csg-portal/schedule-b-${csgId}.pdf`;
     const pendingCsgIds = allCsgIds.filter(
-      (row) => !completedNames.has(makeCsgFileName(row.csgId))
+      (row) => !successfulNames.has(makeCsgFileName(row.csgId))
     );
 
     if (pendingCsgIds.length === 0) {
@@ -119,7 +119,8 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
     }
 
     console.log(
-      `${LOG_PREFIX} job=${id.slice(0, 8)} — ${pendingCsgIds.length} pending of ${allCsgIds.length} total CSG IDs`
+      `${LOG_PREFIX} job=${id.slice(0, 8)} — ${pendingCsgIds.length} pending of ${allCsgIds.length} total CSG IDs ` +
+        `(${successfulNames.size} already successful)`
     );
 
     // ── Session refresh mutex ───────────────────────────────────

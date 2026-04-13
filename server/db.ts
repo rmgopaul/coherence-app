@@ -3388,6 +3388,32 @@ export async function getCompletedScheduleBImportFileNames(
   });
 }
 
+/**
+ * Return fileNames for rows that were processed successfully (error IS NULL)
+ * for the given job. Used by CSG portal runner so previously failed IDs can
+ * be retried on subsequent runs.
+ */
+export async function getSuccessfulScheduleBImportFileNames(
+  jobId: string
+): Promise<Set<string>> {
+  const db = await getDb();
+  if (!db) return new Set();
+  const ensured = await ensureScheduleBImportTables();
+  if (!ensured) return new Set();
+  return withDbRetry("get successful schedule b file names", async () => {
+    const rows = await db
+      .select({ fileName: scheduleBImportResults.fileName })
+      .from(scheduleBImportResults)
+      .where(
+        and(
+          eq(scheduleBImportResults.jobId, jobId),
+          sql`${scheduleBImportResults.error} IS NULL`
+        )
+      );
+    return new Set(rows.map((r) => r.fileName));
+  });
+}
+
 export async function requeueScheduleBImportProcessingFiles(jobId: string) {
   const db = await getDb();
   if (!db) return;
