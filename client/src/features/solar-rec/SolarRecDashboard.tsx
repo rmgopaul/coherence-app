@@ -9113,10 +9113,10 @@ export default function SolarRecDashboard() {
           foot: [[
             "Total",
             formatCurrency(cashFlowSummary.totalVendorFee12Mo),
-            "",
-            "",
+            formatCurrency(cashFlowSummary.rows12Month.reduce((s, r) => s + r.ccAuthCollateral, 0)),
+            formatCurrency(cashFlowSummary.rows12Month.reduce((s, r) => s + r.additionalCollateral, 0)),
             formatCurrency(cashFlowSummary.totalCashFlow12Mo),
-            "",
+            formatNumber(cashFlowSummary.rows12Month.reduce((s, r) => s + r.projectCount, 0)),
           ]],
           footStyles: { fillColor: [241, 245, 249], textColor: navy, fontStyle: "bold", fontSize: 8 },
         });
