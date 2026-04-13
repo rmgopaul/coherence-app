@@ -8972,6 +8972,102 @@ export const appRouter = router({
         return getLatestScanResultsByCsgIds(ctx.user.id, input.csgIds);
       }),
 
+    updateContractOverride: protectedProcedure
+      .input(
+        z.object({
+          csgId: z.string().min(1).max(64),
+          vendorFeePercent: z.number().min(0).max(100).nullable().optional(),
+          additionalCollateralPercent: z.number().min(0).max(100).nullable().optional(),
+          notes: z.string().max(512).nullable().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const { updateContractScanResultOverrides } = await import("./db");
+        const result = await updateContractScanResultOverrides(ctx.user.id, input.csgId, {
+          vendorFeePercent: input.vendorFeePercent ?? null,
+          additionalCollateralPercent: input.additionalCollateralPercent ?? null,
+          notes: input.notes ?? null,
+        });
+        if (!result) {
+          throw new Error(`No contract scan result found for CSG ID ${input.csgId}`);
+        }
+        return result;
+      }),
+    rescanSingleContract: protectedProcedure
+      .input(z.object({ csgId: z.string().min(1).max(64) }))
+      .mutation(async ({ ctx, input }) => {
+        const { getIntegrationByProvider, getLatestContractScanJob, insertContractScanResult } =
+          await import("./db");
+
+        // 1. Validate CSG portal credentials
+        const integration = await getIntegrationByProvider(ctx.user.id, "csg-portal");
+        const metadata = integration?.metadata ? (() => {
+          try { return JSON.parse(integration.metadata!) as Record<string, unknown>; } catch { return {}; }
+        })() : {};
+        const email = typeof metadata.email === "string" && metadata.email ? metadata.email : null;
+        const password = integration?.accessToken || null;
+        if (!email || !password) {
+          throw new Error("CSG portal credentials not configured. Go to Settings to add your portal email and password.");
+        }
+
+        // 2. Fetch and parse the contract PDF
+        const { CsgPortalClient } = await import("./services/integrations/csgPortal");
+        const { extractContractDataFromPdfBuffer } = await import("./services/core/contractScannerServer");
+        const baseUrl = typeof metadata.baseUrl === "string" && metadata.baseUrl ? metadata.baseUrl : undefined;
+        const client = new CsgPortalClient({ email, password, baseUrl });
+        await client.login();
+        const fetchResult = await client.fetchRecContractPdf(input.csgId);
+
+        if (fetchResult.error || !fetchResult.pdfData) {
+          throw new Error(fetchResult.error || "No PDF data returned from portal.");
+        }
+
+        const extraction = await extractContractDataFromPdfBuffer(fetchResult.pdfData, fetchResult.pdfFileName || `contract-${input.csgId}.pdf`);
+
+        // 3. Get a job ID to associate the result with
+        const latestJob = await getLatestContractScanJob(ctx.user.id);
+        if (!latestJob) {
+          throw new Error("No contract scan job exists. Run a contract scan first, then re-scan individual systems.");
+        }
+
+        // 4. Insert/update the result (unique on jobId+csgId, clears overrides)
+        const { nanoid } = await import("nanoid");
+        await insertContractScanResult({
+          id: nanoid(),
+          jobId: latestJob.id,
+          csgId: input.csgId,
+          systemName: extraction.systemName ?? null,
+          vendorFeePercent: extraction.vendorFeePercent ?? null,
+          additionalCollateralPercent: extraction.additionalCollateralPercent ?? null,
+          ccAuthorizationCompleted: extraction.ccAuthorizationCompleted ?? null,
+          additionalFivePercentSelected: extraction.additionalFivePercentSelected ?? null,
+          ccCardAsteriskCount: extraction.ccCardAsteriskCount ?? null,
+          paymentMethod: extraction.paymentMethod ?? null,
+          payeeName: extraction.payeeName ?? null,
+          mailingAddress1: extraction.mailingAddress1 ?? null,
+          mailingAddress2: extraction.mailingAddress2 ?? null,
+          cityStateZip: extraction.cityStateZip ?? null,
+          recQuantity: extraction.recQuantity ?? null,
+          recPrice: extraction.recPrice ?? null,
+          acSizeKw: extraction.acSizeKw ?? null,
+          dcSizeKw: extraction.dcSizeKw ?? null,
+          pdfUrl: fetchResult.pdfUrl ?? null,
+          pdfFileName: fetchResult.pdfFileName ?? null,
+          error: null,
+          scannedAt: new Date(),
+          // Clear any previous overrides — fresh scan replaces manual edits
+          overrideVendorFeePercent: null,
+          overrideAdditionalCollateralPercent: null,
+          overrideNotes: null,
+          overriddenAt: null,
+        });
+
+        return {
+          csgId: input.csgId,
+          vendorFeePercent: extraction.vendorFeePercent,
+          additionalCollateralPercent: extraction.additionalCollateralPercent,
+        };
+      }),
     cleanMailingData: protectedProcedure
       .input(
         z.object({

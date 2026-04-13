@@ -2689,6 +2689,10 @@ export async function insertContractScanResult(
         pdfFileName: data.pdfFileName ?? null,
         error: data.error ?? null,
         scannedAt,
+        overrideVendorFeePercent: data.overrideVendorFeePercent ?? null,
+        overrideAdditionalCollateralPercent: data.overrideAdditionalCollateralPercent ?? null,
+        overrideNotes: data.overrideNotes ?? null,
+        overriddenAt: data.overriddenAt ?? null,
       });
     });
   } catch (err) {
@@ -2821,6 +2825,10 @@ export async function getLatestScanResultsByCsgIds(
             pdfFileName: contractScanResults.pdfFileName,
             error: contractScanResults.error,
             scannedAt: contractScanResults.scannedAt,
+            overrideVendorFeePercent: contractScanResults.overrideVendorFeePercent,
+            overrideAdditionalCollateralPercent: contractScanResults.overrideAdditionalCollateralPercent,
+            overrideNotes: contractScanResults.overrideNotes,
+            overriddenAt: contractScanResults.overriddenAt,
           })
           .from(contractScanResults)
           .innerJoin(
@@ -2852,6 +2860,92 @@ export async function getLatestScanResultsByCsgIds(
     }
   }
   return deduped;
+}
+
+// ── Contract Scan Overrides ───────────────────────────────────────
+
+let _contractScanOverrideColumnsEnsured = false;
+
+async function ensureContractScanOverrideColumns() {
+  const db = await getDb();
+  if (!db || _contractScanOverrideColumnsEnsured) return;
+
+  const columnExists = async (columnName: string): Promise<boolean> => {
+    const result = (await db.execute(sql`
+      SELECT COUNT(*) AS cnt
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE()
+        AND table_name = 'contractScanResults'
+        AND column_name = ${columnName}
+    `)) as unknown as Array<Array<{ cnt: number }>>;
+    const rows = Array.isArray(result) ? result[0] : [];
+    return Array.isArray(rows) && rows[0]?.cnt > 0;
+  };
+
+  try {
+    if (!(await columnExists("overrideVendorFeePercent"))) {
+      await db.execute(sql.raw("ALTER TABLE contractScanResults ADD COLUMN overrideVendorFeePercent double DEFAULT NULL"));
+    }
+    if (!(await columnExists("overrideAdditionalCollateralPercent"))) {
+      await db.execute(sql.raw("ALTER TABLE contractScanResults ADD COLUMN overrideAdditionalCollateralPercent double DEFAULT NULL"));
+    }
+    if (!(await columnExists("overrideNotes"))) {
+      await db.execute(sql.raw("ALTER TABLE contractScanResults ADD COLUMN overrideNotes varchar(512) DEFAULT NULL"));
+    }
+    if (!(await columnExists("overriddenAt"))) {
+      await db.execute(sql.raw("ALTER TABLE contractScanResults ADD COLUMN overriddenAt timestamp NULL DEFAULT NULL"));
+    }
+  } catch (migrationError) {
+    console.warn("[db] contractScanResults override columns migration failed:", migrationError instanceof Error ? migrationError.message : migrationError);
+  }
+
+  _contractScanOverrideColumnsEnsured = true;
+}
+
+export async function updateContractScanResultOverrides(
+  userId: number,
+  csgId: string,
+  overrides: {
+    vendorFeePercent?: number | null;
+    additionalCollateralPercent?: number | null;
+    notes?: string | null;
+  }
+) {
+  const db = await getDb();
+  if (!db) return null;
+  await ensureContractScanOverrideColumns();
+
+  // Find the latest result for this user+csgId (joins to jobs for isolation)
+  const results = await db
+    .select({ id: contractScanResults.id })
+    .from(contractScanResults)
+    .innerJoin(contractScanJobs, eq(contractScanResults.jobId, contractScanJobs.id))
+    .where(
+      and(
+        eq(contractScanJobs.userId, userId),
+        eq(contractScanResults.csgId, csgId),
+        sql`${contractScanResults.error} IS NULL`
+      )
+    )
+    .orderBy(desc(contractScanResults.scannedAt))
+    .limit(1);
+
+  if (results.length === 0) return null;
+
+  const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+  await withDbRetry("update contract scan override", async () => {
+    await db
+      .update(contractScanResults)
+      .set({
+        overrideVendorFeePercent: overrides.vendorFeePercent ?? null,
+        overrideAdditionalCollateralPercent: overrides.additionalCollateralPercent ?? null,
+        overrideNotes: overrides.notes ?? null,
+        overriddenAt: now,
+      })
+      .where(eq(contractScanResults.id, results[0].id));
+  });
+
+  return { id: results[0].id, csgId, overriddenAt: now };
 }
 
 // ── Schedule B Import Jobs ─────────────────────────────────────────

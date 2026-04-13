@@ -9508,6 +9508,15 @@ const contractScanResultsQuery = trpc.abpSettlement.getContractScanResultsByCsgI
   { csgIds: financialCsgIds },
   { enabled: isFinancialsTabActive && financialCsgIds.length > 0 }
 );
+const updateContractOverride = trpc.abpSettlement.updateContractOverride.useMutation();
+const rescanSingleContract = trpc.abpSettlement.rescanSingleContract.useMutation();
+const [editingFinancialRow, setEditingFinancialRow] = useState<{
+  csgId: string;
+  systemName: string;
+  vendorFeePercent: string;
+  additionalCollateralPercent: string;
+  notes: string;
+} | null>(null);
 
 type ProfitRow = {
   systemName: string;
@@ -9527,6 +9536,7 @@ type ProfitRow = {
   // Validation: flag rows where collateral exceeds 30% of GCV.
   needsReview: boolean;
   reviewReason: string;
+  hasOverride: boolean;
 };
 
 const financialProfitData = useMemo<{
@@ -9620,10 +9630,11 @@ const financialProfitData = useMemo<{
     if (!scan || !icc) continue;
 
     const gcv = icc.grossContractValue;
-    const vfp = scan.vendorFeePercent ?? 0;
+    const hasOverride = scan.overriddenAt != null;
+    const vfp = scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
     const vendorFeeAmount = roundMoney(gcv * (vfp / 100));
     const utilityCollateral = roundMoney(gcv * 0.05);
-    const acp = scan.additionalCollateralPercent ?? 0;
+    const acp = scan.overrideAdditionalCollateralPercent ?? scan.additionalCollateralPercent ?? 0;
     const additionalCollateralAmount = roundMoney(gcv * (acp / 100));
 
     // CC auth 5%: if CC auth not completed AND not absent from contract, apply 5%
@@ -9675,6 +9686,7 @@ const financialProfitData = useMemo<{
       totalCollateralization,
       needsReview,
       reviewReason,
+      hasOverride,
     });
   }
 
@@ -14607,6 +14619,7 @@ const aiDataContext = useMemo(() => {
                           <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("profit")}>Profit{financialSortIndicator("profit")}</TableHead>
                           <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("totalCollateralization")}>Total Coll.{financialSortIndicator("totalCollateralization")}</TableHead>
                           <TableHead>Status</TableHead>
+                          <TableHead>Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -14638,6 +14651,11 @@ const aiDataContext = useMemo(() => {
                             <TableCell className="text-right font-semibold text-emerald-700">${formatNumber(r.profit)}</TableCell>
                             <TableCell className="text-right">${formatNumber(r.totalCollateralization)}</TableCell>
                             <TableCell>
+                              {r.hasOverride && (
+                                <Badge variant="secondary" className="bg-blue-100 text-blue-800 border-blue-200 text-[10px] mr-1">
+                                  Edited
+                                </Badge>
+                              )}
                               {r.needsReview ? (
                                 <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-200 text-[10px]">
                                   Review
@@ -14645,6 +14663,45 @@ const aiDataContext = useMemo(() => {
                               ) : (
                                 <Badge variant="secondary" className="text-[10px]">OK</Badge>
                               )}
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex gap-1">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-[10px]"
+                                  onClick={() =>
+                                    setEditingFinancialRow({
+                                      csgId: r.csgId,
+                                      systemName: r.systemName,
+                                      vendorFeePercent: String(r.vendorFeePercent),
+                                      additionalCollateralPercent: String(r.additionalCollateralPercent),
+                                      notes: "",
+                                    })
+                                  }
+                                >
+                                  Edit
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-[10px]"
+                                  disabled={rescanSingleContract.isPending}
+                                  onClick={async () => {
+                                    try {
+                                      const result = await rescanSingleContract.mutateAsync({ csgId: r.csgId });
+                                      toast.success(
+                                        `Re-scanned CSG ${r.csgId}: vendor fee ${result.vendorFeePercent ?? "N/A"}%, collateral ${result.additionalCollateralPercent ?? "N/A"}%`
+                                      );
+                                      await contractScanResultsQuery.refetch();
+                                    } catch (err) {
+                                      toast.error(err instanceof Error ? err.message : "Re-scan failed");
+                                    }
+                                  }}
+                                >
+                                  Re-scan
+                                </Button>
+                              </div>
                             </TableCell>
                           </TableRow>
                         ))}
@@ -14655,6 +14712,93 @@ const aiDataContext = useMemo(() => {
                     <p className="text-xs text-muted-foreground text-center">
                       Showing 100 of {formatNumber(filteredFinancialRows.length)} systems. Export CSV for full data.
                     </p>
+                  )}
+
+                  {/* Edit override dialog */}
+                  {editingFinancialRow && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md space-y-4">
+                        <h3 className="font-semibold text-base">
+                          Edit Contract — CSG {editingFinancialRow.csgId}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">{editingFinancialRow.systemName}</p>
+                        <div className="space-y-3">
+                          <div className="space-y-1">
+                            <label className="text-sm font-medium">Vendor Fee %</label>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              value={editingFinancialRow.vendorFeePercent}
+                              onChange={(e) =>
+                                setEditingFinancialRow((prev) =>
+                                  prev ? { ...prev, vendorFeePercent: e.target.value } : null
+                                )
+                              }
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-sm font-medium">Additional Collateral %</label>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              value={editingFinancialRow.additionalCollateralPercent}
+                              onChange={(e) =>
+                                setEditingFinancialRow((prev) =>
+                                  prev ? { ...prev, additionalCollateralPercent: e.target.value } : null
+                                )
+                              }
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-sm font-medium">Notes (optional)</label>
+                            <Input
+                              value={editingFinancialRow.notes}
+                              onChange={(e) =>
+                                setEditingFinancialRow((prev) =>
+                                  prev ? { ...prev, notes: e.target.value } : null
+                                )
+                              }
+                              placeholder="Reason for override..."
+                            />
+                          </div>
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setEditingFinancialRow(null)}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={updateContractOverride.isPending}
+                            onClick={async () => {
+                              if (!editingFinancialRow) return;
+                              try {
+                                await updateContractOverride.mutateAsync({
+                                  csgId: editingFinancialRow.csgId,
+                                  vendorFeePercent: editingFinancialRow.vendorFeePercent
+                                    ? parseFloat(editingFinancialRow.vendorFeePercent)
+                                    : null,
+                                  additionalCollateralPercent: editingFinancialRow.additionalCollateralPercent
+                                    ? parseFloat(editingFinancialRow.additionalCollateralPercent)
+                                    : null,
+                                  notes: editingFinancialRow.notes || null,
+                                });
+                                toast.success(`Override saved for CSG ${editingFinancialRow.csgId}`);
+                                setEditingFinancialRow(null);
+                                await contractScanResultsQuery.refetch();
+                              } catch (err) {
+                                toast.error(err instanceof Error ? err.message : "Failed to save override");
+                              }
+                            }}
+                          >
+                            {updateContractOverride.isPending ? "Saving..." : "Save Override"}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </CardContent>
               </Card>

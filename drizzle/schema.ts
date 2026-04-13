@@ -739,6 +739,11 @@ export const contractScanResults = mysqlTable(
     pdfFileName: varchar("pdfFileName", { length: 255 }),
     error: text("error"),
     scannedAt: timestamp("scannedAt").defaultNow(),
+    // Manual overrides — take precedence over scanned values when present.
+    overrideVendorFeePercent: double("overrideVendorFeePercent"),
+    overrideAdditionalCollateralPercent: double("overrideAdditionalCollateralPercent"),
+    overrideNotes: varchar("overrideNotes", { length: 512 }),
+    overriddenAt: timestamp("overriddenAt"),
   },
   (table) => ({
     jobIdx: index("contract_scan_results_job_idx").on(table.jobId),
