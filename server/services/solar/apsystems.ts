@@ -313,13 +313,13 @@ export function extractSystems(payload: unknown): APsystemsSystem[] {
 }
 
 // ---------------------------------------------------------------------------
-// API: List Systems (paginated POST — returns real SIDs)
+// API: Paginated system fetcher (shared by /systems and /partnerSystems)
 // ---------------------------------------------------------------------------
 
-export async function listSystems(context: APsystemsApiContext): Promise<{
-  systems: APsystemsSystem[];
-  raw: unknown;
-}> {
+async function fetchSystemsFromEndpoint(
+  context: APsystemsApiContext,
+  endpointPath: string
+): Promise<{ systems: APsystemsSystem[]; total: number }> {
   const allSystems: APsystemsSystem[] = [];
   let page = 1;
   const size = 50; // max page size per API docs
@@ -328,11 +328,10 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
 
   try {
     while (page <= totalPages) {
-      const raw = await postAPsystemsJson(
-        "/installer/api/v2/systems",
-        context,
-        { page, size }
-      );
+      const raw = await postAPsystemsJson(endpointPath, context, {
+        page,
+        size,
+      });
 
       const root = asRecord(raw);
       const code = toNullableNumber(root.code);
@@ -375,14 +374,44 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
     // Endpoint may not exist for this account type
   }
 
+  return { systems: allSystems, total: totalCount };
+}
+
+// ---------------------------------------------------------------------------
+// API: List Systems (own + partner — returns real SIDs, deduplicated)
+// ---------------------------------------------------------------------------
+
+export async function listSystems(context: APsystemsApiContext): Promise<{
+  systems: APsystemsSystem[];
+  raw: unknown;
+}> {
+  // Fetch own systems and partner systems concurrently
+  const [own, partner] = await Promise.all([
+    fetchSystemsFromEndpoint(context, "/installer/api/v2/systems"),
+    fetchSystemsFromEndpoint(context, "/installer/api/v2/partnerSystems"),
+  ]);
+
+  // Deduplicate by SID (own systems take priority)
+  const seen = new Set<string>();
+  const deduped: APsystemsSystem[] = [];
+  for (const s of [...own.systems, ...partner.systems]) {
+    if (seen.has(s.systemId)) continue;
+    seen.add(s.systemId);
+    deduped.push(s);
+  }
+
   return {
-    systems: allSystems,
+    systems: deduped,
     raw: {
-      totalSystems: totalCount,
-      fetchedSystems: allSystems.length,
-      message: allSystems.length > 0
-        ? `Found ${allSystems.length} System ID(s) (SIDs).`
-        : "No systems found. Upload a CSV with System IDs instead.",
+      ownSystems: own.total,
+      partnerSystems: partner.total,
+      fetchedOwn: own.systems.length,
+      fetchedPartner: partner.systems.length,
+      totalDeduped: deduped.length,
+      message:
+        deduped.length > 0
+          ? `Found ${deduped.length} SID(s) (${own.systems.length} own + ${partner.systems.length} partner, deduplicated).`
+          : "No systems found. Upload a CSV with System IDs instead.",
     },
   };
 }
