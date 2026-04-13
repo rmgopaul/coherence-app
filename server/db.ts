@@ -2666,40 +2666,61 @@ export async function insertContractScanResult(
   await ensureContractScanOverrideColumns();
   // Truncate milliseconds from scannedAt for TiDB timestamp compatibility
   const scannedAt = data.scannedAt ? new Date(Math.floor(data.scannedAt.getTime() / 1000) * 1000) : new Date();
+  const row = {
+    id: data.id ?? nanoid(),
+    jobId: data.jobId,
+    csgId: data.csgId,
+    systemName: data.systemName ?? null,
+    vendorFeePercent: data.vendorFeePercent ?? null,
+    additionalCollateralPercent: data.additionalCollateralPercent ?? null,
+    ccAuthorizationCompleted: data.ccAuthorizationCompleted ?? null,
+    additionalFivePercentSelected: data.additionalFivePercentSelected ?? null,
+    ccCardAsteriskCount: data.ccCardAsteriskCount ?? null,
+    paymentMethod: data.paymentMethod ?? null,
+    payeeName: data.payeeName ?? null,
+    mailingAddress1: data.mailingAddress1 ?? null,
+    mailingAddress2: data.mailingAddress2 ?? null,
+    cityStateZip: data.cityStateZip ?? null,
+    recQuantity: data.recQuantity ?? null,
+    recPrice: data.recPrice ?? null,
+    acSizeKw: data.acSizeKw ?? null,
+    dcSizeKw: data.dcSizeKw ?? null,
+    pdfUrl: data.pdfUrl ?? null,
+    pdfFileName: data.pdfFileName ?? null,
+    error: data.error ?? null,
+    scannedAt,
+    overrideVendorFeePercent: data.overrideVendorFeePercent ?? null,
+    overrideAdditionalCollateralPercent: data.overrideAdditionalCollateralPercent ?? null,
+    overrideNotes: data.overrideNotes ?? null,
+    overriddenAt: data.overriddenAt ?? null,
+  };
   try {
-    await withDbRetry("insert contract scan result", async () => {
-      await db.insert(contractScanResults).values({
-        id: data.id ?? nanoid(),
-        jobId: data.jobId,
-        csgId: data.csgId,
-        systemName: data.systemName ?? null,
-        vendorFeePercent: data.vendorFeePercent ?? null,
-        additionalCollateralPercent: data.additionalCollateralPercent ?? null,
-        ccAuthorizationCompleted: data.ccAuthorizationCompleted ?? null,
-        additionalFivePercentSelected: data.additionalFivePercentSelected ?? null,
-        ccCardAsteriskCount: data.ccCardAsteriskCount ?? null,
-        paymentMethod: data.paymentMethod ?? null,
-        payeeName: data.payeeName ?? null,
-        mailingAddress1: data.mailingAddress1 ?? null,
-        mailingAddress2: data.mailingAddress2 ?? null,
-        cityStateZip: data.cityStateZip ?? null,
-        recQuantity: data.recQuantity ?? null,
-        recPrice: data.recPrice ?? null,
-        acSizeKw: data.acSizeKw ?? null,
-        dcSizeKw: data.dcSizeKw ?? null,
-        pdfUrl: data.pdfUrl ?? null,
-        pdfFileName: data.pdfFileName ?? null,
-        error: data.error ?? null,
-        scannedAt,
-        overrideVendorFeePercent: data.overrideVendorFeePercent ?? null,
-        overrideAdditionalCollateralPercent: data.overrideAdditionalCollateralPercent ?? null,
-        overrideNotes: data.overrideNotes ?? null,
-        overriddenAt: data.overriddenAt ?? null,
-      });
+    await withDbRetry("upsert contract scan result", async () => {
+      // Check for existing row (unique on jobId+csgId) and update if found
+      const existing = await db
+        .select({ id: contractScanResults.id })
+        .from(contractScanResults)
+        .where(
+          and(
+            eq(contractScanResults.jobId, data.jobId),
+            eq(contractScanResults.csgId, data.csgId)
+          )
+        )
+        .limit(1);
+
+      if (existing.length > 0) {
+        const { id: _id, jobId: _jobId, csgId: _csgId, ...updateFields } = row;
+        await db
+          .update(contractScanResults)
+          .set(updateFields)
+          .where(eq(contractScanResults.id, existing[0].id));
+      } else {
+        await db.insert(contractScanResults).values(row);
+      }
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[contractScanResult] INSERT failed for csgId=${data.csgId}: ${msg}`);
+    console.error(`[contractScanResult] UPSERT failed for csgId=${data.csgId}: ${msg}`);
     throw err;
   }
 }
