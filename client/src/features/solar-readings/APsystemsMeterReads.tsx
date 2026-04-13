@@ -255,6 +255,7 @@ export default function APsystemsMeterReads() {
   const removeConnectionMutation = trpc.apsystems.removeConnection.useMutation();
   const disconnectMutation = trpc.apsystems.disconnect.useMutation();
   const productionSnapshotMutation = trpc.apsystems.getProductionSnapshot.useMutation();
+  const listAllSidsMutation = trpc.apsystems.listAllSids.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
 
@@ -444,26 +445,45 @@ export default function APsystemsMeterReads() {
     }
   };
 
-  const handlePullAllSystems = async () => {
+  const handlePullAllSystems = async (allProfiles = false) => {
     if (!isConnected) {
       toast.error("Connect APsystems before pulling systems.");
       return;
     }
     try {
-      const result = await systemsQuery.refetch();
-      const systems = result.data?.systems ?? [];
-      if (systems.length === 0) {
-        toast.error("No systems returned. The API may not support listing for this account. Upload a CSV instead.");
-        return;
+      let ids: string[];
+      let label: string;
+
+      if (allProfiles) {
+        const result = await listAllSidsMutation.mutateAsync();
+        const systems = result.systems ?? [];
+        if (systems.length === 0) {
+          toast.error("No SIDs returned from any profile. Upload a CSV instead.");
+          return;
+        }
+        ids = systems.map((s) => s.systemId);
+        const profileSummary = result.perProfile
+          .map((p) => `${p.connectionName}: ${p.systemCount}${p.error ? ` (error: ${p.error})` : ""}`)
+          .join(", ");
+        label = `All Profiles (${result.totalProfiles}) — ${ids.length} SIDs [${profileSummary}]`;
+      } else {
+        const result = await systemsQuery.refetch();
+        const systems = result.data?.systems ?? [];
+        if (systems.length === 0) {
+          toast.error("No SIDs returned. The API may not support listing for this account. Upload a CSV instead.");
+          return;
+        }
+        ids = systems.map((s: { systemId: string }) => s.systemId);
+        label = `API — ${ids.length} SIDs`;
       }
-      const ids = systems.map((s: { systemId: string }) => s.systemId);
+
       setBulkSystemIds(ids);
-      setBulkSourceFileName(`API — ${ids.length} systems`);
+      setBulkSourceFileName(label);
       setBulkRows([]);
       setBulkImportError(null);
       setBulkProgress({ total: ids.length, processed: 0, found: 0, notFound: 0, errored: 0 });
       toast.success(
-        `Loaded ${NUMBER_FORMATTER.format(ids.length)} System IDs. Next step: click "Run Production Snapshot" to fetch row data.`
+        `Loaded ${NUMBER_FORMATTER.format(ids.length)} SIDs. Next step: click "Run Production Snapshot" to fetch row data.`
       );
     } catch (error) {
       toast.error(`Failed to list systems: ${error instanceof Error ? error.message : "Unknown error"}`);
@@ -1089,8 +1109,8 @@ export default function APsystemsMeterReads() {
                 <Label>System IDs</Label>
                 <div className="flex items-center gap-2">
                   <Button
-                    onClick={() => void handlePullAllSystems()}
-                    disabled={!isConnected || systemsQuery.isFetching}
+                    onClick={() => void handlePullAllSystems(false)}
+                    disabled={!isConnected || systemsQuery.isFetching || listAllSidsMutation.isPending}
                     className="whitespace-nowrap"
                   >
                     {systemsQuery.isFetching ? (
@@ -1098,8 +1118,23 @@ export default function APsystemsMeterReads() {
                     ) : (
                       <Download className="h-4 w-4 mr-2" />
                     )}
-                    Pull All Systems
+                    Pull SIDs
                   </Button>
+                  {connections.length > 1 && (
+                    <Button
+                      variant="outline"
+                      onClick={() => void handlePullAllSystems(true)}
+                      disabled={!isConnected || systemsQuery.isFetching || listAllSidsMutation.isPending}
+                      className="whitespace-nowrap"
+                    >
+                      {listAllSidsMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4 mr-2" />
+                      )}
+                      Pull SIDs (All Profiles)
+                    </Button>
+                  )}
                   <span className="text-xs text-muted-foreground">or</span>
                   <label className="cursor-pointer">
                     <Input
@@ -1136,7 +1171,7 @@ export default function APsystemsMeterReads() {
                   Source: {bulkSourceFileName ?? "None"}{bulkSystemIds.length > 0 ? ` — ${NUMBER_FORMATTER.format(bulkSystemIds.length)} IDs` : ""}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  "Pull All Systems" imports IDs only. Run the bulk snapshot action to populate result rows.
+                  "Pull SIDs" imports System IDs only. Run the bulk snapshot action to populate result rows.
                 </p>
                 {bulkImportError ? <p className="text-xs text-destructive">{bulkImportError}</p> : null}
               </div>

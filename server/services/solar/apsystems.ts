@@ -313,22 +313,23 @@ export function extractSystems(payload: unknown): APsystemsSystem[] {
 }
 
 // ---------------------------------------------------------------------------
-// API: List ECUs (paginated POST endpoint)
+// API: List Systems (paginated POST — returns real SIDs)
 // ---------------------------------------------------------------------------
 
 export async function listSystems(context: APsystemsApiContext): Promise<{
   systems: APsystemsSystem[];
   raw: unknown;
 }> {
-  const allEcuIds: string[] = [];
+  const allSystems: APsystemsSystem[] = [];
   let page = 1;
   const size = 50; // max page size per API docs
   let totalPages = 1;
+  let totalCount = 0;
 
   try {
     while (page <= totalPages) {
       const raw = await postAPsystemsJson(
-        "/installer/api/v2/systems/ecus",
+        "/installer/api/v2/systems",
         context,
         { page, size }
       );
@@ -339,11 +340,29 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
 
       const data = asRecord(root.data);
       const total = toNullableNumber(data.total) ?? 0;
-      const ecuList = Array.isArray(data.data) ? data.data : [];
+      totalCount = total;
+      const systemsList = asRecordArray(data.systems);
 
-      for (const id of ecuList) {
-        const ecuId = toNullableString(id);
-        if (ecuId) allEcuIds.push(ecuId);
+      for (const row of systemsList) {
+        const sid = toNullableString(row.sid);
+        if (!sid) continue;
+
+        const capacityKw = toNullableNumber(row.capacity);
+        const systemType = toNullableNumber(row.type);
+        const typeLabel =
+          systemType === 2
+            ? "Storage"
+            : systemType === 3
+              ? "PV & Storage"
+              : "PV";
+
+        allSystems.push({
+          systemId: sid,
+          name: sid,
+          capacity: capacityKw,
+          address: toNullableString(row.timezone),
+          status: typeLabel,
+        });
       }
 
       totalPages = Math.ceil(total / size);
@@ -356,24 +375,14 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
     // Endpoint may not exist for this account type
   }
 
-  // ECU IDs aren't System IDs, but they can be used for ECU-level queries.
-  // Convert to system format for the UI.
-  const systems: APsystemsSystem[] = allEcuIds.map((ecuId) => ({
-    systemId: ecuId,
-    name: `ECU ${ecuId}`,
-    capacity: null,
-    address: null,
-    status: null,
-  }));
-
   return {
-    systems,
+    systems: allSystems,
     raw: {
-      totalEcus: allEcuIds.length,
-      ecuIds: allEcuIds,
-      message: allEcuIds.length > 0
-        ? `Found ${allEcuIds.length} ECU(s). Note: these are ECU IDs, not System IDs (SIDs).`
-        : "No ECUs found. Upload a CSV with System IDs instead.",
+      totalSystems: totalCount,
+      fetchedSystems: allSystems.length,
+      message: allSystems.length > 0
+        ? `Found ${allSystems.length} System ID(s) (SIDs).`
+        : "No systems found. Upload a CSV with System IDs instead.",
     },
   };
 }

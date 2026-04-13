@@ -12288,6 +12288,31 @@ Generate the pipeline analysis report now.`,
     removeConnection: protectedProcedure.input(z.object({ connectionId: z.string().min(1) })).mutation(async ({ ctx, input }) => { const { deleteIntegration, getIntegrationByProvider, upsertIntegration } = await import("./db"); const { nanoid } = await import("nanoid"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (!integration) throw new Error("APsystems is not connected."); const ms = parseAPsystemsMetadata(integration.metadata, toNonEmptyString(integration.accessToken)); const next = ms.connections.filter((c) => c.id !== input.connectionId); if (next.length === 0) { if (integration.id) await deleteIntegration(integration.id); return { success: true, connected: false, activeConnectionId: null, totalConnections: 0 }; } const nac = next.find((c) => c.id === ms.activeConnectionId) ?? next[0]; await upsertIntegration({ id: nanoid(), userId: ctx.user.id, provider: APSYSTEMS_PROVIDER, accessToken: nac.appId, refreshToken: null, expiresAt: null, scope: null, metadata: serializeAPsystemsMetadata(next, nac.id, nac.baseUrl ?? ms.baseUrl) }); return { success: true, connected: true, activeConnectionId: nac.id, totalConnections: next.length }; }),
     disconnect: protectedProcedure.mutation(async ({ ctx }) => { const { deleteIntegration, getIntegrationByProvider } = await import("./db"); const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER); if (integration?.id) await deleteIntegration(integration.id); return { success: true }; }),
     listSystems: protectedProcedure.query(async ({ ctx }) => { const context = await getAPsystemsContext(ctx.user.id); const { listSystems } = await import("./services/solar/apsystems"); return listSystems(context); }),
+    listAllSids: protectedProcedure.mutation(async ({ ctx }) => {
+      const { getIntegrationByProvider } = await import("./db");
+      const { listSystems } = await import("./services/solar/apsystems");
+      const integration = await getIntegrationByProvider(ctx.user.id, APSYSTEMS_PROVIDER);
+      const metadata = parseAPsystemsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      if (metadata.connections.length === 0) throw new Error("No APsystems profiles saved.");
+      const allSystems: Array<{ systemId: string; name: string; capacity: number | null; address: string | null; status: string | null; connectionId: string; connectionName: string }> = [];
+      const perProfile: Array<{ connectionId: string; connectionName: string; systemCount: number; error: string | null }> = [];
+      for (const conn of metadata.connections) {
+        try {
+          const context = { appId: conn.appId, appSecret: conn.appSecret, baseUrl: conn.baseUrl ?? metadata.baseUrl };
+          const result = await listSystems(context);
+          for (const s of result.systems) {
+            allSystems.push({ ...s, connectionId: conn.id, connectionName: conn.name });
+          }
+          perProfile.push({ connectionId: conn.id, connectionName: conn.name, systemCount: result.systems.length, error: null });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          perProfile.push({ connectionId: conn.id, connectionName: conn.name, systemCount: 0, error: msg });
+        }
+      }
+      const seen = new Set<string>();
+      const deduped = allSystems.filter((s) => { if (seen.has(s.systemId)) return false; seen.add(s.systemId); return true; });
+      return { systems: deduped, perProfile, totalProfiles: metadata.connections.length };
+    }),
     getProductionSnapshot: protectedProcedure.input(z.object({ systemId: z.string().min(1), anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })).mutation(async ({ ctx, input }) => { const context = await getAPsystemsContext(ctx.user.id); const { getSystemProductionSnapshot } = await import("./services/solar/apsystems"); return getSystemProductionSnapshot(context, input.systemId.trim(), input.anchorDate); }),
   }),
 
