@@ -420,22 +420,49 @@ async function getInverterTelemetryPayload(
     `/equipment/${encodedSite}/${encodedSerial}/data`,
   ];
 
+  const buildWindowQuery = (
+    window: { startDate: string | null; endDate: string | null }
+  ) => ({
+    startTime: window.startDate
+      ? toSolarEdgeDateTime(window.startDate, false)
+      : undefined,
+    endTime: window.endDate
+      ? toSolarEdgeDateTime(window.endDate, true)
+      : undefined,
+  });
+
+  // Probe each candidate with the first date window only. Once a candidate
+  // succeeds, fetch remaining windows in parallel on that endpoint.
   let lastError: unknown = null;
   for (const endpoint of candidates) {
     try {
-      const allTelemetries: Array<Record<string, unknown>> = [];
-      for (const window of dateWindows) {
-        const payload = await getSolarEdgeJson(endpoint, context, {
-          startTime: window.startDate ? toSolarEdgeDateTime(window.startDate, false) : undefined,
-          endTime: window.endDate ? toSolarEdgeDateTime(window.endDate, true) : undefined,
-        });
-        allTelemetries.push(...extractInverterTelemetry(payload));
-      }
+      const probePayload = await getSolarEdgeJson(
+        endpoint,
+        context,
+        buildWindowQuery(dateWindows[0])
+      );
+      const probeTelemetries = extractInverterTelemetry(probePayload);
+
+      const remainingTelemetries =
+        dateWindows.length > 1
+          ? (
+              await Promise.all(
+                dateWindows.slice(1).map((window) =>
+                  getSolarEdgeJson(
+                    endpoint,
+                    context,
+                    buildWindowQuery(window)
+                  ).then(extractInverterTelemetry)
+                )
+              )
+            ).flat()
+          : [];
+
       return {
         endpoint,
         payload: {
           data: {
-            telemetries: allTelemetries,
+            telemetries: [...probeTelemetries, ...remainingTelemetries],
           },
         },
       };
@@ -921,7 +948,9 @@ export async function getSiteInverterSnapshot(
     throw new Error("Anchor date must be in YYYY-MM-DD format.");
   }
 
-  const startDate = shiftIsoDate(anchorDate, -29);
+  // Snapshot only needs the latest readings — 2 days keeps it to a single
+  // date window (no 7-day splits) while still catching the most recent data.
+  const startDate = shiftIsoDate(anchorDate, -1);
 
   try {
     const result = await getSiteInverterProduction(context, siteId, startDate, anchorDate);

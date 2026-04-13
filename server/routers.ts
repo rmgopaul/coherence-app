@@ -6185,7 +6185,32 @@ export const appRouter = router({
           allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
         const targetConnections = scope === "all" ? allConnections : [activeConnection];
 
-        const rows = await mapWithConcurrency(uniqueSiteIds, 4, async (siteId) => {
+        let processedCount = 0;
+        let errorCount = 0;
+        let circuitBroken = false;
+
+        const rows = await mapWithConcurrency(uniqueSiteIds, 10, async (siteId) => {
+          if (circuitBroken) {
+            return {
+              siteId,
+              status: "Error" as const,
+              found: false,
+              inverterCount: null,
+              invertersWithTelemetry: null,
+              inverterFailures: null,
+              totalLatestPowerW: null,
+              totalLatestEnergyWh: null,
+              firstTelemetryAt: null,
+              lastTelemetryAt: null,
+              error: "Aborted: API failure rate too high in this batch.",
+              matchedConnectionId: null,
+              matchedConnectionName: null,
+              checkedConnections: targetConnections.length,
+              foundInConnections: 0,
+              profileStatusSummary: "",
+            };
+          }
+
           let selectedSnapshot: Awaited<ReturnType<typeof getSiteInverterSnapshot>> | null = null;
           let selectedConnection: (typeof targetConnections)[number] | null = null;
           let firstError: string | null = null;
@@ -6227,6 +6252,7 @@ export const appRouter = router({
           }
 
           if (selectedSnapshot && selectedConnection) {
+            processedCount += 1;
             return {
               ...selectedSnapshot,
               matchedConnectionId: selectedConnection.id,
@@ -6240,6 +6266,12 @@ export const appRouter = router({
           }
 
           const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
+          processedCount += 1;
+          if (notFoundStatus === "Error") errorCount += 1;
+          if (processedCount >= 15 && errorCount / processedCount > 0.8) {
+            circuitBroken = true;
+          }
+
           return {
             siteId,
             status: notFoundStatus,
