@@ -9964,6 +9964,19 @@ export const appRouter = router({
               totalInterconnected: z.number(), totalInterconnectedKwAc: z.number(),
             }),
           }),
+          cashFlowSummary: z.object({
+            rows12Month: z.array(z.object({
+              month: z.string(),
+              vendorFee: z.number(),
+              ccAuthCollateral: z.number(),
+              additionalCollateral: z.number(),
+              totalCashFlow: z.number(),
+              projectCount: z.number(),
+            })),
+            totalVendorFee12Mo: z.number(),
+            totalCollateral12Mo: z.number(),
+            totalCashFlow12Mo: z.number(),
+          }).optional(),
         })
       )
       .mutation(async ({ ctx, input }) => {
@@ -10000,6 +10013,9 @@ Trends in systems going online -- throughput rates, bottlenecks, and how interco
 ## Year-over-Year Comparison
 Summarize YoY changes in 2-3 concise sentences covering the most significant shifts. Focus on the overall trend direction and magnitude rather than listing every month individually. State the trailing-12-month totals vs. prior-year totals for Part I, Part II, and Interconnected with percentage change. Do NOT list individual monthly comparisons.
 
+## Cash Flow Forecast
+If cash flow data is provided, analyze the monthly revenue (vendor fee) and collateral obligations (CC Auth 5%, Additional Collateral) flowing to CSG. Note the M+1 lag: Part II verification in month M triggers an invoice on the 1st of M+1, with payment by end of M+1. Identify trends in revenue volume and collateral burden. State trailing-12-month total vendor fee revenue and total cash flow. If no cash flow data is provided, omit this section entirely.
+
 ## Key Risks & Opportunities
 2-4 bullet points identifying risks (declining volumes, growing backlogs) and opportunities (capacity growth, improving conversion rates).
 
@@ -10026,7 +10042,12 @@ ${formatRows(input.rows3Year)}
 ${formatRows(input.rows12Month)}
 
 12-Month Totals: Part I: ${t12.totalPart1} apps (${t12.totalPart1KwAc.toFixed(1)} kW), Part II: ${t12.totalPart2} apps (${t12.totalPart2KwAc.toFixed(1)} kW), Interconnected: ${t12.totalInterconnected} (${t12.totalInterconnectedKwAc.toFixed(1)} kW)
+${input.cashFlowSummary ? `
+CASH FLOW DATA (Last 12 Months — month shown is the payment month, M+1 from Part II verification):
+${input.cashFlowSummary.rows12Month.map((r) => `${r.month}: VendorFee=$${r.vendorFee.toFixed(2)}, CcAuth=$${r.ccAuthCollateral.toFixed(2)}, AddlColl=$${r.additionalCollateral.toFixed(2)}, Total=$${r.totalCashFlow.toFixed(2)}, Projects=${r.projectCount}`).join("\n")}
 
+Cash Flow 12-Month Totals: Vendor Fee Revenue: $${input.cashFlowSummary.totalVendorFee12Mo.toFixed(2)}, Collateral: $${input.cashFlowSummary.totalCollateral12Mo.toFixed(2)}, Total Cash Flow: $${input.cashFlowSummary.totalCashFlow12Mo.toFixed(2)}
+` : ""}
 Generate the pipeline analysis report now.`,
         };
 

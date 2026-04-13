@@ -145,6 +145,20 @@ type PipelineMonthRow = {
   prevInterconnectedKwAc: number;
 };
 
+type PipelineCashFlowRow = {
+  month: string; // "YYYY-MM" — cash flow month (Part II month + 1)
+  vendorFee: number;
+  ccAuthCollateral: number;
+  additionalCollateral: number;
+  totalCashFlow: number;
+  projectCount: number;
+  prevVendorFee: number;
+  prevCcAuthCollateral: number;
+  prevAdditionalCollateral: number;
+  prevTotalCashFlow: number;
+  prevProjectCount: number;
+};
+
 type AnnualVintageAggregate = {
   deliveryStartDate: Date | null;
   deliveryStartRaw: string;
@@ -2571,6 +2585,7 @@ export default function SolarRecDashboard() {
   const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
   const [pipelineKwRange, setPipelineKwRange] = useState<"3year" | "12month">("3year");
   const [pipelineInterconnectedRange, setPipelineInterconnectedRange] = useState<"3year" | "12month">("3year");
+  const [pipelineCashFlowRange, setPipelineCashFlowRange] = useState<"3year" | "12month">("3year");
   const [pipelineReportLoading, setPipelineReportLoading] = useState(false);
   const generatePipelineReport = trpc.openai.generatePipelineReport.useMutation();
   const isContractsTabActive = activeTab === "contracts";
@@ -2582,6 +2597,7 @@ export default function SolarRecDashboard() {
   const isForecastTabActive = activeTab === "forecast";
   const isAlertsTabActive = activeTab === "alerts";
   const isComparisonsTabActive = activeTab === "comparisons";
+  const isPipelineTabActive = activeTab === "app-pipeline";
   const isFinancialsTabActive = activeTab === "financials";
   const isDataQualityTabActive = activeTab === "data-quality";
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
@@ -8778,7 +8794,7 @@ export default function SolarRecDashboard() {
 
   /** Build alternating 4-month shaded bands for pipeline charts.
    *  Returns ReferenceArea x1/x2 pairs for every other group of 4. */
-  const pipelineBands = useCallback((rows: PipelineMonthRow[]) => {
+  const pipelineBands = useCallback((rows: Array<{ month: string }>) => {
     if (rows.length === 0) return [];
     const bands: Array<{ x1: string; x2: string }> = [];
     let i = 0;
@@ -8798,10 +8814,14 @@ export default function SolarRecDashboard() {
 
   /** Determine which 4-month group index a row belongs to (0-based from the start of the list).
    *  Even groups = white, odd groups = shaded. */
-  const pipelineRowGroupIndex = useCallback((rows: PipelineMonthRow[], month: string) => {
+  const pipelineRowGroupIndex = useCallback((rows: Array<{ month: string }>, month: string) => {
     const idx = rows.findIndex((r) => r.month === month);
     return Math.floor(idx / 4);
   }, []);
+
+  // Ref for cash flow rows — defined later (after contractScanResultsQuery),
+  // but needed by handleGeneratePipelineReport which is defined before.
+  const cashFlowRows12MonthRef = useRef<PipelineCashFlowRow[]>([]);
 
   /** Generate a PDF pipeline report with ChatGPT analysis + data tables. */
   const handleGeneratePipelineReport = useCallback(async () => {
@@ -8828,6 +8848,22 @@ export default function SolarRecDashboard() {
         twelveMonth: sumFields(completed12Month),
       };
 
+      // Build cash flow summary for the report
+      const completedCashFlow12Mo = cashFlowRows12MonthRef.current.filter((r) => r.month < currentMonth);
+      const cashFlowSummary = completedCashFlow12Mo.length > 0 ? {
+        rows12Month: completedCashFlow12Mo.map((r) => ({
+          month: r.month,
+          vendorFee: r.vendorFee,
+          ccAuthCollateral: r.ccAuthCollateral,
+          additionalCollateral: r.additionalCollateral,
+          totalCashFlow: r.totalCashFlow,
+          projectCount: r.projectCount,
+        })),
+        totalVendorFee12Mo: completedCashFlow12Mo.reduce((s, r) => s + r.vendorFee, 0),
+        totalCollateral12Mo: completedCashFlow12Mo.reduce((s, r) => s + r.ccAuthCollateral + r.additionalCollateral, 0),
+        totalCashFlow12Mo: completedCashFlow12Mo.reduce((s, r) => s + r.totalCashFlow, 0),
+      } : undefined;
+
       // Call ChatGPT for analysis
       let result: { analysis: string };
       try {
@@ -8836,6 +8872,7 @@ export default function SolarRecDashboard() {
           rows3Year: completed3Year,
           rows12Month: completed12Month,
           summaryTotals,
+          cashFlowSummary,
         });
       } catch (apiErr: any) {
         const apiMsg = apiErr?.message || apiErr?.data?.message || JSON.stringify(apiErr);
@@ -9050,6 +9087,40 @@ export default function SolarRecDashboard() {
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" } },
       });
+      y = (doc as any).lastAutoTable?.finalY ? (doc as any).lastAutoTable.finalY + 28 : y + 140;
+
+      // ── Cash Flow Table ──
+      if (cashFlowSummary && cashFlowSummary.rows12Month.length > 0) {
+        ensureSpace(120);
+        sectionHeading("Cash Flow Summary (Last 12 Months)");
+
+        autoTable(doc, {
+          startY: y,
+          margin: { left: ml, right: mr },
+          head: [["Month", "Vendor Fee", "CC Auth", "Add'l Coll.", "Total", "Projects"]],
+          body: cashFlowSummary.rows12Month.map((r) => [
+            r.month,
+            formatCurrency(r.vendorFee),
+            formatCurrency(r.ccAuthCollateral),
+            formatCurrency(r.additionalCollateral),
+            formatCurrency(r.totalCashFlow),
+            formatNumber(r.projectCount),
+          ]),
+          styles: { fontSize: 8, cellPadding: 5, lineColor: slate200, lineWidth: 0.5 },
+          headStyles: { fillColor: navy, textColor: 255, fontStyle: "bold", fontSize: 8 },
+          alternateRowStyles: { fillColor: [248, 250, 252] },
+          columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "right" } },
+          foot: [[
+            "Total",
+            formatCurrency(cashFlowSummary.totalVendorFee12Mo),
+            "",
+            "",
+            formatCurrency(cashFlowSummary.totalCashFlow12Mo),
+            "",
+          ]],
+          footStyles: { fillColor: [241, 245, 249], textColor: navy, fontStyle: "bold", fontSize: 8 },
+        });
+      }
 
       // ── Footer on every page ──
       const totalPages = doc.getNumberOfPages();
@@ -9530,7 +9601,7 @@ const financialRevenueAtRisk = useMemo(() => {
 
 // ── Financials: Profit & Collateralization ──────────────────────
 const financialCsgIds = useMemo(() => {
-  if (!isFinancialsTabActive) return [];
+  if (!isFinancialsTabActive && !isPipelineTabActive) return [];
   const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
   const ids = new Set<string>();
   for (const row of mappingRows) {
@@ -9538,11 +9609,11 @@ const financialCsgIds = useMemo(() => {
     if (csgId) ids.add(csgId);
   }
   return Array.from(ids);
-}, [isFinancialsTabActive, datasets.abpCsgSystemMapping]);
+}, [isFinancialsTabActive, isPipelineTabActive, datasets.abpCsgSystemMapping]);
 
 const contractScanResultsQuery = trpc.abpSettlement.getContractScanResultsByCsgIds.useQuery(
   { csgIds: financialCsgIds },
-  { enabled: isFinancialsTabActive && financialCsgIds.length > 0 }
+  { enabled: (isFinancialsTabActive || isPipelineTabActive) && financialCsgIds.length > 0 }
 );
 const updateContractOverride = trpc.abpSettlement.updateContractOverride.useMutation();
 const rescanSingleContract = trpc.abpSettlement.rescanSingleContract.useMutation();
@@ -9746,6 +9817,124 @@ const financialProfitData = useMemo<{
   datasets.abpReport,
   localOverrides,
 ]);
+
+// ── Pipeline: Cash Flow by Month (M+1 from Part II verification) ──
+const pipelineCashFlowRows = useMemo<PipelineCashFlowRow[]>(() => {
+  const scanResults = contractScanResultsQuery.data ?? [];
+  if (scanResults.length === 0) return [];
+
+  // Build lookup maps (mirrors financialProfitData join chain)
+  const scanByCsgId = new Map<string, (typeof scanResults)[number]>();
+  for (const r of scanResults) scanByCsgId.set(r.csgId, r);
+
+  const mappingRows = datasets.abpCsgSystemMapping?.rows ?? [];
+  const csgIdByAppId = new Map<string, string>();
+  for (const row of mappingRows) {
+    const csgId = (row.csgId || row["CSG ID"] || "").trim();
+    const systemId = (row.systemId || row["System ID"] || "").trim();
+    if (csgId && systemId) csgIdByAppId.set(systemId, csgId);
+  }
+
+  const iccRows = datasets.abpIccReport3Rows?.rows ?? [];
+  const iccByAppId = new Map<string, { grossContractValue: number }>();
+  for (const row of iccRows) {
+    const appId = (
+      row["Application ID"] || row.Application_ID || row.application_id || ""
+    ).trim();
+    if (!appId) continue;
+    const gcv =
+      parseNumber(
+        row["Total REC Delivery Contract Value"] ||
+        row["REC Delivery Contract Value"] ||
+        row["Total Contract Value"]
+      ) ?? 0;
+    const rq =
+      parseNumber(
+        row["Total Quantity of RECs Contracted"] ||
+        row["Contracted SRECs"] ||
+        row.SRECs
+      ) ?? 0;
+    const rp = parseNumber(row["REC Price"]) ?? 0;
+    const gross = gcv > 0 ? gcv : rq * rp;
+    if (gross > 0) iccByAppId.set(appId, { grossContractValue: gross });
+  }
+
+  // Aggregate into monthly buckets keyed on cash-flow month (Part II month + 1)
+  type CfBucket = { vendorFee: number; ccAuth: number; addlColl: number; count: number };
+  const byMonth = new Map<string, CfBucket>();
+  const now = new Date();
+
+  for (const abpRow of part2VerifiedAbpRows) {
+    const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
+    if (!appId) continue;
+
+    const csgId = csgIdByAppId.get(appId);
+    if (!csgId) continue;
+    const scan = scanByCsgId.get(csgId);
+    const icc = iccByAppId.get(appId);
+    if (!scan || !icc) continue;
+
+    // Parse Part II verification date
+    const p2Raw = abpRow.Part_2_App_Verification_Date || abpRow.part_2_app_verification_date || "";
+    const p2Date = parsePart2VerificationDate(p2Raw);
+    if (!p2Date || p2Date > now) continue;
+
+    // Cash flow month = verification month + 1
+    const cfDate = new Date(p2Date.getFullYear(), p2Date.getMonth() + 1, 1);
+    const cfMonth = `${cfDate.getFullYear()}-${String(cfDate.getMonth() + 1).padStart(2, "0")}`;
+
+    const gcv = icc.grossContractValue;
+    const localOv = localOverrides.get(csgId);
+    const vfp = localOv?.vfp ?? scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
+    const vendorFee = roundMoney(gcv * (vfp / 100));
+    const ccAuth = scan.ccAuthorizationCompleted === false ? roundMoney(gcv * 0.05) : 0;
+    const acp = localOv?.acp ?? scan.overrideAdditionalCollateralPercent ?? scan.additionalCollateralPercent ?? 0;
+    const addlColl = roundMoney(gcv * (acp / 100));
+
+    const bucket = byMonth.get(cfMonth) ?? { vendorFee: 0, ccAuth: 0, addlColl: 0, count: 0 };
+    bucket.vendorFee = roundMoney(bucket.vendorFee + vendorFee);
+    bucket.ccAuth = roundMoney(bucket.ccAuth + ccAuth);
+    bucket.addlColl = roundMoney(bucket.addlColl + addlColl);
+    bucket.count += 1;
+    byMonth.set(cfMonth, bucket);
+  }
+
+  // Build rows with prior-year comparison
+  const sortedMonths = Array.from(byMonth.keys()).sort();
+  return sortedMonths.map((month) => {
+    const b = byMonth.get(month)!;
+    const [yearStr, monthStr] = month.split("-");
+    const prevMonth = `${Number(yearStr) - 1}-${monthStr}`;
+    const pb = byMonth.get(prevMonth);
+    return {
+      month,
+      vendorFee: b.vendorFee,
+      ccAuthCollateral: b.ccAuth,
+      additionalCollateral: b.addlColl,
+      totalCashFlow: roundMoney(b.vendorFee + b.ccAuth + b.addlColl),
+      projectCount: b.count,
+      prevVendorFee: pb?.vendorFee ?? 0,
+      prevCcAuthCollateral: pb?.ccAuth ?? 0,
+      prevAdditionalCollateral: pb?.addlColl ?? 0,
+      prevTotalCashFlow: pb ? roundMoney(pb.vendorFee + pb.ccAuth + pb.addlColl) : 0,
+      prevProjectCount: pb?.count ?? 0,
+    };
+  });
+}, [part2VerifiedAbpRows, contractScanResultsQuery.data, datasets.abpCsgSystemMapping, datasets.abpIccReport3Rows, localOverrides]);
+
+const cashFlowRows3Year = useMemo(() => {
+  const now = new Date();
+  const cutoff = `${now.getFullYear() - 3}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return pipelineCashFlowRows.filter((row) => row.month >= cutoff);
+}, [pipelineCashFlowRows]);
+
+const cashFlowRows12Month = useMemo(() => {
+  const now = new Date();
+  const cutoffDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+  const cutoff = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth() + 1).padStart(2, "0")}`;
+  return pipelineCashFlowRows.filter((row) => row.month >= cutoff);
+}, [pipelineCashFlowRows]);
+cashFlowRows12MonthRef.current = cashFlowRows12Month;
 
 // ── Financials: debug panel data (drive the collapsible diagnostic
 //    block under the profit table). Walks the same join chain as
@@ -13969,6 +14158,110 @@ const aiDataContext = useMemo(() => {
                     </TableBody>
                   </Table>
                 </div>
+              </CardContent>
+            </Card>
+
+            {/* ====== Cash Flow Pipeline ====== */}
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <CardTitle className="text-base">Cash Flow Pipeline</CardTitle>
+                    <CardDescription>
+                      Projected monthly cash flow to CSG. Part II verified in month M triggers an invoice on the 1st of M+1, with payment by end of M+1. Shows vendor fee revenue and collateral obligations.
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant={pipelineCashFlowRange === "3year" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineCashFlowRange("3year")}
+                    >
+                      Last 3 Years
+                    </Button>
+                    <Button
+                      variant={pipelineCashFlowRange === "12month" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => setPipelineCashFlowRange("12month")}
+                    >
+                      Last 12 Months
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {financialCsgIds.length === 0 ? (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    Cash flow data requires <strong>ABP CSG-System Mapping</strong>, <strong>ICC Report 3</strong>, and <strong>Contract Scan</strong> results.
+                    Upload these datasets and ensure contracts have been scanned to see projected cash flow.
+                  </div>
+                ) : (
+                  <>
+                    <div className="h-80 rounded-md border border-slate-200 bg-white p-2">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart
+                          data={pipelineCashFlowRange === "3year" ? cashFlowRows3Year : cashFlowRows12Month}
+                          margin={{ top: 8, right: 12, left: 4, bottom: 8 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                          {pipelineBands(pipelineCashFlowRange === "3year" ? cashFlowRows3Year : cashFlowRows12Month).map((band) => (
+                            <ReferenceArea key={band.x1} x1={band.x1} x2={band.x2} fill="#f1f5f9" fillOpacity={0.7} ifOverflow="extendDomain" />
+                          ))}
+                          <XAxis dataKey="month" tick={{ fontSize: 11 }} angle={-45} textAnchor="end" height={50} />
+                          <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => `$${formatNumber(v)}`} />
+                          <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                          <Legend />
+                          <Bar dataKey="vendorFee" stackId="cf" fill="#16a34a" name="Vendor Fee" />
+                          <Bar dataKey="ccAuthCollateral" stackId="cf" fill="#f59e0b" name="CC Auth Collateral" />
+                          <Bar dataKey="additionalCollateral" stackId="cf" fill="#ef4444" name="Add'l Collateral" />
+                          <Line type="monotone" dataKey="prevTotalCashFlow" stroke="#94a3b8" strokeDasharray="5 3" strokeWidth={2} dot={false} name="Total (Prior Year)" />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+
+                    <div className="overflow-x-auto rounded-md border border-slate-200">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Month</TableHead>
+                            <TableHead className="text-right">Vendor Fee</TableHead>
+                            <TableHead className="text-right">CC Auth</TableHead>
+                            <TableHead className="text-right">Add'l Coll.</TableHead>
+                            <TableHead className="text-right">Total</TableHead>
+                            <TableHead className="text-right">Projects</TableHead>
+                            <TableHead className="text-right text-slate-400">Prior Yr Total</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {(pipelineCashFlowRange === "3year" ? cashFlowRows3Year : cashFlowRows12Month).length === 0 ? (
+                            <TableRow>
+                              <TableCell colSpan={7} className="py-6 text-center text-slate-500">
+                                No cash flow data available. Ensure Part II verified projects have CSG mappings, ICC data, and scanned contracts.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            (pipelineCashFlowRange === "3year" ? cashFlowRows3Year : cashFlowRows12Month).map((row) => {
+                              const rows = pipelineCashFlowRange === "3year" ? cashFlowRows3Year : cashFlowRows12Month;
+                              const groupIdx = pipelineRowGroupIndex(rows, row.month);
+                              const shaded = groupIdx % 2 === 1;
+                              return (
+                                <TableRow key={row.month} className={shaded ? "bg-slate-50" : ""}>
+                                  <TableCell className="font-medium">{row.month}</TableCell>
+                                  <TableCell className="text-right">{formatCurrency(row.vendorFee)}</TableCell>
+                                  <TableCell className="text-right">{formatCurrency(row.ccAuthCollateral)}</TableCell>
+                                  <TableCell className="text-right">{formatCurrency(row.additionalCollateral)}</TableCell>
+                                  <TableCell className="text-right font-semibold">{formatCurrency(row.totalCashFlow)}</TableCell>
+                                  <TableCell className="text-right">{formatNumber(row.projectCount)}</TableCell>
+                                  <TableCell className="text-right text-slate-400">{formatCurrency(row.prevTotalCashFlow)}</TableCell>
+                                </TableRow>
+                              );
+                            })
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>)}
