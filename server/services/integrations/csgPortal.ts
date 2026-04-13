@@ -1,3 +1,5 @@
+import dns from "node:dns";
+
 export type CsgPortalCredentials = {
   email: string;
   password: string;
@@ -28,6 +30,56 @@ type BinaryRequestResult = {
 };
 
 const CSG_PORTAL_REQUEST_TIMEOUT_MS = 45_000;
+let CSG_DNS_IPV4_FIRST_CONFIGURED = false;
+
+function ensureIpv4FirstDnsOrder(): void {
+  if (CSG_DNS_IPV4_FIRST_CONFIGURED) return;
+  try {
+    // Cloudflare-backed hosts often return AAAA first. In runtimes with no IPv6 route,
+    // this can throw ENETUNREACH. Force IPv4-first for outbound portal requests.
+    dns.setDefaultResultOrder("ipv4first");
+    CSG_DNS_IPV4_FIRST_CONFIGURED = true;
+  } catch {
+    // Best effort; if this fails, requests still proceed with Node defaults.
+  }
+}
+
+function containsNetUnreachableError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [error];
+
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+
+    if (typeof current === "string") {
+      if (current.includes("ENETUNREACH")) return true;
+      continue;
+    }
+
+    if (typeof current !== "object") continue;
+
+    const anyCurrent = current as {
+      code?: unknown;
+      message?: unknown;
+      cause?: unknown;
+      errors?: unknown;
+    };
+
+    if (anyCurrent.code === "ENETUNREACH") return true;
+    if (typeof anyCurrent.message === "string" && anyCurrent.message.includes("ENETUNREACH")) {
+      return true;
+    }
+
+    if (anyCurrent.cause) stack.push(anyCurrent.cause);
+    if (Array.isArray(anyCurrent.errors)) {
+      anyCurrent.errors.forEach((nested) => stack.push(nested));
+    }
+  }
+
+  return false;
+}
 
 function clean(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -262,6 +314,7 @@ export class CsgPortalClient {
 
   constructor(private readonly credentials: CsgPortalCredentials) {
     this.baseUrl = normalizeBaseUrl(credentials.baseUrl);
+    ensureIpv4FirstDnsOrder();
   }
 
   private buildCookieHeader(): string {
@@ -304,6 +357,13 @@ export class CsgPortalClient {
         signal: controller.signal,
       });
     } catch (error) {
+      if (!controller.signal.aborted && containsNetUnreachableError(error)) {
+        throw new Error(
+          `Portal request failed with ENETUNREACH while requesting ${requestLabel}. ` +
+            `The runtime cannot reach the target network path.`
+        );
+      }
+
       if (
         (error instanceof Error && error.name === "AbortError") ||
         String(error).toLowerCase().includes("aborted")
