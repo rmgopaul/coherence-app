@@ -395,11 +395,27 @@ const dashboardRouter = t.router({
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
         "../services/core/scheduleBImportJobRunner"
       );
+      const { isCsgScheduleBImportRunnerActive, runCsgScheduleBImportJob } = await import(
+        "../services/core/csgScheduleBImportJobRunner"
+      );
       if (
         (job.status === "queued" || job.status === "running") &&
-        !isScheduleBImportRunnerActive(job.id)
+        !isScheduleBImportRunnerActive(job.id) &&
+        !isCsgScheduleBImportRunnerActive(job.id)
       ) {
-        void runScheduleBImportJob(job.id);
+        const { listAllUploadedScheduleBImportFiles, getScheduleBImportCsgIdsForJob } = await import("../db");
+        const [uploadedFiles, queuedCsgIds] = await Promise.all([
+          listAllUploadedScheduleBImportFiles(job.id),
+          getScheduleBImportCsgIdsForJob(job.id),
+        ]);
+
+        if (uploadedFiles.length > 0) {
+          // Classic Schedule B file import path (local upload / Drive link).
+          void runScheduleBImportJob(job.id);
+        } else if (queuedCsgIds.length > 0) {
+          // CSG portal import path (no scheduleBImportFiles rows expected).
+          void runCsgScheduleBImportJob(job.id);
+        }
       }
 
       return {
@@ -450,11 +466,27 @@ const dashboardRouter = t.router({
       const { isScheduleBImportRunnerActive, runScheduleBImportJob } = await import(
         "../services/core/scheduleBImportJobRunner"
       );
+      const { isCsgScheduleBImportRunnerActive, runCsgScheduleBImportJob } = await import(
+        "../services/core/csgScheduleBImportJobRunner"
+      );
       if (
         (job.status === "queued" || job.status === "running") &&
-        !isScheduleBImportRunnerActive(job.id)
+        !isScheduleBImportRunnerActive(job.id) &&
+        !isCsgScheduleBImportRunnerActive(job.id)
       ) {
-        void runScheduleBImportJob(job.id);
+        const { listAllUploadedScheduleBImportFiles, getScheduleBImportCsgIdsForJob } = await import("../db");
+        const [uploadedFiles, queuedCsgIds] = await Promise.all([
+          listAllUploadedScheduleBImportFiles(job.id),
+          getScheduleBImportCsgIdsForJob(job.id),
+        ]);
+
+        if (uploadedFiles.length > 0) {
+          // Classic Schedule B file import path (local upload / Drive link).
+          void runScheduleBImportJob(job.id);
+        } else if (queuedCsgIds.length > 0) {
+          // CSG portal import path (no scheduleBImportFiles rows expected).
+          void runCsgScheduleBImportJob(job.id);
+        }
       }
 
       const totalFiles = job.totalFiles ?? 0;
