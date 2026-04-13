@@ -355,6 +355,10 @@ async function fetchSystemsFromEndpoint(
 
     const root = asRecord(raw);
     const code = toNullableNumber(root.code);
+    // 1001 = "No data" — valid empty result, not an error
+    if (code === 1001) {
+      return { systems: [], total: 0, error: null };
+    }
     if (code !== 0) {
       lastError = `API returned code ${code}`;
       if (page === 1) return { systems: [], total: 0, error: lastError };
