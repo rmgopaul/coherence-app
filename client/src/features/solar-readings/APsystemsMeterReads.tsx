@@ -464,8 +464,13 @@ export default function APsystemsMeterReads() {
         ids = systems.map((s) => s.systemId);
         const profileSummary = result.perProfile
           .map((p) => {
-            const parts = [`${p.connectionName}: ${p.systemCount}`];
-            if ("ownCount" in p) parts.push(`(${p.ownCount}/${p.ownTotal} own, ${p.partnerCount}/${p.partnerTotal} partner)`);
+            const parts = [`${p.connectionName}: ${p.systemCount} unique`];
+            if ("ownCount" in p) {
+              const partnerDetail = "partnerRawEntries" in p && p.partnerRawEntries !== p.partnerCount
+                ? `${p.partnerCount} unique from ${p.partnerRawEntries} entries`
+                : `${p.partnerCount}`;
+              parts.push(`(${p.ownCount}/${p.ownTotal} own, ${partnerDetail}/${p.partnerTotal} partner)`);
+            }
             if (p.error) parts.push(`(${p.error})`);
             return parts.join(" ");
           })

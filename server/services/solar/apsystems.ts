@@ -417,6 +417,10 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
     fetchSystemsFromEndpoint(context, "/installer/api/v2/partnerSystems"),
   ]);
 
+  // Count unique SIDs per source before cross-dedup
+  const uniqueOwnSids = new Set(own.systems.map((s) => s.systemId)).size;
+  const uniquePartnerSids = new Set(partner.systems.map((s) => s.systemId)).size;
+
   // Deduplicate by SID (own systems take priority)
   const deduped = deduplicateById(
     [...own.systems, ...partner.systems],
@@ -424,9 +428,9 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
   );
 
   const parts: string[] = [];
-  parts.push(`${own.systems.length} own`);
+  parts.push(`${uniqueOwnSids} own`);
   if (own.error) parts.push(`own error: ${own.error}`);
-  parts.push(`${partner.systems.length} partner`);
+  parts.push(`${uniquePartnerSids} unique partner from ${partner.systems.length} entries`);
   if (partner.error) parts.push(`partner error: ${partner.error}`);
 
   return {
@@ -437,11 +441,13 @@ export async function listSystems(context: APsystemsApiContext): Promise<{
       partnerSystems: partner.total,
       partnerError: partner.error,
       fetchedOwn: own.systems.length,
+      uniqueOwnSids,
       fetchedPartner: partner.systems.length,
+      uniquePartnerSids,
       totalDeduped: deduped.length,
       message:
         deduped.length > 0
-          ? `Found ${deduped.length} SID(s) (${parts.join(", ")}).`
+          ? `Found ${deduped.length} unique SID(s) (${parts.join(", ")}).`
           : `No systems found.${own.error || partner.error ? ` Errors: ${[own.error, partner.error].filter(Boolean).join("; ")}` : ""} Upload a CSV with System IDs instead.`,
     },
   };

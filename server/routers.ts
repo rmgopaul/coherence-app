@@ -12320,16 +12320,17 @@ Generate the pipeline analysis report now.`,
             return {
               connectionId: conn.id, connectionName: conn.name,
               systemCount: result.systems.length,
-              ownCount: (raw.fetchedOwn as number) ?? 0,
+              ownCount: (raw.uniqueOwnSids as number) ?? 0,
               ownTotal: (raw.ownSystems as number) ?? 0,
-              partnerCount: (raw.fetchedPartner as number) ?? 0,
+              partnerCount: (raw.uniquePartnerSids as number) ?? 0,
               partnerTotal: (raw.partnerSystems as number) ?? 0,
+              partnerRawEntries: (raw.fetchedPartner as number) ?? 0,
               error: (raw.ownError || raw.partnerError) ? `own: ${raw.ownError ?? "ok"}, partner: ${raw.partnerError ?? "ok"}` : null,
               systems,
             };
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            return { connectionId: conn.id, connectionName: conn.name, systemCount: 0, ownCount: 0, ownTotal: 0, partnerCount: 0, partnerTotal: 0, error: msg, systems: [] as TaggedSystem[] };
+            return { connectionId: conn.id, connectionName: conn.name, systemCount: 0, ownCount: 0, ownTotal: 0, partnerCount: 0, partnerTotal: 0, partnerRawEntries: 0, error: msg, systems: [] as TaggedSystem[] };
           }
         })
       );
