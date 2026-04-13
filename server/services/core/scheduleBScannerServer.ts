@@ -188,13 +188,42 @@ function extractYearsFromPage(page: PdfPageData): ScheduleBDeliveryYear[] {
   return years;
 }
 
+export function extractScheduleBDeliveryYearsFromText(text: string): ScheduleBDeliveryYear[] {
+  const years: ScheduleBDeliveryYear[] = [];
+  const seen = new Set<string>();
+  const normalized = normalizeText(text);
+  const regex = /\b(20\d{2})\s*-\s*(20\d{2})\s+([\d,]+)\b/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(normalized)) !== null) {
+    const startYear = Number(match[1]);
+    const endYear = Number(match[2]);
+    if (!Number.isFinite(startYear) || endYear !== startYear + 1) continue;
+
+    const recQuantity = parseInt(match[3].replace(/,/g, ""), 10);
+    if (!Number.isFinite(recQuantity) || recQuantity < 0) continue;
+
+    const label = `${startYear}-${endYear}`;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    years.push({ label, startYear, recQuantity });
+  }
+
+  years.sort((a, b) => a.startYear - b.startYear);
+  return years;
+}
+
 function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {
   // Prefer the page with the canonical header text.
   const schedulePage = pages.find((page) =>
     /Delivery\s+Year\s+Expected\s+REC\s+Quantity/i.test(page.text)
   );
   if (schedulePage) {
-    return extractYearsFromPage(schedulePage);
+    const positionedYears = extractYearsFromPage(schedulePage);
+    if (positionedYears.length > 0) return positionedYears;
+
+    const textYears = extractScheduleBDeliveryYearsFromText(schedulePage.text);
+    if (textYears.length > 0) return textYears;
   }
 
   // Fallback: some PDFs have form-fill text only (labels are in the
@@ -203,6 +232,9 @@ function parseDeliveryTable(pages: PdfPageData[]): ScheduleBDeliveryYear[] {
   for (const page of pages) {
     const years = extractYearsFromPage(page);
     if (years.length >= 5) return years; // credible delivery table
+
+    const textYears = extractScheduleBDeliveryYearsFromText(page.text);
+    if (textYears.length >= 5) return textYears;
   }
   return [];
 }
