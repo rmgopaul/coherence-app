@@ -336,7 +336,7 @@ async function fetchSystemsFromEndpoint(
 ): Promise<{ systems: APsystemsSystem[]; total: number; error: string | null }> {
   const allSystems: APsystemsSystem[] = [];
   let page = 1;
-  const size = 50; // max page size per API docs
+  let pageSize = 50; // requested size; may be capped by API on first response
   let totalPages = 1;
   let totalCount = 0;
   let lastError: string | null = null;
@@ -344,18 +344,18 @@ async function fetchSystemsFromEndpoint(
   while (page <= totalPages) {
     let raw: unknown;
     try {
-      raw = await postAPsystemsJson(endpointPath, context, { page, size });
+      raw = await postAPsystemsJson(endpointPath, context, {
+        page,
+        size: pageSize,
+      });
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      // First page failure → endpoint doesn't exist for this account type
       if (page === 1) return { systems: [], total: 0, error: lastError };
-      // Later page failure → return what we have so far with the error
       break;
     }
 
     const root = asRecord(raw);
     const code = toNullableNumber(root.code);
-    // 1001 = "No data" — valid empty result, not an error
     if (code === 1001) {
       return { systems: [], total: 0, error: null };
     }
@@ -368,10 +368,17 @@ async function fetchSystemsFromEndpoint(
     const data = asRecord(root.data);
     const total = toNullableNumber(data.total) ?? 0;
     totalCount = total;
-    // Use the API's actual page size, not our requested size —
-    // some endpoints cap lower than 50 (e.g. partnerSystems may use 10)
-    const actualSize = toNullableNumber(data.size) ?? size;
+    const returnedSize = toNullableNumber(data.size);
     const systemsList = asRecordArray(data.systems);
+
+    // On the first page, detect if the API capped our requested page size.
+    // Use the API's actual size for ALL subsequent requests so page offsets
+    // align with what the server expects. Without this, requesting page=2
+    // with size=50 when the API uses size=10 skips items 10–49.
+    if (page === 1 && returnedSize && returnedSize < pageSize) {
+      pageSize = returnedSize;
+    }
+    totalPages = Math.ceil(total / (returnedSize || pageSize));
 
     for (const row of systemsList) {
       const sid = toNullableString(row.sid);
@@ -393,10 +400,10 @@ async function fetchSystemsFromEndpoint(
       });
     }
 
-    totalPages = Math.ceil(total / actualSize);
-    page++;
+    // Stop if page returned no items (even if total says more exist)
+    if (systemsList.length === 0) break;
 
-    // Safety cap to avoid runaway pagination
+    page++;
     if (page > 200) break;
   }
 
