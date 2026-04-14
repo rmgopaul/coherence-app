@@ -54,6 +54,27 @@ export function registerOAuthRoutes(app: Express) {
         return;
       }
 
+      // Migration: if a user exists with this email but a different openId
+      // (e.g., from a previous OAuth provider), update their openId to the
+      // new Google one so all integrations carry over seamlessly.
+      if (userInfo.email) {
+        const existingByEmail = await db.getUserByEmail(userInfo.email);
+        if (existingByEmail && existingByEmail.openId !== userInfo.openId) {
+          // Also clean up any orphan record that may have been created with
+          // the new openId from a prior login attempt.
+          const orphan = await db.getUserByOpenId(userInfo.openId);
+          if (orphan && orphan.id !== existingByEmail.id) {
+            console.log(`[OAuth] Removing orphan user ${orphan.id} (openId: ${userInfo.openId})`);
+            await db.deleteUser(orphan.id);
+          }
+
+          console.log(
+            `[OAuth] Migrating user ${existingByEmail.id} openId: ${existingByEmail.openId} -> ${userInfo.openId}`
+          );
+          await db.updateUserOpenId(existingByEmail.id, userInfo.openId);
+        }
+      }
+
       await db.upsertUser({
         openId: userInfo.openId,
         name: userInfo.name || null,

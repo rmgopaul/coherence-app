@@ -518,6 +518,24 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   }
 }
 
+export async function deleteUser(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("delete user", async () =>
+    db.delete(users).where(eq(users.id, userId))
+  );
+}
+
+export async function updateUserOpenId(userId: number, newOpenId: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("update user openId", async () =>
+    db.update(users).set({ openId: newOpenId }).where(eq(users.id, userId))
+  );
+}
+
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
   if (!db) {
