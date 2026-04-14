@@ -79,7 +79,7 @@ private fun driveFileColor(mimeType: String): Color = when {
 @Composable
 fun DriveScreen(onBack: () -> Unit) {
   val app = LocalApp.current
-  val repo = app.googleRepository
+  val repo = app.container.googleRepository
   val scope = rememberCoroutineScope()
   val context = LocalContext.current
 

@@ -9,6 +9,31 @@ function getQueryParam(req: Request, key: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * Decode the OAuth state parameter.
+ * Supports two formats:
+ *  - Legacy: base64(redirectUri)
+ *  - Extended: base64(JSON { r: redirectUri, p?: platform })
+ */
+function decodeOAuthState(state: string): {
+  redirectUri: string;
+  platform?: string;
+} {
+  const decoded = atob(state);
+  try {
+    const parsed = JSON.parse(decoded);
+    if (typeof parsed === "object" && parsed !== null && typeof parsed.r === "string") {
+      return {
+        redirectUri: parsed.r,
+        platform: typeof parsed.p === "string" ? parsed.p : undefined,
+      };
+    }
+  } catch {
+    // Not JSON — legacy format
+  }
+  return { redirectUri: decoded };
+}
+
 export function registerOAuthRoutes(app: Express) {
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
     const code = getQueryParam(req, "code");
@@ -20,7 +45,8 @@ export function registerOAuthRoutes(app: Express) {
     }
 
     try {
-      const tokenResponse = await sdk.exchangeCodeForToken(code, state);
+      const { redirectUri, platform } = decodeOAuthState(state);
+      const tokenResponse = await sdk.exchangeCodeForToken(code, redirectUri);
       const userInfo = await sdk.getUserInfo(tokenResponse.access_token);
 
       if (!userInfo.openId) {
@@ -47,10 +73,16 @@ export function registerOAuthRoutes(app: Express) {
         twoFactorVerified: !has2FA, // false if 2FA enabled (requires verification)
       });
 
-      const cookieOptions = getSessionCookieOptions(req);
-      res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-
-      res.redirect(302, "/");
+      if (platform === "android") {
+        // Android app: redirect to custom scheme with token in URL
+        const callbackUrl = `coherence://auth-callback?token=${encodeURIComponent(sessionToken)}`;
+        res.redirect(302, callbackUrl);
+      } else {
+        // Web: set session cookie and redirect to dashboard
+        const cookieOptions = getSessionCookieOptions(req);
+        res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
+        res.redirect(302, "/");
+      }
     } catch (error) {
       console.error("[OAuth] Callback failed", error);
       res.status(500).json({ error: "OAuth callback failed" });

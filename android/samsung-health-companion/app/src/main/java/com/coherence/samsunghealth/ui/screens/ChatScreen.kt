@@ -72,7 +72,7 @@ private val MessageTimestampFormatter = DateTimeFormatter.ofPattern("MMM d, h:mm
 @Composable
 fun ChatScreen() {
   val app = LocalApp.current
-  val chatRepo = app.chatRepository
+  val chatRepo = app.container.chatRepository
   var selectedConversation by remember { mutableStateOf<Conversation?>(null) }
 
   if (selectedConversation != null) {

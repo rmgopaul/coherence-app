@@ -24,14 +24,14 @@ const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 
 class SDKServer {
   /**
-   * Exchange Google OAuth authorization code for tokens
+   * Exchange Google OAuth authorization code for tokens.
+   * @param code - The authorization code from Google
+   * @param redirectUri - The redirect URI used in the original auth request
    */
   async exchangeCodeForToken(
     code: string,
-    state: string
+    redirectUri: string
   ): Promise<GoogleTokenResponse> {
-    const redirectUri = atob(state);
-
     const { data } = await axios.post<GoogleTokenResponse>(
       GOOGLE_TOKEN_URL,
       new URLSearchParams({

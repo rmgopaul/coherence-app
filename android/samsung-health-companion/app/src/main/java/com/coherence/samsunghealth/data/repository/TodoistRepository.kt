@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.data.repository
 
+import android.util.Log
 import com.coherence.samsunghealth.data.model.TodoistProject
 import com.coherence.samsunghealth.data.model.TodoistTask
 import com.coherence.samsunghealth.network.TrpcClient
@@ -9,9 +10,11 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 
-class TodoistRepository(private val trpc: TrpcClient) {
+class TodoistRepository(private val trpc: TrpcClient, private val json: Json) {
 
-  private val json = Json { ignoreUnknownKeys = true }
+  companion object {
+    private const val TAG = "TodoistRepository"
+  }
 
   suspend fun getTasks(filter: String? = null): List<TodoistTask> {
     val input = filter?.let {
@@ -31,7 +34,8 @@ class TodoistRepository(private val trpc: TrpcClient) {
       val input = buildJsonObject { put("taskId", taskId) }
       trpc.mutate("todoist.completeTask", input)
       true
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "completeTask failed", e)
       false
     }
   }
@@ -55,7 +59,8 @@ class TodoistRepository(private val trpc: TrpcClient) {
       }
       val result = trpc.mutate("todoist.createTask", input)
       json.decodeFromJsonElement(TodoistTask.serializer(), result)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "createTask failed", e)
       null
     }
   }

@@ -13,7 +13,7 @@ export const getLoginUrl = () => {
     return "/";
   }
   const redirectUri = `${window.location.origin}/api/oauth/callback`;
-  const state = btoa(redirectUri);
+  const state = btoa(JSON.stringify({ r: redirectUri }));
 
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.searchParams.set("client_id", clientId);

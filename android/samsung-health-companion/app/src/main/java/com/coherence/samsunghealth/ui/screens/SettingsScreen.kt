@@ -46,7 +46,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.coherence.samsunghealth.data.model.AppPreferences
@@ -74,7 +73,7 @@ private val DashboardWidgets = listOf(
 fun SettingsScreen(onBack: () -> Unit) {
   val app = LocalApp.current
   val scope = rememberCoroutineScope()
-  val preferences by app.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
+  val preferences by app.container.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
 
   var user by remember { mutableStateOf<User?>(null) }
   var serverReachable by remember { mutableStateOf<Boolean?>(null) }
@@ -82,7 +81,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
   LaunchedEffect(Unit) {
     try {
-      user = app.authRepository.getMe()
+      user = app.container.authRepository.getMe()
       serverReachable = true
     } catch (_: Exception) {
       serverReachable = false
@@ -115,7 +114,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             options = ThemeMode.entries.map { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
             selectedIndex = ThemeMode.entries.indexOf(preferences.themeMode),
             onSelected = { index ->
-              scope.launch { app.appPreferencesRepository.setThemeMode(ThemeMode.entries[index]) }
+              scope.launch { app.container.appPreferencesRepository.setThemeMode(ThemeMode.entries[index]) }
             },
           )
           SettingToggle(
@@ -123,7 +122,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             subtitle = "Use Android dynamic color palette when available",
             checked = preferences.dynamicColorEnabled,
             onCheckedChange = { enabled ->
-              scope.launch { app.appPreferencesRepository.setDynamicColorEnabled(enabled) }
+              scope.launch { app.container.appPreferencesRepository.setDynamicColorEnabled(enabled) }
             },
           )
           SettingToggle(
@@ -131,7 +130,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             subtitle = "Use OLED-friendly black surfaces in dark mode",
             checked = preferences.trueBlackEnabled,
             onCheckedChange = { enabled ->
-              scope.launch { app.appPreferencesRepository.setTrueBlackEnabled(enabled) }
+              scope.launch { app.container.appPreferencesRepository.setTrueBlackEnabled(enabled) }
             },
           )
         }
@@ -147,7 +146,7 @@ fun SettingsScreen(onBack: () -> Unit) {
               subtitle = "Show on dashboard",
               checked = !preferences.hiddenWidgets.contains(widgetId),
               onCheckedChange = { visible ->
-                scope.launch { app.appPreferencesRepository.setWidgetHidden(widgetId, !visible) }
+                scope.launch { app.container.appPreferencesRepository.setWidgetHidden(widgetId, !visible) }
               },
             )
           }
@@ -162,7 +161,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             selectedIndex = listOf(25, 50, 90).indexOf(preferences.focusDurationMinutes).coerceAtLeast(0),
             onSelected = { index ->
               val minutes = listOf(25, 50, 90)[index]
-              scope.launch { app.appPreferencesRepository.setFocusDurationMinutes(minutes) }
+              scope.launch { app.container.appPreferencesRepository.setFocusDurationMinutes(minutes) }
             },
           )
           OptionGroup(
@@ -171,7 +170,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             selectedIndex = listOf(5, 15, 30, 60).indexOf(preferences.refreshIntervalMinutes).coerceAtLeast(1),
             onSelected = { index ->
               val minutes = listOf(5, 15, 30, 60)[index]
-              scope.launch { app.appPreferencesRepository.setRefreshIntervalMinutes(minutes) }
+              scope.launch { app.container.appPreferencesRepository.setRefreshIntervalMinutes(minutes) }
             },
           )
           OptionGroup(
@@ -180,7 +179,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             selectedIndex = listOf(0, 1, 5, 15).indexOf(preferences.lockTimeoutMinutes).coerceAtLeast(2),
             onSelected = { index ->
               val minutes = listOf(0, 1, 5, 15)[index]
-              scope.launch { app.appPreferencesRepository.setLockTimeoutMinutes(minutes) }
+              scope.launch { app.container.appPreferencesRepository.setLockTimeoutMinutes(minutes) }
             },
           )
         }
@@ -223,14 +222,14 @@ fun SettingsScreen(onBack: () -> Unit) {
             Row(verticalAlignment = Alignment.CenterVertically) {
               when (serverReachable) {
                 true -> {
-                  Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF22C55E))
+                  Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                   Spacer(Modifier.width(6.dp))
-                  Text("Connected", color = Color(0xFF22C55E))
+                  Text("Connected", color = MaterialTheme.colorScheme.primary)
                 }
                 false -> {
-                  Icon(Icons.Default.Error, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFFEF4444))
+                  Icon(Icons.Default.Error, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.error)
                   Spacer(Modifier.width(6.dp))
-                  Text("Unreachable", color = Color(0xFFEF4444))
+                  Text("Unreachable", color = MaterialTheme.colorScheme.error)
                 }
                 null -> {
                   Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -256,7 +255,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             Text("Coherence", style = MaterialTheme.typography.bodyMedium)
-            Text("Version 0.2.1", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Version ${com.coherence.samsunghealth.BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
           }
         }
       }
@@ -266,7 +265,7 @@ fun SettingsScreen(onBack: () -> Unit) {
         Button(
           onClick = { showSignOutConfirm = true },
           modifier = Modifier.fillMaxWidth(),
-          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+          colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
         ) {
           Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(20.dp))
           Spacer(Modifier.width(8.dp))
@@ -287,7 +286,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             showSignOutConfirm = false
             app.authManager.clearSession()
           },
-          colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+          colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
         ) {
           Text("Sign out")
         }

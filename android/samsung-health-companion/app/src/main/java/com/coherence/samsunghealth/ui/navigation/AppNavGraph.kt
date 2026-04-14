@@ -26,8 +26,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.coherence.samsunghealth.data.model.ClockifyTimeEntry
 import com.coherence.samsunghealth.ui.LocalApp
+import com.coherence.samsunghealth.ui.screens.DashboardViewModel
 import com.coherence.samsunghealth.ui.screens.CalendarScreen
 import com.coherence.samsunghealth.ui.screens.ChatScreen
 import com.coherence.samsunghealth.ui.screens.ClockifyScreen
@@ -73,6 +75,9 @@ private val detailPopExit: ExitTransition = slideOutHorizontally(
 @Composable
 fun AppNavGraph() {
   val app = LocalApp.current
+  val dashboardViewModel: DashboardViewModel = viewModel(
+    factory = DashboardViewModel.Factory(app.container),
+  )
   val navController = rememberNavController()
   val currentRoute by navController.currentBackStackEntryAsState()
   val showBottomBar = currentRoute?.destination?.route in BottomNavTab.entries.map { it.route }
@@ -82,11 +87,12 @@ fun AppNavGraph() {
   LaunchedEffect(Unit) {
     while (true) {
       try {
-        val status = app.clockifyRepository.getStatus()
+        val status = app.container.clockifyRepository.getStatus()
         clockifyConnected = status?.connected == true
         currentClockifyEntry =
-          if (clockifyConnected) app.clockifyRepository.getCurrentEntry() else null
-      } catch (_: Exception) {
+          if (clockifyConnected) app.container.clockifyRepository.getCurrentEntry() else null
+      } catch (e: Exception) {
+        android.util.Log.w("AppNavGraph", "Clockify poll failed", e)
         clockifyConnected = false
         currentClockifyEntry = null
       }
@@ -113,7 +119,7 @@ fun AppNavGraph() {
     ) {
       NavHost(
         navController = navController,
-        startDestination = "dashboard",
+        startDestination = Routes.DASHBOARD,
         modifier = Modifier
           .fillMaxSize()
           .padding(top = if (clockifyConnected) 58.dp else 0.dp),
@@ -124,66 +130,66 @@ fun AppNavGraph() {
       ) {
       // --- Bottom nav tab routes (crossfade) ---
       composable(
-        route = "dashboard",
+        route = Routes.DASHBOARD,
         enterTransition = { tabEnter },
         exitTransition = { tabExit },
         popEnterTransition = { tabEnter },
         popExitTransition = { tabExit },
-      ) { DashboardScreen() }
+      ) { DashboardScreen(viewModel = dashboardViewModel) }
 
       composable(
-        route = "tasks",
+        route = Routes.TASKS,
         enterTransition = { tabEnter },
         exitTransition = { tabExit },
         popEnterTransition = { tabEnter },
         popExitTransition = { tabExit },
-      ) { TasksScreen() }
+      ) { TasksScreen(viewModel = dashboardViewModel) }
 
       composable(
-        route = "calendar",
+        route = Routes.CALENDAR,
         enterTransition = { tabEnter },
         exitTransition = { tabExit },
         popEnterTransition = { tabEnter },
         popExitTransition = { tabExit },
-      ) { CalendarScreen() }
+      ) { CalendarScreen(viewModel = dashboardViewModel) }
 
       composable(
-        route = "health",
+        route = Routes.HEALTH,
         enterTransition = { tabEnter },
         exitTransition = { tabExit },
         popEnterTransition = { tabEnter },
         popExitTransition = { tabExit },
-      ) { HealthScreen() }
+      ) { HealthScreen(viewModel = dashboardViewModel) }
 
       composable(
-        route = "more",
+        route = Routes.MORE,
         enterTransition = { tabEnter },
         exitTransition = { tabExit },
         popEnterTransition = { tabEnter },
         popExitTransition = { tabExit },
       ) {
         MoreScreen(
-          onNavigateToChat = { navController.navigate("chat") { launchSingleTop = true } },
-          onNavigateToNotes = { navController.navigate("notes") { launchSingleTop = true } },
-          onNavigateToSupplements = { navController.navigate("supplements") { launchSingleTop = true } },
-          onNavigateToHabits = { navController.navigate("habits") { launchSingleTop = true } },
-          onNavigateToDailyLog = { navController.navigate("dailylog") { launchSingleTop = true } },
-          onNavigateToDrive = { navController.navigate("drive") { launchSingleTop = true } },
-          onNavigateToClockify = { navController.navigate("clockify") { launchSingleTop = true } },
-          onNavigateToSettings = { navController.navigate("settings") { launchSingleTop = true } },
+          onNavigateToChat = { navController.navigate(Routes.CHAT) { launchSingleTop = true } },
+          onNavigateToNotes = { navController.navigate(Routes.NOTES) { launchSingleTop = true } },
+          onNavigateToSupplements = { navController.navigate(Routes.SUPPLEMENTS) { launchSingleTop = true } },
+          onNavigateToHabits = { navController.navigate(Routes.HABITS) { launchSingleTop = true } },
+          onNavigateToDailyLog = { navController.navigate(Routes.DAILY_LOG) { launchSingleTop = true } },
+          onNavigateToDrive = { navController.navigate(Routes.DRIVE) { launchSingleTop = true } },
+          onNavigateToClockify = { navController.navigate(Routes.CLOCKIFY) { launchSingleTop = true } },
+          onNavigateToSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
         )
       }
 
       // --- Detail / push routes (slide from right) ---
       // These inherit the NavHost-level slide transitions defined above.
-      composable("chat") { ChatScreen() }
-      composable("notes") { NotesScreen(onBack = { navController.popBackStack() }) }
-      composable("supplements") { SupplementsScreen(onBack = { navController.popBackStack() }) }
-      composable("habits") { HabitsScreen(onBack = { navController.popBackStack() }) }
-      composable("dailylog") { DailyLogScreen(onBack = { navController.popBackStack() }) }
-      composable("drive") { DriveScreen(onBack = { navController.popBackStack() }) }
-      composable("clockify") { ClockifyScreen(onBack = { navController.popBackStack() }) }
-      composable("settings") { SettingsScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.CHAT) { ChatScreen() }
+      composable(Routes.NOTES) { NotesScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.SUPPLEMENTS) { SupplementsScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.HABITS) { HabitsScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.DAILY_LOG) { DailyLogScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.DRIVE) { DriveScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.CLOCKIFY) { ClockifyScreen(onBack = { navController.popBackStack() }) }
+      composable(Routes.SETTINGS) { SettingsScreen(onBack = { navController.popBackStack() }) }
       }
 
       if (clockifyConnected) {

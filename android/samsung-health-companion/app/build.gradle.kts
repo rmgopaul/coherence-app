@@ -3,7 +3,6 @@ plugins {
   id("org.jetbrains.kotlin.android")
   id("org.jetbrains.kotlin.plugin.serialization")
   id("org.jetbrains.kotlin.plugin.compose")
-  id("com.google.devtools.ksp") version "2.1.10-1.0.31"
 }
 
 android {
@@ -22,11 +21,14 @@ android {
     buildConfigField("String", "WEBHOOK_URL", "\"https://app.coherence-rmg.com/api/webhooks/samsung-health\"")
     buildConfigField("String", "SYNC_KEY", "\"V5PYAoAFr6qjTSQ_hUtv5ZexAsh2PzX_OkdmZVCIyHM\"")
     buildConfigField("String", "BASE_URL", "\"https://app.coherence-rmg.com\"")
+    buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${project.findProperty("GOOGLE_CLIENT_ID") ?: ""}\"")
+    buildConfigField("String", "OAUTH_REDIRECT_SCHEME", "\"coherence\"")
   }
 
   buildTypes {
     release {
-      isMinifyEnabled = false
+      isMinifyEnabled = true
+      isShrinkResources = true
       proguardFiles(
         getDefaultProguardFile("proguard-android-optimize.txt"),
         "proguard-rules.pro"
@@ -70,11 +72,6 @@ dependencies {
 
   // Navigation
   implementation("androidx.navigation:navigation-compose:2.8.6")
-
-  // Room
-  implementation("androidx.room:room-runtime:2.7.0")
-  implementation("androidx.room:room-ktx:2.7.0")
-  ksp("androidx.room:room-compiler:2.7.0")
 
   // DataStore
   implementation("androidx.datastore:datastore-preferences:1.1.1")

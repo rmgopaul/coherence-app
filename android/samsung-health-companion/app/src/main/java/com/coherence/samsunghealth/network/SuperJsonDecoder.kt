@@ -3,10 +3,7 @@ package com.coherence.samsunghealth.network
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Decodes superjson-encoded responses from the tRPC server.
@@ -42,8 +39,4 @@ object SuperJsonDecoder {
     return responseBody
   }
 
-  fun decodeBatchedResults(responseBody: JsonElement): List<JsonElement> {
-    if (responseBody !is JsonArray) return listOf(decodeTrpcResult(responseBody))
-    return responseBody.jsonArray.map { decodeTrpcResult(it) }
-  }
 }

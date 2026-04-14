@@ -31,11 +31,11 @@ enum class BottomNavTab(
   val label: String,
   val icon: ImageVector,
 ) {
-  Dashboard("dashboard", "Dashboard", Icons.Default.Dashboard),
-  Tasks("tasks", "Tasks", Icons.Default.CheckCircle),
-  Calendar("calendar", "Calendar", Icons.Default.CalendarMonth),
-  Health("health", "Health", Icons.Default.FavoriteBorder),
-  More("more", "More", Icons.Default.MoreHoriz),
+  Dashboard(Routes.DASHBOARD, "Dashboard", Icons.Default.Dashboard),
+  Tasks(Routes.TASKS, "Tasks", Icons.Default.CheckCircle),
+  Calendar(Routes.CALENDAR, "Calendar", Icons.Default.CalendarMonth),
+  Health(Routes.HEALTH, "Health", Icons.Default.FavoriteBorder),
+  More(Routes.MORE, "More", Icons.Default.MoreHoriz),
 }
 
 @Composable

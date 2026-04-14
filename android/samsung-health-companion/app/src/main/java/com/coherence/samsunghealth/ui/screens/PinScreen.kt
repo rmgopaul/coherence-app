@@ -25,7 +25,6 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -37,8 +36,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -122,7 +123,7 @@ fun PinScreen(onUnlocked: (pinCookieValue: String) -> Unit) {
       Spacer(modifier = Modifier.height(8.dp))
       Text(
         text = error!!,
-        color = Color(0xFFEF4444),
+        color = MaterialTheme.colorScheme.error,
         style = MaterialTheme.typography.bodySmall,
       )
     }
@@ -152,7 +153,7 @@ private suspend fun verifyPin(pin: String): PinResult = withContext(Dispatchers.
     .build()
 
   val baseUrl = BuildConfig.BASE_URL.trimEnd('/')
-  val body = """{"pin":"$pin"}"""
+  val body = buildJsonObject { put("pin", pin) }.toString()
   val request = Request.Builder()
     .url("$baseUrl/api/pin/verify")
     .post(body.toRequestBody("application/json".toMediaType()))

@@ -6,9 +6,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-class SearchRepository(private val trpc: TrpcClient) {
-
-  private val json = Json { ignoreUnknownKeys = true }
+class SearchRepository(private val trpc: TrpcClient, private val json: Json) {
 
   suspend fun globalSearch(query: String, limit: Int = 30): GlobalSearchResponse {
     val input = buildJsonObject {

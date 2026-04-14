@@ -16,7 +16,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.coherence.samsunghealth.ui.LocalApp
 import com.coherence.samsunghealth.ui.state.dataOrNull
 import com.coherence.samsunghealth.ui.state.errorOrNull
 import com.coherence.samsunghealth.ui.state.isLoading
@@ -25,9 +24,7 @@ import com.coherence.samsunghealth.ui.widgets.CalendarWidget
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CalendarScreen() {
-  val app = LocalApp.current
-  val viewModel = app.dashboardViewModel
+fun CalendarScreen(viewModel: DashboardViewModel) {
   val state by viewModel.state.collectAsState()
 
   PullToRefreshBox(

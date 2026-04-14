@@ -73,7 +73,7 @@ private fun habitColor(color: String): Color = when (color) {
 @Composable
 fun HabitsScreen(onBack: () -> Unit) {
   val app = LocalApp.current
-  val repo = app.habitsRepository
+  val repo = app.container.habitsRepository
   val scope = rememberCoroutineScope()
 
   val habits = remember { mutableStateListOf<HabitWithCompletion>() }

@@ -1,9 +1,12 @@
 package com.coherence.samsunghealth.auth
 
+import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
+import android.util.Base64
 import android.util.Log
-import android.webkit.CookieManager
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.coherence.samsunghealth.BuildConfig
@@ -16,10 +19,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 class AuthManager(private val context: Context) {
@@ -29,7 +30,6 @@ class AuthManager(private val context: Context) {
     private const val PREFS_FILE = "coherence_auth"
     private const val KEY_SESSION_TOKEN = "session_token"
     private const val KEY_PIN_COOKIE = "pin_cookie"
-    private const val KEY_AUTH_BYPASS = "auth_bypass"
     private const val COOKIE_NAME = "app_session_id"
     private const val PIN_COOKIE_NAME = "coherence_pin_gate"
   }
@@ -48,77 +48,87 @@ class AuthManager(private val context: Context) {
     EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
   )
 
-  private val _isAuthenticated = MutableStateFlow(
-    getSessionToken() != null || prefs.getBoolean(KEY_AUTH_BYPASS, false),
-  )
+  private val httpClient = OkHttpClient.Builder()
+    .connectTimeout(10, TimeUnit.SECONDS)
+    .readTimeout(10, TimeUnit.SECONDS)
+    .build()
+
+  private val _isAuthenticated = MutableStateFlow(getSessionToken() != null)
   val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
 
-  // PIN state: null = unknown, true = unlocked/not needed, false = locked
   private val _isPinUnlocked = MutableStateFlow<Boolean?>(null)
   val isPinUnlocked: StateFlow<Boolean?> = _isPinUnlocked.asStateFlow()
 
-  fun getSessionToken(): String? {
-    return prefs.getString(KEY_SESSION_TOKEN, null)
-  }
+  fun getSessionToken(): String? = prefs.getString(KEY_SESSION_TOKEN, null)
 
-  fun getPinCookie(): String? {
-    return prefs.getString(KEY_PIN_COOKIE, null)
-  }
+  fun getPinCookie(): String? = prefs.getString(KEY_PIN_COOKIE, null)
 
   fun saveSessionToken(token: String) {
     prefs.edit().putString(KEY_SESSION_TOKEN, token).apply()
     _isAuthenticated.value = true
   }
 
-  /**
-   * Mark as authenticated even without a session cookie.
-   * Used when server has DEV_BYPASS_AUTH=true and API works with just PIN cookie.
-   */
-  private fun markAuthBypassed() {
-    prefs.edit().putBoolean(KEY_AUTH_BYPASS, true).apply()
-    _isAuthenticated.value = true
-    Log.d(TAG, "Auth bypassed — API accessible without session cookie")
-  }
-
   fun savePinCookie(cookie: String) {
     prefs.edit().putString(KEY_PIN_COOKIE, cookie).apply()
     _isPinUnlocked.value = true
-
-    // Also set the PIN cookie in WebView's CookieManager
-    val cookieManager = CookieManager.getInstance()
-    val baseUrl = BuildConfig.BASE_URL
-    cookieManager.setCookie(baseUrl, "$PIN_COOKIE_NAME=$cookie; path=/; secure; httponly")
-    cookieManager.flush()
   }
 
   fun clearSession() {
     prefs.edit()
       .remove(KEY_SESSION_TOKEN)
       .remove(KEY_PIN_COOKIE)
-      .remove(KEY_AUTH_BYPASS)
       .apply()
     _isAuthenticated.value = false
     _isPinUnlocked.value = null
-    CookieManager.getInstance().removeAllCookies(null)
   }
 
   /**
-   * Check PIN status and, if PIN is already unlocked, try to access API directly.
-   * If the API is accessible (server has DEV_BYPASS_AUTH), skip the WebView login entirely.
+   * Launch the Google OAuth flow in Chrome Custom Tabs.
+   * The server will redirect back to coherence://auth-callback?token=...
+   */
+  fun launchLogin(activity: Activity) {
+    val loginUrl = buildGoogleOAuthUrl()
+    val customTabsIntent = CustomTabsIntent.Builder().build()
+    customTabsIntent.launchUrl(activity, Uri.parse(loginUrl))
+  }
+
+  /**
+   * Build the Google OAuth URL with Android platform indicator in state.
+   */
+  private fun buildGoogleOAuthUrl(): String {
+    val clientId = BuildConfig.GOOGLE_CLIENT_ID
+    val baseUrl = baseUrl()
+    val redirectUri = "$baseUrl/api/oauth/callback"
+    val stateJson = """{"r":"$redirectUri","p":"android"}"""
+    val state = Base64.encodeToString(stateJson.toByteArray(), Base64.NO_WRAP)
+
+    return Uri.parse("https://accounts.google.com/o/oauth2/v2/auth").buildUpon()
+      .appendQueryParameter("client_id", clientId)
+      .appendQueryParameter("redirect_uri", redirectUri)
+      .appendQueryParameter("response_type", "code")
+      .appendQueryParameter("scope", "openid email profile")
+      .appendQueryParameter("state", state)
+      .appendQueryParameter("access_type", "offline")
+      .appendQueryParameter("prompt", "consent")
+      .build()
+      .toString()
+  }
+
+  /**
+   * Check PIN status. If PIN is not enabled or already unlocked,
+   * try direct API access to see if we can skip login entirely.
    */
   suspend fun checkPinStatus() {
     val storedPinCookie = getPinCookie()
 
     if (storedPinCookie != null && storedPinCookie.isNotBlank()) {
-      // We have a stored PIN cookie — verify it's still valid
       try {
         val result = withContext(Dispatchers.IO) {
-          val client = buildClient()
           val request = Request.Builder()
             .url("${baseUrl()}/api/pin/status")
             .addHeader("Cookie", "$PIN_COOKIE_NAME=$storedPinCookie")
             .build()
-          val response = client.newCall(request).execute()
+          val response = httpClient.newCall(request).execute()
           val body = response.body?.string() ?: ""
           val parsed = json.parseToJsonElement(body).jsonObject
           Pair(
@@ -128,29 +138,25 @@ class AuthManager(private val context: Context) {
         }
 
         if (!result.first || result.second) {
-          // PIN not enabled or our cookie is valid
           savePinCookie(storedPinCookie)
           _isPinUnlocked.value = true
-          // Now try accessing the API to see if we can skip login
           tryDirectApiAccess()
         } else {
           _isPinUnlocked.value = false
         }
-      } catch (_: Exception) {
-        // Network error — trust stored cookie
+      } catch (e: Exception) {
+        Log.w(TAG, "PIN status check failed, trusting stored cookie", e)
         _isPinUnlocked.value = true
       }
       return
     }
 
-    // No stored PIN cookie — check if PIN is even enabled
     try {
       val enabled = withContext(Dispatchers.IO) {
-        val client = buildClient()
         val request = Request.Builder()
           .url("${baseUrl()}/api/pin/status")
           .build()
-        val response = client.newCall(request).execute()
+        val response = httpClient.newCall(request).execute()
         val body = response.body?.string() ?: ""
         val parsed = json.parseToJsonElement(body).jsonObject
         parsed["enabled"]?.jsonPrimitive?.boolean ?: false
@@ -158,80 +164,46 @@ class AuthManager(private val context: Context) {
 
       _isPinUnlocked.value = !enabled
       if (!enabled) {
-        // No PIN needed — try direct API access
         tryDirectApiAccess()
       }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "PIN status check failed", e)
       _isPinUnlocked.value = true
     }
   }
 
   /**
-   * After PIN is unlocked, try calling a tRPC endpoint directly.
-   * If it succeeds, the server has DEV_BYPASS_AUTH or the user is already
-   * authenticated — either way, we can skip the WebView login.
+   * If we have a stored session token, verify it's still valid by calling auth.me.
    */
   suspend fun tryDirectApiAccess() {
-    if (_isAuthenticated.value) return // already authenticated
+    if (_isAuthenticated.value) return
 
     try {
       val statusCode = withContext(Dispatchers.IO) {
-        val client = buildClient()
         val cookies = buildList {
           getSessionToken()?.let { add("$COOKIE_NAME=$it") }
           getPinCookie()?.let { add("$PIN_COOKIE_NAME=$it") }
         }.joinToString("; ")
 
-        // tRPC queries use GET with ?input= query param
         val request = Request.Builder()
           .url("${baseUrl()}/api/trpc/auth.me?input=%7B%22json%22%3Anull%7D")
           .get()
           .apply { if (cookies.isNotBlank()) addHeader("Cookie", cookies) }
           .build()
 
-        val response = client.newCall(request).execute()
-        val responseBody = response.body?.string()
-        Log.d(TAG, "Direct API response: HTTP ${response.code}, body: ${responseBody?.take(200)}")
+        val response = httpClient.newCall(request).execute()
+        Log.d(TAG, "Direct API check: HTTP ${response.code}")
         response.code
       }
 
-      Log.d(TAG, "Direct API access check: HTTP $statusCode")
-
-      when (statusCode) {
-        200 -> markAuthBypassed() // API works — no login needed
-        401 -> {} // Need real auth — will show WebView
-        423 -> {} // PIN not working — shouldn't happen here
+      if (statusCode == 200) {
+        _isAuthenticated.value = true
+        Log.d(TAG, "Existing session still valid")
       }
     } catch (e: Exception) {
       Log.w(TAG, "Direct API check failed: ${e.message}")
     }
   }
 
-  fun tryExtractSessionCookie(): Boolean {
-    val cookieManager = CookieManager.getInstance()
-    val baseUrl = BuildConfig.BASE_URL
-    val cookies = cookieManager.getCookie(baseUrl) ?: return false
-
-    val sessionToken = cookies.split(";")
-      .map { it.trim() }
-      .firstOrNull { it.startsWith("$COOKIE_NAME=") }
-      ?.substringAfter("$COOKIE_NAME=")
-
-    if (sessionToken != null && sessionToken.isNotBlank()) {
-      saveSessionToken(sessionToken)
-      return true
-    }
-    return false
-  }
-
-  fun getLoginUrl(): String {
-    return BuildConfig.BASE_URL
-  }
-
   private fun baseUrl() = BuildConfig.BASE_URL.trimEnd('/')
-
-  private fun buildClient() = OkHttpClient.Builder()
-    .connectTimeout(10, TimeUnit.SECONDS)
-    .readTimeout(10, TimeUnit.SECONDS)
-    .build()
 }

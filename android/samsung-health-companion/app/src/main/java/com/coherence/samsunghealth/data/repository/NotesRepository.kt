@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.data.repository
 
+import android.util.Log
 import com.coherence.samsunghealth.data.model.Note
 import com.coherence.samsunghealth.data.model.NoteCreateResult
 import com.coherence.samsunghealth.network.TrpcClient
@@ -8,16 +9,21 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 
-class NotesRepository(private val trpc: TrpcClient) {
+class NotesRepository(private val trpc: TrpcClient, private val json: Json) {
 
-  private val json = Json { ignoreUnknownKeys = true }
+  companion object {
+    private const val TAG = "NotesRepository"
+  }
 
   suspend fun list(limit: Int = 100): List<Note> {
     val input = buildJsonObject { put("limit", limit) }
     val result = trpc.query("notes.list", input)
     return try {
       result.jsonArray.map { json.decodeFromJsonElement(Note.serializer(), it) }
-    } catch (_: Exception) { emptyList() }
+    } catch (e: Exception) {
+      Log.w(TAG, "list failed", e)
+      emptyList()
+    }
   }
 
   suspend fun create(title: String, content: String = "", notebook: String = "General"): String? {
@@ -29,7 +35,10 @@ class NotesRepository(private val trpc: TrpcClient) {
       }
       val result = trpc.mutate("notes.create", input)
       json.decodeFromJsonElement(NoteCreateResult.serializer(), result).noteId
-    } catch (_: Exception) { null }
+    } catch (e: Exception) {
+      Log.w(TAG, "create failed", e)
+      null
+    }
   }
 
   suspend fun update(noteId: String, title: String? = null, content: String? = null): Boolean {
@@ -41,13 +50,19 @@ class NotesRepository(private val trpc: TrpcClient) {
       }
       trpc.mutate("notes.update", input)
       true
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+      Log.w(TAG, "update failed", e)
+      false
+    }
   }
 
   suspend fun delete(noteId: String): Boolean {
     return try {
       trpc.mutate("notes.delete", buildJsonObject { put("noteId", noteId) })
       true
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+      Log.w(TAG, "delete failed", e)
+      false
+    }
   }
 }

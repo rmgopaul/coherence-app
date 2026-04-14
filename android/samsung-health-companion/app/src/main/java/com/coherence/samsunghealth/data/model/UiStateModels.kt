@@ -3,23 +3,6 @@ package com.coherence.samsunghealth.data.model
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class DashboardHeroState(
-  val greeting: String = "",
-  val dateLabel: String = "",
-  val tasksDueToday: Int = 0,
-  val eventsToday: Int = 0,
-  val recoveryPercent: Int? = null,
-  val habitStreak: Int? = null,
-)
-
-data class WidgetShellState(
-  val isLoading: Boolean = false,
-  val error: String? = null,
-  val lastUpdatedMillis: Long? = null,
-  val isExpanded: Boolean = true,
-)
-
-@Serializable
 data class SuggestionItem(
   val id: String,
   val title: String,

@@ -8,9 +8,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-class PlanRepository(private val trpc: TrpcClient) {
-
-  private val json = Json { ignoreUnknownKeys = true }
+class PlanRepository(private val trpc: TrpcClient, private val json: Json) {
 
   /**
    * Generate a daily overview using the server's OpenAI integration.

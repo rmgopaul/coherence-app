@@ -60,7 +60,7 @@ private fun formatDuration(seconds: Long?): String {
 @Composable
 fun ClockifyScreen(onBack: () -> Unit) {
   val app = LocalApp.current
-  val repo = app.clockifyRepository
+  val repo = app.container.clockifyRepository
   val scope = rememberCoroutineScope()
 
   var currentEntry by remember { mutableStateOf<ClockifyTimeEntry?>(null) }

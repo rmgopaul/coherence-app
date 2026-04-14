@@ -32,7 +32,7 @@ val LocalApp = compositionLocalOf<CoherenceApplication> {
 
 @Composable
 fun CoherenceAppUi(app: CoherenceApplication) {
-  val preferences by app.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
+  val preferences by app.container.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
 
   CoherenceTheme(
     themeMode = preferences.themeMode,
@@ -42,27 +42,25 @@ fun CoherenceAppUi(app: CoherenceApplication) {
     CompositionLocalProvider(LocalApp provides app) {
       val isAuthenticated by app.authManager.isAuthenticated.collectAsState()
       val isPinUnlocked by app.authManager.isPinUnlocked.collectAsState()
-      var apiCheckDone by remember { mutableStateOf(false) }
+      var startupCheckDone by remember { mutableStateOf(false) }
 
-      // Check PIN status on first launch
       LaunchedEffect(Unit) {
         app.authManager.checkPinStatus()
       }
 
-      // After PIN is unlocked, try direct API access before showing WebView
       LaunchedEffect(isPinUnlocked) {
         if (isPinUnlocked == true && !isAuthenticated) {
           app.authManager.tryDirectApiAccess()
-          apiCheckDone = true
+        }
+        if (isPinUnlocked != null) {
+          startupCheckDone = true
         }
       }
 
       when {
-        // Still checking PIN status
-        isPinUnlocked == null -> {
+        !startupCheckDone -> {
           LoadingScreen("Connecting...")
         }
-        // PIN is required and not yet unlocked
         isPinUnlocked == false -> {
           PinScreen(
             onUnlocked = { pinCookieValue ->
@@ -70,15 +68,9 @@ fun CoherenceAppUi(app: CoherenceApplication) {
             },
           )
         }
-        // Authenticated (via session cookie or auth bypass) — show native app
         isAuthenticated -> {
           AppNavGraph()
         }
-        // Still checking if API is directly accessible
-        !apiCheckDone -> {
-          LoadingScreen("Checking access...")
-        }
-        // Not authenticated and API requires login — show WebView
         else -> {
           LoginScreen(authManager = app.authManager)
         }

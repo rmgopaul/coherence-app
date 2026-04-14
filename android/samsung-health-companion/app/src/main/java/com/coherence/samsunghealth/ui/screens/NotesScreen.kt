@@ -62,7 +62,7 @@ private fun stripHtml(html: String): String =
 @Composable
 fun NotesScreen(onBack: () -> Unit) {
   val app = LocalApp.current
-  val repo = app.notesRepository
+  val repo = app.container.notesRepository
   val scope = rememberCoroutineScope()
 
   val notes = remember { mutableStateListOf<Note>() }

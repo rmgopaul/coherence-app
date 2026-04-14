@@ -51,7 +51,7 @@ import java.time.format.DateTimeFormatter
 @Composable
 fun SupplementsScreen(onBack: () -> Unit) {
   val app = LocalApp.current
-  val repo = app.supplementsRepository
+  val repo = app.container.supplementsRepository
   val scope = rememberCoroutineScope()
 
   val definitions = remember { mutableStateListOf<SupplementDefinition>() }

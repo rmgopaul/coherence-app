@@ -38,7 +38,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.coherence.samsunghealth.data.model.TodoistProject
-import com.coherence.samsunghealth.ui.LocalApp
 import com.coherence.samsunghealth.ui.state.dataOrNull
 import com.coherence.samsunghealth.ui.state.errorOrNull
 import com.coherence.samsunghealth.ui.state.isLoading
@@ -48,9 +47,7 @@ import java.time.LocalDate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TasksScreen() {
-  val app = LocalApp.current
-  val viewModel = app.dashboardViewModel
+fun TasksScreen(viewModel: DashboardViewModel) {
   val state by viewModel.state.collectAsState()
   var showCreateDialog by rememberSaveable { mutableStateOf(false) }
   val projects = state.projectsState.dataOrNull().orEmpty()

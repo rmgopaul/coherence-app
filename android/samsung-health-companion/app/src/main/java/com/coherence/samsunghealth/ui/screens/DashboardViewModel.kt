@@ -2,7 +2,9 @@ package com.coherence.samsunghealth.ui.screens
 
 import android.util.Log
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.coherence.samsunghealth.di.AppContainer
 import com.coherence.samsunghealth.data.model.CalendarEvent
 import com.coherence.samsunghealth.data.model.GmailMessage
 import com.coherence.samsunghealth.data.model.MarketDashboardResponse
@@ -510,6 +512,21 @@ class DashboardViewModel(
         )
       }
       recomputeSuggestedActions()
+    }
+  }
+
+  class Factory(private val container: AppContainer) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+      return DashboardViewModel(
+        todoistRepo = container.todoistRepository,
+        googleRepo = container.googleRepository,
+        whoopRepo = container.whoopRepository,
+        metricsRepo = container.metricsRepository,
+        planRepo = container.planRepository,
+        marketRepo = container.marketRepository,
+        sportsRepo = container.sportsRepository,
+      ) as T
     }
   }
 }

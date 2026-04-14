@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.data.repository
 
+import android.util.Log
 import com.coherence.samsunghealth.data.model.ClockifyStatus
 import com.coherence.samsunghealth.data.model.ClockifyStopResult
 import com.coherence.samsunghealth.data.model.ClockifyTimeEntry
@@ -9,15 +10,18 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 
-class ClockifyRepository(private val trpc: TrpcClient) {
+class ClockifyRepository(private val trpc: TrpcClient, private val json: Json) {
 
-  private val json = Json { ignoreUnknownKeys = true }
+  companion object {
+    private const val TAG = "ClockifyRepository"
+  }
 
   suspend fun getStatus(): ClockifyStatus? {
     return try {
       val result = trpc.query("clockify.getStatus")
       json.decodeFromJsonElement(ClockifyStatus.serializer(), result)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "getStatus failed", e)
       null
     }
   }
@@ -26,7 +30,8 @@ class ClockifyRepository(private val trpc: TrpcClient) {
     return try {
       val result = trpc.query("clockify.getCurrentEntry")
       json.decodeFromJsonElement(ClockifyTimeEntry.serializer(), result)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "getCurrentEntry failed", e)
       null
     }
   }
@@ -36,7 +41,8 @@ class ClockifyRepository(private val trpc: TrpcClient) {
       val input = buildJsonObject { put("limit", limit) }
       val result = trpc.query("clockify.getRecentEntries", input)
       result.jsonArray.map { json.decodeFromJsonElement(ClockifyTimeEntry.serializer(), it) }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "getRecentEntries failed", e)
       emptyList()
     }
   }
@@ -49,7 +55,8 @@ class ClockifyRepository(private val trpc: TrpcClient) {
       }
       val result = trpc.mutate("clockify.startTimer", input)
       json.decodeFromJsonElement(ClockifyTimeEntry.serializer(), result)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "startTimer failed", e)
       null
     }
   }
@@ -59,7 +66,8 @@ class ClockifyRepository(private val trpc: TrpcClient) {
       val result = trpc.mutate("clockify.stopTimer")
       val stop = json.decodeFromJsonElement(ClockifyStopResult.serializer(), result)
       stop.success
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "stopTimer failed", e)
       false
     }
   }

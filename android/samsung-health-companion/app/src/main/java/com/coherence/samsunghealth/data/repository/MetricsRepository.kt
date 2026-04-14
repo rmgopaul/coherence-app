@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.data.repository
 
+import android.util.Log
 import com.coherence.samsunghealth.data.model.DailyHealthMetric
 import com.coherence.samsunghealth.data.model.TrendSeriesResponse
 import com.coherence.samsunghealth.network.TrpcClient
@@ -8,9 +9,11 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 
-class MetricsRepository(private val trpc: TrpcClient) {
+class MetricsRepository(private val trpc: TrpcClient, private val json: Json) {
 
-  private val json = Json { ignoreUnknownKeys = true }
+  companion object {
+    private const val TAG = "MetricsRepository"
+  }
 
   suspend fun getHistory(limit: Int = 30): List<DailyHealthMetric> {
     val input = buildJsonObject { put("limit", limit) }
@@ -28,6 +31,9 @@ class MetricsRepository(private val trpc: TrpcClient) {
     return try {
       trpc.mutate("metrics.captureToday")
       true
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+      Log.w(TAG, "captureToday failed", e)
+      false
+    }
   }
 }

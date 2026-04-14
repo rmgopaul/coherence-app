@@ -1,20 +1,24 @@
 package com.coherence.samsunghealth.data.repository
 
+import android.util.Log
 import com.coherence.samsunghealth.data.model.Integration
 import com.coherence.samsunghealth.data.model.User
 import com.coherence.samsunghealth.network.TrpcClient
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 
-class AuthRepository(private val trpc: TrpcClient) {
+class AuthRepository(private val trpc: TrpcClient, private val json: Json) {
 
-  private val json = Json { ignoreUnknownKeys = true }
+  companion object {
+    private const val TAG = "AuthRepository"
+  }
 
   suspend fun getMe(): User? {
     val result = trpc.query("auth.me")
     return try {
       json.decodeFromJsonElement(User.serializer(), result)
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "getMe failed", e)
       null
     }
   }
@@ -23,7 +27,8 @@ class AuthRepository(private val trpc: TrpcClient) {
     val result = trpc.query("integrations.list")
     return try {
       result.jsonArray.map { json.decodeFromJsonElement(Integration.serializer(), it) }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Log.w(TAG, "getIntegrations failed", e)
       emptyList()
     }
   }

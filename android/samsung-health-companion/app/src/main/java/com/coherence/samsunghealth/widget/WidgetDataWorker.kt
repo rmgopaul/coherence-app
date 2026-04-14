@@ -105,7 +105,7 @@ class WidgetDataWorker(
   }
 
   private suspend fun fetchHeadlines(app: CoherenceApplication): List<WidgetHeadline> {
-    val market = app.marketRepository.getMarketDashboard()
+    val market = app.container.marketRepository.getMarketDashboard()
     return market.headlines.take(5).map { h ->
       WidgetHeadline(title = h.title, source = h.source)
     }
@@ -117,7 +117,7 @@ class WidgetDataWorker(
   }
 
   private suspend fun fetchTickers(app: CoherenceApplication): List<WidgetTicker> {
-    val market = app.marketRepository.getMarketDashboard()
+    val market = app.container.marketRepository.getMarketDashboard()
     return market.quotes.map { q ->
       WidgetTicker(
         symbol = q.symbol.replace("-USD", ""),
@@ -130,7 +130,7 @@ class WidgetDataWorker(
   }
 
   private suspend fun fetchSports(app: CoherenceApplication): List<WidgetGame> {
-    val sports = app.sportsRepository.getGames()
+    val sports = app.container.sportsRepository.getGames()
     return sports.games.map { g ->
       val teams = if (g.isHome) "${g.opponentAbbreviation} @ ${g.teamAbbreviation}"
       else "${g.teamAbbreviation} @ ${g.opponentAbbreviation}"
@@ -151,7 +151,7 @@ class WidgetDataWorker(
   }
 
   private suspend fun fetchEmails(app: CoherenceApplication): List<WidgetEmail> {
-    val messages = app.googleRepository.getGmailMessages(maxResults = 3)
+    val messages = app.container.googleRepository.getGmailMessages(maxResults = 3)
     return messages.map { m ->
       val fromRaw = m.from
       val fromName = if (fromRaw.contains("<")) fromRaw.substringBefore("<").trim()
@@ -166,7 +166,7 @@ class WidgetDataWorker(
   }
 
   private suspend fun fetchTasks(app: CoherenceApplication, todayKey: String): List<WidgetTask> {
-    val allTasks = app.todoistRepository.getTasks()
+    val allTasks = app.container.todoistRepository.getTasks()
     val todayTasks = allTasks
       .filter { t -> t.due != null && t.due.date <= todayKey }
       .sortedByDescending { it.priority }
@@ -176,7 +176,7 @@ class WidgetDataWorker(
   }
 
   private suspend fun fetchNextEvent(app: CoherenceApplication): WidgetCalendarEvent? {
-    val events = app.googleRepository.getCalendarEvents(daysAhead = 2, maxResults = 10)
+    val events = app.container.googleRepository.getCalendarEvents(daysAhead = 2, maxResults = 10)
     val now = System.currentTimeMillis()
 
     return events

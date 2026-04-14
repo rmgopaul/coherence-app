@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.network
 
+import android.util.Log
 import com.coherence.samsunghealth.auth.AuthManager
 import okhttp3.Interceptor
 import okhttp3.Response
@@ -10,12 +11,10 @@ class SessionInterceptor(
 
   override fun intercept(chain: Interceptor.Chain): Response {
     val original = chain.request()
-    val token = authManager.getSessionToken()
 
     val cookies = buildList {
-      if (token != null) add("app_session_id=$token")
-      val pinCookie = authManager.getPinCookie()
-      if (pinCookie != null) add("coherence_pin_gate=$pinCookie")
+      authManager.getSessionToken()?.let { add("app_session_id=$it") }
+      authManager.getPinCookie()?.let { add("coherence_pin_gate=$it") }
     }
 
     val request = if (cookies.isNotEmpty()) {
@@ -26,6 +25,14 @@ class SessionInterceptor(
       original
     }
 
-    return chain.proceed(request)
+    val response = chain.proceed(request)
+
+    // If the server returns 401, clear the session so the UI redirects to login
+    if (response.code == 401) {
+      Log.w("SessionInterceptor", "Received 401 — clearing session")
+      authManager.clearSession()
+    }
+
+    return response
   }
 }

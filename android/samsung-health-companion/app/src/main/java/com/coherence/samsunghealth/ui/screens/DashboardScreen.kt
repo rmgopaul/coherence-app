@@ -60,11 +60,10 @@ import kotlinx.coroutines.isActive
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DashboardScreen() {
+fun DashboardScreen(viewModel: DashboardViewModel) {
   val app = LocalApp.current
-  val viewModel = app.dashboardViewModel
   val state by viewModel.state.collectAsState()
-  val preferences by app.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
+  val preferences by app.container.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
   val tasks = state.tasksState.dataOrNull().orEmpty()
   val events = state.eventsState.dataOrNull().orEmpty()
   val whoop = state.whoopState.dataOrNull()
@@ -101,7 +100,7 @@ fun DashboardScreen() {
     delay(250)
     searchLoading = true
     try {
-      val response = app.searchRepository.globalSearch(normalized, 20)
+      val response = app.container.searchRepository.globalSearch(normalized, 20)
       searchResults.clear()
       searchResults.addAll(response.items)
       searchError = null
@@ -269,14 +268,14 @@ fun DashboardScreen() {
       // Habits
       if (!hiddenWidgets.contains("habits")) {
         item {
-          HabitsWidget(habitsRepo = app.habitsRepository)
+          HabitsWidget(habitsRepo = app.container.habitsRepository)
         }
       }
 
       // Supplements
       if (!hiddenWidgets.contains("supplements")) {
         item {
-          SupplementsWidget(supplementsRepo = app.supplementsRepository)
+          SupplementsWidget(supplementsRepo = app.container.supplementsRepository)
         }
       }
     }

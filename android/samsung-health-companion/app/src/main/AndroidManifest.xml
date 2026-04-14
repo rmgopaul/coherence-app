@@ -53,6 +53,18 @@
       android:name=".PermissionsRationaleActivity"
       android:exported="false" />
 
+    <activity
+      android:name=".auth.OAuthRedirectActivity"
+      android:exported="true"
+      android:launchMode="singleTask">
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="coherence" android:host="auth-callback" />
+      </intent-filter>
+    </activity>
+
     <activity-alias
       android:name=".ViewPermissionUsageActivity"
       android:exported="true"

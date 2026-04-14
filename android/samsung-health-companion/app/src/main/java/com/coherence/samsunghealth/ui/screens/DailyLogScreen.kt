@@ -41,7 +41,7 @@ import com.coherence.samsunghealth.ui.LocalApp
 @Composable
 fun DailyLogScreen(onBack: () -> Unit) {
   val app = LocalApp.current
-  val repo = app.metricsRepository
+  val repo = app.container.metricsRepository
 
   val metrics = remember { mutableStateListOf<DailyHealthMetric>() }
   var isLoading by remember { mutableStateOf(true) }

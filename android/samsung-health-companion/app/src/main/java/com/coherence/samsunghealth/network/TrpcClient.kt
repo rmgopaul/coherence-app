@@ -18,12 +18,7 @@ import okhttp3.logging.HttpLoggingInterceptor
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-class TrpcClient(authManager: AuthManager) {
-
-  private val json = Json {
-    ignoreUnknownKeys = true
-    isLenient = true
-  }
+class TrpcClient(authManager: AuthManager, private val json: Json) {
 
   private val client: OkHttpClient = OkHttpClient.Builder()
     .addInterceptor(SessionInterceptor(authManager))

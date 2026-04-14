@@ -1,5 +1,6 @@
 package com.coherence.samsunghealth.data.repository
 
+import android.util.Log
 import com.coherence.samsunghealth.data.model.SupplementDefinition
 import com.coherence.samsunghealth.data.model.SupplementLog
 import com.coherence.samsunghealth.network.TrpcClient
@@ -8,15 +9,20 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 
-class SupplementsRepository(private val trpc: TrpcClient) {
+class SupplementsRepository(private val trpc: TrpcClient, private val json: Json) {
 
-  private val json = Json { ignoreUnknownKeys = true }
+  companion object {
+    private const val TAG = "SupplementsRepository"
+  }
 
   suspend fun listDefinitions(): List<SupplementDefinition> {
     val result = trpc.query("supplements.listDefinitions")
     return try {
       result.jsonArray.map { json.decodeFromJsonElement(SupplementDefinition.serializer(), it) }
-    } catch (_: Exception) { emptyList() }
+    } catch (e: Exception) {
+      Log.w(TAG, "listDefinitions failed", e)
+      emptyList()
+    }
   }
 
   suspend fun getLogs(dateKey: String? = null): List<SupplementLog> {
@@ -24,7 +30,10 @@ class SupplementsRepository(private val trpc: TrpcClient) {
     val result = trpc.query("supplements.getLogs", input)
     return try {
       result.jsonArray.map { json.decodeFromJsonElement(SupplementLog.serializer(), it) }
-    } catch (_: Exception) { emptyList() }
+    } catch (e: Exception) {
+      Log.w(TAG, "getLogs failed", e)
+      emptyList()
+    }
   }
 
   suspend fun addLog(name: String, dose: String, doseUnit: String = "capsule", timing: String = "am", dateKey: String? = null, definitionId: String? = null): Boolean {
@@ -39,13 +48,19 @@ class SupplementsRepository(private val trpc: TrpcClient) {
       }
       trpc.mutate("supplements.addLog", input)
       true
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+      Log.w(TAG, "addLog failed", e)
+      false
+    }
   }
 
   suspend fun deleteLog(id: String): Boolean {
     return try {
       trpc.mutate("supplements.deleteLog", buildJsonObject { put("id", id) })
       true
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+      Log.w(TAG, "deleteLog failed", e)
+      false
+    }
   }
 }
