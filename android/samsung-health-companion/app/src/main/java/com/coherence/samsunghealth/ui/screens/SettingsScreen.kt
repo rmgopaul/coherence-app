@@ -18,6 +18,7 @@ import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
@@ -48,10 +49,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.coherence.samsunghealth.data.model.AppPreferences
 import com.coherence.samsunghealth.data.model.ThemeMode
 import com.coherence.samsunghealth.data.model.User
+import com.coherence.samsunghealth.sync.AutoSyncScheduler
+import com.coherence.samsunghealth.sync.HistoricalSyncWorker
 import com.coherence.samsunghealth.ui.LocalApp
+import com.coherence.samsunghealth.ui.health.HealthConnectPermissionHost
 import kotlinx.coroutines.launch
 
 private val DashboardWidgets = listOf(
@@ -72,12 +77,15 @@ private val DashboardWidgets = listOf(
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
   val app = LocalApp.current
+  val context = LocalContext.current
   val scope = rememberCoroutineScope()
   val preferences by app.container.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
 
   var user by remember { mutableStateOf<User?>(null) }
   var serverReachable by remember { mutableStateOf<Boolean?>(null) }
   var showSignOutConfirm by remember { mutableStateOf(false) }
+  var backfillDaysText by remember { mutableStateOf(HistoricalSyncWorker.DEFAULT_DAYS_BACK.toString()) }
+  var backfillQueued by remember { mutableStateOf(false) }
 
   LaunchedEffect(Unit) {
     try {
@@ -148,6 +156,47 @@ fun SettingsScreen(onBack: () -> Unit) {
               onCheckedChange = { visible ->
                 scope.launch { app.container.appPreferencesRepository.setWidgetHidden(widgetId, !visible) }
               },
+            )
+          }
+        }
+      }
+
+      item {
+        SettingsCard(title = "Health Data", icon = Icons.Default.FavoriteBorder) {
+          HealthConnectPermissionHost()
+          Text(
+            "Backfill history",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Medium,
+          )
+          Text(
+            "Pulls the last N days from Health Connect and posts them to " +
+              "your dashboard. Health Connect retains up to 30 days.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            OptionGroup(
+              title = "Days to backfill",
+              options = listOf("7", "14", "30"),
+              selectedIndex = listOf("7", "14", "30").indexOf(backfillDaysText).coerceAtLeast(2),
+              onSelected = { index ->
+                backfillDaysText = listOf("7", "14", "30")[index]
+              },
+            )
+          }
+          Button(
+            onClick = {
+              val days = backfillDaysText.toIntOrNull()
+                ?: HistoricalSyncWorker.DEFAULT_DAYS_BACK
+              AutoSyncScheduler.scheduleHistoricalBackfill(context, days)
+              backfillQueued = true
+            },
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              if (backfillQueued) "Backfill queued — check back later"
+              else "Start backfill",
             )
           }
         }

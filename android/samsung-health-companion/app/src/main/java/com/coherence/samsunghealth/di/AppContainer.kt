@@ -18,6 +18,9 @@ import com.coherence.samsunghealth.data.repository.SupplementsRepository
 import com.coherence.samsunghealth.data.repository.TodoistRepository
 import com.coherence.samsunghealth.data.repository.WhoopRepository
 import com.coherence.samsunghealth.network.TrpcClient
+import com.coherence.samsunghealth.sdk.HealthConnectPermissionManager
+import com.coherence.samsunghealth.sdk.SamsungHealthDataSdkRepository
+import com.coherence.samsunghealth.sdk.SamsungHealthRepository
 import kotlinx.serialization.json.Json
 
 /**
@@ -50,4 +53,12 @@ class AppContainer(context: Context) {
   val clockifyRepository = ClockifyRepository(trpcClient, json)
   val marketRepository = MarketRepository(trpcClient, json)
   val sportsRepository = SportsRepository(trpcClient, json)
+
+  // Health Connect layer. Shared between the periodic sync worker,
+  // the historical backfill worker, and the UI permission flow so
+  // every caller sees the same permission + client instance.
+  val healthConnectPermissionManager = HealthConnectPermissionManager(context)
+  val samsungHealthRepository: SamsungHealthRepository =
+    SamsungHealthDataSdkRepository(context, healthConnectPermissionManager)
 }
+
