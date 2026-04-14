@@ -78,12 +78,23 @@ function SiteIdsUploadDialog({
     { credentialId },
     { enabled: open }
   );
+  const [savedCount, setSavedCount] = useState<number | null>(null);
+
+  // Reset transient state when dialog opens
+  useEffect(() => {
+    if (open) {
+      setSavedCount(null);
+      setParsed(null);
+      setFileName(null);
+      setError(null);
+    }
+  }, [open]);
   const saveMutation = trpc.credentials.setSiteIds.useMutation({
     onSuccess: (data) => {
       existingQuery.refetch();
+      setSavedCount(data.count);
       setParsed(null);
       setFileName(null);
-      onOpenChange(false);
     },
   });
 
@@ -129,7 +140,13 @@ function SiteIdsUploadDialog({
           <DialogTitle>Upload Site IDs — {credentialLabel}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3 pt-1">
-          {existingCount > 0 && (
+          {savedCount != null && (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 p-2.5 text-xs text-emerald-800 flex items-center gap-2">
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+              <span><span className="font-medium">{savedCount}</span> site IDs saved. They will be used on the next "Run All".</span>
+            </div>
+          )}
+          {savedCount == null && existingCount > 0 && (
             <div className="rounded-md border bg-muted/40 p-2.5 text-xs">
               <span className="font-medium">{existingCount}</span> site IDs currently stored.
               Uploading a new CSV will replace them.
@@ -182,13 +199,25 @@ function SiteIdsUploadDialog({
             </div>
           )}
 
-          <Button
-            onClick={handleSave}
-            disabled={!parsed || saveMutation.isPending}
-            className="w-full"
-          >
-            {saveMutation.isPending ? "Saving..." : `Save ${parsed?.length ?? 0} Site IDs`}
-          </Button>
+          {savedCount != null ? (
+            <Button
+              onClick={() => {
+                setSavedCount(null);
+                onOpenChange(false);
+              }}
+              className="w-full"
+            >
+              Done
+            </Button>
+          ) : (
+            <Button
+              onClick={handleSave}
+              disabled={!parsed || saveMutation.isPending}
+              className="w-full"
+            >
+              {saveMutation.isPending ? "Saving..." : `Save ${parsed?.length ?? 0} Site IDs`}
+            </Button>
+          )}
 
           {saveMutation.error && (
             <p className="text-xs text-destructive">{saveMutation.error.message}</p>
@@ -196,6 +225,18 @@ function SiteIdsUploadDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Tiny badge showing stored site count for a credential. */
+function StoredSitesBadge({ credentialId }: { credentialId: string }) {
+  const query = trpc.credentials.getSiteIds.useQuery({ credentialId });
+  const count = query.data?.siteIds.length ?? 0;
+  if (count === 0) return null;
+  return (
+    <span className="inline-flex items-center rounded bg-blue-100 text-blue-700 px-1 py-0 text-[10px] font-medium leading-4">
+      {count} sites
+    </span>
   );
 }
 
@@ -768,6 +809,7 @@ export default function MonitoringDashboard() {
                             className="h-3.5 w-3.5"
                           />
                           <span>{credential.provider} • {credential.label}</span>
+                          <StoredSitesBadge credentialId={credential.id} />
                           <button
                             type="button"
                             className="ml-1 p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
