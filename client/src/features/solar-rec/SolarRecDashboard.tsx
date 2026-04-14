@@ -3,8 +3,9 @@ import { toast } from "sonner";
 import { useLocation, useSearch } from "wouter";
 import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
 import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+import autoTable, { type CellHookData } from "jspdf-autotable";
 import {
+  Area,
   Bar,
   BarChart,
   CartesianGrid,
@@ -13,6 +14,7 @@ import {
   Line,
   LineChart,
   ReferenceArea,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -7969,25 +7971,107 @@ export default function SolarRecDashboard() {
     () => snapshotContractIds.slice(snapshotContractStartIndex, snapshotContractEndIndex),
     [snapshotContractEndIndex, snapshotContractIds, snapshotContractStartIndex]
   );
-  const snapshotTrendRows = useMemo(
-    () =>
-      [...logEntries]
-        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
-        .map((entry) => ({
-          id: entry.id,
-          label: entry.createdAt.toLocaleDateString([], { month: "numeric", day: "numeric" }),
-          timestamp: entry.createdAt.toLocaleString(),
-          reportingPercent:
-            entry.reportingPercent ?? toPercentValue(entry.reportingSystems, entry.totalSystems),
-          cooNotTransferredNotReportingPercent: toPercentValue(
-            entry.changedNotTransferredNotReporting,
+  const snapshotTrendRows = useMemo(() => {
+    const sorted = [...logEntries].sort(
+      (a, b) => a.createdAt.getTime() - b.createdAt.getTime()
+    );
+    return sorted.map((entry, idx) => {
+      const reportingPct =
+        entry.reportingPercent ??
+        toPercentValue(entry.reportingSystems, entry.totalSystems);
+      const contractValuePct =
+        entry.contractedValueReportingPercent ??
+        toPercentValue(
+          entry.contractedValueReporting ?? 0,
+          entry.totalContractedValue
+        );
+      const prev = idx > 0 ? sorted[idx - 1] : null;
+      const prevReportingPct = prev
+        ? (prev.reportingPercent ??
+            toPercentValue(prev.reportingSystems, prev.totalSystems))
+        : null;
+      const reportingDelta =
+        prevReportingPct !== null && reportingPct !== null
+          ? +(reportingPct - prevReportingPct).toFixed(2)
+          : null;
+
+      return {
+        id: entry.id,
+        label: entry.createdAt.toLocaleDateString([], {
+          month: "numeric",
+          day: "numeric",
+        }),
+        timestamp: entry.createdAt.toLocaleString(),
+        reportingPercent: reportingPct,
+        reportingDelta,
+        contractValueReportingPercent: contractValuePct,
+        cooNotTransferredNotReporting:
+          entry.changedNotTransferredNotReporting,
+        cooNotTransferredNotReportingPercent: toPercentValue(
+          entry.changedNotTransferredNotReporting,
+          entry.totalSystems
+        ),
+        changeOwnershipPercent:
+          entry.changeOwnershipPercent ??
+          toPercentValue(
+            entry.changeOwnershipSystems,
             entry.totalSystems
           ),
-          changeOwnershipPercent:
-            entry.changeOwnershipPercent ?? toPercentValue(entry.changeOwnershipSystems, entry.totalSystems),
-        })),
-    [logEntries]
-  );
+        totalSystems: entry.totalSystems,
+        reportingSystems: entry.reportingSystems,
+        contractedValueNotReporting:
+          entry.contractedValueNotReporting,
+        totalGap: entry.totalGap,
+      };
+    });
+  }, [logEntries]);
+
+  const snapshotTrendSummary = useMemo(() => {
+    if (snapshotTrendRows.length === 0) return null;
+    const latest = snapshotTrendRows[snapshotTrendRows.length - 1];
+    const prior =
+      snapshotTrendRows.length > 1
+        ? snapshotTrendRows[snapshotTrendRows.length - 2]
+        : null;
+
+    const pctValues = snapshotTrendRows
+      .flatMap((r) => [
+        r.reportingPercent,
+        r.contractValueReportingPercent,
+      ])
+      .filter(
+        (v): v is number => v !== null && v !== undefined
+      );
+    const minPct =
+      pctValues.length > 0 ? Math.min(...pctValues) : 0;
+    const maxPct =
+      pctValues.length > 0 ? Math.max(...pctValues) : 100;
+    const pctPadding = Math.max((maxPct - minPct) * 0.2, 3);
+    const pctDomain: [number, number] = [
+      Math.max(0, Math.floor(minPct - pctPadding)),
+      Math.min(100, Math.ceil(maxPct + pctPadding)),
+    ];
+
+    const cvDelta =
+      prior &&
+      latest.contractValueReportingPercent !== null &&
+      prior.contractValueReportingPercent !== null
+        ? +(
+            latest.contractValueReportingPercent -
+            prior.contractValueReportingPercent
+          ).toFixed(2)
+        : null;
+
+    return {
+      latestReportingPct: latest.reportingPercent,
+      reportingDelta: latest.reportingDelta,
+      latestContractValuePct:
+        latest.contractValueReportingPercent,
+      contractValueDelta: cvDelta,
+      latestCooNtNr: latest.cooNotTransferredNotReporting,
+      pctDomain,
+    };
+  }, [snapshotTrendRows]);
 
   useEffect(() => {
     if (snapshotContractPage <= snapshotContractTotalPages) return;
@@ -8542,8 +8626,8 @@ export default function SolarRecDashboard() {
           summaryTotals,
           cashFlowSummary,
         });
-      } catch (apiErr: any) {
-        const apiMsg = apiErr?.message || apiErr?.data?.message || JSON.stringify(apiErr);
+      } catch (apiErr: unknown) {
+        const apiMsg = apiErr instanceof Error ? apiErr.message : String(apiErr);
         alert(`ChatGPT API call failed:\n\n${apiMsg}`);
         setPipelineReportLoading(false);
         return;
@@ -8722,7 +8806,7 @@ export default function SolarRecDashboard() {
         headStyles: { fillColor: navy, textColor: 255, fontStyle: "bold", fontSize: 9 },
         alternateRowStyles: { fillColor: [248, 250, 252] },
         columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" } },
-        didParseCell: (data: any) => {
+        didParseCell: (data: CellHookData) => {
           // Color the Change column: green for positive, red for negative
           if (data.section === "body" && data.column.index === 3) {
             const val = data.cell.raw as string;
@@ -8815,9 +8899,9 @@ export default function SolarRecDashboard() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error("PDF build error:", err);
-      const msg = err?.message || String(err);
+      const msg = err instanceof Error ? err.message : String(err);
       alert(`PDF generation failed:\n\n${msg}`);
     } finally {
       setPipelineReportLoading(false);
@@ -13314,62 +13398,229 @@ const aiDataContext = useMemo(() => {
 
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Snapshot Trend Graphic</CardTitle>
+                <CardTitle className="text-base">Snapshot Trend</CardTitle>
                 <CardDescription>
-                  This chart updates automatically as each new snapshot is logged.
+                  Portfolio health over time — auto-updated with each snapshot.
                 </CardDescription>
+                {snapshotTrendSummary && (
+                  <div className="flex flex-wrap gap-x-5 gap-y-1.5 pt-2">
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <span className="text-slate-500">Reporting</span>
+                      <span className="font-semibold text-teal-700">
+                        {snapshotTrendSummary.latestReportingPct !== null
+                          ? `${snapshotTrendSummary.latestReportingPct.toFixed(1)}%`
+                          : "—"}
+                      </span>
+                      {snapshotTrendSummary.reportingDelta !== null && (
+                        <Badge
+                          variant="outline"
+                          className={
+                            snapshotTrendSummary.reportingDelta >= 0
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700 text-xs"
+                              : "border-red-200 bg-red-50 text-red-700 text-xs"
+                          }
+                        >
+                          {snapshotTrendSummary.reportingDelta >= 0 ? "▲" : "▼"}{" "}
+                          {Math.abs(snapshotTrendSummary.reportingDelta).toFixed(1)}pp
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <span className="text-slate-500">Contract Value</span>
+                      <span className="font-semibold text-blue-700">
+                        {snapshotTrendSummary.latestContractValuePct !== null
+                          ? `${snapshotTrendSummary.latestContractValuePct.toFixed(1)}%`
+                          : "—"}
+                      </span>
+                      {snapshotTrendSummary.contractValueDelta !== null && (
+                        <Badge
+                          variant="outline"
+                          className={
+                            snapshotTrendSummary.contractValueDelta >= 0
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700 text-xs"
+                              : "border-red-200 bg-red-50 text-red-700 text-xs"
+                          }
+                        >
+                          {snapshotTrendSummary.contractValueDelta >= 0 ? "▲" : "▼"}{" "}
+                          {Math.abs(snapshotTrendSummary.contractValueDelta).toFixed(1)}pp
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm">
+                      <span className="text-slate-500">At-Risk Systems</span>
+                      <span className="font-semibold text-amber-700">
+                        {formatNumber(snapshotTrendSummary.latestCooNtNr)}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </CardHeader>
               <CardContent>
                 {snapshotTrendRows.length === 0 ? (
                   <p className="text-sm text-slate-600">No snapshots logged yet.</p>
                 ) : (
-                  <div className="h-80 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={snapshotTrendRows} margin={{ top: 16, right: 24, left: 8, bottom: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                        <YAxis
-                          domain={[0, 100]}
-                          tick={{ fontSize: 12 }}
-                          tickFormatter={(value) => `${value}%`}
-                        />
-                        <Tooltip
-                          labelFormatter={(_, payload) =>
-                            payload && payload.length > 0 ? String(payload[0]?.payload?.timestamp ?? "") : ""
-                          }
-                          formatter={(value: number | string) =>
-                            typeof value === "number" ? `${value.toFixed(1)}%` : value
-                          }
-                        />
-                        <Legend />
-                        <Line
-                          type="monotone"
-                          dataKey="reportingPercent"
-                          name="Reporting to GATS (%)"
-                          stroke="#0f766e"
-                          strokeWidth={2}
-                          dot={{ r: 2 }}
-                          activeDot={{ r: 4 }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="cooNotTransferredNotReportingPercent"
-                          name="COO Not Transferred + Not Reporting (%)"
-                          stroke="#b45309"
-                          strokeWidth={2}
-                          dot={{ r: 2 }}
-                          activeDot={{ r: 4 }}
-                        />
-                        <Line
-                          type="monotone"
-                          dataKey="changeOwnershipPercent"
-                          name="Change of Ownership (%)"
-                          stroke="#334155"
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
+                  <div className="space-y-1">
+                    <div className="h-[300px] w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <ComposedChart
+                          data={snapshotTrendRows}
+                          margin={{ top: 8, right: 48, left: 8, bottom: 4 }}
+                        >
+                          <defs>
+                            <linearGradient id="snTrendReportingGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#0f766e" stopOpacity={0.18} />
+                              <stop offset="95%" stopColor="#0f766e" stopOpacity={0.02} />
+                            </linearGradient>
+                            <linearGradient id="snTrendContractGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%" stopColor="#1d4ed8" stopOpacity={0.10} />
+                              <stop offset="95%" stopColor="#1d4ed8" stopOpacity={0.01} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fontSize: 11 }}
+                            axisLine={{ stroke: "#cbd5e1" }}
+                            tickLine={false}
+                          />
+                          <YAxis
+                            yAxisId="pct"
+                            domain={snapshotTrendSummary?.pctDomain ?? [0, 100]}
+                            tick={{ fontSize: 11 }}
+                            tickFormatter={(v: number) => `${v}%`}
+                            axisLine={false}
+                            tickLine={false}
+                            width={44}
+                          />
+                          <YAxis
+                            yAxisId="count"
+                            orientation="right"
+                            tick={{ fontSize: 11 }}
+                            axisLine={false}
+                            tickLine={false}
+                            width={36}
+                            allowDecimals={false}
+                          />
+                          <Tooltip
+                            content={({ active, payload }) => {
+                              if (!active || !payload || payload.length === 0)
+                                return null;
+                              const row = payload[0]?.payload;
+                              if (!row) return null;
+                              return (
+                                <div className="rounded-lg border bg-white px-3 py-2.5 shadow-lg text-xs space-y-1.5 min-w-[220px]">
+                                  <p className="font-medium text-slate-700 pb-0.5">
+                                    {row.timestamp}
+                                  </p>
+                                  <div className="space-y-1 border-t pt-1.5">
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-500">Reporting Rate</span>
+                                      <span className="font-semibold text-teal-700">
+                                        {row.reportingPercent !== null
+                                          ? `${row.reportingPercent.toFixed(1)}%`
+                                          : "—"}
+                                        {row.reportingDelta !== null && (
+                                          <span
+                                            className={
+                                              row.reportingDelta >= 0
+                                                ? "text-emerald-600 ml-1"
+                                                : "text-red-600 ml-1"
+                                            }
+                                          >
+                                            {row.reportingDelta >= 0 ? "+" : ""}
+                                            {row.reportingDelta.toFixed(1)}pp
+                                          </span>
+                                        )}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-500">Contract Value</span>
+                                      <span className="font-semibold text-blue-700">
+                                        {row.contractValueReportingPercent !== null
+                                          ? `${row.contractValueReportingPercent.toFixed(1)}%`
+                                          : "—"}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4">
+                                      <span className="text-slate-500">At-Risk (Not Transferred)</span>
+                                      <span className="font-semibold text-amber-700">
+                                        {formatNumber(row.cooNotTransferredNotReporting)} systems
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between gap-4 border-t pt-1">
+                                      <span className="text-slate-400">Portfolio</span>
+                                      <span className="text-slate-500">
+                                        {formatNumber(row.reportingSystems)} / {formatNumber(row.totalSystems)} systems
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            }}
+                          />
+                          {snapshotTrendSummary &&
+                            snapshotTrendSummary.pctDomain[0] <= 95 &&
+                            snapshotTrendSummary.pctDomain[1] >= 95 && (
+                              <ReferenceLine
+                                yAxisId="pct"
+                                y={95}
+                                stroke="#94a3b8"
+                                strokeDasharray="4 4"
+                                label={{
+                                  value: "95% target",
+                                  position: "insideTopRight",
+                                  fontSize: 10,
+                                  fill: "#94a3b8",
+                                }}
+                              />
+                            )}
+                          <Area
+                            yAxisId="pct"
+                            type="monotone"
+                            dataKey="reportingPercent"
+                            name="Reporting Rate (%)"
+                            fill="url(#snTrendReportingGrad)"
+                            stroke="#0f766e"
+                            strokeWidth={2.5}
+                            dot={{ r: 3, fill: "#0f766e", strokeWidth: 0 }}
+                            activeDot={{ r: 5, fill: "#0f766e", strokeWidth: 2, stroke: "#fff" }}
+                          />
+                          <Area
+                            yAxisId="pct"
+                            type="monotone"
+                            dataKey="contractValueReportingPercent"
+                            name="Contract Value Reporting (%)"
+                            fill="url(#snTrendContractGrad)"
+                            stroke="#1d4ed8"
+                            strokeWidth={1.5}
+                            strokeDasharray="6 3"
+                            dot={false}
+                            activeDot={{ r: 4, fill: "#1d4ed8", strokeWidth: 2, stroke: "#fff" }}
+                          />
+                          <Bar
+                            yAxisId="count"
+                            dataKey="cooNotTransferredNotReporting"
+                            name="At-Risk Systems (count)"
+                            fill="#f59e0b"
+                            fillOpacity={0.65}
+                            radius={[2, 2, 0, 0]}
+                            maxBarSize={20}
+                          />
+                          <Legend
+                            iconType="circle"
+                            wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
+                          />
+                        </ComposedChart>
+                      </ResponsiveContainer>
+                    </div>
+                    {snapshotTrendRows.length >= 2 && (
+                      <p className="text-[11px] text-slate-400 pl-12">
+                        pp = percentage points &middot;{" "}
+                        {snapshotTrendRows.length} snapshots from{" "}
+                        {snapshotTrendRows[0].label} to{" "}
+                        {snapshotTrendRows[snapshotTrendRows.length - 1].label}
+                      </p>
+                    )}
                   </div>
                 )}
               </CardContent>
