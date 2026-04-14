@@ -38,6 +38,9 @@ const TabAIChatLazy = lazy(() =>
 const PerformanceRatioTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/PerformanceRatioTab")
 );
+const OfflineMonitoringTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/OfflineMonitoringTab")
+);
 import {
   buildMeterReadDownloadFileName,
   convertMeterReadWorkbook,
@@ -62,6 +65,7 @@ import type {
   DatasetKey,
   GenerationBaseline,
   MonitoringDetailsRecord,
+  OfflineBreakdownRow,
   OwnershipStatus,
   SizeBucket,
   SystemRecord,
@@ -176,6 +180,8 @@ import {
   normalizeMonitoringPlatform,
   getMonitoringDetailsForSystem,
   createLogId,
+  classifyMonitoringAccessType,
+  resolveOfflineMonitoringAccessFields,
 } from "@/solar-rec-dashboard/lib/helpers";
 
 
@@ -378,16 +384,7 @@ type RecPerformanceContractYearSummaryRow = {
   totalDrawdownAmount: number;
 };
 
-type OfflineBreakdownRow = {
-  key: string;
-  label: string;
-  totalSystems: number;
-  offlineSystems: number;
-  offlinePercent: number | null;
-  offlineContractValue: number;
-  totalContractValue: number;
-  offlineContractValuePercent: number | null;
-};
+// OfflineBreakdownRow — moved to @/solar-rec-dashboard/state/types
 
 type SystemBuilder = {
   key: string;
@@ -448,14 +445,7 @@ type OwnershipOverviewExportRow = {
 
 // MonitoringDetailsRecord — moved to @/solar-rec-dashboard/state/types
 
-type OfflineMonitoringAccessFields = {
-  accessType: string;
-  monitoringSiteId: string;
-  monitoringSiteName: string;
-  monitoringLink: string;
-  monitoringUsername: string;
-  monitoringPassword: string;
-};
+// OfflineMonitoringAccessFields — moved to @/solar-rec-dashboard/state/types
 
 // PerformanceRatioMatchType, PortalMonitoringCandidate, ConvertedReadInputRow,
 // GenerationBaseline, AnnualProductionProfile, PerformanceRatioRow,
@@ -801,78 +791,7 @@ function buildSystemSnapshotKey(system: SystemRecord): string {
 
 // getMonitoringDetailsForSystem — moved to @/solar-rec-dashboard/lib/helpers
 
-function classifyMonitoringAccessType(accessTypeRaw: string): "granted" | "link" | "login" | "other" {
-  const normalized = clean(accessTypeRaw).toLowerCase();
-  if (!normalized) return "other";
-  if (normalized.includes("grant")) return "granted";
-  if (normalized.includes("link")) return "link";
-  if (
-    normalized.includes("password") ||
-    normalized.includes("pass") ||
-    normalized.includes("pwd") ||
-    normalized.includes("login")
-  ) {
-    return "login";
-  }
-  return "other";
-}
-
-function resolveOfflineMonitoringAccessFields(
-  system: SystemRecord,
-  monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>
-): OfflineMonitoringAccessFields {
-  const details = getMonitoringDetailsForSystem(system, monitoringDetailsBySystemKey);
-  const accessType = clean(details?.online_monitoring_access_type) || clean(system.monitoringType);
-  const category = classifyMonitoringAccessType(accessType);
-  const monitoringSiteId = clean(details?.online_monitoring_system_id);
-  const monitoringSiteName = clean(details?.online_monitoring_system_name);
-  const monitoringLink = clean(details?.online_monitoring_website_api_link);
-  const monitoringUsername =
-    firstNonEmptyString(clean(details?.online_monitoring_username), clean(details?.online_monitoring_granted_username)) ?? "";
-  const monitoringPassword = clean(details?.online_monitoring_password);
-
-  if (category === "granted") {
-    return {
-      accessType,
-      monitoringSiteId,
-      monitoringSiteName,
-      monitoringLink: "",
-      monitoringUsername: "",
-      monitoringPassword: "",
-    };
-  }
-
-  if (category === "link") {
-    return {
-      accessType,
-      monitoringSiteId: "",
-      monitoringSiteName: "",
-      monitoringLink,
-      monitoringUsername: "",
-      monitoringPassword: "",
-    };
-  }
-
-  if (category === "login") {
-    return {
-      accessType,
-      monitoringSiteId: "",
-      monitoringSiteName,
-      monitoringLink: "",
-      monitoringUsername,
-      monitoringPassword,
-    };
-  }
-
-  return {
-    accessType,
-    monitoringSiteId,
-    monitoringSiteName,
-    monitoringLink,
-    monitoringUsername,
-    monitoringPassword,
-  };
-}
+// classifyMonitoringAccessType, resolveOfflineMonitoringAccessFields — moved to @/solar-rec-dashboard/lib/helpers
 
 function formatTransitionBreakdown(breakdown: Map<TransitionStatus, number>): string {
   const orderedStatuses: TransitionStatus[] = [...CHANGE_OWNERSHIP_ORDER, NO_COO_STATUS];
@@ -5965,7 +5884,19 @@ export default function SolarRecDashboard() {
               if (Object.keys(current).length === 0) return loadedDatasets;
               const merged = { ...current };
               for (const [key, value] of Object.entries(loadedDatasets)) {
-                if (!merged[key as DatasetKey] && value) {
+                if (!value) continue;
+                const existing = merged[key as DatasetKey];
+                if (!existing) {
+                  merged[key as DatasetKey] = value;
+                  continue;
+                }
+                // If the remote version has a newer uploadedAt, replace local.
+                // This lets externally-mutated datasets (meter reads pages, the
+                // monitoring batch converted-reads bridge, etc.) overwrite a
+                // stale IndexedDB copy instead of being silently ignored.
+                // Local-only edits are preserved because their uploadedAt is
+                // always >= the last remote version.
+                if (value.uploadedAt.getTime() > existing.uploadedAt.getTime()) {
                   merged[key as DatasetKey] = value;
                 }
               }
@@ -10905,544 +10836,17 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          {activeTab === "offline-monitoring" && (<div className="space-y-4 mt-4">
-            <Card id="offline-overview" className="scroll-mt-24">
-              <CardHeader>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                  <div>
-                    <CardTitle className="text-base">Non-Reporting Systems by Monitoring Method, Platform, and Installer</CardTitle>
-                    <CardDescription>
-                      Offline status means not reporting to GATS within the last 3 months.
-                    </CardDescription>
-                  </div>
-                  <Button variant="outline" size="sm" onClick={downloadOfflineSystemsCsv}>
-                    Download Offline Systems CSV
-                  </Button>
-                </div>
-              </CardHeader>
-            </Card>
-
-            <Card className="border-slate-200/80 bg-slate-50/70">
-              <CardContent className="pt-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Jump to</span>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-overview")}>
-                    Overview
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-summary")}>
-                    Summary
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-by-method")}>
-                    By Method
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-by-platform")}>
-                    By Platform
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-by-installer")}>
-                    By Installer
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-zero-reporting")}>
-                    0% Reporting
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => jumpToSection("offline-detail")}>
-                    Offline Detail
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-
-            <div id="offline-summary" className="grid gap-4 md:grid-cols-2 xl:grid-cols-6 scroll-mt-24">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Offline Systems</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.offlineSystemCount)}</CardTitle>
-                  <CardDescription>{formatPercent(offlineSummary.offlineSystemPercent)}</CardDescription>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Filtered Offline Systems</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.filteredOfflineCount)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Monitoring Methods</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.monitoringTypeCount)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Monitoring Platforms</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.monitoringPlatformCount)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Installers</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(offlineSummary.installerCount)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Offline Contract Value</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(offlineSummary.totalOfflineContractValue)}</CardTitle>
-                  <CardDescription>{formatPercent(offlineSummary.offlineContractValuePercent)}</CardDescription>
-                </CardHeader>
-              </Card>
-            </div>
-
-            <div className="grid gap-4 xl:grid-cols-2">
-              <Card id="offline-by-method" className="scroll-mt-24">
-                <CardHeader>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                    <div>
-                      <CardTitle className="text-base">Offline by Monitoring Method</CardTitle>
-                      <CardDescription>
-                        Includes offline percentage and contract value by monitoring method (Granted Access, Password, Link, etc).
-                      </CardDescription>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-slate-700">Sort by</label>
-                        <select
-                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                          value={offlineMonitoringSortBy}
-                          onChange={(event) =>
-                            setOfflineMonitoringSortBy(
-                              event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
-                            )
-                          }
-                        >
-                          <option value="offlineSystems">Offline Systems</option>
-                          <option value="offlinePercent">Offline %</option>
-                          <option value="offlineContractValue">Offline Contract Value</option>
-                          <option value="label">Monitoring Method</option>
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-slate-700">Direction</label>
-                        <select
-                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                          value={offlineMonitoringSortDir}
-                          onChange={(event) => setOfflineMonitoringSortDir(event.target.value as "asc" | "desc")}
-                        >
-                          <option value="desc">Descending</option>
-                          <option value="asc">Ascending</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Monitoring Method</TableHead>
-                        <TableHead>Total Systems</TableHead>
-                        <TableHead>Offline Systems</TableHead>
-                        <TableHead>Offline %</TableHead>
-                        <TableHead>Offline Contract Value</TableHead>
-                        <TableHead>Offline Value %</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {offlineMonitoringBreakdownRows.map((row) => (
-                        <TableRow key={row.key}>
-                          <TableCell className="font-medium">{row.label}</TableCell>
-                          <TableCell>{formatNumber(row.totalSystems)}</TableCell>
-                          <TableCell>{formatNumber(row.offlineSystems)}</TableCell>
-                          <TableCell>{formatPercent(row.offlinePercent)}</TableCell>
-                          <TableCell>{formatCurrency(row.offlineContractValue)}</TableCell>
-                          <TableCell>{formatPercent(row.offlineContractValuePercent)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-
-              <Card id="offline-by-platform" className="scroll-mt-24">
-                <CardHeader>
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                    <div>
-                      <CardTitle className="text-base">Offline by Monitoring Platform</CardTitle>
-                      <CardDescription>
-                        Includes offline percentage and contract value by monitoring platform (SolarEdge, Enphase, ennexOS, etc).
-                      </CardDescription>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-slate-700">Sort by</label>
-                        <select
-                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                          value={offlinePlatformSortBy}
-                          onChange={(event) =>
-                            setOfflinePlatformSortBy(
-                              event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
-                            )
-                          }
-                        >
-                          <option value="offlineSystems">Offline Systems</option>
-                          <option value="offlinePercent">Offline %</option>
-                          <option value="offlineContractValue">Offline Contract Value</option>
-                          <option value="label">Monitoring Platform</option>
-                        </select>
-                      </div>
-                      <div className="space-y-1">
-                        <label className="text-xs font-medium text-slate-700">Direction</label>
-                        <select
-                          className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                          value={offlinePlatformSortDir}
-                          onChange={(event) => setOfflinePlatformSortDir(event.target.value as "asc" | "desc")}
-                        >
-                          <option value="desc">Descending</option>
-                          <option value="asc">Ascending</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Monitoring Platform</TableHead>
-                        <TableHead>Total Systems</TableHead>
-                        <TableHead>Offline Systems</TableHead>
-                        <TableHead>Offline %</TableHead>
-                        <TableHead>Offline Contract Value</TableHead>
-                        <TableHead>Offline Value %</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {offlinePlatformBreakdownRows.map((row) => (
-                        <TableRow key={row.key}>
-                          <TableCell className="font-medium">{row.label}</TableCell>
-                          <TableCell>{formatNumber(row.totalSystems)}</TableCell>
-                          <TableCell>{formatNumber(row.offlineSystems)}</TableCell>
-                          <TableCell>{formatPercent(row.offlinePercent)}</TableCell>
-                          <TableCell>{formatCurrency(row.offlineContractValue)}</TableCell>
-                          <TableCell>{formatPercent(row.offlineContractValuePercent)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            </div>
-
-            <Card id="offline-by-installer" className="scroll-mt-24">
-              <CardHeader>
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                  <div>
-                    <CardTitle className="text-base">Offline by Installer</CardTitle>
-                    <CardDescription>
-                      Includes offline percentage and contract value by installer.
-                    </CardDescription>
-                  </div>
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-700">Sort by</label>
-                      <select
-                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                        value={offlineInstallerSortBy}
-                        onChange={(event) =>
-                          setOfflineInstallerSortBy(
-                            event.target.value as "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
-                          )
-                        }
-                      >
-                        <option value="offlineSystems">Offline Systems</option>
-                        <option value="offlinePercent">Offline %</option>
-                        <option value="offlineContractValue">Offline Contract Value</option>
-                        <option value="label">Installer</option>
-                      </select>
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs font-medium text-slate-700">Direction</label>
-                      <select
-                        className="h-9 w-full rounded-md border border-slate-300 bg-white px-2 text-sm"
-                        value={offlineInstallerSortDir}
-                        onChange={(event) => setOfflineInstallerSortDir(event.target.value as "asc" | "desc")}
-                      >
-                        <option value="desc">Descending</option>
-                        <option value="asc">Ascending</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Installer</TableHead>
-                      <TableHead>Total Systems</TableHead>
-                      <TableHead>Offline Systems</TableHead>
-                      <TableHead>Offline %</TableHead>
-                      <TableHead>Offline Contract Value</TableHead>
-                      <TableHead>Offline Value %</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {offlineInstallerBreakdownRows.map((row) => (
-                      <TableRow key={row.key}>
-                        <TableCell className="font-medium">{row.label}</TableCell>
-                        <TableCell>{formatNumber(row.totalSystems)}</TableCell>
-                        <TableCell>{formatNumber(row.offlineSystems)}</TableCell>
-                        <TableCell>{formatPercent(row.offlinePercent)}</TableCell>
-                        <TableCell>{formatCurrency(row.offlineContractValue)}</TableCell>
-                        <TableCell>{formatPercent(row.offlineContractValuePercent)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-
-            <Card id="offline-zero-reporting" className="scroll-mt-24">
-              <CardHeader>
-                <CardTitle className="text-base">Installer + Monitoring Platform with 0% Reporting (&gt;10 Systems)</CardTitle>
-                <CardDescription>
-                  Combinations where no systems are reporting and total systems exceed 10.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {zeroReportingInstallerPlatformRows.length === 0 ? (
-                  <p className="text-sm text-slate-600">No combinations currently match this criteria.</p>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Installer</TableHead>
-                        <TableHead>Monitoring Platform</TableHead>
-                        <TableHead>Total Systems</TableHead>
-                        <TableHead>Reporting %</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {zeroReportingInstallerPlatformRows.map((row) => (
-                        <TableRow key={`${row.installerName}-${row.monitoringPlatform}`}>
-                          <TableCell className="font-medium">{row.installerName}</TableCell>
-                          <TableCell>{row.monitoringPlatform}</TableCell>
-                          <TableCell>{formatNumber(row.totalSystems)}</TableCell>
-                          <TableCell className="text-rose-700 font-semibold">
-                            {formatPercent(row.reportingPercent)}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card id="offline-detail" className="scroll-mt-24">
-              <CardHeader>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                  <div>
-                    <CardTitle className="text-base">Offline Systems Detail</CardTitle>
-                    <CardDescription>Filterable and sortable list of non-reporting systems.</CardDescription>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={downloadOfflineDetailFilteredCsv}
-                    disabled={filteredOfflineSystems.length === 0}
-                  >
-                    Export Filtered Table CSV
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Monitoring method</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={offlineMonitoringFilter}
-                      onChange={(event) => setOfflineMonitoringFilter(event.target.value)}
-                    >
-                      <option value="All">All Monitoring Methods</option>
-                      {offlineMonitoringOptions.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Monitoring platform</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={offlinePlatformFilter}
-                      onChange={(event) => setOfflinePlatformFilter(event.target.value)}
-                    >
-                      <option value="All">All Platforms</option>
-                      {offlinePlatformOptions.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Installer</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={offlineInstallerFilter}
-                      onChange={(event) => setOfflineInstallerFilter(event.target.value)}
-                    >
-                      <option value="All">All Installers</option>
-                      {offlineInstallerOptions.map((value) => (
-                        <option key={value} value={value}>
-                          {value}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Sort by</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={offlineDetailSortBy}
-                      onChange={(event) =>
-                        setOfflineDetailSortBy(
-                          event.target.value as
-                            | "systemName"
-                            | "monitoringType"
-                            | "monitoringPlatform"
-                            | "installerName"
-                            | "contractedValue"
-                            | "latestReportingDate"
-                        )
-                      }
-                    >
-                      <option value="contractedValue">Contract Value</option>
-                      <option value="latestReportingDate">Last Reporting Date</option>
-                      <option value="systemName">System Name</option>
-                      <option value="monitoringType">Monitoring Method</option>
-                      <option value="monitoringPlatform">Monitoring Platform</option>
-                      <option value="installerName">Installer</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Direction</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={offlineDetailSortDir}
-                      onChange={(event) => setOfflineDetailSortDir(event.target.value as "asc" | "desc")}
-                    >
-                      <option value="desc">Descending</option>
-                      <option value="asc">Ascending</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Search</label>
-                    <Input
-                      placeholder="System, IDs, method, platform, installer, monitoring access..."
-                      value={offlineSearch}
-                      onChange={(event) => setOfflineSearch(event.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>System</TableHead>
-                      <TableHead>system_id</TableHead>
-                      <TableHead>Tracking ID</TableHead>
-                      <TableHead>Monitoring Method</TableHead>
-                      <TableHead>Monitoring Platform</TableHead>
-                      <TableHead>Access Type</TableHead>
-                      <TableHead>Monitoring Site ID</TableHead>
-                      <TableHead>Monitoring Site Name</TableHead>
-                      <TableHead>Monitoring Link</TableHead>
-                      <TableHead>Monitoring Username</TableHead>
-                      <TableHead>Monitoring Password</TableHead>
-                      <TableHead>Installer</TableHead>
-                      <TableHead>Last Reporting Date</TableHead>
-                      <TableHead>Last Report (kWh)</TableHead>
-                      <TableHead>Contract Value</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {visibleOfflineDetailRows.map((system) => {
-                      const accessFields = resolveOfflineMonitoringAccessFields(system, monitoringDetailsBySystemKey);
-                      return (
-                        <TableRow key={system.key}>
-                          <TableCell className="font-medium">{system.systemName}</TableCell>
-                          <TableCell>{system.systemId ?? "N/A"}</TableCell>
-                          <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                          <TableCell>{system.monitoringType}</TableCell>
-                          <TableCell>{system.monitoringPlatform}</TableCell>
-                          <TableCell>{accessFields.accessType || "N/A"}</TableCell>
-                          <TableCell>{accessFields.monitoringSiteId || "N/A"}</TableCell>
-                          <TableCell>{accessFields.monitoringSiteName || "N/A"}</TableCell>
-                          <TableCell className="max-w-[18rem] break-all">
-                            {accessFields.monitoringLink ? (
-                              <a
-                                href={accessFields.monitoringLink}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 underline"
-                              >
-                                {accessFields.monitoringLink}
-                              </a>
-                            ) : (
-                              "N/A"
-                            )}
-                          </TableCell>
-                          <TableCell>{accessFields.monitoringUsername || "N/A"}</TableCell>
-                          <TableCell>{accessFields.monitoringPassword || "N/A"}</TableCell>
-                          <TableCell>{system.installerName}</TableCell>
-                          <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
-                          <TableCell>{formatKwh(system.latestReportingKwh)}</TableCell>
-                          <TableCell>{formatCurrency(system.contractedValue)}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                    {visibleOfflineDetailRows.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={15} className="py-6 text-center text-slate-500">
-                          No offline systems match the current filters.
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
-                <div className="flex items-center justify-between text-xs text-slate-600">
-                  <span>
-                    Showing {formatNumber(visibleOfflineDetailRows.length)} of{" "}
-                    {formatNumber(filteredOfflineSystems.length)} rows
-                  </span>
-                  <span>
-                    Page {formatNumber(offlineDetailCurrentPage)} of {formatNumber(offlineDetailTotalPages)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setOfflineDetailPage((page) => Math.max(1, page - 1))}
-                    disabled={offlineDetailCurrentPage <= 1}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setOfflineDetailPage((page) => Math.min(offlineDetailTotalPages, page + 1))}
-                    disabled={offlineDetailCurrentPage >= offlineDetailTotalPages}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>)}
+          {activeTab === "offline-monitoring" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading offline monitoring tab...</div>}>
+              <OfflineMonitoringTabLazy
+                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                abpEligibleTrackingIdsStrict={abpEligibleTrackingIdsStrict}
+                abpApplicationIdBySystemKey={abpApplicationIdBySystemKey}
+                monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
+                jumpToSection={jumpToSection}
+              />
+            </Suspense>
+          )}
 
           {activeTab === "meter-reads" && (<div className="space-y-4 mt-4">
             <Card>
