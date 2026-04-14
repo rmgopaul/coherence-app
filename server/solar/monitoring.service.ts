@@ -8,6 +8,11 @@
 import { nanoid } from "nanoid";
 import * as db from "../db";
 import { mapWithConcurrency } from "../services/core/concurrency";
+import {
+  pushMonitoringRunsToConvertedReads,
+  type MonitoringRunRow,
+} from "./convertedReadsBridge";
+import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
 
 // ---------------------------------------------------------------------------
 // Provider registry — maps provider key to the service function that
@@ -96,7 +101,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 // Execute a single provider run
 // ---------------------------------------------------------------------------
 
-type SiteProgressCallback = (delta: { success: number; error: number; noData: number }) => void;
+type SiteProgressCallback = (delta: {
+  success: number;
+  error: number;
+  noData: number;
+  run?: MonitoringRunRow;
+}) => void;
 
 export async function executeProviderRun(
   provider: string,
@@ -231,6 +241,14 @@ export async function executeProviderRun(
             success: row.status === "success" ? 1 : 0,
             error: row.status === "error" ? 1 : 0,
             noData: row.status === "no_data" ? 1 : 0,
+            run: {
+              provider,
+              siteId: row.siteId,
+              siteName: row.siteName ?? null,
+              lifetimeKwh: row.lifetimeKwh ?? null,
+              dateKey,
+              status: row.status,
+            },
           });
           return row;
         } catch (err) {
@@ -337,6 +355,17 @@ export async function executeMonitoringBatch(
       providersCompleted: 0,
     });
 
+    // Resolve the owner userId for pushing converted reads
+    let ownerUserId: number | null = null;
+    try {
+      ownerUserId = await resolveSolarRecOwnerUserId();
+    } catch {
+      console.warn("[MonitoringBatch] Could not resolve owner userId — converted reads push will be skipped.");
+    }
+
+    // Collect all completed runs across the batch for converted reads push
+    const allCompletedRuns: MonitoringRunRow[] = [];
+
     let providersCompleted = 0;
     for (const provider of providers) {
       const providerCredentials = scopedCredentials.filter((credential) => credential.provider === provider);
@@ -369,6 +398,7 @@ export async function executeMonitoringBatch(
             totalError += delta.error;
             totalNoData += delta.noData;
             totalSites += delta.success + delta.error + delta.noData;
+            if (delta.run) allCompletedRuns.push(delta.run);
             // Fire-and-forget DB update — don't await to avoid slowing down the batch
             db.updateMonitoringBatchRun(batchId, {
               totalSites,
@@ -391,6 +421,16 @@ export async function executeMonitoringBatch(
         errorCount: totalError,
         noDataCount: totalNoData,
       });
+    }
+
+    // Push successful runs to Converted Reads dataset for Performance Ratio tab
+    if (ownerUserId && allCompletedRuns.length > 0) {
+      try {
+        const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(ownerUserId, allCompletedRuns);
+        console.log(`[MonitoringBatch] Converted reads: ${pushed} pushed, ${skipped} skipped (dedup).`);
+      } catch (err) {
+        console.error("[MonitoringBatch] Failed to push converted reads:", err instanceof Error ? err.message : err);
+      }
     }
 
     await db.updateMonitoringBatchRun(batchId, {
