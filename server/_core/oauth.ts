@@ -88,10 +88,14 @@ export function registerOAuthRoutes(app: Express) {
       const totpSecret = user ? await db.getTotpSecret(user.id) : undefined;
       const has2FA = totpSecret?.verified === true;
 
+      // Android app has its own PIN gate, so skip the 2FA challenge.
+      // Web users still go through the normal 2FA verification flow.
+      const skip2FA = platform === "android";
+
       const sessionToken = await sdk.createSessionToken(userInfo.openId, {
         name: userInfo.name || "",
         expiresInMs: ONE_YEAR_MS,
-        twoFactorVerified: !has2FA, // false if 2FA enabled (requires verification)
+        twoFactorVerified: skip2FA || !has2FA,
       });
 
       if (platform === "android") {
