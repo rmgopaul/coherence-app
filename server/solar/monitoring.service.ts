@@ -62,6 +62,9 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Max time (ms) to wait for a single site's getSnapshots call before recording a timeout error. */
+const PER_SITE_TIMEOUT_MS = 30_000;
+
 /** Extract a human-readable label from a credential's metadata (username, account, apiKey prefix). */
 function extractCredentialLabel(
   cred: { connectionName?: string | null; metadata?: string | null; accessToken?: string | null } | undefined
@@ -71,7 +74,6 @@ function extractCredentialLabel(
   if (!cred.metadata) return cred.accessToken ? `...${cred.accessToken.slice(-6)}` : null;
   try {
     const meta = JSON.parse(cred.metadata);
-    // Try common fields that identify the login
     return meta.username ?? meta.account ?? meta.connectionName
       ?? (meta.apiKey ? `Key ...${meta.apiKey.slice(-6)}` : null);
   } catch {
@@ -79,10 +81,22 @@ function extractCredentialLabel(
   }
 }
 
+/** Race a promise against a timeout. Rejects with a clear message on timeout. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout after ${ms}ms: ${label}`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Execute a single provider run
 // ---------------------------------------------------------------------------
+
+type SiteProgressCallback = (delta: { success: number; error: number; noData: number }) => void;
 
 export async function executeProviderRun(
   provider: string,
@@ -90,6 +104,7 @@ export async function executeProviderRun(
   triggeredBy: number | null,
   options?: {
     credentialIds?: string[];
+    onSiteProgress?: SiteProgressCallback;
   }
 ): Promise<{ success: number; error: number; noData: number }> {
   const selectedCredentialSet =
@@ -110,7 +125,6 @@ export async function executeProviderRun(
   const adapterLoader = providerAdapters[provider];
   if (!adapterLoader) {
     console.warn(`[Monitoring] No adapter for provider ${provider}`);
-    // Persist an error row so the dashboard shows this provider was skipped
     try {
       await db.upsertMonitoringApiRun({
         id: nanoid(),
@@ -153,13 +167,19 @@ export async function executeProviderRun(
       const snapshots = await mapWithConcurrency(sites, 4, async (site) => {
         const start = Date.now();
         try {
-          const results = await adapter.getSnapshots(cred, [site.siteId], dateKey);
+          // Wrap each site call with a timeout to prevent one slow API from blocking the batch
+          const results = await withTimeout(
+            adapter.getSnapshots(cred, [site.siteId], dateKey),
+            PER_SITE_TIMEOUT_MS,
+            `${provider}/${site.siteId}`
+          );
           const result = results[0];
           const durationMs = Date.now() - start;
 
+          let row;
           if (!result || result.status === "Not Found") {
             noData++;
-            return {
+            row = {
               provider,
               connectionId: cred.id,
               siteId: site.siteId,
@@ -172,11 +192,9 @@ export async function executeProviderRun(
               triggeredBy,
               triggeredAt: new Date(),
             };
-          }
-
-          if (result.status === "Error") {
+          } else if (result.status === "Error") {
             error++;
-            return {
+            row = {
               provider,
               connectionId: cred.id,
               siteId: site.siteId,
@@ -190,25 +208,34 @@ export async function executeProviderRun(
               triggeredBy,
               triggeredAt: new Date(),
             };
+          } else {
+            success++;
+            row = {
+              provider,
+              connectionId: cred.id,
+              siteId: site.siteId,
+              siteName: result.siteName ?? site.siteName,
+              dateKey,
+              status: "success" as const,
+              readingsCount: result.lifetimeKwh != null ? 1 : 0,
+              lifetimeKwh: result.lifetimeKwh,
+              durationMs,
+              triggeredBy,
+              triggeredAt: new Date(),
+            };
           }
 
-          success++;
-          return {
-            provider,
-            connectionId: cred.id,
-            siteId: site.siteId,
-            siteName: result.siteName ?? site.siteName,
-            dateKey,
-            status: "success" as const,
-            readingsCount: result.lifetimeKwh != null ? 1 : 0,
-            lifetimeKwh: result.lifetimeKwh,
-            durationMs,
-            triggeredBy,
-            triggeredAt: new Date(),
-          };
+          // Persist immediately and notify batch of incremental progress
+          await db.upsertMonitoringApiRun({ id: nanoid(), ...row });
+          options?.onSiteProgress?.({
+            success: row.status === "success" ? 1 : 0,
+            error: row.status === "error" ? 1 : 0,
+            noData: row.status === "no_data" ? 1 : 0,
+          });
+          return row;
         } catch (err) {
           error++;
-          return {
+          const row = {
             provider,
             connectionId: cred.id,
             siteId: site.siteId,
@@ -222,13 +249,12 @@ export async function executeProviderRun(
             triggeredBy,
             triggeredAt: new Date(),
           };
+          await db.upsertMonitoringApiRun({ id: nanoid(), ...row });
+          options?.onSiteProgress?.({ success: 0, error: 1, noData: 0 });
+          return row;
         }
       });
-
-      // Persist all results
-      for (const snap of snapshots) {
-        await db.upsertMonitoringApiRun({ id: nanoid(), ...snap });
-      }
+      // Results already persisted per-site above
     } catch (err) {
       console.error(`[Monitoring] Provider ${provider} credential ${cred.id} failed:`, err);
       const message = err instanceof Error ? err.message : String(err);
@@ -319,7 +345,6 @@ export async function executeMonitoringBatch(
         continue;
       }
 
-      // Find credential name for this provider
       const cred = providerCredentials[0];
       const credName = cred?.connectionName ?? extractCredentialLabel(cred);
 
@@ -338,12 +363,25 @@ export async function executeMonitoringBatch(
         triggeredBy,
         {
           credentialIds: providerCredentials.map((credential) => credential.id),
+          // Incremental progress: update batch status after each site completes
+          onSiteProgress: (delta) => {
+            totalSuccess += delta.success;
+            totalError += delta.error;
+            totalNoData += delta.noData;
+            totalSites += delta.success + delta.error + delta.noData;
+            // Fire-and-forget DB update — don't await to avoid slowing down the batch
+            db.updateMonitoringBatchRun(batchId, {
+              totalSites,
+              successCount: totalSuccess,
+              errorCount: totalError,
+              noDataCount: totalNoData,
+            }).catch(() => {});
+          },
         }
       );
-      totalSuccess += success;
-      totalError += error;
-      totalNoData += noData;
-      totalSites += success + error + noData;
+
+      // Reconcile final counts from executeProviderRun (authoritative)
+      // The onSiteProgress callbacks already incremented, so don't double-count
       providersCompleted++;
 
       await db.updateMonitoringBatchRun(batchId, {
