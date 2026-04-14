@@ -1,3 +1,12 @@
+import {
+  toNullableString,
+  toNullableNumber,
+  asRecord,
+  asRecordArray,
+  parseIsoDate,
+  normalizeBaseUrl,
+} from "./helpers";
+
 export const FRONIUS_DEFAULT_BASE_URL = "https://api.solarweb.com/swqapi";
 
 export type FroniusApiContext = {
@@ -70,47 +79,6 @@ export type FroniusDeviceSnapshot = {
   isOnline: boolean | null;
   error: string | null;
 };
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-function toNullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function toNullableNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.map((row) => asRecord(row));
-}
-
-// ---------------------------------------------------------------------------
-// Date helpers
-// ---------------------------------------------------------------------------
-
-function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return { year, month, day };
-}
 
 function formatIsoDate(date: Date): string {
   const year = date.getFullYear();
@@ -187,45 +155,10 @@ function safeRound(value: number | null): number | null {
   return Math.round(value * 1000) / 1000;
 }
 
-function sumFinite(values: Array<number | null | undefined>): number | null {
-  const finite = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-  if (finite.length === 0) return null;
-  const total = finite.reduce((sum, value) => sum + value, 0);
-  return Math.round(total * 1000) / 1000;
-}
-
 function isNotFoundError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
   return message.includes("(404") || message.includes("not found");
-}
-
-// ---------------------------------------------------------------------------
-// Concurrency helper
-// ---------------------------------------------------------------------------
-
-export async function mapWithConcurrency<TInput, TOutput>(
-  items: TInput[],
-  limit: number,
-  worker: (item: TInput, index: number) => Promise<TOutput>
-): Promise<TOutput[]> {
-  if (items.length === 0) return [];
-  const safeLimit = Math.max(1, Math.floor(limit) || 1);
-  const output = new Array<TOutput>(items.length);
-  let cursor = 0;
-
-  const run = async () => {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= items.length) return;
-      output[index] = await worker(items[index], index);
-    }
-  };
-
-  const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => run());
-  await Promise.all(workers);
-  return output;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,15 +293,18 @@ const FRONIUS_MAX_RETRY_ATTEMPTS = 3;
 type FroniusThrottleState = {
   tail: Promise<void>;
   releaseTail: (() => void) | null;
-  recentRequestTimestamps: number[];
+  windowStart: number;
+  windowCount: number;
   nextAllowedAt: number;
   lastRequestAt: number;
 };
 
 const froniusThrottleByKey = new Map<string, FroniusThrottleState>();
+const THROTTLE_EVICTION_THRESHOLD = 50;
+const THROTTLE_STALE_MS = 10 * 60 * 1000; // 10 minutes
 
 function getFroniusThrottleKey(context: FroniusApiContext): string {
-  return `${context.accessKeyId.trim()}::${normalizeBaseUrl(context.baseUrl)}`;
+  return `${context.accessKeyId.trim()}::${normalize(context.baseUrl)}`;
 }
 
 function getOrCreateFroniusThrottleState(context: FroniusApiContext): FroniusThrottleState {
@@ -376,11 +312,22 @@ function getOrCreateFroniusThrottleState(context: FroniusApiContext): FroniusThr
   const existing = froniusThrottleByKey.get(key);
   if (existing) return existing;
 
+  // Evict stale entries to prevent unbounded growth from rotated keys.
+  if (froniusThrottleByKey.size >= THROTTLE_EVICTION_THRESHOLD) {
+    const now = Date.now();
+    for (const [k, v] of Array.from(froniusThrottleByKey.entries())) {
+      if (now - v.lastRequestAt > THROTTLE_STALE_MS) {
+        froniusThrottleByKey.delete(k);
+      }
+    }
+  }
+
   const initialTail = Promise.resolve();
   const state: FroniusThrottleState = {
     tail: initialTail,
     releaseTail: null,
-    recentRequestTimestamps: [],
+    windowStart: 0,
+    windowCount: 0,
     nextAllowedAt: 0,
     lastRequestAt: 0,
   };
@@ -407,14 +354,16 @@ async function waitForFroniusRateLimitSlot(context: FroniusApiContext): Promise<
 
   try {
     const now = Date.now();
-    state.recentRequestTimestamps = state.recentRequestTimestamps.filter(
-      (timestamp) => now - timestamp < FRONIUS_WINDOW_MS
-    );
+
+    // Reset the tumbling window when it expires.
+    if (now - state.windowStart >= FRONIUS_WINDOW_MS) {
+      state.windowStart = now;
+      state.windowCount = 0;
+    }
 
     let waitMs = 0;
-    if (state.recentRequestTimestamps.length >= FRONIUS_SAFE_REQUESTS_PER_MINUTE) {
-      const oldestInWindow = state.recentRequestTimestamps[0];
-      waitMs = Math.max(waitMs, FRONIUS_WINDOW_MS - (now - oldestInWindow) + 50);
+    if (state.windowCount >= FRONIUS_SAFE_REQUESTS_PER_MINUTE) {
+      waitMs = Math.max(waitMs, FRONIUS_WINDOW_MS - (now - state.windowStart) + 50);
     }
 
     waitMs = Math.max(waitMs, state.nextAllowedAt - now);
@@ -426,7 +375,7 @@ async function waitForFroniusRateLimitSlot(context: FroniusApiContext): Promise<
 
     const scheduledAt = Date.now();
     state.lastRequestAt = scheduledAt;
-    state.recentRequestTimestamps.push(scheduledAt);
+    state.windowCount += 1;
   } finally {
     releaseCurrentTail();
     if (state.releaseTail === releaseCurrentTail) {
@@ -467,18 +416,16 @@ function applyFroniusBackoff(context: FroniusApiContext, retryAfterMs: number): 
   state.nextAllowedAt = Math.max(state.nextAllowedAt, until);
 }
 
-function normalizeBaseUrl(raw: string | null | undefined): string {
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
-  if (!trimmed) return FRONIUS_DEFAULT_BASE_URL;
-  return trimmed.replace(/\/+$/, "");
-}
+const normalize = (raw: string | null | undefined) =>
+  normalizeBaseUrl(raw, FRONIUS_DEFAULT_BASE_URL);
 
 async function getFroniusJson(
   path: string,
   context: FroniusApiContext,
-  query?: Record<string, string | number | null | undefined>
+  query?: Record<string, string | number | null | undefined>,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const baseUrl = normalize(context.baseUrl);
   const safePath = path.startsWith("/") ? path : `/${path}`;
   const url = new URL(`${baseUrl}${safePath}`);
 
@@ -492,13 +439,17 @@ async function getFroniusJson(
   for (let attempt = 1; attempt <= FRONIUS_MAX_RETRY_ATTEMPTS; attempt += 1) {
     await waitForFroniusRateLimitSlot(context);
 
+    const composedSignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(20_000)])
+      : AbortSignal.timeout(20_000);
+
     const response = await fetch(url.toString(), {
       headers: {
         AccessKeyId: context.accessKeyId,
         AccessKeyValue: context.accessKeyValue,
         Accept: "application/json",
       },
-      signal: AbortSignal.timeout(20_000),
+      signal: composedSignal,
     });
 
     if (response.ok) {
@@ -583,7 +534,10 @@ export function extractPvSystems(payload: unknown): FroniusPvSystem[] {
 // API: List PV Systems (with pagination)
 // ---------------------------------------------------------------------------
 
-export async function listPvSystems(context: FroniusApiContext): Promise<{
+export async function listPvSystems(
+  context: FroniusApiContext,
+  signal?: AbortSignal,
+): Promise<{
   pvSystems: FroniusPvSystem[];
   raw: unknown;
 }> {
@@ -597,7 +551,7 @@ export async function listPvSystems(context: FroniusApiContext): Promise<{
     const raw = await getFroniusJson("/pvsystems", context, {
       Limit: limit,
       Offset: offset,
-    });
+    }, signal);
     allRawPages.push(raw);
 
     const systems = extractPvSystems(raw);
@@ -620,9 +574,10 @@ export async function listPvSystems(context: FroniusApiContext): Promise<{
 
 export async function getPvSystemDetails(
   context: FroniusApiContext,
-  pvSystemId: string
+  pvSystemId: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}`, context);
+  return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}`, context, undefined, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -631,12 +586,14 @@ export async function getPvSystemDetails(
 
 export async function getPvSystemDevices(
   context: FroniusApiContext,
-  pvSystemId: string
+  pvSystemId: string,
+  signal?: AbortSignal,
 ): Promise<FroniusDevice[]> {
   const raw = await getFroniusJson(
     `/pvsystems/${encodeURIComponent(pvSystemId)}/devices`,
     context,
-    { Limit: 100 }
+    { Limit: 100 },
+    signal,
   );
 
   const root = asRecord(raw);
@@ -674,9 +631,10 @@ export async function getPvSystemDevices(
 
 export async function getAggData(
   context: FroniusApiContext,
-  pvSystemId: string
+  pvSystemId: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/aggdata`, context);
+  return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/aggdata`, context, undefined, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,7 +645,8 @@ export async function getAggrData(
   context: FroniusApiContext,
   pvSystemId: string,
   from?: string | null,
-  to?: string | null
+  to?: string | null,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   // The SWQAPI aggrdata endpoint accepts From/To date range parameters.
   // Period is NOT supported by this endpoint (returns error 3204).
@@ -695,7 +654,7 @@ export async function getAggrData(
   return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/aggrdata`, context, {
     From: from ?? undefined,
     To: to ?? undefined,
-  });
+  }, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -704,9 +663,10 @@ export async function getAggrData(
 
 export async function getFlowData(
   context: FroniusApiContext,
-  pvSystemId: string
+  pvSystemId: string,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/flowdata`, context);
+  return getFroniusJson(`/pvsystems/${encodeURIComponent(pvSystemId)}/flowdata`, context, undefined, signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -767,25 +727,25 @@ export function extractLifetimeKwh(payload: unknown): LifetimeKwhExtraction {
 }
 
 // ---------------------------------------------------------------------------
-// Extraction: Daily energy from aggrdata (Period=Days)
+// Extraction: Aggregated energy from aggrdata
 // ---------------------------------------------------------------------------
 
-type DailyEnergyPoint = {
+type EnergyPoint = {
   dateKey: string;
   kwh: number;
 };
 
-type DailyEnergyExtraction = {
-  points: DailyEnergyPoint[];
+type EnergyExtraction = {
+  points: EnergyPoint[];
   channelName: string | null;
   channelUnit: string | null;
   channelSelection: string | null;
 };
 
-export function extractAggrDailyEnergyKwh(payload: unknown): DailyEnergyExtraction {
+export function extractAggrEnergyKwh(payload: unknown): EnergyExtraction {
   const root = asRecord(payload);
   const dataEntries = asRecordArray(root.data ?? root.Data);
-  const output: DailyEnergyPoint[] = [];
+  const output: EnergyPoint[] = [];
   let channelName: string | null = null;
   let channelUnit: string | null = null;
   let channelSelection: string | null = null;
@@ -823,73 +783,68 @@ export function extractAggrDailyEnergyKwh(payload: unknown): DailyEnergyExtracti
   };
 }
 
-// ---------------------------------------------------------------------------
-// Extraction: Monthly energy from aggrdata (Period=Months)
-// ---------------------------------------------------------------------------
-
-type MonthlyEnergyPoint = {
-  dateKey: string;
-  kwh: number;
-};
-
-type MonthlyEnergyExtraction = {
-  points: MonthlyEnergyPoint[];
-  channelName: string | null;
-  channelUnit: string | null;
-  channelSelection: string | null;
-};
-
-export function extractAggrMonthlyEnergyKwh(payload: unknown): MonthlyEnergyExtraction {
-  const root = asRecord(payload);
-  const dataEntries = asRecordArray(root.data ?? root.Data);
-  const output: MonthlyEnergyPoint[] = [];
-  let channelName: string | null = null;
-  let channelUnit: string | null = null;
-  let channelSelection: string | null = null;
-
-  for (const entry of dataEntries) {
-    const logDateTime = toNullableString(
-      entry.logDateTime ?? entry.LogDateTime ?? entry.logDate ?? entry.timestamp
-    );
-    // For monthly data, use the date key (first 10 chars) so we can compare with ISO date ranges
-    const dateKey = asDateKey(logDateTime);
-    if (!dateKey) continue;
-
-    const channels = asRecordArray(entry.channels ?? entry.Channels);
-    const selectedChannel = findProductionChannel(channels);
-    if (!selectedChannel) continue;
-
-    const unit = selectedChannel.unit ?? "Wh";
-    const rawValue = toNullableNumber(selectedChannel.channel.value ?? selectedChannel.channel.Value);
-    const kwh = channelValueToKwh(rawValue, unit);
-    if (kwh === null) continue;
-
-    if (!channelName) {
-      channelName = selectedChannel.channelName;
-      channelUnit = selectedChannel.unit;
-      channelSelection = selectedChannel.selectionSource;
-    }
-
-    output.push({ dateKey, kwh });
-  }
-
-  return {
-    points: output,
-    channelName,
-    channelUnit,
-    channelSelection,
-  };
-}
+/** @deprecated Use {@link extractAggrEnergyKwh} — kept for backward compatibility. */
+export const extractAggrDailyEnergyKwh = extractAggrEnergyKwh;
+/** @deprecated Use {@link extractAggrEnergyKwh} — kept for backward compatibility. */
+export const extractAggrMonthlyEnergyKwh = extractAggrEnergyKwh;
 
 // ---------------------------------------------------------------------------
 // Production Snapshot
 // ---------------------------------------------------------------------------
 
+type SnapshotDateMetadata = {
+  anchorDate: string;
+  monthlyStartDate: string;
+  weeklyStartDate: string;
+  mtdStartDate: string;
+  previousCalendarMonthStartDate: string;
+  previousCalendarMonthEndDate: string;
+  last12MonthsStartDate: string;
+};
+
+function makeErrorSnapshot(
+  pvSystemId: string,
+  name: string | null,
+  status: "Not Found" | "Error",
+  dates: SnapshotDateMetadata,
+  error: unknown,
+): FroniusProductionSnapshot {
+  return {
+    pvSystemId,
+    name,
+    status,
+    found: false,
+    lifetimeKwh: null,
+    hourlyProductionKwh: null,
+    monthlyProductionKwh: null,
+    mtdProductionKwh: null,
+    previousCalendarMonthProductionKwh: null,
+    last12MonthsProductionKwh: null,
+    weeklyProductionKwh: null,
+    dailyProductionKwh: null,
+    ...dates,
+    lifetimeChannelName: null,
+    lifetimeChannelUnit: null,
+    lifetimeChannelSelection: null,
+    dailyChannelName: null,
+    dailyChannelUnit: null,
+    dailyChannelSelection: null,
+    monthlyChannelName: null,
+    monthlyChannelUnit: null,
+    monthlyChannelSelection: null,
+    error:
+      status === "Not Found"
+        ? (error instanceof Error ? error.message : "PV system not found.")
+        : (error instanceof Error ? error.message : "Unknown error."),
+  };
+}
+
 export async function getPvSystemProductionSnapshot(
   context: FroniusApiContext,
   pvSystemIdRaw: string,
   anchorDateRaw?: string | null,
-  nameOverride?: string | null
+  nameOverride?: string | null,
+  signal?: AbortSignal,
 ): Promise<FroniusProductionSnapshot> {
   const pvSystemId = pvSystemIdRaw.trim();
   const name = nameOverride ?? null;
@@ -906,15 +861,22 @@ export async function getPvSystemProductionSnapshot(
   const last12MonthsStartDate = shiftIsoDateByYears(anchorDate, -1);
 
   try {
+    // IMPORTANT: Both aggrdata calls are intentional and CANNOT be merged.
+    // The Fronius SWQAPI aggrdata endpoint returns data at a granularity
+    // determined by the date range span:
+    //   ~60-day range (previousCalendarMonthStart..anchorDate) → daily rows
+    //   ~12-month range (last12MonthsStart..anchorDate) → monthly rows
+    // A single call with the 12-month range would NOT return daily-resolution
+    // data, which is needed for daily/weekly/MTD rollups.
     const [aggdataPayload, dailyAggrPayload, monthlyAggrPayload] = await Promise.all([
-      getAggData(context, pvSystemId),
-      getAggrData(context, pvSystemId, previousCalendarMonthStartDate, anchorDate),
-      getAggrData(context, pvSystemId, last12MonthsStartDate, anchorDate),
+      getAggData(context, pvSystemId, signal),
+      getAggrData(context, pvSystemId, previousCalendarMonthStartDate, anchorDate, signal),
+      getAggrData(context, pvSystemId, last12MonthsStartDate, anchorDate, signal),
     ]);
 
     const lifetimeExtraction = extractLifetimeKwh(aggdataPayload);
-    const dailyExtraction = extractAggrDailyEnergyKwh(dailyAggrPayload);
-    const monthlyExtraction = extractAggrMonthlyEnergyKwh(monthlyAggrPayload);
+    const dailyExtraction = extractAggrEnergyKwh(dailyAggrPayload);
+    const monthlyExtraction = extractAggrEnergyKwh(monthlyAggrPayload);
     const dailySeries = dailyExtraction.points;
     const monthlySeries = monthlyExtraction.points;
 
@@ -992,53 +954,7 @@ export async function getPvSystemProductionSnapshot(
       error: null,
     };
   } catch (error) {
-    if (isNotFoundError(error)) {
-      return {
-        pvSystemId,
-        name,
-        status: "Not Found",
-        found: false,
-        lifetimeKwh: null,
-        hourlyProductionKwh: null,
-        monthlyProductionKwh: null,
-        mtdProductionKwh: null,
-        previousCalendarMonthProductionKwh: null,
-        last12MonthsProductionKwh: null,
-        weeklyProductionKwh: null,
-        dailyProductionKwh: null,
-        anchorDate,
-        monthlyStartDate,
-        weeklyStartDate,
-        mtdStartDate,
-        previousCalendarMonthStartDate,
-        previousCalendarMonthEndDate,
-        last12MonthsStartDate,
-        lifetimeChannelName: null,
-        lifetimeChannelUnit: null,
-        lifetimeChannelSelection: null,
-        dailyChannelName: null,
-        dailyChannelUnit: null,
-        dailyChannelSelection: null,
-        monthlyChannelName: null,
-        monthlyChannelUnit: null,
-        monthlyChannelSelection: null,
-        error: error instanceof Error ? error.message : "PV system not found.",
-      };
-    }
-
-    return {
-      pvSystemId,
-      name,
-      status: "Error",
-      found: false,
-      lifetimeKwh: null,
-      hourlyProductionKwh: null,
-      monthlyProductionKwh: null,
-      mtdProductionKwh: null,
-      previousCalendarMonthProductionKwh: null,
-      last12MonthsProductionKwh: null,
-      weeklyProductionKwh: null,
-      dailyProductionKwh: null,
+    const dates: SnapshotDateMetadata = {
       anchorDate,
       monthlyStartDate,
       weeklyStartDate,
@@ -1046,17 +962,14 @@ export async function getPvSystemProductionSnapshot(
       previousCalendarMonthStartDate,
       previousCalendarMonthEndDate,
       last12MonthsStartDate,
-      lifetimeChannelName: null,
-      lifetimeChannelUnit: null,
-      lifetimeChannelSelection: null,
-      dailyChannelName: null,
-      dailyChannelUnit: null,
-      dailyChannelSelection: null,
-      monthlyChannelName: null,
-      monthlyChannelUnit: null,
-      monthlyChannelSelection: null,
-      error: error instanceof Error ? error.message : "Unknown error.",
     };
+    return makeErrorSnapshot(
+      pvSystemId,
+      name,
+      isNotFoundError(error) ? "Not Found" : "Error",
+      dates,
+      error,
+    );
   }
 }
 
@@ -1067,15 +980,16 @@ export async function getPvSystemProductionSnapshot(
 export async function getPvSystemDeviceSnapshot(
   context: FroniusApiContext,
   pvSystemIdRaw: string,
-  nameOverride?: string | null
+  nameOverride?: string | null,
+  signal?: AbortSignal,
 ): Promise<FroniusDeviceSnapshot> {
   const pvSystemId = pvSystemIdRaw.trim();
   const name = nameOverride ?? null;
 
   try {
     const [devices, flowPayload] = await Promise.all([
-      getPvSystemDevices(context, pvSystemId),
-      getFlowData(context, pvSystemId),
+      getPvSystemDevices(context, pvSystemId, signal),
+      getFlowData(context, pvSystemId, signal),
     ]);
 
     const inverterCount = devices.filter(

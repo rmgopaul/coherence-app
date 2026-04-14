@@ -3,6 +3,7 @@ import {
   getPvSystemProductionSnapshot,
   type FroniusApiContext,
 } from "../../services/solar/fronius";
+import { mapWithConcurrency } from "../../services/core/concurrency";
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): FroniusApiContext[] {
   if (credential.metadata) {
@@ -36,13 +37,19 @@ const adapter = {
     const contexts = getContexts(credential);
     if (contexts.length === 0) throw new Error("Fronius requires accessKeyId and accessKeyValue in metadata.");
     const allSites: { siteId: string; siteName: string }[] = [];
+    const errors: string[] = [];
     for (const ctx of contexts) {
       try {
         const { pvSystems } = await listPvSystems(ctx);
         allSites.push(...pvSystems.map((s) => ({ siteId: s.pvSystemId, siteName: s.name })));
       } catch (err) {
-        console.error(`[Fronius adapter] listSites error:`, err instanceof Error ? err.message : err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Fronius adapter] listSites error:`, msg);
+        errors.push(msg);
       }
+    }
+    if (allSites.length === 0 && errors.length > 0) {
+      throw new Error(`All Fronius connections failed: ${errors.join("; ")}`);
     }
     return allSites;
   },
@@ -53,29 +60,51 @@ const adapter = {
     anchorDate: string,
   ) {
     const contexts = getContexts(credential);
-    const ctx = contexts[0];
-    if (!ctx) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
-    const results = [];
-    for (const siteId of siteIds) {
-      try {
-        const snap = await getPvSystemProductionSnapshot(ctx, siteId, anchorDate);
-        results.push({
-          siteId,
-          siteName: snap.name ?? null,
-          status: snap.status as "Found" | "Not Found" | "Error",
-          lifetimeKwh: snap.lifetimeKwh ?? null,
-        });
-      } catch (err) {
-        results.push({
-          siteId,
-          siteName: null,
-          status: "Error" as const,
-          lifetimeKwh: null,
-          errorMessage: err instanceof Error ? err.message : String(err),
-        });
-      }
+    if (contexts.length === 0) {
+      return siteIds.map((id) => ({
+        siteId: id,
+        siteName: null,
+        status: "Error" as const,
+        lifetimeKwh: null,
+        errorMessage: "No credentials",
+      }));
     }
-    return results;
+
+    return mapWithConcurrency(siteIds, 4, async (siteId) => {
+      let lastError: string | null = null;
+
+      for (const ctx of contexts) {
+        try {
+          const snap = await getPvSystemProductionSnapshot(ctx, siteId, anchorDate);
+
+          if (snap.status === "Found") {
+            return {
+              siteId,
+              siteName: snap.name ?? null,
+              status: "Found" as const,
+              lifetimeKwh: snap.lifetimeKwh ?? null,
+            };
+          }
+
+          // "Not Found" — site may belong to a different connection
+          if (snap.status === "Not Found") continue;
+
+          // "Error" — record but try remaining connections
+          lastError = snap.error ?? "Unknown API error";
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      // All connections exhausted
+      return {
+        siteId,
+        siteName: null,
+        status: (lastError ? "Error" : "Not Found") as "Error" | "Not Found",
+        lifetimeKwh: null,
+        errorMessage: lastError ?? "Site not found in any connection",
+      };
+    });
   },
 };
 
