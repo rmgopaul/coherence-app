@@ -1,3 +1,10 @@
+import {
+  toNonEmptyString,
+  toIdString,
+  toFiniteNumber,
+  asRecord,
+} from "./teslaPowerhubUtils";
+
 export const TESLA_POWERHUB_DEFAULT_TOKEN_URL = "https://gridlogic-api.sn.tesla.services/v1/auth/token";
 export const TESLA_POWERHUB_DEFAULT_API_BASE_URL = "https://gridlogic-api.sn.tesla.services/v2";
 export const TESLA_POWERHUB_DEFAULT_PORTAL_BASE_URL = "https://powerhub.energy.tesla.com";
@@ -70,30 +77,8 @@ export type TeslaPowerhubMetricsProgress = {
   windowKey?: TeslaPowerhubWindowKey;
 };
 
-function toNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function toIdString(value: unknown): string | null {
-  if (typeof value === "string" && value.trim().length > 0) return value.trim();
-  if (typeof value === "number" && Number.isFinite(value)) return String(value);
-  return null;
-}
-
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const normalized = value.trim();
-    if (!normalized) return null;
-    const parsed = Number(normalized);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
+const MAX_WALK_DEPTH = 10;
+const GLOBAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 function normalizeUrlOrFallback(raw: string | null | undefined, fallback: string): string {
   const normalized = (raw ?? "").trim();
@@ -172,9 +157,12 @@ function parseTokenPayload(payload: unknown, rawBody: string): TeslaPowerhubToke
 }
 
 async function requestClientCredentialsToken(
-  context: TeslaPowerhubApiContext
+  context: TeslaPowerhubApiContext,
+  fetchOptions?: { signal?: AbortSignal }
 ): Promise<TeslaPowerhubTokenResponse> {
   const tokenUrl = normalizeUrlOrFallback(context.tokenUrl, TESLA_POWERHUB_DEFAULT_TOKEN_URL);
+  const signals: AbortSignal[] = [AbortSignal.timeout(20_000)];
+  if (fetchOptions?.signal) signals.push(fetchOptions.signal);
   const response = await fetch(tokenUrl, {
     method: "POST",
     headers: {
@@ -183,7 +171,7 @@ async function requestClientCredentialsToken(
       Accept: "application/json",
     },
     body: "grant_type=client_credentials",
-    signal: AbortSignal.timeout(20_000),
+    signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
   });
 
   if (!response.ok) {
@@ -393,16 +381,19 @@ async function fetchJsonWithBearerToken(
   accessToken: string,
   options?: {
     timeoutMs?: number;
+    signal?: AbortSignal;
   }
 ): Promise<unknown> {
   const timeoutMs = typeof options?.timeoutMs === "number" && options.timeoutMs > 0 ? options.timeoutMs : null;
-  const controller = timeoutMs ? new AbortController() : null;
-  const timeoutHandle =
-    timeoutMs && controller
-      ? setTimeout(() => {
-          controller.abort();
-        }, timeoutMs)
-      : null;
+  const signals: AbortSignal[] = [];
+  if (timeoutMs) signals.push(AbortSignal.timeout(timeoutMs));
+  if (options?.signal) signals.push(options.signal);
+  const signal =
+    signals.length > 1
+      ? AbortSignal.any(signals)
+      : signals.length === 1
+        ? signals[0]
+        : undefined;
 
   let response: Response;
   try {
@@ -411,17 +402,14 @@ async function fetchJsonWithBearerToken(
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
       },
-      signal: controller?.signal,
+      signal,
     });
   } catch (error) {
-    if ((error as { name?: string })?.name === "AbortError" && timeoutMs) {
-      throw new Error(`(Request timed out after ${timeoutMs} ms)`);
+    if ((error as { name?: string })?.name === "AbortError") {
+      if (options?.signal?.aborted) throw error;
+      if (timeoutMs) throw new Error(`(Request timed out after ${timeoutMs} ms)`);
     }
     throw error;
-  } finally {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
-    }
   }
 
   if (!response.ok) {
@@ -528,7 +516,8 @@ function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescrip
   };
 
   // Phase 1: handle arrays of UUID strings (e.g. { sites: ["uuid1", "uuid2"] })
-  const extractUuidArrays = (value: unknown): void => {
+  const extractUuidArrays = (value: unknown, depth = 0): void => {
+    if (depth > MAX_WALK_DEPTH) return;
     if (!value || typeof value !== "object") return;
     if (Array.isArray(value)) {
       // If the entire payload is an array of UUID strings
@@ -537,7 +526,7 @@ function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescrip
           addSiteId(uuid as string, null, null);
         }
       }
-      for (const row of value) extractUuidArrays(row);
+      for (const row of value) extractUuidArrays(row, depth + 1);
       return;
     }
     const record = asRecord(value);
@@ -566,7 +555,7 @@ function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescrip
     }
     // Recurse into data, results, etc.
     for (const key of ["data", "results", "response", "payload", "content"]) {
-      if (record[key] !== undefined) extractUuidArrays(record[key]);
+      if (record[key] !== undefined) extractUuidArrays(record[key], depth + 1);
     }
   };
   extractUuidArrays(payload);
@@ -576,11 +565,13 @@ function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescrip
     value: unknown,
     inheritedSiteId: string | null,
     inheritedSiteName: string | null,
-    inheritedExternalId: string | null
+    inheritedExternalId: string | null,
+    depth = 0
   ): void => {
+    if (depth > MAX_WALK_DEPTH) return;
     if (Array.isArray(value)) {
       for (const row of value) {
-        walk(row, inheritedSiteId, inheritedSiteName, inheritedExternalId);
+        walk(row, inheritedSiteId, inheritedSiteName, inheritedExternalId, depth + 1);
       }
       return;
     }
@@ -608,7 +599,7 @@ function collectSitesFromUnknown(payload: unknown, groupId: string): SiteDescrip
     }
 
     for (const child of Object.values(record)) {
-      walk(child, siteId ?? inheritedSiteId, siteName ?? inheritedSiteName, externalId ?? inheritedExternalId);
+      walk(child, siteId ?? inheritedSiteId, siteName ?? inheritedSiteName, externalId ?? inheritedExternalId, depth + 1);
     }
   };
 
@@ -680,8 +671,10 @@ function computeSiteDeltasByTelemetryPayload(
     value: unknown,
     siteId: string | null,
     siteName: string | null,
-    path: string
+    path: string,
+    depth = 0
   ): void => {
+    if (depth > MAX_WALK_DEPTH) return;
     if (Array.isArray(value)) {
       value.forEach((entry, index) => {
         const entryPath = `${path}[${index}]`;
@@ -700,11 +693,11 @@ function computeSiteDeltasByTelemetryPayload(
             record.timestamp ?? record.ts ?? record.datetime ?? record.time,
             entryPath
           );
-          parseNumericContainer(record.values, siteId, siteName, `${entryPath}.values`);
-          parseNumericContainer(record.data, siteId, siteName, `${entryPath}.data`);
-          parseNumericContainer(record.points, siteId, siteName, `${entryPath}.points`);
-          parseNumericContainer(record.series, siteId, siteName, `${entryPath}.series`);
-          parseNumericContainer(record.data_points, siteId, siteName, `${entryPath}.data_points`);
+          parseNumericContainer(record.values, siteId, siteName, `${entryPath}.values`, depth + 1);
+          parseNumericContainer(record.data, siteId, siteName, `${entryPath}.data`, depth + 1);
+          parseNumericContainer(record.points, siteId, siteName, `${entryPath}.points`, depth + 1);
+          parseNumericContainer(record.series, siteId, siteName, `${entryPath}.series`, depth + 1);
+          parseNumericContainer(record.data_points, siteId, siteName, `${entryPath}.data_points`, depth + 1);
           return;
         }
         addValue(siteId, siteName, entry, null, entryPath);
@@ -729,7 +722,7 @@ function computeSiteDeltasByTelemetryPayload(
       });
     if (looksLikeSiteIdMap) {
       entries.forEach(([key, rowValue]) => {
-        parseNumericContainer(rowValue, key, siteName, `${path}.${key}`);
+        parseNumericContainer(rowValue, key, siteName, `${path}.${key}`, depth + 1);
       });
       return;
     }
@@ -752,16 +745,17 @@ function computeSiteDeltasByTelemetryPayload(
       path
     );
 
-    parseNumericContainer(record.values, siteId, siteName, `${path}.values`);
-    parseNumericContainer(record.data, siteId, siteName, `${path}.data`);
-    parseNumericContainer(record.points, siteId, siteName, `${path}.points`);
-    parseNumericContainer(record.series, siteId, siteName, `${path}.series`);
-    parseNumericContainer(record.data_points, siteId, siteName, `${path}.data_points`);
+    parseNumericContainer(record.values, siteId, siteName, `${path}.values`, depth + 1);
+    parseNumericContainer(record.data, siteId, siteName, `${path}.data`, depth + 1);
+    parseNumericContainer(record.points, siteId, siteName, `${path}.points`, depth + 1);
+    parseNumericContainer(record.series, siteId, siteName, `${path}.series`, depth + 1);
+    parseNumericContainer(record.data_points, siteId, siteName, `${path}.data_points`, depth + 1);
   };
 
-  const walk = (value: unknown, inheritedSiteId: string | null, inheritedSiteName: string | null, path: string): void => {
+  const walk = (value: unknown, inheritedSiteId: string | null, inheritedSiteName: string | null, path: string, depth = 0): void => {
+    if (depth > MAX_WALK_DEPTH) return;
     if (Array.isArray(value)) {
-      value.forEach((row, index) => walk(row, inheritedSiteId, inheritedSiteName, `${path}[${index}]`));
+      value.forEach((row, index) => walk(row, inheritedSiteId, inheritedSiteName, `${path}[${index}]`, depth + 1));
       return;
     }
     if (!value || typeof value !== "object") return;
@@ -778,16 +772,16 @@ function computeSiteDeltasByTelemetryPayload(
       signalObject[signalKey.toLowerCase()] ??
       signalObject[signalKey.toUpperCase()];
     if (signalEntry !== undefined) {
-      parseNumericContainer(signalEntry, siteId, siteName, `${path}.${signalKey}`);
+      parseNumericContainer(signalEntry, siteId, siteName, `${path}.${signalKey}`, depth + 1);
       if (record[signalKey] !== undefined) handledKeys.add(signalKey);
       if (record.signals !== undefined) handledKeys.add("signals");
     }
 
-    parseNumericContainer(record.values, siteId, siteName, `${path}.values`);
-    parseNumericContainer(record.data, siteId, siteName, `${path}.data`);
-    parseNumericContainer(record.points, siteId, siteName, `${path}.points`);
-    parseNumericContainer(record.series, siteId, siteName, `${path}.series`);
-    parseNumericContainer(record.data_points, siteId, siteName, `${path}.data_points`);
+    parseNumericContainer(record.values, siteId, siteName, `${path}.values`, depth + 1);
+    parseNumericContainer(record.data, siteId, siteName, `${path}.data`, depth + 1);
+    parseNumericContainer(record.points, siteId, siteName, `${path}.points`, depth + 1);
+    parseNumericContainer(record.series, siteId, siteName, `${path}.series`, depth + 1);
+    parseNumericContainer(record.data_points, siteId, siteName, `${path}.data_points`, depth + 1);
     handledKeys.add("values");
     // NOTE: "data" is intentionally NOT in handledKeys — the recursive walk
     // must also process `data` entries so detectSiteId can extract `site_id`
@@ -806,7 +800,7 @@ function computeSiteDeltasByTelemetryPayload(
 
     for (const [key, child] of Object.entries(record)) {
       if (handledKeys.has(key)) continue;
-      walk(child, siteId, siteName, `${path}.${key}`);
+      walk(child, siteId, siteName, `${path}.${key}`, depth + 1);
     }
   };
 
@@ -870,7 +864,8 @@ async function fetchSiteExternalIds(
   context: TeslaPowerhubApiContext,
   accessToken: string,
   siteIds: string[],
-  onProgress?: (fetched: number, total: number) => void
+  onProgress?: (fetched: number, total: number) => void,
+  abortSignal?: AbortSignal
 ): Promise<Map<string, string>> {
   const apiBase = normalizeUrlOrFallback(context.apiBaseUrl, TESLA_POWERHUB_DEFAULT_API_BASE_URL);
   const externalIds = new Map<string, string>();
@@ -878,11 +873,13 @@ async function fetchSiteExternalIds(
   let fetched = 0;
 
   await mapConcurrent(siteIds, 4, async (siteId) => {
+    if (abortSignal?.aborted) return;
     await throttle();
     const url = `${apiBase}/asset/sites/${encodeURIComponent(siteId)}`;
     try {
       const raw = await fetchJsonWithBearerToken(url, accessToken, {
         timeoutMs: 30_000,
+        signal: abortSignal,
       });
       const record = asRecord(raw);
       const dataRecord = asRecord(record.data);
@@ -943,6 +940,7 @@ async function fetchSingleSiteTelemetryTotal(
     endDatetime: string;
     period?: string;
     fallbackSignal?: string;
+    abortSignal?: AbortSignal;
   }
 ): Promise<{ totalKwh: number; rawPreview: unknown; usedSignal: string } | null> {
   const trySignal = async (
@@ -961,6 +959,7 @@ async function fetchSingleSiteTelemetryTotal(
     try {
       const raw = await fetchJsonWithBearerToken(url.toString(), accessToken, {
         timeoutMs: 120_000,
+        signal: options.abortSignal,
       });
       const totals = computeSiteDeltasByTelemetryPayload(raw, "", sig, {
         unattributedSiteId: options.siteId,
@@ -1053,6 +1052,7 @@ async function fetchGroupSites(
   options: {
     groupId: string;
     endpointUrl?: string | null;
+    signal?: AbortSignal;
   }
 ): Promise<{
   sites: SiteDescriptor[];
@@ -1065,7 +1065,7 @@ async function fetchGroupSites(
 
   for (const url of candidateUrls) {
     try {
-      const raw = await fetchJsonWithBearerToken(url, accessToken);
+      const raw = await fetchJsonWithBearerToken(url, accessToken, { signal: options.signal });
       const sites = collectSitesFromUnknown(raw, groupId);
       if (sites.length > 0) {
         return {
@@ -1110,6 +1110,7 @@ async function fetchTelemetryWindowTotals(
     endpointUrl?: string | null;
     preferredAttempt?: TelemetryAttempt | null;
     allowEmptyTotals?: boolean;
+    abortSignal?: AbortSignal;
   }
 ): Promise<{
   totals: Map<string, SiteTotal>;
@@ -1134,6 +1135,7 @@ async function fetchTelemetryWindowTotals(
     try {
       const raw = await fetchJsonWithBearerToken(requestUrl, accessToken, {
         timeoutMs: 120_000,
+        signal: options.abortSignal,
       });
       const totals = computeSiteDeltasByTelemetryPayload(raw, options.groupId, options.signal);
       if (totals.size > 0 || options.allowEmptyTotals) {
@@ -1234,6 +1236,9 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     endpointUrl?: string | null;
     signal?: string | null;
     onProgress?: (progress: TeslaPowerhubMetricsProgress) => void;
+    abortSignal?: AbortSignal;
+    fetchExternalIds?: boolean;
+    includeDebugPreviews?: boolean;
   }
 ): Promise<{
   sites: TeslaPowerhubSiteProductionMetrics[];
@@ -1266,6 +1271,20 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   if (!groupId) {
     throw new Error("groupId is required.");
   }
+
+  const globalSignal = options.abortSignal
+    ? AbortSignal.any([AbortSignal.timeout(GLOBAL_TIMEOUT_MS), options.abortSignal])
+    : AbortSignal.timeout(GLOBAL_TIMEOUT_MS);
+  const shouldPreview = options.includeDebugPreviews !== false;
+  const shouldFetchExternalIds = options.fetchExternalIds !== false;
+  const checkAborted = () => {
+    if (globalSignal.aborted) {
+      throw globalSignal.reason instanceof Error
+        ? globalSignal.reason
+        : new DOMException("Global timeout exceeded", "AbortError");
+    }
+  };
+
   emitProgress({
     currentStep: 0,
     totalSteps,
@@ -1283,7 +1302,8 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     totalSteps,
     message: "Requesting Tesla access token.",
   });
-  const token = await requestClientCredentialsToken(context);
+  checkAborted();
+  const token = await requestClientCredentialsToken(context, { signal: globalSignal });
   emitProgress({
     currentStep: 1,
     totalSteps,
@@ -1295,9 +1315,11 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     totalSteps,
     message: "Loading group site inventory.",
   });
+  checkAborted();
   const siteResult = await fetchGroupSites(context, token.access_token, {
     groupId,
     endpointUrl: options.endpointUrl,
+    signal: globalSignal,
   });
   emitProgress({
     currentStep: 2,
@@ -1329,14 +1351,11 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     lifetime: null,
   };
   const totalsByWindow = new Map<TeslaPowerhubWindowKey, Map<string, SiteTotal>>();
-  let preferredTelemetryAttempt: TelemetryAttempt | null = null;
   const siteSignalUsed = new Map<string, string>();
 
-  // ---- Phase 1: Group-level query attempt ------------------------------------
-  // Try group-level endpoints first to see if the API returns per-site
-  // breakdowns.  In practice, group-level endpoints usually return only
-  // aggregated totals (NOT per-site data).  When that happens, the results
-  // are empty and Phase 2 per-site fallback handles the actual site queries.
+  // ---- Phase 1: Group-level query attempt (PARALLEL) -------------------------
+  // All 5 time windows are queried concurrently.  Each window independently
+  // discovers the working telemetry endpoint.
   const stepByWindow: Record<TeslaPowerhubWindowKey, number> = {
     daily: 3,
     weekly: 4,
@@ -1345,89 +1364,86 @@ export async function getTeslaPowerhubGroupProductionMetrics(
     lifetime: 7,
   };
 
-  for (const window of windows) {
-    const step = stepByWindow[window.key];
-    emitProgress({
-      currentStep: step,
-      totalSteps,
-      windowKey: window.key,
-      message: `Loading ${window.key} telemetry (RGM + inverter signals).`,
-    });
-
-    // Query primary signal at group level.  The history endpoint may return
-    // per-site breakdowns that feed the site list for Phase 2.
-    let primaryTotals = new Map<string, SiteTotal>();
-    try {
-      const primaryResult = await fetchTelemetryWindowTotals(context, token.access_token, {
-        groupId,
-        signal: primarySignal,
-        startDatetime: window.startDatetime,
-        endDatetime: window.endDatetime,
-        period: window.period,
-        endpointUrl: options.endpointUrl,
-        preferredAttempt: preferredTelemetryAttempt,
+  checkAborted();
+  await Promise.allSettled(
+    windows.map(async (window) => {
+      const step = stepByWindow[window.key];
+      emitProgress({
+        currentStep: step,
+        totalSteps,
+        windowKey: window.key,
+        message: `Loading ${window.key} telemetry (RGM + inverter signals).`,
       });
-      preferredTelemetryAttempt = primaryResult.attemptUsed;
-      primaryTotals = primaryResult.totals;
-      resolvedTelemetryEndpoints[window.key] = primaryResult.resolvedEndpointUrl;
-      telemetryPreviewByWindow[window.key] = primaryResult.rawPreview;
-    } catch (error) {
-      telemetryErrorsByWindow[window.key] = `Primary (${primarySignal}): ${error instanceof Error ? error.message : "Unknown error."}`;
-    }
 
-    // Query fallback signal at group level
-    let fallbackTotals = new Map<string, SiteTotal>();
-    try {
-      const fallbackResult = await fetchTelemetryWindowTotals(context, token.access_token, {
-        groupId,
-        signal: fallbackSignal,
-        startDatetime: window.startDatetime,
-        endDatetime: window.endDatetime,
-        period: window.period,
-        endpointUrl: options.endpointUrl,
-        preferredAttempt: preferredTelemetryAttempt,
+      let primaryTotals = new Map<string, SiteTotal>();
+      try {
+        const primaryResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+          groupId,
+          signal: primarySignal,
+          startDatetime: window.startDatetime,
+          endDatetime: window.endDatetime,
+          period: window.period,
+          endpointUrl: options.endpointUrl,
+          abortSignal: globalSignal,
+        });
+        primaryTotals = primaryResult.totals;
+        resolvedTelemetryEndpoints[window.key] = primaryResult.resolvedEndpointUrl;
+        telemetryPreviewByWindow[window.key] = primaryResult.rawPreview;
+      } catch (error) {
+        telemetryErrorsByWindow[window.key] = `Primary (${primarySignal}): ${error instanceof Error ? error.message : "Unknown error."}`;
+      }
+
+      let fallbackTotals = new Map<string, SiteTotal>();
+      try {
+        const fallbackResult = await fetchTelemetryWindowTotals(context, token.access_token, {
+          groupId,
+          signal: fallbackSignal,
+          startDatetime: window.startDatetime,
+          endDatetime: window.endDatetime,
+          period: window.period,
+          endpointUrl: options.endpointUrl,
+          abortSignal: globalSignal,
+        });
+        fallbackTotals = fallbackResult.totals;
+        if (!resolvedTelemetryEndpoints[window.key]) {
+          resolvedTelemetryEndpoints[window.key] = fallbackResult.resolvedEndpointUrl;
+        }
+      } catch (error) {
+        const existing = telemetryErrorsByWindow[window.key];
+        telemetryErrorsByWindow[window.key] = `${existing ? `${existing} | ` : ""}Fallback (${fallbackSignal}): ${error instanceof Error ? error.message : "Unknown error."}`;
+      }
+
+      // Merge: always prefer RGM data over inverter for revenue-grade accuracy.
+      const merged = new Map<string, SiteTotal>();
+      const actualRgmTotals = primarySignal === RGM_SIGNAL ? primaryTotals : fallbackTotals;
+      const actualInvTotals = primarySignal === RGM_SIGNAL ? fallbackTotals : primaryTotals;
+      const windowSiteIds = new Set([...Array.from(primaryTotals.keys()), ...Array.from(fallbackTotals.keys())]);
+      for (const siteId of Array.from(windowSiteIds)) {
+        const rgmEntry = actualRgmTotals.get(siteId);
+        const invEntry = actualInvTotals.get(siteId);
+        if (rgmEntry && rgmEntry.totalKwh > 0) {
+          merged.set(siteId, rgmEntry);
+          if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, RGM_SIGNAL);
+        } else if (invEntry && invEntry.totalKwh > 0) {
+          merged.set(siteId, invEntry);
+          if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, INV_SIGNAL);
+        } else if (rgmEntry) {
+          merged.set(siteId, rgmEntry);
+        } else if (invEntry) {
+          merged.set(siteId, invEntry);
+        }
+      }
+
+      totalsByWindow.set(window.key, merged);
+
+      emitProgress({
+        currentStep: step,
+        totalSteps,
+        windowKey: window.key,
+        message: `${window.key} telemetry loaded (${merged.size} sites: ${actualRgmTotals.size} RGM, ${actualInvTotals.size} inverter).`,
       });
-      preferredTelemetryAttempt = fallbackResult.attemptUsed;
-      fallbackTotals = fallbackResult.totals;
-      if (!resolvedTelemetryEndpoints[window.key]) {
-        resolvedTelemetryEndpoints[window.key] = fallbackResult.resolvedEndpointUrl;
-      }
-    } catch (error) {
-      const existing = telemetryErrorsByWindow[window.key];
-      telemetryErrorsByWindow[window.key] = `${existing ? `${existing} | ` : ""}Fallback (${fallbackSignal}): ${error instanceof Error ? error.message : "Unknown error."}`;
-    }
-
-    // Merge: always prefer RGM data over inverter for revenue-grade accuracy,
-    // regardless of which signal was queried as primary vs fallback.
-    const merged = new Map<string, SiteTotal>();
-    const actualRgmTotals = primarySignal === RGM_SIGNAL ? primaryTotals : fallbackTotals;
-    const actualInvTotals = primarySignal === RGM_SIGNAL ? fallbackTotals : primaryTotals;
-    const windowSiteIds = new Set([...Array.from(primaryTotals.keys()), ...Array.from(fallbackTotals.keys())]);
-    for (const siteId of Array.from(windowSiteIds)) {
-      const rgmEntry = actualRgmTotals.get(siteId);
-      const invEntry = actualInvTotals.get(siteId);
-      if (rgmEntry && rgmEntry.totalKwh > 0) {
-        merged.set(siteId, rgmEntry);
-        if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, RGM_SIGNAL);
-      } else if (invEntry && invEntry.totalKwh > 0) {
-        merged.set(siteId, invEntry);
-        if (!siteSignalUsed.has(siteId)) siteSignalUsed.set(siteId, INV_SIGNAL);
-      } else if (rgmEntry) {
-        merged.set(siteId, rgmEntry);
-      } else if (invEntry) {
-        merged.set(siteId, invEntry);
-      }
-    }
-
-    totalsByWindow.set(window.key, merged);
-
-    emitProgress({
-      currentStep: step,
-      totalSteps,
-      windowKey: window.key,
-      message: `${window.key} telemetry loaded (${merged.size} sites: ${actualRgmTotals.size} RGM, ${actualInvTotals.size} inverter).`,
-    });
-  }
+    })
+  );
 
   // ---- Build combined site list from inventory + Phase 1 telemetry --------
   // The site inventory endpoint may return 0 sites if the group detail
@@ -1459,26 +1475,24 @@ export async function getTeslaPowerhubGroupProductionMetrics(
 
   // ---- Phase 2: Per-site gap-fill -----------------------------------------
   // Phase 1 group-level queries may return per-site data for MOST sites but
-  // not all (the API may omit sites with no data for that signal, or large
-  // time-range requests may drop some sites).  Phase 2 fills the gaps by
-  // querying individual sites that are missing from Phase 1 results.
-  if (combinedSiteList.length > 0) {
+  // not all.  Phase 2 fills the gaps by querying individual sites.
+  if (combinedSiteList.length > 0 && !globalSignal.aborted) {
     const perSiteThrottle = createApiThrottle(4);
+
+    // Single token refresh before the entire per-site phase.
     let perSiteToken = token.access_token;
+    try {
+      const refreshed = await requestClientCredentialsToken(context, { signal: globalSignal });
+      perSiteToken = refreshed.access_token;
+    } catch { /* use previous token */ }
 
     for (const window of windows) {
+      if (globalSignal.aborted) break;
       const existingTotals = totalsByWindow.get(window.key) ?? new Map<string, SiteTotal>();
-      // Find sites missing from Phase 1 for this window
       const missingSites = combinedSiteList.filter(
         (site) => !existingTotals.has(site.siteId) || existingTotals.get(site.siteId)!.totalKwh === 0
       );
-      if (missingSites.length === 0) continue; // all sites covered
-
-      // Refresh token before each window batch
-      try {
-        const refreshed = await requestClientCredentialsToken(context);
-        perSiteToken = refreshed.access_token;
-      } catch { /* use previous token */ }
+      if (missingSites.length === 0) continue;
 
       let perSiteOk = 0;
       let perSiteEmpty = 0;
@@ -1495,6 +1509,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       const batchToken = perSiteToken;
 
       await mapConcurrent(missingSites, 4, async (site) => {
+        if (globalSignal.aborted) return;
         await perSiteThrottle();
         try {
           const result = await fetchSingleSiteTelemetryTotal(context, batchToken, {
@@ -1504,6 +1519,7 @@ export async function getTeslaPowerhubGroupProductionMetrics(
             endDatetime: window.endDatetime,
             period: window.period,
             fallbackSignal,
+            abortSignal: globalSignal,
           });
           if (result) {
             perSiteOk++;
@@ -1553,54 +1569,59 @@ export async function getTeslaPowerhubGroupProductionMetrics(
   }
   // ---- End per-site gap-fill -----------------------------------------------
 
-  // ---- Phase 3: Fetch STE external identifiers -----------------------------
+  // ---- Phase 3: Fetch STE external identifiers (opt-in) --------------------
   // The STE identifier (e.g. STE20250403-01158) lives in the individual
-  // /asset/sites/{site_id} response — it is NOT included in the group
-  // endpoint.  Rate-limited to 4 req/s.
-  const allDiscoveredSiteIds = new Set<string>();
-  siteResult.sites.forEach((s) => allDiscoveredSiteIds.add(s.siteId));
-  totalsByWindow.forEach((totals) => {
-    totals.forEach((_, siteId) => {
-      if (siteId !== groupId) allDiscoveredSiteIds.add(siteId);
-    });
-  });
+  // /asset/sites/{site_id} response.  Skipped when fetchExternalIds is false
+  // (the adapter path does not need STE IDs for snapshot reads).
+  let siteExternalIds = new Map<string, string>();
 
-  emitProgress({
-    currentStep: 8,
-    totalSteps,
-    message: `Fetching STE identifiers for ${allDiscoveredSiteIds.size} site(s).`,
-  });
-
-  let steToken = token.access_token;
-  try {
-    const refreshed = await requestClientCredentialsToken(context);
-    steToken = refreshed.access_token;
-  } catch {
-    // Use original token if refresh fails.
-  }
-
-  const siteExternalIds = await fetchSiteExternalIds(
-    context,
-    steToken,
-    Array.from(allDiscoveredSiteIds),
-    (fetched, total) => {
-      emitProgress({
-        currentStep: 8,
-        totalSteps,
-        message: `Fetching STE identifiers (${fetched}/${total}).`,
+  if (shouldFetchExternalIds && !globalSignal.aborted) {
+    const allDiscoveredSiteIds = new Set<string>();
+    siteResult.sites.forEach((s) => allDiscoveredSiteIds.add(s.siteId));
+    totalsByWindow.forEach((totals) => {
+      totals.forEach((_, siteId) => {
+        if (siteId !== groupId) allDiscoveredSiteIds.add(siteId);
       });
-    }
-  );
+    });
 
-  emitProgress({
-    currentStep: 8,
-    totalSteps,
-    message: `STE identifiers fetched (${siteExternalIds.size} found).`,
-  });
+    emitProgress({
+      currentStep: 8,
+      totalSteps,
+      message: `Fetching STE identifiers for ${allDiscoveredSiteIds.size} site(s).`,
+    });
+
+    let steToken = token.access_token;
+    try {
+      const refreshed = await requestClientCredentialsToken(context, { signal: globalSignal });
+      steToken = refreshed.access_token;
+    } catch {
+      // Use original token if refresh fails.
+    }
+
+    siteExternalIds = await fetchSiteExternalIds(
+      context,
+      steToken,
+      Array.from(allDiscoveredSiteIds),
+      (fetched, total) => {
+        emitProgress({
+          currentStep: 8,
+          totalSteps,
+          message: `Fetching STE identifiers (${fetched}/${total}).`,
+        });
+      },
+      globalSignal
+    );
+
+    emitProgress({
+      currentStep: 8,
+      totalSteps,
+      message: `STE identifiers fetched (${siteExternalIds.size} found).`,
+    });
+  }
   // ---- End STE ID fetch --------------------------------------------------
 
   const successfulWindowCount = windows.filter((window) => (totalsByWindow.get(window.key)?.size ?? 0) > 0).length;
-  if (successfulWindowCount === 0) {
+  if (successfulWindowCount === 0 && !globalSignal.aborted) {
     const allErrors = Object.entries(telemetryErrorsByWindow)
       .filter(([, error]) => error)
       .map(([key, error]) => `${key}: ${error}`)
@@ -1687,8 +1708,10 @@ export async function getTeslaPowerhubGroupProductionMetrics(
       scope: token.scope ?? null,
     },
     debug: {
-      siteSourcePreview: siteResult.rawPreview,
-      telemetryPreviewByWindow,
+      siteSourcePreview: shouldPreview ? siteResult.rawPreview : null,
+      telemetryPreviewByWindow: shouldPreview
+        ? telemetryPreviewByWindow
+        : { daily: null, weekly: null, monthly: null, yearly: null, lifetime: null },
       telemetryErrorsByWindow,
       windows: {
         daily: {

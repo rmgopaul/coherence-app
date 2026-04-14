@@ -3,6 +3,7 @@ import {
   type TeslaPowerhubApiContext,
   type TeslaPowerhubSiteProductionMetrics,
 } from "../../services/solar/teslaPowerhub";
+import { toNonEmptyString } from "../../services/solar/teslaPowerhubUtils";
 
 type TeslaPowerhubConnection = TeslaPowerhubApiContext & {
   groupId: string;
@@ -20,10 +21,6 @@ const groupMetricsCache = new Map<
     promise: Promise<TeslaPowerhubSiteProductionMetrics[]>;
   }
 >();
-
-function toNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
 
 function extractGroupIdFromUrl(raw: string | null): string | null {
   if (!raw) return null;
@@ -136,6 +133,8 @@ async function loadGroupSites(
       groupId: connection.groupId,
       endpointUrl: connection.endpointUrl,
       signal: connection.signal,
+      fetchExternalIds: false,
+      includeDebugPreviews: false,
     }
   )
     .then((result) => result.sites)
