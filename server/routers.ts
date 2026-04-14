@@ -9125,37 +9125,24 @@ export const appRouter = router({
         const { cleanAddressBatch } = await import("./services/core/addressCleaner");
 
         // ── 1. Deterministic cleaning pass ───────────────────────
-        const sourceRows = input.rows.map((row) => {
-          const sanitized = sanitizeMailingFields({
-            payeeName: toNonEmptyString(row.payeeName),
-            mailingAddress1: toNonEmptyString(row.mailingAddress1),
-            mailingAddress2: toNonEmptyString(row.mailingAddress2),
-            cityStateZip: toNonEmptyString(row.cityStateZip),
-            city: toNonEmptyString(row.city),
-            state: toNonEmptyString(row.state),
-            zip: toNonEmptyString(row.zip),
-          });
-          return {
-            key: row.key,
-            payeeName: sanitized.payeeName,
-            mailingAddress1: sanitized.mailingAddress1,
-            mailingAddress2: sanitized.mailingAddress2,
-            cityStateZip: toNonEmptyString(row.cityStateZip),
-            city: sanitized.city,
-            state: sanitized.state,
-            zip: sanitized.zip,
-          };
-        });
+        const sourceRows = input.rows.map((row) => ({
+          key: row.key,
+          payeeName: toNonEmptyString(row.payeeName),
+          mailingAddress1: toNonEmptyString(row.mailingAddress1),
+          mailingAddress2: toNonEmptyString(row.mailingAddress2),
+          cityStateZip: toNonEmptyString(row.cityStateZip),
+          city: toNonEmptyString(row.city),
+          state: toNonEmptyString(row.state),
+          zip: toNonEmptyString(row.zip),
+        }));
 
         const { cleaned: deterministicResults, ambiguousRows } = cleanAddressBatch(sourceRows);
-
-        // Build lookup of deterministic results by key
         const resultByKey = new Map(deterministicResults.map((r) => [r.key, r]));
 
-        // ── 2. Two-pass LLM cleaning on ALL rows ─────────────────
-        // Send all rows (not just ambiguous) so the LLM can fix
-        // misspellings, ordinals, and other issues the deterministic
-        // pass can't handle.
+        // ── 2. LLM pass on deterministic results ─────────────────
+        // Feed already-cleaned data so the LLM focuses on what
+        // regex can't fix: crammed addresses, city inference,
+        // misspelling correction.
         const anthropicIntegration = await getIntegrationByProvider(ctx.user.id, "anthropic");
         const openaiIntegration = await getIntegrationByProvider(ctx.user.id, "openai");
 
@@ -9163,7 +9150,7 @@ export const appRouter = router({
         const llmApiKey = llmProvider === "anthropic" ? anthropicIntegration!.accessToken! : llmProvider === "openai" ? openaiIntegration!.accessToken! : null;
 
         if (llmProvider && llmApiKey) {
-          console.log(`[AI Cleaning] Sending all ${sourceRows.length} rows to ${llmProvider} for two-pass cleaning (${ambiguousRows.length} ambiguous).`);
+          console.log(`[AI Cleaning] Sending ${deterministicResults.length} pre-cleaned rows to ${llmProvider} (${ambiguousRows.length} ambiguous).`);
 
           try {
             const llmCleaned = await callLlmForAddressCleaning(
@@ -9172,13 +9159,12 @@ export const appRouter = router({
               llmProvider === "anthropic"
                 ? (parseJsonMetadata(anthropicIntegration!.metadata).model as string || "claude-sonnet-4-20250514")
                 : resolveOpenAIModel(openaiIntegration!.metadata),
-              sourceRows
+              deterministicResults
             );
 
-            // Merge LLM results, re-sanitizing to catch any remaining LLM output errors
-            const sourceKeySet = new Set(sourceRows.map((r) => r.key));
+            // Merge LLM results, re-sanitizing as a final safety net
             for (const llmRow of llmCleaned) {
-              if (sourceKeySet.has(llmRow.key)) {
+              if (resultByKey.has(llmRow.key)) {
                 const sanitized = sanitizeMailingFields({
                   payeeName: llmRow.payeeName,
                   mailingAddress1: llmRow.mailingAddress1,
@@ -9202,19 +9188,17 @@ export const appRouter = router({
               }
             }
           } catch (llmError) {
-            console.error(`[AI Cleaning] LLM two-pass failed: ${llmError instanceof Error ? llmError.message : "Unknown error"}. Using deterministic results.`);
+            console.error(`[AI Cleaning] LLM failed: ${llmError instanceof Error ? llmError.message : "Unknown error"}. Using deterministic results.`);
           }
         } else {
-          console.warn(`[AI Cleaning] No AI provider connected. All ${sourceRows.length} rows cleaned deterministically only.`);
+          console.warn(`[AI Cleaning] No AI provider connected. ${deterministicResults.length} rows cleaned deterministically only.`);
         }
 
         // ── 3. Build response ────────────────────────────────────
-        const sourceKeys = new Set(sourceRows.map((row) => row.key));
         const warnings: string[] = [];
         const finalRows = sourceRows.map((src) => {
           const result = resultByKey.get(src.key);
           if (!result) {
-            // No cleaning result — return source as-is
             return {
               key: src.key,
               payeeName: src.payeeName,
@@ -9225,7 +9209,6 @@ export const appRouter = router({
               zip: src.zip,
             };
           }
-          // Use cleaned values directly — null means intentionally cleared
           return {
             key: src.key,
             payeeName: result.payeeName,
@@ -9237,9 +9220,8 @@ export const appRouter = router({
           };
         });
 
-        const ambiguousCount = ambiguousRows.length;
-        if (ambiguousCount > 0) {
-          warnings.push(`${ambiguousCount} record(s) had ambiguous data and were sent to AI for review.`);
+        if (ambiguousRows.length > 0) {
+          warnings.push(`${ambiguousRows.length} record(s) had ambiguous data and were sent to AI for review.`);
         }
 
         return {
@@ -9247,7 +9229,7 @@ export const appRouter = router({
           warnings,
           stats: {
             sent: sourceRows.length,
-            returnedByAi: ambiguousCount,
+            returnedByAi: ambiguousRows.length,
             missing: 0,
             keptOriginal: 0,
             fieldWarnings: deterministicResults.filter((r) => r.ambiguous).length,

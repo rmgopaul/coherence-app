@@ -1,233 +1,77 @@
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
+/**
+ * Address cleaning utilities — the single source of truth for:
+ *  - Text normalization (ordinals, spacing, state abbreviations, zip codes)
+ *  - City/state/zip parsing
+ *  - LLM-based address cleaning (single focused pass)
+ *  - Post-LLM sanitization safety net
+ */
 
-const ADDRESS_CLEANING_SYSTEM_PROMPT = [
-  "You clean US mailing address records. Return valid JSON: {\"rows\":[...]}. No prose.",
-  "",
-  "RULES:",
-  "1. Return EXACTLY the same number of rows, in the SAME order, with the SAME keys.",
-  "2. payeeName: Title-case. Preserve LLC/Inc/Corp.",
-  "3. mailingAddress1: street address ONLY. Never a name, phone, city, or state.",
-  "4. mailingAddress2: ONLY secondary unit (Apt/Ste/Unit/PO Box). Empty string if none.",
-  "5. city: city name ONLY. Never zip, phone, state abbreviation, 'IL', or 'USA'. If city is 'IL 62814' or similar (state+zip), set city to empty string.",
-  "6. state: 2-letter uppercase. Do NOT default to 'IL' — mailing may be any US state.",
-  "7. zip: 5-digit or ZIP+4 ONLY.",
-  "8. Standardize: Street→St, Avenue→Ave, Road→Rd, Drive→Dr, Lane→Ln, Court→Ct.",
-  "9. Fix field-placement errors (city/state/zip in addr2, names in addr1, crammed addresses).",
-  "10. Remove phone numbers, placeholders (N/A, TBD), duplicate fields.",
-  "11. Use cityStateZip as fallback when city/state/zip are empty.",
-  "12. Do NOT invent data. Empty string if uncertain.",
-  "",
-  "COMMON ERROR PATTERNS — you MUST fix these:",
-  "13. SPLIT ORDINALS: Source data often splits ordinal suffixes. '55 Th'→'55th', '145 Th'→'145th', '92 Nd'→'92nd', '3 Rd'→'3rd', '1 St'→'1st' (when ordinal, not Street/Road). '16 Th St'→'16th St', '120 Th Av'→'120th Av'.",
-  "14. NUMBER-ONLY ADDRESS + STREET-IN-CITY: When mailingAddress1 is ONLY a number (e.g. '4009') and city contains a street name fused with the city (e.g. 'Navaho Circle Pinckneyville'), split them: addr1='4009 Navaho Cir', city='Pinckneyville'. Examples: '301'+'N Grant St Oblong'→addr1='301 N Grant St', city='Oblong'. '337'+'Slingerland Drive Schaumburg'→addr1='337 Slingerland Dr', city='Schaumburg'. '1638'+'G Road Prairie Du Rocher'→addr1='1638 G Rd', city='Prairie Du Rocher'.",
-  "15. STATE+ZIP IN CITY: When city is 'IL 62814', 'IL. 60502', 'IL 62549', etc. (a state abbreviation + zip), extract state and zip, set city to EMPTY STRING. The real city name is unknown — do not guess.",
-  "16. CRAMMED ADDRESS: When mailingAddress1 contains the full address including city/state (e.g. '1034 145th Ave Joy IL' or '1805 N Main Georgetown Il'), split: addr1='1034 145th Ave', city='Joy', state='IL'.",
-  "17. GARBAGE IN CITY: Values like 'Payee Contact Email Address:', email addresses, column headers, or phone numbers in city are data errors. Set city to empty string.",
-  "18. ZIP-STATE VALIDATION: Illinois zips are 60000–62999. If zip is in that range but state is wrong (e.g. state='LA' with zip='60012'), correct state to 'IL'. Apply similar logic for other states.",
-  "19. CITY CONTAINS CITY+STATE+ZIP: Parse 'Jacksonville Il, 62650'→city='Jacksonville', state='IL', zip='62650'. Also: 'Hillsboro, Il. 62049'→city='Hillsboro', state='IL', zip='62049'. 'Marion Il, 62959'→city='Marion', state='IL', zip='62959'.",
-  "20. CITY MISSPELLINGS: Fix obvious misspellings — 'Hillsde'→'Hillside', 'Ofallon'→\"O'Fallon\", 'Milledgville'→'Milledgeville', 'Lagrange Park'→'La Grange Park'. Preserve proper capitalization: 'Dekalb'→'DeKalb', 'Mchenry'→'McHenry'.",
-].join("\n");
+/* ------------------------------------------------------------------ */
+/*  Shared constants                                                    */
+/* ------------------------------------------------------------------ */
 
-const ADDRESS_QA_SYSTEM_PROMPT = [
-  "You are a QA reviewer for US mailing address data. Return valid JSON: {\"rows\":[...]}. No prose.",
-  "",
-  "You are reviewing address records that have ALREADY been cleaned once. Your job is to catch remaining errors.",
-  "Return EXACTLY the same number of rows, in the SAME order, with the SAME keys.",
-  "",
-  "FIX THESE COMMON REMAINING ERRORS:",
-  "1. SPLIT ORDINALS still present: '55 Th Pl'→'55th Pl', '120 Th Ave'→'120th Ave', '92 Nd Ave'→'92nd Ave', '800 Th St'→'800th St'.",
-  "2. STREET NAME FUSED IN CITY: If mailingAddress1 is just a house number (e.g. '301') and city looks like 'N Grant St Oblong', move the street portion to addr1: addr1='301 N Grant St', city='Oblong'.",
-  "3. STATE+ZIP STILL IN CITY: 'IL 62814' or 'IL. 60502' in city → extract to state/zip, city=''.",
-  "4. CITY MISSPELLINGS: 'Hillsde'→'Hillside', 'Ofallon'→\"O'Fallon\", 'Dekalb'→'DeKalb', 'Mchenry'→'McHenry', 'Lagrange Park'→'La Grange Park', 'Milledgville'→'Milledgeville'.",
-  "5. MISSING CITY: If city is empty but you can infer it from the zip code with high confidence, fill it in.",
-  "6. WRONG STATE for ZIP: Illinois zips 60000-62999 → state must be 'IL'. Missouri zips 63000-65999 → 'MO'. Correct mismatches.",
-  "7. GARBAGE DATA: Remove column headers, email labels, 'Payee Contact Email Address:', phone numbers, or other non-address data from any field.",
-  "8. ADDR2 SHOULD BE EMPTY: If mailingAddress2 contains a city name, state, zip, or non-unit text, clear it and move data to correct fields.",
-  "9. Do NOT invent data. Empty string if uncertain.",
-  "10. Standardize: Street→St, Avenue→Ave, Road→Rd, Drive→Dr, Lane→Ln, Court→Ct.",
-].join("\n");
+const US_STATES = new Set([
+  "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+  "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+  "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+  "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+  "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+  "DC", "PR", "VI", "GU", "AS", "MP",
+]);
 
-type LlmInputRow = {
-  key: string;
-  payeeName: string | null;
-  mailingAddress1: string | null;
-  mailingAddress2: string | null;
-  cityStateZip: string | null;
-  city: string | null;
-  state: string | null;
-  zip: string | null;
+/** Lowercase key → 2-letter state code. Includes full names + common abbreviations. */
+const STATE_NAME_MAP: Record<string, string> = {
+  alabama: "AL", alaska: "AK", arizona: "AZ", arkansas: "AR", california: "CA",
+  colorado: "CO", connecticut: "CT", delaware: "DE", florida: "FL", georgia: "GA",
+  hawaii: "HI", idaho: "ID", illinois: "IL", indiana: "IN", iowa: "IA",
+  kansas: "KS", kentucky: "KY", louisiana: "LA", maine: "ME", maryland: "MD",
+  massachusetts: "MA", michigan: "MI", minnesota: "MN", mississippi: "MS",
+  missouri: "MO", montana: "MT", nebraska: "NE", nevada: "NV",
+  "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+  "north carolina": "NC", "north dakota": "ND", ohio: "OH", oklahoma: "OK",
+  oregon: "OR", pennsylvania: "PA", "rhode island": "RI", "south carolina": "SC",
+  "south dakota": "SD", tennessee: "TN", texas: "TX", utah: "UT",
+  vermont: "VT", virginia: "VA", washington: "WA", "west virginia": "WV",
+  wisconsin: "WI", wyoming: "WY",
+  // Common abbreviations found in CSG data
+  ill: "IL", "ill.": "IL", ind: "IN", "ind.": "IN",
+  wis: "WI", "wis.": "WI", mich: "MI", "mich.": "MI",
+  minn: "MN", "minn.": "MN", calif: "CA", "calif.": "CA",
 };
-
-type LlmOutputRow = {
-  key: string;
-  payeeName: string | null;
-  mailingAddress1: string | null;
-  mailingAddress2: string | null;
-  city: string | null;
-  state: string | null;
-  zip: string | null;
-};
-
-async function callLlmRaw(
-  provider: "anthropic" | "openai",
-  apiKey: string,
-  model: string,
-  systemPrompt: string,
-  userContent: string,
-): Promise<string> {
-  if (provider === "anthropic") {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-      },
-      signal: AbortSignal.timeout(120_000),
-      body: JSON.stringify({
-        model,
-        max_tokens: 16384,
-        system: systemPrompt,
-        messages: [{ role: "user", content: userContent }],
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
-      let message = "Anthropic API error";
-      try { message = (JSON.parse(errorBody) as any)?.error?.message || message; } catch {}
-      throw new Error(`Anthropic API error (${response.status}): ${message}`);
-    }
-
-    const data = await response.json() as any;
-    return data?.content?.[0]?.text ?? "";
-  } else {
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(180_000),
-      body: JSON.stringify({
-        model,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userContent },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      const errorBody = await response.text().catch(() => "");
-      let message = "OpenAI API error";
-      try { message = (JSON.parse(errorBody) as any)?.error?.message || message; } catch {}
-      throw new Error(`OpenAI API error (${response.status}): ${message}`);
-    }
-
-    const data = await response.json() as any;
-    return data?.choices?.[0]?.message?.content ?? "";
-  }
-}
-
-function parseLlmResponse(content: string): LlmOutputRow[] {
-  if (!content) throw new Error("LLM returned empty response.");
-
-  const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const jsonStr = jsonMatch ? jsonMatch[1].trim() : content.trim();
-
-  const parsed = JSON.parse(jsonStr) as { rows?: unknown };
-  if (!Array.isArray(parsed?.rows)) {
-    throw new Error("LLM response missing 'rows' array.");
-  }
-
-  return (parsed.rows as Array<Record<string, unknown>>).map((row) => ({
-    key: String(row.key ?? ""),
-    payeeName: toNonEmptyString(row.payeeName),
-    mailingAddress1: toNonEmptyString(row.mailingAddress1),
-    mailingAddress2: toNonEmptyString(row.mailingAddress2),
-    city: toNonEmptyString(row.city),
-    state: toNonEmptyString(row.state),
-    zip: toNonEmptyString(row.zip),
-  }));
-}
 
 /**
- * Two-pass LLM address cleaning:
- * Pass 1 — Clean raw address data (uses ADDRESS_CLEANING_SYSTEM_PROMPT)
- * Pass 2 — QA review of Pass 1 results (uses ADDRESS_QA_SYSTEM_PROMPT)
+ * Zip prefix → expected state. Used to detect mismatches like PA+60xxx.
+ * Only includes ranges where the mapping is unambiguous.
  */
-export async function callLlmForAddressCleaning(
-  provider: "anthropic" | "openai",
-  apiKey: string,
-  model: string,
-  rows: LlmInputRow[],
-): Promise<LlmOutputRow[]> {
-  // ── Pass 1: Clean ──────────────────────────────────────────────
-  const pass1Content = await callLlmRaw(
-    provider,
-    apiKey,
-    model,
-    ADDRESS_CLEANING_SYSTEM_PROMPT,
-    JSON.stringify({
-      instructions: `Clean these ${rows.length} address records. Return EXACTLY ${rows.length} rows.`,
-      rows,
-    }),
-  );
-  const pass1Rows = parseLlmResponse(pass1Content);
+const ZIP_PREFIX_TO_STATE: Record<string, string> = {
+  "600": "IL", "601": "IL", "602": "IL", "603": "IL", "604": "IL",
+  "605": "IL", "606": "IL", "607": "IL", "608": "IL", "609": "IL",
+  "610": "IL", "611": "IL", "612": "IL", "613": "IL", "614": "IL",
+  "615": "IL", "616": "IL", "617": "IL", "618": "IL", "619": "IL",
+  "620": "IL", "621": "IL", "622": "IL", "623": "IL", "624": "IL",
+  "625": "IL", "626": "IL", "627": "IL", "628": "IL", "629": "IL",
+  "630": "MO", "631": "MO", "632": "MO", "633": "MO", "634": "MO",
+  "635": "MO", "636": "MO", "637": "MO", "638": "MO", "639": "MO",
+  "640": "MO", "641": "MO", "644": "MO", "645": "MO", "646": "MO",
+  "647": "MO", "648": "MO", "649": "MO", "650": "MO", "651": "MO",
+  "652": "MO", "653": "MO", "654": "MO", "655": "MO", "656": "MO",
+  "657": "MO", "658": "MO", "659": "MO",
+};
 
-  console.log(`[AI Cleaning] Pass 1 complete: ${pass1Rows.length} rows returned.`);
-
-  // ── Pass 2: QA review ──────────────────────────────────────────
-  // Feed Pass 1 output back for a second review with the QA prompt
-  try {
-    const pass2Input = pass1Rows.map((r) => ({
-      key: r.key,
-      payeeName: r.payeeName,
-      mailingAddress1: r.mailingAddress1,
-      mailingAddress2: r.mailingAddress2,
-      city: r.city,
-      state: r.state,
-      zip: r.zip,
-    }));
-
-    const pass2Content = await callLlmRaw(
-      provider,
-      apiKey,
-      model,
-      ADDRESS_QA_SYSTEM_PROMPT,
-      JSON.stringify({
-        instructions: `QA-review these ${pass2Input.length} pre-cleaned address records. Fix any remaining errors. Return EXACTLY ${pass2Input.length} rows.`,
-        rows: pass2Input,
-      }),
-    );
-    const pass2Rows = parseLlmResponse(pass2Content);
-
-    console.log(`[AI Cleaning] Pass 2 (QA) complete: ${pass2Rows.length} rows returned.`);
-
-    // Use Pass 2 if it returned the right count, else fall back to Pass 1
-    if (pass2Rows.length === rows.length) {
-      return pass2Rows;
-    }
-    console.warn(`[AI Cleaning] Pass 2 returned ${pass2Rows.length} rows (expected ${rows.length}). Using Pass 1 results.`);
-    return pass1Rows;
-  } catch (pass2Error) {
-    console.error(`[AI Cleaning] Pass 2 (QA) failed: ${pass2Error instanceof Error ? pass2Error.message : "Unknown error"}. Using Pass 1 results.`);
-    return pass1Rows;
-  }
-}
+/* ------------------------------------------------------------------ */
+/*  Primitive helpers                                                   */
+/* ------------------------------------------------------------------ */
 
 export function toNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-export function normalizeMailingText(value: unknown): string | null {
+function normalizeMailingText(value: unknown): string | null {
   const raw = toNonEmptyString(value);
   if (!raw) return null;
   const normalized = raw
     .replace(/\u00a0/g, " ")
-    .replace(/[''`´]/g, "'")
+    .replace(/['\u2018\u2019`\u00b4]/g, "'")
     .replace(/\s+/g, " ")
     .trim();
   return normalized.length > 0 ? normalized : null;
@@ -235,74 +79,40 @@ export function normalizeMailingText(value: unknown): string | null {
 
 export function normalizeMailingCompareToken(value: string | null | undefined): string {
   if (!value) return "";
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .trim();
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "").trim();
+}
+
+/* ------------------------------------------------------------------ */
+/*  State / zip / ordinals                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Resolve a state value to a 2-letter abbreviation.
+ * Handles: "IL", "Illinois", "Ill", "Ill.", 2-letter codes, full names.
+ */
+export function resolveStateName(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  // Fast path: already 2-letter
+  const upper = trimmed.toUpperCase();
+  if (upper.length === 2 && US_STATES.has(upper)) return upper;
+
+  // Lookup by lowercase (handles full names + abbreviations like "ill", "calif")
+  const lower = trimmed.toLowerCase().replace(/\.$/, "");
+  if (STATE_NAME_MAP[lower]) return STATE_NAME_MAP[lower];
+
+  // Fallback: strip non-alpha, check if it's a known state
+  const letters = upper.replace(/[^A-Z]/g, "");
+  if (letters.length === 2 && US_STATES.has(letters)) return letters;
+
+  return null;
 }
 
 export function normalizeStateAbbreviation(value: string | null | undefined): string | null {
   const raw = normalizeMailingText(value);
   if (!raw) return null;
-
-  const letters = raw.toUpperCase().replace(/[^A-Z]/g, "");
-  if (!letters) return null;
-  if (letters.length === 2) return letters;
-
-  const fullStateMap: Record<string, string> = {
-    ALABAMA: "AL",
-    ALASKA: "AK",
-    ARIZONA: "AZ",
-    ARKANSAS: "AR",
-    CALIFORNIA: "CA",
-    COLORADO: "CO",
-    CONNECTICUT: "CT",
-    DELAWARE: "DE",
-    FLORIDA: "FL",
-    GEORGIA: "GA",
-    HAWAII: "HI",
-    IDAHO: "ID",
-    ILLINOIS: "IL",
-    INDIANA: "IN",
-    IOWA: "IA",
-    KANSAS: "KS",
-    KENTUCKY: "KY",
-    LOUISIANA: "LA",
-    MAINE: "ME",
-    MARYLAND: "MD",
-    MASSACHUSETTS: "MA",
-    MICHIGAN: "MI",
-    MINNESOTA: "MN",
-    MISSISSIPPI: "MS",
-    MISSOURI: "MO",
-    MONTANA: "MT",
-    NEBRASKA: "NE",
-    NEVADA: "NV",
-    NEWHAMPSHIRE: "NH",
-    NEWJERSEY: "NJ",
-    NEWMEXICO: "NM",
-    NEWYORK: "NY",
-    NORTHCAROLINA: "NC",
-    NORTHDAKOTA: "ND",
-    OHIO: "OH",
-    OKLAHOMA: "OK",
-    OREGON: "OR",
-    PENNSYLVANIA: "PA",
-    RHODEISLAND: "RI",
-    SOUTHCAROLINA: "SC",
-    SOUTHDAKOTA: "SD",
-    TENNESSEE: "TN",
-    TEXAS: "TX",
-    UTAH: "UT",
-    VERMONT: "VT",
-    VIRGINIA: "VA",
-    WASHINGTON: "WA",
-    WESTVIRGINIA: "WV",
-    WISCONSIN: "WI",
-    WYOMING: "WY",
-  };
-
-  return fullStateMap[letters] ?? letters.slice(0, 2);
+  return resolveStateName(raw);
 }
 
 export function normalizeZipCode(value: string | null | undefined): string | null {
@@ -312,6 +122,42 @@ export function normalizeZipCode(value: string | null | undefined): string | nul
   return match ? match[0] : null;
 }
 
+/**
+ * Correct state when zip clearly belongs to a different state.
+ * e.g. state="PA", zip="61111" → state="IL"
+ */
+export function correctStateForZip(state: string | null, zip: string | null): string | null {
+  if (!zip || !state) return state;
+  const prefix = zip.slice(0, 3);
+  const expectedState = ZIP_PREFIX_TO_STATE[prefix];
+  if (expectedState && expectedState !== state) {
+    return expectedState;
+  }
+  return state;
+}
+
+/** Rejoin split ordinal suffixes: "55 Th" → "55th", "92 Nd" → "92nd". */
+export function normalizeOrdinals(value: string): string {
+  let result = value.replace(/(\d+)\s+[Tt][Hh]\b/g, "$1th");
+  result = result.replace(/(\d+)\s+[Nn][Dd]\b/g, "$1nd");
+  return result;
+}
+
+/** Fix stuck-together number+word patterns: "17Saratoga" → "17 Saratoga" */
+export function fixSpacing(value: string): string {
+  let result = value.replace(/(\d)([A-Z])/g, "$1 $2");
+  result = result.replace(/(\d)([a-z])/g, (_, d, l) => `${d} ${l.toUpperCase()}`);
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/*  City/state/zip parsing                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Parse "City, ST 62701" or "City, Illinois 62701" or "62701" etc.
+ * Returns null values (not empty strings) when fields are missing.
+ */
 export function parseCityStateZip(value: string | null | undefined): {
   city: string | null;
   state: string | null;
@@ -324,15 +170,86 @@ export function parseCityStateZip(value: string | null | undefined): {
     .replace(/\s*,\s*/g, ", ")
     .replace(/\s+/g, " ")
     .trim();
-  const match = normalized.match(/^(.+?)(?:,\s*|\s+)([A-Za-z]{2,})(?:[\s,.\-]+(\d{5}(?:-\d{4})?))?$/);
-  if (!match) return { city: null, state: null, zip: null };
 
-  return {
-    city: normalizeMailingText(match[1]?.replace(/[.,]+$/g, "")),
-    state: normalizeStateAbbreviation(match[2]),
-    zip: normalizeZipCode(match[3] ?? null),
-  };
+  // "City, IL 62701" or "City IL.62701" etc.
+  const patterns = [
+    /^(.+?),?\s+([A-Za-z]{2,})\.?\s*(\d{5}(?:-\d{4})?)\s*$/,
+    /^(.+?),\s+([A-Za-z]{2,})\s*$/,
+    /^(.+?)\s+([A-Za-z]{2})\s*$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) {
+      const possibleState = resolveStateName(match[2]);
+      if (possibleState) {
+        return {
+          city: normalizeMailingText(match[1]?.replace(/[.,]+$/g, "")),
+          state: possibleState,
+          zip: normalizeZipCode(match[3] ?? null),
+        };
+      }
+    }
+  }
+
+  // Just a bare zip
+  const zipMatch = normalized.match(/^(\d{5}(?:-\d{4})?)$/);
+  if (zipMatch) return { city: null, state: null, zip: zipMatch[1] };
+
+  return { city: null, state: null, zip: null };
 }
+
+/**
+ * Extract trailing city/state/zip from a crammed address string.
+ * "408 W High St. Roanoke, IL. 61561" → { prefix: "408 W High St", city: "Roanoke", state: "IL", zip: "61561" }
+ */
+export function extractTrailingCityStateZip(value: string): {
+  prefix: string; city: string; state: string; zip: string;
+} | null {
+  const trimmed = normalizeMailingText(value);
+  if (!trimmed) return null;
+
+  const patterns = [
+    /^(.+?)[.,]\s+([A-Za-z\s]+?)[.,]?\s+([A-Za-z]{2,})\.?\s+(\d{5}(?:-\d{4})?)\s*$/,
+    /^(.+?)\s+([A-Za-z\s]+?),?\s+([A-Za-z]{2,})\.?\s*(\d{5}(?:-\d{4})?)\s*$/,
+    /^(.+?),\s*([A-Za-z\s]+?)\s+([A-Za-z]{2,})\.?\s*(\d{5}(?:-\d{4})?)\s*$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match) {
+      const possibleState = resolveStateName(match[3]);
+      if (possibleState && match[1].length > 3) {
+        return {
+          prefix: (normalizeMailingText(match[1]) ?? "").replace(/[.,]\s*$/, ""),
+          city: normalizeMailingText(match[2]) ?? "",
+          state: possibleState,
+          zip: match[4],
+        };
+      }
+    }
+  }
+
+  // "... City, ST" (no zip)
+  const simpleMatch = trimmed.match(/^(.+?),\s*([A-Za-z\s]+?),?\s+([A-Za-z]{2,})\.?\s*$/);
+  if (simpleMatch) {
+    const possibleState = resolveStateName(simpleMatch[3]);
+    if (possibleState && simpleMatch[1].length > 3) {
+      return {
+        prefix: (normalizeMailingText(simpleMatch[1]) ?? "").replace(/[.,]\s*$/, ""),
+        city: normalizeMailingText(simpleMatch[2]) ?? "",
+        state: possibleState,
+        zip: "",
+      };
+    }
+  }
+
+  return null;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Detection helpers                                                   */
+/* ------------------------------------------------------------------ */
 
 export function looksLikePhoneNumber(value: string | null | undefined): boolean {
   const raw = normalizeMailingText(value);
@@ -345,6 +262,10 @@ export function looksLikeSecondaryAddressLine(value: string | null | undefined):
   if (!raw) return false;
   return /\b(?:apt|apartment|unit|suite|ste|fl|floor|bldg|building|dept|lot|trlr|trailer|po\s*box|p\.?\s*o\.?\s*box|attn|attention|c\/o|care\s+of|pmb|box)\b/i.test(raw) || /#\s*[A-Za-z0-9-]+/.test(raw);
 }
+
+/* ------------------------------------------------------------------ */
+/*  sanitizeMailingFields — the post-LLM safety net                     */
+/* ------------------------------------------------------------------ */
 
 export function sanitizeMailingFields(input: {
   payeeName: string | null;
@@ -369,15 +290,50 @@ export function sanitizeMailingFields(input: {
   let state = normalizeStateAbbreviation(input.state);
   let zip = normalizeZipCode(input.zip);
 
+  // ── Ordinal normalization ───────────────────────────────────────
+  if (mailingAddress1) mailingAddress1 = normalizeOrdinals(mailingAddress1);
+  if (mailingAddress2) mailingAddress2 = normalizeOrdinals(mailingAddress2);
+
+  // ── cityStateZip fallback ───────────────────────────────────────
   const parsedFromCityStateZip = parseCityStateZip(input.cityStateZip ?? null);
   if (!city && parsedFromCityStateZip.city) city = parsedFromCityStateZip.city;
   if (!state && parsedFromCityStateZip.state) state = parsedFromCityStateZip.state;
   if (!zip && parsedFromCityStateZip.zip) zip = parsedFromCityStateZip.zip;
 
+  // ── Garbage in city ─────────────────────────────────────────────
+  if (city && /\b(payee|contact|email|address|phone|fax|account|invoice)\b/i.test(city)) {
+    city = null;
+  }
+
+  // ── State+zip stuck in city: "IL 62814", "IL. 60502" ────────────
+  if (city) {
+    const stateZipInCity = city.match(/^([A-Za-z]{2})\.?\s+(\d{5}(?:-\d{4})?)\s*$/);
+    if (stateZipInCity) {
+      const resolved = resolveStateName(stateZipInCity[1]);
+      if (resolved) {
+        if (!state) state = resolved;
+        if (!zip) zip = stateZipInCity[2];
+        city = null;
+      }
+    }
+  }
+
+  // ── City contains "City, St. Zip" ───────────────────────────────
+  if (city) {
+    const parsed = parseCityStateZip(city);
+    if (parsed.city && parsed.state) {
+      city = parsed.city;
+      if (!state) state = parsed.state;
+      if (!zip && parsed.zip) zip = parsed.zip;
+    }
+  }
+
+  // ── Phone in addr2 ──────────────────────────────────────────────
   if (mailingAddress2 && looksLikePhoneNumber(mailingAddress2)) {
     mailingAddress2 = null;
   }
 
+  // ── addr2 contains city/state/zip ───────────────────────────────
   if (mailingAddress2) {
     const parsedFromAddress2 = parseCityStateZip(mailingAddress2);
     const hasParsedLocation = Boolean(parsedFromAddress2.city || parsedFromAddress2.state || parsedFromAddress2.zip);
@@ -391,6 +347,7 @@ export function sanitizeMailingFields(input: {
     }
   }
 
+  // ── addr1 is pure city/state/zip (no street number) ─────────────
   if (mailingAddress1) {
     const parsedFromAddress1 = parseCityStateZip(mailingAddress1);
     const hasParsedLocation = Boolean(parsedFromAddress1.city || parsedFromAddress1.state || parsedFromAddress1.zip);
@@ -403,24 +360,26 @@ export function sanitizeMailingFields(input: {
     }
   }
 
+  // ── Deduplicate addr2 vs addr1 / payeeName / city ───────────────
   if (mailingAddress2) {
-    const mailingAddress2Token = normalizeMailingCompareToken(mailingAddress2);
-    const mailingAddress1Token = normalizeMailingCompareToken(mailingAddress1);
+    const addr2Token = normalizeMailingCompareToken(mailingAddress2);
+    const addr1Token = normalizeMailingCompareToken(mailingAddress1);
     const payeeToken = normalizeMailingCompareToken(payeeName);
-    const cityStateZipToken = normalizeMailingCompareToken(
+    const cszToken = normalizeMailingCompareToken(
       [city, [state, zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")
     );
 
     if (
-      !mailingAddress2Token ||
-      mailingAddress2Token === mailingAddress1Token ||
-      mailingAddress2Token === payeeToken ||
-      (cityStateZipToken.length > 0 && mailingAddress2Token === cityStateZipToken)
+      !addr2Token ||
+      addr2Token === addr1Token ||
+      addr2Token === payeeToken ||
+      (cszToken.length > 0 && addr2Token === cszToken)
     ) {
       mailingAddress2 = null;
     }
   }
 
+  // ── Promote addr2 to addr1 if addr1 is empty ────────────────────
   if (!mailingAddress1 && mailingAddress2) {
     const parsedFromAddress2 = parseCityStateZip(mailingAddress2);
     const hasParsedLocation = Boolean(parsedFromAddress2.city || parsedFromAddress2.state || parsedFromAddress2.zip);
@@ -430,26 +389,156 @@ export function sanitizeMailingFields(input: {
     }
   }
 
-  // ── Final guard: addr2 must be a recognized secondary line ──
-  // Bare city names, state names, or other stray text is never valid in addr2.
+  // ── Final guard: addr2 must be a recognized secondary line ──────
   if (mailingAddress2 && !looksLikeSecondaryAddressLine(mailingAddress2)) {
-    // If it looks like a bare city name (alphabetic, no digits), use as city fallback
     if (!city && /^[A-Za-z\s.'-]+$/.test(mailingAddress2)) {
       city = mailingAddress2;
     }
     mailingAddress2 = null;
   }
 
+  // ── Final normalization ─────────────────────────────────────────
   city = city ? city.replace(/[.,]+$/g, "").trim() : null;
   state = normalizeStateAbbreviation(state);
   zip = normalizeZipCode(zip);
 
-  return {
-    payeeName,
-    mailingAddress1,
-    mailingAddress2,
-    city,
-    state,
-    zip,
-  };
+  // ── Zip-state validation (must run last) ────────────────────────
+  state = correctStateForZip(state, zip);
+
+  return { payeeName, mailingAddress1, mailingAddress2, city, state, zip };
+}
+
+/* ------------------------------------------------------------------ */
+/*  LLM cleaning                                                        */
+/* ------------------------------------------------------------------ */
+
+const ADDRESS_CLEANING_SYSTEM_PROMPT = [
+  "You clean US mailing address records. Return valid JSON: {\"rows\":[...]}. No prose.",
+  "",
+  "RULES:",
+  "1. Return EXACTLY the same number of rows, in the SAME order, with the SAME keys.",
+  "2. payeeName: Title-case. Preserve LLC/Inc/Corp.",
+  "3. mailingAddress1: street address ONLY. Never a name, phone, city, or state.",
+  "4. mailingAddress2: ONLY secondary unit (Apt/Ste/Unit/PO Box). Empty string if none.",
+  "5. city: city name ONLY. Never zip, phone, state abbreviation, or 'USA'. If city is 'IL 62814' or similar, set city to empty string.",
+  "6. state: 2-letter uppercase abbreviation.",
+  "7. zip: 5-digit or ZIP+4 ONLY.",
+  "8. Standardize: Street→St, Avenue→Ave, Road→Rd, Drive→Dr, Lane→Ln, Court→Ct.",
+  "9. Fix field-placement errors (city/state/zip in wrong field, crammed addresses).",
+  "10. Remove phone numbers, placeholders (N/A, TBD), duplicate fields.",
+  "11. Use cityStateZip as fallback when city/state/zip are empty.",
+  "12. Do NOT invent data. Empty string if uncertain.",
+  "",
+  "CRITICAL PATTERNS TO FIX:",
+  "13. CRAMMED ADDRESS: '1034 145th Ave Joy IL' → addr1='1034 145th Ave', city='Joy', state='IL'.",
+  "14. NUMBER-ONLY ADDRESS + STREET-IN-CITY: addr1='301', city='N Grant St Oblong' → addr1='301 N Grant St', city='Oblong'.",
+  "15. MISSING CITY: If city is empty but you can infer it from zip with high confidence, fill it in.",
+  "16. CITY MISSPELLINGS: Fix obvious errors — 'Hillsde'→'Hillside', 'Ofallon'→\"O'Fallon\", 'Milledgville'→'Milledgeville'. Capitalization: 'Dekalb'→'DeKalb', 'Mchenry'→'McHenry'.",
+].join("\n");
+
+export async function callLlmForAddressCleaning(
+  provider: "anthropic" | "openai",
+  apiKey: string,
+  model: string,
+  rows: Array<{
+    key: string;
+    payeeName: string | null;
+    mailingAddress1: string | null;
+    mailingAddress2: string | null;
+    cityStateZip: string | null;
+    city: string | null;
+    state: string | null;
+    zip: string | null;
+  }>,
+): Promise<Array<{
+  key: string;
+  payeeName: string | null;
+  mailingAddress1: string | null;
+  mailingAddress2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+}>> {
+  const userContent = JSON.stringify({
+    instructions: `Clean these ${rows.length} address records. Return EXACTLY ${rows.length} rows.`,
+    rows,
+  });
+
+  let content: string;
+
+  if (provider === "anthropic") {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      signal: AbortSignal.timeout(120_000),
+      body: JSON.stringify({
+        model,
+        max_tokens: 16384,
+        system: ADDRESS_CLEANING_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userContent }],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      let message = "Anthropic API error";
+      try { message = (JSON.parse(errorBody) as any)?.error?.message || message; } catch {}
+      throw new Error(`Anthropic API error (${response.status}): ${message}`);
+    }
+
+    const data = await response.json() as any;
+    content = data?.content?.[0]?.text ?? "";
+  } else {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: AbortSignal.timeout(180_000),
+      body: JSON.stringify({
+        model,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: ADDRESS_CLEANING_SYSTEM_PROMPT },
+          { role: "user", content: userContent },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => "");
+      let message = "OpenAI API error";
+      try { message = (JSON.parse(errorBody) as any)?.error?.message || message; } catch {}
+      throw new Error(`OpenAI API error (${response.status}): ${message}`);
+    }
+
+    const data = await response.json() as any;
+    content = data?.choices?.[0]?.message?.content ?? "";
+  }
+
+  if (!content) throw new Error("LLM returned empty response.");
+
+  // Extract JSON from potential markdown code fences
+  const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const jsonStr = jsonMatch ? jsonMatch[1].trim() : content.trim();
+
+  const parsed = JSON.parse(jsonStr) as { rows?: unknown };
+  if (!Array.isArray(parsed?.rows)) {
+    throw new Error("LLM response missing 'rows' array.");
+  }
+
+  return (parsed.rows as Array<Record<string, unknown>>).map((row) => ({
+    key: String(row.key ?? ""),
+    payeeName: toNonEmptyString(row.payeeName),
+    mailingAddress1: toNonEmptyString(row.mailingAddress1),
+    mailingAddress2: toNonEmptyString(row.mailingAddress2),
+    city: toNonEmptyString(row.city),
+    state: toNonEmptyString(row.state),
+    zip: toNonEmptyString(row.zip),
+  }));
 }
