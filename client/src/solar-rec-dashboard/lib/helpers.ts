@@ -12,6 +12,7 @@ import type {
   CsvRow,
   GenerationBaseline,
   MonitoringDetailsRecord,
+  OfflineMonitoringAccessFields,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
 import {
@@ -799,6 +800,100 @@ export function getMonitoringDetailsForSystem(
     (keyByTracking ? monitoringDetailsBySystemKey.get(keyByTracking) : undefined) ??
     monitoringDetailsBySystemKey.get(keyByName)
   );
+}
+
+/**
+ * Classify a monitoring access-type string into one of four categories
+ * the Offline Monitoring tab uses to decide which credential columns
+ * to show in its detail table.
+ */
+export function classifyMonitoringAccessType(
+  accessTypeRaw: string,
+): "granted" | "link" | "login" | "other" {
+  const normalized = clean(accessTypeRaw).toLowerCase();
+  if (!normalized) return "other";
+  if (normalized.includes("grant")) return "granted";
+  if (normalized.includes("link")) return "link";
+  if (
+    normalized.includes("password") ||
+    normalized.includes("pass") ||
+    normalized.includes("pwd") ||
+    normalized.includes("login")
+  ) {
+    return "login";
+  }
+  return "other";
+}
+
+/**
+ * Resolve the six credential fields shown in the Offline Monitoring
+ * detail table. Values blank or populate depending on the access
+ * category — e.g. "granted" access hides link/username/password even
+ * if present, to avoid leaking the wrong credential for that
+ * workflow.
+ */
+export function resolveOfflineMonitoringAccessFields(
+  system: SystemRecord,
+  monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>,
+): OfflineMonitoringAccessFields {
+  const details = getMonitoringDetailsForSystem(
+    system,
+    monitoringDetailsBySystemKey,
+  );
+  const accessType =
+    clean(details?.online_monitoring_access_type) || clean(system.monitoringType);
+  const category = classifyMonitoringAccessType(accessType);
+  const monitoringSiteId = clean(details?.online_monitoring_system_id);
+  const monitoringSiteName = clean(details?.online_monitoring_system_name);
+  const monitoringLink = clean(details?.online_monitoring_website_api_link);
+  const monitoringUsername =
+    firstNonEmptyString(
+      clean(details?.online_monitoring_username),
+      clean(details?.online_monitoring_granted_username),
+    ) ?? "";
+  const monitoringPassword = clean(details?.online_monitoring_password);
+
+  if (category === "granted") {
+    return {
+      accessType,
+      monitoringSiteId,
+      monitoringSiteName,
+      monitoringLink: "",
+      monitoringUsername: "",
+      monitoringPassword: "",
+    };
+  }
+
+  if (category === "link") {
+    return {
+      accessType,
+      monitoringSiteId: "",
+      monitoringSiteName: "",
+      monitoringLink,
+      monitoringUsername: "",
+      monitoringPassword: "",
+    };
+  }
+
+  if (category === "login") {
+    return {
+      accessType,
+      monitoringSiteId: "",
+      monitoringSiteName,
+      monitoringLink: "",
+      monitoringUsername,
+      monitoringPassword,
+    };
+  }
+
+  return {
+    accessType,
+    monitoringSiteId,
+    monitoringSiteName,
+    monitoringLink,
+    monitoringUsername,
+    monitoringPassword,
+  };
 }
 
 /**

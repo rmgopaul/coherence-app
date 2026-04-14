@@ -129,6 +129,30 @@ export type MonitoringDetailsRecord = {
 };
 
 // ---------------------------------------------------------------------------
+// Offline Monitoring types
+// ---------------------------------------------------------------------------
+
+export type OfflineBreakdownRow = {
+  key: string;
+  label: string;
+  totalSystems: number;
+  offlineSystems: number;
+  offlinePercent: number | null;
+  offlineContractValue: number;
+  totalContractValue: number;
+  offlineContractValuePercent: number | null;
+};
+
+export type OfflineMonitoringAccessFields = {
+  accessType: string;
+  monitoringSiteId: string;
+  monitoringSiteName: string;
+  monitoringLink: string;
+  monitoringUsername: string;
+  monitoringPassword: string;
+};
+
+// ---------------------------------------------------------------------------
 // Performance-ratio types
 // ---------------------------------------------------------------------------
 

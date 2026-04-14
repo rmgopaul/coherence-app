@@ -1747,26 +1747,7 @@ export default function SolarRecDashboard() {
     | "reporting"
   >("contractValue");
   const [changeOwnershipSortDir, setChangeOwnershipSortDir] = useState<"asc" | "desc">("desc");
-  const [offlineMonitoringFilter, setOfflineMonitoringFilter] = useState("All");
-  const [offlinePlatformFilter, setOfflinePlatformFilter] = useState("All");
-  const [offlineInstallerFilter, setOfflineInstallerFilter] = useState("All");
-  const [offlineSearch, setOfflineSearch] = useState("");
-  const [offlineMonitoringSortBy, setOfflineMonitoringSortBy] = useState<
-    "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
-  >("offlineSystems");
-  const [offlineMonitoringSortDir, setOfflineMonitoringSortDir] = useState<"asc" | "desc">("desc");
-  const [offlinePlatformSortBy, setOfflinePlatformSortBy] = useState<
-    "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
-  >("offlineSystems");
-  const [offlinePlatformSortDir, setOfflinePlatformSortDir] = useState<"asc" | "desc">("desc");
-  const [offlineInstallerSortBy, setOfflineInstallerSortBy] = useState<
-    "offlineSystems" | "offlinePercent" | "offlineContractValue" | "label"
-  >("offlineSystems");
-  const [offlineInstallerSortDir, setOfflineInstallerSortDir] = useState<"asc" | "desc">("desc");
-  const [offlineDetailSortBy, setOfflineDetailSortBy] = useState<
-    "systemName" | "monitoringType" | "monitoringPlatform" | "installerName" | "contractedValue" | "latestReportingDate"
-  >("contractedValue");
-  const [offlineDetailSortDir, setOfflineDetailSortDir] = useState<"asc" | "desc">("desc");
+  // offline* filter/sort state — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
   const [performanceContractId, setPerformanceContractId] = useState("");
   const [performanceDeliveryYearKey, setPerformanceDeliveryYearKey] = useState("");
   const [performancePreviousSurplusInput, setPerformancePreviousSurplusInput] = useState("0");
@@ -1809,7 +1790,7 @@ export default function SolarRecDashboard() {
   };
   const recPerfSortIndicator = (col: RecPerfSortKey) =>
     recPerfSortBy === col ? (recPerfSortDir === "asc" ? " ▲" : " ▼") : "";
-  const [offlineDetailPage, setOfflineDetailPage] = useState(1);
+  // offlineDetailPage — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
   // compliantSourcePage, compliantReportPage — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
   // Financials table sort/filter state. Mirrors changeOwnership pattern.
   type FinancialSortKey =
@@ -1863,7 +1844,7 @@ export default function SolarRecDashboard() {
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
-  const isOfflineTabActive = activeTab === "offline-monitoring";
+  // isOfflineTabActive removed — OfflineMonitoringTab uses its mount lifecycle as the gate
   const isPerformanceRatioTabActive = activeTab === "performance-ratio";
   const isTrendsTabActive = activeTab === "trends";
   const isForecastTabActive = activeTab === "forecast";
@@ -3665,326 +3646,10 @@ export default function SolarRecDashboard() {
     [summary.ownershipRows]
   );
 
-  const offlineBaseSystems = useMemo(
-    () => {
-      if (!isOfflineTabActive) return [] as SystemRecord[];
-      return part2EligibleSystemsForSizeReporting.filter(
-        (system) =>
-          !!system.trackingSystemRefId &&
-          abpEligibleTrackingIdsStrict.has(system.trackingSystemRefId)
-      );
-    },
-    [abpEligibleTrackingIdsStrict, isOfflineTabActive, part2EligibleSystemsForSizeReporting]
-  );
-
-  const offlineSystems = useMemo(
-    () => offlineBaseSystems.filter((system) => !system.isReporting),
-    [offlineBaseSystems]
-  );
-
-  const offlineMonitoringOptions = useMemo(
-    () => {
-      if (!isOfflineTabActive) return [] as string[];
-      return Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringType || "Unknown"))).sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
-      );
-    },
-    [isOfflineTabActive, offlineBaseSystems]
-  );
-
-  const offlinePlatformOptions = useMemo(
-    () => {
-      if (!isOfflineTabActive) return [] as string[];
-      return Array.from(new Set(offlineBaseSystems.map((system) => system.monitoringPlatform || "Unknown"))).sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
-      );
-    },
-    [isOfflineTabActive, offlineBaseSystems]
-  );
-
-  const offlineInstallerOptions = useMemo(
-    () => {
-      if (!isOfflineTabActive) return [] as string[];
-      return Array.from(new Set(offlineBaseSystems.map((system) => system.installerName || "Unknown"))).sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: "base", numeric: true })
-      );
-    },
-    [isOfflineTabActive, offlineBaseSystems]
-  );
-
-  const offlineMonitoringBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
-    if (!isOfflineTabActive) return [];
-    const groups = new Map<
-      string,
-      { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
-    >();
-
-    offlineBaseSystems.forEach((system) => {
-      const label = system.monitoringType || "Unknown";
-      let current = groups.get(label);
-      if (!current) {
-        current = { label, totalSystems: 0, offlineSystems: 0, totalContractValue: 0, offlineContractValue: 0 };
-        groups.set(label, current);
-      }
-      current.totalSystems += 1;
-      current.totalContractValue += resolveContractValueAmount(system);
-      if (!system.isReporting) {
-        current.offlineSystems += 1;
-        current.offlineContractValue += resolveContractValueAmount(system);
-      }
-    });
-
-    const rows = Array.from(groups.values()).map((group) => ({
-      key: group.label,
-      label: group.label,
-      totalSystems: group.totalSystems,
-      offlineSystems: group.offlineSystems,
-      offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
-      offlineContractValue: group.offlineContractValue,
-      totalContractValue: group.totalContractValue,
-      offlineContractValuePercent: toPercentValue(group.offlineContractValue, group.totalContractValue),
-    }));
-
-    rows.sort((a, b) => {
-      const direction = offlineMonitoringSortDir === "asc" ? 1 : -1;
-      const byLabel =
-        a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }) * direction;
-      if (offlineMonitoringSortBy === "label") return byLabel;
-      const aValue = a[offlineMonitoringSortBy] ?? -Infinity;
-      const bValue = b[offlineMonitoringSortBy] ?? -Infinity;
-      if (aValue === bValue) return byLabel;
-      return ((aValue as number) - (bValue as number)) * direction;
-    });
-    return rows;
-  }, [isOfflineTabActive, offlineMonitoringSortBy, offlineMonitoringSortDir, offlineBaseSystems]);
-
-  const offlineInstallerBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
-    if (!isOfflineTabActive) return [];
-    const groups = new Map<
-      string,
-      { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
-    >();
-
-    offlineBaseSystems.forEach((system) => {
-      const label = system.installerName || "Unknown";
-      let current = groups.get(label);
-      if (!current) {
-        current = { label, totalSystems: 0, offlineSystems: 0, totalContractValue: 0, offlineContractValue: 0 };
-        groups.set(label, current);
-      }
-      current.totalSystems += 1;
-      current.totalContractValue += resolveContractValueAmount(system);
-      if (!system.isReporting) {
-        current.offlineSystems += 1;
-        current.offlineContractValue += resolveContractValueAmount(system);
-      }
-    });
-
-    const rows = Array.from(groups.values()).map((group) => ({
-      key: group.label,
-      label: group.label,
-      totalSystems: group.totalSystems,
-      offlineSystems: group.offlineSystems,
-      offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
-      offlineContractValue: group.offlineContractValue,
-      totalContractValue: group.totalContractValue,
-      offlineContractValuePercent: toPercentValue(group.offlineContractValue, group.totalContractValue),
-    }));
-
-    rows.sort((a, b) => {
-      const direction = offlineInstallerSortDir === "asc" ? 1 : -1;
-      const byLabel =
-        a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }) * direction;
-      if (offlineInstallerSortBy === "label") return byLabel;
-      const aValue = a[offlineInstallerSortBy] ?? -Infinity;
-      const bValue = b[offlineInstallerSortBy] ?? -Infinity;
-      if (aValue === bValue) return byLabel;
-      return ((aValue as number) - (bValue as number)) * direction;
-    });
-    return rows;
-  }, [isOfflineTabActive, offlineInstallerSortBy, offlineInstallerSortDir, offlineBaseSystems]);
-
-  const offlinePlatformBreakdownRows = useMemo<OfflineBreakdownRow[]>(() => {
-    if (!isOfflineTabActive) return [];
-    const groups = new Map<
-      string,
-      { label: string; totalSystems: number; offlineSystems: number; totalContractValue: number; offlineContractValue: number }
-    >();
-
-    offlineBaseSystems.forEach((system) => {
-      const label = system.monitoringPlatform || "Unknown";
-      let current = groups.get(label);
-      if (!current) {
-        current = { label, totalSystems: 0, offlineSystems: 0, totalContractValue: 0, offlineContractValue: 0 };
-        groups.set(label, current);
-      }
-      current.totalSystems += 1;
-      current.totalContractValue += resolveContractValueAmount(system);
-      if (!system.isReporting) {
-        current.offlineSystems += 1;
-        current.offlineContractValue += resolveContractValueAmount(system);
-      }
-    });
-
-    const rows = Array.from(groups.values()).map((group) => ({
-      key: group.label,
-      label: group.label,
-      totalSystems: group.totalSystems,
-      offlineSystems: group.offlineSystems,
-      offlinePercent: toPercentValue(group.offlineSystems, group.totalSystems),
-      offlineContractValue: group.offlineContractValue,
-      totalContractValue: group.totalContractValue,
-      offlineContractValuePercent: toPercentValue(group.offlineContractValue, group.totalContractValue),
-    }));
-
-    rows.sort((a, b) => {
-      const direction = offlinePlatformSortDir === "asc" ? 1 : -1;
-      const byLabel =
-        a.label.localeCompare(b.label, undefined, { sensitivity: "base", numeric: true }) * direction;
-      if (offlinePlatformSortBy === "label") return byLabel;
-      const aValue = a[offlinePlatformSortBy] ?? -Infinity;
-      const bValue = b[offlinePlatformSortBy] ?? -Infinity;
-      if (aValue === bValue) return byLabel;
-      return ((aValue as number) - (bValue as number)) * direction;
-    });
-    return rows;
-  }, [isOfflineTabActive, offlinePlatformSortBy, offlinePlatformSortDir, offlineBaseSystems]);
-
-  const filteredOfflineSystems = useMemo(() => {
-    if (!isOfflineTabActive) return [] as SystemRecord[];
-    const normalizedSearch = offlineSearch.trim().toLowerCase();
-    const rows = offlineSystems.filter((system) => {
-      const monitoringMatch =
-        offlineMonitoringFilter === "All" ? true : system.monitoringType === offlineMonitoringFilter;
-      if (!monitoringMatch) return false;
-      const platformMatch =
-        offlinePlatformFilter === "All" ? true : system.monitoringPlatform === offlinePlatformFilter;
-      if (!platformMatch) return false;
-      const installerMatch = offlineInstallerFilter === "All" ? true : system.installerName === offlineInstallerFilter;
-      if (!installerMatch) return false;
-      if (!normalizedSearch) return true;
-      const haystack = [
-        system.systemName,
-        system.systemId ?? "",
-        system.trackingSystemRefId ?? "",
-        system.monitoringType,
-        system.monitoringPlatform,
-        system.installerName,
-      ]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(normalizedSearch);
-    });
-
-    rows.sort((a, b) => {
-      const direction = offlineDetailSortDir === "asc" ? 1 : -1;
-      if (offlineDetailSortBy === "systemName") {
-        return (
-          a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
-        );
-      }
-      if (offlineDetailSortBy === "monitoringType") {
-        return (
-          a.monitoringType.localeCompare(b.monitoringType, undefined, { sensitivity: "base", numeric: true }) *
-          direction
-        );
-      }
-      if (offlineDetailSortBy === "monitoringPlatform") {
-        return (
-          a.monitoringPlatform.localeCompare(b.monitoringPlatform, undefined, { sensitivity: "base", numeric: true }) *
-          direction
-        );
-      }
-      if (offlineDetailSortBy === "installerName") {
-        return (
-          a.installerName.localeCompare(b.installerName, undefined, { sensitivity: "base", numeric: true }) *
-          direction
-        );
-      }
-      if (offlineDetailSortBy === "latestReportingDate") {
-        const aTime = a.latestReportingDate?.getTime() ?? -Infinity;
-        const bTime = b.latestReportingDate?.getTime() ?? -Infinity;
-        if (aTime === bTime) {
-          return (
-            a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
-          );
-        }
-        return (aTime - bTime) * direction;
-      }
-      const aValue = resolveContractValueAmount(a);
-      const bValue = resolveContractValueAmount(b);
-      if (aValue === bValue) {
-        return (
-          a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction
-        );
-      }
-      return (aValue - bValue) * direction;
-    });
-    return rows;
-  }, [
-    isOfflineTabActive,
-    offlineDetailSortBy,
-    offlineDetailSortDir,
-    offlineInstallerFilter,
-    offlineMonitoringFilter,
-    offlinePlatformFilter,
-    offlineSearch,
-    offlineSystems,
-  ]);
-
-  const offlineSummary = useMemo(() => {
-    if (!isOfflineTabActive) {
-      return {
-        offlineSystemCount: 0,
-        offlineSystemPercent: null,
-        filteredOfflineCount: 0,
-        monitoringTypeCount: 0,
-        monitoringPlatformCount: 0,
-        installerCount: 0,
-        totalOfflineContractValue: 0,
-        totalPortfolioContractValue: 0,
-        offlineContractValuePercent: null,
-      };
-    }
-    const totalOfflineContractValue = offlineSystems.reduce(
-      (sum, system) => sum + resolveContractValueAmount(system),
-      0
-    );
-    const totalPortfolioContractValue = offlineBaseSystems.reduce(
-      (sum, system) => sum + resolveContractValueAmount(system),
-      0
-    );
-    return {
-      offlineSystemCount: offlineSystems.length,
-      offlineSystemPercent: toPercentValue(offlineSystems.length, offlineBaseSystems.length),
-      filteredOfflineCount: filteredOfflineSystems.length,
-      monitoringTypeCount: offlineMonitoringBreakdownRows.length,
-      monitoringPlatformCount: offlinePlatformBreakdownRows.length,
-      installerCount: offlineInstallerBreakdownRows.length,
-      totalOfflineContractValue,
-      totalPortfolioContractValue,
-      offlineContractValuePercent: toPercentValue(totalOfflineContractValue, totalPortfolioContractValue),
-    };
-  }, [
-    filteredOfflineSystems.length,
-    isOfflineTabActive,
-    offlineInstallerBreakdownRows.length,
-    offlineMonitoringBreakdownRows.length,
-    offlinePlatformBreakdownRows.length,
-    offlineBaseSystems,
-    offlineSystems,
-  ]);
-
-  useEffect(() => {
-    setOfflineDetailPage(1);
-  }, [
-    offlineDetailSortBy,
-    offlineDetailSortDir,
-    offlineInstallerFilter,
-    offlineMonitoringFilter,
-    offlinePlatformFilter,
-    offlineSearch,
-  ]);
+  // offlineBaseSystems, offlineSystems, offlineMonitoringOptions, offlinePlatformOptions,
+  // offlineInstallerOptions, offlineMonitoringBreakdownRows, offlineInstallerBreakdownRows,
+  // offlinePlatformBreakdownRows, filteredOfflineSystems, offlineSummary, filter-reset useEffect
+  // — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
 
   const abpApplicationIdBySystemKey = useMemo(() => {
     const mapping = new Map<string, string>();
@@ -4283,166 +3948,8 @@ export default function SolarRecDashboard() {
     triggerCsvDownload(fileName, csv);
   };
 
-  const zeroReportingInstallerPlatformRows = useMemo(() => {
-    const groups = new Map<
-      string,
-      { installerName: string; monitoringPlatform: string; totalSystems: number; reportingSystems: number }
-    >();
-
-    offlineBaseSystems.forEach((system) => {
-      const installerName = system.installerName || "Unknown";
-      const monitoringPlatform = system.monitoringPlatform || "Unknown";
-      const key = `${installerName}__${monitoringPlatform}`;
-      let current = groups.get(key);
-      if (!current) {
-        current = { installerName, monitoringPlatform, totalSystems: 0, reportingSystems: 0 };
-        groups.set(key, current);
-      }
-      current.totalSystems += 1;
-      if (system.isReporting) current.reportingSystems += 1;
-    });
-
-    return Array.from(groups.values())
-      .filter((group) => group.totalSystems > 10 && group.reportingSystems === 0)
-      .map((group) => ({
-        ...group,
-        reportingPercent: toPercentValue(group.reportingSystems, group.totalSystems),
-      }))
-      .sort((a, b) => b.totalSystems - a.totalSystems);
-  }, [offlineBaseSystems]);
-
-  const downloadOfflineSystemsCsv = () => {
-    const headers = [
-      "nonid",
-      "csg_portal_id",
-      "abp_report_id",
-      "system_name",
-      "installer_name",
-      "monitoring_method",
-      "monitoring_platform",
-      "online_monitoring_access_type",
-      "online_monitoring",
-      "online_monitoring_granted_username",
-      "online_monitoring_username",
-      "online_monitoring_system_name",
-      "online_monitoring_system_id",
-      "online_monitoring_password",
-      "online_monitoring_website_api_link",
-      "online_monitoring_entry_method",
-      "online_monitoring_notes",
-      "online_monitoring_self_report",
-      "online_monitoring_rgm_info",
-      "online_monitoring_no_submit_generation",
-      "system_online",
-      "last_reported_online_date",
-      "last_gats_reporting_date",
-      "last_report_kwh",
-      "contract_value",
-    ];
-
-    const rows = offlineSystems
-      .slice()
-      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }))
-      .map((system) => {
-        const keyById = system.systemId ? `id:${system.systemId}` : "";
-        const keyByTracking = system.trackingSystemRefId ? `tracking:${system.trackingSystemRefId}` : "";
-        const keyByName = `name:${system.systemName.toLowerCase()}`;
-
-        const abpReportId =
-          (keyById ? abpApplicationIdBySystemKey.get(keyById) : undefined) ??
-          (keyByTracking ? abpApplicationIdBySystemKey.get(keyByTracking) : undefined) ??
-          abpApplicationIdBySystemKey.get(keyByName) ??
-          "";
-        const monitoringDetails = getMonitoringDetailsForSystem(system, monitoringDetailsBySystemKey);
-
-        return {
-          nonid: system.trackingSystemRefId ?? "",
-          csg_portal_id: system.systemId ?? "",
-          abp_report_id: abpReportId,
-          system_name: system.systemName,
-          installer_name: system.installerName,
-          monitoring_method: system.monitoringType,
-          monitoring_platform: system.monitoringPlatform,
-          online_monitoring_access_type: monitoringDetails?.online_monitoring_access_type ?? "",
-          online_monitoring: monitoringDetails?.online_monitoring ?? "",
-          online_monitoring_granted_username: monitoringDetails?.online_monitoring_granted_username ?? "",
-          online_monitoring_username: monitoringDetails?.online_monitoring_username ?? "",
-          online_monitoring_system_name: monitoringDetails?.online_monitoring_system_name ?? "",
-          online_monitoring_system_id: monitoringDetails?.online_monitoring_system_id ?? "",
-          online_monitoring_password: monitoringDetails?.online_monitoring_password ?? "",
-          online_monitoring_website_api_link: monitoringDetails?.online_monitoring_website_api_link ?? "",
-          online_monitoring_entry_method: monitoringDetails?.online_monitoring_entry_method ?? "",
-          online_monitoring_notes: monitoringDetails?.online_monitoring_notes ?? "",
-          online_monitoring_self_report: monitoringDetails?.online_monitoring_self_report ?? "",
-          online_monitoring_rgm_info: monitoringDetails?.online_monitoring_rgm_info ?? "",
-          online_monitoring_no_submit_generation: monitoringDetails?.online_monitoring_no_submit_generation ?? "",
-          system_online: monitoringDetails?.system_online ?? "",
-          last_reported_online_date: monitoringDetails?.last_reported_online_date ?? "",
-          last_gats_reporting_date: formatDate(system.latestReportingDate),
-          last_report_kwh: system.latestReportingKwh ?? "",
-          contract_value: resolveContractValueAmount(system),
-        };
-      });
-
-    const csv = buildCsv(headers, rows);
-    const fileName = `offline-systems-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const downloadOfflineDetailFilteredCsv = () => {
-    if (filteredOfflineSystems.length === 0) return;
-
-    const headers = [
-      "system_name",
-      "system_id",
-      "tracking_id",
-      "monitoring_method",
-      "monitoring_platform",
-      "access_type",
-      "monitoring_site_id",
-      "monitoring_site_name",
-      "monitoring_link",
-      "monitoring_username",
-      "monitoring_password",
-      "installer_name",
-      "last_reporting_date",
-      "last_report_kwh",
-      "contract_value",
-    ];
-
-    const rows = filteredOfflineSystems.map((system) => {
-      const accessFields = resolveOfflineMonitoringAccessFields(system, monitoringDetailsBySystemKey);
-      return {
-        system_name: system.systemName,
-        system_id: system.systemId ?? "",
-        tracking_id: system.trackingSystemRefId ?? "",
-        monitoring_method: system.monitoringType,
-        monitoring_platform: system.monitoringPlatform,
-        access_type: accessFields.accessType,
-        monitoring_site_id: accessFields.monitoringSiteId,
-        monitoring_site_name: accessFields.monitoringSiteName,
-        monitoring_link: accessFields.monitoringLink,
-        monitoring_username: accessFields.monitoringUsername,
-        monitoring_password: accessFields.monitoringPassword,
-        installer_name: system.installerName,
-        last_reporting_date: formatDate(system.latestReportingDate),
-        last_report_kwh: system.latestReportingKwh ?? "",
-        contract_value: resolveContractValueAmount(system),
-      };
-    });
-
-    const csv = buildCsv(headers, rows);
-    const fileName = `offline-systems-detail-filtered-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    triggerCsvDownload(fileName, csv);
-  };
+  // zeroReportingInstallerPlatformRows, downloadOfflineSystemsCsv, downloadOfflineDetailFilteredCsv
+  // — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
 
   const downloadSizeSiteListCsv = () => {
     const headers = [
@@ -5470,14 +4977,7 @@ export default function SolarRecDashboard() {
     [filteredRecPerformanceRows, recPerformanceResultsPageEndIndex, recPerformanceResultsPageStartIndex]
   );
 
-  const offlineDetailTotalPages = Math.max(1, Math.ceil(filteredOfflineSystems.length / OFFLINE_DETAIL_PAGE_SIZE));
-  const offlineDetailCurrentPage = Math.min(offlineDetailPage, offlineDetailTotalPages);
-  const offlineDetailPageStartIndex = (offlineDetailCurrentPage - 1) * OFFLINE_DETAIL_PAGE_SIZE;
-  const offlineDetailPageEndIndex = offlineDetailPageStartIndex + OFFLINE_DETAIL_PAGE_SIZE;
-  const visibleOfflineDetailRows = useMemo(
-    () => filteredOfflineSystems.slice(offlineDetailPageStartIndex, offlineDetailPageEndIndex),
-    [filteredOfflineSystems, offlineDetailPageEndIndex, offlineDetailPageStartIndex]
-  );
+  // offlineDetailTotalPages/CurrentPage/visibleOfflineDetailRows — moved to OfflineMonitoringTab
 
   useEffect(() => {
     if (contractSummaryPage <= contractSummaryTotalPages) return;
@@ -5504,10 +5004,7 @@ export default function SolarRecDashboard() {
     setRecPerformanceResultsPage(recPerformanceResultsTotalPages);
   }, [recPerformanceResultsPage, recPerformanceResultsTotalPages]);
 
-  useEffect(() => {
-    if (offlineDetailPage <= offlineDetailTotalPages) return;
-    setOfflineDetailPage(offlineDetailTotalPages);
-  }, [offlineDetailPage, offlineDetailTotalPages]);
+  // offlineDetailPage clamping useEffect — moved to OfflineMonitoringTab
 
   useEffect(() => {
     setRecPerformanceResultsPage(1);
