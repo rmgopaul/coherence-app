@@ -1,3 +1,10 @@
+import type {
+  CalendarEvent,
+  TodoistTask,
+  Note,
+  WhoopSummary,
+} from "@/features/dashboard/types";
+
 export type SourceRef = {
   kind: "email" | "event" | "task" | "note" | "thread";
   id: string;
@@ -113,13 +120,13 @@ export type PrioritizedEmailInput = {
 export type BuildDailyBriefInput = {
   now: Date;
   todayKey: string;
-  calendarEvents: any[];
-  todoistTasks: any[];
+  calendarEvents: CalendarEvent[];
+  todoistTasks: TodoistTask[];
   prioritizedEmails: PrioritizedEmailInput[];
   waitingOnEmails?: PrioritizedEmailInput[];
-  whoopSummary?: any | null;
-  samsungHealthSnapshot?: any | null;
-  notes?: any[];
+  whoopSummary?: WhoopSummary | null;
+  samsungHealthSnapshot?: Record<string, unknown> | null;
+  notes?: Note[];
 };
 
 type CalendarEventWindow = {
@@ -155,7 +162,7 @@ const endOfLocalDay = (date: Date) => {
   return next;
 };
 
-const parseEventWindow = (event: any): CalendarEventWindow | null => {
+const parseEventWindow = (event: CalendarEvent): CalendarEventWindow | null => {
   const id = String(event?.id || "").trim();
   const title = String(event?.summary || "Untitled event").trim() || "Untitled event";
   const startRaw = event?.start?.dateTime || event?.start?.date;
@@ -249,10 +256,10 @@ const buildFreeWindows = (start: Date, end: Date, busyWindows: TimeWindow[]): Ti
   return windows.filter((window) => window.end.getTime() > window.start.getTime());
 };
 
-const getLinkedNoteCountForEvent = (event: CalendarEventWindow, notes: any[]): number => {
+const getLinkedNoteCountForEvent = (event: CalendarEventWindow, notes: Note[]): number => {
   if (!Array.isArray(notes) || notes.length === 0) return 0;
 
-  const matchesEvent = (link: any) => {
+  const matchesEvent = (link: Note["links"][number]) => {
     if (!link || link.linkType !== "google_calendar_event") return false;
     const externalId = String(link.externalId || "");
     if (externalId && externalId === event.id) return true;
@@ -263,17 +270,17 @@ const getLinkedNoteCountForEvent = (event: CalendarEventWindow, notes: any[]): n
     return false;
   };
 
-  return notes.filter((note: any) => {
+  return notes.filter((note) => {
     const links = Array.isArray(note?.links) ? note.links : [];
     return links.some(matchesEvent);
   }).length;
 };
 
-const deriveHealthMode = (whoopSummary: any | null | undefined, samsungSnapshot: any | null | undefined) => {
+const deriveHealthMode = (whoopSummary: WhoopSummary | null | undefined, samsungSnapshot: Record<string, unknown> | null | undefined) => {
   const sleepHours =
     toFinite(whoopSummary?.sleepHours) ??
     (toFinite(samsungSnapshot?.sleepTotalMinutes) !== null
-      ? Number((Number(samsungSnapshot.sleepTotalMinutes) / 60).toFixed(1))
+      ? Number((Number(samsungSnapshot!.sleepTotalMinutes) / 60).toFixed(1))
       : undefined);
 
   const recoveryPercent =
@@ -327,7 +334,7 @@ const eventSourceRef = (event: CalendarEventWindow): SourceRef => ({
   url: event.htmlLink,
 });
 
-const taskSourceRef = (task: any): SourceRef => ({
+const taskSourceRef = (task: TodoistTask): SourceRef => ({
   kind: "task",
   id: String(task?.id || ""),
   url: `https://todoist.com/app/task/${String(task?.id || "")}`,

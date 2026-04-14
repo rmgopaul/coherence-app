@@ -296,7 +296,7 @@ export default function Notebook() {
     }
   }, [uploadImageMutation]);
 
-  const notes = useMemo<NoteRow[]>(() => (notesData ?? []).map((note: any) => ({ ...note })), [notesData]);
+  const notes = useMemo<NoteRow[]>(() => (notesData ?? []).map((note) => ({ ...note })), [notesData]);
 
   const selectedNoteFromQuery = useMemo(() => {
     if (!selectedNoteId) return null;
@@ -438,20 +438,21 @@ export default function Notebook() {
 
       trpcUtils.notes.list.setData({ limit: notesFetchLimit }, (current) => {
         if (!Array.isArray(current)) return current;
-        const rows = [...current] as any[];
+        const rows = [...current];
 
-        const existingIndex = rows.findIndex((row: any) => String(row.id) === String(noteId));
+        const existingIndex = rows.findIndex((row) => String(row.id) === String(noteId));
         const existing = existingIndex >= 0 ? rows[existingIndex] : null;
 
-        const nextRow: any = {
-          ...(existing || {}),
+        type CacheRow = (typeof rows)[number];
+        const nextRow: CacheRow = {
+          ...(existing ?? ({} as CacheRow)),
           id: noteId,
           notebook: normalizeNotebook(snapshot.notebook),
           title: normalizeTitle(snapshot.title),
           content: snapshot.contentHtml,
           pinned: snapshot.pinned,
-          createdAt: existing?.createdAt || updatedAtIso,
-          updatedAt: updatedAtIso,
+          createdAt: existing?.createdAt || new Date(updatedAtIso),
+          updatedAt: new Date(updatedAtIso),
           links: existing?.links || [],
         };
 
@@ -462,7 +463,7 @@ export default function Notebook() {
           nextRows.unshift(nextRow);
         }
 
-        nextRows.sort((a: any, b: any) => {
+        nextRows.sort((a, b) => {
           const aPinned = Boolean(a?.pinned) ? 1 : 0;
           const bPinned = Boolean(b?.pinned) ? 1 : 0;
           if (aPinned !== bPinned) return bPinned - aPinned;
@@ -472,7 +473,7 @@ export default function Notebook() {
           return bTs - aTs;
         });
 
-        return nextRows as any;
+        return nextRows;
       });
     },
     [notesFetchLimit, trpcUtils.notes.list]

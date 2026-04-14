@@ -8,10 +8,47 @@ const DEFAULT_HABIT_DURATION_MINUTES = 10;
 const MORNING_HABIT_WINDOW_HOUR = 10;
 const SCHEDULER_ROUNDING_MINUTES = 5;
 
-type CalendarEventInput = any;
-type TodoistTaskInput = any;
-type EmailInput = any;
-type HabitInput = any;
+type CalendarEventInput = {
+  id?: string | number;
+  summary?: string;
+  htmlLink?: string;
+  start?: { date?: string; dateTime?: string };
+  end?: { date?: string; dateTime?: string };
+};
+
+type TodoistTaskInput = {
+  id?: string | number;
+  content?: string;
+  url?: string;
+  labels?: string[];
+  labelNames?: string[];
+  due?: { date?: string; datetime?: string };
+  isCompleted?: boolean | number | string;
+  is_completed?: boolean | number | string;
+  completed?: boolean | number | string;
+  checked?: boolean | number | string;
+  parentId?: string;
+  parent_id?: string;
+  projectId?: string;
+  project_id?: string;
+  priority?: number;
+};
+
+type EmailInput = {
+  id?: string;
+  threadId?: string;
+  snippet?: string;
+  payload?: {
+    headers?: Array<{ name?: string; value?: string }>;
+  };
+};
+
+type HabitInput = {
+  id?: string | number;
+  name?: string;
+  definitionId?: string | number;
+  completed?: boolean | null;
+};
 
 type DayPlanSeed = {
   dayLabel: "Today's Plan" | "Tomorrow's Plan";
@@ -97,10 +134,10 @@ const getTaskDueDate = (task: TodoistTaskInput): Date | null => {
 
 const isTaskCompleted = (task: TodoistTaskInput): boolean => {
   const candidateFlags = [
-    (task as any)?.isCompleted,
-    (task as any)?.is_completed,
-    (task as any)?.completed,
-    (task as any)?.checked,
+    task?.isCompleted,
+    task?.is_completed,
+    task?.completed,
+    task?.checked,
   ];
   return candidateFlags.some((value) => value === true || value === 1 || value === "1");
 };
@@ -136,7 +173,7 @@ const getEventStartEnd = (event: CalendarEventInput): { startMs: number; endMs: 
 
 const getEmailHeader = (message: EmailInput, headerName: string): string => {
   const headers = Array.isArray(message?.payload?.headers) ? message.payload.headers : [];
-  const target = headers.find((header: any) => String(header?.name || "").toLowerCase() === headerName.toLowerCase());
+  const target = headers.find((header) => String(header?.name || "").toLowerCase() === headerName.toLowerCase());
   return typeof target?.value === "string" ? target.value : "";
 };
 
@@ -348,8 +385,8 @@ export const parseDurationMinutesFromTask = (
       if (typeof label === "string") labels.push(label);
     }
   }
-  if (Array.isArray((task as any)?.labelNames)) {
-    for (const label of (task as any).labelNames) {
+  if (Array.isArray(task?.labelNames)) {
+    for (const label of task.labelNames) {
       if (typeof label === "string") labels.push(label);
     }
   }
@@ -644,7 +681,7 @@ export function buildDayPlanSeed(params: {
 
   const parentTaskIds = new Set(
     tasksForDay
-      .map((task) => String((task as any)?.parentId || (task as any)?.parent_id || "").trim())
+      .map((task) => String(task?.parentId || task?.parent_id || "").trim())
       .filter((id) => id.length > 0)
   );
 
@@ -653,8 +690,8 @@ export function buildDayPlanSeed(params: {
     const dueDate = getTaskDueDate(task);
     const match = matchEventForTask(String(task?.content || ""), eventContext);
     const taskId = String(task?.id || Math.random());
-    const parentId = String((task as any)?.parentId || (task as any)?.parent_id || "").trim();
-    const projectId = String((task as any)?.projectId || (task as any)?.project_id || "").trim();
+    const parentId = String(task?.parentId || task?.parent_id || "").trim();
+    const projectId = String(task?.projectId || task?.project_id || "").trim();
     const lexicalToken = getSimilarityToken(String(task?.content || ""));
 
     let groupKey = "";

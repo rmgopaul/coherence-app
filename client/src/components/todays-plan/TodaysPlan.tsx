@@ -16,14 +16,21 @@ import {
 } from "./persistence";
 import { buildDayPlanSeed } from "./scheduler";
 import type { PlanItemData } from "./types";
+import type {
+  CalendarEvent,
+  GmailMessage,
+  TodoistTask,
+  HabitEntry,
+  WhoopSummary,
+} from "@/features/dashboard/types";
 
 type TodaysPlanProps = {
-  calendarEvents: any[];
-  todoistTasks: any[];
-  emails: any[];
-  habits: any[];
-  whoopSummary?: any | null;
-  samsungHealthSnapshot?: any | null;
+  calendarEvents: CalendarEvent[];
+  todoistTasks: TodoistTask[];
+  emails: GmailMessage[];
+  habits: HabitEntry[];
+  whoopSummary?: WhoopSummary | null;
+  samsungHealthSnapshot?: Record<string, unknown> | null;
   onCompleteHabit?: (habitId: string) => void;
   onRegenerate?: () => Promise<void> | void;
 };
@@ -256,7 +263,7 @@ export function TodaysPlan({
 
     const highPriorityEmailCount = (emails || []).filter((message) => {
       const subject = String(
-        message?.payload?.headers?.find((header: any) => header?.name === "Subject")?.value || ""
+        message?.payload?.headers?.find((header: { name: string; value: string }) => header?.name === "Subject")?.value || ""
       );
       const snippet = String(message?.snippet || "");
       return /urgent|asap|deadline|invoice|payment|action required/i.test(`${subject} ${snippet}`);

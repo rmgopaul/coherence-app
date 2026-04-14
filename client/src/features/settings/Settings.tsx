@@ -1706,7 +1706,7 @@ export default function Settings() {
                             <SelectItem value="separator-projects" disabled>
                               ── Projects ──
                             </SelectItem>
-                            {todoistProjects.map((project: any) => (
+                            {todoistProjects.map((project) => (
                               <SelectItem key={project.id} value={`project_${project.id}`}>
                                 {project.name}
                               </SelectItem>
@@ -2427,7 +2427,7 @@ export default function Settings() {
                     ) : (habitsForHistoryDate || []).length === 0 ? (
                       <p className="text-sm text-slate-500">No habits configured yet.</p>
                     ) : (
-                      (habitsForHistoryDate || []).map((habit: any) => {
+                      (habitsForHistoryDate || []).map((habit) => {
                         const done = Boolean(habit.completed);
                         return (
                           <button

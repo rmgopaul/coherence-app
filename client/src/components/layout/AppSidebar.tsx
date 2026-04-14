@@ -143,7 +143,7 @@ export function AppSidebar() {
   const badges = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const tasksDueToday = (todoistTasks ?? []).filter(
-      (t: any) => t.due?.date && t.due.date <= today
+      (t) => t.due?.date && t.due.date <= today
     ).length;
     const eventsToday = (calendarEvents ?? []).length;
     const readingCount = readingSummary?.totalReadings ?? 0;
