@@ -7,13 +7,22 @@
  */
 
 import { clean } from "@/lib/helpers";
-import type { CsvRow } from "@/solar-rec-dashboard/state/types";
+import type {
+  AnnualProductionProfile,
+  CsvRow,
+  GenerationBaseline,
+  MonitoringDetailsRecord,
+  SystemRecord,
+} from "@/solar-rec-dashboard/state/types";
 import {
   AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY,
   DAY_MS,
+  GENERATION_BASELINE_DATE_HEADERS,
+  GENERATION_BASELINE_VALUE_HEADERS,
   GENERATOR_DETAILS_AC_SIZE_HEADERS,
   IL_ABP_TRANSFERRED_CONTRACT_TYPE,
   IL_ABP_TERMINATED_CONTRACT_TYPE,
+  MONTH_HEADERS,
   NUMBER_FORMATTER,
   STALE_UPLOAD_DAYS,
   TEN_KW_COMPLIANT_SOURCE,
@@ -549,4 +558,290 @@ export function isTenKwAcOrLess(
   const portalOk = portalAcSizeKw === null || portalAcSizeKw <= 10;
   const abpOk = abpAcSizeKw === null || abpAcSizeKw <= 10;
   return portalOk && abpOk;
+}
+
+// ---------------------------------------------------------------------------
+// Contract value helpers
+// ---------------------------------------------------------------------------
+
+export function resolveContractValueAmount(system: SystemRecord): number {
+  return firstNonNull(system.totalContractAmount, system.contractedValue) ?? 0;
+}
+
+export function resolveValueGapAmount(system: SystemRecord): number {
+  return resolveContractValueAmount(system) - (system.deliveredValue ?? 0);
+}
+
+// ---------------------------------------------------------------------------
+// Tracking-ID-keyed map builders (shared between Performance Ratio + Forecast)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a Map<trackingSystemRefId, AnnualProductionProfile> from the
+ * annual-production-estimates CSV.  Pure function — same inputs always
+ * yield the same output.  Used by both the Performance Ratio tab and the
+ * Forecast tab; each tab owns its own useMemo and calls this independently.
+ */
+export function buildAnnualProductionByTrackingId(
+  rows: CsvRow[],
+): Map<string, AnnualProductionProfile> {
+  const mapping = new Map<string, AnnualProductionProfile>();
+
+  rows.forEach((row) => {
+    const trackingSystemRefId = clean(row["Unit ID"]) || clean(row.unit_id);
+    if (!trackingSystemRefId) return;
+
+    const monthlyKwh = MONTH_HEADERS.map(
+      (month) => parseNumber(row[month] ?? row[month.toLowerCase()]) ?? 0,
+    );
+    const current = mapping.get(trackingSystemRefId);
+    if (!current) {
+      mapping.set(trackingSystemRefId, {
+        trackingSystemRefId,
+        facilityName: clean(row.Facility) || clean(row["Facility Name"]),
+        monthlyKwh,
+      });
+      return;
+    }
+
+    const mergedMonthly = current.monthlyKwh.map((value, index) => {
+      const candidate = monthlyKwh[index] ?? 0;
+      return candidate > 0 ? candidate : value;
+    });
+    mapping.set(trackingSystemRefId, {
+      trackingSystemRefId,
+      facilityName:
+        current.facilityName ||
+        clean(row.Facility) ||
+        clean(row["Facility Name"]),
+      monthlyKwh: mergedMonthly,
+    });
+  });
+
+  return mapping;
+}
+
+/**
+ * Build a Map<trackingSystemRefId, GenerationBaseline> from generation-entry
+ * and account-solar-generation CSVs.  "Generation Entry" takes priority over
+ * "Account Solar Generation" when both have the same date, and newer dates
+ * always win.  Pure function.
+ */
+export function buildGenerationBaselineByTrackingId(
+  generationEntryRows: CsvRow[],
+  accountSolarGenerationRows: CsvRow[],
+): Map<string, GenerationBaseline> {
+  const mapping = new Map<string, GenerationBaseline>();
+
+  const updateBaseline = (
+    trackingSystemRefId: string,
+    candidate: GenerationBaseline,
+  ) => {
+    const existing = mapping.get(trackingSystemRefId);
+    if (!existing) {
+      mapping.set(trackingSystemRefId, candidate);
+      return;
+    }
+
+    const existingTime = existing.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+    const candidateTime = candidate.date?.getTime() ?? Number.NEGATIVE_INFINITY;
+    if (candidateTime > existingTime) {
+      mapping.set(trackingSystemRefId, candidate);
+      return;
+    }
+    if (candidateTime === existingTime) {
+      const existingRank = existing.source === "Generation Entry" ? 2 : 1;
+      const candidateRank = candidate.source === "Generation Entry" ? 2 : 1;
+      if (candidateRank > existingRank) {
+        mapping.set(trackingSystemRefId, candidate);
+      }
+    }
+  };
+
+  generationEntryRows.forEach((row) => {
+    const trackingSystemRefId = clean(row["Unit ID"]);
+    if (!trackingSystemRefId) return;
+
+    let valueWh: number | null = null;
+    for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
+      valueWh = parseEnergyToWh(row[header], header, "kwh");
+      if (valueWh !== null) break;
+    }
+    if (valueWh === null) return;
+
+    let date: Date | null = null;
+    for (const header of GENERATION_BASELINE_DATE_HEADERS) {
+      date = parseDate(row[header]);
+      if (date) break;
+    }
+
+    updateBaseline(trackingSystemRefId, {
+      valueWh,
+      date,
+      source: "Generation Entry",
+    });
+  });
+
+  accountSolarGenerationRows.forEach((row) => {
+    const trackingSystemRefId = clean(row["GATS Gen ID"]);
+    if (!trackingSystemRefId) return;
+
+    const valueWh = parseEnergyToWh(
+      resolveLastMeterReadRawValue(row),
+      "Last Meter Read (kWh)",
+      "kwh",
+    );
+    if (valueWh === null) return;
+
+    const date =
+      parseDate(row["Last Meter Read Date"]) ??
+      parseDate(row["Month of Generation"]);
+    updateBaseline(trackingSystemRefId, {
+      valueWh,
+      date,
+      source: "Account Solar Generation",
+    });
+  });
+
+  return mapping;
+}
+
+// ---------------------------------------------------------------------------
+// Monitoring-platform / ID helpers (shared between Performance Ratio tab,
+// Offline Monitoring tab, and the master systems builder)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalize a freeform monitoring platform string (from portal, URL, or
+ * notes) to one of a known set of canonical platform names. Falls back
+ * to the raw string if non-URL, or "Unknown" otherwise.
+ */
+export function normalizeMonitoringPlatform(
+  platformRaw: string,
+  websiteRaw: string,
+  notesRaw: string,
+): string {
+  const candidates = [clean(platformRaw), clean(websiteRaw), clean(notesRaw)]
+    .filter(Boolean)
+    .map((value) => value.toLowerCase());
+
+  const inferFromText = (text: string): string | null => {
+    if (text.includes("solaredge") || text.includes("solar edge")) return "SolarEdge";
+    if (text.includes("enphase")) return "Enphase";
+    if (text.includes("hoymiles") || text.includes("s-miles")) return "Hoymiles S-Miles Cloud";
+    if (text.includes("fronius") || text.includes("solar.web") || text.includes("solarweb.com")) return "Fronius Solar.web";
+    if (text.includes("apsystems")) return "APSystems";
+    if (text.includes("ennexos")) return "ennexOS";
+    if (text.includes("tesla")) return "Tesla";
+    if (text.includes("egauge") || text.includes("eguage")) return "eGauge";
+    if (text.includes("sunpower")) return "SUNPOWER";
+    if (text.includes("sdsi") || text.includes("arraymeter")) return "SDSI ArrayMeter";
+    if (text.includes("generac") || text.includes("pwrfleet") || text.includes("pwrcell")) return "Generac PWRfleet";
+    if (text.includes("chilicon")) return "Chilicon Power";
+    if (text.includes("solis")) return "Solis";
+    if (text.includes("encompass") || text.includes("ekm")) return "EKM Encompass.io";
+    if (text.includes("duracell")) return "DURACELL Power Center";
+    if (text.includes("solar-log") || text.includes("solarlog")) return "Solar-Log";
+    if (text.includes("sensergm")) return "SenseRGM";
+    if (text.includes("sems") || text.includes("goodwe")) return "GoodWe SEMS Portal";
+    if (text.includes("alsoenergy")) return "AlsoEnergy";
+    if (text.includes("locus")) return "Locus Energy";
+    if (text.includes("sol-ark")) return "Sol-Ark PowerView Inteless";
+    if (text.includes("mysolark")) return "MySolArk";
+    if (text.includes("chint")) return "Chint Power Systems";
+    if (text.includes("growatt")) return "Growatt";
+    if (text.includes("sunnyportal")) return "SunnyPortal";
+    if (text.includes("eg4")) return "EG4Electronics";
+    if (text.includes("tigo")) return "Tigo";
+    if (text.includes("vision metering")) return "Vision Metering";
+    if (text.includes("solectria") || text.includes("solrenview")) return "Solectria SolrenView";
+    if (text.includes("sigenergy") || text.includes("sigencloud")) return "Sigenergy";
+    if (text.includes("savant")) return "Savant Power Storage";
+    if (text.includes("aurora vision")) return "Aurora Vision";
+    if (text.includes("franklin")) return "FranklinWH";
+    if (text.includes("outback optics")) return "Outback Optics RE";
+    if (text.includes("elkor")) return "ELKOR Cloud";
+    if (text.includes("emporia")) return "Emporia Energy";
+    if (text.includes("wattch")) return "Wattch.io";
+    if (text.includes("aptos")) return "Aptos Solar";
+    if (text.includes("insight cloud")) return "Insight Cloud";
+    if (text.includes("third part")) return "Third Party Reporting";
+    return null;
+  };
+
+  for (const candidate of candidates) {
+    const inferred = inferFromText(candidate);
+    if (inferred) return inferred;
+  }
+
+  const primary = clean(platformRaw);
+  if (primary && !primary.toLowerCase().startsWith("http")) return primary;
+  return "Unknown";
+}
+
+/**
+ * Look up a system's monitoring details (online monitoring URL, credentials,
+ * etc.) from the monitoringDetailsBySystemKey map, trying systemId →
+ * trackingSystemRefId → systemName lowercase in order.
+ */
+export function getMonitoringDetailsForSystem(
+  system: SystemRecord,
+  monitoringDetailsBySystemKey: Map<string, MonitoringDetailsRecord>,
+): MonitoringDetailsRecord | undefined {
+  const keyById = system.systemId ? `id:${system.systemId}` : "";
+  const keyByTracking = system.trackingSystemRefId
+    ? `tracking:${system.trackingSystemRefId}`
+    : "";
+  const keyByName = `name:${system.systemName.toLowerCase()}`;
+
+  return (
+    (keyById ? monitoringDetailsBySystemKey.get(keyById) : undefined) ??
+    (keyByTracking ? monitoringDetailsBySystemKey.get(keyByTracking) : undefined) ??
+    monitoringDetailsBySystemKey.get(keyByName)
+  );
+}
+
+/**
+ * Generate a log-entry identifier. Uses crypto.randomUUID() when available,
+ * falls back to a Date+Math.random seed for older environments.
+ */
+export function createLogId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/**
+ * Build a Map<trackingSystemRefId, Date> from the generator-details CSV,
+ * using the Date Online column snapped to the 15th of the given month.
+ * Performance Ratio uses this as a fallback baseline when no generation
+ * reading exists.
+ */
+export function buildGeneratorDateOnlineByTrackingId(
+  rows: CsvRow[],
+): Map<string, Date> {
+  const mapping = new Map<string, Date>();
+
+  rows.forEach((row) => {
+    const trackingSystemRefId =
+      clean(row["GATS Unit ID"]) ||
+      clean(row.gats_unit_id) ||
+      clean(row["Unit ID"]);
+    if (!trackingSystemRefId) return;
+    const dateOnline = parseDateOnlineAsMidMonth(
+      row["Date Online"] ??
+        row["Date online"] ??
+        row.date_online ??
+        row.date_online_month_year,
+    );
+    if (!dateOnline) return;
+
+    const existing = mapping.get(trackingSystemRefId);
+    if (!existing || dateOnline < existing) {
+      mapping.set(trackingSystemRefId, dateOnline);
+    }
+  });
+
+  return mapping;
 }
