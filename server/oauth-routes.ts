@@ -1,11 +1,30 @@
 import { Router } from "express";
 import { nanoid } from "nanoid";
-import { upsertIntegration, getOAuthCredential, getIntegrationByProvider, addSamsungSyncPayload } from "./db";
+import {
+  upsertIntegration,
+  getOAuthCredential,
+  getIntegrationByProvider,
+  addSamsungSyncPayload,
+  getLatestSamsungSyncPayload,
+  getDb,
+} from "./db";
+import { samsungSyncPayloads } from "../drizzle/schema";
+import { and, desc, eq } from "drizzle-orm";
 import { exchangeGoogleCode } from "./services/integrations/google";
 import { exchangeWhoopCode } from "./services/integrations/whoop";
 import { sdk } from "./_core/sdk";
 import { ENV } from "./_core/env";
 import crypto from "crypto";
+
+/**
+ * Version marker for the Samsung Health webhook handlers. Bump this
+ * string whenever you deploy a behavior change to the ingest pipeline,
+ * then curl the debug endpoint after a deploy to verify the string
+ * has rolled through. Follows the `_runnerVersion` / `_checkpoint`
+ * pattern documented in `docs/server-routing.md` and mirrored by the
+ * Schedule B import routes.
+ */
+const SAMSUNG_HEALTH_WEBHOOK_VERSION = "samsung-webhook-v2-2026-04-14" as const;
 
 const router = Router();
 
@@ -402,115 +421,136 @@ router.post("/webhooks/whoop", async (req, res) => {
   }
 });
 
-// Samsung Health webhook endpoint
-router.post("/webhooks/samsung-health", async (req, res) => {
-  try {
-    const configuredSyncKey = process.env.SAMSUNG_HEALTH_SYNC_KEY?.trim();
-    if (!configuredSyncKey) {
-      return res.status(503).json({ error: "SAMSUNG_HEALTH_SYNC_KEY is not configured on the server" });
-    }
+/**
+ * Resolve the authenticated target user for a Samsung Health webhook
+ * call. Returns either `{ userId }` on success or
+ * `{ error, status }` on failure; the caller should short-circuit
+ * with the error shape.
+ */
+function resolveSamsungWebhookUser(
+  req: any
+): { userId: number } | { status: number; error: string } {
+  const configuredSyncKey = process.env.SAMSUNG_HEALTH_SYNC_KEY?.trim();
+  if (!configuredSyncKey) {
+    return { status: 503, error: "SAMSUNG_HEALTH_SYNC_KEY is not configured on the server" };
+  }
 
-    const providedSyncKey = req.get("x-sync-key")?.trim() ?? "";
-    if (!providedSyncKey || !safeTimingEqual(configuredSyncKey, providedSyncKey)) {
-      return res.status(401).json({ error: "Invalid sync key" });
-    }
+  const providedSyncKey = (req.get?.("x-sync-key") as string | undefined)?.trim() ?? "";
+  if (!providedSyncKey || !safeTimingEqual(configuredSyncKey, providedSyncKey)) {
+    return { status: 401, error: "Invalid sync key" };
+  }
 
-    if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
-      return res.status(400).json({ error: "Invalid JSON body" });
-    }
+  const targetUserId = Number.parseInt(process.env.SAMSUNG_HEALTH_USER_ID ?? "1", 10);
+  if (!Number.isFinite(targetUserId) || targetUserId <= 0) {
+    return { status: 500, error: "SAMSUNG_HEALTH_USER_ID must be a positive integer" };
+  }
 
-    const targetUserId = Number.parseInt(process.env.SAMSUNG_HEALTH_USER_ID ?? "1", 10);
-    if (!Number.isFinite(targetUserId) || targetUserId <= 0) {
-      return res.status(500).json({ error: "SAMSUNG_HEALTH_USER_ID must be a positive integer" });
-    }
+  return { userId: targetUserId };
+}
 
-    const receivedAt = new Date().toISOString();
-    const existing = await getIntegrationByProvider(targetUserId, "samsung-health");
-    const manualScores = parseSamsungManualScores(existing?.metadata);
-    let existingMetadata: Record<string, unknown> = {};
-    if (existing?.metadata) {
-      try {
-        existingMetadata = asRecord(JSON.parse(existing.metadata));
-      } catch {
-        existingMetadata = {};
-      }
-    }
-    const existingSummary = asRecord(existingMetadata.summary);
+/**
+ * Persist a single Samsung Health payload: archive the raw payload,
+ * then upsert the derived summary into the integrations row.
+ *
+ * `updateLiveSummary = false` is used by the batch endpoint for
+ * historical days — we want to archive the raw data but not let a
+ * week-old payload clobber today's integration summary.
+ */
+async function ingestSamsungPayload(
+  targetUserId: number,
+  rawBody: unknown,
+  options: { updateLiveSummary: boolean },
+): Promise<{ success: true; receivedAt: string; dateKey: string } | { error: string; status: number }> {
+  if (!rawBody || typeof rawBody !== "object" || Array.isArray(rawBody)) {
+    return { status: 400, error: "Invalid JSON body" };
+  }
 
-    const payloadRecord = asRecord(req.body);
-    const payloadActivity = asRecord(payloadRecord.activity);
-    const payloadSync = asRecord(payloadRecord.sync);
-    const warnings = extractStringList(payloadSync.warnings);
-    const warningsWithoutForeground = warnings.filter(
-      (warning) => !warning.toLowerCase().includes("must be in foreground")
-    );
-    payloadRecord.sync = {
-      ...payloadSync,
-      warnings: warningsWithoutForeground,
+  const receivedAt = new Date().toISOString();
+  const existing = await getIntegrationByProvider(targetUserId, "samsung-health");
+  const manualScores = parseSamsungManualScores(existing?.metadata);
+  let existingMetadata: Record<string, unknown> = {};
+  if (existing?.metadata) {
+    try {
+      existingMetadata = asRecord(JSON.parse(existing.metadata));
+    } catch {
+      existingMetadata = {};
+    }
+  }
+  const existingSummary = asRecord(existingMetadata.summary);
+
+  const payloadRecord = asRecord(rawBody);
+  const payloadSync = asRecord(payloadRecord.sync);
+  const warnings = extractStringList(payloadSync.warnings);
+  const warningsWithoutForeground = warnings.filter(
+    (warning) => !warning.toLowerCase().includes("must be in foreground"),
+  );
+  payloadRecord.sync = {
+    ...payloadSync,
+    warnings: warningsWithoutForeground,
+  };
+
+  const degradedSync = isDegradedSamsungSync(payloadSync, warnings);
+  const incomingDate = asString(payloadRecord.date);
+  const existingDate = asString(existingSummary.date);
+  const sameDateAsExisting = Boolean(incomingDate && existingDate && incomingDate === existingDate);
+
+  // Consolidated step-preservation: if the new read is missing or
+  // looks degraded (any "steps read failed" warning), fall back to
+  // the previously stored value for the same day. This replaces the
+  // two overlapping branches from the pre-rewrite handler.
+  const anyStepReadWarning = warnings.some((warning) =>
+    warning.toLowerCase().includes("steps read failed"),
+  );
+  const payloadActivity = asRecord(payloadRecord.activity);
+  const incomingSteps = asNumber(payloadActivity.steps);
+  const existingSteps = asNumber(existingSummary.steps);
+
+  if (
+    sameDateAsExisting &&
+    existingSteps !== null &&
+    existingSteps > 0 &&
+    (incomingSteps === null ||
+      (anyStepReadWarning && (incomingSteps <= 0 || incomingSteps < existingSteps)))
+  ) {
+    payloadRecord.activity = {
+      ...payloadActivity,
+      steps: existingSteps,
     };
-    const degradedSync = isDegradedSamsungSync(payloadSync, warnings);
-    const incomingDate = asString(payloadRecord.date);
-    const existingDate = asString(existingSummary.date);
-    const sameDateAsExisting = Boolean(incomingDate && existingDate && incomingDate === existingDate);
-    const foregroundStepWarning = warnings.some(
+    // If the only reason we fell back was a foreground-requirement
+    // warning, scrub it from the payload too so the UI doesn't show
+    // a stale error banner.
+    const onlyForegroundWarning = warnings.every(
       (warning) =>
-        warning.toLowerCase().includes("steps read failed") &&
-        warning.toLowerCase().includes("must be in foreground")
+        !warning.toLowerCase().includes("steps read failed") ||
+        warning.toLowerCase().includes("must be in foreground"),
     );
-    const anyStepReadWarning = warnings.some((warning) =>
-      warning.toLowerCase().includes("steps read failed")
-    );
-    const incomingSteps = asNumber(payloadActivity.steps);
-    const existingSteps = asNumber(existingSummary.steps);
-
-    // Preserve existing steps only when the incoming reading appears degraded.
-    // Do not block legitimate lower values (for example, after a test payload or source correction).
-    if (sameDateAsExisting && existingSteps !== null && existingSteps > 0) {
-      const shouldKeepExistingSteps =
-        incomingSteps === null ||
-        (anyStepReadWarning && (incomingSteps <= 0 || incomingSteps < existingSteps));
-
-      if (shouldKeepExistingSteps) {
-        payloadRecord.activity = {
-          ...asRecord(payloadRecord.activity),
-          steps: existingSteps,
-        };
-      }
-    }
-
-    if (
-      foregroundStepWarning &&
-      existingSteps !== null &&
-      existingSteps > 0 &&
-      (incomingSteps === null || incomingSteps <= 0)
-    ) {
-      payloadRecord.activity = {
-        ...asRecord(payloadRecord.activity),
-        steps: existingSteps,
-      };
+    if (onlyForegroundWarning) {
       payloadRecord.sync = {
         ...asRecord(payloadRecord.sync),
         warnings: warningsWithoutForeground.filter(
-          (warning) => !warning.toLowerCase().includes("steps read failed")
+          (warning) => !warning.toLowerCase().includes("steps read failed"),
         ),
       };
     }
+  }
 
+  const rawDateKey =
+    typeof payloadRecord.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(payloadRecord.date)
+      ? payloadRecord.date
+      : receivedAt.slice(0, 10);
+
+  await addSamsungSyncPayload({
+    id: nanoid(),
+    userId: targetUserId,
+    dateKey: rawDateKey,
+    capturedAt: new Date(receivedAt),
+    payload: JSON.stringify(payloadRecord),
+  });
+
+  if (options.updateLiveSummary) {
     const metadata = buildSamsungMetadata(payloadRecord, receivedAt, manualScores, {
       previousSummary: existingSummary,
       preservePreviousIfDegraded: degradedSync && sameDateAsExisting,
-    });
-    const rawDateKey =
-      typeof payloadRecord.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(payloadRecord.date)
-        ? payloadRecord.date
-        : receivedAt.slice(0, 10);
-
-    await addSamsungSyncPayload({
-      id: nanoid(),
-      userId: targetUserId,
-      dateKey: rawDateKey,
-      capturedAt: new Date(receivedAt),
-      payload: JSON.stringify(payloadRecord),
     });
 
     await upsertIntegration({
@@ -523,11 +563,243 @@ router.post("/webhooks/samsung-health", async (req, res) => {
       scope: null,
       metadata,
     });
+  }
 
-    return res.status(200).json({ success: true, receivedAt });
+  return { success: true, receivedAt, dateKey: rawDateKey };
+}
+
+// Samsung Health webhook endpoint — single day
+router.post("/webhooks/samsung-health", async (req, res) => {
+  try {
+    const auth = resolveSamsungWebhookUser(req);
+    if ("error" in auth) {
+      return res.status(auth.status).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: auth.error,
+      });
+    }
+
+    const result = await ingestSamsungPayload(auth.userId, req.body, {
+      updateLiveSummary: true,
+    });
+    if ("error" in result) {
+      return res.status(result.status).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: result.error,
+      });
+    }
+    return res.status(200).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      _checkpoint: "samsung-single-v1" as const,
+      success: true,
+      receivedAt: result.receivedAt,
+      dateKey: result.dateKey,
+    });
   } catch (error) {
     console.error("[Samsung Health Webhook] Error handling sync:", error);
-    return res.status(500).json({ error: "Failed to process Samsung Health payload" });
+    return res.status(500).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      error: "Failed to process Samsung Health payload",
+    });
+  }
+});
+
+// Samsung Health webhook endpoint — batch (historical backfill)
+router.post("/webhooks/samsung-health/batch", async (req, res) => {
+  try {
+    const auth = resolveSamsungWebhookUser(req);
+    if ("error" in auth) {
+      return res.status(auth.status).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: auth.error,
+      });
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return res.status(400).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: "Invalid JSON body",
+      });
+    }
+    const payloads = (body as { payloads?: unknown }).payloads;
+    if (!Array.isArray(payloads) || payloads.length === 0) {
+      return res.status(400).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: "`payloads` must be a non-empty array",
+      });
+    }
+    if (payloads.length > 31) {
+      return res.status(400).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: "Batch too large (max 31 days)",
+      });
+    }
+
+    // Sort chronologically so the *last* payload is the newest; we let
+    // only the newest payload touch the live summary so a backfill
+    // doesn't overwrite a fresher sync.
+    const sorted = [...payloads].sort((a, b) => {
+      const aDate = typeof a === "object" && a && "date" in (a as Record<string, unknown>)
+        ? String((a as Record<string, unknown>).date ?? "")
+        : "";
+      const bDate = typeof b === "object" && b && "date" in (b as Record<string, unknown>)
+        ? String((b as Record<string, unknown>).date ?? "")
+        : "";
+      return aDate.localeCompare(bDate);
+    });
+
+    const accepted: string[] = [];
+    const rejected: Array<{ index: number; error: string }> = [];
+
+    for (let i = 0; i < sorted.length; i++) {
+      const isLast = i === sorted.length - 1;
+      const result = await ingestSamsungPayload(auth.userId, sorted[i], {
+        updateLiveSummary: isLast,
+      });
+      if ("error" in result) {
+        rejected.push({ index: i, error: result.error });
+      } else {
+        accepted.push(result.dateKey);
+      }
+    }
+
+    return res.status(200).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      _checkpoint: "samsung-batch-v1" as const,
+      success: rejected.length === 0,
+      acceptedDateKeys: accepted,
+      rejected,
+    });
+  } catch (error) {
+    console.error("[Samsung Health Webhook Batch] Error handling backfill:", error);
+    return res.status(500).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      error: "Failed to process Samsung Health batch",
+    });
+  }
+});
+
+/**
+ * Samsung Health webhook debug endpoint.
+ *
+ * Authenticates via the same `x-sync-key` header as the ingest
+ * routes and returns the raw state of the Samsung Health integration
+ * for the configured target user: the live integration summary, the
+ * most recent N raw payload rows, and the version markers.
+ *
+ * Mirrors the `debugScheduleBImportRaw` pattern from
+ * `server/routers/solarRecDashboard.ts` so that "is my code actually
+ * running?" can be answered by a single curl without needing to
+ * reproduce a full sync from the Android app.
+ */
+router.get("/webhooks/samsung-health/debug", async (req, res) => {
+  try {
+    const auth = resolveSamsungWebhookUser(req);
+    if ("error" in auth) {
+      return res.status(auth.status).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: auth.error,
+      });
+    }
+
+    const limitRaw = Number.parseInt(
+      typeof req.query.limit === "string" ? req.query.limit : "10",
+      10,
+    );
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 50) : 10;
+
+    const db = await getDb();
+    if (!db) {
+      return res.status(503).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        _checkpoint: "samsung-debug-v1" as const,
+        error: "Database unavailable",
+      });
+    }
+
+    const integration = await getIntegrationByProvider(auth.userId, "samsung-health");
+    let integrationMetadata: Record<string, unknown> | null = null;
+    if (integration?.metadata) {
+      try {
+        integrationMetadata = asRecord(JSON.parse(integration.metadata));
+      } catch {
+        integrationMetadata = null;
+      }
+    }
+    const integrationSummary = integrationMetadata
+      ? asRecord(integrationMetadata.summary)
+      : null;
+
+    const recentPayloads = await db
+      .select({
+        id: samsungSyncPayloads.id,
+        dateKey: samsungSyncPayloads.dateKey,
+        capturedAt: samsungSyncPayloads.capturedAt,
+      })
+      .from(samsungSyncPayloads)
+      .where(eq(samsungSyncPayloads.userId, auth.userId))
+      .orderBy(desc(samsungSyncPayloads.capturedAt))
+      .limit(limit);
+
+    const latestPayload = await getLatestSamsungSyncPayload(auth.userId);
+    let latestPayloadParsed: Record<string, unknown> | null = null;
+    if (latestPayload?.payload) {
+      try {
+        latestPayloadParsed = asRecord(JSON.parse(latestPayload.payload));
+      } catch {
+        latestPayloadParsed = null;
+      }
+    }
+
+    return res.status(200).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      _checkpoint: "samsung-debug-v1" as const,
+      userId: auth.userId,
+      integration: integration
+        ? {
+            hasMetadata: Boolean(integration.metadata),
+            summary: integrationSummary,
+            manualScores: parseSamsungManualScores(integration.metadata),
+          }
+        : null,
+      latestPayload: latestPayload
+        ? {
+            id: latestPayload.id,
+            dateKey: latestPayload.dateKey,
+            capturedAt: latestPayload.capturedAt,
+            sync: latestPayloadParsed ? asRecord(latestPayloadParsed.sync) : null,
+            source: latestPayloadParsed ? asRecord(latestPayloadParsed.source) : null,
+            summary: latestPayloadParsed
+              ? {
+                  date: asString(latestPayloadParsed.date),
+                  steps: asNumber(asRecord(latestPayloadParsed.activity).steps),
+                  sleepTotalMinutes: asNumber(
+                    asRecord(latestPayloadParsed.sleep).totalSleepMinutes,
+                  ),
+                  recordTypesSucceeded: extractStringList(
+                    asRecord(latestPayloadParsed.sync).recordTypesSucceeded,
+                  ),
+                  warnings: extractStringList(
+                    asRecord(latestPayloadParsed.sync).warnings,
+                  ),
+                }
+              : null,
+          }
+        : null,
+      recentPayloads: recentPayloads.map((row) => ({
+        id: row.id,
+        dateKey: row.dateKey,
+        capturedAt: row.capturedAt,
+      })),
+      totalRecentPayloads: recentPayloads.length,
+    });
+  } catch (error) {
+    console.error("[Samsung Health Webhook Debug] Error:", error);
+    return res.status(500).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      error: "Failed to load Samsung Health debug state",
+    });
   }
 });
 
