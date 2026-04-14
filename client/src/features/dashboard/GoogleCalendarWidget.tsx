@@ -9,6 +9,7 @@ import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import type { CalendarEvent } from "@/features/dashboard/types";
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 type RangePreset = "7d" | "14d" | "30d" | "custom";
@@ -36,7 +37,7 @@ function toDateInputValue(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function parseCalendarEvent(event: any): CalendarEventRow | null {
+function parseCalendarEvent(event: CalendarEvent): CalendarEventRow | null {
   const startDateTime = event?.start?.dateTime as string | undefined;
   const startDate = event?.start?.date as string | undefined;
   const endDateTime = event?.end?.dateTime as string | undefined;

@@ -20,7 +20,7 @@ import {
   Download,
 } from "lucide-react";
 
-function formatDate(dateStr: string) {
+function formatDate(dateStr: string | Date) {
   return new Date(dateStr).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
@@ -55,7 +55,7 @@ export default function SunpowerReadings() {
   function handleExportCsv() {
     if (!readings || readings.length === 0) return;
     const header = "Email,NONID,Lifetime kWh,Meter Serial,Firmware,PVS Serial,Read At\n";
-    const rows = readings.map((r: any) =>
+    const rows = readings.map((r) =>
       [
         r.customerEmail,
         r.nonId || "",
@@ -150,7 +150,7 @@ export default function SunpowerReadings() {
                 <Skeleton className="h-7 w-32" />
               ) : summary?.latestReadings?.[0] ? (
                 <p className="text-sm font-medium">
-                  {formatDate((summary.latestReadings[0] as any).readAt)}
+                  {formatDate(summary.latestReadings[0].readAt)}
                 </p>
               ) : (
                 <p className="text-sm text-muted-foreground">None yet</p>
@@ -240,7 +240,7 @@ export default function SunpowerReadings() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {readings.map((r: any) => (
+                  {readings.map((r) => (
                     <tr key={r.id} className="hover:bg-muted/30">
                       <td className="py-2.5 pr-4">
                         <span className="font-medium">{r.customerEmail}</span>

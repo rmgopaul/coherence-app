@@ -22,6 +22,15 @@ import {
   FileText,
   FolderOpen,
 } from "lucide-react";
+import type {
+  CalendarEvent,
+  GmailMessage,
+  TodoistTask,
+  TodoistProject,
+  Note,
+  DriveFile,
+} from "@/features/dashboard/types";
+import type { DashboardSectionKey } from "@/lib/dashboardPreferences";
 
 // ---------------------------------------------------------------------------
 // Inline utilities (kept local to avoid coupling to Dashboard internals)
@@ -51,11 +60,11 @@ const toPlainText = (content: string) =>
 
 export interface WorkspaceSectionProps {
   // --- Visibility / collapse state ---
-  isSectionVisible: (key: any) => boolean;
+  isSectionVisible: (key: DashboardSectionKey) => boolean;
   workspaceExpanded: boolean;
   setWorkspaceExpanded: (v: boolean) => void;
-  dashboardViewMode: string;
-  setDashboardViewMode: (v: any) => void;
+  dashboardViewMode: "essential" | "detailed";
+  setDashboardViewMode: (v: "essential" | "detailed") => void;
 
   // --- Navigation ---
   setLocation: (path: string) => void;
@@ -66,37 +75,37 @@ export interface WorkspaceSectionProps {
   // --- Calendar ---
   hasGoogle: boolean;
   calendarLoading: boolean;
-  upcomingEvents: any[];
+  upcomingEvents: CalendarEvent[];
   eventsByDate: {
     date: string;
-    events: any[];
+    events: CalendarEvent[];
     colors: { header: string; text: string; bg: string; border: string };
   }[];
   selectedCalendarHistoryEventId: string | null;
   setSelectedCalendarHistoryEventId: React.Dispatch<React.SetStateAction<string | null>>;
-  selectedCalendarHistoryEvent: any | null;
-  calendarLinkedNotes: any[];
+  selectedCalendarHistoryEvent: CalendarEvent | null;
+  calendarLinkedNotes: (Note & { latestOccurrence?: string | null })[];
   refetchCalendar: () => void;
-  openNotebookForCalendarEvent: (event: any) => void;
-  handleCreateNoteFromCalendarEvent: (event: any) => void;
+  openNotebookForCalendarEvent: (event: CalendarEvent) => void;
+  handleCreateNoteFromCalendarEvent: (event: CalendarEvent) => void;
   createNoteFromCalendarMutationPending: boolean;
-  handleEditNote: (note: any) => void;
-  formatEventTime: (event: any) => string;
+  handleEditNote: (note: Note) => void;
+  formatEventTime: (event: CalendarEvent) => string;
 
   // --- Todoist ---
   hasTodoist: boolean;
   tasksLoading: boolean;
-  todayTasks: any[] | undefined;
+  todayTasks: TodoistTask[] | undefined;
   todoistFilter: string;
   setTodoistFilter: (v: string) => void;
-  todoistProjects: any[] | undefined;
+  todoistProjects: TodoistProject[] | undefined;
   todoistLabels: string[];
   quickTodoistTaskInput: string;
   setQuickTodoistTaskInput: (v: string) => void;
   handleQuickAddTodoistTask: () => void;
   quickAddTodoistTaskPending: boolean;
   handleCompleteTask: (taskId: string) => void;
-  handleCreateNoteFromTask: (task: any) => void;
+  handleCreateNoteFromTask: (task: TodoistTask) => void;
   createNoteFromTaskMutationPending: boolean;
   refetchTasks: () => void;
   refetchTodoistCompletedToday: () => void;
@@ -104,22 +113,22 @@ export interface WorkspaceSectionProps {
   // --- Email ---
   emailsLoading: boolean;
   emailsFetching: boolean;
-  gmailMessages: any[] | undefined;
+  gmailMessages: GmailMessage[] | undefined;
   markingEmailId: string | null;
   markEmailAsReadPending: boolean;
   createTaskFromEmailPending: boolean;
   refetchEmails: () => void;
   handleMarkEmailAsRead: (messageId: string, e: React.MouseEvent) => void;
-  handleAddEmailToTodoist: (message: any, e: React.MouseEvent) => void;
-  getEmailHeader: (message: any, name: string) => string;
+  handleAddEmailToTodoist: (message: GmailMessage, e: React.MouseEvent) => void;
+  getEmailHeader: (message: GmailMessage, name: string) => string;
   formatEmailDate: (internalDate: string) => string;
 
   // --- Drive ---
   driveLoading: boolean;
-  displayedDriveFiles: any[];
+  displayedDriveFiles: DriveFile[];
   driveSearchQuery: string;
   setDriveSearchQuery: (v: string) => void;
-  driveSearchResults: any[] | null;
+  driveSearchResults: DriveFile[] | null;
   isSearching: boolean;
   handleDriveSearch: () => void;
   clearDriveSearch: () => void;
@@ -300,7 +309,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                     {date}
                   </div>
                   <div className="space-y-1 mt-1">
-                    {events.map((event: any) => (
+                    {events.map((event) => (
                       <div
                         key={event.id}
                         className={`p-2 ${colors.bg} rounded-md border ${colors.border} hover:opacity-95 transition-opacity ${
@@ -375,7 +384,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                   </div>
                   {selectedCalendarHistoryEvent &&
                     events.some(
-                      (event: any) =>
+                      (event) =>
                         String(event.id || "") === String(selectedCalendarHistoryEvent.id || "")
                     ) && (
                       <div className="mt-1.5 rounded-md border border-emerald-200 bg-emerald-50/70 p-2">
@@ -388,7 +397,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                           </p>
                         ) : (
                           <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1">
-                            {calendarLinkedNotes.slice(0, 12).map((note: any) => (
+                            {calendarLinkedNotes.slice(0, 12).map((note) => (
                               <button
                                 key={note.id}
                                 type="button"
@@ -440,7 +449,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                    todoistFilter.startsWith("label_") ?
                      `@${decodeURIComponent(todoistFilter.replace("label_", ""))}` :
                    todoistFilter.startsWith("project_") ?
-                     todoistProjects?.find((p: any) => p.id === todoistFilter.replace("project_", ""))?.name || "Tasks" :
+                     todoistProjects?.find((p) => p.id === todoistFilter.replace("project_", ""))?.name || "Tasks" :
                    "Tasks"}
                 </CardTitle>
               </div>
@@ -498,7 +507,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                     {todoistProjects && todoistProjects.length > 0 && (
                       <>
                         <SelectItem value="separator" disabled>── My Projects ──</SelectItem>
-                        {todoistProjects.map((project: any) => (
+                        {todoistProjects.map((project) => (
                           <SelectItem key={project.id} value={`project_${project.id}`}>
                             {project.name}
                           </SelectItem>
@@ -544,7 +553,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                 </p>
               </div>
             ) : (
-              todayTasks.slice(0, 50).map((task: any) => (
+              todayTasks.slice(0, 50).map((task) => (
                 <div
                   key={task.id}
                   className="flex items-start gap-3 p-2 rounded border border-[#f29b90] bg-[#d63a2b] hover:bg-[#c93426] transition-colors"
@@ -556,7 +565,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                   />
                   <div className="flex-1 min-w-0">
                     <a
-                      href={task.url || `https://todoist.com/app/task/${task.id}`}
+                      href={("url" in task ? (task as { url?: string }).url : undefined) || `https://todoist.com/app/task/${task.id}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-sm text-white break-words hover:text-white/90 hover:underline"
@@ -636,7 +645,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                 <p className="text-sm">No recent emails</p>
               </div>
             ) : (
-              gmailMessages.slice(0, 50).map((message: any) => (
+              gmailMessages.slice(0, 50).map((message) => (
                 <div key={message.id} className="group relative">
                   <a
                     href={`https://mail.google.com/mail/u/0/#inbox/${message.id}`}
@@ -778,7 +787,7 @@ export function WorkspaceSection(props: WorkspaceSectionProps) {
                     <p className="text-sm">{driveSearchResults !== null ? "No files found" : "No recent files"}</p>
                   </div>
                 ) : (
-                  displayedDriveFiles.map((file: any) => (
+                  displayedDriveFiles.map((file) => (
                     <a
                       key={file.id}
                       href={file.webViewLink}

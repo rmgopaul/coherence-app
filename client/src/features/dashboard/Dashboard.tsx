@@ -17,20 +17,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
-import type { AppRouter } from "../../../../server/routers";
-import type { inferRouterOutputs } from "@trpc/server";
-
-type RouterOutputs = inferRouterOutputs<AppRouter>;
-type CalendarEvent = RouterOutputs["google"]["getCalendarEvents"][number];
-type GmailMessage = RouterOutputs["google"]["getGmailMessages"][number];
-type GmailWaitingOnItem = RouterOutputs["google"]["getGmailWaitingOn"][number];
-type TodoistTask = RouterOutputs["todoist"]["getTasks"][number];
-type TodoistProject = RouterOutputs["todoist"]["getProjects"][number];
-type Note = RouterOutputs["notes"]["list"][number];
-type NoteLink = Note["links"][number];
-type HabitEntry = RouterOutputs["habits"]["getForDate"][number];
-type MetricHistoryRow = RouterOutputs["metrics"]["getHistory"][number];
-type DriveFile = RouterOutputs["google"]["searchDrive"][number];
+import type {
+  CalendarEvent,
+  GmailMessage,
+  GmailWaitingOnItem,
+  TodoistTask,
+  TodoistProject,
+  Note,
+  NoteLink,
+  HabitEntry,
+  MetricHistoryRow,
+  DriveFile,
+} from "./types";
 import {
   getHiddenDashboardHeaderButtons,
   getHiddenDashboardSections,

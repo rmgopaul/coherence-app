@@ -4,15 +4,17 @@ import { MessageSquare, Plus, Trash2, Send, Loader2 } from "lucide-react";
 import { Card, CardHeader, CardContent, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import type { Conversation, ChatMessage } from "@/features/dashboard/types";
+import type { DashboardSectionKey } from "@/lib/dashboardPreferences";
 
 export interface ChatPanelProps {
   // Data
   hasOpenAI: boolean;
-  conversations: any[] | undefined;
+  conversations: Conversation[] | undefined;
   selectedConversationId: string | null;
-  messages: any[] | undefined;
+  messages: ChatMessage[] | undefined;
   chatMessage: string;
-  isSectionVisible: (key: any) => boolean;
+  isSectionVisible: (key: DashboardSectionKey) => boolean;
   chatExpanded: boolean;
 
   // Handlers

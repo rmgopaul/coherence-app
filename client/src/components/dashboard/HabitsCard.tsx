@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Target, RefreshCw } from "lucide-react";
 import { SectionRating } from "@/components/SectionRating";
 import { useLocation } from "wouter";
+import type { HabitEntry } from "@/features/dashboard/types";
 import {
   Cell,
   Pie,
@@ -50,7 +51,7 @@ interface HabitStreak {
 }
 
 interface HabitsCardProps {
-  habits: any[];
+  habits: HabitEntry[];
   habitStreakMap: Record<string, HabitStreak>;
   completionChartData: { name: string; value: number; color: string }[];
   onToggle: (habitId: string, completed: boolean) => void;
@@ -78,7 +79,7 @@ export function HabitsCard({
           <CardTitle className="text-base">Habits</CardTitle>
         </div>
         <div className="flex items-center gap-1">
-          <SectionRating sectionId="section-tracking" currentRating={sectionRating as any} />
+          <SectionRating sectionId="section-tracking" currentRating={sectionRating as never} />
           <Button variant="ghost" size="sm" onClick={onRefresh}>
             <RefreshCw className="h-4 w-4" />
           </Button>
@@ -117,7 +118,7 @@ export function HabitsCard({
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-2">
-            {habits.map((habit: any) => {
+            {habits.map((habit) => {
               const styles = HABIT_COLOR_STYLES[habit.color] ?? HABIT_COLOR_STYLES.slate;
               const streakData = habitStreakMap[habit.id];
               return (

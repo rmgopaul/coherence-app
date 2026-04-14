@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/select";
 import { SectionRating } from "@/components/SectionRating";
 import { FileText, RefreshCw, Loader2, Trash2 } from "lucide-react";
+import type { Note, NoteLink, TodoistTask, CalendarEvent } from "@/features/dashboard/types";
 
 const toPlainText = (content: string) => {
   if (typeof window === "undefined")
@@ -34,11 +35,11 @@ export interface NotesCardProps {
   linkTaskId: string;
   linkEventId: string;
   noteNotebookOptions: string[];
-  filteredNotes: any[];
-  notes: any[] | undefined;
+  filteredNotes: Note[];
+  notes: Note[] | undefined;
   notesLoading: boolean;
-  todayTasks: any[] | undefined;
-  upcomingEvents: any[];
+  todayTasks: TodoistTask[] | undefined;
+  upcomingEvents: CalendarEvent[];
   sectionRating: number | undefined;
 
   // Handlers
@@ -51,14 +52,14 @@ export interface NotesCardProps {
   setLinkTaskId: (v: string) => void;
   setLinkEventId: (v: string) => void;
   onSubmitNote: () => void;
-  onEditNote: (note: any) => void;
+  onEditNote: (note: Note) => void;
   onDeleteNote: (noteId: string) => void;
   onPinNote: (noteId: string, pinned: boolean) => void;
   onLinkNoteToTask: () => void;
   onLinkNoteToEvent: () => void;
   onRemoveLink: (linkId: string) => void;
   onRefresh: () => void;
-  formatCalendarEventLabel: (event: any) => string;
+  formatCalendarEventLabel: (event: CalendarEvent) => string;
 
   // Mutation state
   createPending: boolean;
@@ -113,7 +114,7 @@ export function NotesCard({
         <div className="flex items-center gap-1">
           <SectionRating
             sectionId="section-notes"
-            currentRating={sectionRating as any}
+            currentRating={sectionRating as never}
           />
           <Button variant="ghost" size="sm" onClick={onRefresh}>
             <RefreshCw className="h-4 w-4" />
@@ -204,7 +205,7 @@ export function NotesCard({
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="__none">Select note</SelectItem>
-              {(notes || []).map((note: any) => (
+              {(notes || []).map((note) => (
                 <SelectItem key={note.id} value={note.id}>
                   {note.notebook || "General"} &bull; {note.title}
                 </SelectItem>
@@ -226,7 +227,7 @@ export function NotesCard({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none">Select Todoist task</SelectItem>
-                  {(todayTasks || []).slice(0, 50).map((task: any) => (
+                  {(todayTasks || []).slice(0, 50).map((task) => (
                     <SelectItem key={task.id} value={String(task.id)}>
                       {task.content}
                     </SelectItem>
@@ -256,7 +257,7 @@ export function NotesCard({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none">Select calendar event</SelectItem>
-                  {upcomingEvents.slice(0, 50).map((event: any) => (
+                  {upcomingEvents.slice(0, 50).map((event) => (
                     <SelectItem
                       key={event.id}
                       value={String(event.id || "")}
@@ -289,7 +290,7 @@ export function NotesCard({
               No notes for this notebook filter.
             </p>
           ) : (
-            filteredNotes.map((note: any) => (
+            filteredNotes.map((note) => (
               <div
                 key={note.id}
                 className="rounded-md border border-emerald-100 bg-emerald-50/60 px-2 py-2 space-y-1.5"
@@ -345,7 +346,7 @@ export function NotesCard({
 
                 <div className="flex flex-wrap gap-1">
                   {Array.isArray(note.links) && note.links.length > 0 ? (
-                    note.links.map((link: any) => (
+                    note.links.map((link) => (
                       <Badge
                         key={link.id}
                         variant="outline"

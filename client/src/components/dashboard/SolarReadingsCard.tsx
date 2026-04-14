@@ -3,7 +3,7 @@ import { DashboardWidget } from "./DashboardWidget";
 import { Sun, User, Zap, Clock } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
-function formatRelativeDate(dateStr: string): string {
+function formatRelativeDate(dateStr: string | Date): string {
   const date = new Date(dateStr);
   const now = Date.now();
   const diffMs = now - date.getTime();
@@ -72,7 +72,7 @@ export function SolarReadingsCard() {
               Recent Submissions
             </p>
             <div className="space-y-2">
-              {data.latestReadings.slice(0, 5).map((r: any) => (
+              {data.latestReadings.slice(0, 5).map((r) => (
                 <div
                   key={r.id}
                   className="flex items-center justify-between rounded-md border px-3 py-2 text-sm"

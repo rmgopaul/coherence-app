@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/select";
 import { SectionRating } from "@/components/SectionRating";
 import { SUPPLEMENT_UNITS } from "@shared/const";
+import type { SupplementDefinition, SupplementLog } from "@/features/dashboard/types";
 
 type SupplementUnit = (typeof SUPPLEMENT_UNITS)[number];
 
@@ -20,8 +21,8 @@ export interface SupplementsCardProps {
   supplementDose: string;
   supplementDoseUnit: SupplementUnit;
   supplementTiming: "am" | "pm";
-  supplementDefinitions: any[] | undefined;
-  supplementLogs: any[] | undefined;
+  supplementDefinitions: SupplementDefinition[] | undefined;
+  supplementLogs: SupplementLog[] | undefined;
   sectionRating: number | undefined;
 
   // Handlers
@@ -69,7 +70,7 @@ export function SupplementsCard({
         </div>
         <SectionRating
           sectionId="section-supplements"
-          currentRating={sectionRating as any}
+          currentRating={sectionRating as never}
         />
       </CardHeader>
       <CardContent className="space-y-3 min-w-0">
@@ -149,7 +150,7 @@ export function SupplementsCard({
               No curated supplements yet.
             </p>
           ) : (
-            (supplementDefinitions || []).map((definition: any) => (
+            (supplementDefinitions || []).map((definition) => (
               <div
                 key={definition.id}
                 className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border bg-muted px-2 py-1.5"
@@ -188,7 +189,7 @@ export function SupplementsCard({
               No supplements logged today.
             </p>
           ) : (
-            (supplementLogs || []).map((log: any) => (
+            (supplementLogs || []).map((log) => (
               <div
                 key={log.id}
                 className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-emerald-100 bg-emerald-50 px-2 py-1.5"

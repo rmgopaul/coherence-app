@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { HeartPulse, RefreshCw, Loader2 } from "lucide-react";
 import { SectionRating } from "@/components/SectionRating";
 import { useLocation } from "wouter";
+import type { WhoopSummary } from "@/features/dashboard/types";
 
 const toPercent = (value: number | null) =>
   value === null ? "-" : `${Math.round(value)}%`;
@@ -15,7 +16,7 @@ const kilojouleToCalories = (value: number | null) =>
   value === null ? null : Number((value / 4.184).toFixed(0));
 
 interface WhoopCardProps {
-  whoopSummary: any;
+  whoopSummary: WhoopSummary | undefined;
   hasWhoop: boolean;
   isLoading: boolean;
   isFetching: boolean;
@@ -44,7 +45,7 @@ export function WhoopCard({
           <CardTitle className="text-base text-white">WHOOP</CardTitle>
         </div>
         <div className="flex items-center gap-1">
-          <SectionRating sectionId="section-whoop" currentRating={sectionRating as any} />
+          <SectionRating sectionId="section-whoop" currentRating={sectionRating as never} />
           {hasWhoop && (
             <Button
               variant="ghost"

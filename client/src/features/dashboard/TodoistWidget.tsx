@@ -13,6 +13,7 @@ import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
+import type { TodoistTask, TodoistProject } from "@/features/dashboard/types";
 
 const TODOIST_PAGE_SIZE = 20;
 
@@ -30,14 +31,14 @@ function getApiFilter(viewFilter: ViewFilter): string | undefined {
   return viewFilter;
 }
 
-function getViewLabel(viewFilter: ViewFilter, projects?: any[]): string {
+function getViewLabel(viewFilter: ViewFilter, projects?: TodoistProject[]): string {
   if (viewFilter === "today") return "Today's Tasks";
   if (viewFilter === "all") return "All Open Tasks";
   if (viewFilter === "upcoming") return "Upcoming (7 Days)";
   if (viewFilter === "inbox") return "Inbox";
   if (viewFilter.startsWith("project_") && projects) {
     const projectId = viewFilter.replace("project_", "");
-    const project = projects.find((p: any) => p.id === projectId);
+    const project = projects.find((p) => p.id === projectId);
     return project ? project.name : "Project";
   }
   return "Tasks";
@@ -62,7 +63,7 @@ export default function TodoistWidget() {
   const [newTaskContent, setNewTaskContent] = useState("");
   const [newTaskDescription, setNewTaskDescription] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState<number>(1);
-  const [localTasks, setLocalTasks] = useState<any[]>([]);
+  const [localTasks, setLocalTasks] = useState<TodoistTask[]>([]);
   const [taskSearch, setTaskSearch] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"priority_desc" | "priority_asc" | "due_soon" | "content_asc">("priority_desc");
@@ -290,7 +291,7 @@ export default function TodoistWidget() {
                       <SelectItem value="__separator_projects" disabled>
                         ── Projects ──
                       </SelectItem>
-                      {projects.map((project: any) => (
+                      {projects.map((project) => (
                         <SelectItem key={project.id} value={`project_${project.id}`}>
                           {project.name}
                         </SelectItem>

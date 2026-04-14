@@ -8,6 +8,7 @@ import { Mail } from "lucide-react";
 import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
+import type { GmailMessage } from "@/features/dashboard/types";
 
 const GMAIL_PAGE_SIZE = 25;
 
@@ -31,8 +32,8 @@ export default function GmailWidget() {
     }
   }, [authLoading, user, setLocation]);
 
-  const getHeader = (message: any, headerName: string) => {
-    const header = message.payload?.headers?.find((h: any) => h.name === headerName);
+  const getHeader = (message: GmailMessage, headerName: string) => {
+    const header = message.payload?.headers?.find((h: { name: string; value: string }) => h.name === headerName);
     return header?.value || "";
   };
 
