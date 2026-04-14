@@ -398,7 +398,7 @@ export const supplementsRouter = router({
   scanBottleWithClaude: protectedProcedure
     .input(
       z.object({
-        base64Data: z.string().max(10_000_000),
+        base64Data: z.string().max(20_000_000),
         contentType: z.enum(["image/png", "image/jpeg", "image/webp"]),
         fileName: z.string().max(255).optional(),
         timing: z.enum(["am", "pm"]).optional(),
@@ -412,7 +412,7 @@ export const supplementsRouter = router({
     .input(
       z.object({
         customerEmail: z.string().email(),
-        base64Data: z.string().max(10_000_000),
+        base64Data: z.string().max(20_000_000),
         contentType: z.enum(["image/png", "image/jpeg", "image/webp"]),
         timing: z.enum(["am", "pm"]).optional(),
         autoLogPrice: z.boolean().optional(),

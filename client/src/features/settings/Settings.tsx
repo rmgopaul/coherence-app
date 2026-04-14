@@ -828,43 +828,62 @@ export default function Settings() {
     }
   };
 
-  const fileToBase64 = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const result = typeof reader.result === "string" ? reader.result : "";
-        const base64Data = result.split(",")[1] || "";
-        resolve(base64Data);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
+  const resizeAndEncode = async (
+    file: File,
+    maxDimension = 1600,
+    quality = 0.85
+  ): Promise<{ base64Data: string; contentType: "image/jpeg" }> => {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(
+      1,
+      maxDimension / Math.max(bitmap.width, bitmap.height)
+    );
+    const width = Math.round(bitmap.width * scale);
+    const height = Math.round(bitmap.height * scale);
+
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx = canvas.getContext("2d")!;
+    ctx.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+
+    const blob = await canvas.convertToBlob({
+      type: "image/jpeg",
+      quality,
     });
+    const buffer = await blob.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return { base64Data: btoa(binary), contentType: "image/jpeg" };
+  };
 
   const handleSupplementBottleUpload = async (fileList: FileList | null) => {
     const file = fileList?.[0] ?? null;
     if (!file) return;
 
     const normalizedType = (file.type || "").toLowerCase();
-    const contentType =
-      normalizedType === "image/jpg"
-        ? "image/jpeg"
-        : normalizedType;
+    const resolvedType =
+      normalizedType === "image/jpg" ? "image/jpeg" : normalizedType;
 
-    if (!["image/png", "image/jpeg", "image/webp"].includes(contentType)) {
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(resolvedType)
+    ) {
       toast.error("Unsupported image type. Use PNG, JPG/JPEG, or WEBP.");
       return;
     }
 
-    if (file.size > 8 * 1024 * 1024) {
-      toast.error("Image must be 8 MB or less.");
+    if (file.size > 50 * 1024 * 1024) {
+      toast.error("Image must be 50 MB or less.");
       return;
     }
 
     try {
-      const base64Data = await fileToBase64(file);
+      const { base64Data, contentType } = await resizeAndEncode(file);
       await scanBottleWithClaude.mutateAsync({
         base64Data,
-        contentType: contentType as "image/png" | "image/jpeg" | "image/webp",
+        contentType,
         fileName: file.name,
         autoLogPrice: true,
       });
