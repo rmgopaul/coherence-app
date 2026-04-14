@@ -1,10 +1,12 @@
 /**
  * SolarEdge monitoring adapter.
  *
- * Site discovery: tries the SolarEdge /sites/list API first. If the API
- * returns 0 sites (common with single-site API keys), falls back to
- * metadata.siteIds — an array of { siteId, name } persisted via the
- * "Upload Site IDs" CSV flow on the monitoring dashboard.
+ * Site discovery priority:
+ *   1. Stored site IDs in metadata.siteIds (from CSV upload) — instant, no API call
+ *   2. SolarEdge /sites/list API discovery — only attempted when no stored sites exist
+ *
+ * When the user has uploaded a CSV, the stored list is authoritative.
+ * This avoids a 60+ second timeout on a known-failing API key.
  */
 import {
   listSites as seListSites,
@@ -18,13 +20,11 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
   if (credential.metadata) {
     try {
       const meta = JSON.parse(credential.metadata);
-      // Multi-connection format: connections[].apiKey
       if (meta.connections && Array.isArray(meta.connections)) {
         return meta.connections
           .filter((c: any) => c.apiKey)
           .map((c: any) => ({ apiKey: c.apiKey, baseUrl: c.baseUrl ?? meta.baseUrl ?? null }));
       }
-      // Simple format
       if (meta.apiKey) return [{ apiKey: meta.apiKey, baseUrl: meta.baseUrl ?? null }];
     } catch {}
   }
@@ -50,22 +50,7 @@ function getStoredSiteIds(credential: { metadata?: string | null }): StoredSite[
 
 const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
-    const contexts = getContexts(credential);
-    const allSites: { siteId: string; siteName: string }[] = [];
-
-    // 1. Try API discovery
-    for (const ctx of contexts) {
-      try {
-        const { sites } = await seListSites(ctx);
-        allSites.push(...sites.map((s) => ({ siteId: s.siteId, siteName: s.siteName })));
-      } catch (err) {
-        console.error(`[SolarEdge adapter] listSites API error:`, err instanceof Error ? err.message : err);
-      }
-    }
-
-    if (allSites.length > 0) return allSites;
-
-    // 2. Fall back to stored site IDs from metadata
+    // 1. Stored site IDs take priority — instant, no API call
     const stored = getStoredSiteIds(credential);
     if (stored.length > 0) {
       return stored.map((s) => ({
@@ -74,10 +59,23 @@ const adapter = {
       }));
     }
 
+    // 2. No stored sites — try API discovery
+    const contexts = getContexts(credential);
+    const allSites: { siteId: string; siteName: string }[] = [];
+    for (const ctx of contexts) {
+      try {
+        const { sites } = await seListSites(ctx);
+        allSites.push(...sites.map((s) => ({ siteId: s.siteId, siteName: s.siteName })));
+      } catch (err) {
+        console.error(`[SolarEdge adapter] listSites API error:`, err instanceof Error ? err.message : err);
+      }
+    }
+    if (allSites.length > 0) return allSites;
+
     // 3. Neither source produced sites
     throw new Error(
-      "SolarEdge site list API returned 0 sites and no site IDs are stored. " +
-      "Upload a CSV of site IDs on the Monitoring Dashboard to enable this credential."
+      "SolarEdge: no stored site IDs and the /sites/list API returned 0 sites. " +
+      "Upload a CSV of site IDs on the Monitoring Dashboard."
     );
   },
 
@@ -87,7 +85,15 @@ const adapter = {
     anchorDate: string
   ) {
     const contexts = getContexts(credential);
-    if (contexts.length === 0) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
+    if (contexts.length === 0) {
+      return siteIds.map((id) => ({
+        siteId: id,
+        siteName: null,
+        status: "Error" as const,
+        lifetimeKwh: null,
+        errorMessage: "No SolarEdge API credentials configured.",
+      }));
+    }
 
     const results = [];
     for (const siteId of siteIds) {
@@ -110,7 +116,6 @@ const adapter = {
         }
       }
       if (!found) {
-        // Fall back to first context for error reporting
         try {
           const snap = await getSiteProductionSnapshot(contexts[0], siteId, anchorDate);
           results.push({
@@ -120,7 +125,13 @@ const adapter = {
             lifetimeKwh: snap.lifetimeKwh ?? null,
           });
         } catch (err) {
-          results.push({ siteId, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: err instanceof Error ? err.message : String(err) });
+          results.push({
+            siteId,
+            siteName: null,
+            status: "Error" as const,
+            lifetimeKwh: null,
+            errorMessage: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     }
