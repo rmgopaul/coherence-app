@@ -46,22 +46,41 @@ const adapter = {
     anchorDate: string
   ) {
     const contexts = getContexts(credential);
-    // Use first context that has the site (simplified: try first context)
-    const ctx = contexts[0];
-    if (!ctx) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
+    if (contexts.length === 0) return siteIds.map((id) => ({ siteId: id, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: "No credentials" }));
 
     const results = [];
     for (const siteId of siteIds) {
-      try {
-        const snap = await getSiteProductionSnapshot(ctx, siteId, anchorDate);
-        results.push({
-          siteId,
-          siteName: snap.siteName ?? null,
-          status: snap.status as "Found" | "Not Found" | "Error",
-          lifetimeKwh: snap.lifetimeKwh ?? null,
-        });
-      } catch (err) {
-        results.push({ siteId, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: err instanceof Error ? err.message : String(err) });
+      let found = false;
+      for (const ctx of contexts) {
+        try {
+          const snap = await getSiteProductionSnapshot(ctx, siteId, anchorDate);
+          if (snap.status === "Found" || snap.found) {
+            results.push({
+              siteId,
+              siteName: snap.siteName ?? null,
+              status: snap.status as "Found" | "Not Found" | "Error",
+              lifetimeKwh: snap.lifetimeKwh ?? null,
+            });
+            found = true;
+            break;
+          }
+        } catch {
+          // Try next context
+        }
+      }
+      if (!found) {
+        // Fall back to first context for error reporting
+        try {
+          const snap = await getSiteProductionSnapshot(contexts[0], siteId, anchorDate);
+          results.push({
+            siteId,
+            siteName: snap.siteName ?? null,
+            status: snap.status as "Found" | "Not Found" | "Error",
+            lifetimeKwh: snap.lifetimeKwh ?? null,
+          });
+        } catch (err) {
+          results.push({ siteId, siteName: null, status: "Error" as const, lifetimeKwh: null, errorMessage: err instanceof Error ? err.message : String(err) });
+        }
       }
     }
     return results;

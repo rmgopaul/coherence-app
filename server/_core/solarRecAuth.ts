@@ -1,6 +1,5 @@
 import type express from "express";
 import { parse as parseCookieHeader } from "cookie";
-import crypto from "crypto";
 import axios from "axios";
 import { SignJWT, jwtVerify } from "jose";
 import { ONE_YEAR_MS, SOLAR_REC_SESSION_COOKIE, AXIOS_TIMEOUT_MS } from "@shared/const";
@@ -279,30 +278,6 @@ export async function resolveSolarRecOwnerUserId(): Promise<number> {
   })();
 
   return resolvingOwnerUserIdPromise;
-}
-
-/** @deprecated - use authenticateSolarRecRequest instead */
-export function isSolarRecAuthenticated(req: express.Request): boolean {
-  // Keep password-based auth as fallback during migration.
-  const configuredPw = process.env.SOLAR_REC_ACCESS_PASSWORD?.trim();
-  if (!configuredPw) {
-    // If no password configured, check for JWT session
-    const cookieValue = getCookieValue(req, SOLAR_REC_SESSION_COOKIE);
-    return cookieValue != null && cookieValue.length > 10;
-  }
-
-  const cookieValue = getCookieValue(req, SOLAR_REC_SESSION_COOKIE);
-  if (!cookieValue) return false;
-
-  // Check JWT first (new auth)
-  if (cookieValue.includes(".")) return true; // JWTs contain dots
-
-  // Legacy: check password hash cookie
-  const expected = crypto.createHash("sha256").update(`solar-rec:${configuredPw}`).digest("hex");
-  const provided = Buffer.from(cookieValue, "utf8");
-  const expectedBuf = Buffer.from(expected, "utf8");
-  if (provided.length !== expectedBuf.length) return false;
-  return crypto.timingSafeEqual(provided, expectedBuf);
 }
 
 // ---------------------------------------------------------------------------

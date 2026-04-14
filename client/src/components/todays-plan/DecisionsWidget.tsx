@@ -64,9 +64,7 @@ export function DecisionsWidget({ decisions, waitingOn, onSendNudge }: Decisions
                       size="sm"
                       variant="outline"
                       className="h-7 gap-1 px-2 text-xs"
-                      onClick={() =>
-                        onSendNudge ? onSendNudge(item) : console.log("[DecisionsWidget] Send Nudge", item)
-                      }
+                      onClick={() => onSendNudge?.(item)}
                     >
                       <BellRing className="h-3.5 w-3.5" />
                       Send Nudge

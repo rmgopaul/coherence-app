@@ -1,3 +1,12 @@
+import {
+  toNullableString,
+  toNullableNumber,
+  asRecord,
+  parseIsoDate,
+  toUtcEpochSeconds,
+  normalizeBaseUrl,
+} from "./helpers";
+
 export const ENPHASE_V4_DEFAULT_BASE_URL = "https://api.enphaseenergy.com/api/v4";
 export const ENPHASE_V4_DEFAULT_REDIRECT_URI = "https://api.enphaseenergy.com/oauth/redirect_uri";
 const ENPHASE_OAUTH_TOKEN_URL = "https://api.enphaseenergy.com/oauth/token";
@@ -37,62 +46,19 @@ export type EnphaseV4System = {
   timezone: string | null;
 };
 
-function toNullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
 function toIdString(value: unknown): string | null {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return null;
 }
 
-function toNullableNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function normalizeBaseUrl(raw: string | null | undefined): string {
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
-  if (!trimmed) return ENPHASE_V4_DEFAULT_BASE_URL;
-  return trimmed.replace(/\/+$/, "");
-}
+const normalize = (raw: string | null | undefined) =>
+  normalizeBaseUrl(raw, ENPHASE_V4_DEFAULT_BASE_URL);
 
 function normalizeRedirectUri(raw: string | null | undefined): string {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return ENPHASE_V4_DEFAULT_REDIRECT_URI;
   return trimmed;
-}
-
-function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return { year, month, day };
-}
-
-function toUtcEpochSeconds(dateIso: string, endOfDay: boolean): number {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) {
-    throw new Error("Dates must be in YYYY-MM-DD format.");
-  }
-
-  const utcMillis = endOfDay
-    ? Date.UTC(parsed.year, parsed.month - 1, parsed.day, 23, 59, 59, 999)
-    : Date.UTC(parsed.year, parsed.month - 1, parsed.day, 0, 0, 0, 0);
-  return Math.floor(utcMillis / 1000);
 }
 
 function buildBasicAuth(clientId: string, clientSecret: string): string {
@@ -179,7 +145,7 @@ function buildApiUrl(
   context: EnphaseV4ApiContext,
   query?: Record<string, string | number | null | undefined>
 ): string {
-  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const baseUrl = normalize(context.baseUrl);
   const safePath = path.startsWith("/") ? path : `/${path}`;
   const url = new URL(`${baseUrl}${safePath}`);
 
@@ -387,21 +353,3 @@ export async function getSystemProductionSnapshot(
   }
 }
 
-export async function mapWithConcurrency<TInput, TOutput>(
-  items: TInput[],
-  concurrency: number,
-  fn: (item: TInput) => Promise<TOutput>
-): Promise<TOutput[]> {
-  const results: TOutput[] = new Array(items.length);
-  let nextIndex = 0;
-
-  const worker = async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await fn(items[index]);
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-  return results;
-}

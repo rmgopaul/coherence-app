@@ -36,7 +36,7 @@ export function TriageEmail({
           size="sm"
           variant="outline"
           className="h-7 gap-1 px-2 text-xs"
-          onClick={() => (onReply ? onReply(email) : console.log("[TriageEmail] Reply", email))}
+          onClick={() => onReply?.(email)}
         >
           <Reply className="h-3.5 w-3.5" />
           Reply
@@ -46,7 +46,7 @@ export function TriageEmail({
           variant="outline"
           className="h-7 gap-1 px-2 text-xs"
           disabled={markReadDisabled}
-          onClick={() => (onMarkRead ? onMarkRead(email) : console.log("[TriageEmail] Mark as read", email))}
+          onClick={() => onMarkRead?.(email)}
         >
           {markReadPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <MailCheck className="h-3.5 w-3.5" />}
           Mark as read
@@ -55,7 +55,7 @@ export function TriageEmail({
           size="sm"
           variant="outline"
           className="h-7 gap-1 px-2 text-xs"
-          onClick={() => (onMakeTask ? onMakeTask(email) : console.log("[TriageEmail] Make Task", email))}
+          onClick={() => onMakeTask?.(email)}
         >
           <SquareCheckBig className="h-3.5 w-3.5" />
           Make Task

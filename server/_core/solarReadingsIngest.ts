@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { Request } from "express";
+import { createNonceTracker } from "./nonceTracker";
 
 export const SOLAR_READINGS_SIGNATURE_HEADER = "x-solar-signature";
 export const SOLAR_READINGS_TIMESTAMP_HEADER = "x-solar-timestamp";
@@ -14,7 +15,7 @@ const SOLAR_READINGS_MAX_READING_AGE_MS = 45 * 24 * 60 * 60 * 1000;
 
 export const SOLAR_READINGS_REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
-const seenNonces = new Map<string, number>();
+const nonceTracker = createNonceTracker(SOLAR_READINGS_REPLAY_WINDOW_MS);
 
 export type SolarReadingsSigningInput = {
   customerEmail: string;
@@ -65,27 +66,6 @@ function normalizeOptionalString(value: string | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function cleanupExpiredNonces(nowMs: number): void {
-  seenNonces.forEach((expiresAt, nonce) => {
-    if (expiresAt <= nowMs) {
-      seenNonces.delete(nonce);
-    }
-  });
-}
-
-function rememberNonce(nonce: string, nowMs: number): void {
-  seenNonces.set(nonce, nowMs + SOLAR_READINGS_REPLAY_WINDOW_MS);
-}
-
-function hasReplayNonce(nonce: string, nowMs: number): boolean {
-  const expiresAt = seenNonces.get(nonce);
-  if (!expiresAt) return false;
-  if (expiresAt <= nowMs) {
-    seenNonces.delete(nonce);
-    return false;
-  }
-  return true;
-}
 
 function normalizeProvidedSignature(value: string): string {
   if (value.toLowerCase().startsWith(SOLAR_READINGS_SIGNATURE_PREFIX)) {
@@ -158,7 +138,7 @@ export function verifySolarReadingsSignedRequest(options: {
   nonce: string;
 } {
   const nowMs = Date.now();
-  cleanupExpiredNonces(nowMs);
+  nonceTracker.cleanup(nowMs);
 
   const timestampRaw = readHeader(options.req, SOLAR_READINGS_TIMESTAMP_HEADER);
   if (!timestampRaw) {
@@ -182,7 +162,7 @@ export function verifySolarReadingsSignedRequest(options: {
   if (!SOLAR_READINGS_NONCE_REGEX.test(nonce)) {
     throw new Error(`${SOLAR_READINGS_NONCE_HEADER} must be 16-120 URL-safe characters.`);
   }
-  if (hasReplayNonce(nonce, nowMs)) {
+  if (nonceTracker.hasReplay(nonce, nowMs)) {
     throw new Error("Duplicate request nonce detected.");
   }
 
@@ -210,11 +190,11 @@ export function verifySolarReadingsSignedRequest(options: {
 
   const readAt = new Date(payload.readAt);
   assertReadAtWithinBounds(readAt, nowMs);
-  rememberNonce(nonce, nowMs);
+  nonceTracker.remember(nonce, nowMs);
 
   return { payload, readAt, timestampMs, nonce };
 }
 
 export function resetSolarReadingsNonceCacheForTests(): void {
-  seenNonces.clear();
+  nonceTracker.reset();
 }

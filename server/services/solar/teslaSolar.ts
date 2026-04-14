@@ -1,3 +1,10 @@
+import {
+  toNullableString,
+  asRecord,
+  normalizeBaseUrl,
+  parseIsoDate,
+} from "./helpers";
+
 export const TESLA_SOLAR_DEFAULT_BASE_URL = "https://fleet-api.prd.na.vn.cloud.tesla.com";
 
 export type TeslaSolarApiContext = {
@@ -19,28 +26,10 @@ export type TeslaEnergySite = {
   resourceType: string | null;
 };
 
-function toNullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
 function toIdString(value: unknown): string | null {
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function normalizeBaseUrl(raw: string | null | undefined): string {
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
-  if (!trimmed) return TESLA_SOLAR_DEFAULT_BASE_URL;
-  return trimmed.replace(/\/+$/, "");
-}
-
-function parseIsoDate(input: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(input);
 }
 
 function buildTeslaApiUrl(
@@ -48,7 +37,7 @@ function buildTeslaApiUrl(
   context: TeslaSolarApiContext,
   query?: Record<string, string | number | null | undefined>
 ): string {
-  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const baseUrl = normalizeBaseUrl(context.baseUrl, TESLA_SOLAR_DEFAULT_BASE_URL);
   const safePath = path.startsWith("/") ? path : `/${path}`;
   const url = new URL(`${baseUrl}${safePath}`);
 

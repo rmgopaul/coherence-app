@@ -23,7 +23,7 @@ const EnphaseV2MeterReadsPage = lazy(
   () => import("../features/solar-readings/EnphaseV2MeterReadsPage")
 );
 const EnphaseV4MeterReads = lazy(
-  () => import("../features/solar-readings/EnphaseV2MeterReads")
+  () => import("../features/solar-readings/EnphaseV4MeterReads")
 );
 const APsystemsMeterReads = lazy(
   () => import("../features/solar-readings/APsystemsMeterReads")

@@ -1,36 +1,11 @@
 import { nanoid } from "nanoid";
+import { mapWithConcurrency } from "./concurrency";
 
 const CONTRACT_SCAN_SESSION_REFRESH_INTERVAL = 80;
 const CONTRACT_SCAN_CONCURRENCY = 3;
 
 /** Set of job IDs with active runners on this process. */
 const activeRunners = new Set<string>();
-
-async function mapWithConcurrency<TInput, TOutput>(
-  items: TInput[],
-  concurrency: number,
-  mapper: (item: TInput, index: number) => Promise<TOutput>
-): Promise<TOutput[]> {
-  const safeConcurrency = Math.max(1, Math.floor(concurrency));
-  const results: TOutput[] = new Array(items.length);
-  let nextIndex = 0;
-
-  const worker = async () => {
-    while (true) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      if (currentIndex >= items.length) return;
-      results[currentIndex] = await mapper(
-        items[currentIndex],
-        currentIndex
-      );
-    }
-  };
-
-  const workerCount = Math.min(safeConcurrency, items.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  return results;
-}
 
 /**
  * DB-backed contract scan job runner.

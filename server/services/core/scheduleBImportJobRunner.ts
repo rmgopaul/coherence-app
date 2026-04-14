@@ -35,6 +35,8 @@
  *      cleanly if the caller set status to "stopping".
  */
 
+import { mapWithConcurrency } from "./concurrency";
+
 const activeRunners = new Set<string>();
 const SCHEDULE_B_IMPORT_CONCURRENCY = Math.max(
   1,
@@ -46,25 +48,6 @@ const TOKEN_REFRESH_INTERVAL = 100; // refresh OAuth token every N files
 
 export function isScheduleBImportRunnerActive(jobId: string): boolean {
   return activeRunners.has(jobId.trim());
-}
-
-async function mapWithConcurrency<T>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<void>
-): Promise<void> {
-  const safe = Math.max(1, Math.floor(concurrency));
-  let cursor = 0;
-  const runOne = async () => {
-    while (true) {
-      const current = cursor;
-      cursor += 1;
-      if (current >= items.length) return;
-      await worker(items[current], current);
-    }
-  };
-  const workerCount = Math.min(safe, items.length);
-  await Promise.all(Array.from({ length: workerCount }, () => runOne()));
 }
 
 const LOG_PREFIX = "[scheduleBImport v2_atomic_counters]";

@@ -8,6 +8,8 @@
  * session refresh, and error handling patterns.
  */
 
+import { mapWithConcurrency } from "./concurrency";
+
 const CSG_SCHEDULE_B_CONCURRENCY = 3;
 const CSG_SCHEDULE_B_SESSION_REFRESH_INTERVAL = 80;
 const LOG_PREFIX = "[csgScheduleBImport]";
@@ -16,26 +18,6 @@ const activeRunners = new Set<string>();
 
 export function isCsgScheduleBImportRunnerActive(jobId: string): boolean {
   return activeRunners.has(jobId);
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  mapper: (item: T, index: number) => Promise<R>
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let nextIndex = 0;
-  const worker = async () => {
-    while (true) {
-      const i = nextIndex;
-      nextIndex += 1;
-      if (i >= items.length) return;
-      results[i] = await mapper(items[i], i);
-    }
-  };
-  const count = Math.min(Math.max(1, concurrency), items.length);
-  await Promise.all(Array.from({ length: count }, () => worker()));
-  return results;
 }
 
 function parseJsonMetadata(raw: string | null | undefined): Record<string, unknown> {

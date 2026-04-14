@@ -7,6 +7,7 @@
  */
 import { nanoid } from "nanoid";
 import * as db from "../db";
+import { mapWithConcurrency } from "../services/core/concurrency";
 
 // ---------------------------------------------------------------------------
 // Provider registry — maps provider key to the service function that
@@ -72,32 +73,6 @@ function extractCredentialLabel(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Concurrency limiter
-// ---------------------------------------------------------------------------
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<R>
-): Promise<R[]> {
-  const results: R[] = [];
-  const executing = new Set<Promise<void>>();
-
-  for (const item of items) {
-    const p = fn(item).then((r) => {
-      results.push(r);
-    });
-    const wrapped: Promise<void> = p.then(() => { executing.delete(wrapped); });
-    executing.add(wrapped);
-    if (executing.size >= concurrency) {
-      await Promise.race(executing);
-    }
-  }
-
-  await Promise.all(executing);
-  return results;
-}
 
 // ---------------------------------------------------------------------------
 // Execute a single provider run

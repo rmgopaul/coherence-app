@@ -11,7 +11,7 @@ async function makeGoogleApiCall(url: string, accessToken: string, retries = 3):
       return response;
     } catch (error) {
       if (i === retries - 1) throw error;
-      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+      await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, i)));
     }
   }
   throw new Error("Failed after retries");

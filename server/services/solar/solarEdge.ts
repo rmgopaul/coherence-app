@@ -1,3 +1,13 @@
+import {
+  toNullableString,
+  toNullableNumber,
+  asRecord,
+  asRecordArray,
+  normalizeBaseUrl,
+  parseIsoDate,
+} from "./helpers";
+import { mapWithConcurrency } from "../core/concurrency";
+
 export const SOLAR_EDGE_DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com/v2";
 
 export type SolarEdgeApiContext = {
@@ -98,44 +108,8 @@ export type SolarEdgeProductionSnapshot = {
   error: string | null;
 };
 
-function toNullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function toNullableNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.map((row) => asRecord(row));
-}
-
-function normalizeBaseUrl(raw: string | null | undefined): string {
-  const trimmed = typeof raw === "string" ? raw.trim() : "";
-  if (!trimmed) return SOLAR_EDGE_DEFAULT_BASE_URL;
-  return trimmed.replace(/\/+$/, "");
-}
-
-function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return { year, month, day };
-}
+const normalize = (raw: string | null | undefined) =>
+  normalizeBaseUrl(raw, SOLAR_EDGE_DEFAULT_BASE_URL);
 
 function formatIsoDate(date: Date): string {
   const year = date.getFullYear();
@@ -372,30 +346,6 @@ function extractInverterTelemetry(payload: unknown): Array<Record<string, unknow
   return rows.map((row) => ({ ...row }));
 }
 
-async function mapWithConcurrency<TInput, TOutput>(
-  items: TInput[],
-  limit: number,
-  worker: (item: TInput, index: number) => Promise<TOutput>
-): Promise<TOutput[]> {
-  if (items.length === 0) return [];
-  const safeLimit = Math.max(1, Math.floor(limit) || 1);
-  const output = new Array<TOutput>(items.length);
-  let cursor = 0;
-
-  const run = async () => {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= items.length) return;
-      output[index] = await worker(items[index], index);
-    }
-  };
-
-  const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => run());
-  await Promise.all(workers);
-  return output;
-}
-
 async function getInverterTelemetryPayload(
   context: SolarEdgeApiContext,
   siteId: string,
@@ -606,7 +556,7 @@ function buildApiUrl(
     includeApiKeyQuery?: boolean;
   }
 ): string {
-  const baseUrl = normalizeBaseUrl(context.baseUrl);
+  const baseUrl = normalize(context.baseUrl);
   const safePath = path.startsWith("/") ? path : `/${path}`;
   const url = new URL(`${baseUrl}${safePath}`);
 
@@ -639,7 +589,7 @@ function buildApiHeaders(context: SolarEdgeApiContext, authMode: SolarEdgeAuthMo
 }
 
 function stripV2Suffix(rawBaseUrl: string | null | undefined): string | null {
-  const base = normalizeBaseUrl(rawBaseUrl);
+  const base = normalize(rawBaseUrl);
   if (!base.toLowerCase().endsWith("/v2")) return null;
   return base.slice(0, -3).replace(/\/+$/, "");
 }
@@ -649,7 +599,7 @@ async function getSolarEdgeJson(
   context: SolarEdgeApiContext,
   query?: Record<string, string | number | null | undefined>
 ): Promise<unknown> {
-  const primaryBase = normalizeBaseUrl(context.baseUrl);
+  const primaryBase = normalize(context.baseUrl);
   const fallbackBase = stripV2Suffix(context.baseUrl);
 
   const attempted = new Set<string>();
@@ -657,7 +607,7 @@ async function getSolarEdgeJson(
 
   const addAttempt = (baseUrl: string | null | undefined, authMode: SolarEdgeAuthMode) => {
     if (!baseUrl) return;
-    const normalizedBase = normalizeBaseUrl(baseUrl);
+    const normalizedBase = normalize(baseUrl);
     const signature = `${authMode}:${normalizedBase}`;
     if (attempted.has(signature)) return;
     attempted.add(signature);

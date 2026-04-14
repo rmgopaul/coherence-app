@@ -1,3 +1,11 @@
+import {
+  toNullableString,
+  toNullableNumber,
+  asRecord,
+  asRecordArray,
+  parseIsoDate,
+} from "./helpers";
+
 export type SolarLogApiContext = {
   baseUrl: string;
   password?: string | null;
@@ -34,45 +42,8 @@ export type SolarLogProductionSnapshot = {
 };
 
 // ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-function toNullableString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function toNullableNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.map((row) => asRecord(row));
-}
-
-// ---------------------------------------------------------------------------
 // Date helpers
 // ---------------------------------------------------------------------------
-
-function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return { year, month, day };
-}
 
 function formatIsoDate(date: Date): string {
   const year = date.getFullYear();
@@ -145,34 +116,6 @@ function isNotFoundError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const message = error.message.toLowerCase();
   return message.includes("(404") || message.includes("not found") || message.includes("econnrefused");
-}
-
-// ---------------------------------------------------------------------------
-// Concurrency helper
-// ---------------------------------------------------------------------------
-
-export async function mapWithConcurrency<TInput, TOutput>(
-  items: TInput[],
-  limit: number,
-  worker: (item: TInput, index: number) => Promise<TOutput>
-): Promise<TOutput[]> {
-  if (items.length === 0) return [];
-  const safeLimit = Math.max(1, Math.floor(limit) || 1);
-  const output = new Array<TOutput>(items.length);
-  let cursor = 0;
-
-  const run = async () => {
-    while (true) {
-      const index = cursor;
-      cursor += 1;
-      if (index >= items.length) return;
-      output[index] = await worker(items[index], index);
-    }
-  };
-
-  const workers = Array.from({ length: Math.min(safeLimit, items.length) }, () => run());
-  await Promise.all(workers);
-  return output;
 }
 
 // ---------------------------------------------------------------------------

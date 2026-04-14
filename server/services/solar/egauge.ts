@@ -1,5 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import {
+  toNullableString as toNonEmptyString,
+  asRecord,
+  parseIsoDate,
+} from "./helpers";
+
 export const EGAUGE_DEFAULT_BASE_URL = "https://YOUR-METER.d.egauge.net";
 export const EGAUGE_PORTFOLIO_BASE_URL = "https://www.egauge.net";
 
@@ -13,16 +19,6 @@ export type EgaugeApiContext = {
 };
 
 const EGAUGE_REQUEST_TIMEOUT_MS = 20_000;
-
-function toNonEmptyString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-}
 
 function truncate(value: string, maxLength = 300): string {
   if (value.length <= maxLength) return value;
@@ -191,17 +187,6 @@ function parseIsoDateToUnixEnd(dateValue: string): number {
     throw new Error("Dates must be YYYY-MM-DD.");
   }
   return Math.floor(epoch / 1000);
-}
-
-function parseIsoDate(input: string): { year: number; month: number; day: number } | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input);
-  if (!match) return null;
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  return { year, month, day };
 }
 
 function formatIsoDate(date: Date): string {
@@ -1586,21 +1571,3 @@ export async function getMeterProductionSnapshot(
   }
 }
 
-export async function mapWithConcurrency<TInput, TOutput>(
-  items: TInput[],
-  concurrency: number,
-  fn: (item: TInput) => Promise<TOutput>
-): Promise<TOutput[]> {
-  const results: TOutput[] = new Array(items.length);
-  let nextIndex = 0;
-
-  const worker = async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex++;
-      results[index] = await fn(items[index]);
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
-  return results;
-}

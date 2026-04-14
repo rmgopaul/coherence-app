@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import type { Request } from "express";
+import { createNonceTracker } from "./nonceTracker";
 
 export const SUPPLEMENT_INGEST_SIGNATURE_HEADER = "x-solar-signature";
 export const SUPPLEMENT_INGEST_TIMESTAMP_HEADER = "x-solar-timestamp";
@@ -13,7 +14,7 @@ const ALLOWED_FUTURE_SKEW_MS = 5 * 60 * 1000;
 const MAX_CAPTURED_AGE_MS = 45 * 24 * 60 * 60 * 1000;
 const REPLAY_WINDOW_MS = 5 * 60 * 1000;
 
-const seenNonces = new Map<string, number>();
+const nonceTracker = createNonceTracker(REPLAY_WINDOW_MS);
 
 export type SupplementIngestSigningInput = {
   customerEmail: string;
@@ -70,27 +71,6 @@ function normalizeSignature(value: string): string {
   return value;
 }
 
-function cleanupExpiredNonces(nowMs: number): void {
-  seenNonces.forEach((expiresAt, nonce) => {
-    if (expiresAt <= nowMs) {
-      seenNonces.delete(nonce);
-    }
-  });
-}
-
-function rememberNonce(nonce: string, nowMs: number): void {
-  seenNonces.set(nonce, nowMs + REPLAY_WINDOW_MS);
-}
-
-function hasReplayNonce(nonce: string, nowMs: number): boolean {
-  const expiresAt = seenNonces.get(nonce);
-  if (!expiresAt) return false;
-  if (expiresAt <= nowMs) {
-    seenNonces.delete(nonce);
-    return false;
-  }
-  return true;
-}
 
 function secureHexEquals(leftHex: string, rightHex: string): boolean {
   if (!SIGNATURE_REGEX.test(leftHex)) return false;
@@ -155,7 +135,7 @@ export function verifySupplementIngestSignedRequest(options: {
   nonce: string;
 } {
   const nowMs = Date.now();
-  cleanupExpiredNonces(nowMs);
+  nonceTracker.cleanup(nowMs);
 
   const timestampRaw = readHeader(options.req, SUPPLEMENT_INGEST_TIMESTAMP_HEADER);
   if (!timestampRaw) {
@@ -178,7 +158,7 @@ export function verifySupplementIngestSignedRequest(options: {
   if (!NONCE_REGEX.test(nonce)) {
     throw new Error(`${SUPPLEMENT_INGEST_NONCE_HEADER} must be 16-120 URL-safe characters.`);
   }
-  if (hasReplayNonce(nonce, nowMs)) {
+  if (nonceTracker.hasReplay(nonce, nowMs)) {
     throw new Error("Duplicate request nonce detected.");
   }
 
@@ -202,12 +182,12 @@ export function verifySupplementIngestSignedRequest(options: {
 
   const capturedAt = new Date(payload.capturedAt);
   assertCapturedAtWithinBounds(capturedAt, nowMs);
-  rememberNonce(nonce, nowMs);
+  nonceTracker.remember(nonce, nowMs);
 
   return { payload, capturedAt, timestampMs, nonce };
 }
 
 export function resetSupplementIngestNonceCacheForTests(): void {
-  seenNonces.clear();
+  nonceTracker.reset();
 }
 

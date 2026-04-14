@@ -4,6 +4,7 @@ import {
   toFiniteNumber,
   asRecord,
 } from "./teslaPowerhubUtils";
+import { normalizeBaseUrl as normalizeUrlOrFallback } from "./helpers";
 
 export const TESLA_POWERHUB_DEFAULT_TOKEN_URL = "https://gridlogic-api.sn.tesla.services/v1/auth/token";
 export const TESLA_POWERHUB_DEFAULT_API_BASE_URL = "https://gridlogic-api.sn.tesla.services/v2";
@@ -79,12 +80,6 @@ export type TeslaPowerhubMetricsProgress = {
 
 const MAX_WALK_DEPTH = 10;
 const GLOBAL_TIMEOUT_MS = 5 * 60 * 1000;
-
-function normalizeUrlOrFallback(raw: string | null | undefined, fallback: string): string {
-  const normalized = (raw ?? "").trim();
-  if (!normalized) return fallback;
-  return normalized.replace(/\/+$/, "");
-}
 
 function buildBasicAuth(clientId: string, clientSecret: string): string {
   return `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;

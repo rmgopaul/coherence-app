@@ -15,7 +15,8 @@ const Home = lazy(() => import("@/features/dashboard/Home"));
 const Dashboard = lazy(() => import("@/features/dashboard/Dashboard"));
 const SolarRecDashboard = lazy(() => import("@/features/solar-rec/SolarRecDashboard"));
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
-const EnphaseV2MeterReads = lazy(() => import("@/features/solar-readings/EnphaseV2MeterReads"));
+const EnphaseV4MeterReads = lazy(() => import("@/features/solar-readings/EnphaseV4MeterReads"));
+const EnphaseV2MeterReadsPage = lazy(() => import("@/features/solar-readings/EnphaseV2MeterReadsPage"));
 const SolarEdgeMeterReads = lazy(() => import("@/features/solar-readings/SolarEdgeMeterReads"));
 const FroniusMeterReads = lazy(() => import("@/features/solar-readings/FroniusMeterReads"));
 const EnnexOsMeterReads = lazy(() => import("@/features/solar-readings/EnnexOsMeterReads"));
@@ -79,8 +80,8 @@ function AppRoutes() {
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
       <Route path={"/address-checker"} component={withRouteSuspense(AddressChecker)} />
       <Route path={"/sunpower-readings"} component={withRouteSuspense(SunpowerReadings)} />
-      <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
-      <Route path={"/enphase-v2-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReads)} />
+      <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV4MeterReads)} />
+      <Route path={"/enphase-v2-meter-reads"} component={withRouteSuspense(EnphaseV2MeterReadsPage)} />
       <Route path={"/solaredge-meter-reads"} component={withRouteSuspense(SolarEdgeMeterReads)} />
       <Route path={"/fronius-meter-reads"} component={withRouteSuspense(FroniusMeterReads)} />
       <Route path={"/ennexos-meter-reads"} component={withRouteSuspense(EnnexOsMeterReads)} />

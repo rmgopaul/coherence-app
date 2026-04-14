@@ -17,6 +17,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import type { AppRouter } from "../../../../server/routers";
+import type { inferRouterOutputs } from "@trpc/server";
+
+type RouterOutputs = inferRouterOutputs<AppRouter>;
+type CalendarEvent = RouterOutputs["google"]["getCalendarEvents"][number];
+type GmailMessage = RouterOutputs["google"]["getGmailMessages"][number];
+type GmailWaitingOnItem = RouterOutputs["google"]["getGmailWaitingOn"][number];
+type TodoistTask = RouterOutputs["todoist"]["getTasks"][number];
+type TodoistProject = RouterOutputs["todoist"]["getProjects"][number];
+type Note = RouterOutputs["notes"]["list"][number];
+type NoteLink = Note["links"][number];
+type HabitEntry = RouterOutputs["habits"]["getForDate"][number];
+type MetricHistoryRow = RouterOutputs["metrics"]["getHistory"][number];
+type DriveFile = RouterOutputs["google"]["searchDrive"][number];
 import {
   getHiddenDashboardHeaderButtons,
   getHiddenDashboardSections,
@@ -168,7 +182,7 @@ const toPlainText = (content: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const formatCalendarEventLabel = (event: any) => {
+const formatCalendarEventLabel = (event: CalendarEvent) => {
   const summary = String(event?.summary || "Untitled event").trim() || "Untitled event";
   const startDateTime = event?.start?.dateTime;
   const startDate = event?.start?.date;
@@ -215,7 +229,7 @@ import { SUPPLEMENT_UNITS } from "@shared/const";
 const IGNORED_ALL_DAY_SUMMARIES = new Set(["home", "office", "wfh", "work from home", "remote", "travel", "vacation", "ooo", "out of office"]);
 
 /** Returns true if the event is a non-actionable all-day status marker (e.g. "Home"). */
-const isIgnoredStatusEvent = (event: any): boolean => {
+const isIgnoredStatusEvent = (event: CalendarEvent): boolean => {
   const summary = (event?.summary || "").trim().toLowerCase();
   if (!summary) return false;
   const isAllDay = !event?.start?.dateTime && !!event?.start?.date;
@@ -251,7 +265,7 @@ export default function Dashboard() {
   const [chatMessage, setChatMessage] = useState("");
   const [quickTodoistTaskInput, setQuickTodoistTaskInput] = useState("");
   const [driveSearchQuery, setDriveSearchQuery] = useState("");
-  const [driveSearchResults, setDriveSearchResults] = useState<any[] | null>(null);
+  const [driveSearchResults, setDriveSearchResults] = useState<DriveFile[] | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [todoistFilter, setTodoistFilter] = useState("all");
   const [dailyBrief, setDailyBrief] = useState<DailyBrief | null>(null);
@@ -327,10 +341,13 @@ export default function Dashboard() {
     staleTime: 300_000,
   });
   const sectionRatingMap = useMemo(() => {
-    const map: Record<string, string> = {};
+    const map: Record<string, number> = {};
     for (const rating of sectionRatings || []) {
       if (rating.sectionId && rating.eventValue) {
-        map[rating.sectionId] = rating.eventValue;
+        const num = Number(rating.eventValue);
+        if (Number.isFinite(num)) {
+          map[rating.sectionId] = num;
+        }
       }
     }
     return map;
@@ -373,7 +390,7 @@ export default function Dashboard() {
     if (!integration?.metadata) return null;
 
     try {
-      const parsed = JSON.parse(integration.metadata) as any;
+      const parsed = JSON.parse(integration.metadata) as Record<string, unknown>;
       const summary = (parsed?.summary ?? {}) as Record<string, unknown>;
       const sync = (parsed?.sync ?? {}) as Record<string, unknown>;
       const toNullableNumber = (value: unknown) =>
@@ -410,8 +427,8 @@ export default function Dashboard() {
   }, [integrations]);
 
 
-  const getEmailHeader = (message: any, headerName: string) => {
-    const header = message.payload?.headers?.find((h: any) => h.name === headerName);
+  const getEmailHeader = (message: GmailMessage, headerName: string) => {
+    const header = message.payload?.headers?.find((h: { name: string; value: string }) => h.name === headerName);
     return header?.value || "";
   };
 
@@ -462,7 +479,7 @@ export default function Dashboard() {
   });
   
   // Filter to show only upcoming events (not past events) in Central Time
-  const upcomingEvents = calendarEvents?.filter((event: any) => {
+  const upcomingEvents = calendarEvents?.filter((event) => {
     const startTime = event.start?.dateTime || event.start?.date;
     if (!startTime) return false;
     
@@ -474,7 +491,7 @@ export default function Dashboard() {
   }) || [];
   
   // Group events by date and assign colors
-  const groupedEvents = upcomingEvents.reduce((acc: any, event: any) => {
+  const groupedEvents = upcomingEvents.reduce((acc: Record<string, CalendarEvent[]>, event) => {
     const startTime = event.start?.dateTime || event.start?.date;
     const eventDate = new Date(startTime);
     const dateKey = eventDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -555,7 +572,7 @@ export default function Dashboard() {
 
   const todoistLabels = Array.from(
     new Set(
-      (allTodoistTasks ?? []).flatMap((task: any) =>
+      (allTodoistTasks ?? []).flatMap((task) =>
         Array.isArray(task.labels) ? task.labels : []
       )
     )
@@ -667,22 +684,22 @@ export default function Dashboard() {
   const filteredNotes = useMemo(() => {
     if (!notes) return [];
     if (noteNotebookFilter === "all") return notes;
-    return notes.filter((note: any) => (note.notebook || "General") === noteNotebookFilter);
+    return notes.filter((note) => (note.notebook || "General") === noteNotebookFilter);
   }, [notes, noteNotebookFilter]);
 
   const selectedTaskForLink = useMemo(
-    () => (todayTasks || []).find((task: any) => String(task.id) === linkTaskId) || null,
+    () => (todayTasks || []).find((task) => String(task.id) === linkTaskId) || null,
     [todayTasks, linkTaskId]
   );
 
   const selectedEventForLink = useMemo(
-    () => upcomingEvents.find((event: any) => String(event.id || "") === linkEventId) || null,
+    () => upcomingEvents.find((event) => String(event.id || "") === linkEventId) || null,
     [upcomingEvents, linkEventId]
   );
 
   const selectedCalendarHistoryEvent = useMemo(
     () =>
-      upcomingEvents.find((event: any) => String(event.id || "") === selectedCalendarHistoryEventId) || null,
+      upcomingEvents.find((event) => String(event.id || "") === selectedCalendarHistoryEventId) || null,
     [upcomingEvents, selectedCalendarHistoryEventId]
   );
 
@@ -698,7 +715,7 @@ export default function Dashboard() {
 
     const targetSeries = [recurringId, iCalUID].filter((value) => value.length > 0);
 
-    const matchesLink = (link: any) => {
+    const matchesLink = (link: NoteLink) => {
       if (link?.linkType !== "google_calendar_event") return false;
       if (String(link.externalId || "") === eventId) return true;
 
@@ -756,17 +773,17 @@ export default function Dashboard() {
     };
 
     return notes
-      .map((note: any) => {
+      .map((note) => {
         const matchingLinks = (Array.isArray(note.links) ? note.links : []).filter(matchesLink);
         if (matchingLinks.length === 0) return null;
         const latestOccurrence = matchingLinks
-          .map((link: any) => String(link.occurrenceStartIso || ""))
+          .map((link) => String(link.occurrenceStartIso || ""))
           .filter((value: string) => value.length > 0)
           .sort((a: string, b: string) => new Date(b).getTime() - new Date(a).getTime())[0];
         return { ...note, matchingLinks, latestOccurrence };
       })
-      .filter(Boolean)
-      .sort((a: any, b: any) => {
+      .filter(<T,>(v: T | null | undefined): v is T => v != null)
+      .sort((a, b) => {
         const aTs = new Date(a.updatedAt || a.createdAt || 0).getTime();
         const bTs = new Date(b.updatedAt || b.createdAt || 0).getTime();
         return bTs - aTs;
@@ -776,7 +793,7 @@ export default function Dashboard() {
   const todaysCalendarEvents = useMemo(() => {
     const now = new Date();
     return (calendarEvents || [])
-      .filter((event: any) => {
+      .filter((event) => {
         if (isIgnoredStatusEvent(event)) return false;
         const startTime = event.start?.dateTime || event.start?.date;
         if (!startTime) return false;
@@ -784,7 +801,7 @@ export default function Dashboard() {
         return isSameLocalDay(eventDate, now);
       })
       .slice(0, 8)
-      .map((event: any) => ({
+      .map((event) => ({
         summary: event.summary || "Untitled event",
         start: event.start?.dateTime || event.start?.date || "",
         location: event.location || "",
@@ -793,7 +810,7 @@ export default function Dashboard() {
 
   const todayEventCount = useMemo(() => {
     const now = new Date();
-    return (calendarEvents || []).filter((event: any) => {
+    return (calendarEvents || []).filter((event) => {
       if (isIgnoredStatusEvent(event)) return false;
       const startTime = event.start?.dateTime || event.start?.date;
       if (!startTime) return false;
@@ -814,8 +831,8 @@ export default function Dashboard() {
     todayStart.setHours(0, 0, 0, 0);
 
     const candidates = (calendarEvents || [])
-      .filter((event: any) => !isIgnoredStatusEvent(event))
-      .map((event: any) => {
+      .filter((event) => !isIgnoredStatusEvent(event))
+      .map((event) => {
         if (event?.start?.dateTime) {
           return {
             event,
@@ -832,12 +849,12 @@ export default function Dashboard() {
         }
         return null;
       })
-      .filter((item: any) => {
+      .filter((item): item is NonNullable<typeof item> => {
         if (!item) return false;
         if (item.isAllDay) return item.startDate.getTime() >= todayStart.getTime();
         return item.startDate.getTime() >= nowMs;
       })
-      .sort((a: any, b: any) => a.startDate.getTime() - b.startDate.getTime());
+      .sort((a, b) => a.startDate.getTime() - b.startDate.getTime());
 
     return candidates[0] ?? null;
   }, [calendarEvents, minuteTick]);
@@ -847,7 +864,7 @@ export default function Dashboard() {
       /(urgent|asap|action required|deadline|overdue|today|tomorrow|important|final notice|payment due|invoice)/i;
 
     return (gmailMessages || [])
-      .map((message: any) => {
+      .map((message) => {
         const subject = getEmailHeader(message, "Subject");
         const from = getEmailHeader(message, "From");
         const dateHeader = getEmailHeader(message, "Date");
@@ -910,7 +927,7 @@ export default function Dashboard() {
   }, [prioritizedEmails]);
 
   const waitingOnItems = useMemo(() => {
-    return (gmailWaitingOn || []).slice(0, 4).map((item: any) => ({
+    return (gmailWaitingOn || []).slice(0, 4).map((item) => ({
       id: String(item.threadId || item.id || ""),
       title: item.subject || "(No subject)",
       detail: item.to || item.from || "Awaiting response",
@@ -947,7 +964,7 @@ export default function Dashboard() {
       const previous = trpcUtils.google.getGmailMessages.getData(queryInput);
       trpcUtils.google.getGmailMessages.setData(queryInput, (current) => {
         if (!Array.isArray(current)) return current;
-        return current.filter((message: any) => message.id !== messageId);
+        return current.filter((message) => message.id !== messageId);
       });
       return { previous };
     },
@@ -1198,11 +1215,11 @@ export default function Dashboard() {
     updateLayoutPreferences.mutate({ widgetLayout: newLayout });
   };
 
-  const handleAddEmailToTodoist = (message: any, e: React.MouseEvent) => {
+  const handleAddEmailToTodoist = (message: GmailMessage, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    const getEmailHeader = (msg: any, headerName: string) => {
-      const header = msg.payload?.headers?.find((h: any) => h.name === headerName);
+    const getEmailHeader = (msg: GmailMessage, headerName: string) => {
+      const header = msg.payload?.headers?.find((h: { name: string; value: string }) => h.name === headerName);
       return header?.value || '';
     };
     const subject = getEmailHeader(message, "Subject");
@@ -1240,7 +1257,7 @@ export default function Dashboard() {
   };
 
   const handleSendNudge = (item: { id: string }) => {
-    const source = (gmailWaitingOn || []).find((row: any) => String(row.threadId || row.id || "") === item.id);
+    const source = (gmailWaitingOn || []).find((row) => String(row.threadId || row.id || "") === item.id);
     const url = typeof source?.url === "string" && source.url.length > 0
       ? source.url
       : `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(item.id)}`;
@@ -1298,7 +1315,7 @@ export default function Dashboard() {
     });
   };
 
-  const handleEditNote = (note: any) => {
+  const handleEditNote = (note: Note) => {
     setEditingNoteId(note.id);
     setNoteNotebookInput(note.notebook || "General");
     setNoteTitleInput(note.title || "");
@@ -1315,7 +1332,7 @@ export default function Dashboard() {
       linkType: "todoist_task",
       externalId: String(selectedTaskForLink.id),
       sourceUrl:
-        (selectedTaskForLink as any).url ||
+        ("url" in selectedTaskForLink ? String((selectedTaskForLink as Record<string, unknown>).url) : "") ||
         `https://todoist.com/app/task/${selectedTaskForLink.id}`,
       sourceTitle: String(selectedTaskForLink.content || "Todoist task"),
       metadata: {
@@ -1346,20 +1363,20 @@ export default function Dashboard() {
     });
   };
 
-  const handleCreateNoteFromTask = (task: any) => {
+  const handleCreateNoteFromTask = (task: TodoistTask) => {
     createNoteFromTaskMutation.mutate({
       taskId: String(task.id),
       taskContent: String(task.content || "Untitled task"),
-      taskUrl: task.url || `https://todoist.com/app/task/${task.id}`,
+      taskUrl: ("url" in task ? String((task as Record<string, unknown>).url) : "") || `https://todoist.com/app/task/${task.id}`,
       dueDate: task.due?.date ?? task.due?.string ?? undefined,
       projectName:
         todoistFilter.startsWith("project_")
-          ? todoistProjects?.find((p: any) => p.id === todoistFilter.replace("project_", ""))?.name
+          ? todoistProjects?.find((p) => p.id === todoistFilter.replace("project_", ""))?.name
           : undefined,
     });
   };
 
-  const handleCreateNoteFromCalendarEvent = (event: any) => {
+  const handleCreateNoteFromCalendarEvent = (event: CalendarEvent) => {
     createNoteFromCalendarMutation.mutate({
       eventId: String(event.id || ""),
       eventSummary: String(event.summary || "Untitled event"),
@@ -1371,7 +1388,7 @@ export default function Dashboard() {
     });
   };
 
-  const openNotebookForCalendarEvent = (event: any) => {
+  const openNotebookForCalendarEvent = (event: CalendarEvent) => {
     const params = new URLSearchParams();
     params.set("view", "calendar");
     if (event?.id) {
@@ -1963,7 +1980,7 @@ export default function Dashboard() {
     return null;
   }
   
-  const formatEventTime = (event: any) => {
+  const formatEventTime = (event: CalendarEvent) => {
     const start = event.start?.dateTime || event.start?.date;
     if (!start) return "";
     const date = new Date(start);
@@ -1986,7 +2003,7 @@ export default function Dashboard() {
   const recentMetricRows = (metricHistory || []).slice(0, 7);
   const dailyTrendChartData = [...recentMetricRows]
     .reverse()
-    .map((row: any) => ({
+    .map((row) => ({
       date: String(row.dateKey || "").slice(5),
       recovery: row.whoopRecoveryScore ?? null,
       steps: row.samsungSteps ?? null,
@@ -2007,7 +2024,7 @@ export default function Dashboard() {
   })();
   const habitCompletionChartData = (() => {
     const total = (habitsForToday || []).length;
-    const completed = (habitsForToday || []).filter((habit: any) => habit.completed).length;
+    const completed = (habitsForToday || []).filter((habit) => habit.completed).length;
     return [
       { name: "Completed", value: completed, color: "#059669" },
       { name: "Remaining", value: Math.max(0, total - completed), color: "#cbd5e1" },
@@ -2021,7 +2038,7 @@ export default function Dashboard() {
         <DashboardHero
           userName={preferences?.displayName || user?.name?.split(" ")[0]}
           stats={[
-            { label: "Tasks", value: (allTodoistTasks || []).filter((t: any) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
+            { label: "Tasks", value: (allTodoistTasks || []).filter((t) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
             { label: "Events", value: todayEventCount, icon: Calendar },
             { label: "Recovery", value: whoopSummary?.recoveryScore != null ? `${Math.round(whoopSummary.recoveryScore)}%` : "--", icon: HeartPulse },
             { label: "Completed", value: todoistCompletedLoading ? "..." : (todoistCompletedToday?.count ?? 0), icon: CheckSquare },
@@ -2154,7 +2171,7 @@ export default function Dashboard() {
         <div className="space-y-4">
           <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
             <TodaysPlan
-              calendarEvents={(calendarEvents || []).filter((e: any) => !isIgnoredStatusEvent(e))}
+              calendarEvents={(calendarEvents || []).filter((e) => !isIgnoredStatusEvent(e))}
               todoistTasks={allTodoistTasks || []}
               emails={gmailMessages || []}
               habits={habitsForToday || []}
@@ -2222,7 +2239,7 @@ export default function Dashboard() {
             hasSamsungHealth={hasSamsungHealth}
             isRefreshing={integrationsFetching}
             onRefresh={() => refetchIntegrations()}
-            sectionRating={sectionRatingMap["section-health"] as any}
+            sectionRating={sectionRatingMap["section-health"] }
           />
           <WhoopCard
             whoopSummary={whoopSummary}
@@ -2231,7 +2248,7 @@ export default function Dashboard() {
             isFetching={whoopFetching}
             errorMessage={whoopErrorMessage}
             onRefresh={() => refetchWhoop()}
-            sectionRating={sectionRatingMap["section-whoop"] as any}
+            sectionRating={sectionRatingMap["section-whoop"] }
           />
         </div>
       </div>
@@ -2275,7 +2292,7 @@ export default function Dashboard() {
                     <span>Samsung Steps</span>
                     <span>Todo Done</span>
                   </div>
-                  {recentMetricRows.map((row: any) => (
+                  {recentMetricRows.map((row) => (
                     <div
                       key={row.id}
                       className="grid grid-cols-4 gap-2 rounded-md border bg-muted/50 px-2 py-1.5 text-xs"
@@ -2305,7 +2322,7 @@ export default function Dashboard() {
               supplementTiming={supplementTiming}
               supplementDefinitions={supplementDefinitions}
               supplementLogs={supplementLogs}
-              sectionRating={sectionRatingMap["section-supplements"] as any}
+              sectionRating={sectionRatingMap["section-supplements"] }
               setSupplementName={setSupplementName}
               setSupplementDose={setSupplementDose}
               setSupplementDoseUnit={setSupplementDoseUnit}
@@ -2327,7 +2344,7 @@ export default function Dashboard() {
             onToggle={handleToggleHabit}
             isToggling={setHabitCompletion.isPending}
             onRefresh={() => refetchHabitsForToday()}
-            sectionRating={sectionRatingMap["section-tracking"] as any}
+            sectionRating={sectionRatingMap["section-tracking"] }
           />
 
           {isSectionVisible("notes") ? (
@@ -2346,7 +2363,7 @@ export default function Dashboard() {
               notesLoading={notesLoading}
               todayTasks={todayTasks}
               upcomingEvents={upcomingEvents}
-              sectionRating={sectionRatingMap["section-notes"] as any}
+              sectionRating={sectionRatingMap["section-notes"] }
               setNoteTitleInput={setNoteTitleInput}
               setNoteContentInput={setNoteContentInput}
               setNoteNotebookInput={setNoteNotebookInput}
