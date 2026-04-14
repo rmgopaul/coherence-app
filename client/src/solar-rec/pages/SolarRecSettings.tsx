@@ -245,7 +245,7 @@ const PROVIDERS = [
   { key: "apsystems", label: "APsystems", fields: ["appId", "appSecret"] },
   { key: "solarlog", label: "SolarLog", fields: ["deviceUrl", "password"] },
   { key: "growatt", label: "Growatt", fields: ["username", "password"] },
-  { key: "egauge", label: "eGauge", fields: ["baseUrl", "username", "password", "meterId"] },
+  { key: "egauge", label: "eGauge", fields: ["baseUrl", "username", "password", "meterId", "accessType"] },
   {
     key: "tesla-powerhub",
     label: "Tesla Powerhub",

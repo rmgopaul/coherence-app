@@ -1,3 +1,13 @@
+/**
+ * Tesla Powerhub monitoring adapter.
+ *
+ * Key fixes:
+ * - listSites throws with descriptive errors when all connections fail
+ *   (instead of returning empty array → silent skip)
+ * - getSnapshots returns "Error" with actual messages when API fails
+ *   (instead of "Not Found" which hides real failures)
+ * - Cache auto-clears on rejected promises so retries work
+ */
 import {
   getTeslaPowerhubGroupProductionMetrics,
   type TeslaPowerhubApiContext,
@@ -139,6 +149,7 @@ async function loadGroupSites(
   )
     .then((result) => result.sites)
     .catch((error) => {
+      // Clear failed cache entry so the next call retries fresh
       groupMetricsCache.delete(cacheKey);
       throw error;
     });
@@ -158,6 +169,7 @@ const adapter = {
     }
 
     const sitesById = new Map<string, { siteId: string; siteName: string }>();
+    const errors: string[] = [];
     const anchorDate = new Date().toISOString().slice(0, 10);
     for (const connection of connections) {
       try {
@@ -170,12 +182,18 @@ const adapter = {
           });
         });
       } catch (error) {
-        console.error(
-          "[Tesla Powerhub adapter] listSites error:",
-          error instanceof Error ? error.message : error
-        );
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error("[Tesla Powerhub adapter] listSites error:", msg);
+        errors.push(msg);
       }
     }
+
+    // If all connections failed, throw with the collected error messages
+    // so the monitoring service records a credential-level error row
+    if (sitesById.size === 0 && errors.length > 0) {
+      throw new Error(`Tesla Powerhub: all connections failed. ${errors[0]}`);
+    }
+
     return Array.from(sitesById.values());
   },
 
@@ -196,7 +214,9 @@ const adapter = {
       }));
     }
 
+    // Preload all group sites. Track errors so we can surface them.
     const sitesById = new Map<string, TeslaPowerhubSiteProductionMetrics>();
+    let preloadError: string | null = null;
     for (const connection of connections) {
       try {
         const sites = await loadGroupSites(connection, anchorDate);
@@ -206,16 +226,24 @@ const adapter = {
           }
         });
       } catch (error) {
-        console.error(
-          "[Tesla Powerhub adapter] getSnapshots preload error:",
-          error instanceof Error ? error.message : error
-        );
+        preloadError = error instanceof Error ? error.message : String(error);
+        console.error("[Tesla Powerhub adapter] getSnapshots preload error:", preloadError);
       }
     }
 
     return siteIds.map((siteId) => {
       const site = sitesById.get(siteId);
       if (!site) {
+        // If preload failed entirely, report the actual error instead of "Not Found"
+        if (preloadError && sitesById.size === 0) {
+          return {
+            siteId,
+            siteName: null,
+            status: "Error" as const,
+            lifetimeKwh: null,
+            errorMessage: preloadError,
+          };
+        }
         return {
           siteId,
           siteName: null,
