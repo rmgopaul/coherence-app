@@ -6189,7 +6189,7 @@ export const appRouter = router({
         let errorCount = 0;
         let circuitBroken = false;
 
-        const rows = await mapWithConcurrency(uniqueSiteIds, 10, async (siteId) => {
+        const rows = await mapWithConcurrency(uniqueSiteIds, 20, async (siteId) => {
           if (circuitBroken) {
             return {
               siteId,
