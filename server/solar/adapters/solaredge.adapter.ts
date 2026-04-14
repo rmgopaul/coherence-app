@@ -1,11 +1,18 @@
 /**
  * SolarEdge monitoring adapter.
+ *
+ * Site discovery: tries the SolarEdge /sites/list API first. If the API
+ * returns 0 sites (common with single-site API keys), falls back to
+ * metadata.siteIds — an array of { siteId, name } persisted via the
+ * "Upload Site IDs" CSV flow on the monitoring dashboard.
  */
 import {
   listSites as seListSites,
   getSiteProductionSnapshot,
   type SolarEdgeApiContext,
 } from "../../services/solar/solarEdge";
+
+type StoredSite = { siteId: string; name?: string | null };
 
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolarEdgeApiContext[] {
   if (credential.metadata) {
@@ -25,19 +32,53 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
   return [];
 }
 
+function getStoredSiteIds(credential: { metadata?: string | null }): StoredSite[] {
+  if (!credential.metadata) return [];
+  try {
+    const meta = JSON.parse(credential.metadata);
+    if (!Array.isArray(meta.siteIds)) return [];
+    return meta.siteIds
+      .filter((s: any) => typeof s === "object" && s && (s.siteId || s.id || s.meterNumber))
+      .map((s: any) => ({
+        siteId: String(s.siteId ?? s.id ?? s.meterNumber).trim(),
+        name: s.name ?? s.siteName ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
 const adapter = {
   async listSites(credential: { accessToken?: string | null; metadata?: string | null }) {
     const contexts = getContexts(credential);
     const allSites: { siteId: string; siteName: string }[] = [];
+
+    // 1. Try API discovery
     for (const ctx of contexts) {
       try {
         const { sites } = await seListSites(ctx);
         allSites.push(...sites.map((s) => ({ siteId: s.siteId, siteName: s.siteName })));
       } catch (err) {
-        console.error(`[SolarEdge adapter] listSites error:`, err instanceof Error ? err.message : err);
+        console.error(`[SolarEdge adapter] listSites API error:`, err instanceof Error ? err.message : err);
       }
     }
-    return allSites;
+
+    if (allSites.length > 0) return allSites;
+
+    // 2. Fall back to stored site IDs from metadata
+    const stored = getStoredSiteIds(credential);
+    if (stored.length > 0) {
+      return stored.map((s) => ({
+        siteId: s.siteId,
+        siteName: s.name ?? `Site ${s.siteId}`,
+      }));
+    }
+
+    // 3. Neither source produced sites
+    throw new Error(
+      "SolarEdge site list API returned 0 sites and no site IDs are stored. " +
+      "Upload a CSV of site IDs on the Monitoring Dashboard to enable this credential."
+    );
   },
 
   async getSnapshots(

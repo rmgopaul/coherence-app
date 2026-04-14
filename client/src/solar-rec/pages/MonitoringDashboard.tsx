@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,8 +20,184 @@ import {
   AlertTriangle,
   Minus,
   Loader2,
+  Upload,
 } from "lucide-react";
 import { useSolarRecAuth } from "../hooks/useSolarRecAuth";
+import { parseCsv } from "@/solar-rec-dashboard/lib/csvIo";
+
+// ---------------------------------------------------------------------------
+// Site IDs CSV upload dialog
+// ---------------------------------------------------------------------------
+
+type ParsedSite = { siteId: string; name: string | null };
+
+function parseSiteIdsCsv(csvText: string): ParsedSite[] {
+  const { headers, rows } = parseCsv(csvText);
+  if (rows.length === 0) return [];
+
+  // Auto-detect column names (case-insensitive)
+  const lowerHeaders = headers.map((h) => h.toLowerCase().replace(/[^a-z0-9]/g, ""));
+  const idCol = headers[lowerHeaders.findIndex((h) =>
+    ["siteid", "site_id", "id", "meternumber", "meter_number", "systemid", "system_id"].includes(h)
+  )] ?? headers[0]; // fall back to first column
+  const nameCol = headers[lowerHeaders.findIndex((h) =>
+    ["name", "sitename", "site_name", "system_name", "label"].includes(h)
+  )] ?? null;
+
+  const sites: ParsedSite[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const siteId = (row[idCol] ?? "").trim();
+    if (!siteId || seen.has(siteId)) continue;
+    seen.add(siteId);
+    sites.push({
+      siteId,
+      name: nameCol ? (row[nameCol] ?? "").trim() || null : null,
+    });
+  }
+  return sites;
+}
+
+function SiteIdsUploadDialog({
+  credentialId,
+  credentialLabel,
+  open,
+  onOpenChange,
+}: {
+  credentialId: string;
+  credentialLabel: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [parsed, setParsed] = useState<ParsedSite[] | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const existingQuery = trpc.credentials.getSiteIds.useQuery(
+    { credentialId },
+    { enabled: open }
+  );
+  const saveMutation = trpc.credentials.setSiteIds.useMutation({
+    onSuccess: (data) => {
+      existingQuery.refetch();
+      setParsed(null);
+      setFileName(null);
+      onOpenChange(false);
+    },
+  });
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    setFileName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const sites = parseSiteIdsCsv(reader.result as string);
+        if (sites.length === 0) {
+          setError("No valid site IDs found in the CSV. Ensure the file has a column named 'siteId', 'id', or similar.");
+          setParsed(null);
+        } else {
+          setParsed(sites);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to parse CSV.");
+        setParsed(null);
+      }
+    };
+    reader.readAsText(file);
+    // Reset input so the same file can be re-selected
+    e.target.value = "";
+  };
+
+  const handleSave = () => {
+    if (!parsed) return;
+    saveMutation.mutate({
+      credentialId,
+      siteIds: parsed.map((s) => ({ siteId: s.siteId, name: s.name ?? undefined })),
+    });
+  };
+
+  const existingCount = existingQuery.data?.siteIds.length ?? 0;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Upload Site IDs — {credentialLabel}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 pt-1">
+          {existingCount > 0 && (
+            <div className="rounded-md border bg-muted/40 p-2.5 text-xs">
+              <span className="font-medium">{existingCount}</span> site IDs currently stored.
+              Uploading a new CSV will replace them.
+            </div>
+          )}
+
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,.txt"
+            className="hidden"
+            onChange={handleFileChange}
+          />
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className="h-3.5 w-3.5 mr-1.5" />
+            {fileName ? fileName : "Choose CSV file"}
+          </Button>
+
+          <p className="text-[11px] text-muted-foreground">
+            CSV should have a column named <code className="bg-muted px-1 rounded">siteId</code> (or <code className="bg-muted px-1 rounded">id</code>). An optional <code className="bg-muted px-1 rounded">name</code> column adds labels.
+          </p>
+
+          {error && (
+            <p className="text-xs text-destructive">{error}</p>
+          )}
+
+          {parsed && (
+            <div className="rounded-md border p-2.5 space-y-1.5">
+              <p className="text-xs font-medium">
+                {parsed.length} site{parsed.length === 1 ? "" : "s"} found
+              </p>
+              <div className="max-h-40 overflow-y-auto space-y-0.5">
+                {parsed.slice(0, 50).map((s) => (
+                  <div key={s.siteId} className="text-[11px] text-muted-foreground flex gap-2">
+                    <span className="font-mono">{s.siteId}</span>
+                    {s.name && <span className="truncate">{s.name}</span>}
+                  </div>
+                ))}
+                {parsed.length > 50 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    ...and {parsed.length - 50} more
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          <Button
+            onClick={handleSave}
+            disabled={!parsed || saveMutation.isPending}
+            className="w-full"
+          >
+            {saveMutation.isPending ? "Saving..." : `Save ${parsed?.length ?? 0} Site IDs`}
+          </Button>
+
+          {saveMutation.error && (
+            <p className="text-xs text-destructive">{saveMutation.error.message}</p>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -249,6 +425,8 @@ export default function MonitoringDashboard() {
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
   const [selectedRun, setSelectedRun] = useState<ApiRun | null>(null);
+  const [uploadCredentialId, setUploadCredentialId] = useState<string | null>(null);
+  const [uploadCredentialLabel, setUploadCredentialLabel] = useState("");
   const { isOperator } = useSolarRecAuth();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
@@ -590,6 +768,19 @@ export default function MonitoringDashboard() {
                             className="h-3.5 w-3.5"
                           />
                           <span>{credential.provider} • {credential.label}</span>
+                          <button
+                            type="button"
+                            className="ml-1 p-0.5 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                            title="Upload site IDs CSV"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setUploadCredentialId(credential.id);
+                              setUploadCredentialLabel(`${credential.provider} • ${credential.label}`);
+                            }}
+                          >
+                            <Upload className="h-3 w-3" />
+                          </button>
                         </label>
                       );
                     })}
@@ -803,6 +994,18 @@ export default function MonitoringDashboard() {
           Not Run
         </div>
       </div>
+
+      {/* Site IDs upload dialog */}
+      {uploadCredentialId && (
+        <SiteIdsUploadDialog
+          credentialId={uploadCredentialId}
+          credentialLabel={uploadCredentialLabel}
+          open={!!uploadCredentialId}
+          onOpenChange={(open) => {
+            if (!open) setUploadCredentialId(null);
+          }}
+        />
+      )}
 
       {/* Run detail dialog */}
       <Dialog

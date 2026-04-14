@@ -1030,6 +1030,64 @@ const credentialsRouter = t.router({
       return { success: true };
     }),
 
+  getSiteIds: solarRecOperatorProcedure
+    .input(z.object({ credentialId: z.string() }))
+    .query(async ({ input }) => {
+      const { getSolarRecTeamCredential } = await import("../db");
+      const cred = await getSolarRecTeamCredential(input.credentialId);
+      if (!cred) return { siteIds: [] };
+      const meta = parseMetadataRecord(cred.metadata);
+      const raw = Array.isArray(meta.siteIds) ? meta.siteIds : [];
+      const siteIds = raw
+        .filter((s: any) => typeof s === "object" && s && (s.siteId || s.id))
+        .map((s: any) => ({
+          siteId: String(s.siteId ?? s.id).trim(),
+          name: typeof s.name === "string" ? s.name : null,
+        }));
+      return { siteIds };
+    }),
+
+  setSiteIds: solarRecOperatorProcedure
+    .input(
+      z.object({
+        credentialId: z.string(),
+        siteIds: z.array(
+          z.object({
+            siteId: z.string().min(1),
+            name: z.string().optional(),
+          })
+        ),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSolarRecTeamCredential, upsertSolarRecTeamCredential } =
+        await import("../db");
+      const cred = await getSolarRecTeamCredential(input.credentialId);
+      if (!cred) throw new Error("Credential not found.");
+
+      // Merge siteIds into existing metadata, preserving all other fields
+      const existing = parseMetadataRecord(cred.metadata);
+      const merged = {
+        ...existing,
+        siteIds: input.siteIds.map((s) => ({
+          siteId: s.siteId,
+          name: s.name ?? null,
+        })),
+      };
+
+      await upsertSolarRecTeamCredential({
+        id: cred.id,
+        provider: cred.provider,
+        connectionName: cred.connectionName ?? undefined,
+        accessToken: cred.accessToken ?? undefined,
+        refreshToken: cred.refreshToken ?? undefined,
+        metadata: JSON.stringify(merged),
+        createdBy: ctx.userId,
+      });
+
+      return { count: input.siteIds.length };
+    }),
+
   migrateFromMain: solarRecAdminProcedure.mutation(async ({ ctx }) => {
     const {
       getUserIntegrations,
