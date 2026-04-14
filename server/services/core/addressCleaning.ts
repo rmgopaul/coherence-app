@@ -28,19 +28,53 @@ const ADDRESS_CLEANING_SYSTEM_PROMPT = [
   "20. CITY MISSPELLINGS: Fix obvious misspellings — 'Hillsde'→'Hillside', 'Ofallon'→\"O'Fallon\", 'Milledgville'→'Milledgeville', 'Lagrange Park'→'La Grange Park'. Preserve proper capitalization: 'Dekalb'→'DeKalb', 'Mchenry'→'McHenry'.",
 ].join("\n");
 
-export async function callLlmForAddressCleaning(
+const ADDRESS_QA_SYSTEM_PROMPT = [
+  "You are a QA reviewer for US mailing address data. Return valid JSON: {\"rows\":[...]}. No prose.",
+  "",
+  "You are reviewing address records that have ALREADY been cleaned once. Your job is to catch remaining errors.",
+  "Return EXACTLY the same number of rows, in the SAME order, with the SAME keys.",
+  "",
+  "FIX THESE COMMON REMAINING ERRORS:",
+  "1. SPLIT ORDINALS still present: '55 Th Pl'→'55th Pl', '120 Th Ave'→'120th Ave', '92 Nd Ave'→'92nd Ave', '800 Th St'→'800th St'.",
+  "2. STREET NAME FUSED IN CITY: If mailingAddress1 is just a house number (e.g. '301') and city looks like 'N Grant St Oblong', move the street portion to addr1: addr1='301 N Grant St', city='Oblong'.",
+  "3. STATE+ZIP STILL IN CITY: 'IL 62814' or 'IL. 60502' in city → extract to state/zip, city=''.",
+  "4. CITY MISSPELLINGS: 'Hillsde'→'Hillside', 'Ofallon'→\"O'Fallon\", 'Dekalb'→'DeKalb', 'Mchenry'→'McHenry', 'Lagrange Park'→'La Grange Park', 'Milledgville'→'Milledgeville'.",
+  "5. MISSING CITY: If city is empty but you can infer it from the zip code with high confidence, fill it in.",
+  "6. WRONG STATE for ZIP: Illinois zips 60000-62999 → state must be 'IL'. Missouri zips 63000-65999 → 'MO'. Correct mismatches.",
+  "7. GARBAGE DATA: Remove column headers, email labels, 'Payee Contact Email Address:', phone numbers, or other non-address data from any field.",
+  "8. ADDR2 SHOULD BE EMPTY: If mailingAddress2 contains a city name, state, zip, or non-unit text, clear it and move data to correct fields.",
+  "9. Do NOT invent data. Empty string if uncertain.",
+  "10. Standardize: Street→St, Avenue→Ave, Road→Rd, Drive→Dr, Lane→Ln, Court→Ct.",
+].join("\n");
+
+type LlmInputRow = {
+  key: string;
+  payeeName: string | null;
+  mailingAddress1: string | null;
+  mailingAddress2: string | null;
+  cityStateZip: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+};
+
+type LlmOutputRow = {
+  key: string;
+  payeeName: string | null;
+  mailingAddress1: string | null;
+  mailingAddress2: string | null;
+  city: string | null;
+  state: string | null;
+  zip: string | null;
+};
+
+async function callLlmRaw(
   provider: "anthropic" | "openai",
   apiKey: string,
   model: string,
-  rows: Array<{ key: string; payeeName: string | null; mailingAddress1: string | null; mailingAddress2: string | null; cityStateZip: string | null; city: string | null; state: string | null; zip: string | null }>,
-): Promise<Array<{ key: string; payeeName: string | null; mailingAddress1: string | null; mailingAddress2: string | null; city: string | null; state: string | null; zip: string | null }>> {
-  const userContent = JSON.stringify({
-    instructions: `Clean these ${rows.length} ambiguous address records. Return EXACTLY ${rows.length} rows.`,
-    rows,
-  });
-
-  let content: string;
-
+  systemPrompt: string,
+  userContent: string,
+): Promise<string> {
   if (provider === "anthropic") {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -53,7 +87,7 @@ export async function callLlmForAddressCleaning(
       body: JSON.stringify({
         model,
         max_tokens: 16384,
-        system: ADDRESS_CLEANING_SYSTEM_PROMPT,
+        system: systemPrompt,
         messages: [{ role: "user", content: userContent }],
       }),
     });
@@ -66,7 +100,7 @@ export async function callLlmForAddressCleaning(
     }
 
     const data = await response.json() as any;
-    content = data?.content?.[0]?.text ?? "";
+    return data?.content?.[0]?.text ?? "";
   } else {
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -79,7 +113,7 @@ export async function callLlmForAddressCleaning(
         model,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: ADDRESS_CLEANING_SYSTEM_PROMPT },
+          { role: "system", content: systemPrompt },
           { role: "user", content: userContent },
         ],
       }),
@@ -93,12 +127,13 @@ export async function callLlmForAddressCleaning(
     }
 
     const data = await response.json() as any;
-    content = data?.choices?.[0]?.message?.content ?? "";
+    return data?.choices?.[0]?.message?.content ?? "";
   }
+}
 
+function parseLlmResponse(content: string): LlmOutputRow[] {
   if (!content) throw new Error("LLM returned empty response.");
 
-  // Extract JSON from potential markdown code fences
   const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
   const jsonStr = jsonMatch ? jsonMatch[1].trim() : content.trim();
 
@@ -116,6 +151,71 @@ export async function callLlmForAddressCleaning(
     state: toNonEmptyString(row.state),
     zip: toNonEmptyString(row.zip),
   }));
+}
+
+/**
+ * Two-pass LLM address cleaning:
+ * Pass 1 — Clean raw address data (uses ADDRESS_CLEANING_SYSTEM_PROMPT)
+ * Pass 2 — QA review of Pass 1 results (uses ADDRESS_QA_SYSTEM_PROMPT)
+ */
+export async function callLlmForAddressCleaning(
+  provider: "anthropic" | "openai",
+  apiKey: string,
+  model: string,
+  rows: LlmInputRow[],
+): Promise<LlmOutputRow[]> {
+  // ── Pass 1: Clean ──────────────────────────────────────────────
+  const pass1Content = await callLlmRaw(
+    provider,
+    apiKey,
+    model,
+    ADDRESS_CLEANING_SYSTEM_PROMPT,
+    JSON.stringify({
+      instructions: `Clean these ${rows.length} address records. Return EXACTLY ${rows.length} rows.`,
+      rows,
+    }),
+  );
+  const pass1Rows = parseLlmResponse(pass1Content);
+
+  console.log(`[AI Cleaning] Pass 1 complete: ${pass1Rows.length} rows returned.`);
+
+  // ── Pass 2: QA review ──────────────────────────────────────────
+  // Feed Pass 1 output back for a second review with the QA prompt
+  try {
+    const pass2Input = pass1Rows.map((r) => ({
+      key: r.key,
+      payeeName: r.payeeName,
+      mailingAddress1: r.mailingAddress1,
+      mailingAddress2: r.mailingAddress2,
+      city: r.city,
+      state: r.state,
+      zip: r.zip,
+    }));
+
+    const pass2Content = await callLlmRaw(
+      provider,
+      apiKey,
+      model,
+      ADDRESS_QA_SYSTEM_PROMPT,
+      JSON.stringify({
+        instructions: `QA-review these ${pass2Input.length} pre-cleaned address records. Fix any remaining errors. Return EXACTLY ${pass2Input.length} rows.`,
+        rows: pass2Input,
+      }),
+    );
+    const pass2Rows = parseLlmResponse(pass2Content);
+
+    console.log(`[AI Cleaning] Pass 2 (QA) complete: ${pass2Rows.length} rows returned.`);
+
+    // Use Pass 2 if it returned the right count, else fall back to Pass 1
+    if (pass2Rows.length === rows.length) {
+      return pass2Rows;
+    }
+    console.warn(`[AI Cleaning] Pass 2 returned ${pass2Rows.length} rows (expected ${rows.length}). Using Pass 1 results.`);
+    return pass1Rows;
+  } catch (pass2Error) {
+    console.error(`[AI Cleaning] Pass 2 (QA) failed: ${pass2Error instanceof Error ? pass2Error.message : "Unknown error"}. Using Pass 1 results.`);
+    return pass1Rows;
+  }
 }
 
 export function toNonEmptyString(value: unknown): string | null {

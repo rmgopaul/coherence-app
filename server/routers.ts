@@ -9152,61 +9152,60 @@ export const appRouter = router({
         // Build lookup of deterministic results by key
         const resultByKey = new Map(deterministicResults.map((r) => [r.key, r]));
 
-        // ── 2. LLM pass for ambiguous rows only ──────────────────
-        if (ambiguousRows.length > 0) {
-          // Try Anthropic first, then OpenAI as fallback
-          const anthropicIntegration = await getIntegrationByProvider(ctx.user.id, "anthropic");
-          const openaiIntegration = await getIntegrationByProvider(ctx.user.id, "openai");
+        // ── 2. Two-pass LLM cleaning on ALL rows ─────────────────
+        // Send all rows (not just ambiguous) so the LLM can fix
+        // misspellings, ordinals, and other issues the deterministic
+        // pass can't handle.
+        const anthropicIntegration = await getIntegrationByProvider(ctx.user.id, "anthropic");
+        const openaiIntegration = await getIntegrationByProvider(ctx.user.id, "openai");
 
-          const llmProvider = anthropicIntegration?.accessToken ? "anthropic" : openaiIntegration?.accessToken ? "openai" : null;
-          const llmApiKey = llmProvider === "anthropic" ? anthropicIntegration!.accessToken! : llmProvider === "openai" ? openaiIntegration!.accessToken! : null;
+        const llmProvider = anthropicIntegration?.accessToken ? "anthropic" : openaiIntegration?.accessToken ? "openai" : null;
+        const llmApiKey = llmProvider === "anthropic" ? anthropicIntegration!.accessToken! : llmProvider === "openai" ? openaiIntegration!.accessToken! : null;
 
-          if (llmProvider && llmApiKey) {
-            const ambiguousKeys = new Set(ambiguousRows.map((r) => r.key));
-            console.log(`[AI Cleaning] ${deterministicResults.length - ambiguousRows.length} cleaned deterministically, ${ambiguousRows.length} sent to ${llmProvider} for review.`);
+        if (llmProvider && llmApiKey) {
+          console.log(`[AI Cleaning] Sending all ${sourceRows.length} rows to ${llmProvider} for two-pass cleaning (${ambiguousRows.length} ambiguous).`);
 
-            try {
-              const llmCleaned = await callLlmForAddressCleaning(
-                llmProvider,
-                llmApiKey,
-                llmProvider === "anthropic"
-                  ? (parseJsonMetadata(anthropicIntegration!.metadata).model as string || "claude-sonnet-4-20250514")
-                  : resolveOpenAIModel(openaiIntegration!.metadata),
-                ambiguousRows
-              );
+          try {
+            const llmCleaned = await callLlmForAddressCleaning(
+              llmProvider,
+              llmApiKey,
+              llmProvider === "anthropic"
+                ? (parseJsonMetadata(anthropicIntegration!.metadata).model as string || "claude-sonnet-4-20250514")
+                : resolveOpenAIModel(openaiIntegration!.metadata),
+              sourceRows
+            );
 
-              // Merge LLM results into deterministic results,
-              // re-sanitizing to catch LLM output errors (e.g. "IL 62814" in city)
-              for (const llmRow of llmCleaned) {
-                if (ambiguousKeys.has(llmRow.key)) {
-                  const sanitized = sanitizeMailingFields({
-                    payeeName: llmRow.payeeName,
-                    mailingAddress1: llmRow.mailingAddress1,
-                    mailingAddress2: llmRow.mailingAddress2,
-                    city: llmRow.city,
-                    state: llmRow.state,
-                    zip: llmRow.zip,
-                  });
-                  resultByKey.set(llmRow.key, {
-                    key: llmRow.key,
-                    payeeName: sanitized.payeeName,
-                    mailingAddress1: sanitized.mailingAddress1,
-                    mailingAddress2: sanitized.mailingAddress2,
-                    cityStateZip: resultByKey.get(llmRow.key)?.cityStateZip ?? null,
-                    city: sanitized.city,
-                    state: sanitized.state,
-                    zip: sanitized.zip,
-                    ambiguous: false,
-                    ambiguousReason: "",
-                  });
-                }
+            // Merge LLM results, re-sanitizing to catch any remaining LLM output errors
+            const sourceKeySet = new Set(sourceRows.map((r) => r.key));
+            for (const llmRow of llmCleaned) {
+              if (sourceKeySet.has(llmRow.key)) {
+                const sanitized = sanitizeMailingFields({
+                  payeeName: llmRow.payeeName,
+                  mailingAddress1: llmRow.mailingAddress1,
+                  mailingAddress2: llmRow.mailingAddress2,
+                  city: llmRow.city,
+                  state: llmRow.state,
+                  zip: llmRow.zip,
+                });
+                resultByKey.set(llmRow.key, {
+                  key: llmRow.key,
+                  payeeName: sanitized.payeeName,
+                  mailingAddress1: sanitized.mailingAddress1,
+                  mailingAddress2: sanitized.mailingAddress2,
+                  cityStateZip: resultByKey.get(llmRow.key)?.cityStateZip ?? null,
+                  city: sanitized.city,
+                  state: sanitized.state,
+                  zip: sanitized.zip,
+                  ambiguous: false,
+                  ambiguousReason: "",
+                });
               }
-            } catch (llmError) {
-              console.error(`[AI Cleaning] LLM pass failed: ${llmError instanceof Error ? llmError.message : "Unknown error"}. Using deterministic results for ambiguous rows.`);
             }
-          } else {
-            console.warn(`[AI Cleaning] No AI provider connected. ${ambiguousRows.length} ambiguous rows cleaned deterministically only.`);
+          } catch (llmError) {
+            console.error(`[AI Cleaning] LLM two-pass failed: ${llmError instanceof Error ? llmError.message : "Unknown error"}. Using deterministic results.`);
           }
+        } else {
+          console.warn(`[AI Cleaning] No AI provider connected. All ${sourceRows.length} rows cleaned deterministically only.`);
         }
 
         // ── 3. Build response ────────────────────────────────────
