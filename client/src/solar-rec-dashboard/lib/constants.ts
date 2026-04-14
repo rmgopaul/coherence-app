@@ -6,6 +6,11 @@
  * the pagesize constants, and the REMOTE_* keys here too.
  */
 
+import type {
+  ChangeOwnershipStatus,
+  OwnershipStatus,
+} from "@/solar-rec-dashboard/state/types";
+
 /**
  * Transferee / transferor name fragments that identify the receiving entity
  * as an Illinois utility (ComEd, Ameren Illinois, MidAmerican). A transfer
@@ -183,3 +188,27 @@ export const DASHBOARD_TAB_VALUES = [
 
 export const DEFAULT_DASHBOARD_TAB = "overview";
 export const DASHBOARD_TAB_VALUE_SET = new Set<string>(DASHBOARD_TAB_VALUES);
+
+// ---------------------------------------------------------------------------
+// Ownership status orderings (for dropdowns, breakdown tables, and snapshot
+// diffs). Used by both the parent dashboard and the extracted Ownership +
+// ChangeOwnership tabs.
+// ---------------------------------------------------------------------------
+
+export const OWNERSHIP_ORDER: OwnershipStatus[] = [
+  "Transferred and Reporting",
+  "Transferred and Not Reporting",
+  "Not Transferred and Reporting",
+  "Not Transferred and Not Reporting",
+  "Terminated and Reporting",
+  "Terminated and Not Reporting",
+];
+
+export const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
+  "Transferred and Reporting",
+  "Transferred and Not Reporting",
+  "Terminated and Reporting",
+  "Terminated and Not Reporting",
+  "Change of Ownership - Not Transferred and Reporting",
+  "Change of Ownership - Not Transferred and Not Reporting",
+];

@@ -41,6 +41,12 @@ const PerformanceRatioTabLazy = lazy(
 const OfflineMonitoringTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/OfflineMonitoringTab")
 );
+const ChangeOwnershipTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/ChangeOwnershipTab")
+);
+const OwnershipTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/OwnershipTab")
+);
 import {
   buildMeterReadDownloadFileName,
   convertMeterReadWorkbook,
@@ -60,6 +66,7 @@ import {
 import type {
   AnnualProductionProfile,
   ChangeOwnershipStatus,
+  ChangeOwnershipSummary,
   CsvDataset,
   CsvRow,
   DatasetKey,
@@ -107,6 +114,8 @@ import {
   ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE,
   REC_PERFORMANCE_RESULTS_PAGE_SIZE,
   OFFLINE_DETAIL_PAGE_SIZE,
+  OWNERSHIP_ORDER,
+  CHANGE_OWNERSHIP_ORDER,
   SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
   IL_ABP_TRANSFERRED_CONTRACT_TYPE,
   IL_ABP_TERMINATED_CONTRACT_TYPE,
@@ -182,6 +191,8 @@ import {
   createLogId,
   classifyMonitoringAccessType,
   resolveOfflineMonitoringAccessFields,
+  ownershipBadgeClass,
+  changeOwnershipBadgeClass,
 } from "@/solar-rec-dashboard/lib/helpers";
 
 
@@ -590,23 +601,7 @@ const DATASET_DEFINITIONS: Record<
   },
 };
 
-const OWNERSHIP_ORDER: OwnershipStatus[] = [
-  "Transferred and Reporting",
-  "Transferred and Not Reporting",
-  "Not Transferred and Reporting",
-  "Not Transferred and Not Reporting",
-  "Terminated and Reporting",
-  "Terminated and Not Reporting",
-];
-
-const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
-  "Transferred and Reporting",
-  "Transferred and Not Reporting",
-  "Terminated and Reporting",
-  "Terminated and Not Reporting",
-  "Change of Ownership - Not Transferred and Reporting",
-  "Change of Ownership - Not Transferred and Not Reporting",
-];
+// OWNERSHIP_ORDER, CHANGE_OWNERSHIP_ORDER — moved to @/solar-rec-dashboard/lib/constants
 
 const MULTI_APPEND_DATASET_KEYS = new Set<DatasetKey>(["accountSolarGeneration", "convertedReads", "transferHistory"]);
 const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccReport3Rows"]);
@@ -1045,17 +1040,7 @@ function sumSchedule(row: CsvRow, suffix: "_quantity_required" | "_quantity_deli
   return hasData ? total : null;
 }
 
-function ownershipBadgeClass(status: OwnershipStatus): string {
-  if (status.startsWith("Transferred")) return "bg-blue-100 text-blue-800 border-blue-200";
-  if (status.startsWith("Terminated")) return "bg-rose-100 text-rose-800 border-rose-200";
-  return "bg-emerald-100 text-emerald-800 border-emerald-200";
-}
-
-function changeOwnershipBadgeClass(status: ChangeOwnershipStatus): string {
-  if (status.startsWith("Transferred")) return "bg-blue-100 text-blue-800 border-blue-200";
-  if (status.startsWith("Terminated")) return "bg-rose-100 text-rose-800 border-rose-200";
-  return "bg-amber-100 text-amber-900 border-amber-200";
-}
+// ownershipBadgeClass, changeOwnershipBadgeClass — moved to @/solar-rec-dashboard/lib/helpers
 
 // createLogId — moved to @/solar-rec-dashboard/lib/helpers
 
@@ -1733,20 +1718,8 @@ export default function SolarRecDashboard() {
   const forcedRemoteDatasetSyncKeysRef = useRef<Set<DatasetKey>>(new Set());
   const remoteSourceManifestsRef = useRef<Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>>({});
   remoteSourceManifestsRef.current = remoteSourceManifests;
-  const [ownershipFilter, setOwnershipFilter] = useState<OwnershipStatus | "All">("All");
-  const [searchTerm, setSearchTerm] = useState("");
-  const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<ChangeOwnershipStatus | "All">("All");
-  const [changeOwnershipSearch, setChangeOwnershipSearch] = useState("");
-  const [changeOwnershipSortBy, setChangeOwnershipSortBy] = useState<
-    | "systemName"
-    | "contractValue"
-    | "installedKwAc"
-    | "contractDate"
-    | "zillowSoldDate"
-    | "status"
-    | "reporting"
-  >("contractValue");
-  const [changeOwnershipSortDir, setChangeOwnershipSortDir] = useState<"asc" | "desc">("desc");
+  // ownershipFilter, searchTerm — moved to @/solar-rec-dashboard/components/OwnershipTab
+  // changeOwnership{Filter,Search,SortBy,SortDir} — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
   // offline* filter/sort state — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
   const [performanceContractId, setPerformanceContractId] = useState("");
   const [performanceDeliveryYearKey, setPerformanceDeliveryYearKey] = useState("");
@@ -3370,25 +3343,7 @@ export default function SolarRecDashboard() {
     [recValuePageEndIndex, recValuePageStartIndex, recValueRows]
   );
 
-  const filteredOwnershipRows = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase();
-    return part2EligibleSystemsForSizeReporting.filter((system) => {
-      const matchesFilter = ownershipFilter === "All" ? true : system.ownershipStatus === ownershipFilter;
-      if (!matchesFilter) return false;
-      if (!normalizedSearch) return true;
-
-      const haystack = [
-        system.systemName,
-        system.systemId ?? "",
-        system.trackingSystemRefId ?? "",
-        system.contractStatusText,
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(normalizedSearch);
-    });
-  }, [ownershipFilter, part2EligibleSystemsForSizeReporting, searchTerm]);
+  // filteredOwnershipRows — moved to @/solar-rec-dashboard/components/OwnershipTab
 
   const changeOwnershipRows = useMemo(() => {
     const eligiblePart2ApplicationIds = new Set<string>();
@@ -3514,7 +3469,7 @@ export default function SolarRecDashboard() {
     );
   }, [part2VerifiedAbpRows, systems]);
 
-  const changeOwnershipSummary = useMemo(() => {
+  const changeOwnershipSummary = useMemo<ChangeOwnershipSummary>(() => {
     const total = changeOwnershipRows.length;
     const reporting = changeOwnershipRows.filter((system) => system.isReporting).length;
     const notReporting = total - reporting;
@@ -3555,79 +3510,7 @@ export default function SolarRecDashboard() {
     [changeOwnershipRows]
   );
 
-  const filteredChangeOwnershipRows = useMemo(() => {
-    const normalizedSearch = changeOwnershipSearch.trim().toLowerCase();
-    const rows = changeOwnershipRows.filter((system) => {
-      const matchesFilter =
-        changeOwnershipFilter === "All" ? true : system.changeOwnershipStatus === changeOwnershipFilter;
-      if (!matchesFilter) return false;
-      if (!normalizedSearch) return true;
-
-      const haystack = [
-        system.systemName,
-        system.systemId ?? "",
-        system.trackingSystemRefId ?? "",
-        system.contractType ?? "",
-        system.zillowStatus ?? "",
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(normalizedSearch);
-    });
-
-    const direction = changeOwnershipSortDir === "asc" ? 1 : -1;
-    rows.sort((a, b) => {
-      const byName =
-        a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }) * direction;
-
-      if (changeOwnershipSortBy === "systemName") return byName;
-      if (changeOwnershipSortBy === "status") {
-        const aStatus = a.changeOwnershipStatus ?? "";
-        const bStatus = b.changeOwnershipStatus ?? "";
-        const diff =
-          aStatus.localeCompare(bStatus, undefined, { sensitivity: "base", numeric: true }) * direction;
-        return diff === 0 ? byName : diff;
-      }
-      if (changeOwnershipSortBy === "reporting") {
-        const aValue = a.isReporting ? 1 : 0;
-        const bValue = b.isReporting ? 1 : 0;
-        if (aValue === bValue) return byName;
-        return (aValue - bValue) * direction;
-      }
-      if (changeOwnershipSortBy === "contractValue") {
-        const aValue = resolveContractValueAmount(a);
-        const bValue = resolveContractValueAmount(b);
-        if (aValue === bValue) return byName;
-        return (aValue - bValue) * direction;
-      }
-      if (changeOwnershipSortBy === "installedKwAc") {
-        const aValue = a.installedKwAc ?? Number.NEGATIVE_INFINITY;
-        const bValue = b.installedKwAc ?? Number.NEGATIVE_INFINITY;
-        if (aValue === bValue) return byName;
-        return (aValue - bValue) * direction;
-      }
-      if (changeOwnershipSortBy === "contractDate") {
-        const aValue = a.contractedDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-        const bValue = b.contractedDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-        if (aValue === bValue) return byName;
-        return (aValue - bValue) * direction;
-      }
-
-      const aValue = a.zillowSoldDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-      const bValue = b.zillowSoldDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-      if (aValue === bValue) return byName;
-      return (aValue - bValue) * direction;
-    });
-
-    return rows;
-  }, [
-    changeOwnershipFilter,
-    changeOwnershipRows,
-    changeOwnershipSearch,
-    changeOwnershipSortBy,
-    changeOwnershipSortDir,
-  ]);
+  // filteredChangeOwnershipRows — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
   const ownershipCountTileRows = useMemo(
     () => ({
@@ -3912,41 +3795,7 @@ export default function SolarRecDashboard() {
     triggerCsvDownload(fileName, csv);
   };
 
-  const downloadChangeOwnershipDetailFilteredCsv = () => {
-    if (filteredChangeOwnershipRows.length === 0) return;
-
-    const headers = [
-      "system_name",
-      "system_id",
-      "tracking_id",
-      "ac_size_kw",
-      "contract_value",
-      "contract_date",
-      "zillow_sold_date",
-      "zillow_status",
-      "contract_type",
-      "status_category",
-      "reporting",
-    ];
-
-    const rows = filteredChangeOwnershipRows.map((system) => ({
-      system_name: system.systemName,
-      system_id: system.systemId ?? "",
-      tracking_id: system.trackingSystemRefId ?? "",
-      ac_size_kw: system.installedKwAc ?? "",
-      contract_value: resolveContractValueAmount(system),
-      contract_date: system.contractedDate ? system.contractedDate.toISOString().slice(0, 10) : "",
-      zillow_sold_date: system.zillowSoldDate ? system.zillowSoldDate.toISOString().slice(0, 10) : "",
-      zillow_status: system.zillowStatus ?? "",
-      contract_type: system.contractType ?? "",
-      status_category: system.changeOwnershipStatus ?? "",
-      reporting: system.isReporting ? "Yes" : "No",
-    }));
-
-    const csv = buildCsv(headers, rows);
-    const fileName = `coo-flagged-systems-detail-${timestampForCsvFileName()}.csv`;
-    triggerCsvDownload(fileName, csv);
-  };
+  // downloadChangeOwnershipDetailFilteredCsv — moved to @/solar-rec-dashboard/components/ChangeOwnershipTab
 
   // zeroReportingInstallerPlatformRows, downloadOfflineSystemsCsv, downloadOfflineDetailFilteredCsv
   // — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
@@ -10041,297 +9890,22 @@ const aiDataContext = useMemo(() => {
             )}
           </div>)}
 
-          {activeTab === "change-ownership" && (<div className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Change of Ownership Logic</CardTitle>
-                <CardDescription>
-                  A system is flagged for COO when contract type is IL ABP - Transferred/Terminated, or when Zillow is
-                  Sold and sold date is after contract date.
-                </CardDescription>
-              </CardHeader>
-            </Card>
+          {activeTab === "change-ownership" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading change of ownership tab...</div>}>
+              <ChangeOwnershipTabLazy
+                changeOwnershipRows={changeOwnershipRows}
+                changeOwnershipSummary={changeOwnershipSummary}
+              />
+            </Suspense>
+          )}
 
-            <div className="grid gap-4 md:grid-cols-3">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Flagged Change of Ownership Systems</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(changeOwnershipSummary.total)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Reporting (Last 3 Months)</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(changeOwnershipSummary.reporting)}</CardTitle>
-                  <CardDescription>{formatPercent(changeOwnershipSummary.reportingPercent)}</CardDescription>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Not Reporting (Last 3 Months)</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(changeOwnershipSummary.notReporting)}</CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-3">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Contract Value (COO Total)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(changeOwnershipSummary.contractedValueTotal)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Contract Value Reporting</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(changeOwnershipSummary.contractedValueReporting)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Contract Value Not Reporting</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(changeOwnershipSummary.contractedValueNotReporting)}</CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Status Breakdown</CardTitle>
-                <CardDescription>
-                  Uses contract type for IL ABP Transferred/Terminated, otherwise marks as Change of Ownership - Not
-                  Transferred.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {changeOwnershipSummary.counts.map((item) => (
-                  <div key={item.status} className="rounded-lg border border-slate-200 p-3 bg-white">
-                    <p className="text-xs text-slate-500">{item.status}</p>
-                    <p className="text-2xl font-semibold text-slate-900">{formatNumber(item.count)}</p>
-                    <p className="text-xs text-slate-500">{formatPercent(item.percent)}</p>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                  <CardTitle className="text-base">Flagged Systems Detail</CardTitle>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={downloadChangeOwnershipDetailFilteredCsv}
-                    disabled={filteredChangeOwnershipRows.length === 0}
-                  >
-                    Export Filtered Table CSV
-                  </Button>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Filter by status</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={changeOwnershipFilter}
-                      onChange={(event) =>
-                        setChangeOwnershipFilter(event.target.value as ChangeOwnershipStatus | "All")
-                      }
-                    >
-                      <option value="All">All Categories</option>
-                      {CHANGE_OWNERSHIP_ORDER.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Search</label>
-                    <Input
-                      placeholder="System name, IDs, contract type..."
-                      value={changeOwnershipSearch}
-                      onChange={(event) => setChangeOwnershipSearch(event.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Sort by</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={changeOwnershipSortBy}
-                      onChange={(event) =>
-                        setChangeOwnershipSortBy(
-                          event.target.value as
-                            | "systemName"
-                            | "contractValue"
-                            | "installedKwAc"
-                            | "contractDate"
-                            | "zillowSoldDate"
-                            | "status"
-                            | "reporting"
-                        )
-                      }
-                    >
-                      <option value="contractValue">Contract Value</option>
-                      <option value="installedKwAc">AC Size (kW)</option>
-                      <option value="contractDate">Contract Date</option>
-                      <option value="zillowSoldDate">Zillow Sold Date</option>
-                      <option value="status">Status Category</option>
-                      <option value="reporting">Reporting</option>
-                      <option value="systemName">System Name</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Direction</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={changeOwnershipSortDir}
-                      onChange={(event) => setChangeOwnershipSortDir(event.target.value as "asc" | "desc")}
-                    >
-                      <option value="desc">Descending</option>
-                      <option value="asc">Ascending</option>
-                    </select>
-                  </div>
-                </div>
-
-                {filteredChangeOwnershipRows.length > 500 ? (
-                  <p className="text-xs text-slate-500">
-                    Showing first 500 of {formatNumber(filteredChangeOwnershipRows.length)} systems.
-                  </p>
-                ) : null}
-
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>System</TableHead>
-                      <TableHead>system_id</TableHead>
-                      <TableHead>Tracking ID</TableHead>
-                      <TableHead>AC Size (kW)</TableHead>
-                      <TableHead>Contract Value</TableHead>
-                      <TableHead>Contract Date</TableHead>
-                      <TableHead>Zillow Sold Date</TableHead>
-                      <TableHead>Zillow Status</TableHead>
-                      <TableHead>Contract Type</TableHead>
-                      <TableHead>Status Category</TableHead>
-                      <TableHead>Reporting?</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredChangeOwnershipRows.slice(0, 500).map((system) => (
-                      <TableRow key={system.key}>
-                        <TableCell className="font-medium">{system.systemName}</TableCell>
-                        <TableCell>{system.systemId ?? "N/A"}</TableCell>
-                        <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                        <TableCell>{formatCapacityKw(system.installedKwAc)}</TableCell>
-                        <TableCell>{formatCurrency(resolveContractValueAmount(system))}</TableCell>
-                        <TableCell>{formatDate(system.contractedDate)}</TableCell>
-                        <TableCell>{formatDate(system.zillowSoldDate)}</TableCell>
-                        <TableCell>{system.zillowStatus ?? "N/A"}</TableCell>
-                        <TableCell>{system.contractType ?? "N/A"}</TableCell>
-                        <TableCell>
-                          {system.changeOwnershipStatus ? (
-                            <span
-                              className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium ${changeOwnershipBadgeClass(system.changeOwnershipStatus)}`}
-                            >
-                              {system.changeOwnershipStatus}
-                            </span>
-                          ) : (
-                            "N/A"
-                          )}
-                        </TableCell>
-                        <TableCell>{system.isReporting ? "Yes" : "No"}</TableCell>
-                      </TableRow>
-                    ))}
-                    {filteredChangeOwnershipRows.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={11} className="py-6 text-center text-slate-500">
-                          No flagged systems match the current filters.
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </div>)}
-
-          {activeTab === "ownership" && (<div className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Ownership Status Classifier</CardTitle>
-                <CardDescription>
-                  Categories: Transferred, Not Transferred, and Terminated crossed with Reporting / Not Reporting.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Filter by category</label>
-                    <select
-                      className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-                      value={ownershipFilter}
-                      onChange={(event) => setOwnershipFilter(event.target.value as OwnershipStatus | "All")}
-                    >
-                      <option value="All">All Categories</option>
-                      {OWNERSHIP_ORDER.map((status) => (
-                        <option key={status} value={status}>
-                          {status}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-slate-700">Search</label>
-                    <Input
-                      placeholder="System name, system_id, tracking ID..."
-                      value={searchTerm}
-                      onChange={(event) => setSearchTerm(event.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>System</TableHead>
-                      <TableHead>system_id</TableHead>
-                      <TableHead>Tracking ID</TableHead>
-                      <TableHead>Status Category</TableHead>
-                      <TableHead>Reporting?</TableHead>
-                      <TableHead>Transferred?</TableHead>
-                      <TableHead>Terminated?</TableHead>
-                      <TableHead>Contract Type</TableHead>
-                      <TableHead>Last Reporting Date</TableHead>
-                      <TableHead>Contracted Date</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredOwnershipRows.slice(0, 500).map((system) => (
-                      <TableRow key={system.key}>
-                        <TableCell className="font-medium">{system.systemName}</TableCell>
-                        <TableCell>{system.systemId ?? "N/A"}</TableCell>
-                        <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                        <TableCell>
-                          <span
-                            className={`inline-flex items-center rounded-md border px-2 py-1 text-xs font-medium ${ownershipBadgeClass(system.ownershipStatus)}`}
-                          >
-                            {system.ownershipStatus}
-                          </span>
-                        </TableCell>
-                        <TableCell>{system.isReporting ? "Yes" : "No"}</TableCell>
-                        <TableCell>{system.isTransferred ? "Yes" : "No"}</TableCell>
-                        <TableCell>{system.isTerminated ? "Yes" : "No"}</TableCell>
-                        <TableCell>{system.contractType ?? "N/A"}</TableCell>
-                        <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
-                        <TableCell>{formatDate(system.contractedDate)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </div>)}
+          {activeTab === "ownership" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading ownership tab...</div>}>
+              <OwnershipTabLazy
+                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+              />
+            </Suspense>
+          )}
 
           {activeTab === "offline-monitoring" && (
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading offline monitoring tab...</div>}>

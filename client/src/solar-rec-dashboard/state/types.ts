@@ -153,6 +153,29 @@ export type OfflineMonitoringAccessFields = {
 };
 
 // ---------------------------------------------------------------------------
+// Change Ownership summary (computed by the parent `changeOwnershipSummary`
+// memo; consumed by the extracted ChangeOwnershipTab component and by the
+// Overview tab tiles).
+// ---------------------------------------------------------------------------
+
+export type ChangeOwnershipSummaryCount = {
+  status: ChangeOwnershipStatus;
+  count: number;
+  percent: number | null;
+};
+
+export type ChangeOwnershipSummary = {
+  total: number;
+  reporting: number;
+  notReporting: number;
+  reportingPercent: number | null;
+  contractedValueTotal: number;
+  contractedValueReporting: number;
+  contractedValueNotReporting: number;
+  counts: ChangeOwnershipSummaryCount[];
+};
+
+// ---------------------------------------------------------------------------
 // Performance-ratio types
 // ---------------------------------------------------------------------------
 

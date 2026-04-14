@@ -9,10 +9,12 @@
 import { clean } from "@/lib/helpers";
 import type {
   AnnualProductionProfile,
+  ChangeOwnershipStatus,
   CsvRow,
   GenerationBaseline,
   MonitoringDetailsRecord,
   OfflineMonitoringAccessFields,
+  OwnershipStatus,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
 import {
@@ -894,6 +896,27 @@ export function resolveOfflineMonitoringAccessFields(
     monitoringUsername,
     monitoringPassword,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Ownership badge class helpers (Tailwind class strings used by the
+// Ownership + Change Ownership tab badges)
+// ---------------------------------------------------------------------------
+
+export function ownershipBadgeClass(status: OwnershipStatus): string {
+  if (status.startsWith("Transferred"))
+    return "bg-blue-100 text-blue-800 border-blue-200";
+  if (status.startsWith("Terminated"))
+    return "bg-rose-100 text-rose-800 border-rose-200";
+  return "bg-emerald-100 text-emerald-800 border-emerald-200";
+}
+
+export function changeOwnershipBadgeClass(status: ChangeOwnershipStatus): string {
+  if (status.startsWith("Transferred"))
+    return "bg-blue-100 text-blue-800 border-blue-200";
+  if (status.startsWith("Terminated"))
+    return "bg-rose-100 text-rose-800 border-rose-200";
+  return "bg-amber-100 text-amber-900 border-amber-200";
 }
 
 /**
