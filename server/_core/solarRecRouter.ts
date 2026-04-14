@@ -220,6 +220,32 @@ function parseMetadataRecord(
   }
 }
 
+/** Derive a human-readable label from a credential row. Used by monitoring procedures. */
+function credentialLabel(cred: {
+  id: string;
+  provider: string;
+  connectionName?: string | null;
+  accessToken?: string | null;
+  metadata?: string | null;
+}): string {
+  const fromName = toNonEmptyString(cred.connectionName);
+  if (fromName) return fromName;
+  const meta = parseMetadataRecord(cred.metadata);
+  const fromMeta =
+    toNonEmptyString(meta.username) ??
+    toNonEmptyString(meta.account) ??
+    toNonEmptyString(meta.clientId) ??
+    toNonEmptyString(meta.connectionName) ??
+    toNonEmptyString(meta.baseUrl) ??
+    toNonEmptyString(meta.groupId) ??
+    (typeof meta.apiKey === "string" && meta.apiKey.length > 6
+      ? `Key ...${meta.apiKey.slice(-6)}`
+      : null);
+  if (fromMeta) return fromMeta;
+  if (cred.accessToken) return `...${cred.accessToken.slice(-6)}`;
+  return `${cred.provider}:${cred.id.slice(-6)}`;
+}
+
 function getConnectionRows(
   metadata: Record<string, unknown>
 ): Array<Record<string, unknown>> {
@@ -1168,19 +1194,6 @@ const monitoringRouter = t.router({
       return getMonitoringGrid(input.startDate, input.endDate);
     }),
 
-  getRunDetail: solarRecViewerProcedure
-    .input(
-      z.object({
-        provider: z.string(),
-        siteId: z.string(),
-        dateKey: z.string(),
-      })
-    )
-    .query(async ({ input }) => {
-      const { getMonitoringRunDetail } = await import("../db");
-      return getMonitoringRunDetail(input.provider, input.siteId, input.dateKey);
-    }),
-
   getHealthSummary: solarRecViewerProcedure.query(async () => {
     const { getMonitoringHealthSummary } = await import("../db");
     return getMonitoringHealthSummary();
@@ -1205,26 +1218,12 @@ const monitoringRouter = t.router({
     const { listSolarRecTeamCredentials } = await import("../db");
     const credentials = await listSolarRecTeamCredentials();
     return credentials
-      .map((credential) => {
-        const metadata = parseMetadataRecord(credential.metadata);
-        const metadataLabel =
-          toNonEmptyString(metadata.username) ??
-          toNonEmptyString(metadata.account) ??
-          toNonEmptyString(metadata.clientId) ??
-          toNonEmptyString(metadata.baseUrl) ??
-          toNonEmptyString(metadata.groupId) ??
-          toNonEmptyString(metadata.connectionName);
-        const label =
-          toNonEmptyString(credential.connectionName) ??
-          metadataLabel ??
-          `${credential.provider}:${credential.id.slice(-6)}`;
-        return {
-          id: credential.id,
-          provider: credential.provider,
-          connectionName: credential.connectionName ?? null,
-          label,
-        };
-      })
+      .map((credential) => ({
+        id: credential.id,
+        provider: credential.provider,
+        connectionName: credential.connectionName ?? null,
+        label: credentialLabel(credential),
+      }))
       .sort((a, b) =>
         a.provider === b.provider
           ? a.label.localeCompare(b.label)
@@ -1264,28 +1263,6 @@ const monitoringRouter = t.router({
       return { batchId, dateKey, selectedProviders, selectedCredentialIds };
     }),
 
-  runProvider: solarRecOperatorProcedure
-    .input(
-      z.object({
-        provider: z.string(),
-        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const dateKey = input.anchorDate ?? new Date().toISOString().slice(0, 10);
-
-      // Fire-and-forget: run single provider
-      import("../solar/monitoring.service").then((mod) =>
-        mod
-          .executeProviderRun(input.provider, dateKey, ctx.userId)
-          .catch((err) =>
-            console.error(`[MonitoringProvider:${input.provider}] Failed:`, err)
-          )
-      );
-
-      return { provider: input.provider, dateKey };
-    }),
-
   getOverview: solarRecViewerProcedure
     .input(
       z.object({
@@ -1302,29 +1279,13 @@ const monitoringRouter = t.router({
         listSolarRecTeamCredentials(),
       ]);
 
-      // Build credential label lookup
-      const credLabelMap = new Map<string, { name: string; provider: string }>();
-      for (const c of creds) {
-        let label = c.connectionName ?? "";
-        if (!label && c.metadata) {
-          try {
-            const meta = JSON.parse(c.metadata);
-            label =
-              meta.username ??
-              meta.account ??
-              meta.connectionName ??
-              (meta.apiKey ? `Key ...${String(meta.apiKey).slice(-6)}` : "");
-          } catch {
-            /* ignore */
-          }
-        }
-        if (!label && c.accessToken) {
-          label = `...${c.accessToken.slice(-6)}`;
-        }
-        credLabelMap.set(c.id, { name: label || "Unnamed", provider: c.provider });
-      }
+      const credentials = creds.map((c) => ({
+        id: c.id,
+        name: credentialLabel(c),
+        provider: c.provider,
+      }));
 
-      return { runs, credentials: Array.from(credLabelMap.entries()).map(([id, v]) => ({ id, ...v })) };
+      return { runs, credentials };
     }),
 });
 

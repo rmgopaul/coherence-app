@@ -50,6 +50,12 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
   "egauge-monitoring": () => import("./adapters/egauge.adapter").then((m) => m.default),
   "tesla-powerhub": () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
   teslapowerhub: () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
+  ennexos: () => import("./adapters/ennexos.adapter").then((m) => m.default),
+  "enphase-v2": () => import("./adapters/enphaseV2.adapter").then((m) => m.default),
+  enphasev2: () => import("./adapters/enphaseV2.adapter").then((m) => m.default),
+  "tesla-solar": () => import("./adapters/teslaSolar.adapter").then((m) => m.default),
+  teslasolar: () => import("./adapters/teslaSolar.adapter").then((m) => m.default),
+  ekm: () => import("./adapters/ekm.adapter").then((m) => m.default),
 };
 
 // ---------------------------------------------------------------------------
@@ -104,7 +110,27 @@ export async function executeProviderRun(
   const adapterLoader = providerAdapters[provider];
   if (!adapterLoader) {
     console.warn(`[Monitoring] No adapter for provider ${provider}`);
-    return { success: 0, error: 0, noData: 0 };
+    // Persist an error row so the dashboard shows this provider was skipped
+    try {
+      await db.upsertMonitoringApiRun({
+        id: nanoid(),
+        provider,
+        connectionId: credentials[0]?.id ?? null,
+        siteId: `provider:${provider}`,
+        siteName: provider,
+        dateKey,
+        status: "error",
+        readingsCount: 0,
+        lifetimeKwh: null,
+        errorMessage: `No monitoring adapter registered for provider "${provider}". Contact support or check configuration.`,
+        durationMs: null,
+        triggeredBy,
+        triggeredAt: new Date(),
+      });
+    } catch (persistError) {
+      console.error(`[Monitoring] Failed to persist missing-adapter error for ${provider}:`, persistError);
+    }
+    return { success: 0, error: 1, noData: 0 };
   }
 
   let adapter: ProviderAdapter;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -19,7 +19,6 @@ import {
   XCircle,
   AlertTriangle,
   Minus,
-  RefreshCw,
   Loader2,
 } from "lucide-react";
 import { useSolarRecAuth } from "../hooks/useSolarRecAuth";
@@ -253,7 +252,6 @@ export default function MonitoringDashboard() {
   const { isOperator } = useSolarRecAuth();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const gridQuery = trpc.monitoring.getGrid.useQuery({ startDate, endDate });
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
