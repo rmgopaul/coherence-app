@@ -304,6 +304,20 @@ function DebugConvertedReadsDialog({
     },
   });
 
+  const markFailedMutation = trpc.monitoring.markBatchFailed.useMutation({
+    onSuccess: (data) => {
+      setClearStatus(
+        data.ok
+          ? "Latest batch marked as failed."
+          : `Batch not marked failed: ${data.message}`
+      );
+      query.refetch();
+    },
+    onError: (err) => {
+      setClearStatus(`Mark failed error: ${err.message}`);
+    },
+  });
+
   const handleClear = () => {
     const confirmed = window.confirm(
       "This will wipe the converted reads dataset on the server AND your local browser cache. You'll need to re-run meter reads to repopulate. Continue?"
@@ -311,6 +325,15 @@ function DebugConvertedReadsDialog({
     if (!confirmed) return;
     setClearStatus(null);
     clearMutation.mutate();
+  };
+
+  const handleMarkFailed = (batchId: string) => {
+    const confirmed = window.confirm(
+      "Mark this batch as failed? Use this when a batch has been 'running' for a long time without progress (e.g. the server process died). This does NOT cancel any still-running process — it only updates the DB row so the UI unsticks."
+    );
+    if (!confirmed) return;
+    setClearStatus(null);
+    markFailedMutation.mutate({ batchId });
   };
 
   const data = query.data;
@@ -368,7 +391,7 @@ function DebugConvertedReadsDialog({
               </div>
 
               {data.latestBatch && (
-                <div className="rounded border bg-muted/30 p-2 space-y-0.5">
+                <div className="rounded border bg-muted/30 p-2 space-y-1">
                   <p className="text-xs font-medium text-muted-foreground mb-1">
                     Latest batch run
                   </p>
@@ -390,6 +413,21 @@ function DebugConvertedReadsDialog({
                     <div>started: {data.latestBatch.startedAt?.slice(0, 19) ?? "n/a"}</div>
                     <div>completed: {data.latestBatch.completedAt?.slice(0, 19) ?? "n/a"}</div>
                   </div>
+                  {data.latestBatch.status === "running" &&
+                    data.latestBatch.ageSeconds != null &&
+                    data.latestBatch.ageSeconds > 300 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full mt-1 h-7 text-xs text-destructive hover:bg-destructive/10"
+                        disabled={markFailedMutation.isPending}
+                        onClick={() => handleMarkFailed(data.latestBatch!.id)}
+                      >
+                        {markFailedMutation.isPending
+                          ? "Marking failed…"
+                          : `Force-fail stalled batch (${data.latestBatch.ageSeconds}s old)`}
+                      </Button>
+                    )}
                 </div>
               )}
 

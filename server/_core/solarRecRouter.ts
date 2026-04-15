@@ -1337,6 +1337,33 @@ const monitoringRouter = t.router({
     }),
 
   /**
+   * Force-mark a MonitoringBatchRun as failed. Used to unstick the UI when
+   * a batch row is still in "running" status but the server process that
+   * was executing it has died (deploy, restart, crash). Does NOT cancel
+   * any actively-running process — only updates the DB row so the client
+   * dashboard stops polling.
+   */
+  markBatchFailed: solarRecOperatorProcedure
+    .input(z.object({ batchId: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const { updateMonitoringBatchRun, getMonitoringBatchRun } = await import("../db");
+      const existing = await getMonitoringBatchRun(input.batchId);
+      if (!existing) {
+        throw new Error(`Batch ${input.batchId} not found.`);
+      }
+      if (existing.status !== "running") {
+        return { ok: false, previousStatus: existing.status, message: "Batch is not running — nothing to mark failed." };
+      }
+      await updateMonitoringBatchRun(input.batchId, {
+        status: "failed",
+        currentProvider: null,
+        currentCredentialName: null,
+        completedAt: new Date(),
+      });
+      return { ok: true, previousStatus: existing.status };
+    }),
+
+  /**
    * Wipes the server-side `dataset:convertedReads` payload. Used to clean up
    * a corrupted dataset before re-running meter-read APIs. Client-side
    * IndexedDB must be cleared separately by the caller.
