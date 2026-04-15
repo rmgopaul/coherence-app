@@ -71,11 +71,21 @@ const ComparisonsTabLazy = lazy(
 const DataQualityTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/DataQualityTab")
 );
-import {
-  buildMeterReadDownloadFileName,
-  convertMeterReadWorkbook,
-  type MeterReadsConversionResult,
-} from "@/lib/meterReads";
+const OverviewTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/OverviewTab")
+);
+const SizeReportingTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/SizeReportingTab")
+);
+const RecValueTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/RecValueTab")
+);
+const MeterReadsTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/MeterReadsTab")
+);
+const DeliveryTrackerTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/DeliveryTrackerTab")
+);
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 import { parseTabularFile } from "@/lib/csvParsing";
 import {
@@ -134,11 +144,9 @@ import {
   DASHBOARD_LOGS_RECORD_KEY,
   NUMBER_FORMATTER,
   DAY_MS,
-  SIZE_SITE_LIST_PAGE_SIZE,
   PERFORMANCE_RATIO_PAGE_SIZE,
   COMPLIANT_SOURCE_PAGE_SIZE,
   COMPLIANT_REPORT_PAGE_SIZE,
-  REC_VALUE_PAGE_SIZE,
   SNAPSHOT_CONTRACT_PAGE_SIZE,
   CONTRACT_SUMMARY_PAGE_SIZE,
   CONTRACT_DETAIL_PAGE_SIZE,
@@ -1683,13 +1691,10 @@ export default function SolarRecDashboard() {
   const [performanceDeliveryYearKey, setPerformanceDeliveryYearKey] = useState("");
   const [performancePreviousSurplusInput, setPerformancePreviousSurplusInput] = useState("0");
   const [performancePreviousDrawdownInput, setPerformancePreviousDrawdownInput] = useState("0");
-  const [meterReadsResult, setMeterReadsResult] = useState<MeterReadsConversionResult | null>(null);
-  const [meterReadsError, setMeterReadsError] = useState<string | null>(null);
-  const [meterReadsBusy, setMeterReadsBusy] = useState(false);
+  // meterReads{Result,Error,Busy} — moved to @/solar-rec-dashboard/components/MeterReadsTab
   // performanceRatio filter/sort/page state — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
-  const [recValuePage, setRecValuePage] = useState(1);
-  const [sizeSiteListCollapsed, setSizeSiteListCollapsed] = useState(false);
-  const [sizeSiteListPage, setSizeSiteListPage] = useState(1);
+  // recValuePage — moved to @/solar-rec-dashboard/components/RecValueTab
+  // sizeSiteList{Page,Collapsed} — moved to @/solar-rec-dashboard/components/SizeReportingTab
   const [snapshotContractPage, setSnapshotContractPage] = useState(1);
   // contractSummaryPage, contractDetailPage — moved to @/solar-rec-dashboard/components/ContractsTab
   // annualContractVintagePage, annualContractSummaryPage — moved to @/solar-rec-dashboard/components/AnnualReviewTab
@@ -2353,9 +2358,7 @@ export default function SolarRecDashboard() {
     setForceSyncingDatasets({});
     setRemoteSourceManifests({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
-    setMeterReadsResult(null);
-    setMeterReadsError(null);
-    setMeterReadsBusy(false);
+    // meterReads state is now owned by MeterReadsTab; it resets on unmount.
   };
 
   const queueForceDatasetSync = (key: DatasetKey) => {
@@ -2444,37 +2447,8 @@ export default function SolarRecDashboard() {
     }
   }, [localOnlyDatasets, migratingLocalOnlyDatasets, persistDatasetSourceFilesToCloud, setDatasetCloudSyncBadge]);
 
-  const handleMeterReadsUpload = async (file: File | null) => {
-    if (!file) return;
-
-    setMeterReadsBusy(true);
-    setMeterReadsError(null);
-
-    try {
-      const result = await convertMeterReadWorkbook(file);
-      setMeterReadsResult(result);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Unknown error while converting meter read workbook.";
-      setMeterReadsError(message);
-    } finally {
-      setMeterReadsBusy(false);
-    }
-  };
-
-  const downloadMeterReadsCsv = () => {
-    if (!meterReadsResult) return;
-
-    const blob = new Blob([meterReadsResult.csvText], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = buildMeterReadDownloadFileName(meterReadsResult.readDate);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+  // handleMeterReadsUpload / downloadMeterReadsCsv — moved to
+  // @/solar-rec-dashboard/components/MeterReadsTab
 
   const part2VerifiedAbpRows = useMemo(() => {
     return (datasets.abpReport?.rows ?? []).filter((row) => isPart2VerifiedAbpRow(row));
@@ -3249,17 +3223,7 @@ export default function SolarRecDashboard() {
       .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
   }, [part2EligibleSystemsForSizeReporting]);
 
-  const sizeSiteListTotalPages = Math.max(
-    1,
-    Math.ceil(sizeTabNotReportingPart2Rows.length / SIZE_SITE_LIST_PAGE_SIZE)
-  );
-  const sizeSiteListCurrentPage = Math.min(sizeSiteListPage, sizeSiteListTotalPages);
-  const sizeSiteListPageStartIndex = (sizeSiteListCurrentPage - 1) * SIZE_SITE_LIST_PAGE_SIZE;
-  const sizeSiteListPageEndIndex = sizeSiteListPageStartIndex + SIZE_SITE_LIST_PAGE_SIZE;
-  const visibleSizeSiteListRows = useMemo(
-    () => sizeTabNotReportingPart2Rows.slice(sizeSiteListPageStartIndex, sizeSiteListPageEndIndex),
-    [sizeTabNotReportingPart2Rows, sizeSiteListPageStartIndex, sizeSiteListPageEndIndex]
-  );
+  // sizeSiteList pagination + visibleSizeSiteListRows — moved to SizeReportingTab
 
   const recValueRows = useMemo(
     () =>
@@ -3268,14 +3232,7 @@ export default function SolarRecDashboard() {
         .sort((a, b) => resolveValueGapAmount(b) - resolveValueGapAmount(a)),
     [part2EligibleSystemsForSizeReporting]
   );
-  const recValueTotalPages = Math.max(1, Math.ceil(recValueRows.length / REC_VALUE_PAGE_SIZE));
-  const recValueCurrentPage = Math.min(recValuePage, recValueTotalPages);
-  const recValuePageStartIndex = (recValueCurrentPage - 1) * REC_VALUE_PAGE_SIZE;
-  const recValuePageEndIndex = recValuePageStartIndex + REC_VALUE_PAGE_SIZE;
-  const visibleRecValueRows = useMemo(
-    () => recValueRows.slice(recValuePageStartIndex, recValuePageEndIndex),
-    [recValuePageEndIndex, recValuePageStartIndex, recValueRows]
-  );
+  // recValue pagination + visibleRecValueRows — moved to RecValueTab
 
   // filteredOwnershipRows — moved to @/solar-rec-dashboard/components/OwnershipTab
 
@@ -3734,39 +3691,7 @@ export default function SolarRecDashboard() {
   // zeroReportingInstallerPlatformRows, downloadOfflineSystemsCsv, downloadOfflineDetailFilteredCsv
   // — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
 
-  const downloadSizeSiteListCsv = () => {
-    const headers = [
-      "system_name",
-      "tracking_id",
-      "portal_id",
-      "state_certification_number",
-      "size_bucket",
-      "system_size_kw_ac",
-      "last_reporting_date",
-    ];
-
-    const rows = sizeTabNotReportingPart2Rows.map((system) => ({
-      system_name: system.systemName,
-      tracking_id: system.trackingSystemRefId ?? "",
-      portal_id: system.systemId ?? "",
-      state_certification_number: system.stateApplicationRefId ?? "",
-      size_bucket: system.sizeBucket,
-      system_size_kw_ac: system.installedKwAc ?? "",
-      last_reporting_date: system.latestReportingDate ? system.latestReportingDate.toISOString().slice(0, 10) : "",
-    }));
-
-    const csv = buildCsv(headers, rows);
-    const fileName = `size-reporting-sites-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+  // downloadSizeSiteListCsv — moved to @/solar-rec-dashboard/components/SizeReportingTab
 
   const recPriceByTrackingId = useMemo(() => {
     if (!isContractsComputationActive) return new Map<string, number>();
@@ -6674,542 +6599,40 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
 
-          {activeTab === "overview" && (<div className="space-y-4 mt-4">
-            {/* Row 1: System counts — compact, short values */}
-            <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Systems</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(summary.totalSystems)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Reporting in Last 3 Months</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(summary.reportingSystems)}</CardTitle>
-                  <CardDescription>{formatPercent(summary.reportingPercent)}</CardDescription>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>{`<=10 kW AC`}</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(summary.smallSystems)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>{`>10 kW AC`}</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(summary.largeSystems)}</CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
-            {/* Row 2: Part II verified values — wider cards for long numbers */}
-            <div className="grid gap-4 grid-cols-1 md:grid-cols-3">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(overviewPart2Totals.totalContractedValuePart2)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Cumulative kW AC (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwAcPart2)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Cumulative kW DC (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCapacityKw(overviewPart2Totals.cumulativeKwDcPart2)}</CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
-            {/* Row 3: Financial totals from Profit & Collateralization */}
-            <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Vendor Fee</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalProfit)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Utility Collateral</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalUtilityCollateral)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Additional Collateral</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalAdditionalCollateral)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total CC Auth Collateral</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(financialProfitData.totalCcAuth)}</CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
+          {activeTab === "overview" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading overview tab...</div>}>
+              <OverviewTabLazy
+                summary={summary}
+                overviewPart2Totals={overviewPart2Totals}
+                financialProfitData={financialProfitData}
+                sizeReportingChartRows={sizeReportingChartRows}
+                ownershipStackedChartRows={ownershipStackedChartRows}
+                changeOwnershipSummary={changeOwnershipSummary}
+                onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
+                onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
+                onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}
+              />
+            </Suspense>
+          )}
+          {activeTab === "size" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading size tab...</div>}>
+              <SizeReportingTabLazy
+                sizeBreakdownRows={sizeBreakdownRows}
+                sizeTabNotReportingPart2Rows={sizeTabNotReportingPart2Rows}
+              />
+            </Suspense>
+          )}
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Reporting by Size Bucket</CardTitle>
-                  <CardDescription>Stacked reporting vs not reporting counts.</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={sizeReportingChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="bucket" tick={{ fontSize: 12 }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-                        <Tooltip />
-                        <Legend />
-                        <Bar dataKey="reporting" stackId="size-status" fill="#16a34a" name="Reporting" />
-                        <Bar dataKey="notReporting" stackId="size-status" fill="#f59e0b" name="Not Reporting" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Ownership Mix by Reporting State</CardTitle>
-                  <CardDescription>
-                    Part II verified, non-terminated systems split into Not Transferred, Transferred, and Change of Ownership.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={ownershipStackedChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-                        <Tooltip />
-                        <Legend />
-                        <Bar dataKey="notTransferred" stackId="ownership" fill="#0ea5e9" name="Not Transferred" />
-                        <Bar dataKey="transferred" stackId="ownership" fill="#8b5cf6" name="Transferred" />
-                        <Bar dataKey="changeOwnership" stackId="ownership" fill="#f97316" name="Change of Ownership" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Ownership and Reporting Status Counts</CardTitle>
-                <CardDescription>
-                  Part II verified systems only. Click any tile to export matching systems to CSV.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid gap-3 md:grid-cols-3">
-                  <button
-                    type="button"
-                    onClick={() => downloadOwnershipCountTileCsv("reporting")}
-                    className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-emerald-800">Reporting</p>
-                    <p className="text-2xl font-semibold text-emerald-900">
-                      {formatNumber(summary.ownershipOverview.reportingOwnershipTotal)}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleActiveTabChange("offline-monitoring")}
-                    title="View offline systems"
-                    className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-amber-800">Not Reporting</p>
-                    <p className="text-2xl font-semibold text-amber-900">
-                      {formatNumber(summary.ownershipOverview.notReportingOwnershipTotal)}
-                    </p>
-                    <p className="text-[10px] text-amber-600 mt-1">Click to view offline systems</p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => downloadOwnershipCountTileCsv("terminated")}
-                    className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-slate-700">Terminated</p>
-                    <p className="text-2xl font-semibold text-slate-900">
-                      {formatNumber(summary.ownershipOverview.terminatedTotal)}
-                    </p>
-                  </button>
-                </div>
-
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">Change of Ownership</p>
-                </div>
-
-                <div className="grid gap-3 md:grid-cols-4">
-                  <button
-                    type="button"
-                    onClick={() => downloadChangeOwnershipCountTileCsv("Transferred and Reporting")}
-                    className="rounded-lg border border-emerald-300 bg-emerald-100 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-emerald-900">Ownership Changed, Transferred and Reporting</p>
-                    <p className="text-2xl font-semibold text-emerald-950">
-                      {formatNumber(
-                        changeOwnershipSummary.counts.find((item) => item.status === "Transferred and Reporting")
-                          ?.count ?? 0
-                      )}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => downloadChangeOwnershipCountTileCsv("Change of Ownership - Not Transferred and Reporting")}
-                    className="rounded-lg border border-green-200 bg-green-50 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-green-800">
-                      Change of Ownership - Not Transferred and Reporting
-                    </p>
-                    <p className="text-2xl font-semibold text-green-900">
-                      {formatNumber(
-                        changeOwnershipSummary.counts.find(
-                          (item) => item.status === "Change of Ownership - Not Transferred and Reporting"
-                        )?.count ?? 0
-                      )}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => downloadChangeOwnershipCountTileCsv("Transferred and Not Reporting")}
-                    className="rounded-lg border border-amber-300 bg-amber-100 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-amber-800">Ownership Changed, Transferred but not Reporting</p>
-                    <p className="text-2xl font-semibold text-amber-900">
-                      {formatNumber(
-                        changeOwnershipSummary.counts.find((item) => item.status === "Transferred and Not Reporting")
-                          ?.count ?? 0
-                      )}
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => downloadChangeOwnershipCountTileCsv("Change of Ownership - Not Transferred and Not Reporting")}
-                    className="rounded-lg border border-rose-300 bg-rose-100 p-3 text-left transition hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 focus-visible:ring-offset-2"
-                  >
-                    <p className="text-xs font-semibold text-rose-800">
-                      Ownership Changed, but not Transferred and not Reporting
-                    </p>
-                    <p className="text-2xl font-semibold text-rose-900">
-                      {formatNumber(
-                        changeOwnershipSummary.counts.find(
-                          (item) => item.status === "Change of Ownership - Not Transferred and Not Reporting"
-                        )?.count ?? 0
-                      )}
-                    </p>
-                  </button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>)}
-
-          {activeTab === "size" && (<div className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Size Bucket Reporting Matrix</CardTitle>
-                <CardDescription>
-                  Reporting is based on the most recent generation month being within the last 3 months.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Size Bucket</TableHead>
-                      <TableHead>Total Systems</TableHead>
-                      <TableHead>Reporting</TableHead>
-                      <TableHead>Not Reporting</TableHead>
-                      <TableHead>Reporting %</TableHead>
-                      <TableHead>Contracted Value</TableHead>
-                      <TableHead>Delivered Value</TableHead>
-                      <TableHead>Value Delivered %</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {sizeBreakdownRows.map((row) => (
-                      <TableRow key={row.bucket}>
-                        <TableCell className="font-medium">{row.bucket}</TableCell>
-                        <TableCell>{formatNumber(row.total)}</TableCell>
-                        <TableCell>{formatNumber(row.reporting)}</TableCell>
-                        <TableCell>{formatNumber(row.notReporting)}</TableCell>
-                        <TableCell>{formatPercent(row.reportingPercent)}</TableCell>
-                        <TableCell>{formatCurrency(row.contractedValue)}</TableCell>
-                        <TableCell>{formatCurrency(row.deliveredValue)}</TableCell>
-                        <TableCell>{formatPercent(row.valueDeliveredPercent)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <CardTitle className="text-base">Systems Not Reporting in Last 3 Months</CardTitle>
-                    <CardDescription>Part II verified systems only.</CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="outline" size="sm" onClick={downloadSizeSiteListCsv}>
-                      Download Site List CSV
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSizeSiteListCollapsed((value) => !value)}
-                    >
-                      {sizeSiteListCollapsed ? "Expand List" : "Collapse List"}
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="mb-3 flex items-center justify-between text-xs text-slate-600">
-                  <span>
-                    Showing {formatNumber(visibleSizeSiteListRows.length)} of{" "}
-                    {formatNumber(sizeTabNotReportingPart2Rows.length)} systems
-                  </span>
-                  {!sizeSiteListCollapsed ? (
-                    <span>
-                      Page {formatNumber(sizeSiteListCurrentPage)} of {formatNumber(sizeSiteListTotalPages)}
-                    </span>
-                  ) : null}
-                </div>
-                {sizeSiteListCollapsed ? (
-                  <p className="text-sm text-slate-600">
-                    Site list is collapsed. Click <strong>Expand List</strong> to view rows.
-                  </p>
-                ) : (
-                  <>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>System</TableHead>
-                          <TableHead>Tracking ID</TableHead>
-                          <TableHead>Portal ID</TableHead>
-                          <TableHead>State Certification #</TableHead>
-                          <TableHead>Size Bucket</TableHead>
-                          <TableHead>System Size (kW AC)</TableHead>
-                          <TableHead>Last Reporting Date</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {visibleSizeSiteListRows.map((system) => (
-                          <TableRow key={system.key}>
-                            <TableCell className="font-medium">{system.systemName}</TableCell>
-                            <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                            <TableCell>{system.systemId ?? "N/A"}</TableCell>
-                            <TableCell>{system.stateApplicationRefId ?? "N/A"}</TableCell>
-                            <TableCell>{system.sizeBucket}</TableCell>
-                            <TableCell>{system.installedKwAc === null ? "N/A" : formatNumber(system.installedKwAc, 3)}</TableCell>
-                            <TableCell>{formatDate(system.latestReportingDate)}</TableCell>
-                          </TableRow>
-                        ))}
-                        {visibleSizeSiteListRows.length === 0 ? (
-                          <TableRow>
-                            <TableCell colSpan={7} className="py-6 text-center text-slate-500">
-                              No Part II verified non-reporting systems found.
-                            </TableCell>
-                          </TableRow>
-                        ) : null}
-                      </TableBody>
-                    </Table>
-                    <div className="mt-3 flex items-center justify-end gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSizeSiteListPage((page) => Math.max(1, page - 1))}
-                        disabled={sizeSiteListCurrentPage <= 1}
-                      >
-                        Previous
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSizeSiteListPage((page) => Math.min(sizeSiteListTotalPages, page + 1))}
-                        disabled={sizeSiteListCurrentPage >= sizeSiteListTotalPages}
-                      >
-                        Next
-                      </Button>
-                    </div>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          </div>)}
-
-		          {activeTab === "value" && (<div className="space-y-4 mt-4">
-            <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
-              <Card>
-                <CardHeader>
-                  <CardDescription>Part II Systems with Value Data</CardDescription>
-                  <CardTitle className="text-2xl">{formatNumber(recValueRows.length)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Total Contracted Value (Part II Verified)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalContractedValue)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Value Gap (Contracted - Delivered)</CardDescription>
-                  <CardTitle className="text-2xl">{formatCurrency(snapshotPart2ValueSummary.totalGap)}</CardTitle>
-                </CardHeader>
-              </Card>
-              <Card>
-                <CardHeader>
-                  <CardDescription>Contract Value Reporting %</CardDescription>
-                  <CardTitle className="text-2xl">
-                    {formatPercent(snapshotPart2ValueSummary.contractedValueReportingPercent)}
-                  </CardTitle>
-                </CardHeader>
-              </Card>
-            </div>
-
-	            <div className="grid gap-4 lg:grid-cols-2">
-	              <Card>
-	                <CardHeader>
-	                  <CardTitle className="text-base">Contracted vs Delivered Value by Reporting Status</CardTitle>
-	                  <CardDescription>Part II verified systems grouped into Reporting, Not Reporting, and Terminated.</CardDescription>
-	                </CardHeader>
-	                <CardContent>
-	                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
-	                    <ResponsiveContainer width="100%" height="100%">
-	                      <BarChart data={recValueByStatusChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
-	                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-	                        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-	                        <YAxis tick={{ fontSize: 12 }} />
-	                        <Tooltip
-	                          formatter={(value: number, name: string) => [formatCurrency(value), name]}
-	                        />
-	                        <Legend />
-	                        <Bar dataKey="contractedValue" fill="#0ea5e9" name="Contracted Value" />
-	                        <Bar dataKey="deliveredValue" fill="#16a34a" name="Delivered Value" />
-	                      </BarChart>
-	                    </ResponsiveContainer>
-	                  </div>
-	                </CardContent>
-	              </Card>
-
-	              <Card>
-	                <CardHeader>
-	                  <CardTitle className="text-base">Top Value Gaps by System</CardTitle>
-	                  <CardDescription>Largest contracted-vs-delivered dollar gaps across Part II verified systems.</CardDescription>
-	                </CardHeader>
-	                <CardContent>
-	                  <div className="h-72 rounded-md border border-slate-200 bg-white p-2">
-	                    <ResponsiveContainer width="100%" height="100%">
-	                      <BarChart data={recTopGapChartRows} margin={{ top: 8, right: 12, left: 4, bottom: 56 }}>
-	                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-	                        <XAxis dataKey="label" angle={-35} textAnchor="end" interval={0} height={72} tick={{ fontSize: 10 }} />
-	                        <YAxis tick={{ fontSize: 12 }} />
-	                        <Tooltip formatter={(value: number) => [formatCurrency(value), "Value Gap"]} />
-	                        <Bar dataKey="valueGap" fill="#f59e0b" name="Value Gap" />
-	                      </BarChart>
-	                    </ResponsiveContainer>
-	                  </div>
-	                </CardContent>
-	              </Card>
-	            </div>
-
-	            <Card>
-	              <CardHeader>
-	                <CardTitle className="text-base">REC Value by System</CardTitle>
-                <CardDescription>
-                  Compares delivered value vs contracted value at system REC price.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex items-center justify-between text-xs text-slate-600">
-                  <span>
-                    Showing {formatNumber(visibleRecValueRows.length)} of {formatNumber(recValueRows.length)} rows
-                  </span>
-                  <span>
-                    Page {formatNumber(recValueCurrentPage)} of {formatNumber(recValueTotalPages)}
-                  </span>
-                </div>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>System</TableHead>
-                      <TableHead>Tracking ID</TableHead>
-                      <TableHead>REC Price</TableHead>
-                      <TableHead>Contracted RECs</TableHead>
-                      <TableHead>Delivered RECs</TableHead>
-                      <TableHead>% Delivered RECs</TableHead>
-                      <TableHead>Contracted Value</TableHead>
-                      <TableHead>Delivered Value</TableHead>
-                      <TableHead>% Delivered Value</TableHead>
-                      <TableHead>Gap</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {visibleRecValueRows.map((system) => (
-                      <TableRow key={system.key}>
-                        <TableCell className="font-medium">{system.systemName}</TableCell>
-                        <TableCell>{system.trackingSystemRefId ?? "N/A"}</TableCell>
-                        <TableCell>{formatCurrency(system.recPrice)}</TableCell>
-                        <TableCell>{formatNumber(system.contractedRecs)}</TableCell>
-                        <TableCell>{formatNumber(system.deliveredRecs)}</TableCell>
-                        <TableCell>
-                          {formatPercent(
-                            toPercentValue(system.deliveredRecs ?? 0, system.contractedRecs ?? 0)
-                          )}
-                        </TableCell>
-                        <TableCell>{formatCurrency(resolveContractValueAmount(system))}</TableCell>
-                        <TableCell>{formatCurrency(system.deliveredValue)}</TableCell>
-                        <TableCell>
-                          {formatPercent(
-                            toPercentValue(system.deliveredValue ?? 0, resolveContractValueAmount(system))
-                          )}
-                        </TableCell>
-                        <TableCell className={resolveValueGapAmount(system) > 0 ? "text-amber-700" : ""}>
-                          {formatCurrency(resolveValueGapAmount(system))}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {visibleRecValueRows.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={10} className="py-6 text-center text-slate-500">
-                          No systems with REC value data available.
-                        </TableCell>
-                      </TableRow>
-                    ) : null}
-                  </TableBody>
-                </Table>
-                <div className="flex items-center justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setRecValuePage((page) => Math.max(1, page - 1))}
-                    disabled={recValueCurrentPage <= 1}
-                  >
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setRecValuePage((page) => Math.min(recValueTotalPages, page + 1))}
-                    disabled={recValueCurrentPage >= recValueTotalPages}
-                  >
-                    Next
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </div>)}
+          {activeTab === "value" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC value tab...</div>}>
+              <RecValueTabLazy
+                recValueRows={recValueRows}
+                snapshotPart2ValueSummary={snapshotPart2ValueSummary}
+                recValueByStatusChartRows={recValueByStatusChartRows}
+                recTopGapChartRows={recTopGapChartRows}
+              />
+            </Suspense>
+          )}
 
           {activeTab === "contracts" && (
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading utility contracts tab...</div>}>
@@ -7695,109 +7118,11 @@ const aiDataContext = useMemo(() => {
             </Suspense>
           )}
 
-          {activeTab === "meter-reads" && (<div className="space-y-4 mt-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Meter Read Workbook Converter</CardTitle>
-                <CardDescription>
-                  Upload the monthly meter read Excel workbook and generate the full portal-ready CSV output in one step.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="inline-flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
-                    <Upload className="h-4 w-4" />
-                    Choose Excel Workbook
-                    <input
-                      type="file"
-                      accept=".xlsx,.xlsm,.xlsb,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                      className="hidden"
-                      onChange={(event) => {
-                        const file = event.target.files?.[0] ?? null;
-                        void handleMeterReadsUpload(file);
-                        event.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-
-                  <Button variant="outline" onClick={downloadMeterReadsCsv} disabled={!meterReadsResult || meterReadsBusy}>
-                    Download Converted CSV
-                  </Button>
-
-                  {meterReadsBusy ? (
-                    <Badge className="bg-blue-100 text-blue-800 border-blue-200">Processing workbook...</Badge>
-                  ) : null}
-                </div>
-
-                {meterReadsError ? <p className="text-sm text-rose-700">{meterReadsError}</p> : null}
-
-                {meterReadsResult ? (
-                  <div className="grid gap-3 md:grid-cols-4">
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs text-slate-500">Source Workbook</p>
-                      <p className="text-sm font-medium text-slate-900 break-all">{meterReadsResult.sourceWorkbookName}</p>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs text-slate-500">Read Date</p>
-                      <p className="text-sm font-medium text-slate-900">{meterReadsResult.readDate}</p>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs text-slate-500">Output Rows</p>
-                      <p className="text-sm font-medium text-slate-900">{formatNumber(meterReadsResult.totalRows)}</p>
-                    </div>
-                    <div className="rounded-lg border border-slate-200 bg-white p-3">
-                      <p className="text-xs text-slate-500">Monitoring Platforms</p>
-                      <p className="text-sm font-medium text-slate-900">{formatNumber(meterReadsResult.byMonitoring.length)}</p>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="text-sm text-slate-600">
-                    No workbook converted yet. Choose an Excel file to generate the output CSV.
-                  </p>
-                )}
-
-                {meterReadsResult && meterReadsResult.notes.length > 0 ? (
-                  <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3">
-                    <p className="text-xs font-medium text-amber-900 mb-2">Conversion Notes</p>
-                    <ul className="list-disc pl-5 space-y-1 text-xs text-amber-800">
-                      {meterReadsResult.notes.map((note) => (
-                        <li key={note}>{note}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </CardContent>
-            </Card>
-
-            {meterReadsResult ? (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-base">Rows by Monitoring Platform</CardTitle>
-                  <CardDescription>
-                    Confirms how many rows were generated per platform before you download/upload.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Monitoring</TableHead>
-                        <TableHead>Rows</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {meterReadsResult.byMonitoring.map((item) => (
-                        <TableRow key={item.monitoring}>
-                          <TableCell className="font-medium">{item.monitoring}</TableCell>
-                          <TableCell>{formatNumber(item.rows)}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </CardContent>
-              </Card>
-            ) : null}
-          </div>)}
+          {activeTab === "meter-reads" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading meter reads tab...</div>}>
+              <MeterReadsTabLazy />
+            </Suspense>
+          )}
 
           {activeTab === "performance-ratio" && (
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading performance ratio tab...</div>}>
@@ -8491,452 +7816,255 @@ const aiDataContext = useMemo(() => {
             </Suspense>
           )}
 
-          {activeTab === "delivery-tracker" && (<div className="space-y-4 mt-4">
-            {/* ── Schedule B PDF Import ────────────────────────── */}
-            <ScheduleBImport
-              transferDeliveryLookup={transferDeliveryLookup}
-              existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
-              onClearAppliedSchedule={() => {
-                // Phase 1a follow-up: Clear on the Schedule B card wipes
-                // the applied deliveryScheduleBase dataset so the tracker
-                // starts fresh. Also reset the stale signature ref so
-                // the next apply always fires a genuine cloud sync.
-                delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
-                clearDataset("deliveryScheduleBase");
-              }}
-              // apply-track-v1 + contract-id-mapping-v1: after a
-              // server-side apply or mapping mutation lands, reload
-              // deliveryScheduleBase from the cloud so local state
-              // mirrors the server's post-apply truth. This eliminates
-              // the "Dataset has: N stays flat" bug caused by the
-              // client doing an independent parallel merge (see the
-              // deprecated onApply handler below).
-              //
-              // Hardening pass 2026-04-11: previously this had silent
-              // console.warn bail-outs on "no payload" and "null
-              // deserialize" that left the user staring at stale data
-              // with no error indication. Now every bail-out surfaces a
-              // toast, logs enough shape info to diagnose, AND falls
-              // back to the source-manifest path if the flat-payload
-              // deserializer can't handle what the server wrote.
-              onApplyComplete={async () => {
-                try {
-                  const response = await getRemoteDatasetRef.current
-                    .mutateAsync({ key: "deliveryScheduleBase" })
-                    .catch((fetchErr) => {
-                      console.error(
-                        "[onApplyComplete] getRemoteDataset threw",
-                        fetchErr
-                      );
-                      return null;
-                    });
-                  if (!response?.payload) {
-                    toast.error(
-                      "Apply landed on the server but the cloud reload returned no payload. Refresh the page if the Delivery Tracker doesn't update."
-                    );
-                    console.warn(
-                      "[onApplyComplete] getRemoteDataset returned no payload; leaving local state untouched"
-                    );
-                    return;
-                  }
-
-                  // Primary path: flat {fileName,uploadedAt,headers,csvText}
-                  // shape (what applyScheduleBToDeliveryObligations and
-                  // applyScheduleBContractIdMapping both write).
-                  let loaded = deserializeRemoteDatasetPayload(
-                    response.payload
-                  );
-
-                  // Fallback path: source-manifest shape. If the cloud
-                  // has an older {_rawSourcesV1: true, sources: [...]}
-                  // payload (from a pre-apply-track-v1 era), resolve
-                  // the latest source's storageKey and parse that.
-                  // Mirrors the main rehydration path in
-                  // loadRemoteDatasets at ~line 7167.
-                  if (!loaded) {
-                    const sourceManifest = parseRemoteSourceManifestPayload(
-                      response.payload
-                    );
-                    if (sourceManifest && sourceManifest.sources.length > 0) {
-                      try {
-                        const latest =
-                          sourceManifest.sources[
-                            sourceManifest.sources.length - 1
-                          ];
-                        const sourceResponse =
-                          await getRemoteDatasetRef.current
-                            .mutateAsync({ key: latest.storageKey })
-                            .catch(() => null);
-                        if (sourceResponse?.payload) {
-                          const decoded =
-                            latest.encoding === "base64"
-                              ? new TextDecoder().decode(
-                                  base64ToBytes(sourceResponse.payload)
-                                )
-                              : sourceResponse.payload;
-                          const parsedCsv = await parseCsvTextAsync(decoded);
-                          loaded = {
-                            fileName: latest.fileName || "Schedule B Import",
-                            uploadedAt: new Date(latest.uploadedAt),
-                            headers: parsedCsv.headers,
-                            rows: parsedCsv.rows,
-                          };
-                        }
-                      } catch (manifestErr) {
-                        console.error(
-                          "[onApplyComplete] source-manifest fallback failed",
-                          manifestErr
-                        );
-                      }
-                    }
-                  }
-
-                  if (!loaded) {
-                    // Still null — log the payload shape prefix so we
-                    // can diagnose from the browser console without
-                    // another deploy round-trip.
-                    const preview = response.payload.slice(0, 200);
-                    toast.error(
-                      "Apply landed on the server but the local dataset couldn't be refreshed. Open DevTools console for details, or refresh the page."
-                    );
-                    console.error(
-                      "[onApplyComplete] deserializeRemoteDatasetPayload and source-manifest fallback both returned null. Payload preview:",
-                      preview
-                    );
-                    return;
-                  }
-
-                  setDatasets((prev) => ({
-                    ...prev,
-                    deliveryScheduleBase: loaded,
-                  }));
-                  // Sync the signature ref to match the freshly loaded
-                  // dataset so the sync effect at ~line 7565 doesn't
-                  // immediately re-upload the same payload (would be a
-                  // harmless redundant round-trip, but still wasteful).
-                  remoteDatasetSignatureRef.current.deliveryScheduleBase = `${loaded.fileName}|${loaded.uploadedAt.toISOString()}|${loaded.rows.length}|${loaded.sources?.length ?? 0}`;
-                  setDatasetCloudSyncStatus((prev) => ({
-                    ...prev,
-                    deliveryScheduleBase: "synced",
-                  }));
-                  console.log(
-                    `[onApplyComplete] reloaded deliveryScheduleBase: ${loaded.rows.length} rows, uploadedAt=${loaded.uploadedAt.toISOString()}`
-                  );
-                } catch (err) {
-                  console.error(
-                    "[onApplyComplete] failed to reload deliveryScheduleBase",
-                    err
-                  );
-                  toast.error(
-                    err instanceof Error
-                      ? `Cloud reload failed: ${err.message}`
-                      : "Cloud reload failed"
-                  );
-                }
-              }}
-              // @deprecated apply-track-v1: the parallel client-side
-              // merge below is superseded by onApplyComplete's cloud
-              // reload. Kept for backward compatibility during rollout;
-              // delete in a follow-up after verifying prod behavior.
-              onApply={(rows) => {
-                const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
-                  const trackingId = clean(row.tracking_system_ref_id).toUpperCase();
-                  if (trackingId) return `tracking:${trackingId}`;
-                  const designatedSystemId = clean(row.designated_system_id);
-                  if (designatedSystemId) return `designated:${designatedSystemId}`;
-                  const systemName = clean(row.system_name).toLowerCase();
-                  if (systemName) return `name:${systemName}`;
-                  return `${fallbackPrefix}:${index}`;
-                };
-
-                // Persistence fix (Phase 0, Bug 4): clear any stale sync
-                // signature so the cloud-sync effect at ~line 8438 treats the
-                // new dataset as a genuine change regardless of whether the
-                // previous signature was raw:... (manifest era) or
-                // local-only:... (silent-drop branch).
-                delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
-
-                const beforeRowCount = datasets.deliveryScheduleBase?.rows.length ?? 0;
-
-                setDatasets((prev) => {
-                  const existingRows = prev.deliveryScheduleBase?.rows ?? [];
-                  const mergedByKey = new Map<string, CsvRow>();
-                  const orderedKeys: string[] = [];
-
-                  existingRows.forEach((row, index) => {
-                    const key = makeDeliveryRowKey(row, "existing", index);
-                    if (mergedByKey.has(key)) return;
-                    mergedByKey.set(key, row);
-                    orderedKeys.push(key);
-                  });
-
-                  let incomingNewCount = 0;
-                  let incomingMergedCount = 0;
-                  rows.forEach((row, index) => {
-                    const key = makeDeliveryRowKey(row, "scheduleb", index);
-                    const existing = mergedByKey.get(key);
-                    if (existing) {
-                      mergedByKey.set(key, { ...existing, ...row });
-                      incomingMergedCount += 1;
-                      return;
-                    }
-                    mergedByKey.set(key, row);
-                    orderedKeys.push(key);
-                    incomingNewCount += 1;
-                  });
-
-                  const mergedRows = orderedKeys
-                    .map((key) => mergedByKey.get(key))
-                    .filter((row): row is CsvRow => Boolean(row));
-
-                  const mergedHeaders: string[] = [];
-                  const pushHeader = (header: string) => {
-                    if (!header || mergedHeaders.includes(header)) return;
-                    mergedHeaders.push(header);
-                  };
-                  (prev.deliveryScheduleBase?.headers ?? []).forEach(pushHeader);
-                  rows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
-                  mergedRows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
-
-                  // Diagnostic toast so the user can see exactly what
-                  // happened: rows received, new vs. merged-into-existing,
-                  // dataset size before/after. Without this the UX is
-                  // opaque when "Apply says success but tracker count
-                  // doesn't change" (usually because the new rows all
-                  // collided with existing tracking IDs).
-                  toast.info(
-                    `Apply: ${rows.length} incoming (${incomingNewCount} new, ${incomingMergedCount} merged). Dataset ${beforeRowCount} → ${mergedRows.length} rows.`,
-                    { duration: 8000 }
-                  );
-
-                  return {
-                    ...prev,
-                    deliveryScheduleBase: {
-                      fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
-                      uploadedAt: new Date(),
-                      headers: mergedHeaders,
-                      rows: mergedRows,
-                    },
-                  };
-                });
-                // Phase 0 persistence fix: do NOT wipe the source manifest.
-                // A synthesized (merged) dataset was never backed by a
-                // manifest, so setting it to undefined just poisons the
-                // sync path — it forced the inline-serialize branch to
-                // recompute from a stale signature. Leave it alone and let
-                // the dataset sync effect take the normal synth path.
-                setDatasetCloudSyncBadge("deliveryScheduleBase", "pending");
-                setForceSyncingDatasets((prev) => ({ ...prev, deliveryScheduleBase: false }));
-                forcedRemoteDatasetSyncKeysRef.current.delete("deliveryScheduleBase");
-              }}
-            />
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Card><CardHeader><CardDescription>Systems in Schedule</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.contracts.reduce((a, c) => a + c.systems, 0))}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Transfers Processed</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.totalTransfers)}</CardTitle></CardHeader></Card>
-              <Card className={deliveryTrackerData.unmatchedTransfers > 0 ? "border-amber-200 bg-amber-50/50" : ""}><CardHeader><CardDescription>Unmatched Transfers</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.unmatchedTransfers)}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Schedule Systems Loaded</CardDescription><CardTitle className="text-2xl">{formatNumber(deliveryTrackerData.scheduleCount ?? 0)}</CardTitle></CardHeader></Card>
-            </div>
-            {deliveryTrackerData.unmatchedTransfers > 0 && ((deliveryTrackerData.scheduleIdSample ?? []).length > 0 || (deliveryTrackerData.transferIdSample ?? []).length > 0) && (
-              <Card className="border-amber-200 bg-amber-50/30">
-                <CardContent className="pt-3 pb-3">
-                  <p className="text-xs font-medium text-amber-800 mb-1">Debug: Sample IDs for matching</p>
-                  <div className="grid grid-cols-2 gap-4 text-xs font-mono">
-                    <div><p className="text-amber-700 mb-1">Schedule IDs (first 5):</p>{(deliveryTrackerData.scheduleIdSample ?? []).map((id, i) => <div key={i}>{id}</div>)}</div>
-                    <div><p className="text-amber-700 mb-1">Transfer Unit IDs (first 5):</p>{(deliveryTrackerData.transferIdSample ?? []).map((id, i) => <div key={i}>{id}</div>)}</div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {deliveryTrackerData.transfersMissingObligation.length > 0 && (
-              <Card className="border-amber-200 bg-amber-50/40">
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-base text-amber-900">
-                        Missing Schedule B Coverage ({formatNumber(deliveryTrackerData.transfersMissingObligation.length)})
-                      </CardTitle>
-                      <CardDescription className="text-amber-800">
-                        These tracking IDs have transfers recorded in GATS Transfer History but no matching
-                        Schedule B PDF has been scraped yet. Their obligations are therefore unknown and they
-                        are not counted in the contract summary below. Upload and scrape the corresponding
-                        Schedule B PDFs to restore coverage.
-                      </CardDescription>
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        const csv = buildCsv(
-                          ["tracking_system_ref_id"],
-                          deliveryTrackerData.transfersMissingObligation.map((id) => ({
-                            tracking_system_ref_id: id,
-                          }))
-                        );
-                        triggerCsvDownload(
-                          `delivery-tracker-missing-schedule-b-${timestampForCsvFileName()}.csv`,
-                          csv
-                        );
-                      }}
-                    >
-                      Export CSV
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="max-h-48 overflow-y-auto rounded border border-amber-200 bg-white">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Tracking ID</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {deliveryTrackerData.transfersMissingObligation.slice(0, 20).map((id) => (
-                          <TableRow key={id}>
-                            <TableCell className="font-mono text-xs">{id}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                  {deliveryTrackerData.transfersMissingObligation.length > 20 && (
-                    <p className="text-xs text-amber-700 mt-2">
-                      Showing first 20 of {formatNumber(deliveryTrackerData.transfersMissingObligation.length)}{" "}
-                      missing tracking IDs. Export CSV for the full list.
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Contract summary */}
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base">Delivery by Contract</CardTitle>
-                    <CardDescription>Obligations from Schedule B PDFs, actuals computed from Transfer History uploads.</CardDescription>
-                  </div>
-                  {deliveryTrackerData.contracts.length > 0 && (
-                    <Button variant="outline" size="sm" onClick={() => {
-                      const csv = buildCsv(
-                        ["contract", "systems", "total_obligated", "total_delivered", "total_gap", "delivery_percent"],
-                        deliveryTrackerData.contracts.map(c => ({
-                          contract: c.contractId, systems: c.systems, total_obligated: c.totalObligated,
-                          total_delivered: c.totalDelivered, total_gap: c.totalGap,
-                          delivery_percent: c.deliveryPercent !== null ? c.deliveryPercent.toFixed(1) : "",
-                        }))
-                      );
-                      triggerCsvDownload(`delivery-tracker-contracts-${timestampForCsvFileName()}.csv`, csv);
-                    }}>Export CSV</Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                {deliveryTrackerData.contracts.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-4 text-center">
-                    Import Schedule B PDFs above and upload Transfer History (GATS) in Step 1 to see delivery tracking.
-                  </p>
-                ) : (
+          {activeTab === "delivery-tracker" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading delivery tracker tab...</div>}>
+              <DeliveryTrackerTabLazy
+                deliveryTrackerData={deliveryTrackerData}
+                scheduleBImportSlot={
                   <>
-                    <div className="h-72 rounded-md border border-slate-200 bg-white p-2 mb-4">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={deliveryTrackerData.contracts} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                          <XAxis dataKey="contractId" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
-                          <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip />
-                          <Legend />
-                          <Bar dataKey="totalObligated" fill="#94a3b8" name="Obligated" />
-                          <Bar dataKey="totalDelivered" fill="#16a34a" name="Delivered" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <Table>
-                      <TableHeader><TableRow>
-                        <TableHead>Contract</TableHead>
-                        <TableHead className="text-right">Systems</TableHead>
-                        <TableHead className="text-right">Obligated</TableHead>
-                        <TableHead className="text-right">Delivered</TableHead>
-                        <TableHead className="text-right">Gap</TableHead>
-                        <TableHead className="text-right">Delivery %</TableHead>
-                      </TableRow></TableHeader>
-                      <TableBody>
-                        {deliveryTrackerData.contracts.map((c) => (
-                          <TableRow key={c.contractId}>
-                            <TableCell className="font-medium">{c.contractId}</TableCell>
-                            <TableCell className="text-right">{c.systems}</TableCell>
-                            <TableCell className="text-right">{formatNumber(c.totalObligated)}</TableCell>
-                            <TableCell className="text-right">{formatNumber(c.totalDelivered)}</TableCell>
-                            <TableCell className="text-right">{formatNumber(c.totalGap)}</TableCell>
-                            <TableCell className="text-right">{c.deliveryPercent !== null ? `${c.deliveryPercent.toFixed(1)}%` : "N/A"}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </>
-                )}
-              </CardContent>
-            </Card>
+                    {/* ── Schedule B PDF Import ────────────────────────── */}
+                    <ScheduleBImport
+                      transferDeliveryLookup={transferDeliveryLookup}
+                      existingDeliverySchedule={datasets.deliveryScheduleBase?.rows ?? null}
+                      onClearAppliedSchedule={() => {
+                        // Phase 1a follow-up: Clear on the Schedule B card wipes
+                        // the applied deliveryScheduleBase dataset so the tracker
+                        // starts fresh. Also reset the stale signature ref so
+                        // the next apply always fires a genuine cloud sync.
+                        delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
+                        clearDataset("deliveryScheduleBase");
+                      }}
+                      // apply-track-v1 + contract-id-mapping-v1: after a
+                      // server-side apply or mapping mutation lands, reload
+                      // deliveryScheduleBase from the cloud so local state
+                      // mirrors the server's post-apply truth. This eliminates
+                      // the "Dataset has: N stays flat" bug caused by the
+                      // client doing an independent parallel merge (see the
+                      // deprecated onApply handler below).
+                      //
+                      // Hardening pass 2026-04-11: previously this had silent
+                      // console.warn bail-outs on "no payload" and "null
+                      // deserialize" that left the user staring at stale data
+                      // with no error indication. Now every bail-out surfaces a
+                      // toast, logs enough shape info to diagnose, AND falls
+                      // back to the source-manifest path if the flat-payload
+                      // deserializer can't handle what the server wrote.
+                      onApplyComplete={async () => {
+                        try {
+                          const response = await getRemoteDatasetRef.current
+                            .mutateAsync({ key: "deliveryScheduleBase" })
+                            .catch((fetchErr) => {
+                              console.error(
+                                "[onApplyComplete] getRemoteDataset threw",
+                                fetchErr
+                              );
+                              return null;
+                            });
+                          if (!response?.payload) {
+                            toast.error(
+                              "Apply landed on the server but the cloud reload returned no payload. Refresh the page if the Delivery Tracker doesn't update."
+                            );
+                            console.warn(
+                              "[onApplyComplete] getRemoteDataset returned no payload; leaving local state untouched"
+                            );
+                            return;
+                          }
 
-            {/* System-level detail (paginated) */}
-            {deliveryTrackerData.rows.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-base">System × Year Detail</CardTitle>
-                      <CardDescription>{formatNumber(deliveryTrackerData.rows.length)} system-year rows</CardDescription>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={() => {
-                      const csv = buildCsv(
-                        ["system_name", "unit_id", "contract", "year", "start_date", "end_date", "obligated", "delivered", "gap"],
-                        deliveryTrackerData.rows.map(r => ({
-                          system_name: r.systemName, unit_id: r.unitId, contract: r.contractId,
-                          year: r.yearLabel, start_date: r.yearStart?.toISOString().slice(0, 10) ?? "",
-                          end_date: r.yearEnd?.toISOString().slice(0, 10) ?? "",
-                          obligated: r.obligated, delivered: r.delivered, gap: r.gap,
-                        }))
-                      );
-                      triggerCsvDownload(`delivery-tracker-detail-${timestampForCsvFileName()}.csv`, csv);
-                    }}>Export CSV</Button>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="max-h-[500px] overflow-y-auto">
-                    <Table>
-                      <TableHeader><TableRow>
-                        <TableHead>System</TableHead>
-                        <TableHead>Unit ID</TableHead>
-                        <TableHead>Contract</TableHead>
-                        <TableHead>Year</TableHead>
-                        <TableHead className="text-right">Obligated</TableHead>
-                        <TableHead className="text-right">Delivered</TableHead>
-                        <TableHead className="text-right">Gap</TableHead>
-                      </TableRow></TableHeader>
-                      <TableBody>
-                        {deliveryTrackerData.rows.slice(0, 200).map((r, i) => (
-                          <TableRow key={i}>
-                            <TableCell className="text-sm">{r.systemName}</TableCell>
-                            <TableCell className="text-xs text-slate-500">{r.unitId}</TableCell>
-                            <TableCell className="text-sm">{r.contractId}</TableCell>
-                            <TableCell className="text-sm">{r.yearLabel}</TableCell>
-                            <TableCell className="text-right">{formatNumber(r.obligated)}</TableCell>
-                            <TableCell className="text-right">{formatNumber(r.delivered)}</TableCell>
-                            <TableCell className={`text-right ${r.gap > 0 ? "text-rose-600" : r.gap < 0 ? "text-emerald-600" : ""}`}>{formatNumber(r.gap)}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                  {deliveryTrackerData.rows.length > 200 && (
-                    <p className="text-xs text-slate-500 mt-2 text-center">Showing first 200 of {formatNumber(deliveryTrackerData.rows.length)} rows. Export CSV for full data.</p>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-          </div>)}
+                          // Primary path: flat {fileName,uploadedAt,headers,csvText}
+                          // shape (what applyScheduleBToDeliveryObligations and
+                          // applyScheduleBContractIdMapping both write).
+                          let loaded = deserializeRemoteDatasetPayload(
+                            response.payload
+                          );
+
+                          // Fallback path: source-manifest shape. If the cloud
+                          // has an older {_rawSourcesV1: true, sources: [...]}
+                          // payload (from a pre-apply-track-v1 era), resolve
+                          // the latest source's storageKey and parse that.
+                          // Mirrors the main rehydration path in
+                          // loadRemoteDatasets at ~line 7167.
+                          if (!loaded) {
+                            const sourceManifest = parseRemoteSourceManifestPayload(
+                              response.payload
+                            );
+                            if (sourceManifest && sourceManifest.sources.length > 0) {
+                              try {
+                                const latest =
+                                  sourceManifest.sources[
+                                    sourceManifest.sources.length - 1
+                                  ];
+                                const sourceResponse =
+                                  await getRemoteDatasetRef.current
+                                    .mutateAsync({ key: latest.storageKey })
+                                    .catch(() => null);
+                                if (sourceResponse?.payload) {
+                                  const decoded =
+                                    latest.encoding === "base64"
+                                      ? new TextDecoder().decode(
+                                          base64ToBytes(sourceResponse.payload)
+                                        )
+                                      : sourceResponse.payload;
+                                  const parsedCsv = await parseCsvTextAsync(decoded);
+                                  loaded = {
+                                    fileName: latest.fileName || "Schedule B Import",
+                                    uploadedAt: new Date(latest.uploadedAt),
+                                    headers: parsedCsv.headers,
+                                    rows: parsedCsv.rows,
+                                  };
+                                }
+                              } catch (manifestErr) {
+                                console.error(
+                                  "[onApplyComplete] source-manifest fallback failed",
+                                  manifestErr
+                                );
+                              }
+                            }
+                          }
+
+                          if (!loaded) {
+                            // Still null — log the payload shape prefix so we
+                            // can diagnose from the browser console without
+                            // another deploy round-trip.
+                            const preview = response.payload.slice(0, 200);
+                            toast.error(
+                              "Apply landed on the server but the local dataset couldn't be refreshed. Open DevTools console for details, or refresh the page."
+                            );
+                            console.error(
+                              "[onApplyComplete] deserializeRemoteDatasetPayload and source-manifest fallback both returned null. Payload preview:",
+                              preview
+                            );
+                            return;
+                          }
+
+                          setDatasets((prev) => ({
+                            ...prev,
+                            deliveryScheduleBase: loaded,
+                          }));
+                          // Sync the signature ref to match the freshly loaded
+                          // dataset so the sync effect at ~line 7565 doesn't
+                          // immediately re-upload the same payload (would be a
+                          // harmless redundant round-trip, but still wasteful).
+                          remoteDatasetSignatureRef.current.deliveryScheduleBase = `${loaded.fileName}|${loaded.uploadedAt.toISOString()}|${loaded.rows.length}|${loaded.sources?.length ?? 0}`;
+                          setDatasetCloudSyncStatus((prev) => ({
+                            ...prev,
+                            deliveryScheduleBase: "synced",
+                          }));
+                          console.log(
+                            `[onApplyComplete] reloaded deliveryScheduleBase: ${loaded.rows.length} rows, uploadedAt=${loaded.uploadedAt.toISOString()}`
+                          );
+                        } catch (err) {
+                          console.error(
+                            "[onApplyComplete] failed to reload deliveryScheduleBase",
+                            err
+                          );
+                          toast.error(
+                            err instanceof Error
+                              ? `Cloud reload failed: ${err.message}`
+                              : "Cloud reload failed"
+                          );
+                        }
+                      }}
+                      // @deprecated apply-track-v1: the parallel client-side
+                      // merge below is superseded by onApplyComplete's cloud
+                      // reload. Kept for backward compatibility during rollout;
+                      // delete in a follow-up after verifying prod behavior.
+                      onApply={(rows) => {
+                        const makeDeliveryRowKey = (row: CsvRow, fallbackPrefix: string, index: number) => {
+                          const trackingId = clean(row.tracking_system_ref_id).toUpperCase();
+                          if (trackingId) return `tracking:${trackingId}`;
+                          const designatedSystemId = clean(row.designated_system_id);
+                          if (designatedSystemId) return `designated:${designatedSystemId}`;
+                          const systemName = clean(row.system_name).toLowerCase();
+                          if (systemName) return `name:${systemName}`;
+                          return `${fallbackPrefix}:${index}`;
+                        };
+
+                        // Persistence fix (Phase 0, Bug 4): clear any stale sync
+                        // signature so the cloud-sync effect at ~line 8438 treats the
+                        // new dataset as a genuine change regardless of whether the
+                        // previous signature was raw:... (manifest era) or
+                        // local-only:... (silent-drop branch).
+                        delete remoteDatasetSignatureRef.current.deliveryScheduleBase;
+
+                        const beforeRowCount = datasets.deliveryScheduleBase?.rows.length ?? 0;
+
+                        setDatasets((prev) => {
+                          const existingRows = prev.deliveryScheduleBase?.rows ?? [];
+                          const mergedByKey = new Map<string, CsvRow>();
+                          const orderedKeys: string[] = [];
+
+                          existingRows.forEach((row, index) => {
+                            const key = makeDeliveryRowKey(row, "existing", index);
+                            if (mergedByKey.has(key)) return;
+                            mergedByKey.set(key, row);
+                            orderedKeys.push(key);
+                          });
+
+                          let incomingNewCount = 0;
+                          let incomingMergedCount = 0;
+                          rows.forEach((row, index) => {
+                            const key = makeDeliveryRowKey(row, "scheduleb", index);
+                            const existing = mergedByKey.get(key);
+                            if (existing) {
+                              mergedByKey.set(key, { ...existing, ...row });
+                              incomingMergedCount += 1;
+                              return;
+                            }
+                            mergedByKey.set(key, row);
+                            orderedKeys.push(key);
+                            incomingNewCount += 1;
+                          });
+
+                          const mergedRows = orderedKeys
+                            .map((key) => mergedByKey.get(key))
+                            .filter((row): row is CsvRow => Boolean(row));
+
+                          const mergedHeaders: string[] = [];
+                          const pushHeader = (header: string) => {
+                            if (!header || mergedHeaders.includes(header)) return;
+                            mergedHeaders.push(header);
+                          };
+                          (prev.deliveryScheduleBase?.headers ?? []).forEach(pushHeader);
+                          rows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
+                          mergedRows.flatMap((row) => Object.keys(row)).forEach(pushHeader);
+
+                          // Diagnostic toast so the user can see exactly what
+                          // happened: rows received, new vs. merged-into-existing,
+                          // dataset size before/after. Without this the UX is
+                          // opaque when "Apply says success but tracker count
+                          // doesn't change" (usually because the new rows all
+                          // collided with existing tracking IDs).
+                          toast.info(
+                            `Apply: ${rows.length} incoming (${incomingNewCount} new, ${incomingMergedCount} merged). Dataset ${beforeRowCount} → ${mergedRows.length} rows.`,
+                            { duration: 8000 }
+                          );
+
+                          return {
+                            ...prev,
+                            deliveryScheduleBase: {
+                              fileName: prev.deliveryScheduleBase?.fileName ?? "Schedule B Import",
+                              uploadedAt: new Date(),
+                              headers: mergedHeaders,
+                              rows: mergedRows,
+                            },
+                          };
+                        });
+                        // Phase 0 persistence fix: do NOT wipe the source manifest.
+                        // A synthesized (merged) dataset was never backed by a
+                        // manifest, so setting it to undefined just poisons the
+                        // sync path — it forced the inline-serialize branch to
+                        // recompute from a stale signature. Leave it alone and let
+                        // the dataset sync effect take the normal synth path.
+                        setDatasetCloudSyncBadge("deliveryScheduleBase", "pending");
+                        setForceSyncingDatasets((prev) => ({ ...prev, deliveryScheduleBase: false }));
+                        forcedRemoteDatasetSyncKeysRef.current.delete("deliveryScheduleBase");
+                      }}
+                    />
+                  </>
+                }
+              />
+            </Suspense>
+          )}
           {/* AI Data Assistant — shared across all tabs */}
           <div className="mt-4">
             <Suspense fallback={null}>
