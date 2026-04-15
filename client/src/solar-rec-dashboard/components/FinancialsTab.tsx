@@ -24,7 +24,7 @@
  * runs on other tabs.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -179,6 +179,10 @@ export default function FinancialsTab(props: FinancialsTabProps) {
   const [financialSortBy, setFinancialSortBy] = useState<FinancialSortKey>("profit");
   const [financialSortDir, setFinancialSortDir] = useState<"asc" | "desc">("desc");
   const [financialSearch, setFinancialSearch] = useState("");
+  // Phase 18: defer the search string so filteredFinancialRows
+  // re-runs as a low-priority update, keeping keystrokes responsive
+  // on large profit tables.
+  const deferredFinancialSearch = useDeferredValue(financialSearch);
   const [financialFilter, setFinancialFilter] = useState<"all" | "needs-review" | "ok">(
     "all",
   );
@@ -439,7 +443,7 @@ export default function FinancialsTab(props: FinancialsTabProps) {
       rows = rows.filter((r) => !r.needsReview);
     }
 
-    const needle = financialSearch.trim().toLowerCase();
+    const needle = deferredFinancialSearch.trim().toLowerCase();
     if (needle) {
       rows = rows.filter((r) =>
         [r.systemName, r.applicationId, r.csgId].join(" ").toLowerCase().includes(needle),
@@ -464,7 +468,7 @@ export default function FinancialsTab(props: FinancialsTabProps) {
   }, [
     financialProfitData.rows,
     financialFilter,
-    financialSearch,
+    deferredFinancialSearch,
     financialSortBy,
     financialSortDir,
   ]);

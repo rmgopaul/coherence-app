@@ -16,7 +16,7 @@
  * filter/sort closure is garbage collected when the user switches away.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useMemo, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
   Card,
@@ -98,6 +98,9 @@ export default function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
     ChangeOwnershipStatus | "All"
   >("All");
   const [changeOwnershipSearch, setChangeOwnershipSearch] = useState("");
+  // Phase 18: defer the search string so filteredChangeOwnershipRows
+  // re-runs as a low-priority update, keeping keystrokes responsive.
+  const deferredChangeOwnershipSearch = useDeferredValue(changeOwnershipSearch);
   const [changeOwnershipSortBy, setChangeOwnershipSortBy] =
     useState<ChangeOwnershipSortKey>("contractValue");
   const [changeOwnershipSortDir, setChangeOwnershipSortDir] = useState<
@@ -109,7 +112,7 @@ export default function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
   // (the tab is an auditing surface, not a dense-table use case).
   // -------------------------------------------------------------------------
   const filteredChangeOwnershipRows = useMemo(() => {
-    const normalizedSearch = changeOwnershipSearch.trim().toLowerCase();
+    const normalizedSearch = deferredChangeOwnershipSearch.trim().toLowerCase();
     const rows = changeOwnershipRows.filter((system) => {
       const matchesFilter =
         changeOwnershipFilter === "All"
@@ -185,7 +188,7 @@ export default function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
   }, [
     changeOwnershipFilter,
     changeOwnershipRows,
-    changeOwnershipSearch,
+    deferredChangeOwnershipSearch,
     changeOwnershipSortBy,
     changeOwnershipSortDir,
   ]);

@@ -15,7 +15,7 @@
  * Mounts only when `activeTab === "ownership"`.
  */
 
-import { useMemo, useState } from "react";
+import { useDeferredValue, useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -66,9 +66,12 @@ export default function OwnershipTab(props: OwnershipTabProps) {
     OwnershipStatus | "All"
   >("All");
   const [searchTerm, setSearchTerm] = useState("");
+  // Phase 18: defer the search string so filteredOwnershipRows
+  // re-runs as a low-priority update, keeping keystrokes responsive.
+  const deferredSearchTerm = useDeferredValue(searchTerm);
 
   const filteredOwnershipRows = useMemo(() => {
-    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const normalizedSearch = deferredSearchTerm.trim().toLowerCase();
     return part2EligibleSystemsForSizeReporting.filter((system) => {
       const matchesFilter =
         ownershipFilter === "All" ? true : system.ownershipStatus === ownershipFilter;
@@ -86,7 +89,7 @@ export default function OwnershipTab(props: OwnershipTabProps) {
 
       return haystack.includes(normalizedSearch);
     });
-  }, [ownershipFilter, part2EligibleSystemsForSizeReporting, searchTerm]);
+  }, [ownershipFilter, part2EligibleSystemsForSizeReporting, deferredSearchTerm]);
 
   return (
     <div className="space-y-4 mt-4">

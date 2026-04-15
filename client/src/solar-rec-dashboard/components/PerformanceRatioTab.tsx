@@ -19,7 +19,7 @@
  * component — the gate IS the mount.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 import {
@@ -184,6 +184,13 @@ export default function PerformanceRatioTab(props: PerformanceRatioTabProps) {
   const [performanceRatioMatchFilter, setPerformanceRatioMatchFilter] =
     useState<PerformanceRatioMatchType | "All">("All");
   const [performanceRatioSearch, setPerformanceRatioSearch] = useState("");
+  // Phase 18: useDeferredValue marks the search string as a
+  // low-priority update so the `filteredPerformanceRatioRows` memo
+  // (which filter-sorts over ~100k+ rows on every keystroke) runs
+  // after the input re-renders. The user still sees the character
+  // they just typed instantly; the filtered table catches up a
+  // frame or two later without blocking keystrokes.
+  const deferredPerformanceRatioSearch = useDeferredValue(performanceRatioSearch);
   const [performanceRatioSortBy, setPerformanceRatioSortBy] = useState<
     | "performanceRatioPercent"
     | "productionDeltaWh"
@@ -577,7 +584,7 @@ export default function PerformanceRatioTab(props: PerformanceRatioTabProps) {
   );
 
   const filteredPerformanceRatioRows = useMemo(() => {
-    const search = performanceRatioSearch.trim().toLowerCase();
+    const search = deferredPerformanceRatioSearch.trim().toLowerCase();
 
     const rows = performanceRatioResult.rows.filter((row) => {
       if (
@@ -646,7 +653,7 @@ export default function PerformanceRatioTab(props: PerformanceRatioTabProps) {
 
     return rows;
   }, [
-    performanceRatioSearch,
+    deferredPerformanceRatioSearch,
     performanceRatioResult.rows,
     performanceRatioMonitoringFilter,
     performanceRatioMatchFilter,

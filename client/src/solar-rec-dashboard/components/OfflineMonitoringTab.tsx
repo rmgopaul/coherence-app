@@ -20,7 +20,7 @@
  * Switching away unmounts the whole subtree.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
   Card,
@@ -107,6 +107,9 @@ export default function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
   const [offlinePlatformFilter, setOfflinePlatformFilter] = useState("All");
   const [offlineInstallerFilter, setOfflineInstallerFilter] = useState("All");
   const [offlineSearch, setOfflineSearch] = useState("");
+  // Phase 18: defer the search string so filteredOfflineSystems
+  // re-runs as a low-priority update, keeping keystrokes responsive.
+  const deferredOfflineSearch = useDeferredValue(offlineSearch);
 
   // --- Breakdown table sort state (one per table) ---
   const [offlineMonitoringSortBy, setOfflineMonitoringSortBy] =
@@ -342,7 +345,7 @@ export default function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
   // Detail table: filtered + sorted + paginated
   // -------------------------------------------------------------------------
   const filteredOfflineSystems = useMemo(() => {
-    const normalizedSearch = offlineSearch.trim().toLowerCase();
+    const normalizedSearch = deferredOfflineSearch.trim().toLowerCase();
     const rows = offlineSystems.filter((system) => {
       const monitoringMatch =
         offlineMonitoringFilter === "All"
@@ -439,7 +442,7 @@ export default function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
     offlineInstallerFilter,
     offlineMonitoringFilter,
     offlinePlatformFilter,
-    offlineSearch,
+    deferredOfflineSearch,
     offlineSystems,
   ]);
 

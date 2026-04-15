@@ -26,7 +26,7 @@
  * `createLogEntry` snapshot builder. Flows in as the single prop.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -106,6 +106,10 @@ export default function RecPerformanceEvaluationTab(
   const [recPerfSortBy, setRecPerfSortBy] = useState<RecPerfSortKey>("applicationId");
   const [recPerfSortDir, setRecPerfSortDir] = useState<"asc" | "desc">("asc");
   const [recPerfSearch, setRecPerfSearch] = useState("");
+  // Phase 18: defer the search string so filteredRecPerformanceRows
+  // re-runs as a low-priority update, keeping keystrokes responsive
+  // on large rec-performance tables.
+  const deferredRecPerfSearch = useDeferredValue(recPerfSearch);
   const [recPerfStatusFilter, setRecPerfStatusFilter] = useState<
     "all" | "surplus" | "shortfall"
   >("all");
@@ -447,8 +451,8 @@ export default function RecPerformanceEvaluationTab(
   // ── Filter + sort + pagination ───────────────────────────────────
   const filteredRecPerformanceRows = useMemo(() => {
     let rows = recPerformanceEvaluation.rows;
-    if (recPerfSearch) {
-      const q = recPerfSearch.toLowerCase();
+    if (deferredRecPerfSearch) {
+      const q = deferredRecPerfSearch.toLowerCase();
       rows = rows.filter(
         (r) =>
           r.applicationId.toLowerCase().includes(q) ||
@@ -478,7 +482,7 @@ export default function RecPerformanceEvaluationTab(
     return rows;
   }, [
     recPerformanceEvaluation.rows,
-    recPerfSearch,
+    deferredRecPerfSearch,
     recPerfStatusFilter,
     recPerfSortBy,
     recPerfSortDir,
