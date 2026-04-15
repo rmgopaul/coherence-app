@@ -277,6 +277,75 @@ export type FinancialProfitData = {
 };
 
 // ---------------------------------------------------------------------------
+// REC performance spine — Tier 1 (Contracts + Annual Review)
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of the Contracts tab "Contract + Delivery Start Date Detail"
+ * table. Computed by the extracted `ContractsTab` from the parent's
+ * delivery schedule base + transfer history + price lookups.
+ */
+export type ContractDeliveryAggregate = {
+  contractId: string;
+  deliveryStartDate: Date | null;
+  deliveryStartRaw: string;
+  required: number;
+  delivered: number;
+  gap: number;
+  deliveredPercent: number | null;
+  requiredValue: number;
+  deliveredValue: number;
+  valueGap: number;
+  valueDeliveredPercent: number | null;
+  projectCount: number;
+  pricedProjectCount: number;
+};
+
+/**
+ * One row of the Annual Review tab vintage trend / summary table.
+ * Computed by aggregating `AnnualContractVintageAggregate` rows
+ * across all contracts.
+ */
+export type AnnualVintageAggregate = {
+  deliveryStartDate: Date | null;
+  deliveryStartRaw: string;
+  label: string;
+  projectCount: number;
+  reportingProjectCount: number;
+  reportingProjectPercent: number | null;
+  required: number;
+  delivered: number;
+  gap: number;
+  deliveredPercent: number | null;
+  requiredValue: number;
+  deliveredValue: number;
+  valueGap: number;
+  valueDeliveredPercent: number | null;
+};
+
+/**
+ * One row of the Annual Review tab "Contract + Vintage Annual Detail"
+ * table — the annual-review equivalent of `ContractDeliveryAggregate`
+ * with extra reporting-project columns.
+ */
+export type AnnualContractVintageAggregate = {
+  contractId: string;
+  deliveryStartDate: Date | null;
+  deliveryStartRaw: string;
+  required: number;
+  delivered: number;
+  gap: number;
+  deliveredPercent: number | null;
+  requiredValue: number;
+  deliveredValue: number;
+  valueGap: number;
+  valueDeliveredPercent: number | null;
+  projectCount: number;
+  reportingProjectCount: number;
+  reportingProjectPercent: number | null;
+};
+
+// ---------------------------------------------------------------------------
 // Performance-ratio types
 // ---------------------------------------------------------------------------
 
