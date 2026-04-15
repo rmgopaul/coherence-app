@@ -31,7 +31,7 @@ import {
 import { storageGet, storagePut } from "../storage";
 import {
   checkSupplementPrice,
-  extractSupplementFromBottleImage,
+  extractSupplementsFromBottleImage,
   findExistingSupplementMatch,
   sourceDomainFromUrl,
 } from "../services/integrations/supplements";
@@ -733,22 +733,128 @@ export type SupplementBottleScanInput = {
   autoLogPrice?: boolean;
 };
 
+type SupplementDefinitionRow = NonNullable<
+  Awaited<ReturnType<typeof import("../db").getSupplementDefinitionById>>
+>;
+type SupplementExtraction = Awaited<
+  ReturnType<
+    typeof import("../services/integrations/supplements").extractSupplementsFromBottleImage
+  >
+>[number];
+type SupplementPriceCheck = Awaited<
+  ReturnType<typeof import("../services/integrations/supplements").checkSupplementPrice>
+>;
+
+export type SupplementBottleScanResultItem = {
+  existed: boolean;
+  definitionId: string;
+  definition: SupplementDefinitionRow | null;
+  extracted: SupplementExtraction;
+  priceCheck: SupplementPriceCheck | null;
+  priceCheckError: string | null;
+  priceLogCreated: boolean;
+};
+
+export type SupplementBottleScanResult = {
+  success: boolean;
+  imageUrl: string;
+  results: SupplementBottleScanResultItem[];
+  // Legacy top-level fields mirror `results[0]` for mobile clients
+  // that were built before multi-extraction landed. Remove once every
+  // mobile build is on the new shape.
+  existed: boolean;
+  definitionId: string;
+  definition: SupplementDefinitionRow | null;
+  extracted: SupplementExtraction;
+  priceCheck: SupplementPriceCheck | null;
+  priceCheckError: string | null;
+  priceLogCreated: boolean;
+};
+
+/**
+ * Ensure a matched-or-created supplement definition exists for a
+ * single extracted record, returning the ID plus the freshly-loaded
+ * row. Does NOT run a price check — that happens in a second pass so
+ * price checks can be parallelized.
+ */
+async function resolveSupplementForExtraction(
+  userId: number,
+  extracted: SupplementExtraction,
+  existingDefinitions: SupplementDefinitionRow[],
+  fallbackTiming: "am" | "pm" | undefined
+): Promise<{
+  definitionId: string;
+  existed: boolean;
+  definitionRow: SupplementDefinitionRow;
+}> {
+  const matchedDefinition = findExistingSupplementMatch(
+    existingDefinitions,
+    extracted.name ?? "",
+    extracted.brand
+  );
+
+  const defaultDose = toNonEmptyString(extracted.dose) ?? "1";
+  const defaultDoseUnit = extracted.doseUnit ?? "capsule";
+  const defaultTiming = extracted.timing ?? fallbackTiming ?? "am";
+
+  let definitionId: string;
+  const existed = Boolean(matchedDefinition);
+
+  if (matchedDefinition) {
+    definitionId = matchedDefinition.id;
+    await updateSupplementDefinition(userId, matchedDefinition.id, {
+      brand:
+        toNonEmptyString(matchedDefinition.brand) ??
+        toNonEmptyString(extracted.brand) ??
+        null,
+      dose: toNonEmptyString(matchedDefinition.dose) ?? defaultDose,
+      doseUnit: matchedDefinition.doseUnit ?? defaultDoseUnit,
+      dosePerUnit:
+        toNonEmptyString(matchedDefinition.dosePerUnit) ??
+        toNonEmptyString(extracted.dosePerUnit) ??
+        null,
+      quantityPerBottle:
+        matchedDefinition.quantityPerBottle ?? extracted.quantityPerBottle ?? null,
+      timing: matchedDefinition.timing ?? defaultTiming,
+    });
+  } else {
+    const nextSortOrder =
+      existingDefinitions.length > 0
+        ? Math.max(
+            ...existingDefinitions.map((definition) => definition.sortOrder ?? 0)
+          ) + 1
+        : 0;
+    definitionId = nanoid();
+    await createSupplementDefinition({
+      id: definitionId,
+      userId,
+      name: extracted.name ?? "Unnamed supplement",
+      brand: toNonEmptyString(extracted.brand) ?? null,
+      dose: defaultDose,
+      doseUnit: defaultDoseUnit,
+      dosePerUnit: toNonEmptyString(extracted.dosePerUnit) ?? null,
+      productUrl: null,
+      pricePerBottle: null,
+      quantityPerBottle: extracted.quantityPerBottle ?? null,
+      timing: defaultTiming,
+      isLocked: false,
+      isActive: true,
+      sortOrder: nextSortOrder,
+    });
+  }
+
+  const reloaded = await getSupplementDefinitionById(userId, definitionId);
+  const definitionRow = reloaded ?? matchedDefinition;
+  if (!definitionRow) {
+    throw new Error("Supplement was created but could not be reloaded.");
+  }
+  return { definitionId, existed, definitionRow };
+}
+
 export async function performSupplementBottleScanForUser(
   userId: number,
   input: SupplementBottleScanInput
-): Promise<{
-  success: boolean;
-  existed: boolean;
-  definitionId: string;
-  definition: Awaited<ReturnType<typeof import("../db").getSupplementDefinitionById>>;
-  extracted: Awaited<ReturnType<typeof import("../services/integrations/supplements").extractSupplementFromBottleImage>>;
-  imageUrl: string;
-  priceCheck:
-    | Awaited<ReturnType<typeof import("../services/integrations/supplements").checkSupplementPrice>>
-    | null;
-  priceCheckError: string | null;
-  priceLogCreated: boolean;
-}> {
+): Promise<SupplementBottleScanResult> {
   const anthropicIntegration = await getIntegrationByProvider(userId, "anthropic");
   const apiKey = toNonEmptyString(anthropicIntegration?.accessToken);
   if (!apiKey) {
@@ -771,133 +877,140 @@ export async function performSupplementBottleScanForUser(
   const imageBuffer = Buffer.from(input.base64Data, "base64");
   const { url: imageUrl } = await storagePut(imageKey, imageBuffer, input.contentType);
 
-  const extracted = await extractSupplementFromBottleImage({
+  const extractedList = await extractSupplementsFromBottleImage({
     credentials: { apiKey, model },
     base64Image: input.base64Data,
     mimeType: input.contentType,
   });
 
-  if (!extracted.name) {
+  if (extractedList.length === 0) {
     throw new Error(
-      "Could not read the supplement name from the photo. Try a clearer front-label image."
+      "Could not read any supplement labels from the photo. Try a clearer image with the front labels visible."
     );
   }
 
-  const definitions = await listSupplementDefinitions(userId);
-  const matchedDefinition = findExistingSupplementMatch(
-    definitions,
-    extracted.name,
-    extracted.brand
-  );
+  // Phase 1 — reconcile each extracted item against the DB. Serialized
+  // so that if the same image shows two bottles of the same product
+  // (unlikely but possible), the second pass sees the first one's
+  // insert and merges instead of creating a duplicate.
+  const existingDefinitions = (await listSupplementDefinitions(
+    userId
+  )) as SupplementDefinitionRow[];
+  const workingDefinitions: SupplementDefinitionRow[] = [...existingDefinitions];
 
-  const defaultDose = toNonEmptyString(extracted.dose) ?? "1";
-  const defaultDoseUnit = extracted.doseUnit ?? "capsule";
-  const defaultTiming = extracted.timing ?? input.timing ?? "am";
-  let definitionId: string;
-  const existed = Boolean(matchedDefinition);
+  const resolved: Array<{
+    extracted: SupplementExtraction;
+    definitionId: string;
+    existed: boolean;
+    definitionRow: SupplementDefinitionRow;
+  }> = [];
 
-  if (matchedDefinition) {
-    definitionId = matchedDefinition.id;
-    await updateSupplementDefinition(userId, matchedDefinition.id, {
-      brand:
-        toNonEmptyString(matchedDefinition.brand) ??
-        toNonEmptyString(extracted.brand) ??
-        null,
-      dose:
-        toNonEmptyString(matchedDefinition.dose) ??
-        defaultDose,
-      doseUnit: matchedDefinition.doseUnit ?? defaultDoseUnit,
-      dosePerUnit:
-        toNonEmptyString(matchedDefinition.dosePerUnit) ??
-        toNonEmptyString(extracted.dosePerUnit) ??
-        null,
-      quantityPerBottle:
-        matchedDefinition.quantityPerBottle ?? extracted.quantityPerBottle ?? null,
-      timing: matchedDefinition.timing ?? defaultTiming,
-    });
-  } else {
-    const nextSortOrder =
-      definitions.length > 0
-        ? Math.max(...definitions.map((definition) => definition.sortOrder ?? 0)) + 1
-        : 0;
-    definitionId = nanoid();
-    await createSupplementDefinition({
-      id: definitionId,
+  for (const extracted of extractedList) {
+    const outcome = await resolveSupplementForExtraction(
       userId,
-      name: extracted.name,
-      brand: toNonEmptyString(extracted.brand) ?? null,
-      dose: defaultDose,
-      doseUnit: defaultDoseUnit,
-      dosePerUnit: toNonEmptyString(extracted.dosePerUnit) ?? null,
-      productUrl: null,
-      pricePerBottle: null,
-      quantityPerBottle: extracted.quantityPerBottle ?? null,
-      timing: defaultTiming,
-      isLocked: false,
-      isActive: true,
-      sortOrder: nextSortOrder,
-    });
-  }
-
-  const definitionBeforePrice =
-    (await getSupplementDefinitionById(userId, definitionId)) ?? matchedDefinition;
-  if (!definitionBeforePrice) {
-    throw new Error("Supplement was created but could not be reloaded.");
-  }
-
-  let priceCheckError: string | null = null;
-  let priceLogCreated = false;
-  let priceCheckResult: Awaited<ReturnType<typeof checkSupplementPrice>> | null = null;
-
-  try {
-    priceCheckResult = await checkSupplementPrice({
-      credentials: { apiKey, model },
-      supplementName: definitionBeforePrice.name,
-      brand: toNonEmptyString(definitionBeforePrice.brand),
-      dosePerUnit: toNonEmptyString(definitionBeforePrice.dosePerUnit),
-    });
-  } catch (error) {
-    priceCheckError = error instanceof Error ? error.message : "Claude price lookup failed.";
-  }
-
-  if (priceCheckResult && priceCheckResult.pricePerBottle !== null) {
-    await updateSupplementDefinition(userId, definitionId, {
-      pricePerBottle: priceCheckResult.pricePerBottle,
-      productUrl: priceCheckResult.sourceUrl ?? definitionBeforePrice.productUrl ?? null,
-    });
-
-    if (input.autoLogPrice ?? true) {
-      await addSupplementPriceLog({
-        id: nanoid(),
-        userId,
-        definitionId,
-        supplementName: definitionBeforePrice.name,
-        brand: definitionBeforePrice.brand ?? null,
-        pricePerBottle: priceCheckResult.pricePerBottle,
-        currency: priceCheckResult.currency ?? "USD",
-        sourceName: priceCheckResult.sourceName ?? null,
-        sourceUrl: priceCheckResult.sourceUrl ?? null,
-        sourceDomain: sourceDomainFromUrl(priceCheckResult.sourceUrl),
-        confidence: priceCheckResult.confidence,
-        imageUrl,
-        capturedAt: new Date(),
-      });
-      priceLogCreated = true;
+      extracted,
+      workingDefinitions,
+      input.timing
+    );
+    resolved.push({ extracted, ...outcome });
+    // Fold the newly-created/updated row into the working set so the
+    // next iteration's match check can see it.
+    const idx = workingDefinitions.findIndex(
+      (row) => row.id === outcome.definitionRow.id
+    );
+    if (idx >= 0) {
+      workingDefinitions[idx] = outcome.definitionRow;
+    } else {
+      workingDefinitions.push(outcome.definitionRow);
     }
   }
 
-  const finalDefinition = await getSupplementDefinitionById(userId, definitionId);
+  // Phase 2 — run price checks in parallel. Claude price lookups hit
+  // the web and are the slowest part of the pipeline; serializing them
+  // would turn a 10-supplement photo into a minute-long stall.
+  const priceCheckOutcomes = await Promise.all(
+    resolved.map(async (item) => {
+      try {
+        const priceCheck = await checkSupplementPrice({
+          credentials: { apiKey, model },
+          supplementName: item.definitionRow.name,
+          brand: toNonEmptyString(item.definitionRow.brand),
+          dosePerUnit: toNonEmptyString(item.definitionRow.dosePerUnit),
+        });
+        return { priceCheck, priceCheckError: null as string | null };
+      } catch (error) {
+        return {
+          priceCheck: null as SupplementPriceCheck | null,
+          priceCheckError:
+            error instanceof Error ? error.message : "Claude price lookup failed.",
+        };
+      }
+    })
+  );
 
+  // Phase 3 — persist price updates + logs. Sequential because each
+  // write targets a distinct definition ID and the overhead of a few
+  // awaits is nothing next to the Claude round-trips that already ran.
+  const results: SupplementBottleScanResultItem[] = [];
+  for (let i = 0; i < resolved.length; i++) {
+    const item = resolved[i];
+    const { priceCheck, priceCheckError } = priceCheckOutcomes[i];
+    let priceLogCreated = false;
+
+    if (priceCheck && priceCheck.pricePerBottle !== null) {
+      await updateSupplementDefinition(userId, item.definitionId, {
+        pricePerBottle: priceCheck.pricePerBottle,
+        productUrl: priceCheck.sourceUrl ?? item.definitionRow.productUrl ?? null,
+      });
+
+      if (input.autoLogPrice ?? true) {
+        await addSupplementPriceLog({
+          id: nanoid(),
+          userId,
+          definitionId: item.definitionId,
+          supplementName: item.definitionRow.name,
+          brand: item.definitionRow.brand ?? null,
+          pricePerBottle: priceCheck.pricePerBottle,
+          currency: priceCheck.currency ?? "USD",
+          sourceName: priceCheck.sourceName ?? null,
+          sourceUrl: priceCheck.sourceUrl ?? null,
+          sourceDomain: sourceDomainFromUrl(priceCheck.sourceUrl),
+          confidence: priceCheck.confidence,
+          imageUrl,
+          capturedAt: new Date(),
+        });
+        priceLogCreated = true;
+      }
+    }
+
+    const finalDefinition = await getSupplementDefinitionById(
+      userId,
+      item.definitionId
+    );
+    results.push({
+      existed: item.existed,
+      definitionId: item.definitionId,
+      definition: finalDefinition,
+      extracted: item.extracted,
+      priceCheck,
+      priceCheckError,
+      priceLogCreated,
+    });
+  }
+
+  const primary = results[0];
   return {
     success: true,
-    existed,
-    definitionId,
-    definition: finalDefinition,
-    extracted,
     imageUrl,
-    priceCheck: priceCheckResult,
-    priceCheckError,
-    priceLogCreated,
+    results,
+    // Legacy fields — see type definition.
+    existed: primary.existed,
+    definitionId: primary.definitionId,
+    definition: primary.definition,
+    extracted: primary.extracted,
+    priceCheck: primary.priceCheck,
+    priceCheckError: primary.priceCheckError,
+    priceLogCreated: primary.priceLogCreated,
   };
 }
 

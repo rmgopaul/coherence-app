@@ -115,11 +115,15 @@ type SupplementBottleScanSummary = {
   definitionId: string;
   definitionName: string;
   existed: boolean;
-  imageUrl: string | null;
   pricePerBottle: number | null;
   sourceUrl: string | null;
   priceLogCreated: boolean;
   priceCheckError: string | null;
+};
+
+type SupplementBottleScanBatch = {
+  imageUrl: string | null;
+  items: SupplementBottleScanSummary[];
 };
 
 export default function Settings() {
@@ -158,7 +162,7 @@ export default function Settings() {
   const [newSupplementPricePerBottle, setNewSupplementPricePerBottle] = useState("");
   const [newSupplementQuantityPerBottle, setNewSupplementQuantityPerBottle] = useState("");
   const [supplementDrafts, setSupplementDrafts] = useState<Record<string, SupplementEditorState>>({});
-  const [latestSupplementScan, setLatestSupplementScan] = useState<SupplementBottleScanSummary | null>(null);
+  const [latestSupplementScan, setLatestSupplementScan] = useState<SupplementBottleScanBatch | null>(null);
   
   const { data: integrations, isLoading, refetch } = trpc.integrations.list.useQuery(undefined, {
     enabled: !!user,
@@ -371,22 +375,35 @@ export default function Settings() {
 
   const scanBottleWithClaude = trpc.supplements.scanBottleWithClaude.useMutation({
     onSuccess: (result) => {
-      const definitionName = result.definition?.name ?? "Supplement";
+      const resultItems = result.results ?? [];
+      const items: SupplementBottleScanSummary[] = resultItems.map((item) => ({
+        definitionId: item.definitionId,
+        definitionName: item.definition?.name ?? item.extracted?.name ?? "Supplement",
+        existed: Boolean(item.existed),
+        pricePerBottle: item.priceCheck?.pricePerBottle ?? null,
+        sourceUrl: item.priceCheck?.sourceUrl ?? null,
+        priceLogCreated: Boolean(item.priceLogCreated),
+        priceCheckError: item.priceCheckError ?? null,
+      }));
       setLatestSupplementScan({
-        definitionId: result.definitionId,
-        definitionName,
-        existed: Boolean(result.existed),
         imageUrl: result.imageUrl ?? null,
-        pricePerBottle: result.priceCheck?.pricePerBottle ?? null,
-        sourceUrl: result.priceCheck?.sourceUrl ?? null,
-        priceLogCreated: Boolean(result.priceLogCreated),
-        priceCheckError: result.priceCheckError ?? null,
+        items,
       });
-      toast.success(
-        result.existed
-          ? `Updated existing supplement: ${definitionName}`
-          : `Added new supplement: ${definitionName}`
-      );
+
+      if (items.length === 1) {
+        const [only] = items;
+        toast.success(
+          only.existed
+            ? `Updated existing supplement: ${only.definitionName}`
+            : `Added new supplement: ${only.definitionName}`
+        );
+      } else if (items.length > 1) {
+        const added = items.filter((item) => !item.existed).length;
+        const updated = items.length - added;
+        toast.success(
+          `Scanned ${items.length} supplements (${added} new, ${updated} updated)`
+        );
+      }
       refetchSupplementDefinitions();
       refetchSupplementPriceLogs();
     },
@@ -1269,34 +1286,48 @@ export default function Settings() {
                   {scanBottleWithClaude.isPending ? (
                     <p className="text-xs text-emerald-800">Analyzing image and checking price with Claude...</p>
                   ) : null}
-                  {latestSupplementScan ? (
-                    <div className="rounded-md border border-emerald-200 bg-white px-3 py-2 text-xs text-emerald-900 space-y-1">
-                      <p>
-                        {latestSupplementScan.existed ? "Updated existing supplement" : "Added new supplement"}:{" "}
-                        <span className="font-medium">{latestSupplementScan.definitionName}</span>
-                      </p>
-                      <p>
-                        Price:{" "}
-                        {latestSupplementScan.pricePerBottle === null
-                          ? "No confident price found"
-                          : `$${latestSupplementScan.pricePerBottle.toFixed(2)}`}
-                      </p>
-                      {latestSupplementScan.sourceUrl ? (
-                        <p>
-                          Source:{" "}
-                          <a
-                            href={latestSupplementScan.sourceUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="underline"
-                          >
-                            {latestSupplementScan.sourceUrl}
-                          </a>
+                  {latestSupplementScan && latestSupplementScan.items.length > 0 ? (
+                    <div className="rounded-md border border-emerald-200 bg-white px-3 py-2 text-xs text-emerald-900 space-y-2">
+                      {latestSupplementScan.items.length > 1 ? (
+                        <p className="font-medium">
+                          Scanned {latestSupplementScan.items.length} supplements from this photo:
                         </p>
                       ) : null}
-                      {latestSupplementScan.priceCheckError ? (
-                        <p className="text-amber-700">Price check note: {latestSupplementScan.priceCheckError}</p>
-                      ) : null}
+                      {latestSupplementScan.items.map((item) => (
+                        <div
+                          key={item.definitionId}
+                          className="space-y-1 border-t border-emerald-100 pt-2 first:border-t-0 first:pt-0"
+                        >
+                          <p>
+                            {item.existed ? "Updated existing supplement" : "Added new supplement"}:{" "}
+                            <span className="font-medium">{item.definitionName}</span>
+                          </p>
+                          <p>
+                            Price:{" "}
+                            {item.pricePerBottle === null
+                              ? "No confident price found"
+                              : `$${item.pricePerBottle.toFixed(2)}`}
+                          </p>
+                          {item.sourceUrl ? (
+                            <p>
+                              Source:{" "}
+                              <a
+                                href={item.sourceUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline"
+                              >
+                                {item.sourceUrl}
+                              </a>
+                            </p>
+                          ) : null}
+                          {item.priceCheckError ? (
+                            <p className="text-amber-700">
+                              Price check note: {item.priceCheckError}
+                            </p>
+                          ) : null}
+                        </div>
+                      ))}
                     </div>
                   ) : null}
                 </div>

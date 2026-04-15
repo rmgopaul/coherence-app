@@ -373,34 +373,74 @@ function normalizeCurrency(value: unknown): string | null {
   return raw;
 }
 
-export async function extractSupplementFromBottleImage(options: {
+function normalizeExtractionRecord(
+  raw: unknown
+): SupplementImageExtractionResult | null {
+  if (!raw || typeof raw !== "object") return null;
+  const parsed = raw as Record<string, unknown>;
+  const name = toNonEmptyString(parsed.name);
+  if (!name) return null;
+  return {
+    name,
+    brand: toNonEmptyString(parsed.brand),
+    dose: toNonEmptyString(parsed.dose),
+    doseUnit: normalizeDoseUnit(parsed.doseUnit),
+    dosePerUnit: toNonEmptyString(parsed.dosePerUnit),
+    quantityPerBottle: toNullableNumber(parsed.quantityPerBottle),
+    timing: normalizeTiming(parsed.timing),
+    confidence: toClampedConfidence(parsed.confidence),
+    notes: toNonEmptyString(parsed.notes),
+  };
+}
+
+/**
+ * Extract one or more supplements from a single image. A photo may
+ * contain a group of bottles on a shelf, a pill organizer with
+ * multiple products, or a single front-label shot — Claude returns
+ * an entry per distinct supplement it can read.
+ *
+ * Returns an empty array if the image is legible but no supplement
+ * labels are found; callers are responsible for surfacing that.
+ */
+export async function extractSupplementsFromBottleImage(options: {
   credentials: ClaudeCredentials;
   base64Image: string;
   mimeType: "image/png" | "image/jpeg" | "image/webp";
-}): Promise<SupplementImageExtractionResult> {
+}): Promise<SupplementImageExtractionResult[]> {
   const systemPrompt = [
     "You read supplement bottle labels from images.",
+    "An image may contain one OR many supplement bottles / packages.",
     "Return JSON only. No markdown. No prose.",
     "Schema:",
     "{",
-    '  "name": string|null,',
-    '  "brand": string|null,',
-    '  "dose": string|null,',
-    '  "doseUnit": "capsule"|"tablet"|"mg"|"mcg"|"g"|"ml"|"drop"|"scoop"|"other",',
-    '  "dosePerUnit": string|null,',
-    '  "quantityPerBottle": number|null,',
-    '  "timing": "am"|"pm"|null,',
-    '  "confidence": number|null,',
-    '  "notes": string|null',
+    '  "supplements": [',
+    "    {",
+    '      "name": string|null,',
+    '      "brand": string|null,',
+    '      "dose": string|null,',
+    '      "doseUnit": "capsule"|"tablet"|"mg"|"mcg"|"g"|"ml"|"drop"|"scoop"|"other",',
+    '      "dosePerUnit": string|null,',
+    '      "quantityPerBottle": number|null,',
+    '      "timing": "am"|"pm"|null,',
+    '      "confidence": number|null,',
+    '      "notes": string|null',
+    "    }",
+    "  ]",
     "}",
     "Rules:",
-    "- If unreadable, set uncertain fields to null.",
+    "- Return one array entry per distinct supplement product visible.",
+    "- If a single image shows the same bottle twice (e.g. front + back",
+    "  label of one product), emit ONE entry, not two.",
+    "- If unreadable, set uncertain fields on that entry to null.",
+    "- Omit an entry entirely only if you cannot read its supplement name.",
     "- quantityPerBottle should be numeric count if visible (e.g., 60).",
     "- confidence must be 0..1.",
+    "- If the image contains zero readable supplements, return",
+    '  {"supplements": []}.',
   ].join("\n");
 
   const userText =
-    "Extract the supplement details from this bottle image using the schema exactly.";
+    "Extract every supplement visible in this image using the schema exactly.";
 
   const responseText = await callClaudeMessage({
     credentials: options.credentials,
@@ -419,21 +459,25 @@ export async function extractSupplementFromBottleImage(options: {
         text: userText,
       },
     ],
-    maxTokens: 1200,
+    maxTokens: 4096,
   });
 
   const parsed = parseJsonFromClaudeText(responseText);
-  return {
-    name: toNonEmptyString(parsed.name),
-    brand: toNonEmptyString(parsed.brand),
-    dose: toNonEmptyString(parsed.dose),
-    doseUnit: normalizeDoseUnit(parsed.doseUnit),
-    dosePerUnit: toNonEmptyString(parsed.dosePerUnit),
-    quantityPerBottle: toNullableNumber(parsed.quantityPerBottle),
-    timing: normalizeTiming(parsed.timing),
-    confidence: toClampedConfidence(parsed.confidence),
-    notes: toNonEmptyString(parsed.notes),
-  };
+  const rawList = Array.isArray(parsed.supplements)
+    ? parsed.supplements
+    : // Defensive fallback: Claude occasionally returns a bare object if
+      // there is exactly one supplement. Treat that as a 1-item array so
+      // downstream code has a consistent shape.
+      parsed.name
+      ? [parsed]
+      : [];
+
+  const results: SupplementImageExtractionResult[] = [];
+  for (const raw of rawList) {
+    const normalized = normalizeExtractionRecord(raw);
+    if (normalized) results.push(normalized);
+  }
+  return results;
 }
 
 export async function checkSupplementPrice(options: {
