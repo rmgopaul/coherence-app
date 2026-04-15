@@ -1305,7 +1305,16 @@ const monitoringRouter = t.router({
     )
     .mutation(async ({ ctx, input }) => {
       const { createMonitoringBatchRun } = await import("../db");
-      const dateKey = input.anchorDate ?? new Date().toISOString().slice(0, 10);
+      // Use America/Chicago (project timezone) for dateKey so reads run after
+      // 6 PM CT are still stamped with today's date locally, not tomorrow's UTC.
+      const dateKey =
+        input.anchorDate ??
+        new Intl.DateTimeFormat("en-CA", {
+          timeZone: "America/Chicago",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).format(new Date());
       const selectedProviders = Array.from(
         new Set((input.providers ?? []).map((provider) => provider.trim()).filter((provider) => provider.length > 0))
       );
@@ -1335,8 +1344,15 @@ const monitoringRouter = t.router({
   debugConvertedReadsState: solarRecOperatorProcedure.query(async () => {
     const { getSolarRecDashboardPayload } = await import("../db");
     const ownerUserId = await resolveSolarRecOwnerUserId();
-    const todayIso = new Date().toISOString().slice(0, 10);
-    const todayLocal = `${new Date().getMonth() + 1}/${new Date().getDate()}/${new Date().getFullYear()}`;
+    // Today in America/Chicago (project timezone)
+    const todayIso = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const [yy, mm, dd] = todayIso.split("-");
+    const todayLocal = `${Number(mm)}/${Number(dd)}/${yy}`;
 
     const payload = await getSolarRecDashboardPayload(ownerUserId, "dataset:convertedReads");
     if (!payload) {

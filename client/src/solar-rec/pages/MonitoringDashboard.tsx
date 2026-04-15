@@ -265,11 +265,11 @@ function DebugConvertedReadsDialog({
                   <p className="font-mono">{data.ownerUserId}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Today (UTC)</p>
+                  <p className="text-muted-foreground">Today (CT, ISO)</p>
                   <p className="font-mono">{data.todayIso}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Today (local M/D/YYYY)</p>
+                  <p className="text-muted-foreground">Today (CT, M/D/YYYY)</p>
                   <p className="font-mono">{data.todayLocal}</p>
                 </div>
                 <div>
@@ -396,13 +396,32 @@ type HealthSummary = {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Return today's date (YYYY-MM-DD) in the project's local timezone (America/Chicago). */
+function todayProjectDate(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
 function getDateRange(daysBack: number) {
-  const end = new Date();
-  const start = new Date();
-  start.setDate(start.getDate() - daysBack);
+  const endKey = todayProjectDate();
+  // Parse back to a Date, subtract days, format again in project TZ.
+  // Using UTC-midnight math here is fine because we only care about day offsets.
+  const endDate = new Date(`${endKey}T00:00:00`);
+  const startDate = new Date(endDate);
+  startDate.setDate(startDate.getDate() - daysBack);
+  const startKey = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Chicago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(startDate);
   return {
-    startDate: start.toISOString().slice(0, 10),
-    endDate: end.toISOString().slice(0, 10),
+    startDate: startKey,
+    endDate: endKey,
   };
 }
 
@@ -586,7 +605,7 @@ type ConfiguredCredential = {
 export default function MonitoringDashboard() {
   const [daysBack] = useState(30);
   const { startDate, endDate } = useMemo(() => getDateRange(daysBack), [daysBack]);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayProjectDate();
   const [search, setSearch] = useState("");
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [selectedCredentialIds, setSelectedCredentialIds] = useState<string[]>([]);
