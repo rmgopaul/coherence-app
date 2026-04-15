@@ -230,6 +230,44 @@ function SiteIdsUploadDialog({
 }
 
 /**
+ * Wipe the `dataset:convertedReads` entry from the SolarRec Dashboard's
+ * IndexedDB cache. Kept in sync with the constants and database schema
+ * in client/src/solar-rec-dashboard/lib/constants.ts and
+ * client/src/features/solar-rec/SolarRecDashboard.tsx.
+ */
+async function clearLocalConvertedReadsFromIndexedDb(): Promise<void> {
+  if (typeof window === "undefined" || !("indexedDB" in window)) return;
+  const DB_NAME = "solarRecDashboardDb";
+  const DB_VERSION = 2;
+  const STORE = "datasets";
+  const KEY = "dataset:convertedReads";
+
+  await new Promise<void>((resolve, reject) => {
+    const openReq = window.indexedDB.open(DB_NAME, DB_VERSION);
+    openReq.onerror = () => reject(openReq.error ?? new Error("Failed to open IndexedDB."));
+    openReq.onsuccess = () => {
+      const db = openReq.result;
+      if (!db.objectStoreNames.contains(STORE)) {
+        db.close();
+        resolve();
+        return;
+      }
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      store.delete(KEY);
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error ?? new Error("IndexedDB transaction failed."));
+      };
+    };
+  });
+}
+
+/**
  * Debug dialog — shows the raw state of `dataset:convertedReads` on the server.
  * Use this to confirm whether the monitoring batch bridge actually wrote
  * anything, and if so, what dates/rows are stored.
@@ -245,6 +283,35 @@ function DebugConvertedReadsDialog({
     enabled: open,
     refetchOnWindowFocus: false,
   });
+
+  const [clearStatus, setClearStatus] = useState<string | null>(null);
+  const clearMutation = trpc.monitoring.clearConvertedReads.useMutation({
+    onSuccess: async () => {
+      // Also wipe the client-side IndexedDB copy so the dashboard doesn't
+      // re-push stale data on its next auto-sync cycle.
+      try {
+        await clearLocalConvertedReadsFromIndexedDb();
+        setClearStatus("Server + local IndexedDB cleared. Safe to re-run.");
+      } catch (err) {
+        setClearStatus(
+          `Server cleared. Local IndexedDB clear failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+      query.refetch();
+    },
+    onError: (err) => {
+      setClearStatus(`Clear failed: ${err.message}`);
+    },
+  });
+
+  const handleClear = () => {
+    const confirmed = window.confirm(
+      "This will wipe the converted reads dataset on the server AND your local browser cache. You'll need to re-run meter reads to repopulate. Continue?"
+    );
+    if (!confirmed) return;
+    setClearStatus(null);
+    clearMutation.mutate();
+  };
 
   const data = query.data;
 
@@ -344,9 +411,31 @@ function DebugConvertedReadsDialog({
               )}
             </>
           )}
-          <Button onClick={() => query.refetch()} variant="outline" size="sm" className="w-full">
-            Refresh
-          </Button>
+          {clearStatus && (
+            <div className="rounded border bg-muted/40 p-2 text-xs">
+              {clearStatus}
+            </div>
+          )}
+          <div className="flex gap-2">
+            <Button
+              onClick={() => query.refetch()}
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              disabled={clearMutation.isPending}
+            >
+              Refresh
+            </Button>
+            <Button
+              onClick={handleClear}
+              variant="destructive"
+              size="sm"
+              className="flex-1"
+              disabled={clearMutation.isPending}
+            >
+              {clearMutation.isPending ? "Clearing…" : "Clear Dataset"}
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

@@ -1337,6 +1337,24 @@ const monitoringRouter = t.router({
     }),
 
   /**
+   * Wipes the server-side `dataset:convertedReads` payload. Used to clean up
+   * a corrupted dataset before re-running meter-read APIs. Client-side
+   * IndexedDB must be cleared separately by the caller.
+   */
+  clearConvertedReads: solarRecOperatorProcedure.mutation(async () => {
+    const { saveSolarRecDashboardPayload } = await import("../db");
+    const ownerUserId = await resolveSolarRecOwnerUserId();
+    // Writing an empty string is how the dashboard's auto-sync signals "cleared"
+    // (see SolarRecDashboard.tsx:6208 area).
+    const ok = await saveSolarRecDashboardPayload(
+      ownerUserId,
+      "dataset:convertedReads",
+      ""
+    );
+    return { cleared: ok, ownerUserId };
+  }),
+
+  /**
    * Debug endpoint — dumps the raw `dataset:convertedReads` payload from the
    * server DB so we can see exactly what the monitoring bridge has written.
    * Returns metadata + a sample of rows matching today's date.
