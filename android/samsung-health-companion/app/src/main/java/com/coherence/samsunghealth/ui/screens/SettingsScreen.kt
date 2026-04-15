@@ -56,11 +56,15 @@ import androidx.work.WorkManager
 import com.coherence.samsunghealth.data.model.AppPreferences
 import com.coherence.samsunghealth.data.model.ThemeMode
 import com.coherence.samsunghealth.data.model.User
+import com.coherence.samsunghealth.sdk.HealthConnectCooldown
 import com.coherence.samsunghealth.sync.AutoSyncScheduler
 import com.coherence.samsunghealth.sync.HistoricalSyncWorker
 import com.coherence.samsunghealth.ui.LocalApp
 import com.coherence.samsunghealth.ui.health.HealthConnectPermissionHost
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.time.Duration
+import java.time.Instant
 
 private val DashboardWidgets = listOf(
   "suggested_actions" to "Suggested Actions",
@@ -100,6 +104,19 @@ fun SettingsScreen(onBack: () -> Unit) {
   val backfillState: WorkInfo.State? = backfillWorkInfos
     .firstOrNull { it.state != WorkInfo.State.CANCELLED }?.state
     ?: backfillWorkInfos.firstOrNull()?.state
+
+  // Cooldown state. Polled every 30 s while Settings is on screen so
+  // the countdown text stays roughly accurate without burning the
+  // main thread. The underlying SharedPreferences read is cheap.
+  var cooldownState by remember {
+    mutableStateOf<HealthConnectCooldown.State>(app.container.healthConnectCooldown.getState())
+  }
+  LaunchedEffect(Unit) {
+    while (true) {
+      cooldownState = app.container.healthConnectCooldown.getState()
+      delay(30_000L)
+    }
+  }
 
   LaunchedEffect(Unit) {
     try {
@@ -178,6 +195,54 @@ fun SettingsScreen(onBack: () -> Unit) {
       item {
         SettingsCard(title = "Health Data", icon = Icons.Default.FavoriteBorder) {
           HealthConnectPermissionHost()
+
+          // Cooldown banner: shown only when the rate-limit cooldown
+          // is currently active. Replaces the backfill controls with
+          // a clear "wait until X" message because clicking the
+          // button while cooled down would just produce another
+          // immediate failure.
+          if (cooldownState.active && cooldownState.until != null) {
+            val remaining = Duration.between(Instant.now(), cooldownState.until)
+              .coerceAtLeast(Duration.ZERO)
+            val hours = remaining.toHours()
+            val minutes = remaining.toMinutes() % 60
+            val countdown = when {
+              hours >= 1 -> "${hours}h ${minutes}m"
+              minutes >= 1 -> "${minutes}m"
+              else -> "<1m"
+            }
+            Card(
+              colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+              ),
+            ) {
+              Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                Text(
+                  text = "Health Connect rate limit hit",
+                  style = MaterialTheme.typography.titleSmall,
+                  fontWeight = FontWeight.Medium,
+                  color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                  text = "Sync paused for $countdown to let Google's quota " +
+                    "replenish. Periodic syncs and backfills will resume " +
+                    "automatically — no action needed.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+                cooldownState.lastMessage?.let { msg ->
+                  Spacer(Modifier.height(4.dp))
+                  Text(
+                    text = "Last error: $msg",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                  )
+                }
+              }
+            }
+          }
+
           Text(
             "Backfill history",
             style = MaterialTheme.typography.labelLarge,
@@ -199,14 +264,20 @@ fun SettingsScreen(onBack: () -> Unit) {
               },
             )
           }
-          val (buttonLabel, buttonEnabled) = when (backfillState) {
-            WorkInfo.State.ENQUEUED -> "Backfill queued — waiting for network" to false
-            WorkInfo.State.RUNNING -> "Backfill running…" to false
-            WorkInfo.State.BLOCKED -> "Backfill blocked by constraints" to false
-            WorkInfo.State.FAILED -> "Last backfill failed — tap to retry" to true
-            WorkInfo.State.CANCELLED -> "Backfill cancelled — tap to retry" to true
-            WorkInfo.State.SUCCEEDED -> "Backfill complete — run again" to true
-            null -> "Start backfill" to true
+          val (buttonLabel, buttonEnabled) = when {
+            cooldownState.active -> "Sync paused (rate limited)" to false
+            backfillState == WorkInfo.State.ENQUEUED ->
+              "Backfill queued — waiting for network" to false
+            backfillState == WorkInfo.State.RUNNING -> "Backfill running…" to false
+            backfillState == WorkInfo.State.BLOCKED ->
+              "Backfill blocked by constraints" to false
+            backfillState == WorkInfo.State.FAILED ->
+              "Last backfill failed — tap to retry" to true
+            backfillState == WorkInfo.State.CANCELLED ->
+              "Backfill cancelled — tap to retry" to true
+            backfillState == WorkInfo.State.SUCCEEDED ->
+              "Backfill complete — run again" to true
+            else -> "Start backfill" to true
           }
           Button(
             onClick = {

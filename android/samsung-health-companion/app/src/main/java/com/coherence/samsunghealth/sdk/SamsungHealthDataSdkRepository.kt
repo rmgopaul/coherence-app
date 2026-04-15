@@ -36,6 +36,7 @@ class SamsungHealthDataSdkRepository(
   private val context: Context,
   private val permissionManager: HealthConnectPermissionManager =
     HealthConnectPermissionManager(context),
+  private val cooldown: HealthConnectCooldown = HealthConnectCooldown(context),
 ) : SamsungHealthRepository {
 
   override suspend fun collectDailyPayload(): SamsungHealthPayload {
@@ -45,6 +46,20 @@ class SamsungHealthDataSdkRepository(
 
   override suspend fun collectPayloadForDate(date: LocalDate): SamsungHealthPayload {
     val zone = ZoneId.systemDefault()
+
+    // Short-circuit if a previous run hit the rate limit. Doing
+    // anything here would only make the quota hole deeper.
+    val cooldownState = cooldown.getState()
+    if (cooldownState.active) {
+      return emptyPayload(
+        date = date,
+        zone = zone,
+        sdkLinked = true,
+        permissionsGranted = false,
+        warnings = listOf(buildCooldownWarning(cooldownState)),
+      )
+    }
+
     val status = permissionManager.getStatus()
 
     if (!status.sdkAvailable) {
@@ -64,6 +79,7 @@ class SamsungHealthDataSdkRepository(
     val reader = HealthConnectReader(
       client = client,
       grantedPermissions = status.grantedPermissions,
+      cooldown = cooldown,
     )
     if (status.missingPermissions.isNotEmpty()) {
       reader.warnings += "Missing permissions: ${status.missingPermissions.size}"
@@ -86,6 +102,27 @@ class SamsungHealthDataSdkRepository(
     }
 
     val zone = ZoneId.systemDefault()
+
+    // Cooldown short-circuit — same reasoning as collectPayloadForDate.
+    // For a backfill, refusing to call Health Connect at all is much
+    // better than burning every day's worth of retries against an
+    // already-exhausted quota.
+    val cooldownState = cooldown.getState()
+    if (cooldownState.active) {
+      val message = buildCooldownWarning(cooldownState)
+      return generateSequence(startDate) { current ->
+        if (current.isBefore(endDate)) current.plusDays(1) else null
+      }.map { day ->
+        emptyPayload(
+          date = day,
+          zone = zone,
+          sdkLinked = true,
+          permissionsGranted = false,
+          warnings = listOf(message),
+        )
+      }.toList()
+    }
+
     val status = permissionManager.getStatus()
 
     if (!status.sdkAvailable) {
@@ -112,6 +149,7 @@ class SamsungHealthDataSdkRepository(
     val reader = HealthConnectReader(
       client = client,
       grantedPermissions = status.grantedPermissions,
+      cooldown = cooldown,
     )
     if (status.missingPermissions.isNotEmpty()) {
       reader.warnings += "Missing permissions: ${status.missingPermissions.size}"
@@ -149,6 +187,19 @@ class SamsungHealthDataSdkRepository(
 
   override suspend fun getConnectionStatus(): HealthConnectStatus {
     return permissionManager.getStatus()
+  }
+
+  /**
+   * Compose the warning string used when a payload is short-circuited
+   * by an active rate-limit cooldown. Centralized so the per-day,
+   * per-range, and UI surfaces all phrase it the same way.
+   */
+  private fun buildCooldownWarning(state: HealthConnectCooldown.State): String {
+    val until = state.until
+    val untilText = if (until != null) until.toString() else "(unknown)"
+    val reason = state.lastMessage?.let { " — last error: $it" } ?: ""
+    return "Health Connect rate limit cooldown active until $untilText. " +
+      "Skipping read to let the quota replenish.$reason"
   }
 
   private fun emptyPayload(
@@ -264,6 +315,7 @@ class SamsungHealthDataSdkRepository(
   }
 
   companion object {
-    private const val APP_VERSION = "0.3.0"
+    // Keep in sync with HealthConnectPayloadMapper.APP_VERSION.
+    private const val APP_VERSION = "0.3.2"
   }
 }

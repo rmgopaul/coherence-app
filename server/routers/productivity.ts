@@ -19,9 +19,12 @@ import {
   getConversationMessages,
   getConversations,
   getConversationSummaries,
+  getDb,
   getIntegrationByProvider,
   upsertIntegration,
 } from "../db";
+import { samsungSyncPayloads } from "../../drizzle/schema";
+import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { getValidGoogleToken, getValidWhoopToken } from "../helpers/tokenRefresh";
 import {
   getClockifyCurrentUser,
@@ -839,10 +842,11 @@ Generate the pipeline analysis report now.`,
         try {
           const messages = await getGmailMessages(googleIntegration.accessToken, 10);
 
+          type EmailHeader = { name: string; value: string };
           const emailList = messages.map(m => {
-            const from = m.payload.headers.find((h: any) => h.name === "From")?.value || "Unknown";
-            const subject = m.payload.headers.find((h: any) => h.name === "Subject")?.value || "(no subject)";
-            const date = m.payload.headers.find((h: any) => h.name === "Date")?.value || "";
+            const from = m.payload.headers.find((h: EmailHeader) => h.name === "From")?.value || "Unknown";
+            const subject = m.payload.headers.find((h: EmailHeader) => h.name === "Subject")?.value || "(no subject)";
+            const date = m.payload.headers.find((h: EmailHeader) => h.name === "Date")?.value || "";
             return `- From: ${from}\n  Subject: ${subject}\n  Date: ${date}\n  Preview: ${m.snippet}`;
           }).join("\n\n");
 
@@ -926,7 +930,6 @@ export const googleRouter = router({
           daysAhead: input?.daysAhead,
           maxResults: input?.maxResults,
         });
-        console.log(`[Google Calendar] Fetched ${events.length} events`);
         return events;
       } catch (error) {
         console.error("[Google Calendar] Error fetching events:", error);
@@ -956,7 +959,6 @@ export const googleRouter = router({
     try {
       const accessToken = await getValidGoogleToken(ctx.user.id);
       const files = await getGoogleDriveFiles(accessToken);
-      console.log(`[Google Drive] Fetched ${files.length} files`);
       return files;
     } catch (error) {
       console.error("[Google Drive] Error fetching files:", error);
@@ -969,7 +971,6 @@ export const googleRouter = router({
       try {
         const accessToken = await getValidGoogleToken(ctx.user.id);
         const result = await createGoogleSpreadsheet(accessToken, input.title);
-        console.log(`[Google Sheets] Created spreadsheet: ${input.title}`);
         return result;
       } catch (error) {
         console.error("[Google Sheets] Error creating spreadsheet:", error);
@@ -982,7 +983,6 @@ export const googleRouter = router({
       try {
         const accessToken = await getValidGoogleToken(ctx.user.id);
         const files = await searchGoogleDrive(accessToken, input.query);
-        console.log(`[Google Drive Search] Found ${files.length} files for query: ${input.query}`);
         return files;
       } catch (error) {
         console.error("[Google Drive Search] Error searching Drive:", error);
@@ -1064,4 +1064,332 @@ export const samsungHealthRouter = router({
         },
       };
     }),
+  /**
+   * Export the user's Samsung Health archive as a CSV string.
+   *
+   * Reads from `samsungSyncPayloads` (the raw archive) so the export
+   * sees every captured day, not just whatever happens to be on the
+   * live integration summary. Default dedupes to the latest capture
+   * per dateKey; pass `includeAllCaptures` to get every individual
+   * sync attempt instead.
+   *
+   * Returns a `{ filename, csv, rowCount }` triple. Client builds a
+   * Blob and triggers a browser download — no `Content-Disposition`
+   * gymnastics needed because we're going through tRPC.
+   */
+  exportPayloadsCsv: protectedProcedure
+    .input(
+      z
+        .object({
+          startDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/, "startDate must be YYYY-MM-DD")
+            .optional(),
+          endDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/, "endDate must be YYYY-MM-DD")
+            .optional(),
+          includeAllCaptures: z.boolean().optional().default(false),
+        })
+        .optional(),
+    )
+    .query(async ({ ctx, input }) => {
+      const db = await getDb();
+      if (!db) {
+        return {
+          filename: "samsung-health-export.csv",
+          csv: SAMSUNG_CSV_COLUMNS.join(",") + "\n",
+          rowCount: 0,
+          warning: "Database unavailable",
+        };
+      }
+
+      const conditions = [eq(samsungSyncPayloads.userId, ctx.user.id)];
+      if (input?.startDate) {
+        conditions.push(gte(samsungSyncPayloads.dateKey, input.startDate));
+      }
+      if (input?.endDate) {
+        conditions.push(lte(samsungSyncPayloads.dateKey, input.endDate));
+      }
+
+      const rows = await db
+        .select()
+        .from(samsungSyncPayloads)
+        .where(and(...conditions))
+        .orderBy(desc(samsungSyncPayloads.dateKey), desc(samsungSyncPayloads.capturedAt));
+
+      // Optionally collapse to the latest capturedAt per dateKey.
+      const includeAll = input?.includeAllCaptures === true;
+      const filtered = includeAll
+        ? rows
+        : (() => {
+            const seen = new Set<string>();
+            const kept: typeof rows = [];
+            for (const row of rows) {
+              if (seen.has(row.dateKey)) continue;
+              seen.add(row.dateKey);
+              kept.push(row);
+            }
+            return kept;
+          })();
+
+      const csvLines: string[] = [SAMSUNG_CSV_COLUMNS.join(",")];
+      for (const row of filtered) {
+        let payload: Record<string, unknown> = {};
+        try {
+          payload = JSON.parse(row.payload) as Record<string, unknown>;
+        } catch {
+          // Row has an unparseable payload — emit a stub line with
+          // just the dateKey/capturedAt so the user still sees it.
+          csvLines.push(buildSamsungCsvRow(row.dateKey, row.capturedAt, {}));
+          continue;
+        }
+        csvLines.push(buildSamsungCsvRow(row.dateKey, row.capturedAt, payload));
+      }
+
+      const stamp = new Date().toISOString().slice(0, 10);
+      const suffix = includeAll ? "all-captures" : "daily";
+      const filename = `samsung-health-${suffix}-${stamp}.csv`;
+      // Excel and other consumers need a trailing newline to recognise
+      // the final row consistently.
+      const csv = csvLines.join("\n") + "\n";
+
+      return {
+        filename,
+        csv,
+        rowCount: filtered.length,
+      };
+    }),
 });
+
+// ──────────────────────────────────────────────────────────────────────
+// Samsung Health CSV export helpers
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Column order for the Samsung Health CSV export. Kept as a plain
+ * array so the column list is the single source of truth — both the
+ * header line and the row builder iterate over it.
+ */
+const SAMSUNG_CSV_COLUMNS = [
+  "dateKey",
+  "capturedAt",
+  "sourceProvider",
+  "appVersion",
+  "deviceModel",
+  "osVersion",
+  // Activity
+  "steps",
+  "distanceMeters",
+  "floorsClimbed",
+  "activeMinutes",
+  "exerciseMinutes",
+  "caloriesActiveKcal",
+  "caloriesBasalKcal",
+  "caloriesTotalKcal",
+  "walkingDurationMinutes",
+  "runningDurationMinutes",
+  "cyclingDurationMinutes",
+  "swimmingDurationMinutes",
+  "exerciseSessionCount",
+  // Sleep
+  "sleepTotalMinutes",
+  "inBedMinutes",
+  "awakeMinutes",
+  "lightSleepMinutes",
+  "deepSleepMinutes",
+  "remSleepMinutes",
+  "sleepEfficiencyPercent",
+  "sleepScore",
+  "bedtimeIso",
+  "wakeTimeIso",
+  // Cardio
+  "restingHeartRateBpm",
+  "averageHeartRateBpm",
+  "minHeartRateBpm",
+  "maxHeartRateBpm",
+  "hrvRmssdMs",
+  "respiratoryRateBrpm",
+  "vo2MaxMlKgMin",
+  // Oxygen / temperature
+  "spo2AvgPercent",
+  "spo2MinPercent",
+  "bodyTemperatureCelsius",
+  // Blood pressure
+  "bloodPressureSystolicMmHg",
+  "bloodPressureDiastolicMmHg",
+  // Body composition
+  "weightKg",
+  "bmi",
+  "bodyFatPercent",
+  "bodyWaterPercent",
+  "basalMetabolicRateKcal",
+  // Nutrition
+  "caloriesIntakeKcal",
+  "proteinGrams",
+  "carbsGrams",
+  "fatGrams",
+  "saturatedFatGrams",
+  "sugarGrams",
+  "fiberGrams",
+  "sodiumMg",
+  "cholesterolMg",
+  "caffeineMg",
+  // Hydration
+  "waterMl",
+  // Glucose
+  "fastingGlucoseMgDl",
+  "averageGlucoseMgDl",
+  "maxGlucoseMgDl",
+  // Sample counts
+  "workoutsCount",
+  "sleepSessionsCount",
+  "heartRateSamplesCount",
+  // Sync metadata
+  "sdkLinked",
+  "permissionsGranted",
+  "warningsCount",
+  "warnings",
+] as const;
+
+function asCsvNumber(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return String(parsed);
+  }
+  return "";
+}
+
+function asCsvText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  // RFC 4180 minimal: wrap in quotes and double up internal quotes
+  // when the field contains a comma, quote, or newline.
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function asCsvBoolean(value: unknown): string {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  return "";
+}
+
+function getRecord(parent: Record<string, unknown>, key: string): Record<string, unknown> {
+  const child = parent[key];
+  return child && typeof child === "object" && !Array.isArray(child)
+    ? (child as Record<string, unknown>)
+    : {};
+}
+
+function getArrayLength(parent: Record<string, unknown>, key: string): number {
+  const value = parent[key];
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function buildSamsungCsvRow(
+  dateKey: string,
+  capturedAt: Date,
+  payload: Record<string, unknown>,
+): string {
+  const source = getRecord(payload, "source");
+  const activity = getRecord(payload, "activity");
+  const sleep = getRecord(payload, "sleep");
+  const cardio = getRecord(payload, "cardio");
+  const oxygen = getRecord(payload, "oxygenAndTemperature");
+  const bloodPressure = getRecord(payload, "bloodPressure");
+  const bodyComposition = getRecord(payload, "bodyComposition");
+  const nutrition = getRecord(payload, "nutrition");
+  const hydration = getRecord(payload, "hydration");
+  const glucose = getRecord(payload, "glucose");
+  const samples = getRecord(payload, "samples");
+  const sync = getRecord(payload, "sync");
+  const warnings = Array.isArray(sync.warnings) ? (sync.warnings as unknown[]) : [];
+
+  const valuesByColumn: Record<(typeof SAMSUNG_CSV_COLUMNS)[number], string> = {
+    dateKey: asCsvText(dateKey),
+    capturedAt: asCsvText(capturedAt.toISOString()),
+    sourceProvider: asCsvText(source.provider),
+    appVersion: asCsvText(source.appVersion),
+    deviceModel: asCsvText(source.deviceModel),
+    osVersion: asCsvText(source.osVersion),
+    // Activity
+    steps: asCsvNumber(activity.steps),
+    distanceMeters: asCsvNumber(activity.distanceMeters),
+    floorsClimbed: asCsvNumber(activity.floorsClimbed),
+    activeMinutes: asCsvNumber(activity.activeMinutes),
+    exerciseMinutes: asCsvNumber(activity.exerciseMinutes),
+    caloriesActiveKcal: asCsvNumber(activity.caloriesActiveKcal),
+    caloriesBasalKcal: asCsvNumber(activity.caloriesBasalKcal),
+    caloriesTotalKcal: asCsvNumber(activity.caloriesTotalKcal),
+    walkingDurationMinutes: asCsvNumber(activity.walkingDurationMinutes),
+    runningDurationMinutes: asCsvNumber(activity.runningDurationMinutes),
+    cyclingDurationMinutes: asCsvNumber(activity.cyclingDurationMinutes),
+    swimmingDurationMinutes: asCsvNumber(activity.swimmingDurationMinutes),
+    exerciseSessionCount: asCsvNumber(activity.exerciseSessionCount),
+    // Sleep
+    sleepTotalMinutes: asCsvNumber(sleep.totalSleepMinutes),
+    inBedMinutes: asCsvNumber(sleep.inBedMinutes),
+    awakeMinutes: asCsvNumber(sleep.awakeMinutes),
+    lightSleepMinutes: asCsvNumber(sleep.lightMinutes),
+    deepSleepMinutes: asCsvNumber(sleep.deepMinutes),
+    remSleepMinutes: asCsvNumber(sleep.remMinutes),
+    sleepEfficiencyPercent: asCsvNumber(sleep.sleepEfficiencyPercent),
+    sleepScore: asCsvNumber(sleep.sleepScore),
+    bedtimeIso: asCsvText(sleep.bedtimeIso),
+    wakeTimeIso: asCsvText(sleep.wakeTimeIso),
+    // Cardio
+    restingHeartRateBpm: asCsvNumber(cardio.restingHeartRateBpm),
+    averageHeartRateBpm: asCsvNumber(cardio.averageHeartRateBpm),
+    minHeartRateBpm: asCsvNumber(cardio.minHeartRateBpm),
+    maxHeartRateBpm: asCsvNumber(cardio.maxHeartRateBpm),
+    hrvRmssdMs: asCsvNumber(cardio.hrvRmssdMs),
+    respiratoryRateBrpm: asCsvNumber(cardio.respiratoryRateBrpm),
+    vo2MaxMlKgMin: asCsvNumber(cardio.vo2MaxMlKgMin),
+    // Oxygen / temperature
+    spo2AvgPercent: asCsvNumber(oxygen.spo2AvgPercent),
+    spo2MinPercent: asCsvNumber(oxygen.spo2MinPercent),
+    bodyTemperatureCelsius: asCsvNumber(oxygen.bodyTemperatureCelsius),
+    // Blood pressure
+    bloodPressureSystolicMmHg: asCsvNumber(bloodPressure.systolicMmHg),
+    bloodPressureDiastolicMmHg: asCsvNumber(bloodPressure.diastolicMmHg),
+    // Body composition
+    weightKg: asCsvNumber(bodyComposition.weightKg),
+    bmi: asCsvNumber(bodyComposition.bmi),
+    bodyFatPercent: asCsvNumber(bodyComposition.bodyFatPercent),
+    bodyWaterPercent: asCsvNumber(bodyComposition.bodyWaterPercent),
+    basalMetabolicRateKcal: asCsvNumber(bodyComposition.basalMetabolicRateKcal),
+    // Nutrition
+    caloriesIntakeKcal: asCsvNumber(nutrition.caloriesIntakeKcal),
+    proteinGrams: asCsvNumber(nutrition.proteinGrams),
+    carbsGrams: asCsvNumber(nutrition.carbsGrams),
+    fatGrams: asCsvNumber(nutrition.fatGrams),
+    saturatedFatGrams: asCsvNumber(nutrition.saturatedFatGrams),
+    sugarGrams: asCsvNumber(nutrition.sugarGrams),
+    fiberGrams: asCsvNumber(nutrition.fiberGrams),
+    sodiumMg: asCsvNumber(nutrition.sodiumMg),
+    cholesterolMg: asCsvNumber(nutrition.cholesterolMg),
+    caffeineMg: asCsvNumber(nutrition.caffeineMg),
+    // Hydration
+    waterMl: asCsvNumber(hydration.waterMl),
+    // Glucose
+    fastingGlucoseMgDl: asCsvNumber(glucose.fastingMgDl),
+    averageGlucoseMgDl: asCsvNumber(glucose.avgMgDl),
+    maxGlucoseMgDl: asCsvNumber(glucose.maxMgDl),
+    // Sample counts
+    workoutsCount: String(getArrayLength(samples, "workouts")),
+    sleepSessionsCount: String(getArrayLength(samples, "sleepSessions")),
+    heartRateSamplesCount: String(getArrayLength(samples, "heartRateSeries")),
+    // Sync metadata
+    sdkLinked: asCsvBoolean(sync.sdkLinked),
+    permissionsGranted: asCsvBoolean(sync.permissionsGranted),
+    warningsCount: String(warnings.length),
+    warnings: asCsvText(warnings.join("; ")),
+  };
+
+  return SAMSUNG_CSV_COLUMNS.map((col) => valuesByColumn[col]).join(",");
+}

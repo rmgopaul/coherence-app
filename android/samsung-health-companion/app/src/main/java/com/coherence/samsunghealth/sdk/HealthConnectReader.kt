@@ -17,6 +17,9 @@ import kotlin.reflect.KClass
  *    Health Connect's per-app rate limiter.
  *  - Detect rate-limit / quota errors and retry with exponential
  *    backoff instead of surfacing them as permanent warnings.
+ *  - Promote a persistent rate-limit hit into a global cooldown via
+ *    [HealthConnectCooldown] so subsequent sync runs back off
+ *    entirely instead of digging the quota hole deeper.
  *  - Surface per-record-type warnings into shared log buffers so the
  *    final payload reports exactly what was attempted and what failed.
  *
@@ -26,6 +29,7 @@ import kotlin.reflect.KClass
 class HealthConnectReader(
   private val client: HealthConnectClient,
   private val grantedPermissions: Set<String>,
+  private val cooldown: HealthConnectCooldown? = null,
 ) {
 
   /** Mutable log of record-type labels that were read attempted. */
@@ -88,6 +92,10 @@ class HealthConnectReader(
         } while (pageToken != null)
 
         succeeded += label
+        // Any successful read is conclusive evidence the quota has
+        // recovered enough to make progress, so clear any prior
+        // cooldown marker.
+        cooldown?.clear()
         // Post-success spacing: when many read() calls run back-to-back
         // (e.g. a 22-type range fetch during a historical backfill),
         // Health Connect's per-app rate limiter treats bursts more
@@ -119,8 +127,11 @@ class HealthConnectReader(
     }
 
     // Retries exhausted — all attempts hit a rate-limit error.
-    warnings += "$label read failed after $MAX_ATTEMPTS attempts (rate limited): " +
-      (lastErrorMessage ?: "unknown")
+    // Promote this into a global cooldown so the next periodic worker
+    // run skips Health Connect entirely instead of retrying again.
+    val finalMessage = lastErrorMessage ?: "unknown"
+    cooldown?.markRateLimited(finalMessage)
+    warnings += "$label read failed after $MAX_ATTEMPTS attempts (rate limited): $finalMessage"
     return emptyList()
   }
 

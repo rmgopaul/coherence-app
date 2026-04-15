@@ -25,6 +25,7 @@ import {
   Clock3,
   MessageSquare,
   Copy,
+  Download,
   Trash2,
   ArrowLeft,
   Plus,
@@ -240,7 +241,49 @@ export default function Settings() {
     enabled: !!user,
     retry: false,
   });
-  
+
+  const trpcUtils = trpc.useUtils();
+  const [samsungExportLoading, setSamsungExportLoading] = useState(false);
+  const handleExportSamsungCsv = async (
+    options: { includeAllCaptures?: boolean } = {},
+  ) => {
+    if (samsungExportLoading) return;
+    setSamsungExportLoading(true);
+    try {
+      const result = await trpcUtils.samsungHealth.exportPayloadsCsv.fetch({
+        includeAllCaptures: options.includeAllCaptures ?? false,
+      });
+      if (!result.csv || result.rowCount === 0) {
+        toast.warning("No Samsung Health data to export yet");
+        return;
+      }
+      // Build a Blob and trigger a browser download. Done client-side
+      // because tRPC returns JSON, not a Content-Disposition stream.
+      const blob = new Blob([result.csv], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      toast.success(
+        `Exported ${result.rowCount.toLocaleString()} ${
+          result.rowCount === 1 ? "row" : "rows"
+        } to ${result.filename}`,
+      );
+    } catch (error) {
+      toast.error(
+        `Export failed: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
+    } finally {
+      setSamsungExportLoading(false);
+    }
+  };
+
   const connectTodoist = trpc.todoist.connect.useMutation({
     onSuccess: () => {
       toast.success("Todoist connected successfully");
@@ -2324,6 +2367,26 @@ export default function Settings() {
                     >
                       <Copy className="w-4 h-4 mr-2" />
                       Copy Sync Key
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleExportSamsungCsv({ includeAllCaptures: false })}
+                      disabled={samsungExportLoading}
+                      title="Download a CSV with one row per day, using the latest capture for each day"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      {samsungExportLoading ? "Exporting…" : "Export CSV"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleExportSamsungCsv({ includeAllCaptures: true })}
+                      disabled={samsungExportLoading}
+                      title="Download a CSV with every individual sync attempt (multiple rows per day)"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Export raw history
                     </Button>
                     {samsungHealthConfig?.userId ? (
                       <span className="text-xs text-slate-500">

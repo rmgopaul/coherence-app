@@ -18,6 +18,7 @@ import com.coherence.samsunghealth.data.repository.SupplementsRepository
 import com.coherence.samsunghealth.data.repository.TodoistRepository
 import com.coherence.samsunghealth.data.repository.WhoopRepository
 import com.coherence.samsunghealth.network.TrpcClient
+import com.coherence.samsunghealth.sdk.HealthConnectCooldown
 import com.coherence.samsunghealth.sdk.HealthConnectPermissionManager
 import com.coherence.samsunghealth.sdk.SamsungHealthDataSdkRepository
 import com.coherence.samsunghealth.sdk.SamsungHealthRepository
@@ -56,9 +57,15 @@ class AppContainer(context: Context) {
 
   // Health Connect layer. Shared between the periodic sync worker,
   // the historical backfill worker, and the UI permission flow so
-  // every caller sees the same permission + client instance.
+  // every caller sees the same permission + client + cooldown
+  // instance.
   val healthConnectPermissionManager = HealthConnectPermissionManager(context)
+  val healthConnectCooldown = HealthConnectCooldown(context)
   val samsungHealthRepository: SamsungHealthRepository =
-    SamsungHealthDataSdkRepository(context, healthConnectPermissionManager)
+    SamsungHealthDataSdkRepository(
+      context = context,
+      permissionManager = healthConnectPermissionManager,
+      cooldown = healthConnectCooldown,
+    )
 }
 

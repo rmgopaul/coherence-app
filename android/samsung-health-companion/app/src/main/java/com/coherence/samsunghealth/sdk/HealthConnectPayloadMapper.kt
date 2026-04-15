@@ -714,9 +714,10 @@ class HealthConnectPayloadMapper(
   }
 
   companion object {
-    // Bumped for the rate-limit fix so the debug endpoint shows
-    // "0.3.1" in payload.source.appVersion once the new APK is live.
-    private const val APP_VERSION = "0.3.1"
+    // 0.3.2 — adds rate-limit cooldown short-circuit. Once the new
+    // APK is installed and run, the debug endpoint should show this
+    // string in payload.source.appVersion.
+    private const val APP_VERSION = "0.3.2"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

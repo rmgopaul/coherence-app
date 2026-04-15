@@ -57,6 +57,8 @@ class HistoricalSyncWorker(
 
   private val repository: SamsungHealthRepository
     get() = (applicationContext as CoherenceApplication).container.samsungHealthRepository
+  private val cooldown
+    get() = (applicationContext as CoherenceApplication).container.healthConnectCooldown
   private val webhookClient = WebhookClient()
 
   override suspend fun doWork(): Result {
@@ -65,6 +67,19 @@ class HistoricalSyncWorker(
       .coerceIn(1, MAX_DAYS_BACK)
 
     return try {
+      // Cooldown short-circuit. Surfacing the cooldown deadline as a
+      // failure reason is more useful than silently succeeding because
+      // the user explicitly clicked "Start backfill" and expects
+      // either data or an explanation.
+      val cooldownState = cooldown.getState()
+      if (cooldownState.active) {
+        val message = "Health Connect rate limit cooldown active until " +
+          "${cooldownState.until}. Try again later — automatic syncs will " +
+          "resume on their own once the quota replenishes."
+        Log.w(TAG, message)
+        return Result.failure(workDataOf(KEY_FAILURE_REASON to message))
+      }
+
       setForeground(createForegroundInfo(daysBack))
 
       val zone = ZoneId.systemDefault()

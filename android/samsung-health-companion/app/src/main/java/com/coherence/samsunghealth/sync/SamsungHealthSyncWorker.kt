@@ -40,10 +40,24 @@ class SamsungHealthSyncWorker(
 
   private val repository: SamsungHealthRepository
     get() = (applicationContext as CoherenceApplication).container.samsungHealthRepository
+  private val cooldown
+    get() = (applicationContext as CoherenceApplication).container.healthConnectCooldown
   private val webhookClient = WebhookClient()
 
   override suspend fun doWork(): Result {
     return try {
+      // Cooldown short-circuit: if a previous run already burned
+      // through the rate-limit budget, sit out this period rather
+      // than firing 22 more reads at an exhausted quota.
+      val cooldownState = cooldown.getState()
+      if (cooldownState.active) {
+        Log.i(
+          TAG,
+          "Skipping periodic sync — Health Connect rate-limit cooldown until ${cooldownState.until}",
+        )
+        return Result.success()
+      }
+
       setForeground(createForegroundInfo())
       val payload = repository.collectDailyPayload()
 
