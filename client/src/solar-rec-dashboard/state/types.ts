@@ -521,3 +521,46 @@ export type RecPerformanceThreeYearValues = {
   rollingAverage: number;
   expectedRecs: number;
 };
+
+/**
+ * One row in the REC Performance Evaluation results table. Produced
+ * by the parent's `recPerformanceEvaluation` memo from a
+ * `PerformanceSourceRow` via `deriveRecPerformanceThreeYearValues()`
+ * plus surplus-allocation accounting.
+ */
+export type RecPerformanceResultRow = {
+  key: string;
+  applicationId: string;
+  unitId: string;
+  batchId: string;
+  systemName: string;
+  contractId: string;
+  /** Which year in this system's schedule DY3 corresponds to (1–15). */
+  scheduleYearNumber: number;
+  deliveryYearOne: number;
+  deliveryYearTwo: number;
+  deliveryYearThree: number;
+  deliveryYearOneSource: "Actual" | "Expected";
+  deliveryYearTwoSource: "Actual" | "Expected";
+  deliveryYearThreeSource: "Actual" | "Expected";
+  rollingAverage: number;
+  contractPrice: number | null;
+  expectedRecs: number;
+  surplusShortfall: number;
+  allocatedRecs: number;
+  drawdownPayment: number;
+};
+
+/**
+ * Per-contract summary row on the REC Performance Evaluation tab's
+ * "Current Year 3-Year Rolling Summary by Contract" card. Aggregates
+ * the per-system results across all systems under the same contract.
+ */
+export type RecPerformanceContractYearSummaryRow = {
+  contractId: string;
+  systemsInThreeYearReview: number;
+  totalRecDeliveryObligation: number;
+  totalDeliveriesFromThreeYearReview: number;
+  recDelta: number;
+  totalDrawdownAmount: number;
+};
