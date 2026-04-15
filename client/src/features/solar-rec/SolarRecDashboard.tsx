@@ -1,30 +1,14 @@
 import { lazy, startTransition, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation, useSearch } from "wouter";
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, FileText, Loader2, Trash2, Upload } from "lucide-react";
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronUp, Database, Upload } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable, { type CellHookData } from "jspdf-autotable";
-import {
-  Area,
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ComposedChart,
-  Legend,
-  Line,
-  LineChart,
-  ReferenceArea,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+// recharts — all chart components were moved into their individual
+// tab components during Phase 1-9.
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
@@ -95,7 +79,7 @@ const RecPerformanceEvaluationTabLazy = lazy(
 const SnapshotLogTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/SnapshotLogTab")
 );
-import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
+import { clean, formatPercent } from "@/lib/helpers";
 import { parseTabularFile } from "@/lib/csvParsing";
 import {
   buildDeliveryTrackerData,
@@ -103,7 +87,6 @@ import {
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 import {
   buildTransferDeliveryLookup,
-  getDeliveredForYear,
   getDeliveredLifetime,
 } from "@/solar-rec-dashboard/lib/transferHistoryDeliveries";
 import type {
@@ -113,7 +96,6 @@ import type {
   ChangeOwnershipStatus,
   ChangeOwnershipSummary,
   ContractDeliveryAggregate,
-  ContractScanResultRow,
   CsvDataset,
   CsvRow,
   DashboardLogEntry,
@@ -127,8 +109,6 @@ import type {
   PipelineCashFlowRow,
   PipelineMonthRow,
   ProfitRow,
-  RecPerformanceContractYearSummaryRow,
-  RecPerformanceResultRow,
   ScheduleYearEntry,
   SizeBucket,
   SystemRecord,
@@ -145,9 +125,6 @@ import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEn
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
 import {
   COO_TARGET_STATUS,
-  NO_COO_STATUS,
-  TEN_KW_COMPLIANT_SOURCE,
-  AUTO_MONITORING_PLATFORM_COMPLIANT_SOURCE_BY_KEY,
   LEGACY_DATASETS_STORAGE_KEY,
   LOGS_STORAGE_KEY,
   DASHBOARD_DB_NAME,
@@ -156,25 +133,10 @@ import {
   DASHBOARD_DATASETS_RECORD_KEY,
   DASHBOARD_DATASETS_MANIFEST_KEY,
   DASHBOARD_LOGS_RECORD_KEY,
-  NUMBER_FORMATTER,
-  DAY_MS,
-  PERFORMANCE_RATIO_PAGE_SIZE,
-  COMPLIANT_SOURCE_PAGE_SIZE,
-  COMPLIANT_REPORT_PAGE_SIZE,
-  SNAPSHOT_CONTRACT_PAGE_SIZE,
-  CONTRACT_SUMMARY_PAGE_SIZE,
-  CONTRACT_DETAIL_PAGE_SIZE,
-  ANNUAL_CONTRACT_VINTAGE_PAGE_SIZE,
-  ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE,
-  REC_PERFORMANCE_RESULTS_PAGE_SIZE,
-  OFFLINE_DETAIL_PAGE_SIZE,
   OWNERSHIP_ORDER,
   CHANGE_OWNERSHIP_ORDER,
   SNAPSHOT_REC_PERFORMANCE_DELIVERY_YEAR_LABEL,
-  IL_ABP_TRANSFERRED_CONTRACT_TYPE,
-  IL_ABP_TERMINATED_CONTRACT_TYPE,
   MAX_REMOTE_STATE_LOG_BYTES,
-  MAX_REMOTE_STATE_PAYLOAD_CHARS,
   REMOTE_LOG_ENTRY_LIMIT,
   REMOTE_DATASET_CHUNK_CHAR_LIMIT,
   MAX_REMOTE_DATASET_SYNC_ESTIMATED_CHARS,
@@ -182,15 +144,8 @@ import {
   MAX_LOCAL_LOG_STORAGE_CHARS,
   REMOTE_DATASET_KEY_MANIFEST,
   REMOTE_SNAPSHOT_LOGS_KEY,
-  MONTH_HEADERS,
   GENERATION_BASELINE_VALUE_HEADERS,
-  GENERATION_BASELINE_DATE_HEADERS,
-  GENERATOR_DETAILS_AC_SIZE_HEADERS,
-  COMPLIANT_SOURCE_STORAGE_KEY,
-  MAX_COMPLIANT_SOURCE_CHARS,
-  MAX_COMPLIANT_FILE_BYTES,
   MAX_SINGLE_CSV_UPLOAD_BYTES,
-  STALE_UPLOAD_DAYS,
   DASHBOARD_TAB_VALUES,
   DEFAULT_DASHBOARD_TAB,
   DASHBOARD_TAB_VALUE_SET,
@@ -204,42 +159,22 @@ import {
   parseDate,
   parsePart2VerificationDate,
   isPart2VerifiedAbpRow,
-  parseDateOnlineAsMidMonth,
   parseAbpAcSizeKw,
-  parseGeneratorDetailsAcSizeKw,
   parseEnergyToWh,
-  isValidCompliantSourceText,
-  toStartOfDay,
-  calculateExpectedWhForRange,
-  formatDate,
-  formatMonthYear,
-  toReadWindowMonthStart,
   formatNumber,
-  formatKwh,
   formatCapacityKw,
   roundMoney,
   toPercentValue,
   isStaleUpload,
-  formatSignedNumber,
-  normalizeMonitoringMatch,
-  normalizeSystemIdMatch,
-  normalizeSystemNameMatch,
-  normalizeContractType,
   isTransferredContractType,
   isTerminatedContractType,
-  splitRawCandidates,
-  uniqueNonEmpty,
   maxDate,
   firstNonNull,
   firstNonEmptyString,
-  resolveMonitoringPlatformCompliantSource,
-  getAutoCompliantSourcePriority,
-  isTenKwAcOrLess,
   resolveContractValueAmount,
   resolveValueGapAmount,
   buildAnnualProductionByTrackingId,
   buildGenerationBaselineByTrackingId,
-  buildGeneratorDateOnlineByTrackingId,
   normalizeMonitoringPlatform,
   getMonitoringDetailsForSystem,
   createLogId,
@@ -248,8 +183,6 @@ import {
   ownershipBadgeClass,
   changeOwnershipBadgeClass,
   buildDeliveryYearLabel,
-  buildRecReviewDeliveryYearLabel,
-  deriveRecPerformanceThreeYearValues,
 } from "@/solar-rec-dashboard/lib/helpers";
 
 
@@ -1545,20 +1478,23 @@ export default function SolarRecDashboard() {
   );
   // pipeline{Count,Kw,Interconnected,CashFlow}Range, pipelineReportLoading,
   // generatePipelineReport — moved to @/solar-rec-dashboard/components/AppPipelineTab
+  // Tab-active flags kept in the parent are the ones that still
+  // gate a SHARED memo (one that's computed in the parent and
+  // fed to one or more child tabs as props). Flags whose original
+  // consumer memo moved into a child tab component have been
+  // removed — the child's mount lifecycle is now the gate.
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
-  // isOfflineTabActive removed — OfflineMonitoringTab uses its mount lifecycle as the gate
   const isPerformanceRatioTabActive = activeTab === "performance-ratio";
-  const isTrendsTabActive = activeTab === "trends";
   const isForecastTabActive = activeTab === "forecast";
-  const isAlertsTabActive = activeTab === "alerts";
-  const isComparisonsTabActive = activeTab === "comparisons";
   const isOverviewTabActive = activeTab === "overview";
   const isPipelineTabActive = activeTab === "app-pipeline";
   const isFinancialsTabActive = activeTab === "financials";
-  const isDataQualityTabActive = activeTab === "data-quality";
   const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
+  // Removed dead flags whose consumer memos moved out of the parent:
+  // isTrendsTabActive, isAlertsTabActive, isComparisonsTabActive,
+  // isDataQualityTabActive, isOfflineTabActive.
   const handleActiveTabChange = useCallback(
     (nextTabValue: string) => {
       if (!isDashboardTabId(nextTabValue)) return;
@@ -1584,16 +1520,10 @@ export default function SolarRecDashboard() {
   );
   const [selectedSystemKey, setSelectedSystemKey] = useState<string | null>(null);
 
-  // Helper: make system names clickable to open detail sheet
-  const systemNameLink = (systemName: string, systemKey: string) => (
-    <button
-      type="button"
-      className="text-left font-medium text-blue-700 hover:text-blue-900 hover:underline cursor-pointer"
-      onClick={() => setSelectedSystemKey(systemKey)}
-    >
-      {systemName}
-    </button>
-  );
+  // systemNameLink — dead code removed in Phase 10. Each extracted
+  // tab now defines its own locally (e.g. FinancialsTab) or calls
+  // setSelectedSystemKey directly via the onSelectSystem prop.
+
   const isContractsComputationActive =
     isContractsTabActive || isAnnualReviewTabActive || isPerformanceEvalTabActive || isForecastTabActive;
   const datasetsRef = useRef(datasets);
