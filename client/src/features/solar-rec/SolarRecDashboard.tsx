@@ -990,8 +990,24 @@ function loadLegacyDatasetsFromLocalStorage(): Partial<Record<DatasetKey, CsvDat
   }
 }
 
+// Phase 13c: cache the IndexedDB connection at module scope so every
+// save doesn't pay the ~10–50ms open handshake. The connection stays
+// open for the life of the tab unless the browser forcibly closes it
+// (versionchange from another tab, tab goes into BFCache, etc.), at
+// which point we null the cache and the next call reopens cleanly.
+let cachedDashboardDb: IDBDatabase | null = null;
+let cachedDashboardDbPromise: Promise<IDBDatabase> | null = null;
+
+function invalidateCachedDashboardDb(): void {
+  cachedDashboardDb = null;
+  cachedDashboardDbPromise = null;
+}
+
 async function openDashboardDatabase(): Promise<IDBDatabase> {
-  return await new Promise((resolve, reject) => {
+  if (cachedDashboardDb) return cachedDashboardDb;
+  if (cachedDashboardDbPromise) return cachedDashboardDbPromise;
+
+  cachedDashboardDbPromise = new Promise<IDBDatabase>((resolve, reject) => {
     if (typeof window === "undefined" || !("indexedDB" in window)) {
       reject(new Error("IndexedDB is not available in this browser."));
       return;
@@ -1006,14 +1022,55 @@ async function openDashboardDatabase(): Promise<IDBDatabase> {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Failed to open IndexedDB."));
+    request.onsuccess = () => {
+      const db = request.result;
+      // Invalidate the cache on close/versionchange so the next call
+      // re-opens rather than re-using a dead handle.
+      db.onclose = () => {
+        if (cachedDashboardDb === db) invalidateCachedDashboardDb();
+      };
+      db.onversionchange = () => {
+        try {
+          db.close();
+        } catch {
+          // Ignore close errors; we're discarding the handle anyway.
+        }
+        if (cachedDashboardDb === db) invalidateCachedDashboardDb();
+      };
+      cachedDashboardDb = db;
+      resolve(db);
+    };
+    request.onerror = () => {
+      cachedDashboardDbPromise = null;
+      reject(request.error ?? new Error("Failed to open IndexedDB."));
+    };
+    request.onblocked = () => {
+      cachedDashboardDbPromise = null;
+      reject(new Error("IndexedDB open blocked by another tab."));
+    };
   });
+
+  return cachedDashboardDbPromise;
 }
 
 function dashboardDatasetStorageKey(key: DatasetKey): string {
   return `dataset:${key}`;
 }
+
+// Phase 13c: per-dataset signature for the diff-save path. Same
+// shape as buildDatasetStorageSignature for a single entry so the
+// two can't drift out of sync.
+function buildSingleDatasetSignature(dataset: CsvDataset | undefined): string {
+  if (!dataset) return "";
+  return `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
+}
+
+// Module-level cache of "what we last wrote to IndexedDB per key",
+// used by saveDatasetsToStorage to skip store.put calls for datasets
+// that didn't change. Hydrated either by loadDatasetsFromStorage
+// (after a successful initial read) or by saveDatasetsToStorage
+// itself (after a successful write). Missing keys = never saved.
+const lastSavedDatasetSignatures: Partial<Record<DatasetKey, string>> = {};
 
 function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -1029,10 +1086,8 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
     return loadLegacyDatasetsFromLocalStorage();
   }
 
-  let db: IDBDatabase | null = null;
   try {
-    db = await openDashboardDatabase();
-    const openDb = db;
+    const openDb = await openDashboardDatabase();
     const stored = await new Promise<{
       manifest: SerializedDatasetsManifest | null;
       legacy: Record<string, SerializedCsvDataset | undefined> | null;
@@ -1073,6 +1128,11 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
           loaded[key] = dataset;
         });
         if (Object.keys(loaded).length > 0) {
+          // Phase 13c: hydrate the signature cache from disk so the
+          // first save after mount doesn't rewrite every dataset.
+          (Object.keys(loaded) as DatasetKey[]).forEach((key) => {
+            lastSavedDatasetSignatures[key] = buildSingleDatasetSignature(loaded[key]);
+          });
           return loaded;
         }
       }
@@ -1095,10 +1155,11 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
 
     return {};
   } catch {
+    invalidateCachedDashboardDb();
     return loadLegacyDatasetsFromLocalStorage();
-  } finally {
-    if (db) db.close();
   }
+  // Phase 13c: no more `db.close()` in a finally block — the cached
+  // connection stays open for the life of the tab.
 }
 
 async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDataset>>): Promise<void> {
@@ -1110,41 +1171,89 @@ async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDat
     return;
   }
 
-  const db = await openDashboardDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
-    const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-    const activeKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
-    const manifest: SerializedDatasetsManifest = {
-      keys: activeKeys,
-      updatedAt: new Date().toISOString(),
-    };
+  // Phase 13c: diff against lastSavedDatasetSignatures so we only
+  // serialize + put the datasets that actually changed. Unchanged
+  // datasets are left alone in IndexedDB. Datasets that went from
+  // present → missing get deleted. The manifest write is always
+  // issued because it's tiny and reflects the current key set.
+  const activeKeys: DatasetKey[] = [];
+  const changedKeys: DatasetKey[] = [];
+  const removedKeys: DatasetKey[] = [];
+  const nextSignatures: Partial<Record<DatasetKey, string>> = {};
 
-    store.put(manifest, DASHBOARD_DATASETS_MANIFEST_KEY);
-    store.delete(DASHBOARD_DATASETS_RECORD_KEY);
-
-    (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
-      const dataset = datasets[key];
-      if (!dataset) {
-        store.delete(dashboardDatasetStorageKey(key));
-        return;
-      }
-      store.put(serializeDatasetRecord(dataset), dashboardDatasetStorageKey(key));
-    });
-
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    transaction.onabort = () => {
-      db.close();
-      reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
-    };
-    transaction.onerror = () => {
-      db.close();
-      reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
-    };
+  (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+    const dataset = datasets[key];
+    const previousSignature = lastSavedDatasetSignatures[key] ?? "";
+    if (dataset) {
+      activeKeys.push(key);
+      const nextSignature = buildSingleDatasetSignature(dataset);
+      nextSignatures[key] = nextSignature;
+      if (nextSignature !== previousSignature) changedKeys.push(key);
+    } else if (previousSignature) {
+      removedKeys.push(key);
+    }
   });
+
+  // Fast-path: if nothing changed and no keys were removed, we can
+  // skip the transaction entirely. The callers already guard on the
+  // aggregate signature, but belt-and-braces keeps us safe under
+  // racing saves.
+  if (changedKeys.length === 0 && removedKeys.length === 0) return;
+
+  let db: IDBDatabase;
+  try {
+    db = await openDashboardDatabase();
+  } catch (error) {
+    invalidateCachedDashboardDb();
+    throw error;
+  }
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
+      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+      const manifest: SerializedDatasetsManifest = {
+        keys: activeKeys,
+        updatedAt: new Date().toISOString(),
+      };
+
+      store.put(manifest, DASHBOARD_DATASETS_MANIFEST_KEY);
+      // Tombstone the legacy single-blob record on every save so a
+      // partially-migrated cache can't resurrect.
+      store.delete(DASHBOARD_DATASETS_RECORD_KEY);
+
+      for (const key of changedKeys) {
+        const dataset = datasets[key];
+        if (!dataset) continue;
+        store.put(serializeDatasetRecord(dataset), dashboardDatasetStorageKey(key));
+      }
+      for (const key of removedKeys) {
+        store.delete(dashboardDatasetStorageKey(key));
+      }
+
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () =>
+        reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error("Failed saving datasets to IndexedDB."));
+    });
+  } catch (error) {
+    // Transaction failures are usually QuotaExceeded or "database is
+    // closed" — invalidate the cached connection so the next call
+    // reopens cleanly.
+    invalidateCachedDashboardDb();
+    throw error;
+  }
+
+  // Commit the in-memory signature cache only after the transaction
+  // actually landed.
+  for (const key of changedKeys) {
+    const signature = nextSignatures[key];
+    if (signature) lastSavedDatasetSignatures[key] = signature;
+  }
+  for (const key of removedKeys) {
+    delete lastSavedDatasetSignatures[key];
+  }
 }
 
 function serializeDashboardLogs(
@@ -1341,10 +1450,8 @@ async function loadLogsFromStorage(): Promise<DashboardLogEntry[]> {
     return loadPersistedLogs();
   }
 
-  let db: IDBDatabase | null = null;
   try {
-    db = await openDashboardDatabase();
-    const openDb = db;
+    const openDb = await openDashboardDatabase();
     const logsPayload = (await new Promise<unknown>((resolve, reject) => {
       const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
       const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
@@ -1367,10 +1474,10 @@ async function loadLogsFromStorage(): Promise<DashboardLogEntry[]> {
     }
     return [];
   } catch {
+    invalidateCachedDashboardDb();
     return loadPersistedLogs();
-  } finally {
-    if (db) db.close();
   }
+  // Phase 13c: no `db.close()` finally — the cached connection lives.
 }
 
 async function saveLogsToStorage(logEntries: DashboardLogEntry[]): Promise<void> {
@@ -1387,24 +1494,28 @@ async function saveLogsToStorage(logEntries: DashboardLogEntry[]): Promise<void>
   if (!("indexedDB" in window)) return;
 
   const fullText = safeJsonStringify(serializeDashboardLogs(logEntries, { includeSystemName: false })) ?? "[]";
-  const db = await openDashboardDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
-    const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-    store.put(fullText, DASHBOARD_LOGS_RECORD_KEY);
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    transaction.onabort = () => {
-      db.close();
-      reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
-    };
-    transaction.onerror = () => {
-      db.close();
-      reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
-    };
-  });
+  let db: IDBDatabase;
+  try {
+    db = await openDashboardDatabase();
+  } catch (error) {
+    invalidateCachedDashboardDb();
+    throw error;
+  }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
+      const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
+      store.put(fullText, DASHBOARD_LOGS_RECORD_KEY);
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () =>
+        reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error("Failed saving snapshot logs to IndexedDB."));
+    });
+  } catch (error) {
+    invalidateCachedDashboardDb();
+    throw error;
+  }
 }
 
 // loadPersistedCompliantSources — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
@@ -1621,6 +1732,12 @@ export default function SolarRecDashboard() {
     [ensureCsvParserWorker]
   );
 
+  // Phase 13a: chunk uploads now run in parallel via Promise.all.
+  // Each chunk is an independent mutation keyed by its chunk index,
+  // so order doesn't matter and the existing per-call withRetry
+  // already handles transient failures. The chunk-pointer write is
+  // held back until *all* chunk writes succeed so a reader never sees
+  // a pointer referencing a chunk that isn't yet committed.
   const saveRemotePayloadWithChunks = useCallback(async (key: string, payload: string): Promise<string[]> => {
     const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
     if (chunks.length === 1) {
@@ -1629,14 +1746,16 @@ export default function SolarRecDashboard() {
     }
 
     const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
-    for (let index = 0; index < chunks.length; index += 1) {
-      await withRetry(() =>
-        saveRemoteDatasetRef.current.mutateAsync({
-          key: chunkKeys[index],
-          payload: chunks[index],
-        })
-      );
-    }
+    await Promise.all(
+      chunks.map((chunk, index) =>
+        withRetry(() =>
+          saveRemoteDatasetRef.current.mutateAsync({
+            key: chunkKeys[index],
+            payload: chunk,
+          })
+        )
+      )
+    );
     await withRetry(() =>
       saveRemoteDatasetRef.current.mutateAsync({
         key,
@@ -1646,12 +1765,18 @@ export default function SolarRecDashboard() {
     return chunkKeys;
   }, []);
 
+  // Phase 13a: chunk clears are also independent mutations — parallel
+  // them too. The primary-key clear (empty payload) is kept as its
+  // own call because readers use that as the "tombstone" signal, and
+  // we want the ordering: clear pointer first, then detach chunks.
   const clearRemotePayloadWithChunks = useCallback(async (key: string, chunkKeys: string[] | undefined) => {
     await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
-    if (!Array.isArray(chunkKeys)) return;
-    for (const chunkKey of chunkKeys) {
-      await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
-    }
+    if (!Array.isArray(chunkKeys) || chunkKeys.length === 0) return;
+    await Promise.all(
+      chunkKeys.map((chunkKey) =>
+        withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
+      )
+    );
   }, []);
 
   const setDatasetCloudSyncBadge = useCallback(
@@ -3692,15 +3817,24 @@ export default function SolarRecDashboard() {
         const loadedSignatures: Partial<Record<DatasetKey, string>> = {};
         const loadedChunkKeys: Partial<Record<DatasetKey, string[]>> = {};
         const loadedSourceManifests: Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>> = {};
+        // Phase 13b: fetch all chunks in parallel and join them in
+        // chunk-key order. Previously this was a serial for-await
+        // loop that paid the full RTT per chunk — a 6-chunk dataset
+        // on a 200ms link was 1.2s of pure latency.
         const loadChunkedPayload = async (chunkKeys: string[]): Promise<string | null> => {
+          if (cancelled || chunkKeys.length === 0) return null;
+          const responses = await Promise.all(
+            chunkKeys.map((chunkKey) =>
+              withRetry(
+                () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
+                3,
+                250
+              ).catch(() => null)
+            )
+          );
+          if (cancelled) return null;
           let combined = "";
-          for (const chunkKey of chunkKeys) {
-            if (cancelled) return null;
-            const chunkResponse = await withRetry(
-              () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
-              3,
-              250
-            ).catch(() => null);
+          for (const chunkResponse of responses) {
             if (!chunkResponse?.payload) return null;
             combined += chunkResponse.payload;
           }
@@ -3763,38 +3897,49 @@ export default function SolarRecDashboard() {
           }
         };
 
-        for (const rawKey of keys) {
-          if (cancelled) break;
+        // Phase 13b: load all datasets in parallel. Each iteration
+        // writes a different key in the result maps (loadedDatasets,
+        // loadedSignatures, etc.), so there's no contention under
+        // Promise.all. Source-manifest datasets also fan out their
+        // per-source fetches inside loadSingleDataset — three levels
+        // of concurrency (dataset × sources × chunks) for cold-hydrate.
+        // Previously this was a 15-dataset × 3-chunk serial walk ≈
+        // 9s of pure RTT.
+        const loadSingleDataset = async (rawKey: DatasetKey) => {
+          if (cancelled) return;
           try {
             const loadedPayload = await loadPayloadByKey(rawKey);
-            if (!loadedPayload?.payload) continue;
+            if (!loadedPayload?.payload) return;
             const datasetPayload = loadedPayload.payload;
             loadedChunkKeys[rawKey] = loadedPayload.chunkKeys;
 
             const sourceManifest = parseRemoteSourceManifestPayload(datasetPayload);
             if (sourceManifest) {
-              const parsedSourceData: Array<{
-                source: RemoteDatasetSourceRef;
-                parsed: { headers: string[]; rows: CsvRow[] };
-              }> = [];
-
-              for (const source of sourceManifest.sources) {
-                if (cancelled) break;
-                const sourcePayload = await loadPayloadByKey(source.storageKey);
-                if (!sourcePayload?.payload) continue;
-                const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayload.payload);
-                if (!parsed) continue;
-                parsedSourceData.push({
-                  source: {
-                    ...source,
-                    chunkKeys:
-                      source.chunkKeys && source.chunkKeys.length > 0
-                        ? source.chunkKeys
-                        : sourcePayload.chunkKeys,
-                  },
-                  parsed,
-                });
-              }
+              // Fetch every source's payload in parallel, then parse in
+              // parallel, preserving the original manifest order so
+              // "latest source" semantics match what the sync path wrote.
+              const sourcePayloads = await Promise.all(
+                sourceManifest.sources.map(async (source) => {
+                  if (cancelled) return null;
+                  const sourcePayload = await loadPayloadByKey(source.storageKey);
+                  if (!sourcePayload?.payload) return null;
+                  const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayload.payload);
+                  if (!parsed) return null;
+                  return {
+                    source: {
+                      ...source,
+                      chunkKeys:
+                        source.chunkKeys && source.chunkKeys.length > 0
+                          ? source.chunkKeys
+                          : sourcePayload.chunkKeys,
+                    },
+                    parsed,
+                  };
+                })
+              );
+              const parsedSourceData = sourcePayloads.filter(
+                (entry): entry is NonNullable<typeof entry> => entry !== null,
+              );
 
               if (parsedSourceData.length > 0) {
                 const normalizedSources = parsedSourceData.map(({ source, parsed }) => ({
@@ -3859,18 +4004,20 @@ export default function SolarRecDashboard() {
                   version: 1,
                   sources: normalizedSources,
                 };
-                continue;
+                return;
               }
             }
 
             const deserializedDataset = deserializeRemoteDatasetPayload(datasetPayload);
-            if (!deserializedDataset) continue;
+            if (!deserializedDataset) return;
             loadedDatasets[rawKey] = deserializedDataset;
             loadedSignatures[rawKey] = `${deserializedDataset.fileName}|${deserializedDataset.uploadedAt.toISOString()}|${deserializedDataset.rows.length}|${deserializedDataset.sources?.length ?? 0}`;
           } catch {
             // Keep going; partial data is better than none.
           }
-        }
+        };
+
+        await Promise.all(keys.map((rawKey) => loadSingleDataset(rawKey)));
 
         return { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests };
       };
@@ -3933,26 +4080,34 @@ export default function SolarRecDashboard() {
             const chunkKeys = parseChunkPointerPayload(logsResponse.payload);
             if (chunkKeys) {
               remoteLogsChunkKeysRef.current = chunkKeys;
-              let combinedLogsPayload = "";
-              let allLogsChunksLoaded = true;
-              for (const chunkKey of chunkKeys) {
-                if (cancelled) {
-                  allLogsChunksLoaded = false;
-                  break;
+              // Phase 13b: fetch log chunks in parallel and stitch
+              // them together in chunk-key order. Aborts the batch
+              // if any chunk comes back empty (partial log history
+              // is worse than no log history here).
+              if (!cancelled && chunkKeys.length > 0) {
+                const chunkResponses = await Promise.all(
+                  chunkKeys.map((chunkKey) =>
+                    withRetry(
+                      () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
+                      3,
+                      250
+                    ).catch(() => null)
+                  )
+                );
+                if (!cancelled) {
+                  let combinedLogsPayload = "";
+                  let allLogsChunksLoaded = true;
+                  for (const chunkResponse of chunkResponses) {
+                    if (!chunkResponse?.payload) {
+                      allLogsChunksLoaded = false;
+                      break;
+                    }
+                    combinedLogsPayload += chunkResponse.payload;
+                  }
+                  if (allLogsChunksLoaded && combinedLogsPayload) {
+                    logsPayload = combinedLogsPayload;
+                  }
                 }
-                const chunkResponse = await withRetry(
-                  () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
-                  3,
-                  250
-                ).catch(() => null);
-                if (!chunkResponse?.payload) {
-                  allLogsChunksLoaded = false;
-                  break;
-                }
-                combinedLogsPayload += chunkResponse.payload;
-              }
-              if (allLogsChunksLoaded && combinedLogsPayload) {
-                logsPayload = combinedLogsPayload;
               }
             } else {
               remoteLogsChunkKeysRef.current = [];
@@ -4213,21 +4368,30 @@ export default function SolarRecDashboard() {
             forcedRemoteDatasetSyncKeysRef.current.delete(key);
             setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
             if (sourceManifest?.sources && sourceManifest.sources.length > 0) {
-              for (const source of sourceManifest.sources) {
-                try {
-                  await clearRemotePayloadWithChunks(source.storageKey, source.chunkKeys);
-                } catch {
-                  // Best effort source cleanup.
-                }
-              }
+              // Phase 13a: source cleanups are best-effort and fully
+              // independent — fan them out.
+              await Promise.all(
+                sourceManifest.sources.map((source) =>
+                  clearRemotePayloadWithChunks(source.storageKey, source.chunkKeys).catch(() => {
+                    // Best effort source cleanup.
+                  })
+                )
+              );
               setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
             }
             if (!remoteDatasetSignatureRef.current[key]) continue;
             const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
             try {
+              // Phase 13a: primary-key tombstone first (readers use
+              // this as the "deleted" signal), then clear all chunk
+              // slots in parallel.
               await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
-              for (const chunkKey of previousChunkKeys) {
-                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+              if (previousChunkKeys.length > 0) {
+                await Promise.all(
+                  previousChunkKeys.map((chunkKey) =>
+                    withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
+                  )
+                );
               }
               delete remoteDatasetSignatureRef.current[key];
               delete remoteDatasetChunkKeysRef.current[key];
@@ -4340,24 +4504,39 @@ export default function SolarRecDashboard() {
             const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
 
             if (chunks.length === 1) {
+              // Phase 13a: tombstone the primary key, then clear stale
+              // chunks in parallel (all independent mutations).
               await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
-              for (const chunkKey of previousChunkKeys) {
-                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+              if (previousChunkKeys.length > 0) {
+                await Promise.all(
+                  previousChunkKeys.map((chunkKey) =>
+                    withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
+                  )
+                );
               }
               remoteDatasetChunkKeysRef.current[key] = [];
             } else {
+              // Phase 13a: upload all new chunks concurrently, clear
+              // stale ones concurrently too, then commit the chunk
+              // pointer last so readers never observe a partial state.
               const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
-              for (let index = 0; index < chunks.length; index += 1) {
-                await withRetry(() =>
-                  saveRemoteDatasetRef.current.mutateAsync({
-                    key: chunkKeys[index],
-                    payload: chunks[index],
-                  })
-                );
-              }
+              await Promise.all(
+                chunks.map((chunk, index) =>
+                  withRetry(() =>
+                    saveRemoteDatasetRef.current.mutateAsync({
+                      key: chunkKeys[index],
+                      payload: chunk,
+                    })
+                  )
+                )
+              );
               const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
-              for (const staleChunkKey of staleChunkKeys) {
-                await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+              if (staleChunkKeys.length > 0) {
+                await Promise.all(
+                  staleChunkKeys.map((staleChunkKey) =>
+                    withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
+                  )
+                );
               }
               await withRetry(() =>
                 saveRemoteDatasetRef.current.mutateAsync({
@@ -4428,6 +4607,9 @@ export default function SolarRecDashboard() {
         if (remoteLogsSignatureRef.current === nextSignature) return;
 
         const previousChunkKeys = remoteLogsChunkKeysRef.current ?? [];
+        // Phase 13a: same parallel-chunk pattern as saveRemotePayloadWithChunks
+        // but kept inline here because it mixes in the REMOTE_LOG_SYNC_MAX_CHUNKS
+        // guard + the stale-chunk diff. All mutations inside are independent.
         const syncLogsPayload = async (payload: string) => {
           const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
           if (chunks.length > REMOTE_LOG_SYNC_MAX_CHUNKS) {
@@ -4438,24 +4620,34 @@ export default function SolarRecDashboard() {
             await withRetry(() =>
               saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload })
             );
-            for (const chunkKey of previousChunkKeys) {
-              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+            if (previousChunkKeys.length > 0) {
+              await Promise.all(
+                previousChunkKeys.map((chunkKey) =>
+                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
+                )
+              );
             }
             return [] as string[];
           }
 
           const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(REMOTE_SNAPSHOT_LOGS_KEY, index));
-          for (let index = 0; index < chunks.length; index += 1) {
-            await withRetry(() =>
-              saveRemoteDatasetRef.current.mutateAsync({
-                key: chunkKeys[index],
-                payload: chunks[index],
-              })
-            );
-          }
+          await Promise.all(
+            chunks.map((chunk, index) =>
+              withRetry(() =>
+                saveRemoteDatasetRef.current.mutateAsync({
+                  key: chunkKeys[index],
+                  payload: chunk,
+                })
+              )
+            )
+          );
           const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
-          for (const staleChunkKey of staleChunkKeys) {
-            await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }));
+          if (staleChunkKeys.length > 0) {
+            await Promise.all(
+              staleChunkKeys.map((staleChunkKey) =>
+                withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
+              )
+            );
           }
           await withRetry(() =>
             saveRemoteDatasetRef.current.mutateAsync({
@@ -4469,8 +4661,12 @@ export default function SolarRecDashboard() {
         if (logEntries.length === 0) {
           try {
             await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload: "" }));
-            for (const chunkKey of previousChunkKeys) {
-              await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }));
+            if (previousChunkKeys.length > 0) {
+              await Promise.all(
+                previousChunkKeys.map((chunkKey) =>
+                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
+                )
+              );
             }
             remoteLogsChunkKeysRef.current = [];
             remoteLogsSignatureRef.current = nextSignature;
