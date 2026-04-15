@@ -86,6 +86,9 @@ const MeterReadsTabLazy = lazy(
 const DeliveryTrackerTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/DeliveryTrackerTab")
 );
+const ForecastTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/ForecastTab")
+);
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 import { parseTabularFile } from "@/lib/csvParsing";
 import {
@@ -113,9 +116,11 @@ import type {
   MonitoringDetailsRecord,
   OfflineBreakdownRow,
   OwnershipStatus,
+  PerformanceSourceRow,
   PipelineCashFlowRow,
   PipelineMonthRow,
   ProfitRow,
+  ScheduleYearEntry,
   SizeBucket,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
@@ -233,6 +238,9 @@ import {
   resolveOfflineMonitoringAccessFields,
   ownershipBadgeClass,
   changeOwnershipBadgeClass,
+  buildDeliveryYearLabel,
+  buildRecReviewDeliveryYearLabel,
+  deriveRecPerformanceThreeYearValues,
 } from "@/solar-rec-dashboard/lib/helpers";
 
 
@@ -303,32 +311,9 @@ type SnapshotMetricRow =
       metricTone?: "default" | "neutral" | "warn";
     };
 
-type ScheduleYearEntry = {
-  yearIndex: number;
-  required: number;
-  delivered: number;
-  startDate: Date | null;
-  endDate: Date | null;
-  startRaw: string;
-  endRaw: string;
-  key: string;
-};
-
-type PerformanceSourceRow = {
-  key: string;
-  contractId: string;
-  systemId: string | null;
-  trackingSystemRefId: string;
-  systemName: string;
-  batchId: string | null;
-  recPrice: number | null;
-  years: ScheduleYearEntry[];
-  // The energy year of the system's first positive REC transfer to a
-  // utility, derived from transferDeliveryLookup. null = no transfers found.
-  // Used to determine which delivery year the system is actually in
-  // (independent of the Schedule B's yearIndex, which may not be adjusted).
-  firstTransferEnergyYear: number | null;
-};
+// ScheduleYearEntry, PerformanceSourceRow, RecPerformanceThreeYearValues
+// — moved to @/solar-rec-dashboard/state/types (shared with
+// ForecastTab, RecPerformanceEvaluationTab, and SnapshotLogTab).
 
 type RecPerformanceResultRow = {
   key: string;
@@ -624,87 +609,9 @@ function normalizeMonitoringMethod(accessTypeRaw: string, entryMethodRaw: string
 // normalizeMonitoringPlatform — moved to @/solar-rec-dashboard/lib/helpers
 
 
-function buildDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: string, endRaw: string): string {
-  if (start && end) {
-    return `${start.getFullYear()}-${end.getFullYear()}`;
-  }
-  if (startRaw && endRaw) return `${startRaw} to ${endRaw}`;
-  if (startRaw) return startRaw;
-  if (start) return formatDate(start);
-  return "Unknown";
-}
-
-function buildRecReviewDeliveryYearLabel(start: Date | null, end: Date | null, startRaw: string, endRaw: string): string {
-  // Delivery year label matches the energy year of the schedule start
-  // date: schedule start 2023-06-01 → "2023-2024" (the June-to-May
-  // energy year). No +1 offset — the schedule start IS the delivery
-  // year start.
-  return buildDeliveryYearLabel(start, end, startRaw, endRaw);
-}
-
-type RecPerformanceThreeYearValues = {
-  scheduleYearNumber: number;
-  deliveryYearOne: number;
-  deliveryYearTwo: number;
-  deliveryYearThree: number;
-  deliveryYearOneSource: "Actual" | "Expected";
-  deliveryYearTwoSource: "Actual" | "Expected";
-  deliveryYearThreeSource: "Actual" | "Expected";
-  rollingAverage: number;
-  expectedRecs: number;
-};
-
-function deriveRecPerformanceThreeYearValues(
-  sourceRow: PerformanceSourceRow,
-  targetYearIndex: number
-): RecPerformanceThreeYearValues | null {
-  // Array bounds: need at least 2 prior years for the rolling average.
-  if (targetYearIndex < 2) return null;
-
-  const dyOneYear = sourceRow.years[targetYearIndex - 2];
-  const dyTwoYear = sourceRow.years[targetYearIndex - 1];
-  const dyThreeYear = sourceRow.years[targetYearIndex];
-  if (!dyOneYear || !dyTwoYear || !dyThreeYear) return null;
-
-  // Every contract start date is determined by the first REC transfer in
-  // GATS. No fallback to PDF dates. If there's no transfer data, the
-  // system is not eligible for performance evaluation.
-  if (sourceRow.firstTransferEnergyYear === null || !dyThreeYear.startDate) {
-    return null;
-  }
-
-  const firstDeliveryYear = sourceRow.firstTransferEnergyYear + 1;
-  const targetEnergyYear = dyThreeYear.startDate.getFullYear();
-  const actualDeliveryYearNumber = targetEnergyYear - firstDeliveryYear + 1;
-
-  // Only include systems in their 3rd+ actual delivery year.
-  if (actualDeliveryYearNumber < 3) return null;
-
-  const isThirdDeliveryYear = actualDeliveryYearNumber === 3;
-  const values: Array<{ value: number; source: "Actual" | "Expected" }> = isThirdDeliveryYear
-    ? [
-        { value: dyOneYear.delivered, source: "Actual" },
-        { value: dyTwoYear.delivered, source: "Actual" },
-        { value: dyThreeYear.delivered, source: "Actual" },
-      ]
-    : [
-        { value: dyOneYear.required, source: "Expected" },
-        { value: dyTwoYear.required, source: "Expected" },
-        { value: dyThreeYear.delivered, source: "Actual" },
-      ];
-
-  return {
-    scheduleYearNumber: dyThreeYear.yearIndex,
-    deliveryYearOne: values[0].value,
-    deliveryYearTwo: values[1].value,
-    deliveryYearThree: values[2].value,
-    deliveryYearOneSource: values[0].source,
-    deliveryYearTwoSource: values[1].source,
-    deliveryYearThreeSource: values[2].source,
-    rollingAverage: Math.floor((values[0].value + values[1].value + values[2].value) / 3),
-    expectedRecs: dyThreeYear.required,
-  };
-}
+// buildDeliveryYearLabel, buildRecReviewDeliveryYearLabel,
+// RecPerformanceThreeYearValues, deriveRecPerformanceThreeYearValues
+// — moved to @/solar-rec-dashboard/lib/helpers/recPerformance
 
 function buildScheduleYearEntries(row: CsvRow): ScheduleYearEntry[] {
   const entries: ScheduleYearEntry[] = [];
@@ -5789,146 +5696,11 @@ export default function SolarRecDashboard() {
   // pipelineMonthlyRows, pipelineRows3Year, pipelineRows12Month, pipelineBands,
   // pipelineRowGroupIndex, cashFlowRows12MonthRef, handleGeneratePipelineReport
   // — moved to @/solar-rec-dashboard/components/AppPipelineTab
-// trendProductionMoM, trendTopSiteIds, trendDeliveryPace — moved to @/solar-rec-dashboard/components/TrendsTab
-// ── Forecast: REC Performance-Based Projections (dynamic energy year) ──
-// Energy year runs May 1 – April 30. After May 31, shift to next energy year.
-const FORECAST_NOW = new Date();
-const FORECAST_EY_START_YEAR = FORECAST_NOW.getMonth() >= 5 // June (0-indexed: 5) or later
-  ? FORECAST_NOW.getFullYear()       // e.g., June 2026 → EY 2026-2027
-  : FORECAST_NOW.getFullYear() - 1;  // e.g., April 2026 → EY 2025-2026
-const FORECAST_EY_END_YEAR = FORECAST_EY_START_YEAR + 1;
-const FORECAST_EY_LABEL = `${FORECAST_EY_START_YEAR}-${FORECAST_EY_END_YEAR}`;
-const FORECAST_ENERGY_YEAR_END = new Date(FORECAST_EY_END_YEAR, 3, 30); // April 30
-const FORECAST_ENERGY_YEAR_START = new Date(FORECAST_EY_START_YEAR, 4, 1); // May 1
-const FORECAST_FLOOR_DATE = new Date(FORECAST_EY_START_YEAR - 1, 5, 1); // June 1, two years before end
+  // trendProductionMoM, trendTopSiteIds, trendDeliveryPace — moved to @/solar-rec-dashboard/components/TrendsTab
+  // Forecast constants, ForecastContractRow type, forecastProjections,
+  // forecastSummary — moved to @/solar-rec-dashboard/components/ForecastTab
 
-type ForecastContractRow = {
-  contract: string;
-  systemsTotal: number;
-  systemsReporting: number;
-  requiredRecs: number;
-  baselineRollingAvg: number;
-  revisedRollingAvgReporting: number;
-  revisedRollingAvgAll: number;
-  delPercent: number | null;
-  gapReporting: number;
-  gapAll: number;
-};
-
-const forecastProjections = useMemo<ForecastContractRow[]>(() => {
-  if (!isForecastTabActive) return [];
-  if (performanceSourceRows.length === 0) return [];
-
-  // Use the same 3-year rolling logic as REC Performance Eval to match baseline numbers.
-  // For each system: find the delivery year matching FORECAST_EY_LABEL,
-  // require targetYearIndex >= 2 (3rd year or later), compute rolling average.
-  const contractMap = new Map<string, {
-    contract: string;
-    systemsTotal: number;
-    systemsReporting: number;
-    requiredRecs: number;
-    baselineRollingAvg: number;
-    revisedRollingAvgReporting: number;
-    revisedRollingAvgAll: number;
-  }>();
-
-  for (const sourceRow of performanceSourceRows) {
-    // Find the target year matching the energy year label (same logic as perf eval)
-    const targetYearIndex = sourceRow.years.findIndex((year) => {
-      const label = buildRecReviewDeliveryYearLabel(year.startDate, year.endDate, year.startRaw, year.endRaw);
-      return label === FORECAST_EY_LABEL;
-    });
-    const recWindow = deriveRecPerformanceThreeYearValues(sourceRow, targetYearIndex);
-    if (!recWindow) continue; // Must be in 3rd delivery year or later
-
-    const dy1Val = recWindow.deliveryYearOne;
-    const dy2Val = recWindow.deliveryYearTwo;
-    const dy3Actual = recWindow.deliveryYearThree; // What's been delivered so far in DY3
-    const obligation = recWindow.expectedRecs;
-
-    // Baseline rolling average (no projection)
-    const baselineRollingAvg = recWindow.rollingAverage;
-
-    const trackingId = sourceRow.trackingSystemRefId;
-    const profile = annualProductionByTrackingId.get(trackingId);
-    const baseline = generationBaselineByTrackingId.get(trackingId);
-    const sys = systems.find(s => s.trackingSystemRefId === trackingId);
-    const isReporting = sys?.isReporting ?? false;
-
-    // Determine start date: latest meter reading from GATS
-    let meterReadDate = baseline?.date ?? null;
-    if (meterReadDate && meterReadDate < FORECAST_FLOOR_DATE) {
-      meterReadDate = FORECAST_FLOOR_DATE;
-    }
-
-    // Calculate projected RECs for remaining EY
-    let projectedRecsForSystem = 0;
-    if (profile && meterReadDate) {
-      const endDate = FORECAST_ENERGY_YEAR_END;
-      if (meterReadDate < endDate) {
-        const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, meterReadDate, endDate);
-        if (expectedWh !== null && expectedWh > 0) {
-          projectedRecsForSystem = Math.floor((expectedWh / 1000) / 1000);
-        }
-      }
-    } else if (profile && !meterReadDate) {
-      const expectedWh = calculateExpectedWhForRange(profile.monthlyKwh, FORECAST_FLOOR_DATE, FORECAST_ENERGY_YEAR_END);
-      if (expectedWh !== null && expectedWh > 0) {
-        projectedRecsForSystem = Math.floor((expectedWh / 1000) / 1000);
-      }
-    }
-
-    // Revised DY3: plug projected RECs into the current year's delivery,
-    // then recompute the rolling average. This avoids double-counting
-    // by running the projected generation through the same /3 averaging.
-    const dy3RevisedReporting = isReporting && meterReadDate
-      ? dy3Actual + projectedRecsForSystem
-      : dy3Actual;
-    const dy3RevisedAll = dy3Actual + projectedRecsForSystem;
-
-    const revisedRollingAvgReporting = Math.floor((dy1Val + dy2Val + dy3RevisedReporting) / 3);
-    const revisedRollingAvgAll = Math.floor((dy1Val + dy2Val + dy3RevisedAll) / 3);
-
-    // Accumulate by contract
-    const contractId = sourceRow.contractId;
-    const existing = contractMap.get(contractId) ?? {
-      contract: contractId,
-      systemsTotal: 0,
-      systemsReporting: 0,
-      requiredRecs: 0,
-      baselineRollingAvg: 0,
-      revisedRollingAvgReporting: 0,
-      revisedRollingAvgAll: 0,
-    };
-
-    existing.systemsTotal++;
-    if (isReporting) existing.systemsReporting++;
-    existing.requiredRecs += obligation;
-    existing.baselineRollingAvg += baselineRollingAvg;
-    existing.revisedRollingAvgReporting += revisedRollingAvgReporting;
-    existing.revisedRollingAvgAll += revisedRollingAvgAll;
-    contractMap.set(contractId, existing);
-  }
-
-  return Array.from(contractMap.values())
-    .map(c => ({
-      ...c,
-      delPercent: c.requiredRecs > 0 ? (c.baselineRollingAvg / c.requiredRecs) * 100 : null,
-      gapReporting: c.revisedRollingAvgReporting - c.requiredRecs,
-      gapAll: c.revisedRollingAvgAll - c.requiredRecs,
-    }))
-    .sort((a, b) => a.gapReporting - b.gapReporting);
-}, [isForecastTabActive, performanceSourceRows, annualProductionByTrackingId, generationBaselineByTrackingId, systems]);
-
-const forecastSummary = useMemo(() => {
-  const total = forecastProjections.length;
-  const totalRevisedReporting = forecastProjections.reduce((a, c) => a + c.revisedRollingAvgReporting, 0);
-  const totalRevisedAll = forecastProjections.reduce((a, c) => a + c.revisedRollingAvgAll, 0);
-  const atRisk = forecastProjections.filter(c => c.gapReporting < 0).length;
-  return { total, totalRevisedReporting, totalRevisedAll, atRisk };
-}, [forecastProjections]);
-
-// ── Delivery Tracker ────────────────────────────────────────────
+  // ── Delivery Tracker ────────────────────────────────────────────
 // Phase 1a: obligations come exclusively from deliveryScheduleBase (the
 // Schedule B scrape output). recDeliverySchedules has been removed from
 // the entire dashboard. Deliveries come exclusively from transferHistory
@@ -6367,12 +6139,9 @@ const aiDataContext = useMemo(() => {
   try {
     switch (activeTab) {
       case "forecast":
-        return JSON.stringify({
-          tab: "forecast",
-          contracts: forecastProjections,
-          systemCount: systems.length,
-          note: "gapReporting/gapAll: positive=surplus, negative=shortfall. revisedRollingAvg includes projected RECs through EY end.",
-        });
+        // forecastProjections moved into ForecastTab — chat context
+        // loses the per-contract payload but still tracks the tab.
+        return JSON.stringify({ tab: "forecast", systemCount: systems.length });
       case "financials":
         return JSON.stringify({
           tab: "financials",
@@ -6439,7 +6208,7 @@ const aiDataContext = useMemo(() => {
     return JSON.stringify({ tab: activeTab, error: "Failed to serialize data context" });
   }
 }, [
-  activeTab, forecastProjections, financialProfitData,
+  activeTab, financialProfitData,
   performanceSourceRows, deliveryTrackerData, systems,
 ]);
 
@@ -7647,130 +7416,16 @@ const aiDataContext = useMemo(() => {
             </Suspense>
           )}
 
-          {activeTab === "forecast" && (<div className="space-y-4 mt-4">
-            <Card className="border-sky-200 bg-sky-50/30">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">REC Production Forecast — Energy Year {FORECAST_EY_LABEL}</CardTitle>
-                <CardDescription>
-                  Projected additional RECs per contract based on estimated production from each system&apos;s latest GATS meter read date through April 30, {FORECAST_EY_END_YEAR}.
-                  Uses Annual Production Estimates with daily pro-rata. Floor date: June 1, {FORECAST_EY_START_YEAR - 1}. 1 REC = 1,000 kWh (floored per system).
-                  Floor date advances each energy year (always June 1 of the prior energy year).
-                </CardDescription>
-              </CardHeader>
-            </Card>
-
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Card><CardHeader><CardDescription>Contracts</CardDescription><CardTitle className="text-2xl">{forecastSummary.total}</CardTitle></CardHeader></Card>
-              <Card className="border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/30"><CardHeader><CardDescription>Revised Avg (Reporting)</CardDescription><CardTitle className="text-2xl text-emerald-800 dark:text-emerald-400">{formatNumber(forecastSummary.totalRevisedReporting)}</CardTitle></CardHeader></Card>
-              <Card className="border-sky-200 bg-sky-50/50 dark:border-sky-800 dark:bg-sky-950/30"><CardHeader><CardDescription>Revised Avg (All Sites)</CardDescription><CardTitle className="text-2xl text-sky-800 dark:text-sky-400">{formatNumber(forecastSummary.totalRevisedAll)}</CardTitle></CardHeader></Card>
-              <Card className={forecastSummary.atRisk > 0 ? "border-rose-200 bg-rose-50/50 dark:border-rose-800 dark:bg-rose-950/30" : "border-emerald-200 bg-emerald-50/50 dark:border-emerald-800 dark:bg-emerald-950/30"}><CardHeader><CardDescription>Contracts At Risk</CardDescription><CardTitle className="text-2xl">{forecastSummary.atRisk}</CardTitle></CardHeader></Card>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle className="text-base">Projected REC Production by Contract</CardTitle>
-                    <CardDescription>
-                      <strong>Projection 1 (Reporting):</strong> Only sites reporting in the last 3 months.{" "}
-                      <strong>Projection 2 (All Sites):</strong> All eligible sites including non-reporting (using June 1, 2024 floor for missing dates).
-                    </CardDescription>
-                  </div>
-                  {forecastProjections.length > 0 && (
-                    <Button variant="outline" size="sm" onClick={() => {
-                      const csv = buildCsv(
-                        ["contract", "systems_total", "systems_reporting", "obligation_recs", "baseline_rolling_avg", "del_pct", "revised_avg_reporting", "revised_avg_all", "gap_reporting", "gap_all"],
-                        forecastProjections.map(c => ({
-                          contract: c.contract, systems_total: c.systemsTotal, systems_reporting: c.systemsReporting,
-                          obligation_recs: c.requiredRecs, baseline_rolling_avg: c.baselineRollingAvg,
-                          del_pct: c.delPercent !== null ? c.delPercent.toFixed(1) : "",
-                          revised_avg_reporting: c.revisedRollingAvgReporting, revised_avg_all: c.revisedRollingAvgAll,
-                          gap_reporting: c.gapReporting, gap_all: c.gapAll,
-                        }))
-                      );
-                      triggerCsvDownload(`rec-forecast-ey${FORECAST_EY_LABEL}-${timestampForCsvFileName()}.csv`, csv);
-                    }}>Export CSV</Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                {forecastProjections.length === 0 ? (
-                  <p className="text-sm text-slate-500 py-4 text-center">
-                    Scrape Schedule B PDFs, upload Transfer History, Account Solar Generation, and Annual Production Estimates to see forecasts.
-                  </p>
-                ) : (
-                  <>
-                    <div className="h-80 rounded-md border border-slate-200 bg-white p-2 mb-4">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={forecastProjections} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                          <XAxis dataKey="contract" tick={{ fontSize: 10 }} angle={-35} textAnchor="end" height={60} />
-                          <YAxis tick={{ fontSize: 12 }} />
-                          <Tooltip />
-                          <Legend />
-                          <Bar dataKey="requiredRecs" fill="#94a3b8" name="Obligation" />
-                          <Bar dataKey="baselineRollingAvg" fill="#16a34a" name="Baseline 3-Yr Avg" />
-                          <Bar dataKey="revisedRollingAvgReporting" fill="#0ea5e9" name="Revised Avg (Reporting)" />
-                          <Bar dataKey="revisedRollingAvgAll" fill="#8b5cf6" name="Revised Avg (All)" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <Table>
-                        <TableHeader><TableRow>
-                          <TableHead>Contract</TableHead>
-                          <TableHead className="text-right">Systems</TableHead>
-                          <TableHead className="text-right">Reporting</TableHead>
-                          <TableHead className="text-right">Obligation</TableHead>
-                          <TableHead className="text-right">Baseline 3-Yr Avg</TableHead>
-                          <TableHead className="text-right">Del. %</TableHead>
-                          <TableHead className="text-right text-sky-700">Revised Avg (Reporting)</TableHead>
-                          <TableHead className="text-right text-sky-700">%</TableHead>
-                          <TableHead className="text-right text-violet-700">Revised Avg (All)</TableHead>
-                          <TableHead className="text-right text-violet-700">%</TableHead>
-                          <TableHead className="text-right">Gap (Reporting)</TableHead>
-                          <TableHead className="text-right">Gap (All)</TableHead>
-                        </TableRow></TableHeader>
-                        <TableBody>
-                          {forecastProjections.map((c) => {
-                            const delPct = c.delPercent !== null ? c.delPercent.toFixed(1) : "N/A";
-                            const revisedPctReporting = c.requiredRecs > 0 ? ((c.revisedRollingAvgReporting / c.requiredRecs) * 100).toFixed(1) : "N/A";
-                            const revisedPctAll = c.requiredRecs > 0 ? ((c.revisedRollingAvgAll / c.requiredRecs) * 100).toFixed(1) : "N/A";
-                            const gapReportingPositive = c.gapReporting >= 0;
-                            const gapAllPositive = c.gapAll >= 0;
-                            return (
-                              <TableRow key={c.contract}>
-                                <TableCell className="font-medium">{c.contract}</TableCell>
-                                <TableCell className="text-right">{c.systemsTotal}</TableCell>
-                                <TableCell className="text-right">{c.systemsReporting}</TableCell>
-                                <TableCell className="text-right">{formatNumber(c.requiredRecs)}</TableCell>
-                                <TableCell className="text-right">{formatNumber(c.baselineRollingAvg)}</TableCell>
-                                <TableCell className="text-right">{delPct}%</TableCell>
-                                <TableCell className="text-right font-medium text-sky-700 dark:text-sky-400">{formatNumber(c.revisedRollingAvgReporting)}</TableCell>
-                                <TableCell className="text-right text-xs text-sky-600 dark:text-sky-500">{revisedPctReporting}%</TableCell>
-                                <TableCell className="text-right font-medium text-violet-700 dark:text-violet-400">{formatNumber(c.revisedRollingAvgAll)}</TableCell>
-                                <TableCell className="text-right text-xs text-violet-600 dark:text-violet-500">{revisedPctAll}%</TableCell>
-                                <TableCell className="text-right">
-                                  <Badge variant="outline" className={gapReportingPositive ? "text-emerald-700 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700" : "text-red-700 border-red-300 dark:text-red-400 dark:border-red-700"}>
-                                    {gapReportingPositive ? "+" : ""}{formatNumber(c.gapReporting)}
-                                  </Badge>
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <Badge variant="outline" className={gapAllPositive ? "text-emerald-700 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700" : "text-red-700 border-red-300 dark:text-red-400 dark:border-red-700"}>
-                                    {gapAllPositive ? "+" : ""}{formatNumber(c.gapAll)}
-                                  </Badge>
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          </div>)}
+          {activeTab === "forecast" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading forecast tab...</div>}>
+              <ForecastTabLazy
+                performanceSourceRows={performanceSourceRows}
+                systems={systems}
+                annualProductionByTrackingId={annualProductionByTrackingId}
+                generationBaselineByTrackingId={generationBaselineByTrackingId}
+              />
+            </Suspense>
+          )}
 
           {activeTab === "alerts" && (
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading alerts tab...</div>}>

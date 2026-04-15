@@ -22,6 +22,7 @@ export * from "./helpers/monitoring";
 export * from "./helpers/system";
 export * from "./helpers/pipeline";
 export * from "./helpers/trends";
+export * from "./helpers/recPerformance";
 export * from "./helpers/misc";
 
 // Re-export the CsvRow type for callers that import it from this module.

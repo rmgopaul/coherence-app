@@ -458,3 +458,66 @@ export type CompliantPerformanceRatioRow = PerformanceRatioRow & {
   meterReadMonthYear: string;
   readWindowMonthYear: string;
 };
+
+// ---------------------------------------------------------------------------
+// REC performance spine (Phase 9)
+// ---------------------------------------------------------------------------
+
+/**
+ * One entry in a Schedule B row's 15-year delivery schedule. Each entry
+ * carries the required + actually-delivered REC counts for the year,
+ * plus the start/end date boundaries in both parsed and raw form.
+ */
+export type ScheduleYearEntry = {
+  yearIndex: number;
+  required: number;
+  delivered: number;
+  startDate: Date | null;
+  endDate: Date | null;
+  startRaw: string;
+  endRaw: string;
+  key: string;
+};
+
+/**
+ * One row of the REC performance spine. This is the join of a Schedule B
+ * row with a system's tracking info + its 15-year delivery entries,
+ * plus the energy year of the system's first REC transfer (used to
+ * determine which delivery year the system is actually in). Consumed
+ * by the Forecast, Performance Evaluation, and Snapshot Log tabs.
+ */
+export type PerformanceSourceRow = {
+  key: string;
+  contractId: string;
+  systemId: string | null;
+  trackingSystemRefId: string;
+  systemName: string;
+  batchId: string | null;
+  recPrice: number | null;
+  years: ScheduleYearEntry[];
+  /**
+   * The energy year of the system's first positive REC transfer to a
+   * utility, derived from `transferDeliveryLookup`. `null` = no
+   * transfers found. Used to determine which delivery year the system
+   * is actually in (independent of the Schedule B's `yearIndex`, which
+   * may not be adjusted).
+   */
+  firstTransferEnergyYear: number | null;
+};
+
+/**
+ * The result of `deriveRecPerformanceThreeYearValues()` — a system's
+ * rolling 3-year actual/expected REC delivery window used by both the
+ * Performance Evaluation and Forecast tabs.
+ */
+export type RecPerformanceThreeYearValues = {
+  scheduleYearNumber: number;
+  deliveryYearOne: number;
+  deliveryYearTwo: number;
+  deliveryYearThree: number;
+  deliveryYearOneSource: "Actual" | "Expected";
+  deliveryYearTwoSource: "Actual" | "Expected";
+  deliveryYearThreeSource: "Actual" | "Expected";
+  rollingAverage: number;
+  expectedRecs: number;
+};
