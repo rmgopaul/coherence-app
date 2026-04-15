@@ -9,6 +9,7 @@ import {
   getSolarRecDashboardPayload,
   saveSolarRecDashboardPayload,
 } from "../db";
+import { parseCsvText } from "../routers/helpers";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -115,17 +116,19 @@ function buildCsvText(headers: readonly string[], rows: ConvertedReadRow[]): str
   return [headerLine, ...bodyLines].join("\n");
 }
 
-function parseCsvRows(csvText: string, headers: string[]): ConvertedReadRow[] {
+/**
+ * Parse CSV text into rows, respecting RFC 4180 quoted fields.
+ * Uses the project's shared parseCsvText parser which correctly handles
+ * values containing commas, newlines, and escaped quotes (e.g. "Knepp, Ryan").
+ *
+ * The previous implementation used a naive `line.split(",")` which mangled
+ * quoted fields on every round-trip, corrupting the dataset and causing
+ * new reads to fail to merge properly.
+ */
+function parseCsvRows(csvText: string): ConvertedReadRow[] {
   if (!csvText.trim()) return [];
-  const lines = csvText.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length <= 1) return [];
-  const csvHeaders = lines[0].split(",").map((h) => h.replace(/^"|"$/g, "").trim());
-  return lines.slice(1).map((line) => {
-    const values = line.split(",").map((v) => v.replace(/^"|"$/g, "").trim());
-    const row: ConvertedReadRow = {};
-    csvHeaders.forEach((h, i) => { row[h] = values[i] ?? ""; });
-    return row;
-  });
+  const { rows } = parseCsvText(csvText.replace(/^\uFEFF/, ""));
+  return rows;
 }
 
 function buildConvertedReadRow(
@@ -193,7 +196,7 @@ export async function pushMonitoringRunsToConvertedReads(
   // Parse existing rows
   const existingRows: ConvertedReadRow[] =
     (existingDataset?.csvText
-      ? parseCsvRows(existingDataset.csvText, existingDataset.headers ?? [...CONVERTED_READS_HEADERS])
+      ? parseCsvRows(existingDataset.csvText)
       : null) ??
     existingDataset?.rows ??
     [];
