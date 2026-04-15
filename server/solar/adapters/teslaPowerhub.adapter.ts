@@ -74,8 +74,8 @@ function parseConnections(credential: { accessToken?: string | null; metadata?: 
     const rows = Array.isArray(meta.connections) ? meta.connections : [meta];
 
     return rows
-      .map((row: any) => {
-        const record = row && typeof row === "object" ? row : {};
+      .map((row: unknown) => {
+        const record = (row && typeof row === "object" ? row : {}) as Record<string, unknown>;
         const clientId = toNonEmptyString(record.clientId) ?? toNonEmptyString(meta.clientId);
         const clientSecret =
           toNonEmptyString(record.clientSecret) ??

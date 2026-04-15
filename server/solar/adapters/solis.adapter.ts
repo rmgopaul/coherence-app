@@ -10,11 +10,16 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
       const meta = JSON.parse(credential.metadata);
       // Multi-connection format: connections[].apiKey, connections[].apiSecret
       if (meta.connections && Array.isArray(meta.connections)) {
+        type SolisConnection = {
+          apiKey?: string;
+          apiSecret?: string;
+          baseUrl?: string | null;
+        };
         return meta.connections
-          .filter((c: any) => c.apiKey && c.apiSecret)
-          .map((c: any) => ({
-            apiKey: c.apiKey,
-            apiSecret: c.apiSecret,
+          .filter((c: SolisConnection) => c.apiKey && c.apiSecret)
+          .map((c: SolisConnection) => ({
+            apiKey: c.apiKey as string,
+            apiSecret: c.apiSecret as string,
             baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
           }));
       }

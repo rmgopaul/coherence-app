@@ -198,17 +198,41 @@ export const searchRouter = router({
         googleIntegrationPromise,
       ]);
 
-      let todoistTasks: any[] = [];
+      type SearchTodoistTask = {
+        id?: string | number;
+        content?: string;
+        description?: string;
+        createdAt?: string;
+        addedAt?: string;
+        due?: { date?: string } | null;
+      };
+      type SearchCalendarEvent = {
+        id?: string;
+        summary?: string;
+        location?: string;
+        description?: string;
+        htmlLink?: string;
+        start?: { dateTime?: string; date?: string } | null;
+      };
+      type SearchDriveFile = {
+        id?: string;
+        name?: string;
+        mimeType?: string;
+        webViewLink?: string;
+        modifiedTime?: string;
+      };
+
+      let todoistTasks: SearchTodoistTask[] = [];
       if (todoistIntegration?.accessToken) {
         try {
-          todoistTasks = await getTodoistTasks(todoistIntegration.accessToken);
+          todoistTasks = (await getTodoistTasks(todoistIntegration.accessToken)) as unknown as SearchTodoistTask[];
         } catch (error) {
           console.warn("[Search] Failed to load Todoist tasks:", error);
         }
       }
 
-      let calendarEvents: any[] = [];
-      let driveFiles: any[] = [];
+      let calendarEvents: SearchCalendarEvent[] = [];
+      let driveFiles: SearchDriveFile[] = [];
       if (googleIntegration) {
         try {
           const accessToken = await getValidGoogleToken(ctx.user.id);
@@ -1482,7 +1506,7 @@ export const dockRouter = router({
 
           const data = await response.json();
           const subject = data.payload?.headers?.find(
-            (h: any) => h.name === "Subject"
+            (h: { name: string; value: string }) => h.name === "Subject"
           )?.value || "Email";
 
           return { title: subject };

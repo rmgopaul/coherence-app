@@ -16,14 +16,27 @@ import {
 
 type StoredSite = { siteId: string; name?: string | null };
 
+type SolarEdgeConnection = {
+  apiKey?: string;
+  baseUrl?: string | null;
+};
+
+type SolarEdgeStoredSite = {
+  siteId?: string | number;
+  id?: string | number;
+  meterNumber?: string | number;
+  name?: string | null;
+  siteName?: string | null;
+};
+
 function getContexts(credential: { accessToken?: string | null; metadata?: string | null }): SolarEdgeApiContext[] {
   if (credential.metadata) {
     try {
       const meta = JSON.parse(credential.metadata);
       if (meta.connections && Array.isArray(meta.connections)) {
         return meta.connections
-          .filter((c: any) => c.apiKey)
-          .map((c: any) => ({ apiKey: c.apiKey, baseUrl: c.baseUrl ?? meta.baseUrl ?? null }));
+          .filter((c: SolarEdgeConnection) => c.apiKey)
+          .map((c: SolarEdgeConnection) => ({ apiKey: c.apiKey as string, baseUrl: c.baseUrl ?? meta.baseUrl ?? null }));
       }
       if (meta.apiKey) return [{ apiKey: meta.apiKey, baseUrl: meta.baseUrl ?? null }];
     } catch {}
@@ -38,8 +51,14 @@ function getStoredSiteIds(credential: { metadata?: string | null }): StoredSite[
     const meta = JSON.parse(credential.metadata);
     if (!Array.isArray(meta.siteIds)) return [];
     return meta.siteIds
-      .filter((s: any) => typeof s === "object" && s && (s.siteId || s.id || s.meterNumber))
-      .map((s: any) => ({
+      .filter((s: SolarEdgeStoredSite | unknown): s is SolarEdgeStoredSite =>
+        typeof s === "object" && s !== null && (
+          (s as SolarEdgeStoredSite).siteId !== undefined ||
+          (s as SolarEdgeStoredSite).id !== undefined ||
+          (s as SolarEdgeStoredSite).meterNumber !== undefined
+        )
+      )
+      .map((s: SolarEdgeStoredSite) => ({
         siteId: String(s.siteId ?? s.id ?? s.meterNumber).trim(),
         name: s.name ?? s.siteName ?? null,
       }));

@@ -11,32 +11,15 @@ import { ArrowLeft, Download, ExternalLink, Loader2, PlugZap, RefreshCw, Unplug 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import {
+  buildCsv,
+  formatDateInput,
+} from "./shared/csvUtils";
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
 
-function csvEscape(value: string | number | boolean | null | undefined): string {
-  const normalized = value === null || value === undefined ? "" : String(value);
-  if (/["\n,]/.test(normalized)) {
-    return `"${normalized.replaceAll('"', '""')}"`;
-  }
-  return normalized;
-}
-
-function buildCsv(headers: string[], rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
-  const headerLine = headers.map((header) => csvEscape(header)).join(",");
-  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
-  return [headerLine, ...bodyLines].join("\n");
-}
-
 const DEFAULT_BASE_URL = "https://api.enphaseenergy.com/api/v4";
 const DEFAULT_REDIRECT_URI = "https://api.enphaseenergy.com/oauth/redirect_uri";
-
-function formatDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 export default function EnphaseV4MeterReads() {
   const { user, loading: authLoading } = useAuth();

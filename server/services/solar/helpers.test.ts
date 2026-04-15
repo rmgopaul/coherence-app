@@ -7,6 +7,12 @@ import {
   parseIsoDate,
   normalizeBaseUrl,
   toUtcEpochSeconds,
+  formatIsoDate,
+  shiftIsoDate,
+  shiftIsoDateByYears,
+  safeRound,
+  sumKwh,
+  isNotFoundError,
 } from "./helpers";
 
 describe("toNullableString", () => {
@@ -134,5 +140,86 @@ describe("toUtcEpochSeconds", () => {
   });
   it("throws for invalid date format", () => {
     expect(() => toUtcEpochSeconds("invalid", false)).toThrow("YYYY-MM-DD");
+  });
+});
+
+describe("formatIsoDate", () => {
+  it("formats a Date as YYYY-MM-DD", () => {
+    expect(formatIsoDate(new Date(2024, 0, 5))).toBe("2024-01-05");
+    expect(formatIsoDate(new Date(2024, 11, 31))).toBe("2024-12-31");
+  });
+  it("zero-pads single digits", () => {
+    expect(formatIsoDate(new Date(2024, 2, 9))).toBe("2024-03-09");
+  });
+});
+
+describe("shiftIsoDate", () => {
+  it("adds days", () => {
+    expect(shiftIsoDate("2024-01-15", 5)).toBe("2024-01-20");
+    expect(shiftIsoDate("2024-01-30", 5)).toBe("2024-02-04");
+  });
+  it("subtracts days", () => {
+    expect(shiftIsoDate("2024-01-05", -5)).toBe("2023-12-31");
+  });
+  it("handles month/year boundaries", () => {
+    expect(shiftIsoDate("2024-12-31", 1)).toBe("2025-01-01");
+  });
+  it("throws for invalid input", () => {
+    expect(() => shiftIsoDate("invalid", 1)).toThrow("YYYY-MM-DD");
+  });
+});
+
+describe("shiftIsoDateByYears", () => {
+  it("adds years", () => {
+    expect(shiftIsoDateByYears("2024-06-15", 1)).toBe("2025-06-15");
+  });
+  it("subtracts years", () => {
+    expect(shiftIsoDateByYears("2024-06-15", -2)).toBe("2022-06-15");
+  });
+  it("throws for invalid input", () => {
+    expect(() => shiftIsoDateByYears("invalid", 1)).toThrow("YYYY-MM-DD");
+  });
+});
+
+describe("safeRound", () => {
+  it("rounds to 3 decimals", () => {
+    expect(safeRound(1.23456)).toBe(1.235);
+    expect(safeRound(1.234)).toBe(1.234);
+    expect(safeRound(0)).toBe(0);
+  });
+  it("returns null for null/non-finite", () => {
+    expect(safeRound(null)).toBeNull();
+    expect(safeRound(Infinity)).toBeNull();
+    expect(safeRound(NaN)).toBeNull();
+  });
+});
+
+describe("sumKwh", () => {
+  it("sums numeric array and rounds", () => {
+    expect(sumKwh([1.111, 2.222, 3.333])).toBe(6.666);
+  });
+  it("returns null for empty array", () => {
+    expect(sumKwh([])).toBeNull();
+  });
+  it("handles single value", () => {
+    expect(sumKwh([42])).toBe(42);
+  });
+});
+
+describe("isNotFoundError", () => {
+  it("matches 404 errors", () => {
+    expect(isNotFoundError(new Error("HTTP error (404 Not Found)"))).toBe(true);
+  });
+  it("matches 'not found' messages", () => {
+    expect(isNotFoundError(new Error("System Not Found"))).toBe(true);
+  });
+  it("returns false for other errors", () => {
+    expect(isNotFoundError(new Error("Server error"))).toBe(false);
+    expect(isNotFoundError(new Error("Unauthorized"))).toBe(false);
+  });
+  it("returns false for non-Error values", () => {
+    expect(isNotFoundError("not found")).toBe(false);
+    expect(isNotFoundError(null)).toBe(false);
+    expect(isNotFoundError(undefined)).toBe(false);
   });
 });

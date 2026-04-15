@@ -65,8 +65,17 @@ function getConnections(credential: { accessToken?: string | null; metadata?: st
     try {
       const meta = JSON.parse(credential.metadata);
       if (meta.connections && Array.isArray(meta.connections)) {
+        type EgaugeRawConnection = {
+          username?: string;
+          password?: string;
+          baseUrl?: string;
+          deviceUrl?: string;
+          meterId?: string;
+          accessType?: string;
+          name?: string;
+        };
         return meta.connections
-          .map((c: any) => {
+          .map((c: EgaugeRawConnection) => {
             const username = toNonEmptyString(c.username ?? meta.username);
             const password = toNonEmptyString(c.password ?? meta.password);
             return {

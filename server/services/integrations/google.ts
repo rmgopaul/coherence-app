@@ -100,7 +100,7 @@ export async function getGmailMessages(accessToken: string, maxResults = 50): Pr
     return [];
   }
 
-  const messages: any[] = [];
+  const messages: Record<string, unknown>[] = [];
   const chunkSize = 50;
 
   for (let i = 0; i < messageIds.length; i += chunkSize) {
@@ -112,10 +112,10 @@ export async function getGmailMessages(accessToken: string, maxResults = 50): Pr
           accessToken
         );
         if (!msgResponse.ok) return null;
-        return msgResponse.json();
+        return msgResponse.json() as Promise<Record<string, unknown>>;
       })
     );
-    messages.push(...chunkMessages.filter(Boolean));
+    messages.push(...chunkMessages.filter((m): m is Record<string, unknown> => m !== null));
   }
 
   return messages
@@ -127,9 +127,11 @@ export async function getGmailMessages(accessToken: string, maxResults = 50): Pr
     .slice(0, cappedTotal);
 }
 
-function getHeaderValue(message: any, name: string): string {
-  const headers = Array.isArray(message?.payload?.headers) ? message.payload.headers : [];
-  const found = headers.find((h: any) => String(h?.name || "").toLowerCase() === name.toLowerCase());
+type GmailHeader = { name?: string; value?: string };
+function getHeaderValue(message: unknown, name: string): string {
+  const payload = (message as { payload?: { headers?: unknown } } | null)?.payload;
+  const headers: GmailHeader[] = Array.isArray(payload?.headers) ? (payload.headers as GmailHeader[]) : [];
+  const found = headers.find((h: GmailHeader) => String(h?.name || "").toLowerCase() === name.toLowerCase());
   return String(found?.value || "");
 }
 
@@ -163,7 +165,28 @@ export async function getGmailWaitingOn(accessToken: string, maxResults = 25): P
 
   if (threadIds.length === 0) return [];
 
-  const rows: any[] = [];
+  type GmailMessage = {
+    id?: string;
+    threadId?: string;
+    internalDate?: string | number;
+    snippet?: string;
+    labelIds?: string[];
+    payload?: { headers?: GmailHeader[] };
+  };
+  type GmailThread = { id?: string; messages?: GmailMessage[] };
+  type WaitingOnRow = {
+    id: string;
+    threadId: string;
+    from: string;
+    to: string;
+    subject: string;
+    snippet: string;
+    date: string;
+    reason: string;
+    score: number;
+    url: string;
+  };
+  const rows: WaitingOnRow[] = [];
   const chunkSize = 20;
 
   for (let i = 0; i < threadIds.length; i += chunkSize) {
@@ -175,7 +198,7 @@ export async function getGmailWaitingOn(accessToken: string, maxResults = 25): P
           accessToken
         );
         if (!threadResponse.ok) return null;
-        return threadResponse.json();
+        return threadResponse.json() as Promise<GmailThread>;
       })
     );
 
@@ -183,7 +206,7 @@ export async function getGmailWaitingOn(accessToken: string, maxResults = 25): P
       if (!thread || !Array.isArray(thread.messages) || thread.messages.length === 0) continue;
 
       const latest = [...thread.messages].sort(
-        (a: any, b: any) => Number(b?.internalDate || 0) - Number(a?.internalDate || 0)
+        (a: GmailMessage, b: GmailMessage) => Number(b?.internalDate || 0) - Number(a?.internalDate || 0)
       )[0];
       if (!latest) continue;
 
@@ -257,7 +280,8 @@ export async function getGoogleDriveFiles(accessToken: string): Promise<any[]> {
   }
 
   const data = await response.json();
-  return (data.files || []).filter((file: any) => !file.trashed);
+  type DriveFile = { trashed?: boolean };
+  return ((data.files || []) as DriveFile[]).filter((file: DriveFile) => !file.trashed);
 }
 
 export async function searchGoogleDrive(accessToken: string, query: string): Promise<any[]> {
@@ -273,7 +297,8 @@ export async function searchGoogleDrive(accessToken: string, query: string): Pro
   }
 
   const data = await response.json();
-  return (data.files || []).filter((file: any) => !file.trashed);
+  type DriveFile = { trashed?: boolean };
+  return ((data.files || []) as DriveFile[]).filter((file: DriveFile) => !file.trashed);
 }
 
 export async function createGoogleSpreadsheet(accessToken: string, title: string): Promise<any> {

@@ -11,6 +11,10 @@ import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import {
+  buildCsv,
+  formatDateInput,
+} from "./shared/csvUtils";
 
 const EGAUGE_METER_URL_PLACEHOLDER = "https://YOUR-METER.d.egauge.net";
 const EGAUGE_PORTFOLIO_URL_PLACEHOLDER = "https://www.egauge.net";
@@ -25,27 +29,6 @@ const ACCESS_TYPE_LABELS: Record<EgaugeAccessType, string> = {
 };
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
-
-function csvEscape(value: string | number | boolean | null | undefined): string {
-  const normalized = value === null || value === undefined ? "" : String(value);
-  if (/["\n,]/.test(normalized)) {
-    return `"${normalized.replaceAll('"', '""')}"`;
-  }
-  return normalized;
-}
-
-function buildCsv(headers: string[], rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
-  const headerLine = headers.map((header) => csvEscape(header)).join(",");
-  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
-  return [headerLine, ...bodyLines].join("\n");
-}
-
-function formatDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 export default function EGaugeApi() {
   const { user, loading: authLoading } = useAuth();

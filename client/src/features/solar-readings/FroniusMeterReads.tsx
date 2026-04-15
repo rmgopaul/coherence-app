@@ -13,6 +13,15 @@ import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug, Upload } from
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import {
+  parseCsv,
+  csvEscape,
+  buildCsv,
+  formatDateInput,
+  chunkArray,
+  waitForNextFrame,
+  toComparableNumber,
+} from "./shared/csvUtils";
 
 const PERIOD_OPTIONS = ["Total", "Years", "Months", "Days"] as const;
 const BULK_BATCH_SIZE_ACTIVE = 200;
@@ -95,13 +104,6 @@ type BulkSnapshotRow = {
 
 type CsvRow = Record<string, string>;
 
-function formatDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function normalizeDateOnly(date: Date): Date {
   const normalized = new Date(date);
   normalized.setHours(0, 0, 0, 0);
@@ -134,77 +136,6 @@ function getPresetRange(preset: DatePreset, now: Date = new Date()): { startDate
     startDate: formatDateInput(start),
     endDate: formatDateInput(today),
   };
-}
-
-function parseCsv(text: string): { headers: string[]; rows: CsvRow[] } {
-  const source = text.replace(/^\uFEFF/, "");
-  const matrix: string[][] = [];
-
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let index = 0; index < source.length; index += 1) {
-    const char = source[index];
-
-    if (char === '"') {
-      const next = source[index + 1];
-      if (inQuotes && next === '"') {
-        cell += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (!inQuotes && char === ",") {
-      row.push(cell);
-      cell = "";
-      continue;
-    }
-
-    if (!inQuotes && (char === "\n" || char === "\r")) {
-      if (char === "\r" && source[index + 1] === "\n") index += 1;
-      row.push(cell);
-      cell = "";
-      if (row.some((entry) => clean(entry).length > 0)) matrix.push(row);
-      row = [];
-      continue;
-    }
-
-    cell += char;
-  }
-
-  row.push(cell);
-  if (row.some((entry) => clean(entry).length > 0)) matrix.push(row);
-
-  if (matrix.length === 0) return { headers: [], rows: [] };
-
-  const headers = matrix[0].map((header, columnIndex) => clean(header) || `column_${columnIndex + 1}`);
-  const rows = matrix.slice(1).map((values) => {
-    const record: CsvRow = {};
-    headers.forEach((header, columnIndex) => {
-      record[header] = clean(values[columnIndex]);
-    });
-    return record;
-  });
-
-  return { headers, rows };
-}
-
-function csvEscape(value: string | number | boolean | null | undefined): string {
-  const normalized = value === null || value === undefined ? "" : String(value);
-  if (/["\n,]/.test(normalized)) {
-    return `"${normalized.replaceAll('"', '""')}"`;
-  }
-  return normalized;
-}
-
-function buildCsv(headers: string[], rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
-  const headerLine = headers.map((header) => csvEscape(header)).join(",");
-  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
-  return [headerLine, ...bodyLines].join("\n");
 }
 
 function extractPvSystemIdsFromCsv(text: string): string[] {
@@ -249,25 +180,6 @@ function extractPvSystemIdsFromCsv(text: string): string[] {
   }
 
   return [];
-}
-
-function toComparableNumber(value: number | null | undefined): number {
-  return value === null || value === undefined ? Number.NEGATIVE_INFINITY : value;
-}
-
-function chunkArray<T>(values: T[], chunkSize: number): T[][] {
-  if (chunkSize <= 0) return [values];
-  const output: T[][] = [];
-  for (let index = 0; index < values.length; index += chunkSize) {
-    output.push(values.slice(index, index + chunkSize));
-  }
-  return output;
-}
-
-function waitForNextFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, 0);
-  });
 }
 
 export default function FroniusMeterReads() {

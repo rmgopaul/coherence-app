@@ -10,10 +10,16 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
       const meta = JSON.parse(credential.metadata);
       // Multi-connection format: connections[].appId, connections[].appSecret, connections[].baseUrl
       if (meta.connections && Array.isArray(meta.connections)) {
+        type APsystemsConnection = {
+          appId?: string;
+          apiKey?: string;
+          appSecret?: string;
+          baseUrl?: string | null;
+        };
         return meta.connections
-          .filter((c: any) => c.appId || c.apiKey)
-          .map((c: any) => ({
-            appId: c.appId ?? c.apiKey,
+          .filter((c: APsystemsConnection) => c.appId || c.apiKey)
+          .map((c: APsystemsConnection) => ({
+            appId: (c.appId ?? c.apiKey) as string,
             appSecret: c.appSecret ?? "",
             baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
           }));

@@ -241,11 +241,14 @@ export const preferencesRouter = router({
 });
 
 export const marketDashboardRouter = (() => {
+  type MarketQuoteItem = Awaited<ReturnType<typeof fetchMarketQuotes>>[number];
+  type HeadlineItem = Awaited<ReturnType<typeof fetchNewsHeadlines>>[number];
+  type ApprovalRatingItem = Awaited<ReturnType<typeof fetchTrumpApprovalRatings>>[number];
   // In-memory cache with 5-minute TTL; stale data served if fresh fetch fails.
   const cacheBySymbolKey = new Map<string, {
-    quotes: any[];
-    headlines: any[];
-    approvalRatings: any[];
+    quotes: MarketQuoteItem[];
+    headlines: HeadlineItem[];
+    approvalRatings: ApprovalRatingItem[];
     fetchedAt: string;
     marketRateLimited?: boolean;
     usingStaleQuotes?: boolean;
@@ -393,7 +396,8 @@ export const marketDashboardRouter = (() => {
 })();
 
 export const sportsRouter = (() => {
-  let cachedGames: any[] | null = null;
+  type SportsGame = Awaited<ReturnType<typeof fetchMNSportsGames>>[number];
+  let cachedGames: SportsGame[] | null = null;
   let cacheExpiry = 0;
   // Live games: refresh every 30s. No live games: cache 5 minutes.
   const LIVE_CACHE_TTL = 30_000;
@@ -403,7 +407,7 @@ export const sportsRouter = (() => {
     getGames: protectedProcedure.query(async () => {
       const now = Date.now();
       if (cachedGames && now < cacheExpiry) {
-        return { games: cachedGames, fetchedAt: new Date(cacheExpiry - (cachedGames.some((g: any) => g.status === "in" || g.status === "halftime") ? LIVE_CACHE_TTL : IDLE_CACHE_TTL)).toISOString() };
+        return { games: cachedGames, fetchedAt: new Date(cacheExpiry - (cachedGames.some((g: SportsGame) => g.status === "in" || g.status === "halftime") ? LIVE_CACHE_TTL : IDLE_CACHE_TTL)).toISOString() };
       }
 
       try {

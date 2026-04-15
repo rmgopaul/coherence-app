@@ -16,10 +16,23 @@ function getContext(credential: { accessToken?: string | null; metadata?: string
         baseUrl: meta.baseUrl ?? null,
       };
       // EKM has no list-meters API — site IDs are stored in metadata.siteIds
+      type EkmRawSite = {
+        meterNumber?: string | number;
+        siteId?: string | number;
+        id?: string | number;
+        name?: string | null;
+        siteName?: string | null;
+      };
       const siteIds: StoredSite[] = Array.isArray(meta.siteIds)
         ? meta.siteIds
-            .filter((s: any) => typeof s === "object" && s && (s.meterNumber || s.siteId || s.id))
-            .map((s: any) => ({
+            .filter((s: unknown): s is EkmRawSite =>
+              typeof s === "object" && s !== null && (
+                (s as EkmRawSite).meterNumber !== undefined ||
+                (s as EkmRawSite).siteId !== undefined ||
+                (s as EkmRawSite).id !== undefined
+              )
+            )
+            .map((s: EkmRawSite) => ({
               meterNumber: String(s.meterNumber ?? s.siteId ?? s.id).trim(),
               name: s.name ?? s.siteName ?? null,
             }))

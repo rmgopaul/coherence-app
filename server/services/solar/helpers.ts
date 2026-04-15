@@ -63,3 +63,55 @@ export function toUtcEpochSeconds(dateIso: string, endOfDay: boolean): number {
   );
   return Math.floor(date.getTime() / 1000);
 }
+
+// ---------------------------------------------------------------------------
+// Date formatting & arithmetic
+// ---------------------------------------------------------------------------
+
+export function formatIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+export function shiftIsoDate(dateIso: string, deltaDays: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setDate(date.getDate() + deltaDays);
+  return formatIsoDate(date);
+}
+
+export function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
+  const parsed = parseIsoDate(dateIso);
+  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
+  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
+  date.setFullYear(date.getFullYear() + deltaYears);
+  return formatIsoDate(date);
+}
+
+// ---------------------------------------------------------------------------
+// Numeric helpers
+// ---------------------------------------------------------------------------
+
+export function safeRound(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.round(value * 1000) / 1000;
+}
+
+export function sumKwh(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const total = values.reduce((sum, current) => sum + current, 0);
+  return safeRound(total);
+}
+
+// ---------------------------------------------------------------------------
+// Error classification
+// ---------------------------------------------------------------------------
+
+export function isNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("(404") || message.includes("not found");
+}

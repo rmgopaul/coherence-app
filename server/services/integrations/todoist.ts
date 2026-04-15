@@ -29,7 +29,30 @@ export interface TodoistCompletedTask {
 
 const TODOIST_API_BASE = "https://api.todoist.com/api/v1";
 
-function mapTask(task: any): TodoistTask {
+type RawTodoistTask = {
+  id: string | number;
+  content?: string;
+  description?: string;
+  projectId?: string | number;
+  project_id?: string | number;
+  parentId?: string | number;
+  parent_id?: string | number;
+  priority?: number;
+  labels?: unknown[];
+  due?: {
+    date?: string;
+    datetime?: string;
+    string?: string;
+  } | null;
+};
+
+type RawTodoistProject = {
+  id: string | number;
+  name?: string;
+  color?: string;
+};
+
+function mapTask(task: RawTodoistTask): TodoistTask {
   const dueDateTime = task?.due?.datetime ?? undefined;
   const dueDateOnly =
     task?.due?.date ??
@@ -39,8 +62,10 @@ function mapTask(task: any): TodoistTask {
     id: String(task.id),
     content: task.content ?? "",
     description: task.description ?? "",
-    projectId: task.projectId ?? task.project_id ?? "",
-    parentId: task.parentId ?? task.parent_id ?? undefined,
+    projectId: String(task.projectId ?? task.project_id ?? ""),
+    parentId: task.parentId !== undefined || task.parent_id !== undefined
+      ? String(task.parentId ?? task.parent_id)
+      : undefined,
     priority: task.priority ?? 1,
     labels: Array.isArray(task.labels) ? task.labels.map(String) : [],
     due: task.due
@@ -53,7 +78,7 @@ function mapTask(task: any): TodoistTask {
   };
 }
 
-function mapProject(project: any): TodoistProject {
+function mapProject(project: RawTodoistProject): TodoistProject {
   return {
     id: String(project.id),
     name: project.name ?? "Untitled",
@@ -166,7 +191,23 @@ function parseCompletedDate(value: unknown): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function mapCompletedTaskItem(item: any): {
+type RawCompletedTaskItem = {
+  task_id?: string | number;
+  taskId?: string | number;
+  task?: { id?: string | number; content?: string; name?: string };
+  id?: string | number;
+  content?: string;
+  task_name?: string;
+  completed_at?: string;
+  completed_at_utc?: string;
+  completed_date?: string;
+  completedAt?: string;
+  event_id?: string;
+  completion_id?: string;
+  history_id?: string;
+};
+
+function mapCompletedTaskItem(item: RawCompletedTaskItem): {
   completionKey: string;
   taskId: string | null;
   content: string;
@@ -211,7 +252,7 @@ function mapCompletedTaskItem(item: any): {
 }
 
 async function fetchAllTodoistTasks(accessToken: string): Promise<TodoistTask[]> {
-  const all: any[] = [];
+  const all: RawTodoistTask[] = [];
   let cursor: string | null = null;
 
   // Guard loop in case cursor response is unexpected.
@@ -233,7 +274,7 @@ async function fetchAllTodoistTasks(accessToken: string): Promise<TodoistTask[]>
     }
 
     const data = await response.json();
-    all.push(...extractResults<any>(data));
+    all.push(...extractResults<RawTodoistTask>(data));
     cursor = extractNextCursor(data);
     if (!cursor) break;
   }

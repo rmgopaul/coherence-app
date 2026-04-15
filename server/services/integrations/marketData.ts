@@ -61,7 +61,7 @@ function toNumberFromLooseString(value: unknown, fallback = Number.NaN): number 
   return fallback;
 }
 
-function extractJsonObjectByMarker(text: string, marker: string): any | null {
+function extractJsonObjectByMarker(text: string, marker: string): Record<string, unknown> | null {
   const markerIndex = text.indexOf(marker);
   if (markerIndex < 0) return null;
 
@@ -110,7 +110,19 @@ function extractJsonObjectByMarker(text: string, marker: string): any | null {
   return null;
 }
 
-function normalizeQuoteFromApi(q: any): MarketQuote {
+type YahooQuoteRaw = {
+  regularMarketPrice?: number;
+  regularMarketPreviousClose?: number;
+  previousClose?: number;
+  regularMarketChange?: number;
+  regularMarketChangePercent?: number;
+  symbol?: string;
+  shortName?: string;
+  longName?: string;
+  currency?: string;
+  marketState?: string;
+};
+function normalizeQuoteFromApi(q: YahooQuoteRaw): MarketQuote {
   const price = toFiniteNumber(q.regularMarketPrice);
   const previousClose = toFiniteNumber(
     q.regularMarketPreviousClose ?? q.previousClose,
@@ -231,7 +243,7 @@ async function fetchQuotesBatch(symbols: string[]): Promise<MarketQuote[]> {
       const results = json?.quoteResponse?.result;
       if (!Array.isArray(results) || results.length === 0) continue;
 
-      return results.map((q: any) => normalizeQuoteFromApi(q));
+      return results.map((q: YahooQuoteRaw) => normalizeQuoteFromApi(q));
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
     }
@@ -475,9 +487,10 @@ async function fetchStockQuoteFromBarchart(symbol: string): Promise<MarketQuote 
   }
 
   try {
-    const currentSymbol =
+    const currentSymbol = (
       extractJsonObjectByMarker(html, "\"currentSymbol\":") ??
-      extractJsonObjectByMarker(html, "\"currentSymbol\" :");
+      extractJsonObjectByMarker(html, "\"currentSymbol\" :")
+    ) as Record<string, unknown> | null;
     if (!currentSymbol || typeof currentSymbol !== "object") return null;
 
     const symbolFromPage = String(currentSymbol.symbol ?? "").toUpperCase();
@@ -485,7 +498,7 @@ async function fetchStockQuoteFromBarchart(symbol: string): Promise<MarketQuote 
       return null;
     }
 
-    const raw = currentSymbol.raw ?? {};
+    const raw = (currentSymbol.raw ?? {}) as Record<string, unknown>;
     const price = toNumberFromLooseString(
       raw.lastPrice ?? currentSymbol.lastPrice,
       Number.NaN

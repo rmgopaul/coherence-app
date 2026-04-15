@@ -11,11 +11,16 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
       const meta = JSON.parse(credential.metadata);
       // Multi-connection format: connections[].accessKeyId, connections[].accessKeyValue
       if (meta.connections && Array.isArray(meta.connections)) {
+        type FroniusConnection = {
+          accessKeyId?: string;
+          accessKeyValue?: string;
+          baseUrl?: string | null;
+        };
         return meta.connections
-          .filter((c: any) => c.accessKeyId && c.accessKeyValue)
-          .map((c: any) => ({
-            accessKeyId: c.accessKeyId,
-            accessKeyValue: c.accessKeyValue,
+          .filter((c: FroniusConnection) => c.accessKeyId && c.accessKeyValue)
+          .map((c: FroniusConnection) => ({
+            accessKeyId: c.accessKeyId as string,
+            accessKeyValue: c.accessKeyValue as string,
             baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
           }));
       }

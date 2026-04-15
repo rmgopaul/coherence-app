@@ -7,6 +7,12 @@ import {
   asRecordArray,
   normalizeBaseUrl,
   parseIsoDate,
+  formatIsoDate,
+  shiftIsoDate,
+  shiftIsoDateByYears,
+  safeRound,
+  sumKwh,
+  isNotFoundError,
 } from "./helpers";
 import { mapWithConcurrency } from "../core/concurrency";
 
@@ -53,29 +59,6 @@ export type APsystemsProductionSnapshot = {
 // Date helpers
 // ---------------------------------------------------------------------------
 
-function formatIsoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function shiftIsoDate(dateIso: string, deltaDays: number): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
-  date.setDate(date.getDate() + deltaDays);
-  return formatIsoDate(date);
-}
-
-function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
-  date.setFullYear(date.getFullYear() + deltaYears);
-  return formatIsoDate(date);
-}
-
 function firstDayOfMonth(dateIso: string): string {
   const parsed = parseIsoDate(dateIso);
   if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
@@ -105,28 +88,12 @@ function asDateKey(value: string | null | undefined): string | null {
 // Numeric helpers
 // ---------------------------------------------------------------------------
 
-function sumKwh(values: number[]): number | null {
-  if (values.length === 0) return null;
-  return safeRound(values.reduce((sum, current) => sum + current, 0));
-}
-
-function safeRound(value: number | null): number | null {
-  if (value === null || !Number.isFinite(value)) return null;
-  return Math.round(value * 1000) / 1000;
-}
-
 function toKwh(value: number | null, unit: string | null): number | null {
   if (value === null) return null;
   const normalizedUnit = (unit ?? "").trim().toLowerCase();
   if (normalizedUnit.includes("kwh")) return value;
   if (normalizedUnit.includes("wh")) return value / 1000;
   return value / 1000; // Default: assume Wh
-}
-
-function isNotFoundError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const message = error.message.toLowerCase();
-  return message.includes("(404") || message.includes("not found");
 }
 
 // ---------------------------------------------------------------------------

@@ -110,8 +110,47 @@ async function fetchEspnScoreboard(
 /*  Parse ESPN event into GameInfo                                     */
 /* ------------------------------------------------------------------ */
 
+type EspnCompetitor = {
+  team?: {
+    id?: string | number;
+    displayName?: string;
+    shortDisplayName?: string;
+    name?: string;
+    abbreviation?: string;
+    logo?: string;
+    color?: string;
+    location?: string;
+  };
+  score?: string | number;
+  homeAway?: string;
+  records?: Array<{ type?: string; summary?: string }>;
+};
+
+type EspnEvent = {
+  id: string;
+  competitions?: Array<{
+    competitors?: EspnCompetitor[];
+    venue?: { fullName?: string; address?: { city?: string; state?: string } };
+    broadcasts?: Array<{ names?: string[] }>;
+    geoBroadcasts?: Array<{ media?: { shortName?: string } }>;
+    date?: string;
+  }>;
+  status?: {
+    type?: {
+      name?: string;
+      completed?: boolean;
+      shortDetail?: string;
+      detail?: string;
+      description?: string;
+    };
+    period?: number;
+    displayClock?: string;
+  };
+  date: string;
+};
+
 function parseEvent(
-  event: any,
+  event: EspnEvent,
   team: TeamConfig,
 ): GameInfo | null {
   try {
@@ -121,12 +160,12 @@ function parseEvent(
     const competitors = competition.competitors ?? [];
     // Find which competitor is our team
     const ourTeam = competitors.find(
-      (c: any) => String(c.team?.id) === team.espnId,
+      (c: EspnCompetitor) => String(c.team?.id) === team.espnId,
     );
     if (!ourTeam) return null;
 
     const opponent = competitors.find(
-      (c: any) => String(c.team?.id) !== team.espnId,
+      (c: EspnCompetitor) => String(c.team?.id) !== team.espnId,
     );
     if (!opponent) return null;
 

@@ -305,7 +305,6 @@ export const solarRecDashboardRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      console.log(`[importScheduleBFromCsgPortal] called with ${input.csgIds.length} CSG IDs for user ${ctx.user.id}`);
       // 1. Validate CSG portal credentials
       const integration = await getIntegrationByProvider(ctx.user.id, "csg-portal");
       if (!integration?.accessToken) {
@@ -504,11 +503,6 @@ export const solarRecDashboardRouter = router({
       // Ship one-shot instrumentation so we can see in Render logs what
       // this query is actually returning for the production client when
       // the UI disagrees with the debug proc. Safe to leave for a while.
-      if (result.total === 0) {
-        console.log(
-          `[listScheduleBImportResults] jobId=${job.id} userId=${job.userId} ctxUserId=${ctx.user.id} returned 0 rows`
-        );
-      }
 
       const rows = result.rows.map((row) => ({
         fileName: row.fileName,

@@ -10,11 +10,16 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
       const meta = JSON.parse(credential.metadata);
       // Multi-connection format: connections[].username, connections[].password
       if (meta.connections && Array.isArray(meta.connections)) {
+        type GrowattConnection = {
+          username?: string;
+          password?: string;
+          baseUrl?: string | null;
+        };
         return meta.connections
-          .filter((c: any) => c.username && c.password)
-          .map((c: any) => ({
-            username: c.username,
-            password: c.password,
+          .filter((c: GrowattConnection) => c.username && c.password)
+          .map((c: GrowattConnection) => ({
+            username: c.username as string,
+            password: c.password as string,
             baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
           }));
       }

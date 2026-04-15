@@ -5,6 +5,12 @@ import {
   asRecordArray,
   normalizeBaseUrl,
   parseIsoDate,
+  formatIsoDate,
+  shiftIsoDate,
+  shiftIsoDateByYears,
+  safeRound,
+  sumKwh,
+  isNotFoundError,
 } from "./helpers";
 import { mapWithConcurrency } from "../core/concurrency";
 
@@ -111,29 +117,6 @@ export type SolarEdgeProductionSnapshot = {
 const normalize = (raw: string | null | undefined) =>
   normalizeBaseUrl(raw, SOLAR_EDGE_DEFAULT_BASE_URL);
 
-function formatIsoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function shiftIsoDate(dateIso: string, deltaDays: number): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
-  date.setDate(date.getDate() + deltaDays);
-  return formatIsoDate(date);
-}
-
-function shiftIsoDateByYears(dateIso: string, deltaYears: number): string {
-  const parsed = parseIsoDate(dateIso);
-  if (!parsed) throw new Error("Dates must be in YYYY-MM-DD format.");
-  const date = new Date(parsed.year, parsed.month - 1, parsed.day);
-  date.setFullYear(date.getFullYear() + deltaYears);
-  return formatIsoDate(date);
-}
-
 function compareIsoDates(leftIso: string, rightIso: string): number {
   const left = parseIsoDate(leftIso);
   const right = parseIsoDate(rightIso);
@@ -204,11 +187,6 @@ function toKwh(value: number | null, unit: string | null): number | null {
   if (normalizedUnit.includes("kwh")) return value;
   if (normalizedUnit.includes("wh")) return value / 1000;
   return value / 1000;
-}
-
-function safeRound(value: number | null): number | null {
-  if (value === null || !Number.isFinite(value)) return null;
-  return Math.round(value * 1000) / 1000;
 }
 
 function isIsoDateInput(value: string | null | undefined): value is string {
@@ -426,12 +404,6 @@ async function getInverterTelemetryPayload(
   throw lastError ?? new Error("Inverter telemetry endpoint not available for this site.");
 }
 
-function sumKwh(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const total = values.reduce((sum, current) => sum + current, 0);
-  return safeRound(total);
-}
-
 function extractOverviewLifetimeKwh(payload: unknown): number | null {
   const root = asRecord(payload);
   const overview = asRecord(root.overview);
@@ -526,12 +498,6 @@ function extractHourlyEnergySeriesKwh(payload: unknown): HourlyEnergyPoint[] {
   });
 
   return output;
-}
-
-function isNotFoundError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  const message = error.message.toLowerCase();
-  return message.includes("(404") || message.includes("not found");
 }
 
 function toSolarEdgeDateTime(dateIso: string, endOfDay: boolean): string {

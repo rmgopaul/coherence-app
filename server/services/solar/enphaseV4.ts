@@ -5,6 +5,7 @@ import {
   parseIsoDate,
   toUtcEpochSeconds,
   normalizeBaseUrl,
+  safeRound,
 } from "./helpers";
 
 export const ENPHASE_V4_DEFAULT_BASE_URL = "https://api.enphaseenergy.com/api/v4";
@@ -311,11 +312,6 @@ function extractSummaryLifetimeWh(payload: unknown): number | null {
     toNullableNumber(root.lifetime_energy) ??
     null
   );
-}
-
-function safeRound(value: number | null): number | null {
-  if (value === null || !Number.isFinite(value)) return null;
-  return Math.round(value * 1000) / 1000;
 }
 
 export async function getSystemProductionSnapshot(

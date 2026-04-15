@@ -12,6 +12,10 @@ import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Search, Unplug } from
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import {
+  csvEscape,
+  buildCsv,
+} from "./shared/csvUtils";
 
 const DEFAULT_TOKEN_URL = "https://gridlogic-api.sn.tesla.services/v1/auth/token";
 const DEFAULT_API_BASE_URL = "https://gridlogic-api.sn.tesla.services/v2";
@@ -58,20 +62,6 @@ function normalizeGroupId(raw: string): string {
   if (!trimmed) return "";
   const match = trimmed.match(/\/group\/([a-zA-Z0-9-]+)/i);
   return match?.[1]?.trim() || trimmed;
-}
-
-function csvEscape(value: string | number | boolean | null | undefined): string {
-  const normalized = value === null || value === undefined ? "" : String(value);
-  if (/["\n,]/.test(normalized)) {
-    return `"${normalized.replaceAll('"', '""')}"`;
-  }
-  return normalized;
-}
-
-function buildCsv(headers: string[], rows: Array<Record<string, string | number | boolean | null | undefined>>): string {
-  const headerLine = headers.map((header) => csvEscape(header)).join(",");
-  const bodyLines = rows.map((row) => headers.map((header) => csvEscape(row[header])).join(","));
-  return [headerLine, ...bodyLines].join("\n");
 }
 
 export default function TeslaPowerhubApi() {

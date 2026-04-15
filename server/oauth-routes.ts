@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type Request } from "express";
 import { nanoid } from "nanoid";
 import {
   upsertIntegration,
@@ -43,7 +43,7 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 // Helper to get the base URL for OAuth callbacks
-function getBaseUrl(req: any): string {
+function getBaseUrl(req: Request): string {
   // Use published URL if available (for production), otherwise fall back to dynamic host (for dev)
   const baseUrl = ENV.publishedUrl || `${req.protocol}://${req.get("host")}`;
   // Remove trailing slash to prevent double slashes in redirect URIs
@@ -428,7 +428,7 @@ router.post("/webhooks/whoop", async (req, res) => {
  * with the error shape.
  */
 function resolveSamsungWebhookUser(
-  req: any
+  req: Request
 ): { userId: number } | { status: number; error: string } {
   const configuredSyncKey = process.env.SAMSUNG_HEALTH_SYNC_KEY?.trim();
   if (!configuredSyncKey) {

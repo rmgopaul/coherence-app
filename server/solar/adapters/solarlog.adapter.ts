@@ -10,10 +10,15 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
       const meta = JSON.parse(credential.metadata);
       // Multi-connection format: connections[].baseUrl (deviceUrl), connections[].password
       if (meta.connections && Array.isArray(meta.connections)) {
+        type SolarLogConnection = {
+          baseUrl?: string;
+          deviceUrl?: string;
+          password?: string | null;
+        };
         return meta.connections
-          .filter((c: any) => c.baseUrl || c.deviceUrl)
-          .map((c: any) => ({
-            baseUrl: c.baseUrl ?? c.deviceUrl,
+          .filter((c: SolarLogConnection) => c.baseUrl || c.deviceUrl)
+          .map((c: SolarLogConnection) => ({
+            baseUrl: (c.baseUrl ?? c.deviceUrl) as string,
             password: c.password ?? null,
           }));
       }

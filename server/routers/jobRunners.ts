@@ -945,8 +945,6 @@ export const abpSettlementRouter = router({
       const llmApiKey = llmProvider === "anthropic" ? anthropicIntegration!.accessToken! : llmProvider === "openai" ? openaiIntegration!.accessToken! : null;
 
       if (llmProvider && llmApiKey) {
-        console.log(`[AI Cleaning] Sending ${deterministicResults.length} pre-cleaned rows to ${llmProvider} (${ambiguousRows.length} ambiguous).`);
-
         try {
           const llmCleaned = await callLlmForAddressCleaning(
             llmProvider,

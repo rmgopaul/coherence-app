@@ -10,12 +10,18 @@ function getContexts(credential: { accessToken?: string | null; metadata?: strin
       const meta = JSON.parse(credential.metadata);
       // Multi-connection format: connections[].clientId, connections[].clientSecret, connections[].partnerId
       if (meta.connections && Array.isArray(meta.connections)) {
+        type LocusConnection = {
+          clientId?: string;
+          clientSecret?: string;
+          partnerId?: string;
+          baseUrl?: string | null;
+        };
         return meta.connections
-          .filter((c: any) => c.clientId && c.clientSecret && c.partnerId)
-          .map((c: any) => ({
-            clientId: c.clientId,
-            clientSecret: c.clientSecret,
-            partnerId: c.partnerId,
+          .filter((c: LocusConnection) => c.clientId && c.clientSecret && c.partnerId)
+          .map((c: LocusConnection) => ({
+            clientId: c.clientId as string,
+            clientSecret: c.clientSecret as string,
+            partnerId: c.partnerId as string,
             baseUrl: c.baseUrl ?? meta.baseUrl ?? null,
           }));
       }
