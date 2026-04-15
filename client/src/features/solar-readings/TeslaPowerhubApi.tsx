@@ -166,28 +166,49 @@ export default function TeslaPowerhubApi() {
         toast.success("Production metrics loaded.");
 
         // Auto-push Converted Reads to Solar REC Dashboard.
+        // Note: use "Tesla Powerhub" (lowercase h) to match the canonical
+        // name used by the monitoring batch bridge (PROVIDER_LABELS).
         if (snapshot.result?.sites && snapshot.result.sites.length > 0) {
           const today = new Date();
           const anchorDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+          const totalSites = snapshot.result.sites.length;
           const readRows = snapshot.result.sites
             .filter((site: SiteProductionRow) => site.lifetimeKwh > 0)
             .map((site: SiteProductionRow) =>
-              buildConvertedReadRow("Tesla PowerHub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate)
+              buildConvertedReadRow("Tesla Powerhub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate)
             );
-          pushConvertedReadsToRecDashboard(
-            (input) => getRemoteDatasetRef.current.mutateAsync(input),
-            (input) => saveRemoteDatasetRef.current.mutateAsync(input),
-            readRows,
-            "Tesla PowerHub"
-          ).then((result) => {
-            if (result.pushed > 0) {
-              toast.success(`Pushed ${result.pushed} Tesla PowerHub rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${result.skipped} duplicates skipped.` : ""}`);
-            } else if (result.skipped > 0) {
-              toast.message(`All ${result.skipped} Tesla PowerHub Converted Reads rows already exist.`);
-            }
-          }).catch((pushError) => {
-            toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
-          });
+          const filteredOut = totalSites - readRows.length;
+          if (readRows.length === 0) {
+            toast.message(
+              `No Tesla Powerhub rows to push to Converted Reads — all ${totalSites} sites had 0 lifetime kWh.`
+            );
+          } else {
+            pushConvertedReadsToRecDashboard(
+              (input) => getRemoteDatasetRef.current.mutateAsync(input),
+              (input) => saveRemoteDatasetRef.current.mutateAsync(input),
+              readRows,
+              "Tesla Powerhub"
+            ).then((result) => {
+              const filteredSuffix = filteredOut > 0 ? ` ${filteredOut} sites skipped (0 kWh).` : "";
+              if (result.pushed > 0) {
+                toast.success(
+                  `Pushed ${result.pushed} Tesla Powerhub rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${result.skipped} duplicates skipped.` : ""}${filteredSuffix}`
+                );
+              } else if (result.skipped > 0) {
+                toast.message(
+                  `All ${result.skipped} Tesla Powerhub Converted Reads rows already exist.${filteredSuffix}`
+                );
+              } else {
+                toast.message(
+                  `Tesla Powerhub Converted Reads push returned 0 rows.${filteredSuffix}`
+                );
+              }
+            }).catch((pushError) => {
+              toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
+            });
+          }
+        } else {
+          toast.message("Tesla Powerhub job returned no sites to push to Converted Reads.");
         }
       }
     }
@@ -383,7 +404,7 @@ export default function TeslaPowerhubApi() {
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
     for (const site of readRows) {
-      const base = buildConvertedReadRow("Tesla PowerHub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate);
+      const base = buildConvertedReadRow("Tesla Powerhub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate);
       // Row 1: system name only (ID blank) — matches by name
       csvRows.push({
         monitoring: base.monitoring,
