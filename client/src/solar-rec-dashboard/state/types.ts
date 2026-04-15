@@ -346,6 +346,19 @@ export type AnnualContractVintageAggregate = {
 };
 
 // ---------------------------------------------------------------------------
+// Alerts tab
+// ---------------------------------------------------------------------------
+
+export type AlertItem = {
+  id: string;
+  severity: "critical" | "warning" | "info";
+  type: string;
+  system: string;
+  message: string;
+  action: string;
+};
+
+// ---------------------------------------------------------------------------
 // Performance-ratio types
 // ---------------------------------------------------------------------------
 
