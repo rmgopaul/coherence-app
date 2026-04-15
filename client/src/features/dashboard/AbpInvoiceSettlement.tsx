@@ -43,6 +43,53 @@ import {
   type InvoiceNumberMapRow,
   type ParsedTabularData,
 } from "@/lib/abpSettlement";
+import {
+  buildLinkedCsvDatasetPayload,
+  buildMonthKey,
+  buildPersistedUploadStatePayload,
+  buildUpcomingTuesdayLabel,
+  deserializePayeeUpdateRows,
+  deserializePaymentsReportRows,
+  deserializeProjectApplications,
+  deserializeQuickBooksInvoices,
+  getRowValueByAliases,
+  linkedRowsToQuickBooksInvoices,
+  linkedRowsToUtilityRows,
+  normalizeAiMailingModifiedFieldsByCsgId,
+  normalizeAlias,
+  normalizeCsgPortalDatabaseRows,
+  normalizeInstallerRules,
+  normalizeInvoiceNumberMapRows,
+  normalizePayeeUpdateRows,
+  normalizePaymentsReportRows,
+  normalizeProjectApplicationRows,
+  parseBooleanText,
+  parseCsgIds,
+  parseCurrencyToNumber,
+  parseLinkedCsvDatasetPayload,
+  parseNumberInput,
+  parseNumericCell,
+  parsePersistedUploadStatePayload,
+  quickBooksInvoicesToLinkedRows,
+  serializePayeeUpdateRows,
+  serializePaymentsReportRows,
+  serializeProjectApplications,
+  serializeQuickBooksInvoices,
+  splitCityStateZip,
+  toContractTermsFromScan,
+  toNumericCell,
+  toYammCsv,
+  utilityRowsToLinkedRows,
+  type ContractScanResult,
+  type InvoiceMapHeaderSelectionState,
+  type LinkedCsvDatasetPayload,
+  type PersistedPayeeUpdateRow,
+  type PersistedPaymentsReportRow,
+  type PersistedProjectApplicationRow,
+  type PersistedQuickBooksInvoice,
+  type PersistedUploadStatePayload,
+  type RunInputs,
+} from "@/lib/abpSettlement/utils";
 import { clean, toErrorMessage, formatCurrency, formatPercent, formatDateTime, formatDuration, downloadTextFile } from "@/lib/helpers";
 import { AbpPaymentEmailPreviewDialog } from "@/components/AbpPaymentEmailPreview";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -67,22 +114,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 
-type RunInputs = {
-  utilityInvoiceFiles: string[];
-  csgSystemMappingFile: string | null;
-  quickBooksFile: string | null;
-  paymentsReportFile: string | null;
-  projectApplicationFile: string | null;
-  portalInvoiceMapFile: string | null;
-  csgPortalDatabaseFile: string | null;
-  payeeUpdateFile: string | null;
-};
-
-type InvoiceMapHeaderSelectionState = {
-  csgIdHeader: string | null;
-  invoiceNumberHeader: string | null;
-};
-
 type AiMailingCleanupProgress = {
   processed: number;
   total: number;
@@ -95,46 +126,6 @@ type ContractFetchResult = {
   pdfUrl: string | null;
   pdfFileName: string | null;
   error: string | null;
-};
-
-type ContractScanResult = {
-  csgId: string;
-  fileName: string;
-  ccAuthorizationCompleted: boolean | null;
-  ccCardAsteriskCount: number | null;
-  additionalFivePercentSelected: boolean | null;
-  additionalCollateralPercent: number | null;
-  vendorFeePercent: number | null;
-  recQuantity: number | null;
-  recPrice: number | null;
-  paymentMethod: string | null;
-  payeeName: string | null;
-  mailingAddress1: string | null;
-  mailingAddress2: string | null;
-  cityStateZip: string | null;
-  city: string | null;
-  state: string | null;
-  zip: string | null;
-  error: string | null;
-};
-
-type PersistedProjectApplicationRow = {
-  applicationId: string;
-  part1SubmissionDate: string | null;
-  part1OriginalSubmissionDate: string | null;
-  inverterSizeKwAcPart1: number | null;
-};
-
-type PersistedQuickBooksInvoice = Omit<QuickBooksInvoice, "date"> & {
-  date: string | null;
-};
-
-type PersistedPaymentsReportRow = Omit<PaymentsReportRow, "paymentDate"> & {
-  paymentDate: string | null;
-};
-
-type PersistedPayeeUpdateRow = Omit<PayeeMailingUpdateRow, "requestDate"> & {
-  requestDate: string | null;
 };
 
 type SavedRunPayload = {
@@ -169,23 +160,6 @@ type RunSummary = {
   createdAt: string;
   updatedAt: string;
   rowCount: number | null;
-};
-
-type PersistedUploadStatePayload = {
-  version: number;
-  savedAt: string;
-  runInputs: RunInputs;
-  activeScanJobId: string | null;
-  utilityRows: UtilityInvoiceRow[];
-  csgSystemMappings: CsgSystemIdMappingRow[];
-  projectApplications: PersistedProjectApplicationRow[];
-  quickBooksInvoices: PersistedQuickBooksInvoice[];
-  paymentsReportRows: PersistedPaymentsReportRow[];
-  payeeUpdateRows: PersistedPayeeUpdateRow[];
-  invoiceNumberMapRows: InvoiceNumberMapRow[];
-  csgPortalDatabaseRows: CsgPortalDatabaseRow[];
-  installerRules: InstallerSettlementRule[];
-  invoiceMapHeaderSelection?: InvoiceMapHeaderSelectionState;
 };
 
 const ABP_UPLOAD_STATE_DATASET_KEY = "abp_settlement_upload_state_v1";
@@ -261,782 +235,6 @@ const DEFAULT_INSTALLER_RULES: InstallerSettlementRule[] = [
     notes: "Apply a 5% referral fee on gross contract value.",
   },
 ];
-
-function parseCurrencyToNumber(value: string | null | undefined): number {
-  if (!value) return 0;
-  const cleaned = String(value).replace(/[^0-9.\-]/g, "");
-  const num = Number.parseFloat(cleaned);
-  return Number.isFinite(num) ? num : 0;
-}
-
-function toYammCsv(rows: Array<Record<string, string>>): string {
-  const escape = (value: string): string => {
-    if (/[",\n]/.test(value)) return `"${value.replaceAll('"', '""')}"`;
-    return value;
-  };
-  const lines = [
-    YAMM_PAYMENT_EMAIL_HEADERS.map((header) => escape(header)).join(","),
-    ...rows.map((row) =>
-      YAMM_PAYMENT_EMAIL_HEADERS.map((header) => escape(clean(row[header]))).join(",")
-    ),
-  ];
-  return lines.join("\n");
-}
-
-function buildUpcomingTuesdayLabel(date = new Date()): string {
-  const local = new Date(date);
-  const day = local.getDay();
-  const daysUntilTuesday = (2 - day + 7) % 7 || 7;
-  local.setDate(local.getDate() + daysUntilTuesday);
-  return local.toLocaleDateString("en-US", {
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  });
-}
-
-function buildMonthKey(date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
-}
-
-function parseCsgIds(value: string): string[] {
-  return Array.from(
-    new Set(
-      value
-        .split(/[\s,;\n\t]+/g)
-        .map((entry) => entry.trim())
-        .filter(Boolean)
-    )
-  );
-}
-
-function parseNumberInput(value: string): number | undefined {
-  const normalized = value.trim();
-  if (!normalized) return undefined;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function splitCityStateZip(rawValue: string | null | undefined): {
-  city: string | null;
-  state: string | null;
-  zip: string | null;
-} {
-  const raw = clean(rawValue);
-  if (!raw) return { city: null, state: null, zip: null };
-
-  const normalized = raw.replace(/\s+/g, " ");
-  const match = normalized.match(/^(.+?)[,\s]+([A-Za-z]{2,})\s+(\d{5}(?:-\d{4})?)$/);
-  if (!match) return { city: normalized || null, state: null, zip: null };
-
-  return {
-    city: clean(match[1]) || null,
-    state: clean(match[2]).toUpperCase() || null,
-    zip: clean(match[3]) || null,
-  };
-}
-
-type LinkedCsvDatasetPayload = {
-  fileName: string;
-  uploadedAt: string;
-  headers: string[];
-  csvText: string;
-  rows?: Array<Record<string, string>>;
-  metadata?: Record<string, string>;
-};
-
-function buildLinkedCsvDatasetPayload(input: {
-  fileName: string;
-  uploadedAt: string;
-  headers: string[];
-  rows: Array<Record<string, unknown>>;
-  metadata?: Record<string, string>;
-}): string {
-  const normalizedHeaders = input.headers.map((header) => clean(header)).filter(Boolean);
-  const normalizedRows = input.rows.map((row) => {
-    const normalized: Record<string, string> = {};
-    Object.entries(row).forEach(([key, value]) => {
-      normalized[key] = value === null || value === undefined ? "" : String(value);
-    });
-    return normalized;
-  });
-
-  const csvEscape = (value: string): string => {
-    if (/[",\n]/.test(value)) {
-      return `"${value.replaceAll('"', '""')}"`;
-    }
-    return value;
-  };
-
-  const csvText = [
-    normalizedHeaders.map(csvEscape).join(","),
-    ...normalizedRows.map((row) => normalizedHeaders.map((header) => csvEscape(clean(row[header]))).join(",")),
-  ].join("\n");
-
-  const payload: LinkedCsvDatasetPayload = {
-    fileName: clean(input.fileName) || "linked-upload.csv",
-    uploadedAt: clean(input.uploadedAt) || new Date().toISOString(),
-    headers: normalizedHeaders,
-    csvText,
-    rows: normalizedRows.length <= 2000 ? normalizedRows : undefined,
-    metadata: input.metadata,
-  };
-  return JSON.stringify(payload);
-}
-
-function parseLinkedCsvDatasetPayload(value: string): LinkedCsvDatasetPayload | null {
-  try {
-    const parsed = JSON.parse(value) as Partial<LinkedCsvDatasetPayload>;
-    if (!parsed || typeof parsed !== "object") return null;
-    if (!Array.isArray(parsed.headers)) return null;
-
-    const parseCsvMatrix = (csvInput: string): string[][] => {
-      const source = csvInput.replace(/^\uFEFF/, "");
-      const matrix: string[][] = [];
-      let row: string[] = [];
-      let cell = "";
-      let inQuotes = false;
-
-      for (let index = 0; index < source.length; index += 1) {
-        const character = source[index];
-
-        if (character === '"') {
-          const next = source[index + 1];
-          if (inQuotes && next === '"') {
-            cell += '"';
-            index += 1;
-          } else {
-            inQuotes = !inQuotes;
-          }
-          continue;
-        }
-
-        if (!inQuotes && character === ",") {
-          row.push(cell);
-          cell = "";
-          continue;
-        }
-
-        if (!inQuotes && (character === "\n" || character === "\r")) {
-          if (character === "\r" && source[index + 1] === "\n") index += 1;
-          row.push(cell);
-          cell = "";
-          if (row.some((entry) => clean(entry).length > 0)) {
-            matrix.push(row);
-          }
-          row = [];
-          continue;
-        }
-
-        cell += character;
-      }
-
-      row.push(cell);
-      if (row.some((entry) => clean(entry).length > 0)) {
-        matrix.push(row);
-      }
-
-      return matrix;
-    };
-
-    const parseRowsFromCsv = (csvText: string, headers: string[]): Array<Record<string, string>> => {
-      const matrix = parseCsvMatrix(csvText);
-      const firstRow = matrix[0] ?? [];
-      const headerRow =
-        firstRow.length === headers.length &&
-        firstRow.every((entry, index) => clean(entry) === headers[index])
-          ? firstRow
-          : headers;
-
-      const bodyRows = matrix.length > 0 && headerRow === firstRow ? matrix.slice(1) : matrix;
-      return bodyRows.map((cells) => {
-        const record: Record<string, string> = {};
-        headers.forEach((header, index) => {
-          record[header] = clean(cells[index]);
-        });
-        return record;
-      });
-    };
-
-    const normalizedRows = Array.isArray(parsed.rows) && parsed.rows.length > 0
-      ? parsed.rows.map((row) => {
-          const normalized: Record<string, string> = {};
-          if (row && typeof row === "object") {
-            Object.entries(row).forEach(([key, cell]) => {
-              normalized[key] = cell === null || cell === undefined ? "" : String(cell);
-            });
-          }
-          return normalized;
-        })
-      : parseRowsFromCsv(clean(parsed.csvText), parsed.headers.map((header) => clean(header)).filter(Boolean));
-
-    const metadata =
-      parsed.metadata && typeof parsed.metadata === "object"
-        ? Object.fromEntries(
-            Object.entries(parsed.metadata).map(([key, value]) => [clean(key), clean(value)])
-          )
-        : undefined;
-
-    return {
-      fileName: clean(parsed.fileName) || "linked-upload.csv",
-      uploadedAt: clean(parsed.uploadedAt) || new Date().toISOString(),
-      headers: parsed.headers.map((header) => clean(header)).filter(Boolean),
-      csvText: clean(parsed.csvText),
-      rows: normalizedRows,
-      metadata,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function toNumericCell(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
-  const normalized = clean(value);
-  return normalized;
-}
-
-function parseNumericCell(value: unknown): number | null {
-  const normalized = clean(value).replace(/,/g, "").replace(/[$%]/g, "");
-  if (!normalized) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseBooleanText(value: unknown): boolean | null {
-  const normalized = clean(value).toLowerCase();
-  if (!normalized) return null;
-  if (
-    normalized === "true" ||
-    normalized === "yes" ||
-    normalized === "y" ||
-    normalized === "1" ||
-    normalized.includes("reimburs") ||
-    normalized.includes("returned")
-  ) {
-    return true;
-  }
-  if (normalized === "false" || normalized === "no" || normalized === "n" || normalized === "0") {
-    return false;
-  }
-  return null;
-}
-
-function normalizeAlias(value: string): string {
-  return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function getRowValueByAliases(row: Record<string, string>, aliases: string[]): string {
-  if (!row || typeof row !== "object") return "";
-  const entries = Object.entries(row);
-  for (const alias of aliases) {
-    const target = normalizeAlias(alias);
-    const found = entries.find(([key]) => normalizeAlias(key) === target);
-    if (!found) continue;
-    const value = clean(found[1]);
-    if (value) return value;
-  }
-  return "";
-}
-
-function utilityRowsToLinkedRows(rows: UtilityInvoiceRow[]): Array<Record<string, unknown>> {
-  return rows.map((row) => ({
-    rowId: row.rowId,
-    sourceFile: row.sourceFile,
-    sourceSheet: row.sourceSheet,
-    contractId: row.contractId ?? "",
-    utilityName: row.utilityName ?? "",
-    systemId: row.systemId,
-    paymentNumber: toNumericCell(row.paymentNumber),
-    recQuantity: toNumericCell(row.recQuantity),
-    recPrice: toNumericCell(row.recPrice),
-    invoiceAmount: toNumericCell(row.invoiceAmount),
-    systemAddress: row.systemAddress,
-  }));
-}
-
-function linkedRowsToUtilityRows(rows: Array<Record<string, string>>, fallbackFileName: string): UtilityInvoiceRow[] {
-  return rows
-    .map((row, index) => {
-      const systemId = getRowValueByAliases(row, ["systemId", "System ID", "state_certification_number"]);
-      if (!systemId) return null;
-      const sourceFile = getRowValueByAliases(row, ["sourceFile", "Source File"]) || fallbackFileName;
-      const rowId = getRowValueByAliases(row, ["rowId", "Row ID"]) || `${sourceFile}:${index + 2}:${systemId}`;
-      return {
-        rowId,
-        sourceFile,
-        sourceSheet: getRowValueByAliases(row, ["sourceSheet", "Source Sheet"]) || "linked",
-        contractId: getRowValueByAliases(row, ["contractId", "Contract ID"]) || null,
-        utilityName: getRowValueByAliases(row, ["utilityName", "Utility"]) || null,
-        systemId,
-        paymentNumber: parseNumericCell(getRowValueByAliases(row, ["paymentNumber", "Payment Number"])),
-        recQuantity: parseNumericCell(getRowValueByAliases(row, ["recQuantity", "Total RECS", "REC Quantity"])),
-        recPrice: parseNumericCell(getRowValueByAliases(row, ["recPrice", "REC Price"])),
-        invoiceAmount: parseNumericCell(
-          getRowValueByAliases(row, ["invoiceAmount", "Invoice Amount", "Invoice Amount ($)"])
-        ),
-        systemAddress: getRowValueByAliases(row, ["systemAddress", "System Address"]),
-      } satisfies UtilityInvoiceRow;
-    })
-    .filter((row): row is UtilityInvoiceRow => Boolean(row));
-}
-
-function quickBooksInvoicesToLinkedRows(
-  invoices: Map<string, QuickBooksInvoice>
-): Array<Record<string, unknown>> {
-  const rows: Array<Record<string, unknown>> = [];
-
-  Array.from(invoices.values()).forEach((invoice) => {
-    const invoiceDate = invoice.date ? invoice.date.toISOString().slice(0, 10) : "";
-    const lineItems = invoice.lineItems.length > 0 ? invoice.lineItems : [{ lineOrder: null, description: "", productService: "", amount: null }];
-    lineItems.forEach((lineItem, index) => {
-      rows.push({
-        invoiceNumber: invoice.invoiceNumber,
-        date: invoiceDate,
-        customer: invoice.customer,
-        amount: toNumericCell(invoice.amount),
-        openBalance: toNumericCell(invoice.openBalance),
-        cashReceived: toNumericCell(invoice.cashReceived),
-        paymentStatus: invoice.paymentStatus,
-        voided: invoice.voided,
-        lineOrder: toNumericCell(lineItem.lineOrder ?? index + 1),
-        description: lineItem.description,
-        productService: lineItem.productService,
-        lineAmount: toNumericCell(lineItem.amount),
-      });
-    });
-  });
-
-  return rows;
-}
-
-function linkedRowsToQuickBooksInvoices(rows: Array<Record<string, string>>): Map<string, QuickBooksInvoice> {
-  const grouped = new Map<string, QuickBooksInvoice>();
-
-  rows.forEach((row) => {
-    const invoiceNumber = getRowValueByAliases(row, ["invoiceNumber", "Num", "Invoice Number", "Invoice #"]);
-    if (!invoiceNumber) return;
-
-    const existing =
-      grouped.get(invoiceNumber) ??
-      ({
-        invoiceNumber,
-        amount: parseNumericCell(getRowValueByAliases(row, ["amount", "Amount", "Total"])),
-        openBalance: parseNumericCell(getRowValueByAliases(row, ["openBalance", "Open balance", "Open Balance"])),
-        cashReceived: parseNumericCell(getRowValueByAliases(row, ["cashReceived", "Cash Received"])),
-        paymentStatus: getRowValueByAliases(row, ["paymentStatus", "Payment status", "Payment Status"]),
-        voided: getRowValueByAliases(row, ["voided", "Voided"]),
-        customer: getRowValueByAliases(row, ["customer", "Customer", "Customer full name", "Customer Full Name"]) || "Unknown",
-        date: getRowValueByAliases(row, ["date", "Date"])
-          ? new Date(getRowValueByAliases(row, ["date", "Date"]))
-          : null,
-        lineItems: [],
-      } satisfies QuickBooksInvoice);
-
-    if (existing.amount === null) {
-      existing.amount = parseNumericCell(getRowValueByAliases(row, ["amount", "Amount", "Total"]));
-    }
-    if (existing.openBalance === null) {
-      existing.openBalance = parseNumericCell(getRowValueByAliases(row, ["openBalance", "Open balance", "Open Balance"]));
-    }
-    if (existing.cashReceived === null) {
-      existing.cashReceived = parseNumericCell(getRowValueByAliases(row, ["cashReceived", "Cash Received"]));
-    }
-    if (!existing.paymentStatus) {
-      existing.paymentStatus = getRowValueByAliases(row, ["paymentStatus", "Payment status", "Payment Status"]);
-    }
-    if (!existing.voided) {
-      existing.voided = getRowValueByAliases(row, ["voided", "Voided"]);
-    }
-    if (!existing.customer) {
-      existing.customer =
-        getRowValueByAliases(row, ["customer", "Customer", "Customer full name", "Customer Full Name"]) ||
-        "Unknown";
-    }
-    const rowDate = getRowValueByAliases(row, ["date", "Date"]);
-    if (!existing.date && rowDate) {
-      const parsedDate = new Date(rowDate);
-      existing.date = Number.isNaN(parsedDate.getTime()) ? null : parsedDate;
-    }
-
-    const description = getRowValueByAliases(row, ["description", "Product/service description", "Description"]);
-    const productService = getRowValueByAliases(row, ["productService", "Product/Service", "Product Service"]);
-    const lineAmount = parseNumericCell(
-      getRowValueByAliases(row, ["lineAmount", "Product/service amount line", "Line Amount"])
-    );
-    if (description || productService || lineAmount !== null) {
-      existing.lineItems.push({
-        lineOrder: parseNumericCell(getRowValueByAliases(row, ["lineOrder", "Line order", "Line Order"])),
-        description,
-        productService,
-        amount: lineAmount,
-      });
-    }
-
-    grouped.set(invoiceNumber, existing);
-  });
-
-  grouped.forEach((invoice) => {
-    invoice.lineItems.sort((left, right) => {
-      const leftOrder = left.lineOrder ?? Number.MAX_SAFE_INTEGER;
-      const rightOrder = right.lineOrder ?? Number.MAX_SAFE_INTEGER;
-      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-      return left.description.localeCompare(right.description);
-    });
-  });
-
-  return grouped;
-}
-
-function normalizeInstallerRules(rules: InstallerSettlementRule[] | null | undefined): InstallerSettlementRule[] {
-  const source = Array.isArray(rules) ? rules : DEFAULT_INSTALLER_RULES;
-  return source.map((rule, index) => ({
-    id: clean(rule.id) || `installer-rule-${index + 1}`,
-    name: clean(rule.name) || `Installer Rule ${index + 1}`,
-    active: rule.active !== false,
-    matchField: rule.matchField === "partnerCompanyName" ? "partnerCompanyName" : "installerName",
-    matchValue: clean(rule.matchValue),
-    forceUtilityCollateralReimbursement: Boolean(rule.forceUtilityCollateralReimbursement),
-    referralFeePercent: parseNumericCell(rule.referralFeePercent) ?? 0,
-    notes: clean(rule.notes),
-  }));
-}
-
-function normalizeCsgPortalDatabaseRows(rows: unknown[]): CsgPortalDatabaseRow[] {
-  if (!Array.isArray(rows)) return [];
-
-  return rows
-    .map((row) => {
-      if (!row || typeof row !== "object") return null;
-      const source = row as Record<string, unknown>;
-      const csgId = clean(source.csgId);
-      if (!csgId) return null;
-
-      return {
-        systemId: clean(source.systemId),
-        csgId,
-        installerName: clean(source.installerName) || null,
-        partnerCompanyName: clean(source.partnerCompanyName) || null,
-        customerEmail: clean(source.customerEmail) || null,
-        customerAltEmail: clean(source.customerAltEmail) || null,
-        systemAddress: clean(source.systemAddress) || null,
-        systemCity: clean(source.systemCity) || null,
-        systemState: clean(source.systemState).toUpperCase() || null,
-        systemZip: clean(source.systemZip) || null,
-        paymentNotes: clean(source.paymentNotes) || null,
-        collateralReimbursedToPartner: parseBooleanText(source.collateralReimbursedToPartner),
-      } satisfies CsgPortalDatabaseRow;
-    })
-    .filter((row): row is CsgPortalDatabaseRow => Boolean(row));
-}
-
-function normalizeProjectApplicationRows(rows: PersistedProjectApplicationRow[]): PersistedProjectApplicationRow[] {
-  return rows
-    .map((row) => ({
-      applicationId: clean(row.applicationId),
-      part1SubmissionDate: clean(row.part1SubmissionDate) || null,
-      part1OriginalSubmissionDate: clean(row.part1OriginalSubmissionDate) || null,
-      inverterSizeKwAcPart1:
-        typeof row.inverterSizeKwAcPart1 === "number" && Number.isFinite(row.inverterSizeKwAcPart1)
-          ? row.inverterSizeKwAcPart1
-          : null,
-    }))
-    .filter((row) => row.applicationId.length > 0);
-}
-
-function normalizeInvoiceNumberMapRows(rows: unknown[]): InvoiceNumberMapRow[] {
-  if (!Array.isArray(rows)) return [];
-  return rows
-    .map((row) => {
-      if (!row || typeof row !== "object") return null;
-      const source = row as Record<string, unknown>;
-      const csgId = clean(source.csgId);
-      const invoiceNumber = clean(source.invoiceNumber);
-      if (!csgId || !invoiceNumber) return null;
-      return {
-        csgId,
-        invoiceNumber,
-      } satisfies InvoiceNumberMapRow;
-    })
-    .filter((row): row is InvoiceNumberMapRow => Boolean(row));
-}
-
-function serializeProjectApplications(rows: ProjectApplicationLiteRow[]): PersistedProjectApplicationRow[] {
-  return rows.map((row) => ({
-    applicationId: row.applicationId,
-    part1SubmissionDate: row.part1SubmissionDate ? row.part1SubmissionDate.toISOString() : null,
-    part1OriginalSubmissionDate: row.part1OriginalSubmissionDate
-      ? row.part1OriginalSubmissionDate.toISOString()
-      : null,
-    inverterSizeKwAcPart1: row.inverterSizeKwAcPart1,
-  }));
-}
-
-function deserializeProjectApplications(rows: PersistedProjectApplicationRow[]): ProjectApplicationLiteRow[] {
-  return rows.map((row) => ({
-    applicationId: clean(row.applicationId),
-    part1SubmissionDate: row.part1SubmissionDate ? new Date(row.part1SubmissionDate) : null,
-    part1OriginalSubmissionDate: row.part1OriginalSubmissionDate
-      ? new Date(row.part1OriginalSubmissionDate)
-      : null,
-    inverterSizeKwAcPart1:
-      typeof row.inverterSizeKwAcPart1 === "number" && Number.isFinite(row.inverterSizeKwAcPart1)
-        ? row.inverterSizeKwAcPart1
-        : null,
-  }));
-}
-
-function serializeQuickBooksInvoices(invoices: Map<string, QuickBooksInvoice>): PersistedQuickBooksInvoice[] {
-  return Array.from(invoices.values()).map((invoice) => ({
-    ...invoice,
-    date: invoice.date ? invoice.date.toISOString() : null,
-  }));
-}
-
-function deserializeQuickBooksInvoices(invoices: PersistedQuickBooksInvoice[]): Map<string, QuickBooksInvoice> {
-  const map = new Map<string, QuickBooksInvoice>();
-  invoices.forEach((invoice) => {
-    const key = clean(invoice.invoiceNumber);
-    if (!key) return;
-    map.set(key, {
-      ...invoice,
-      date: invoice.date ? new Date(invoice.date) : null,
-    });
-  });
-  return map;
-}
-
-function normalizePaymentsReportRows(rows: unknown[]): PersistedPaymentsReportRow[] {
-  if (!Array.isArray(rows)) return [];
-  return rows
-    .map((row) => {
-      if (!row || typeof row !== "object") return null;
-      const source = row as Record<string, unknown>;
-      const rowId = clean(source.rowId);
-      if (!rowId) return null;
-      const sourceRowNumber = parseNumericCell(source.sourceRowNumber);
-      return {
-        rowId,
-        sourceRowNumber:
-          sourceRowNumber !== null && Number.isFinite(sourceRowNumber)
-            ? Math.max(1, Math.floor(sourceRowNumber))
-            : 1,
-        systemId: clean(source.systemId),
-        csgId: clean(source.csgId),
-        paymentNumber: parseNumericCell(source.paymentNumber),
-        paymentType: clean(source.paymentType),
-        paymentDate: clean(source.paymentDate) || null,
-        amount: parseNumericCell(source.amount),
-        appliesToContract:
-          source.appliesToContract === true || source.appliesToContract === "true"
-            ? true
-            : source.appliesToContract === false || source.appliesToContract === "false"
-              ? false
-              : null,
-      } satisfies PersistedPaymentsReportRow;
-    })
-    .filter((row): row is PersistedPaymentsReportRow => Boolean(row));
-}
-
-function serializePaymentsReportRows(rows: PaymentsReportRow[]): PersistedPaymentsReportRow[] {
-  return rows.map((row) => ({
-    ...row,
-    paymentDate: row.paymentDate ? row.paymentDate.toISOString() : null,
-  }));
-}
-
-function deserializePaymentsReportRows(rows: PersistedPaymentsReportRow[]): PaymentsReportRow[] {
-  return rows.map((row) => ({
-    ...row,
-    paymentDate: row.paymentDate ? new Date(row.paymentDate) : null,
-  }));
-}
-
-function normalizePayeeUpdateRows(rows: unknown[]): PersistedPayeeUpdateRow[] {
-  if (!Array.isArray(rows)) return [];
-  return rows
-    .map((row) => {
-      if (!row || typeof row !== "object") return null;
-      const source = row as Record<string, unknown>;
-      const rowId = clean(source.rowId);
-      if (!rowId) return null;
-      const sourceRowNumber = parseNumericCell(source.sourceRowNumber);
-      return {
-        rowId,
-        sourceRowNumber:
-          sourceRowNumber !== null && Number.isFinite(sourceRowNumber)
-            ? Math.max(1, Math.floor(sourceRowNumber))
-            : 1,
-        requestDate: clean(source.requestDate) || null,
-        requestDateRaw: clean(source.requestDateRaw) || null,
-        responderEmail: clean(source.responderEmail).toLowerCase() || null,
-        enteredCsgId: clean(source.enteredCsgId) || null,
-        paymentMethod: clean(source.paymentMethod) || null,
-        payeeName: clean(source.payeeName) || null,
-        mailingAddress1: clean(source.mailingAddress1) || null,
-        mailingAddress2: clean(source.mailingAddress2) || null,
-        city: clean(source.city) || null,
-        state: clean(source.state).toUpperCase() || null,
-        zip: clean(source.zip) || null,
-        cityStateZip: clean(source.cityStateZip) || null,
-      } satisfies PersistedPayeeUpdateRow;
-    })
-    .filter((row): row is PersistedPayeeUpdateRow => Boolean(row));
-}
-
-function serializePayeeUpdateRows(rows: PayeeMailingUpdateRow[]): PersistedPayeeUpdateRow[] {
-  return rows.map((row) => ({
-    ...row,
-    requestDate: row.requestDate ? row.requestDate.toISOString() : null,
-  }));
-}
-
-function deserializePayeeUpdateRows(rows: PersistedPayeeUpdateRow[]): PayeeMailingUpdateRow[] {
-  return rows.map((row) => ({
-    ...row,
-    requestDate: row.requestDate ? new Date(row.requestDate) : null,
-  }));
-}
-
-function normalizeAiMailingModifiedFieldsByCsgId(
-  value: Record<string, string[]> | null | undefined
-): Record<string, string[]> {
-  if (!value || typeof value !== "object") return {};
-
-  const normalized: Record<string, string[]> = {};
-  Object.entries(value).forEach(([rawCsgId, rawFields]) => {
-    const csgId = clean(rawCsgId);
-    if (!csgId || !Array.isArray(rawFields)) return;
-    const fields = Array.from(new Set(rawFields.map((entry) => clean(entry)).filter(Boolean)));
-    if (fields.length > 0) normalized[csgId] = fields;
-  });
-
-  return normalized;
-}
-
-function buildPersistedUploadStatePayload(input: {
-  runInputs: RunInputs;
-  activeScanJobId: string | null;
-  utilityRows: UtilityInvoiceRow[];
-  csgSystemMappings: CsgSystemIdMappingRow[];
-  projectApplications: ProjectApplicationLiteRow[];
-  quickBooksByInvoice: Map<string, QuickBooksInvoice>;
-  paymentsReportRows: PaymentsReportRow[];
-  payeeUpdateRows: PayeeMailingUpdateRow[];
-  invoiceNumberMapRows: InvoiceNumberMapRow[];
-  csgPortalDatabaseRows: CsgPortalDatabaseRow[];
-  installerRules: InstallerSettlementRule[];
-  invoiceMapHeaderSelection: InvoiceMapHeaderSelectionState;
-}): PersistedUploadStatePayload {
-  return {
-    version: 3,
-    savedAt: new Date().toISOString(),
-    runInputs: input.runInputs,
-    activeScanJobId: clean(input.activeScanJobId) || null,
-    utilityRows: input.utilityRows,
-    csgSystemMappings: input.csgSystemMappings,
-    projectApplications: serializeProjectApplications(input.projectApplications),
-    quickBooksInvoices: serializeQuickBooksInvoices(input.quickBooksByInvoice),
-    paymentsReportRows: serializePaymentsReportRows(input.paymentsReportRows),
-    payeeUpdateRows: serializePayeeUpdateRows(input.payeeUpdateRows),
-    invoiceNumberMapRows: normalizeInvoiceNumberMapRows(input.invoiceNumberMapRows),
-    csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(input.csgPortalDatabaseRows),
-    installerRules: normalizeInstallerRules(input.installerRules),
-    invoiceMapHeaderSelection: {
-      csgIdHeader: clean(input.invoiceMapHeaderSelection.csgIdHeader) || null,
-      invoiceNumberHeader: clean(input.invoiceMapHeaderSelection.invoiceNumberHeader) || null,
-    },
-  };
-}
-
-function parsePersistedUploadStatePayload(value: string): PersistedUploadStatePayload | null {
-  try {
-    const parsed = JSON.parse(value) as PersistedUploadStatePayload;
-    if (!parsed || typeof parsed.version !== "number" || parsed.version < 1 || parsed.version > 3) return null;
-    const runInputsRaw = parsed.runInputs && typeof parsed.runInputs === "object" ? parsed.runInputs : null;
-    if (!runInputsRaw) return null;
-
-    const runInputs: RunInputs = {
-      utilityInvoiceFiles: Array.isArray(runInputsRaw.utilityInvoiceFiles)
-        ? runInputsRaw.utilityInvoiceFiles.map((value) => clean(value)).filter(Boolean)
-        : [],
-      csgSystemMappingFile: clean(runInputsRaw.csgSystemMappingFile) || null,
-      quickBooksFile: clean(runInputsRaw.quickBooksFile) || null,
-      paymentsReportFile: clean(runInputsRaw.paymentsReportFile) || null,
-      projectApplicationFile: clean(runInputsRaw.projectApplicationFile) || null,
-      portalInvoiceMapFile: clean(runInputsRaw.portalInvoiceMapFile) || null,
-      csgPortalDatabaseFile: clean(runInputsRaw.csgPortalDatabaseFile) || null,
-      payeeUpdateFile: clean(runInputsRaw.payeeUpdateFile) || null,
-    };
-
-    return {
-      version: parsed.version,
-      savedAt: clean(parsed.savedAt) || new Date().toISOString(),
-      runInputs,
-      activeScanJobId: clean(parsed.activeScanJobId) || null,
-      utilityRows: Array.isArray(parsed.utilityRows) ? parsed.utilityRows : [],
-      csgSystemMappings: Array.isArray(parsed.csgSystemMappings) ? parsed.csgSystemMappings : [],
-      projectApplications: normalizeProjectApplicationRows(
-        Array.isArray(parsed.projectApplications) ? parsed.projectApplications : []
-      ),
-      quickBooksInvoices: Array.isArray(parsed.quickBooksInvoices) ? parsed.quickBooksInvoices : [],
-      paymentsReportRows: normalizePaymentsReportRows(
-        Array.isArray(parsed.paymentsReportRows) ? parsed.paymentsReportRows : []
-      ),
-      payeeUpdateRows: normalizePayeeUpdateRows(Array.isArray(parsed.payeeUpdateRows) ? parsed.payeeUpdateRows : []),
-      invoiceNumberMapRows: normalizeInvoiceNumberMapRows(
-        Array.isArray(parsed.invoiceNumberMapRows) ? parsed.invoiceNumberMapRows : []
-      ),
-      csgPortalDatabaseRows: normalizeCsgPortalDatabaseRows(
-        Array.isArray(parsed.csgPortalDatabaseRows) ? parsed.csgPortalDatabaseRows : []
-      ),
-      installerRules: normalizeInstallerRules(
-        Array.isArray(parsed.installerRules) ? parsed.installerRules : DEFAULT_INSTALLER_RULES
-      ),
-      invoiceMapHeaderSelection: {
-        csgIdHeader: clean(parsed.invoiceMapHeaderSelection?.csgIdHeader) || null,
-        invoiceNumberHeader: clean(parsed.invoiceMapHeaderSelection?.invoiceNumberHeader) || null,
-      },
-    };
-  } catch {
-    return null;
-  }
-}
-
-function toContractTermsFromScan(rows: ContractScanResult[]): Map<string, ContractTerms> {
-  const map = new Map<string, ContractTerms>();
-  rows.forEach((row) => {
-    if (!row.csgId) return;
-    // Include rows even if they had scan errors — they may still have partial
-    // data (payee name, mailing address from portal) that is useful for AI
-    // cleaning and settlement. Previously errored rows were silently dropped,
-    // causing "Contract Terms Loaded" to show far fewer than expected.
-    if (map.has(row.csgId)) return; // keep first occurrence per CSG ID
-    const cityStateZipParts = splitCityStateZip(row.cityStateZip);
-    map.set(row.csgId, {
-      csgId: row.csgId,
-      fileName: row.fileName ?? "",
-      vendorFeePercent: row.vendorFeePercent,
-      additionalCollateralPercent: row.additionalCollateralPercent,
-      ccAuthorizationCompleted: row.ccAuthorizationCompleted,
-      ccCardAsteriskCount: row.ccCardAsteriskCount,
-      recQuantity: row.recQuantity,
-      recPrice: row.recPrice,
-      paymentMethod: row.paymentMethod,
-      payeeName: row.payeeName,
-      mailingAddress1: row.mailingAddress1,
-      mailingAddress2: row.mailingAddress2,
-      cityStateZip: row.cityStateZip,
-      city: row.city ?? cityStateZipParts.city,
-      state: row.state ?? cityStateZipParts.state,
-      zip: row.zip ?? cityStateZipParts.zip,
-    });
-  });
-  return map;
-}
 
 function isClassification(value: string): value is PaymentClassification {
   return (
@@ -1227,7 +425,7 @@ export default function AbpInvoiceSettlement() {
       };
       let hydratedActiveScanJobId: string | null = null;
       let hydratedCsgPortalDatabaseRows: CsgPortalDatabaseRow[] = [];
-      let hydratedInstallerRules = normalizeInstallerRules(DEFAULT_INSTALLER_RULES);
+      let hydratedInstallerRules = normalizeInstallerRules(DEFAULT_INSTALLER_RULES, DEFAULT_INSTALLER_RULES);
 
       try {
         const stored = await getUploadStateMutationRef.current.mutateAsync({
@@ -1237,7 +435,7 @@ export default function AbpInvoiceSettlement() {
         if (cancelled) return;
 
         if (stored?.payload) {
-          const parsed = parsePersistedUploadStatePayload(stored.payload);
+          const parsed = parsePersistedUploadStatePayload(stored.payload, DEFAULT_INSTALLER_RULES);
           if (parsed) {
             hydratedRunInputs = parsed.runInputs;
             hydratedUtilityRows = parsed.utilityRows ?? [];
@@ -1250,7 +448,7 @@ export default function AbpInvoiceSettlement() {
             hydratedInvoiceMapHeaderSelection = parsed.invoiceMapHeaderSelection ?? hydratedInvoiceMapHeaderSelection;
             hydratedActiveScanJobId = parsed.activeScanJobId ?? null;
             hydratedCsgPortalDatabaseRows = normalizeCsgPortalDatabaseRows(parsed.csgPortalDatabaseRows ?? []);
-            hydratedInstallerRules = normalizeInstallerRules(parsed.installerRules);
+            hydratedInstallerRules = normalizeInstallerRules(parsed.installerRules, DEFAULT_INSTALLER_RULES);
             lastPersistedUploadPayloadRef.current = stored.payload;
           }
         }
@@ -1749,20 +947,23 @@ export default function AbpInvoiceSettlement() {
     setIsSavingUploadsNow(true);
     try {
       const uploadStatePayload = JSON.stringify(
-        buildPersistedUploadStatePayload({
-          runInputs,
-          activeScanJobId,
-          utilityRows,
-          csgSystemMappings,
-          projectApplications,
-          quickBooksByInvoice,
-          paymentsReportRows,
-          payeeUpdateRows,
-          invoiceNumberMapRows,
-          csgPortalDatabaseRows,
-          installerRules,
-          invoiceMapHeaderSelection,
-        })
+        buildPersistedUploadStatePayload(
+          {
+            runInputs,
+            activeScanJobId,
+            utilityRows,
+            csgSystemMappings,
+            projectApplications,
+            quickBooksByInvoice,
+            paymentsReportRows,
+            payeeUpdateRows,
+            invoiceNumberMapRows,
+            csgPortalDatabaseRows,
+            installerRules,
+            invoiceMapHeaderSelection,
+          },
+          DEFAULT_INSTALLER_RULES
+        )
       );
 
       await saveUploadStateMutationRef.current.mutateAsync({
@@ -1817,20 +1018,23 @@ export default function AbpInvoiceSettlement() {
     if (authLoading || !user || !uploadsHydrated) return;
 
     const payload = JSON.stringify(
-      buildPersistedUploadStatePayload({
-        runInputs,
-        activeScanJobId,
-        utilityRows,
-        csgSystemMappings,
-        projectApplications,
-        quickBooksByInvoice,
-        paymentsReportRows,
-        payeeUpdateRows,
-        invoiceNumberMapRows,
-        csgPortalDatabaseRows,
-        installerRules,
-        invoiceMapHeaderSelection,
-      })
+      buildPersistedUploadStatePayload(
+        {
+          runInputs,
+          activeScanJobId,
+          utilityRows,
+          csgSystemMappings,
+          projectApplications,
+          quickBooksByInvoice,
+          paymentsReportRows,
+          payeeUpdateRows,
+          invoiceNumberMapRows,
+          csgPortalDatabaseRows,
+          installerRules,
+          invoiceMapHeaderSelection,
+        },
+        DEFAULT_INSTALLER_RULES
+      )
     );
 
     if (payload === lastPersistedUploadPayloadRef.current) return;
@@ -2433,7 +1637,7 @@ export default function AbpInvoiceSettlement() {
   const handleDeleteInstallerRule = (ruleId: string) => {
     setInstallerRules((current) => {
       const next = current.filter((rule) => rule.id !== ruleId);
-      return next.length > 0 ? next : normalizeInstallerRules(DEFAULT_INSTALLER_RULES);
+      return next.length > 0 ? next : normalizeInstallerRules(DEFAULT_INSTALLER_RULES, DEFAULT_INSTALLER_RULES);
     });
   };
 
@@ -2589,7 +1793,7 @@ export default function AbpInvoiceSettlement() {
     const safeMonth = clean(monthKey) || buildMonthKey();
     downloadTextFile(
       `abp-yamm-payment-emails-${safeMonth}.csv`,
-      toYammCsv(yammEmailRows),
+      toYammCsv(yammEmailRows, YAMM_PAYMENT_EMAIL_HEADERS),
       "text/csv;charset=utf-8"
     );
     toast.success("YAMM email CSV exported.");
@@ -2959,7 +2163,7 @@ export default function AbpInvoiceSettlement() {
       invoiceNumberMapRows,
       invoiceMapHeaderSelection,
       csgPortalDatabaseRows,
-      installerRules: normalizeInstallerRules(installerRules),
+      installerRules: normalizeInstallerRules(installerRules, DEFAULT_INSTALLER_RULES),
       contractTerms: Array.from(contractTermsByCsgId.values()),
       manualOverridesByRowId,
       previousCarryforwardBySystemId,
@@ -3016,7 +2220,7 @@ export default function AbpInvoiceSettlement() {
     });
     setSavedInvoiceNumberMapRows(normalizeInvoiceNumberMapRows(payload.invoiceNumberMapRows ?? []));
     setCsgPortalDatabaseRows(normalizeCsgPortalDatabaseRows(payload.csgPortalDatabaseRows ?? []));
-    setInstallerRules(normalizeInstallerRules(payload.installerRules));
+    setInstallerRules(normalizeInstallerRules(payload.installerRules, DEFAULT_INSTALLER_RULES));
     setContractTermsByCsgId(new Map((payload.contractTerms ?? []).map((term) => [term.csgId, term])));
     setContractScanRows(
       (payload.contractTerms ?? []).map((term) => ({
@@ -3138,7 +2342,7 @@ export default function AbpInvoiceSettlement() {
     setPaymentsReportRows([]);
     setPayeeUpdateRows([]);
     setCsgPortalDatabaseRows([]);
-    setInstallerRules(normalizeInstallerRules(DEFAULT_INSTALLER_RULES));
+    setInstallerRules(normalizeInstallerRules(DEFAULT_INSTALLER_RULES, DEFAULT_INSTALLER_RULES));
     setInvoiceMapParsed(null);
     setInvoiceMapHeaderSelection({ csgIdHeader: null, invoiceNumberHeader: null });
     setSavedInvoiceNumberMapRows([]);
