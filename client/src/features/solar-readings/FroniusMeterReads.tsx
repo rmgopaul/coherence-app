@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -647,18 +648,36 @@ export default function FroniusMeterReads() {
             const readRows = collectedRows
               .filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate)
               .map((row) =>
-                buildConvertedReadRow("Fronius Solar.web", row.pvSystemId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!)
+                buildConvertedReadRow(
+                  MONITORING_CANONICAL_NAMES.fronius,
+                  row.pvSystemId,
+                  row.name ?? "",
+                  row.lifetimeKwh!,
+                  row.anchorDate!
+                )
               );
-            const result = await pushConvertedReadsToRecDashboard(
-              (input) => getRemoteDataset.mutateAsync(input),
-              (input) => saveRemoteDataset.mutateAsync(input),
-              readRows,
-              "Fronius"
-            );
-            if (result.pushed > 0) {
-              toast.success(`Pushed ${NUMBER_FORMATTER.format(result.pushed)} Fronius rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`);
-            } else if (result.skipped > 0) {
-              toast.message(`All ${NUMBER_FORMATTER.format(result.skipped)} Fronius Converted Reads rows already exist. No new rows pushed.`);
+            if (readRows.length === 0) {
+              toast.message(
+                `No Fronius rows to push to Converted Reads — ${NUMBER_FORMATTER.format(found)} sites returned but none had a lifetime kWh reading.`
+              );
+            } else {
+              const result = await pushConvertedReadsToRecDashboard(
+                (input) => getRemoteDataset.mutateAsync(input),
+                (input) => saveRemoteDataset.mutateAsync(input),
+                readRows,
+                MONITORING_CANONICAL_NAMES.fronius
+              );
+              if (result.pushed > 0) {
+                toast.success(
+                  `Pushed ${NUMBER_FORMATTER.format(result.pushed)} Fronius rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`
+                );
+              } else if (result.skipped > 0) {
+                toast.message(
+                  `All ${NUMBER_FORMATTER.format(result.skipped)} Fronius Converted Reads rows already exist. No new rows pushed.`
+                );
+              } else {
+                toast.message("Fronius Converted Reads push returned 0 rows.");
+              }
             }
           } catch (pushError) {
             toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
@@ -880,7 +899,7 @@ export default function FroniusMeterReads() {
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
     for (const row of readRows) {
-      const base = buildConvertedReadRow("Fronius Solar.web", row.pvSystemId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
+      const base = buildConvertedReadRow(MONITORING_CANONICAL_NAMES.fronius, row.pvSystemId, row.name ?? "", row.lifetimeKwh!, row.anchorDate!);
       // Row 1: system name only (ID blank) — matches by name
       csvRows.push({
         monitoring: base.monitoring,

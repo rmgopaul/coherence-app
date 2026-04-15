@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "Locus",
   providerSlug: "locus",
-  convertedReadsMonitoring: "Locus",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.locus,
   pageTitle: "Locus Energy API",
   pageDescription:
     "Client ID/Secret/Partner ID connection for Locus Energy monitoring endpoints, including bulk CSV processing for production snapshots.",

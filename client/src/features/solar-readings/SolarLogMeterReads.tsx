@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "Solar-Log",
   providerSlug: "solarlog",
-  convertedReadsMonitoring: "Solar-Log",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.solarLog,
   pageTitle: "Solar-Log Device API",
   pageDescription:
     "LAN-based connection for Solar-Log data loggers. The Device URL is typically a local IP address (e.g. http://192.168.1.x). Includes bulk CSV processing for production snapshots.",

@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "Generac",
   providerSlug: "generac",
-  convertedReadsMonitoring: "Generac",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.generac,
   pageTitle: "Generac PWRview API",
   pageDescription:
     "API Key connection for Generac PWRview monitoring endpoints, including bulk CSV processing for production snapshots.",

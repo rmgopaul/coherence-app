@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import { toErrorMessage, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -113,7 +114,7 @@ export default function EGaugeApi() {
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
     for (const row of readRows) {
-      const base = buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate);
+      const base = buildConvertedReadRow(MONITORING_CANONICAL_NAMES.egauge, row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate);
       // Row 1: system name only (ID blank) — matches by name
       csvRows.push({
         monitoring: base.monitoring,
@@ -400,20 +401,34 @@ export default function EGaugeApi() {
         const readRows = portfolioRows
           .filter((row) => row.found && row.lifetimeKwh != null)
           .map((row) =>
-            buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+            buildConvertedReadRow(
+              MONITORING_CANONICAL_NAMES.egauge,
+              row.meterId,
+              row.meterName ?? "",
+              row.lifetimeKwh!,
+              row.anchorDate
+            )
           );
-        const pushResult = await pushConvertedReadsToRecDashboard(
-          (input) => getRemoteDataset.mutateAsync(input),
-          (input) => saveRemoteDataset.mutateAsync(input),
-          readRows,
-          "eGauge"
-        );
-        if (pushResult.pushed > 0) {
-          toast.success(
-            `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+        if (readRows.length === 0) {
+          toast.message(
+            `No eGauge rows to push to Converted Reads — ${portfolioResult.found} meters returned but none had a lifetime kWh reading.`
           );
-        } else if (pushResult.skipped > 0) {
-          toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+        } else {
+          const pushResult = await pushConvertedReadsToRecDashboard(
+            (input) => getRemoteDataset.mutateAsync(input),
+            (input) => saveRemoteDataset.mutateAsync(input),
+            readRows,
+            MONITORING_CANONICAL_NAMES.egauge
+          );
+          if (pushResult.pushed > 0) {
+            toast.success(
+              `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+            );
+          } else if (pushResult.skipped > 0) {
+            toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+          } else {
+            toast.message("eGauge Converted Reads push returned 0 rows.");
+          }
         }
       } else {
         // Non-portfolio mode: per-meter register calls (lifetime only)
@@ -431,20 +446,34 @@ export default function EGaugeApi() {
         const readRows = rows
           .filter((row) => row.found && row.lifetimeKwh != null)
           .map((row) =>
-            buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+            buildConvertedReadRow(
+              MONITORING_CANONICAL_NAMES.egauge,
+              row.meterId,
+              row.meterName ?? "",
+              row.lifetimeKwh!,
+              row.anchorDate
+            )
           );
-        const pushResult = await pushConvertedReadsToRecDashboard(
-          (input) => getRemoteDataset.mutateAsync(input),
-          (input) => saveRemoteDataset.mutateAsync(input),
-          readRows,
-          "eGauge"
-        );
-        if (pushResult.pushed > 0) {
-          toast.success(
-            `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+        if (readRows.length === 0) {
+          toast.message(
+            `No eGauge rows to push to Converted Reads — ${result.found} meters returned but none had a lifetime kWh reading.`
           );
-        } else if (pushResult.skipped > 0) {
-          toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+        } else {
+          const pushResult = await pushConvertedReadsToRecDashboard(
+            (input) => getRemoteDataset.mutateAsync(input),
+            (input) => saveRemoteDataset.mutateAsync(input),
+            readRows,
+            MONITORING_CANONICAL_NAMES.egauge
+          );
+          if (pushResult.pushed > 0) {
+            toast.success(
+              `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+            );
+          } else if (pushResult.skipped > 0) {
+            toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+          } else {
+            toast.message("eGauge Converted Reads push returned 0 rows.");
+          }
         }
       }
     } catch (error) {
@@ -508,20 +537,34 @@ export default function EGaugeApi() {
       const readRows = rows
         .filter((row) => row.found && row.lifetimeKwh != null)
         .map((row) =>
-          buildConvertedReadRow("eGauge", row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate)
+          buildConvertedReadRow(
+            MONITORING_CANONICAL_NAMES.egauge,
+            row.meterId,
+            row.meterName ?? "",
+            row.lifetimeKwh!,
+            row.anchorDate
+          )
         );
-      const pushResult = await pushConvertedReadsToRecDashboard(
-        (input) => getRemoteDataset.mutateAsync(input),
-        (input) => saveRemoteDataset.mutateAsync(input),
-        readRows,
-        "eGauge"
-      );
-      if (pushResult.pushed > 0) {
-        toast.success(
-          `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+      if (readRows.length === 0) {
+        toast.message(
+          `No eGauge rows to push to Converted Reads — ${rows.length} meters returned but none had a lifetime kWh reading.`
         );
-      } else if (pushResult.skipped > 0) {
-        toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+      } else {
+        const pushResult = await pushConvertedReadsToRecDashboard(
+          (input) => getRemoteDataset.mutateAsync(input),
+          (input) => saveRemoteDataset.mutateAsync(input),
+          readRows,
+          MONITORING_CANONICAL_NAMES.egauge
+        );
+        if (pushResult.pushed > 0) {
+          toast.success(
+            `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+          );
+        } else if (pushResult.skipped > 0) {
+          toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+        } else {
+          toast.message("eGauge Converted Reads push returned 0 rows.");
+        }
       }
     } catch (error) {
       toast.error(`All portfolios fetch failed: ${toErrorMessage(error)}`);

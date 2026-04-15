@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "Solis",
   providerSlug: "solis",
-  convertedReadsMonitoring: "Solis",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.solis,
   pageTitle: "Solis Cloud API",
   pageDescription:
     "API Key/Secret connection for Solis Cloud monitoring endpoints, including bulk CSV processing for production snapshots.",

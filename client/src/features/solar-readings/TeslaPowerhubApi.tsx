@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
 import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import { clean, toErrorMessage, downloadTextFile, formatKwh } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Search, Unplug } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -175,7 +176,7 @@ export default function TeslaPowerhubApi() {
           const readRows = snapshot.result.sites
             .filter((site: SiteProductionRow) => site.lifetimeKwh > 0)
             .map((site: SiteProductionRow) =>
-              buildConvertedReadRow("Tesla Powerhub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate)
+              buildConvertedReadRow(MONITORING_CANONICAL_NAMES.teslaPowerhub, site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate)
             );
           const filteredOut = totalSites - readRows.length;
           if (readRows.length === 0) {
@@ -187,7 +188,7 @@ export default function TeslaPowerhubApi() {
               (input) => getRemoteDatasetRef.current.mutateAsync(input),
               (input) => saveRemoteDatasetRef.current.mutateAsync(input),
               readRows,
-              "Tesla Powerhub"
+              MONITORING_CANONICAL_NAMES.teslaPowerhub
             ).then((result) => {
               const filteredSuffix = filteredOut > 0 ? ` ${filteredOut} sites skipped (0 kWh).` : "";
               if (result.pushed > 0) {
@@ -404,7 +405,7 @@ export default function TeslaPowerhubApi() {
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
     for (const site of readRows) {
-      const base = buildConvertedReadRow("Tesla Powerhub", site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate);
+      const base = buildConvertedReadRow(MONITORING_CANONICAL_NAMES.teslaPowerhub, site.siteId, site.siteName ?? "", site.lifetimeKwh, anchorDate);
       // Row 1: system name only (ID blank) — matches by name
       csvRows.push({
         monitoring: base.monitoring,

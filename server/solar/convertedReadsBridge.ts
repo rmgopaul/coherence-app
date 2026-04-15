@@ -10,6 +10,7 @@ import {
   saveSolarRecDashboardPayload,
 } from "../db";
 import { parseCsvText } from "../routers/helpers";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -27,29 +28,34 @@ const CONVERTED_READS_HEADERS = [
 
 const DB_STORAGE_KEY = "dataset:convertedReads";
 
-/** Map adapter provider keys to the display labels the dashboard expects. */
+/**
+ * Map adapter provider keys to the canonical display labels from
+ * MONITORING_CANONICAL_NAMES. This is the same source of truth the client
+ * meter reads pages use, so rows from the monitoring batch bridge dedup
+ * correctly against rows pushed from individual meter reads pages.
+ */
 const PROVIDER_LABELS: Record<string, string> = {
-  solaredge: "SolarEdge",
-  "enphase-v4": "Enphase V4",
-  enphasev2: "Enphase V2",
-  "enphase-v2": "Enphase V2",
-  fronius: "Fronius",
-  generac: "Generac",
-  hoymiles: "Hoymiles",
-  goodwe: "GoodWe",
-  solis: "Solis",
-  locus: "Locus Energy",
-  apsystems: "APsystems",
-  solarlog: "SolarLog",
-  growatt: "Growatt",
-  egauge: "eGauge",
-  "egauge-monitoring": "eGauge",
-  "tesla-powerhub": "Tesla Powerhub",
-  teslapowerhub: "Tesla Powerhub",
-  "tesla-solar": "Tesla Solar",
-  teslasolar: "Tesla Solar",
-  ennexos: "eNNexOS",
-  ekm: "EKM",
+  solaredge: MONITORING_CANONICAL_NAMES.solarEdge,
+  "enphase-v4": MONITORING_CANONICAL_NAMES.enphase,
+  enphasev2: MONITORING_CANONICAL_NAMES.enphase,
+  "enphase-v2": MONITORING_CANONICAL_NAMES.enphase,
+  fronius: MONITORING_CANONICAL_NAMES.fronius,
+  generac: MONITORING_CANONICAL_NAMES.generac,
+  hoymiles: MONITORING_CANONICAL_NAMES.hoymiles,
+  goodwe: MONITORING_CANONICAL_NAMES.goodwe,
+  solis: MONITORING_CANONICAL_NAMES.solis,
+  locus: MONITORING_CANONICAL_NAMES.locus,
+  apsystems: MONITORING_CANONICAL_NAMES.apsystems,
+  solarlog: MONITORING_CANONICAL_NAMES.solarLog,
+  growatt: MONITORING_CANONICAL_NAMES.growatt,
+  egauge: MONITORING_CANONICAL_NAMES.egauge,
+  "egauge-monitoring": MONITORING_CANONICAL_NAMES.egauge,
+  "tesla-powerhub": MONITORING_CANONICAL_NAMES.teslaPowerhub,
+  teslapowerhub: MONITORING_CANONICAL_NAMES.teslaPowerhub,
+  "tesla-solar": MONITORING_CANONICAL_NAMES.teslaSolar,
+  teslasolar: MONITORING_CANONICAL_NAMES.teslaSolar,
+  ennexos: MONITORING_CANONICAL_NAMES.ennexos,
+  ekm: MONITORING_CANONICAL_NAMES.ekm,
 };
 
 // ---------------------------------------------------------------------------

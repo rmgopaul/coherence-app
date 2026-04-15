@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
 import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import { toErrorMessage, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, ExternalLink, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -81,7 +82,7 @@ export default function EnphaseV4MeterReads() {
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
     for (const row of readRows) {
-      const base = buildConvertedReadRow("Enphase", row.systemId, row.systemName ?? "", row.lifetimeKwh!, row.anchorDate);
+      const base = buildConvertedReadRow(MONITORING_CANONICAL_NAMES.enphase, row.systemId, row.systemName ?? "", row.lifetimeKwh!, row.anchorDate);
       // Row 1: system name only (ID blank) — matches by name
       csvRows.push({
         monitoring: base.monitoring,
@@ -585,18 +586,36 @@ export default function EnphaseV4MeterReads() {
                     const readRows = result.rows
                       .filter((row) => row.found && row.lifetimeKwh != null)
                       .map((row) =>
-                        buildConvertedReadRow("Enphase", row.systemId, row.systemName ?? "", row.lifetimeKwh!, row.anchorDate)
+                        buildConvertedReadRow(
+                          MONITORING_CANONICAL_NAMES.enphase,
+                          row.systemId,
+                          row.systemName ?? "",
+                          row.lifetimeKwh!,
+                          row.anchorDate
+                        )
                       );
-                    const pushResult = await pushConvertedReadsToRecDashboard(
-                      (input) => getRemoteDataset.mutateAsync(input),
-                      (input) => saveRemoteDataset.mutateAsync(input),
-                      readRows,
-                      "Enphase"
-                    );
-                    if (pushResult.pushed > 0) {
-                      toast.success(`Pushed ${pushResult.pushed} Enphase rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`);
-                    } else if (pushResult.skipped > 0) {
-                      toast.message(`All ${pushResult.skipped} Enphase Converted Reads rows already exist.`);
+                    if (readRows.length === 0) {
+                      toast.message(
+                        `No Enphase rows to push to Converted Reads — ${result.found} sites returned but none had a lifetime kWh reading.`
+                      );
+                    } else {
+                      const pushResult = await pushConvertedReadsToRecDashboard(
+                        (input) => getRemoteDataset.mutateAsync(input),
+                        (input) => saveRemoteDataset.mutateAsync(input),
+                        readRows,
+                        MONITORING_CANONICAL_NAMES.enphase
+                      );
+                      if (pushResult.pushed > 0) {
+                        toast.success(
+                          `Pushed ${pushResult.pushed} Enphase rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
+                        );
+                      } else if (pushResult.skipped > 0) {
+                        toast.message(
+                          `All ${pushResult.skipped} Enphase Converted Reads rows already exist.`
+                        );
+                      } else {
+                        toast.message("Enphase Converted Reads push returned 0 rows.");
+                      }
                     }
                   } catch (error) {
                     toast.error(`Bulk snapshots failed: ${toErrorMessage(error)}`);

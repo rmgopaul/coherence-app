@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "Growatt",
   providerSlug: "growatt",
-  convertedReadsMonitoring: "Growatt",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.growatt,
   pageTitle: "Growatt API",
   pageDescription:
     "Username/password connection for Growatt monitoring endpoints, including bulk CSV processing for thousands of plants.",

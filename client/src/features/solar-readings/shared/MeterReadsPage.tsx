@@ -751,23 +751,33 @@ export default function MeterReadsPage({
                 row.anchorDate!
               )
             );
-          const result =
-            await pushConvertedReadsToRecDashboard(
-              (input) =>
-                getRemoteDataset.mutateAsync(input),
-              (input) =>
-                saveRemoteDataset.mutateAsync(input),
-              readRows,
-              config.convertedReadsMonitoring
-            );
-          if (result.pushed > 0) {
-            toast.success(
-              `Pushed ${NUMBER_FORMATTER.format(result.pushed)} ${config.providerName} rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`
-            );
-          } else if (result.skipped > 0) {
+          if (readRows.length === 0) {
             toast.message(
-              `All ${NUMBER_FORMATTER.format(result.skipped)} ${config.providerName} Converted Reads rows already exist. No new rows pushed.`
+              `No ${config.providerName} rows to push to Converted Reads — ${NUMBER_FORMATTER.format(found)} sites returned but none had a lifetime kWh reading.`
             );
+          } else {
+            const result =
+              await pushConvertedReadsToRecDashboard(
+                (input) =>
+                  getRemoteDataset.mutateAsync(input),
+                (input) =>
+                  saveRemoteDataset.mutateAsync(input),
+                readRows,
+                config.convertedReadsMonitoring
+              );
+            if (result.pushed > 0) {
+              toast.success(
+                `Pushed ${NUMBER_FORMATTER.format(result.pushed)} ${config.providerName} rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`
+              );
+            } else if (result.skipped > 0) {
+              toast.message(
+                `All ${NUMBER_FORMATTER.format(result.skipped)} ${config.providerName} Converted Reads rows already exist. No new rows pushed.`
+              );
+            } else {
+              toast.message(
+                `${config.providerName} Converted Reads push returned 0 rows.`
+              );
+            }
           }
         } catch (pushError) {
           toast.error(

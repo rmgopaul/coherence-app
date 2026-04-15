@@ -1,11 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "GoodWe",
   providerSlug: "goodwe",
-  convertedReadsMonitoring: "GoodWe",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.goodwe,
   pageTitle: "GoodWe SEMS API",
   pageDescription:
     "Account/password connection for GoodWe SEMS Portal endpoints, including bulk CSV processing for production snapshots.",

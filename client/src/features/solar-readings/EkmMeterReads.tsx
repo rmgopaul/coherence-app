@@ -1,12 +1,12 @@
 import { trpc } from "@/lib/trpc";
+import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import MeterReadsPage from "./shared/MeterReadsPage";
 import type { MeterReadsProviderConfig } from "./shared/types";
 
 const config: MeterReadsProviderConfig = {
   providerName: "EKM",
   providerSlug: "ekm",
-  convertedReadsMonitoring: "EKM",
-  convertedReadsCsvMonitoring: "EKM Encompass.io",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.ekm,
   pageTitle: "EKM Metering API",
   pageDescription:
     "API Key connection for EKM meter reads, including bulk CSV processing for production snapshots.",
