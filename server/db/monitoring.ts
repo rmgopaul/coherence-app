@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { eq, and, asc, gte, sql, getDb, withDbRetry } from "./_core";
+import { eq, and, asc, desc, gte, sql, getDb, withDbRetry } from "./_core";
 import {
   monitoringApiRuns,
   monitoringBatchRuns,
@@ -166,6 +166,20 @@ export async function getMonitoringBatchRun(id: string) {
   if (!db) return null;
   return withDbRetry("get monitoring batch run", async () => {
     const [row] = await db.select().from(monitoringBatchRuns).where(eq(monitoringBatchRuns.id, id)).limit(1);
+    return row ?? null;
+  });
+}
+
+/** Returns the most recently created MonitoringBatchRun (or null). Used by the debug endpoint. */
+export async function getLatestMonitoringBatchRun() {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get latest monitoring batch run", async () => {
+    const [row] = await db
+      .select()
+      .from(monitoringBatchRuns)
+      .orderBy(desc(monitoringBatchRuns.createdAt))
+      .limit(1);
     return row ?? null;
   });
 }

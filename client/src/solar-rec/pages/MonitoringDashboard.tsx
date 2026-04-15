@@ -359,7 +359,39 @@ function DebugConvertedReadsDialog({
                   <p className="text-muted-foreground">Payload bytes</p>
                   <p className="font-mono">{data.rawPayloadBytes.toLocaleString()}</p>
                 </div>
+                <div>
+                  <p className="text-muted-foreground">Chunked?</p>
+                  <p className="font-mono">
+                    {data.chunked ? `yes (${data.chunkKeys.length} chunks)` : "no"}
+                  </p>
+                </div>
               </div>
+
+              {data.latestBatch && (
+                <div className="rounded border bg-muted/30 p-2 space-y-0.5">
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    Latest batch run
+                  </p>
+                  <div className="text-[11px] font-mono space-y-0.5">
+                    <div>id: {data.latestBatch.id}</div>
+                    <div>
+                      status: <span className={data.latestBatch.status === "running" ? "text-amber-600" : data.latestBatch.status === "failed" ? "text-destructive" : "text-emerald-700"}>{data.latestBatch.status}</span>
+                      {" · "}
+                      age: {data.latestBatch.ageSeconds != null ? `${data.latestBatch.ageSeconds}s` : "n/a"}
+                    </div>
+                    <div>
+                      providers: {data.latestBatch.providersCompleted}/{data.latestBatch.providersTotal}
+                      {" · "}
+                      sites: {data.latestBatch.totalSites}
+                      {" ("}
+                      {data.latestBatch.successCount}✓ {data.latestBatch.errorCount}✗ {data.latestBatch.noDataCount}○{")"}
+                    </div>
+                    <div>current: {data.latestBatch.currentProvider ?? "none"} {data.latestBatch.currentCredentialName ? `(${data.latestBatch.currentCredentialName})` : ""}</div>
+                    <div>started: {data.latestBatch.startedAt?.slice(0, 19) ?? "n/a"}</div>
+                    <div>completed: {data.latestBatch.completedAt?.slice(0, 19) ?? "n/a"}</div>
+                  </div>
+                </div>
+              )}
 
               {data.sources && data.sources.length > 0 && (
                 <div>

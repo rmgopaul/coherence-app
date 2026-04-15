@@ -1358,10 +1358,21 @@ const monitoringRouter = t.router({
    * Debug endpoint — dumps the raw `dataset:convertedReads` payload from the
    * server DB so we can see exactly what the monitoring bridge has written.
    * Returns metadata + a sample of rows matching today's date.
+   *
+   * Handles three payload shapes:
+   *   1. Full dataset JSON: { uploadedAt, rows, csvText, sources, ... }
+   *   2. Chunk pointer: { _chunkedDataset: true, chunkKeys: [...] } — when
+   *      the dashboard's auto-sync split a large payload into multiple rows.
+   *      We fetch each chunk and reassemble, then parse the combined JSON.
+   *   3. Empty/missing: no dataset stored.
+   *
+   * Also returns the latest MonitoringBatchRun status so we can see if an
+   * active batch is actually making progress or stalled.
    */
   debugConvertedReadsState: solarRecOperatorProcedure.query(async () => {
-    const { getSolarRecDashboardPayload } = await import("../db");
+    const { getSolarRecDashboardPayload, getLatestMonitoringBatchRun } = await import("../db");
     const ownerUserId = await resolveSolarRecOwnerUserId();
+
     // Today in America/Chicago (project timezone)
     const todayIso = new Intl.DateTimeFormat("en-CA", {
       timeZone: "America/Chicago",
@@ -1372,52 +1383,136 @@ const monitoringRouter = t.router({
     const [yy, mm, dd] = todayIso.split("-");
     const todayLocal = `${Number(mm)}/${Number(dd)}/${yy}`;
 
-    const payload = await getSolarRecDashboardPayload(ownerUserId, "dataset:convertedReads");
-    if (!payload) {
+    // Pull the latest batch status so the UI can tell whether a running
+    // batch is actually progressing or has been silently stuck.
+    let latestBatch: {
+      id: string;
+      status: string;
+      providersTotal: number;
+      providersCompleted: number;
+      totalSites: number;
+      successCount: number;
+      errorCount: number;
+      noDataCount: number;
+      currentProvider: string | null;
+      currentCredentialName: string | null;
+      startedAt: string | null;
+      completedAt: string | null;
+      createdAt: string | null;
+      ageSeconds: number | null;
+    } | null = null;
+    try {
+      const row = await getLatestMonitoringBatchRun();
+      if (row) {
+        const createdAt = row.createdAt ? new Date(row.createdAt).toISOString() : null;
+        latestBatch = {
+          id: row.id,
+          status: row.status,
+          providersTotal: row.providersTotal ?? 0,
+          providersCompleted: row.providersCompleted ?? 0,
+          totalSites: row.totalSites ?? 0,
+          successCount: row.successCount ?? 0,
+          errorCount: row.errorCount ?? 0,
+          noDataCount: row.noDataCount ?? 0,
+          currentProvider: row.currentProvider ?? null,
+          currentCredentialName: row.currentCredentialName ?? null,
+          startedAt: row.startedAt ? new Date(row.startedAt).toISOString() : null,
+          completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : null,
+          createdAt,
+          ageSeconds: createdAt
+            ? Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000)
+            : null,
+        };
+      }
+    } catch (err) {
+      console.warn("[debugConvertedReadsState] latest batch lookup failed:", err);
+    }
+
+    const DB_STORAGE_KEY = "dataset:convertedReads";
+    const payloadRaw = await getSolarRecDashboardPayload(ownerUserId, DB_STORAGE_KEY);
+    if (!payloadRaw) {
       return {
         ownerUserId,
         todayIso,
         todayLocal,
         exists: false,
+        chunked: false,
+        chunkKeys: [] as string[],
         uploadedAt: null,
         totalRows: 0,
         todayRowCount: 0,
         sampleRows: [] as Array<Record<string, string>>,
+        lastRows: [] as Array<Record<string, string>>,
         sources: [] as Array<{ fileName: string; uploadedAt: string; rowCount: number }>,
         rawPayloadBytes: 0,
+        latestBatch,
       };
+    }
+
+    // Check if the payload is a chunk pointer (dashboard's auto-sync format
+    // for large datasets). If so, follow the chunk keys and reassemble.
+    let effectivePayload = payloadRaw;
+    let chunked = false;
+    let chunkKeys: string[] = [];
+    let combinedBytes = payloadRaw.length;
+    try {
+      const maybePointer = JSON.parse(payloadRaw) as { _chunkedDataset?: unknown; chunkKeys?: unknown };
+      if (maybePointer && maybePointer._chunkedDataset === true && Array.isArray(maybePointer.chunkKeys)) {
+        chunked = true;
+        chunkKeys = maybePointer.chunkKeys.filter((k): k is string => typeof k === "string");
+        const parts: string[] = [];
+        for (const chunkKey of chunkKeys) {
+          const chunkPayload = await getSolarRecDashboardPayload(ownerUserId, `dataset:${chunkKey}`);
+          if (chunkPayload) parts.push(chunkPayload);
+        }
+        effectivePayload = parts.join("");
+        combinedBytes = effectivePayload.length;
+      }
+    } catch {
+      // Not a JSON pointer — assume it's the full dataset JSON below.
     }
 
     let parsed: {
       uploadedAt?: string;
       rows?: Array<Record<string, string>>;
       csvText?: string;
+      headers?: string[];
       sources?: Array<{ fileName: string; uploadedAt: string; rowCount: number }>;
     } = {};
     try {
-      parsed = JSON.parse(payload);
+      parsed = JSON.parse(effectivePayload);
     } catch {
       return {
         ownerUserId,
         todayIso,
         todayLocal,
         exists: true,
+        chunked,
+        chunkKeys,
         uploadedAt: null,
         totalRows: 0,
         todayRowCount: 0,
         sampleRows: [],
+        lastRows: [],
         sources: [],
-        rawPayloadBytes: payload.length,
+        rawPayloadBytes: combinedBytes,
         parseError: "Stored payload is not valid JSON",
+        latestBatch,
       };
     }
 
-    const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+    // Some payloads (e.g. client auto-sync) write only `csvText`, not `rows`.
+    // Fall back to parsing csvText with the shared CSV parser.
+    let rows: Array<Record<string, string>> = Array.isArray(parsed.rows) ? parsed.rows : [];
+    if (rows.length === 0 && typeof parsed.csvText === "string" && parsed.csvText.trim().length > 0) {
+      const { parseCsvText } = await import("../routers/helpers");
+      rows = parseCsvText(parsed.csvText).rows;
+    }
+
     const todayRows = rows.filter(
       (r) =>
         r.read_date === todayLocal ||
         r.read_date === todayIso ||
-        // YYYY-MM-DD comparison (the raw ISO form)
         (typeof r.read_date === "string" && r.read_date.startsWith(todayIso))
     );
 
@@ -1426,13 +1521,16 @@ const monitoringRouter = t.router({
       todayIso,
       todayLocal,
       exists: true,
+      chunked,
+      chunkKeys,
       uploadedAt: parsed.uploadedAt ?? null,
       totalRows: rows.length,
       todayRowCount: todayRows.length,
       sampleRows: todayRows.slice(0, 10),
       lastRows: rows.slice(-5),
       sources: parsed.sources ?? [],
-      rawPayloadBytes: payload.length,
+      rawPayloadBytes: combinedBytes,
+      latestBatch,
     };
   }),
 
@@ -1463,151 +1561,22 @@ const monitoringRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
-// Auth compat router — so existing meter read pages that call
-// trpc.auth.me / trpc.auth.logout work in the solar-rec context.
-// ---------------------------------------------------------------------------
-
-const authRouter = t.router({
-  me: solarRecViewerProcedure.query(({ ctx }) => {
-    if (!ctx.user) return null;
-    return {
-      id: ctx.user.id,
-      openId: ctx.user.email, // compat shim
-      name: ctx.user.name,
-      email: ctx.user.email,
-      role: ctx.user.role,
-      loginMethod: "google",
-      createdAt: new Date(),
-      updatedAt: new Date(),
-      lastSignedIn: new Date(),
-      twoFactorEnabled: false,
-      twoFactorPending: false,
-    };
-  }),
-
-  logout: solarRecViewerProcedure.mutation(({ ctx }) => {
-    // Clear the solar-rec session cookie
-    ctx.res.clearCookie("solar_rec_session", {
-      path: "/solar-rec/",
-      sameSite: "lax",
-    });
-    return { success: true };
-  }),
-});
-
-// ---------------------------------------------------------------------------
 // Compose root router
 // ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Enphase V2 sub-router (uses team credentials from solarRecTeamCredentials)
-// ---------------------------------------------------------------------------
-
-async function getEnphaseV2TeamCredentials(): Promise<{ apiKey: string; userId: string; baseUrl?: string | null }> {
-  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
-  const creds = await getSolarRecTeamCredentialsByProvider("enphase-v4"); // stored under enphase-v4 key
-  const cred = creds[0];
-  if (!cred) throw new TRPCError({ code: "NOT_FOUND", message: "No Enphase credentials configured. Add them in Settings > API Credentials." });
-
-  let apiKey = cred.accessToken ?? "";
-  let userId = "";
-  let baseUrl: string | null = null;
-
-  if (cred.metadata) {
-    try {
-      const meta = JSON.parse(cred.metadata);
-      userId = meta.userId ?? "";
-      baseUrl = meta.baseUrl ?? null;
-    } catch { /* ignore */ }
-  }
-
-  if (!apiKey || !userId) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "Enphase credentials missing apiKey or userId." });
-  }
-
-  return { apiKey, userId, baseUrl };
-}
-
-const enphaseV2Router = t.router({
-  getStatus: solarRecOperatorProcedure.query(async () => {
-    try {
-      const creds = await getEnphaseV2TeamCredentials();
-      return { connected: true, userId: creds.userId, baseUrl: creds.baseUrl };
-    } catch {
-      return { connected: false, userId: null, baseUrl: null };
-    }
-  }),
-
-  connect: solarRecAdminProcedure
-    .input(z.object({ apiKey: z.string().min(1), userId: z.string().min(1), baseUrl: z.string().optional() }))
-    .mutation(async ({ ctx, input }) => {
-      const { upsertSolarRecTeamCredential } = await import("../db");
-      await upsertSolarRecTeamCredential({
-        provider: "enphase-v4",
-        connectionName: "Enphase V2",
-        accessToken: input.apiKey.trim(),
-        metadata: JSON.stringify({ userId: input.userId.trim(), baseUrl: input.baseUrl?.trim() || null }),
-        createdBy: ctx.userId,
-      });
-      return { success: true };
-    }),
-
-  disconnect: solarRecAdminProcedure.mutation(async () => {
-    const { getSolarRecTeamCredentialsByProvider, deleteSolarRecTeamCredential } = await import("../db");
-    const creds = await getSolarRecTeamCredentialsByProvider("enphase-v4");
-    for (const c of creds) await deleteSolarRecTeamCredential(c.id);
-    return { success: true };
-  }),
-
-  listSystems: solarRecOperatorProcedure.query(async () => {
-    const creds = await getEnphaseV2TeamCredentials();
-    const { listSystems } = await import("../services/solar/enphaseV2");
-    return listSystems(creds);
-  }),
-
-  getSummary: solarRecOperatorProcedure
-    .input(z.object({ systemId: z.string().min(1) }))
-    .mutation(async ({ input }) => {
-      const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemSummary } = await import("../services/solar/enphaseV2");
-      return getSystemSummary(creds, input.systemId.trim());
-    }),
-
-  getEnergyLifetime: solarRecOperatorProcedure
-    .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
-    .mutation(async ({ input }) => {
-      const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemEnergyLifetime } = await import("../services/solar/enphaseV2");
-      return getSystemEnergyLifetime(creds, input.systemId.trim(), input.startDate, input.endDate);
-    }),
-
-  getRgmStats: solarRecOperatorProcedure
-    .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
-    .mutation(async ({ input }) => {
-      const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemRgmStats } = await import("../services/solar/enphaseV2");
-      return getSystemRgmStats(creds, input.systemId.trim(), input.startDate, input.endDate);
-    }),
-
-  getProductionMeterReadings: solarRecOperatorProcedure
-    .input(z.object({ systemId: z.string().min(1), startDate: z.string().optional(), endDate: z.string().optional() }))
-    .mutation(async ({ input }) => {
-      const creds = await getEnphaseV2TeamCredentials();
-      const { getSystemProductionMeterReadings } = await import("../services/solar/enphaseV2");
-      return getSystemProductionMeterReadings(creds, input.systemId.trim(), input.startDate, input.endDate);
-    }),
-});
-
-// ---------------------------------------------------------------------------
-// Compose root router
-// ---------------------------------------------------------------------------
+//
+// 2026-04-15: authRouter and enphaseV2Router were removed from this file.
+// No client ever called solarRecTrpc.auth.* or solarRecTrpc.enphaseV2.*
+// (main-app pages use the primary trpc client, which hits the main
+// appRouter's auth/enphaseV2 sub-routers in server/routers/*.ts).
+// The "auth" and "enphaseV2" roots were also dropped from
+// SOLAR_REC_ROUTER_ROOTS in _core/index.ts so any legacy request that
+// happens to arrive at /solar-rec/api/trpc/{auth,enphaseV2}.* now falls
+// through the dispatcher to the main appRouter instead of 404-ing here.
 
 export const solarRecAppRouter = t.router({
-  auth: authRouter,
   users: usersRouter,
   credentials: credentialsRouter,
   monitoring: monitoringRouter,
-  enphaseV2: enphaseV2Router,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
