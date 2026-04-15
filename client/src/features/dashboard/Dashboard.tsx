@@ -98,141 +98,21 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-
-const DAILY_BRIEF_CACHE_KEY = "dailyBriefCacheV1";
-
-const WEATHER_CODE_LABELS: Record<number, string> = {
-  0: "Clear",
-  1: "Mainly clear",
-  2: "Partly cloudy",
-  3: "Overcast",
-  45: "Fog",
-  48: "Rime fog",
-  51: "Light drizzle",
-  53: "Drizzle",
-  55: "Dense drizzle",
-  56: "Freezing drizzle",
-  57: "Dense freezing drizzle",
-  61: "Light rain",
-  63: "Rain",
-  65: "Heavy rain",
-  66: "Freezing rain",
-  67: "Heavy freezing rain",
-  71: "Light snow",
-  73: "Snow",
-  75: "Heavy snow",
-  77: "Snow grains",
-  80: "Rain showers",
-  81: "Heavy rain showers",
-  82: "Violent rain showers",
-  85: "Light snow showers",
-  86: "Heavy snow showers",
-  95: "Thunderstorm",
-  96: "Thunderstorm with hail",
-  99: "Severe thunderstorm with hail",
-};
-
-const getWeatherLabel = (code?: number) => {
-  if (typeof code !== "number") return "Weather unavailable";
-  return WEATHER_CODE_LABELS[code] || "Weather unavailable";
-};
-
-type DashboardHeaderButtonConfig = {
-  key: DashboardHeaderToolButtonKey;
-  label: string;
-  route: string;
-  icon: LucideIcon;
-};
-
-const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
-  { key: "notebook", label: "Notebook", route: "/notes", icon: FileText },
-  { key: "clockifyTracker", label: "Clockify", route: "/widget/clockify", icon: Clock3 },
-  { key: "solarRec", label: "Solar REC", route: "/solar-rec-dashboard", icon: BarChart3 },
-  { key: "invoiceMatch", label: "Invoice Match", route: "/invoice-match-dashboard", icon: FileSpreadsheet },
-  { key: "deepUpdate", label: "Deep Update", route: "/deep-update-synthesizer", icon: FileSpreadsheet },
-  { key: "contractScanner", label: "Contract Scanner", route: "/contract-scanner", icon: FileText },
-  { key: "contractScraper", label: "Contract Scraper", route: "/contract-scrape-manager", icon: FileText },
-  { key: "enphaseV4", label: "Enphase v4", route: "/enphase-v4-meter-reads", icon: Database },
-  { key: "solarEdgeApi", label: "SolarEdge API", route: "/solaredge-meter-reads", icon: Database },
-  { key: "froniusApi", label: "Fronius API", route: "/fronius-meter-reads", icon: Database },
-  { key: "ennexOsApi", label: "ennexOS API", route: "/ennexos-meter-reads", icon: Database },
-  { key: "egaugeApi", label: "eGauge API", route: "/egauge-api", icon: Database },
-  { key: "teslaSolarApi", label: "Tesla Solar API", route: "/tesla-solar-api", icon: Database },
-  { key: "teslaPowerhubApi", label: "Tesla Powerhub API", route: "/tesla-powerhub-api", icon: Database },
-  { key: "zendeskApi", label: "Zendesk API", route: "/zendesk-ticket-metrics", icon: Database },
-];
-
-const decodeHtmlEntities = (content: string) => {
-  if (typeof window === "undefined") return content.replace(/&nbsp;/gi, " ");
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = content;
-  return textarea.value;
-};
-
-const toPlainText = (content: string) =>
-  decodeHtmlEntities(
-    content
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-  )
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const formatCalendarEventLabel = (event: CalendarEvent) => {
-  const summary = String(event?.summary || "Untitled event").trim() || "Untitled event";
-  const startDateTime = event?.start?.dateTime;
-  const startDate = event?.start?.date;
-  const raw = startDateTime || startDate;
-  if (!raw) return summary;
-
-  const date = new Date(raw);
-  if (Number.isNaN(date.getTime())) return summary;
-
-  const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
-  if (startDateTime) {
-    const time = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-    return `${summary} · ${weekday} ${time}`;
-  }
-  return `${summary} · ${weekday} all-day`;
-};
-
-const normalizeEventText = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const buildLocalDateKey = (date = new Date()) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-const isSameLocalDay = (dateA: Date, dateB: Date) => {
-  return (
-    dateA.getFullYear() === dateB.getFullYear() &&
-    dateA.getMonth() === dateB.getMonth() &&
-    dateA.getDate() === dateB.getDate()
-  );
-};
-
-
 import { SUPPLEMENT_UNITS } from "@shared/const";
-
-/** All-day events with these summaries are location/status markers, not actionable events. */
-const IGNORED_ALL_DAY_SUMMARIES = new Set(["home", "office", "wfh", "work from home", "remote", "travel", "vacation", "ooo", "out of office"]);
-
-/** Returns true if the event is a non-actionable all-day status marker (e.g. "Home"). */
-const isIgnoredStatusEvent = (event: CalendarEvent): boolean => {
-  const summary = (event?.summary || "").trim().toLowerCase();
-  if (!summary) return false;
-  const isAllDay = !event?.start?.dateTime && !!event?.start?.date;
-  return isAllDay && IGNORED_ALL_DAY_SUMMARIES.has(summary);
-};
+import {
+  DAILY_BRIEF_CACHE_KEY,
+  DASHBOARD_HEADER_BUTTONS,
+} from "./dashboard.constants";
+import {
+  getWeatherLabel,
+  decodeHtmlEntities,
+  toPlainText,
+  formatCalendarEventLabel,
+  normalizeEventText,
+  buildLocalDateKey,
+  isSameLocalDay,
+  isIgnoredStatusEvent,
+} from "./dashboard.helpers";
 
 function LiveClockValue() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
