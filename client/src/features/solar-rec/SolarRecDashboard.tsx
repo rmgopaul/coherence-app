@@ -50,6 +50,9 @@ const OwnershipTabLazy = lazy(
 const AppPipelineTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/AppPipelineTab")
 );
+const FinancialsTabLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/FinancialsTab")
+);
 import {
   buildMeterReadDownloadFileName,
   convertMeterReadWorkbook,
@@ -74,12 +77,14 @@ import type {
   CsvDataset,
   CsvRow,
   DatasetKey,
+  FinancialProfitData,
   GenerationBaseline,
   MonitoringDetailsRecord,
   OfflineBreakdownRow,
   OwnershipStatus,
   PipelineCashFlowRow,
   PipelineMonthRow,
+  ProfitRow,
   SizeBucket,
   SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
@@ -1743,32 +1748,14 @@ export default function SolarRecDashboard() {
     recPerfSortBy === col ? (recPerfSortDir === "asc" ? " ▲" : " ▼") : "";
   // offlineDetailPage — moved to @/solar-rec-dashboard/components/OfflineMonitoringTab
   // compliantSourcePage, compliantReportPage — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
-  // Financials table sort/filter state. Mirrors changeOwnership pattern.
-  type FinancialSortKey =
-    | "systemName"
-    | "grossContractValue"
-    | "vendorFeePercent"
-    | "vendorFeeAmount"
-    | "utilityCollateral"
-    | "additionalCollateralPercent"
-    | "additionalCollateralAmount"
-    | "ccAuth5Percent"
-    | "applicationFee"
-    | "totalDeductions"
-    | "profit"
-    | "totalCollateralization";
-  const [financialSortBy, setFinancialSortBy] = useState<FinancialSortKey>("profit");
-  const [financialSortDir, setFinancialSortDir] = useState<"asc" | "desc">("desc");
-  const [financialSearch, setFinancialSearch] = useState("");
-  const [financialFilter, setFinancialFilter] = useState<"all" | "needs-review" | "ok">("all");
-  type RescanStatus = { status: "queued" | "active" | "completed" | "error"; changes?: string; error?: string };
-  const [rescanStatuses, setRescanStatuses] = useState<Map<string, RescanStatus>>(new Map());
-  // Optimistic override cache: applied immediately after saving so the table
-  // updates instantly without waiting for the 28K-CSG-ID refetch (~20s+).
-  // Cleared when the refetch completes (the DB data then includes the overrides).
+  // FinancialSortKey, RescanStatus types + financialSortBy/SortDir/Search/Filter,
+  // rescanStatuses, batchRescanRunning, batchRescanCancelledRef state
+  // — moved to @/solar-rec-dashboard/components/FinancialsTab
+  //
+  // Optimistic override cache: lives in the parent because the Pipeline
+  // tab's cash flow aggregator also reads it. Financials writes via
+  // setLocalOverrides passed as a prop.
   const [localOverrides, setLocalOverrides] = useState<Map<string, { vfp: number; acp: number }>>(new Map());
-  const [batchRescanRunning, setBatchRescanRunning] = useState(false);
-  const batchRescanCancelledRef = useRef(false);
   const [uploadsExpanded, setUploadsExpanded] = useState(false);
   // Compliant source state + refs — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
   const [monthlySnapshotTransitions, setMonthlySnapshotTransitions] = useState<
@@ -6805,54 +6792,7 @@ const part2VerifiedSystemIds = useMemo(() => {
   return ids;
 }, [part2VerifiedAbpRows]);
 
-// ── Financials: Part II Filtered Systems ────────────────────────
-const part2VerifiedSystems = useMemo(() => {
-  if (!isFinancialsTabActive) return [];
-  return systems.filter((sys) => sys.part2VerificationDate !== null);
-}, [isFinancialsTabActive, systems]);
-
-// ── Financials: Revenue at Risk ─────────────────────────────────
-const financialRevenueAtRisk = useMemo(() => {
-  if (!isFinancialsTabActive) return { total: 0, percent: null as number | null, byType: [] as { type: string; count: number; value: number }[], systems: [] as { name: string; riskType: string; value: number; lastDate: string; daysOffline: number }[] };
-  const now = new Date();
-  const atRiskSystems: { name: string; riskType: string; value: number; lastDate: string; daysOffline: number }[] = [];
-
-  part2VerifiedSystems.forEach((sys) => {
-    if ((sys.contractedValue ?? 0) <= 0) return;
-    let riskType = "";
-    if (!sys.isReporting) riskType = "Offline";
-    else if (sys.isTerminated) riskType = "Terminated";
-    if (!riskType) return;
-
-    const daysOffline = sys.latestReportingDate ? Math.floor((now.getTime() - sys.latestReportingDate.getTime()) / (1000 * 60 * 60 * 24)) : 999;
-    atRiskSystems.push({
-      name: sys.systemName,
-      riskType,
-      value: sys.contractedValue ?? 0,
-      lastDate: sys.latestReportingDate?.toLocaleDateString() ?? "Never",
-      daysOffline,
-    });
-  });
-
-  const totalAtRisk = atRiskSystems.reduce((a, s) => a + s.value, 0);
-  const totalPortfolio = part2VerifiedSystems.reduce((a, s) => a + (s.contractedValue ?? 0), 0);
-
-  const byType = new Map<string, { type: string; count: number; value: number }>();
-  atRiskSystems.forEach(s => {
-    const g = byType.get(s.riskType) ?? { type: s.riskType, count: 0, value: 0 };
-    g.count++;
-    g.value += s.value;
-    byType.set(s.riskType, g);
-  });
-
-  return {
-    total: totalAtRisk,
-    percent: toPercentValue(totalAtRisk, totalPortfolio),
-    byType: Array.from(byType.values()),
-    systems: atRiskSystems.sort((a, b) => b.value - a.value),
-  };
-}, [isFinancialsTabActive, part2VerifiedSystems]);
-
+// part2VerifiedSystems, financialRevenueAtRisk — moved to @/solar-rec-dashboard/components/FinancialsTab
 // ── Financials: Profit & Collateralization ──────────────────────
 const financialCsgIds = useMemo(() => {
   if (!isFinancialsTabActive && !isPipelineTabActive && !isOverviewTabActive) return [];
@@ -6869,47 +6809,12 @@ const contractScanResultsQuery = trpc.abpSettlement.getContractScanResultsByCsgI
   { csgIds: financialCsgIds },
   { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
 );
-const updateContractOverride = trpc.abpSettlement.updateContractOverride.useMutation();
-const rescanSingleContract = trpc.abpSettlement.rescanSingleContract.useMutation();
-const [editingFinancialRow, setEditingFinancialRow] = useState<{
-  csgId: string;
-  systemName: string;
-  vendorFeePercent: string;
-  additionalCollateralPercent: string;
-  notes: string;
-} | null>(null);
+// updateContractOverride, rescanSingleContract mutations + editingFinancialRow state
+// — moved to @/solar-rec-dashboard/components/FinancialsTab
 
-type ProfitRow = {
-  systemName: string;
-  applicationId: string;
-  csgId: string;
-  grossContractValue: number;
-  vendorFeePercent: number;
-  vendorFeeAmount: number;
-  utilityCollateral: number;
-  additionalCollateralPercent: number;
-  additionalCollateralAmount: number;
-  ccAuth5Percent: number;
-  applicationFee: number;
-  totalDeductions: number;
-  profit: number;
-  totalCollateralization: number;
-  // Validation: flag rows where collateral exceeds 30% of GCV.
-  needsReview: boolean;
-  reviewReason: string;
-  hasOverride: boolean;
-};
+// ProfitRow — moved to @/solar-rec-dashboard/state/types
 
-const financialProfitData = useMemo<{
-  rows: ProfitRow[];
-  totalProfit: number;
-  avgProfit: number;
-  totalCollateralization: number;
-  totalUtilityCollateral: number;
-  totalAdditionalCollateral: number;
-  totalCcAuth: number;
-  systemsWithData: number;
-}>(() => {
+const financialProfitData = useMemo<FinancialProfitData>(() => {
   const empty = { rows: [] as ProfitRow[], totalProfit: 0, avgProfit: 0, totalCollateralization: 0, totalUtilityCollateral: 0, totalAdditionalCollateral: 0, totalCcAuth: 0, systemsWithData: 0 };
   if (!isFinancialsTabActive && !isOverviewTabActive) return empty;
 
@@ -7271,131 +7176,6 @@ const financialProfitDebug = useMemo(() => {
   datasets.abpIccReport3Rows,
 ]);
 
-// ── Financials: filtered + sorted rows for interactive table ────
-const filteredFinancialRows = useMemo(() => {
-  if (!isFinancialsTabActive) return [];
-  let rows = financialProfitData.rows;
-
-  // Filter by review status
-  if (financialFilter === "needs-review") {
-    rows = rows.filter((r) => r.needsReview);
-  } else if (financialFilter === "ok") {
-    rows = rows.filter((r) => !r.needsReview);
-  }
-
-  // Filter by search term (system name, app ID, csg ID)
-  const needle = financialSearch.trim().toLowerCase();
-  if (needle) {
-    rows = rows.filter((r) =>
-      [r.systemName, r.applicationId, r.csgId]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle)
-    );
-  }
-
-  // Sort by selected column
-  const dir = financialSortDir === "asc" ? 1 : -1;
-  rows = [...rows].sort((a, b) => {
-    const key = financialSortBy;
-    if (key === "systemName") {
-      return (
-        a.systemName.localeCompare(b.systemName, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        }) * dir
-      );
-    }
-    return ((a[key] as number) - (b[key] as number)) * dir;
-  });
-
-  return rows;
-}, [
-  isFinancialsTabActive,
-  financialProfitData.rows,
-  financialFilter,
-  financialSearch,
-  financialSortBy,
-  financialSortDir,
-]);
-
-const financialFlaggedCount = useMemo(
-  () => financialProfitData.rows.filter((r) => r.needsReview).length,
-  [financialProfitData.rows]
-);
-
-// ── Financials: sortable header helper (used in JSX below) ──────
-const financialSortIndicator = (col: FinancialSortKey) =>
-  financialSortBy === col ? (financialSortDir === "asc" ? " ▲" : " ▼") : "";
-const handleFinancialSort = (col: FinancialSortKey) => {
-  if (financialSortBy === col) {
-    setFinancialSortDir((d) => (d === "asc" ? "desc" : "asc"));
-  } else {
-    setFinancialSortBy(col);
-    setFinancialSortDir("desc");
-  }
-};
-
-const handleBatchRescan = async () => {
-  const rowsToScan = filteredFinancialRows;
-  if (rowsToScan.length === 0) return;
-
-  batchRescanCancelledRef.current = false;
-  setBatchRescanRunning(true);
-
-  const initial = new Map<string, RescanStatus>();
-  for (const row of rowsToScan) {
-    initial.set(row.csgId, { status: "queued" });
-  }
-  setRescanStatuses(initial);
-
-  for (const row of rowsToScan) {
-    if (batchRescanCancelledRef.current) break;
-
-    setRescanStatuses((prev) => {
-      const next = new Map(prev);
-      next.set(row.csgId, { status: "active" });
-      return next;
-    });
-
-    try {
-      const result = await rescanSingleContract.mutateAsync({ csgId: row.csgId });
-
-      const changes: string[] = [];
-      const oldVfp = row.vendorFeePercent;
-      const newVfp = result.vendorFeePercent ?? 0;
-      if (newVfp !== oldVfp) {
-        changes.push(`Vendor Fee: ${oldVfp}% \u2192 ${newVfp}%`);
-      }
-      const oldAcp = row.additionalCollateralPercent;
-      const newAcp = result.additionalCollateralPercent ?? 0;
-      if (newAcp !== oldAcp) {
-        changes.push(`Collateral: ${oldAcp}% \u2192 ${newAcp}%`);
-      }
-
-      setRescanStatuses((prev) => {
-        const next = new Map(prev);
-        next.set(row.csgId, {
-          status: "completed",
-          changes: changes.length > 0 ? changes.join("; ") : "No changes",
-        });
-        return next;
-      });
-    } catch (err) {
-      setRescanStatuses((prev) => {
-        const next = new Map(prev);
-        next.set(row.csgId, {
-          status: "error",
-          error: err instanceof Error ? err.message : "Failed",
-        });
-        return next;
-      });
-    }
-  }
-
-  await contractScanResultsQuery.refetch();
-  setBatchRescanRunning(false);
-};
 
 // ── Data Quality: Freshness ─────────────────────────────────────
 const dataQualityFreshness = useMemo(() => {
@@ -7479,7 +7259,6 @@ const aiDataContext = useMemo(() => {
           totalProfit: financialProfitData.totalProfit,
           avgProfit: financialProfitData.avgProfit,
           totalCollateralization: financialProfitData.totalCollateralization,
-          revenueAtRisk: financialRevenueAtRisk,
         });
       case "performance-eval":
         return JSON.stringify({
@@ -7543,7 +7322,7 @@ const aiDataContext = useMemo(() => {
     return JSON.stringify({ tab: activeTab, error: "Failed to serialize data context" });
   }
 }, [
-  activeTab, forecastProjections, financialProfitData, financialRevenueAtRisk,
+  activeTab, forecastProjections, financialProfitData,
   performanceSourceRows, deliveryTrackerData, systems, alerts, alertSummary,
   comparisonInstallers, comparisonPlatforms,
 ]);
@@ -10260,705 +10039,26 @@ const aiDataContext = useMemo(() => {
             </Card>
           </div>)}
 
-          {activeTab === "financials" && (<div className="space-y-4 mt-4">
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
-              <Card className="border-rose-200 bg-rose-50/50"><CardHeader><CardDescription>Revenue at Risk</CardDescription><CardTitle className="text-2xl text-rose-800">${formatNumber(financialRevenueAtRisk.total)}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>% of Portfolio</CardDescription><CardTitle className="text-2xl">{financialRevenueAtRisk.percent !== null ? `${financialRevenueAtRisk.percent.toFixed(1)}%` : "N/A"}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Systems at Risk</CardDescription><CardTitle className="text-2xl">{financialRevenueAtRisk.systems.length}</CardTitle></CardHeader></Card>
-            </div>
-
-            {financialRevenueAtRisk.byType.length > 0 && (
-              <Card>
-                <CardHeader><CardTitle className="text-base">Revenue at Risk by Category</CardTitle></CardHeader>
-                <CardContent>
-                  <div className="h-48 rounded-md border border-slate-200 bg-white p-2 mb-4">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={financialRevenueAtRisk.byType} margin={{ top: 8, right: 12, left: 4, bottom: 8 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                        <XAxis dataKey="type" tick={{ fontSize: 12 }} />
-                        <YAxis tick={{ fontSize: 12 }} />
-                        <Tooltip formatter={(v: number) => `$${formatNumber(v)}`} />
-                        <Bar dataKey="value" fill="#ef4444" name="Value at Risk" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div><CardTitle className="text-base">Systems at Risk</CardTitle><CardDescription>Systems with contracted value that are offline or terminated.</CardDescription></div>
-                  {financialRevenueAtRisk.systems.length > 0 && (
-                    <Button variant="outline" size="sm" onClick={() => {
-                      const csv = buildCsv(["system", "risk_type", "contract_value", "last_reporting", "days_offline"], financialRevenueAtRisk.systems.map(s => ({ system: s.name, risk_type: s.riskType, contract_value: s.value, last_reporting: s.lastDate, days_offline: s.daysOffline })));
-                      triggerCsvDownload(`revenue-at-risk-${timestampForCsvFileName()}.csv`, csv);
-                    }}>Export CSV</Button>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                {financialRevenueAtRisk.systems.length === 0 ? (
-                  <p className="text-sm text-emerald-600 py-4 text-center">No systems at risk. All contracted systems are reporting.</p>
-                ) : (
-                  <Table>
-                    <TableHeader><TableRow>
-                      <TableHead>System</TableHead><TableHead>Risk Type</TableHead><TableHead className="text-right">Contract Value</TableHead><TableHead>Last Reporting</TableHead><TableHead className="text-right">Days Offline</TableHead>
-                    </TableRow></TableHeader>
-                    <TableBody>
-                      {financialRevenueAtRisk.systems.slice(0, 50).map((s, i) => {
-                        const matchedSys = systems.find(sys => sys.systemName === s.name);
-                        return (
-                        <TableRow key={i}>
-                          <TableCell>{matchedSys ? systemNameLink(s.name, matchedSys.key) : <span className="font-medium">{s.name}</span>}</TableCell>
-                          <TableCell><Badge variant={s.riskType === "Offline" ? "destructive" : "secondary"}>{s.riskType}</Badge></TableCell>
-                          <TableCell className="text-right">${formatNumber(s.value)}</TableCell>
-                          <TableCell>{s.lastDate}</TableCell>
-                          <TableCell className="text-right">{s.daysOffline}</TableCell>
-                        </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* ── Profit & Collateralization Section ───────────── */}
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <Card className="border-emerald-200 bg-emerald-50/50"><CardHeader><CardDescription>Total Profit (Vendor Fee)</CardDescription><CardTitle className="text-2xl text-emerald-800">${formatNumber(financialProfitData.totalProfit)}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Avg Profit / System</CardDescription><CardTitle className="text-2xl">${formatNumber(financialProfitData.avgProfit)}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Total Collateralization</CardDescription><CardTitle className="text-2xl">${formatNumber(financialProfitData.totalCollateralization)}</CardTitle></CardHeader></Card>
-              <Card><CardHeader><CardDescription>Systems w/ Data</CardDescription><CardTitle className="text-2xl">{financialProfitData.systemsWithData}</CardTitle></CardHeader></Card>
-              <Card className={financialFlaggedCount > 0 ? "border-amber-200 bg-amber-50/50" : ""}><CardHeader><CardDescription>Needs Review (&gt;30% Coll.)</CardDescription><CardTitle className={`text-2xl ${financialFlaggedCount > 0 ? "text-amber-800" : ""}`}>{financialFlaggedCount}</CardTitle></CardHeader></Card>
-            </div>
-
-            {financialProfitData.rows.length === 0 && financialCsgIds.length === 0 && (
-              <Card className="border-amber-200 bg-amber-50/50">
-                <CardContent className="py-4">
-                  <p className="text-sm text-amber-800">
-                    Upload the ABP CSG-System Mapping, ICC Report 3, and complete a contract scan job on the{" "}
-                    <a href="/contract-scrape-manager" className="underline font-medium">Contract Scraper</a>{" "}
-                    page to see profit and collateralization analysis.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Financials debug panel — walks the join chain
-                financialProfitData uses and shows where rows are
-                being dropped. Always visible (collapsed) when on the
-                Financials tab so you can see WHY the table is empty
-                without going to DevTools. */}
-            {financialProfitDebug && (
-              <Card className="border-slate-200">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">Financials data flow debug</CardTitle>
-                  <CardDescription>
-                    Walks the same join chain the profit table uses, counting attrition at every step. Use this to identify which dataset or which join is dropping rows.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="pt-2">
-                  <details>
-                    <summary className="text-xs cursor-pointer text-slate-600 hover:text-slate-900">
-                      Expand diagnostic (final result: {formatNumber(financialProfitDebug.chain.final)} profit rows)
-                    </summary>
-                    <div className="mt-3 space-y-3 text-xs font-mono">
-                      <div>
-                        <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                          Query state
-                        </p>
-                        <ul className="space-y-0.5">
-                          <li>
-                            getContractScanResultsByCsgIds enabled:{" "}
-                            <span
-                              className={
-                                financialProfitDebug.queryEnabled
-                                  ? "text-emerald-700"
-                                  : "text-rose-700"
-                              }
-                            >
-                              {String(financialProfitDebug.queryEnabled)}
-                            </span>
-                          </li>
-                          <li>
-                            query status:{" "}
-                            <span
-                              className={
-                                financialProfitDebug.queryStatus === "error"
-                                  ? "text-rose-700 font-bold"
-                                  : ""
-                              }
-                            >
-                              {financialProfitDebug.queryStatus}
-                            </span>
-                          </li>
-                          <li>query fetching: {String(financialProfitDebug.queryFetching)}</li>
-                          {financialProfitDebug.queryErrorMessage && (
-                            <li className="text-rose-700">
-                              error: {financialProfitDebug.queryErrorMessage}
-                            </li>
-                          )}
-                        </ul>
-                      </div>
-                      <div>
-                        <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                          Input dataset row counts
-                        </p>
-                        <ul className="space-y-0.5">
-                          <li>
-                            part2VerifiedAbpRows:{" "}
-                            <strong>{formatNumber(financialProfitDebug.counts.part2VerifiedAbpRows)}</strong>
-                          </li>
-                          <li>
-                            abpCsgSystemMapping rows:{" "}
-                            <strong>{formatNumber(financialProfitDebug.counts.mappingRows)}</strong>
-                          </li>
-                          <li>
-                            abpIccReport3Rows:{" "}
-                            <strong>{formatNumber(financialProfitDebug.counts.iccReport3Rows)}</strong>
-                          </li>
-                          <li>
-                            financialCsgIds (passed to query):{" "}
-                            <strong>{formatNumber(financialProfitDebug.counts.financialCsgIdsCount)}</strong>
-                          </li>
-                          <li>
-                            contractScanResults returned by query:{" "}
-                            <strong>{formatNumber(financialProfitDebug.counts.scanResultsReturned)}</strong>
-                          </li>
-                        </ul>
-                      </div>
-                      <div>
-                        <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                          Join chain attrition
-                        </p>
-                        <ul className="space-y-0.5">
-                          <li>
-                            iterated part2VerifiedAbpRows:{" "}
-                            <strong>{formatNumber(financialProfitDebug.chain.iterated)}</strong>
-                          </li>
-                          <li>
-                            ↳ with non-empty Application_ID:{" "}
-                            <strong>{formatNumber(financialProfitDebug.chain.withAppId)}</strong>
-                          </li>
-                          <li>
-                            ↳ with csgId in mapping:{" "}
-                            <strong>{formatNumber(financialProfitDebug.chain.withCsgId)}</strong>
-                          </li>
-                          <li>
-                            ↳ with scan result for that csgId:{" "}
-                            <strong>{formatNumber(financialProfitDebug.chain.withScan)}</strong>
-                          </li>
-                          <li>
-                            ↳ with ICC Report row for appId:{" "}
-                            <strong>{formatNumber(financialProfitDebug.chain.withIcc)}</strong>
-                          </li>
-                          <li>
-                            FINAL (scan AND icc both present):{" "}
-                            <strong className="text-emerald-700">
-                              {formatNumber(financialProfitDebug.chain.final)}
-                            </strong>
-                          </li>
-                        </ul>
-                      </div>
-                      <div>
-                        <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                          Sample IDs (first 5 of each — eyeball for mismatches)
-                        </p>
-                        <ul className="space-y-0.5">
-                          <li>
-                            mapping csgIds: [
-                            {financialProfitDebug.samples.mappingCsgIds.join(", ") || "(empty)"}
-                            ]
-                          </li>
-                          <li>
-                            scan result csgIds: [
-                            {financialProfitDebug.samples.scanCsgIds.join(", ") || "(empty)"}
-                            ]
-                          </li>
-                          <li>
-                            mapping appIds: [
-                            {financialProfitDebug.samples.mappingAppIds.join(", ") || "(empty)"}
-                            ]
-                          </li>
-                          <li>
-                            ICC report appIds: [
-                            {financialProfitDebug.samples.iccAppIds.join(", ") || "(empty)"}
-                            ]
-                          </li>
-                          <li>
-                            part2 verified appIds: [
-                            {financialProfitDebug.samples.part2AppIds.join(", ") || "(empty)"}
-                            ]
-                          </li>
-                        </ul>
-                      </div>
-                      <div>
-                        <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500 mb-1">
-                          ICC Report 3 column analysis
-                        </p>
-                        <ul className="space-y-0.5">
-                          <li>
-                            CSV headers (first 20):{" "}
-                            {financialProfitDebug.icc.headers.length > 0
-                              ? `[${financialProfitDebug.icc.headers.join(", ")}]`
-                              : "(no headers)"}
-                          </li>
-                          <li>
-                            appId field match:{" "}
-                            <span
-                              className={
-                                financialProfitDebug.icc.appIdFieldFound
-                                  .length > 0
-                                  ? "text-emerald-700"
-                                  : "text-rose-700 font-bold"
-                              }
-                            >
-                              {financialProfitDebug.icc.appIdFieldFound
-                                .length > 0
-                                ? financialProfitDebug.icc.appIdFieldFound.join(
-                                    ", "
-                                  )
-                                : "NONE — expected 'Application ID', 'Application_ID', or 'application_id'"}
-                            </span>
-                          </li>
-                          <li>
-                            contract value field match:{" "}
-                            <span
-                              className={
-                                financialProfitDebug.icc
-                                  .contractValueFieldFound.length > 0
-                                  ? "text-emerald-700"
-                                  : "text-rose-700 font-bold"
-                              }
-                            >
-                              {financialProfitDebug.icc
-                                .contractValueFieldFound.length > 0
-                                ? financialProfitDebug.icc.contractValueFieldFound.join(
-                                    ", "
-                                  )
-                                : "NONE — expected 'Total REC Delivery Contract Value', 'REC Delivery Contract Value', or 'Total Contract Value'"}
-                            </span>
-                          </li>
-                        </ul>
-                      </div>
-                      <p className="text-[10px] text-slate-500 italic">
-                        Diagnostic added 2026-04-11 to debug "contract scraper data not reaching Financials". If the chain shows withScan=0 but withCsgId&gt;0, the csgIds in your mapping don't match what the scraper has. If withScan&gt;0 but final=0, ICC Report 3 is missing rows for those appIds.
-                      </p>
-                    </div>
-                  </details>
-                </CardContent>
-              </Card>
-            )}
-
-            {financialProfitData.rows.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle className="text-base">Profit & Collateralization by System</CardTitle>
-                      <CardDescription>Part II verified systems only. Profit = vendor fee. Collateral &gt; 30% of GCV flagged for review.</CardDescription>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={() => {
-                      const csv = buildCsv(
-                        [
-                          "system_name", "application_id", "csg_id", "gross_contract_value",
-                          "vendor_fee_percent", "vendor_fee_amount", "utility_5pct_collateral",
-                          "additional_collateral_percent", "additional_collateral_amount",
-                          "cc_auth_5pct", "application_fee", "total_deductions", "profit",
-                          "total_collateralization", "needs_review", "review_reason",
-                        ],
-                        financialProfitData.rows.map(r => ({
-                          system_name: r.systemName,
-                          application_id: r.applicationId,
-                          csg_id: r.csgId,
-                          gross_contract_value: r.grossContractValue,
-                          vendor_fee_percent: r.vendorFeePercent,
-                          vendor_fee_amount: r.vendorFeeAmount,
-                          utility_5pct_collateral: r.utilityCollateral,
-                          additional_collateral_percent: r.additionalCollateralPercent,
-                          additional_collateral_amount: r.additionalCollateralAmount,
-                          cc_auth_5pct: r.ccAuth5Percent,
-                          application_fee: r.applicationFee,
-                          total_deductions: r.totalDeductions,
-                          profit: r.profit,
-                          total_collateralization: r.totalCollateralization,
-                          needs_review: r.needsReview ? "Yes" : "",
-                          review_reason: r.reviewReason,
-                        }))
-                      );
-                      triggerCsvDownload(`profit-collateralization-${timestampForCsvFileName()}.csv`, csv);
-                    }}>Export CSV</Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {/* ── Filter / search controls ───────────────────── */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      type="text"
-                      value={financialSearch}
-                      onChange={(e) => setFinancialSearch(e.target.value)}
-                      placeholder="Search system, app ID, CSG ID…"
-                      className="flex-1 min-w-[180px] rounded-sm border bg-background px-2 py-1.5 text-xs placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
-                    />
-                    <select
-                      value={financialFilter}
-                      onChange={(e) =>
-                        setFinancialFilter(
-                          e.target.value as "all" | "needs-review" | "ok"
-                        )
-                      }
-                      className="rounded-sm border bg-background px-2 py-1.5 text-xs"
-                    >
-                      <option value="all">
-                        All ({formatNumber(financialProfitData.rows.length)})
-                      </option>
-                      <option value="needs-review">
-                        Needs Review ({formatNumber(financialFlaggedCount)})
-                      </option>
-                      <option value="ok">
-                        OK (
-                        {formatNumber(
-                          financialProfitData.rows.length -
-                            financialFlaggedCount
-                        )}
-                        )
-                      </option>
-                    </select>
-                    <span className="text-xs text-muted-foreground">
-                      Showing{" "}
-                      {formatNumber(
-                        Math.min(100, filteredFinancialRows.length)
-                      )}{" "}
-                      of {formatNumber(filteredFinancialRows.length)}
-                    </span>
-                    {!batchRescanRunning ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-xs"
-                        disabled={filteredFinancialRows.length === 0}
-                        onClick={handleBatchRescan}
-                      >
-                        Re-scan All Filtered ({formatNumber(filteredFinancialRows.length)})
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-xs border-red-300 text-red-700"
-                        onClick={() => {
-                          batchRescanCancelledRef.current = true;
-                        }}
-                      >
-                        Stop Batch
-                      </Button>
-                    )}
-                  </div>
-                  {/* ── Batch rescan progress ───────────────────────── */}
-                  {rescanStatuses.size > 0 && (
-                    <div className="flex items-center gap-3 text-xs">
-                      <Progress
-                        value={
-                          rescanStatuses.size > 0
-                            ? (Array.from(rescanStatuses.values()).filter(
-                                (s) => s.status === "completed" || s.status === "error"
-                              ).length /
-                              rescanStatuses.size) *
-                              100
-                            : 0
-                        }
-                        className="h-2 flex-1"
-                      />
-                      <span className="text-muted-foreground whitespace-nowrap">
-                        {formatNumber(
-                          Array.from(rescanStatuses.values()).filter(
-                            (s) => s.status === "completed" || s.status === "error"
-                          ).length
-                        )}
-                        {" / "}
-                        {formatNumber(rescanStatuses.size)} scanned
-                        {Array.from(rescanStatuses.values()).filter((s) => s.status === "error").length > 0 && (
-                          <span className="text-red-600 ml-1">
-                            ({Array.from(rescanStatuses.values()).filter((s) => s.status === "error").length} errors)
-                          </span>
-                        )}
-                      </span>
-                      {!batchRescanRunning && rescanStatuses.size > 0 && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-5 px-2 text-[10px] text-muted-foreground"
-                          onClick={() => setRescanStatuses(new Map())}
-                        >
-                          Clear
-                        </Button>
-                      )}
-                    </div>
-                  )}
-                  {/* ── Table ────────────────────────────────────────── */}
-                  <div className="overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50" onClick={() => handleFinancialSort("systemName")}>System{financialSortIndicator("systemName")}</TableHead>
-                          <TableHead>App ID</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("grossContractValue")}>Gross Contract{financialSortIndicator("grossContractValue")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("vendorFeePercent")}>Vendor Fee %{financialSortIndicator("vendorFeePercent")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("vendorFeeAmount")}>Vendor Fee ${financialSortIndicator("vendorFeeAmount")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("utilityCollateral")}>Utility 5%{financialSortIndicator("utilityCollateral")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("additionalCollateralPercent")}>Add. Coll. %{financialSortIndicator("additionalCollateralPercent")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("additionalCollateralAmount")}>Add. Coll. ${financialSortIndicator("additionalCollateralAmount")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("ccAuth5Percent")}>CC Auth 5%{financialSortIndicator("ccAuth5Percent")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("applicationFee")}>App Fee{financialSortIndicator("applicationFee")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("totalDeductions")}>Total Ded.{financialSortIndicator("totalDeductions")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("profit")}>Profit{financialSortIndicator("profit")}</TableHead>
-                          <TableHead className="cursor-pointer select-none hover:bg-slate-50 text-right" onClick={() => handleFinancialSort("totalCollateralization")}>Total Coll.{financialSortIndicator("totalCollateralization")}</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Actions</TableHead>
-                          {rescanStatuses.size > 0 && (
-                            <>
-                              <TableHead>Scan Status</TableHead>
-                              <TableHead>Changes</TableHead>
-                            </>
-                          )}
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {filteredFinancialRows.slice(0, 100).map((r) => (
-                          <TableRow
-                            key={r.csgId}
-                            className={
-                              r.needsReview
-                                ? "bg-amber-50/60 border-l-2 border-amber-400"
-                                : ""
-                            }
-                          >
-                            <TableCell className="font-medium text-xs max-w-[160px] truncate">
-                              {r.needsReview && (
-                                <span className="text-amber-600 mr-1" title={r.reviewReason}>⚠</span>
-                              )}
-                              {r.systemName}
-                            </TableCell>
-                            <TableCell className="text-xs">{r.applicationId}</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.grossContractValue)}</TableCell>
-                            <TableCell className="text-right">{r.vendorFeePercent}%</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.vendorFeeAmount)}</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.utilityCollateral)}</TableCell>
-                            <TableCell className="text-right">{r.additionalCollateralPercent}%</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.additionalCollateralAmount)}</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.ccAuth5Percent)}</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.applicationFee)}</TableCell>
-                            <TableCell className="text-right font-medium">${formatNumber(r.totalDeductions)}</TableCell>
-                            <TableCell className="text-right font-semibold text-emerald-700">${formatNumber(r.profit)}</TableCell>
-                            <TableCell className="text-right">${formatNumber(r.totalCollateralization)}</TableCell>
-                            <TableCell>
-                              {r.hasOverride && (
-                                <Badge variant="secondary" className="bg-blue-100 text-blue-800 border-blue-200 text-[10px] mr-1">
-                                  Edited
-                                </Badge>
-                              )}
-                              {r.needsReview ? (
-                                <Badge variant="secondary" className="bg-amber-100 text-amber-800 border-amber-200 text-[10px]">
-                                  Review
-                                </Badge>
-                              ) : (
-                                <Badge variant="secondary" className="text-[10px]">OK</Badge>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex gap-1">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 px-2 text-[10px]"
-                                  onClick={() =>
-                                    setEditingFinancialRow({
-                                      csgId: r.csgId,
-                                      systemName: r.systemName,
-                                      vendorFeePercent: String(r.vendorFeePercent),
-                                      additionalCollateralPercent: String(r.additionalCollateralPercent),
-                                      notes: "",
-                                    })
-                                  }
-                                >
-                                  Edit
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  className="h-6 px-2 text-[10px]"
-                                  disabled={rescanSingleContract.isPending}
-                                  onClick={async () => {
-                                    try {
-                                      const result = await rescanSingleContract.mutateAsync({ csgId: r.csgId });
-                                      toast.success(
-                                        `Re-scanned CSG ${r.csgId}: vendor fee ${result.vendorFeePercent ?? "N/A"}%, collateral ${result.additionalCollateralPercent ?? "N/A"}%`
-                                      );
-                                      await contractScanResultsQuery.refetch();
-                                    } catch (err) {
-                                      toast.error(err instanceof Error ? err.message : "Re-scan failed");
-                                    }
-                                  }}
-                                >
-                                  Re-scan
-                                </Button>
-                              </div>
-                            </TableCell>
-                            {rescanStatuses.size > 0 && (() => {
-                              const entry = rescanStatuses.get(r.csgId);
-                              return (
-                                <>
-                                  <TableCell>
-                                    {!entry && <span className="text-xs text-muted-foreground">—</span>}
-                                    {entry?.status === "queued" && (
-                                      <Badge variant="secondary" className="bg-gray-100 text-gray-700 text-[10px]">Queued</Badge>
-                                    )}
-                                    {entry?.status === "active" && (
-                                      <Badge variant="secondary" className="bg-blue-100 text-blue-700 text-[10px]">
-                                        <Loader2 className="h-3 w-3 animate-spin mr-1 inline" />Scanning
-                                      </Badge>
-                                    )}
-                                    {entry?.status === "completed" && (
-                                      <Badge variant="secondary" className="bg-green-100 text-green-700 text-[10px]">Done</Badge>
-                                    )}
-                                    {entry?.status === "error" && (
-                                      <Badge variant="secondary" className="bg-red-100 text-red-700 text-[10px]" title={entry.error}>Error</Badge>
-                                    )}
-                                  </TableCell>
-                                  <TableCell className="text-xs max-w-[200px] truncate" title={entry?.changes || entry?.error || ""}>
-                                    {entry?.status === "completed" && (entry.changes || "No changes")}
-                                    {entry?.status === "error" && (
-                                      <span className="text-red-600">{entry.error}</span>
-                                    )}
-                                  </TableCell>
-                                </>
-                              );
-                            })()}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                  {filteredFinancialRows.length > 100 && (
-                    <p className="text-xs text-muted-foreground text-center">
-                      Showing 100 of {formatNumber(filteredFinancialRows.length)} systems. Export CSV for full data.
-                    </p>
-                  )}
-
-                  {/* Edit override dialog */}
-                  {editingFinancialRow && (
-                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-                      <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md space-y-4">
-                        <h3 className="font-semibold text-base">
-                          Edit Contract — CSG {editingFinancialRow.csgId}
-                        </h3>
-                        <p className="text-xs text-muted-foreground">{editingFinancialRow.systemName}</p>
-                        <div className="space-y-3">
-                          <div className="space-y-1">
-                            <label className="text-sm font-medium">Vendor Fee %</label>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              value={editingFinancialRow.vendorFeePercent}
-                              onChange={(e) =>
-                                setEditingFinancialRow((prev) =>
-                                  prev ? { ...prev, vendorFeePercent: e.target.value } : null
-                                )
-                              }
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-sm font-medium">Additional Collateral %</label>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              value={editingFinancialRow.additionalCollateralPercent}
-                              onChange={(e) =>
-                                setEditingFinancialRow((prev) =>
-                                  prev ? { ...prev, additionalCollateralPercent: e.target.value } : null
-                                )
-                              }
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <label className="text-sm font-medium">Notes (optional)</label>
-                            <Input
-                              value={editingFinancialRow.notes}
-                              onChange={(e) =>
-                                setEditingFinancialRow((prev) =>
-                                  prev ? { ...prev, notes: e.target.value } : null
-                                )
-                              }
-                              placeholder="Reason for override..."
-                            />
-                          </div>
-                        </div>
-                        <div className="flex justify-end gap-2 pt-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setEditingFinancialRow(null)}
-                          >
-                            Cancel
-                          </Button>
-                          <Button
-                            size="sm"
-                            disabled={updateContractOverride.isPending}
-                            onClick={async () => {
-                              if (!editingFinancialRow) return;
-                              try {
-                                await updateContractOverride.mutateAsync({
-                                  csgId: editingFinancialRow.csgId,
-                                  vendorFeePercent: editingFinancialRow.vendorFeePercent
-                                    ? parseFloat(editingFinancialRow.vendorFeePercent)
-                                    : null,
-                                  additionalCollateralPercent: editingFinancialRow.additionalCollateralPercent
-                                    ? parseFloat(editingFinancialRow.additionalCollateralPercent)
-                                    : null,
-                                  notes: editingFinancialRow.notes || null,
-                                });
-                                toast.success(`Override saved for CSG ${editingFinancialRow.csgId}`);
-                                // Optimistically update local state so the table updates
-                                // instantly (the full 28K-CSG-ID refetch takes 20s+).
-                                const savedCsgId = editingFinancialRow.csgId;
-                                const newVfp = editingFinancialRow.vendorFeePercent
-                                  ? parseFloat(editingFinancialRow.vendorFeePercent)
-                                  : 0;
-                                const newAcp = editingFinancialRow.additionalCollateralPercent
-                                  ? parseFloat(editingFinancialRow.additionalCollateralPercent)
-                                  : 0;
-                                setLocalOverrides((prev) => {
-                                  const next = new Map(prev);
-                                  next.set(savedCsgId, { vfp: newVfp, acp: newAcp });
-                                  return next;
-                                });
-                                setEditingFinancialRow(null);
-                                // Background refetch to sync authoritative DB data, then clear
-                                // local overrides (the DB data now includes them).
-                                contractScanResultsQuery.refetch().then(() => {
-                                  setLocalOverrides((prev) => {
-                                    const next = new Map(prev);
-                                    next.delete(savedCsgId);
-                                    return next;
-                                  });
-                                });
-                              } catch (err) {
-                                toast.error(err instanceof Error ? err.message : "Failed to save override");
-                              }
-                            }}
-                          >
-                            {updateContractOverride.isPending ? "Saving..." : "Save Override"}
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            )}
-          </div>)}
+          {activeTab === "financials" && (
+            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
+              <FinancialsTabLazy
+                systems={systems}
+                part2VerifiedAbpRows={part2VerifiedAbpRows}
+                financialProfitData={financialProfitData}
+                contractScanResults={contractScanResultsQuery.data ?? []}
+                contractScanStatus={contractScanResultsQuery.status}
+                contractScanIsFetching={contractScanResultsQuery.isFetching}
+                contractScanError={contractScanResultsQuery.error}
+                contractScanRefetch={contractScanResultsQuery.refetch}
+                financialCsgIds={financialCsgIds}
+                abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
+                abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
+                localOverrides={localOverrides}
+                setLocalOverrides={setLocalOverrides}
+                onSelectSystem={setSelectedSystemKey}
+              />
+            </Suspense>
+          )}
 
           {activeTab === "data-quality" && (<div className="space-y-4 mt-4">
             <Card>

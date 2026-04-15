@@ -211,10 +211,11 @@ export type PipelineCashFlowRow = {
 
 /**
  * Minimal structural type for a contract scan result row as consumed by
- * the cash flow aggregator. The full tRPC return type is wider but the
- * Pipeline tab only reads these fields. All value fields allow null
- * because that's what the server returns for un-scanned / un-overridden
- * contracts.
+ * the Pipeline cash flow aggregator and the Financials tab's profit /
+ * collateralization calculator. The full tRPC return type is wider but
+ * we only list the fields these callers actually read. All value fields
+ * allow null because that's what the server returns for un-scanned /
+ * un-overridden contracts.
  */
 export type ContractScanResultRow = {
   csgId: string;
@@ -223,6 +224,56 @@ export type ContractScanResultRow = {
   additionalCollateralPercent?: number | null;
   overrideAdditionalCollateralPercent?: number | null;
   ccAuthorizationCompleted?: boolean | null;
+  // Financials-tab extras
+  systemName?: string | null;
+  overriddenAt?: Date | string | null;
+  acSizeKw?: number | null;
+};
+
+// ---------------------------------------------------------------------------
+// Financials tab types
+// ---------------------------------------------------------------------------
+
+/**
+ * One row in the Financials profit/collateralization table. Computed
+ * by the parent's `financialProfitData` useMemo (which is shared with
+ * the Overview tab) and rendered by the extracted FinancialsTab.
+ */
+export type ProfitRow = {
+  systemName: string;
+  applicationId: string;
+  csgId: string;
+  grossContractValue: number;
+  vendorFeePercent: number;
+  vendorFeeAmount: number;
+  utilityCollateral: number;
+  additionalCollateralPercent: number;
+  additionalCollateralAmount: number;
+  ccAuth5Percent: number;
+  applicationFee: number;
+  totalDeductions: number;
+  profit: number;
+  totalCollateralization: number;
+  // Validation: flag rows where collateral > 30% of GCV
+  needsReview: boolean;
+  reviewReason: string;
+  hasOverride: boolean;
+};
+
+/**
+ * The full output of the `financialProfitData` useMemo. The parent
+ * computes it (gated on Financials + Overview tabs) and passes it to
+ * the extracted FinancialsTab as a prop.
+ */
+export type FinancialProfitData = {
+  rows: ProfitRow[];
+  totalProfit: number;
+  avgProfit: number;
+  totalCollateralization: number;
+  totalUtilityCollateral: number;
+  totalAdditionalCollateral: number;
+  totalCcAuth: number;
+  systemsWithData: number;
 };
 
 // ---------------------------------------------------------------------------
