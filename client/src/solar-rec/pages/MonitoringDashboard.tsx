@@ -463,6 +463,24 @@ function DebugConvertedReadsDialog({
                 </div>
               )}
 
+              {data.totalRows === 0 && data.rawPayloadBytes > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    Payload preview (first 400 chars) — diagnostic for mystery payloads
+                  </p>
+                  <div className="rounded border bg-muted/30 p-2 max-h-32 overflow-y-auto">
+                    <div className="text-[10px] font-mono whitespace-pre-wrap break-all">
+                      {data.rawPayloadPreview ?? "(empty)"}
+                    </div>
+                  </div>
+                  {data.topLevelKeys && data.topLevelKeys.length > 0 && (
+                    <p className="text-[11px] font-mono text-muted-foreground mt-1">
+                      Top-level keys: {data.topLevelKeys.join(", ")}
+                    </p>
+                  )}
+                </div>
+              )}
+
               {data.lastRows && data.lastRows.length > 0 && data.todayRowCount === 0 && (
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-1">

@@ -1543,6 +1543,12 @@ const monitoringRouter = t.router({
         (typeof r.read_date === "string" && r.read_date.startsWith(todayIso))
     );
 
+    // Capture first N chars of the raw (main-key) payload for diagnostic
+    // preview — helps diagnose "mystery payload" cases where the debug
+    // endpoint reports 0 rows but a non-trivial byte count.
+    const rawPayloadPreview = payloadRaw.slice(0, 400);
+    const topLevelKeys = Object.keys(parsed).slice(0, 20);
+
     return {
       ownerUserId,
       todayIso,
@@ -1557,6 +1563,8 @@ const monitoringRouter = t.router({
       lastRows: rows.slice(-5),
       sources: parsed.sources ?? [],
       rawPayloadBytes: combinedBytes,
+      rawPayloadPreview,
+      topLevelKeys,
       latestBatch,
     };
   }),

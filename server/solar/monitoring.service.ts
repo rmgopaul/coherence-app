@@ -367,8 +367,12 @@ export async function executeMonitoringBatch(
       );
     }
 
-    // Collect all completed runs across the batch for converted reads push
+    // Collect all completed runs across the batch. We push to converted
+    // reads INCREMENTALLY after each provider finishes — this way if the
+    // server process dies mid-batch, the data from completed providers
+    // is already persisted to the Performance Ratio dataset.
     const allCompletedRuns: MonitoringRunRow[] = [];
+    let pushedThroughIndex = 0;
 
     let providersCompleted = 0;
     for (const provider of providers) {
@@ -418,6 +422,29 @@ export async function executeMonitoringBatch(
       // The onSiteProgress callbacks already incremented, so don't double-count
       providersCompleted++;
 
+      // Incremental converted reads push: any runs collected since the last
+      // push get written to the Performance Ratio dataset now. If the batch
+      // dies before the next provider finishes, the data from this provider
+      // is already safe.
+      if (ownerUserId && allCompletedRuns.length > pushedThroughIndex) {
+        const newRuns = allCompletedRuns.slice(pushedThroughIndex);
+        try {
+          const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(
+            ownerUserId,
+            newRuns
+          );
+          pushedThroughIndex = allCompletedRuns.length;
+          console.log(
+            `[MonitoringBatch] Incremental converted reads push after ${provider}: ${pushed} pushed, ${skipped} skipped (dedup).`
+          );
+        } catch (err) {
+          console.error(
+            `[MonitoringBatch] Incremental converted reads push after ${provider} failed:`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+
       await db.updateMonitoringBatchRun(batchId, {
         providersCompleted,
         totalSites,
@@ -427,32 +454,30 @@ export async function executeMonitoringBatch(
       });
     }
 
-    // Push successful runs to Converted Reads dataset for Performance Ratio tab
-    const successfulRuns = allCompletedRuns.filter(
-      (r) => r.status === "success" && r.lifetimeKwh != null && r.lifetimeKwh > 0
-    );
-    console.log(
-      `[MonitoringBatch] Collected ${allCompletedRuns.length} total runs, ${successfulRuns.length} with lifetime kWh data, ownerUserId=${ownerUserId}`
-    );
-
-    if (!ownerUserId) {
-      console.warn("[MonitoringBatch] Skipping converted reads push: no ownerUserId resolved.");
-    } else if (successfulRuns.length === 0) {
-      console.warn("[MonitoringBatch] Skipping converted reads push: no successful runs with lifetime kWh.");
-    } else {
+    // Final safety-net push for anything collected after the last provider's
+    // incremental push (e.g. if sites completed between the push and the
+    // provider loop exiting). Almost always a no-op.
+    if (ownerUserId && allCompletedRuns.length > pushedThroughIndex) {
+      const newRuns = allCompletedRuns.slice(pushedThroughIndex);
       try {
-        const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(ownerUserId, allCompletedRuns);
+        const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(ownerUserId, newRuns);
+        pushedThroughIndex = allCompletedRuns.length;
         console.log(
-          `[MonitoringBatch] Converted reads push complete: ${pushed} pushed, ${skipped} skipped (dedup). userId=${ownerUserId}`
+          `[MonitoringBatch] Final converted reads push: ${pushed} pushed, ${skipped} skipped (dedup).`
         );
       } catch (err) {
         console.error(
-          "[MonitoringBatch] Failed to push converted reads:",
+          "[MonitoringBatch] Final converted reads push failed:",
           err instanceof Error ? err.message : err,
           err instanceof Error && err.stack ? `\n${err.stack}` : ""
         );
       }
+    } else if (!ownerUserId) {
+      console.warn("[MonitoringBatch] Converted reads push was skipped entirely: no ownerUserId resolved.");
     }
+    console.log(
+      `[MonitoringBatch] Total runs collected: ${allCompletedRuns.length}, rows pushed to converted reads: ${pushedThroughIndex}`
+    );
 
     await db.updateMonitoringBatchRun(batchId, {
       status: "completed",
