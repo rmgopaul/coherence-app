@@ -176,6 +176,56 @@ export type ChangeOwnershipSummary = {
 };
 
 // ---------------------------------------------------------------------------
+// Application Pipeline types
+// ---------------------------------------------------------------------------
+
+export type PipelineMonthRow = {
+  month: string; // "YYYY-MM"
+  part1Count: number;
+  part2Count: number;
+  part1KwAc: number;
+  part2KwAc: number;
+  interconnectedCount: number;
+  interconnectedKwAc: number;
+  prevPart1Count: number;
+  prevPart2Count: number;
+  prevPart1KwAc: number;
+  prevPart2KwAc: number;
+  prevInterconnectedCount: number;
+  prevInterconnectedKwAc: number;
+};
+
+export type PipelineCashFlowRow = {
+  month: string; // "YYYY-MM" — cash flow month (Part II month + 1)
+  vendorFee: number;
+  ccAuthCollateral: number;
+  additionalCollateral: number;
+  totalCashFlow: number;
+  projectCount: number;
+  prevVendorFee: number;
+  prevCcAuthCollateral: number;
+  prevAdditionalCollateral: number;
+  prevTotalCashFlow: number;
+  prevProjectCount: number;
+};
+
+/**
+ * Minimal structural type for a contract scan result row as consumed by
+ * the cash flow aggregator. The full tRPC return type is wider but the
+ * Pipeline tab only reads these fields. All value fields allow null
+ * because that's what the server returns for un-scanned / un-overridden
+ * contracts.
+ */
+export type ContractScanResultRow = {
+  csgId: string;
+  vendorFeePercent?: number | null;
+  overrideVendorFeePercent?: number | null;
+  additionalCollateralPercent?: number | null;
+  overrideAdditionalCollateralPercent?: number | null;
+  ccAuthorizationCompleted?: boolean | null;
+};
+
+// ---------------------------------------------------------------------------
 // Performance-ratio types
 // ---------------------------------------------------------------------------
 
