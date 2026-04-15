@@ -1650,7 +1650,17 @@ export default function SolarRecDashboard() {
   const remoteLogsChunkKeysRef = useRef<string[]>([]);
   const localDatasetSignatureRef = useRef<string>("");
   const localLogsSignatureRef = useRef<string>("0");
-  const csvParserWorkerRef = useRef<Worker | null>(null);
+  // Phase 14: CSV parser worker pool. A single parser worker used
+  // to queue up every parse request (cold hydrate of 15 datasets ran
+  // one at a time on one worker — slow). We now spin up
+  // CSV_WORKER_POOL_SIZE workers on first use and dispatch each
+  // incoming request to the worker with the fewest in-flight tasks
+  // (least-loaded). The global `csvParserPendingRef` map is keyed by
+  // a monotonic id so any worker can resolve its own tasks
+  // independently of the others.
+  const csvParserPoolRef = useRef<Worker[] | null>(null);
+  const csvParserPoolInFlightRef = useRef<number[]>([]);
+  const csvParserPoolWorkerByIdRef = useRef(new Map<number, number>());
   const csvParserRequestSeqRef = useRef(1);
   const csvParserPendingRef = useRef(
     new Map<number, { resolve: (value: { headers: string[]; rows: CsvRow[] }) => void; reject: (error: Error) => void }>()
@@ -1664,43 +1674,103 @@ export default function SolarRecDashboard() {
     }
   }, [activeTab, search]);
 
-  const ensureCsvParserWorker = useCallback(() => {
+  // Phase 14: spin up (or return the existing) pool of CSV parser
+  // workers. Each worker parses one CSV at a time; the pool lets us
+  // parse up to CSV_WORKER_POOL_SIZE datasets concurrently.
+  // Returns null in environments without Web Workers (SSR, very
+  // old browsers), which triggers the synchronous main-thread
+  // fallback in the parse* wrappers below.
+  const ensureCsvParserPool = useCallback(() => {
     if (typeof window === "undefined" || typeof Worker === "undefined") return null;
-    if (csvParserWorkerRef.current) return csvParserWorkerRef.current;
+    if (csvParserPoolRef.current && csvParserPoolRef.current.length > 0) {
+      return csvParserPoolRef.current;
+    }
 
-    const worker = new Worker(new URL("../../workers/csvParser.worker.ts", import.meta.url), {
-      type: "module",
-    });
+    const poolSize = Math.max(
+      1,
+      Math.min(4, (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4),
+    );
+    const workers: Worker[] = [];
+    for (let index = 0; index < poolSize; index += 1) {
+      const worker = new Worker(
+        new URL("../../workers/csvParser.worker.ts", import.meta.url),
+        { type: "module" },
+      );
 
-    worker.onmessage = (event: MessageEvent<CsvParserWorkerResponse>) => {
-      const message = event.data;
-      const pending = csvParserPendingRef.current.get(message.id);
-      if (!pending) return;
-      csvParserPendingRef.current.delete(message.id);
-      if (message.ok) {
-        pending.resolve({ headers: message.headers, rows: message.rows });
-        return;
-      }
-      pending.reject(new Error(message.error || "Failed to parse CSV in worker."));
-    };
+      worker.onmessage = (event: MessageEvent<CsvParserWorkerResponse>) => {
+        const message = event.data;
+        const pending = csvParserPendingRef.current.get(message.id);
+        if (pending) {
+          csvParserPendingRef.current.delete(message.id);
+          if (message.ok) {
+            pending.resolve({ headers: message.headers, rows: message.rows });
+          } else {
+            pending.reject(new Error(message.error || "Failed to parse CSV in worker."));
+          }
+        }
+        // Decrement the in-flight counter for the worker that owned
+        // this task — this lets the dispatch logic pick the now-idle
+        // worker for the next request.
+        const workerIndex = csvParserPoolWorkerByIdRef.current.get(message.id);
+        if (workerIndex !== undefined) {
+          csvParserPoolWorkerByIdRef.current.delete(message.id);
+          const counter = csvParserPoolInFlightRef.current[workerIndex];
+          if (counter !== undefined && counter > 0) {
+            csvParserPoolInFlightRef.current[workerIndex] = counter - 1;
+          }
+        }
+      };
 
-    worker.onerror = () => {
-      csvParserPendingRef.current.forEach(({ reject }) => {
-        reject(new Error("CSV parsing worker crashed."));
-      });
-      csvParserPendingRef.current.clear();
-      worker.terminate();
-      csvParserWorkerRef.current = null;
-    };
+      worker.onerror = () => {
+        // One worker in the pool crashed — reject every pending task
+        // routed to that worker, terminate the whole pool, and null
+        // the refs so the next parse call rebuilds a fresh pool.
+        csvParserPendingRef.current.forEach(({ reject }) => {
+          reject(new Error("CSV parsing worker crashed."));
+        });
+        csvParserPendingRef.current.clear();
+        csvParserPoolWorkerByIdRef.current.clear();
+        (csvParserPoolRef.current ?? []).forEach((w) => {
+          try {
+            w.terminate();
+          } catch {
+            // Ignore; we're tearing the pool down.
+          }
+        });
+        csvParserPoolRef.current = null;
+        csvParserPoolInFlightRef.current = [];
+      };
 
-    csvParserWorkerRef.current = worker;
-    return worker;
+      workers.push(worker);
+    }
+
+    csvParserPoolRef.current = workers;
+    csvParserPoolInFlightRef.current = new Array(workers.length).fill(0);
+    return workers;
   }, []);
+
+  // Pick the least-loaded worker in the pool. Ties break toward the
+  // lowest index so the pool warms up in order.
+  const pickCsvParserWorker = useCallback((): { worker: Worker; index: number } | null => {
+    const pool = ensureCsvParserPool();
+    if (!pool || pool.length === 0) return null;
+    const inFlight = csvParserPoolInFlightRef.current;
+    let bestIndex = 0;
+    let bestLoad = inFlight[0] ?? 0;
+    for (let i = 1; i < pool.length; i += 1) {
+      const load = inFlight[i] ?? 0;
+      if (load < bestLoad) {
+        bestIndex = i;
+        bestLoad = load;
+      }
+    }
+    return { worker: pool[bestIndex]!, index: bestIndex };
+  }, [ensureCsvParserPool]);
 
   const parseCsvFileAsync = useCallback(
     async (file: File): Promise<{ headers: string[]; rows: CsvRow[] }> => {
-      const worker = ensureCsvParserWorker();
-      if (!worker) {
+      const picked = pickCsvParserWorker();
+      if (!picked) {
         const text = await file.text();
         return parseCsv(text);
       }
@@ -1708,28 +1778,34 @@ export default function SolarRecDashboard() {
       return new Promise((resolve, reject) => {
         const id = csvParserRequestSeqRef.current++;
         csvParserPendingRef.current.set(id, { resolve, reject });
+        csvParserPoolWorkerByIdRef.current.set(id, picked.index);
+        csvParserPoolInFlightRef.current[picked.index] =
+          (csvParserPoolInFlightRef.current[picked.index] ?? 0) + 1;
         const message: CsvParserWorkerRequest = { id, mode: "file", file };
-        worker.postMessage(message);
+        picked.worker.postMessage(message);
       });
     },
-    [ensureCsvParserWorker]
+    [pickCsvParserWorker],
   );
 
   const parseCsvTextAsync = useCallback(
     async (text: string): Promise<{ headers: string[]; rows: CsvRow[] }> => {
-      const worker = ensureCsvParserWorker();
-      if (!worker) {
+      const picked = pickCsvParserWorker();
+      if (!picked) {
         return parseCsv(text);
       }
 
       return new Promise((resolve, reject) => {
         const id = csvParserRequestSeqRef.current++;
         csvParserPendingRef.current.set(id, { resolve, reject });
+        csvParserPoolWorkerByIdRef.current.set(id, picked.index);
+        csvParserPoolInFlightRef.current[picked.index] =
+          (csvParserPoolInFlightRef.current[picked.index] ?? 0) + 1;
         const message: CsvParserWorkerRequest = { id, mode: "text", text };
-        worker.postMessage(message);
+        picked.worker.postMessage(message);
       });
     },
-    [ensureCsvParserWorker]
+    [pickCsvParserWorker],
   );
 
   // Phase 13a: chunk uploads now run in parallel via Promise.all.
@@ -1949,14 +2025,24 @@ export default function SolarRecDashboard() {
     [clearRemotePayloadWithChunks, setDatasetCloudSyncBadge, syncDatasetSourceManifestToCloud, uploadRemoteSourceFile]
   );
 
+  // Phase 14: unmount cleanup now terminates every worker in the
+  // pool and clears the per-worker in-flight counters.
   useEffect(() => {
     return () => {
       csvParserPendingRef.current.forEach(({ reject }) => {
         reject(new Error("CSV parser worker terminated."));
       });
       csvParserPendingRef.current.clear();
-      csvParserWorkerRef.current?.terminate();
-      csvParserWorkerRef.current = null;
+      csvParserPoolWorkerByIdRef.current.clear();
+      (csvParserPoolRef.current ?? []).forEach((worker) => {
+        try {
+          worker.terminate();
+        } catch {
+          // Ignore — we're tearing down anyway.
+        }
+      });
+      csvParserPoolRef.current = null;
+      csvParserPoolInFlightRef.current = [];
     };
   }, []);
 
