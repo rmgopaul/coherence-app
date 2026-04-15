@@ -1239,45 +1239,71 @@ function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
 }
 
 /**
- * Phase 16: progressive, prioritized dataset hydration.
+ * Phase 16 + 17c: progressive, prioritized, **batched** dataset hydration.
  *
- * The old `loadDatasetsFromStorage` fetched ALL 15 dataset records
- * from IndexedDB, deserialized them all, then returned one big
- * object that the parent landed with a single `setDatasets` call.
- * On a fresh tab with real user data (100k+ rows across multiple
- * datasets) this meant:
- *   - one huge structured-clone hit on the main thread
- *   - one huge React re-render fanning out to every memo
- *   - several seconds of blank dashboard before first paint
+ * The hydration still walks IndexedDB one dataset at a time with a
+ * microtask yield between each read so the main thread stays
+ * responsive for input/scroll during a cold load. But instead of
+ * landing each dataset with its own `setDatasets` call (which made
+ * the expensive `systems` memo re-fire on every progress tick), we
+ * **batch** the commits into at most two flushes:
  *
- * The new flow:
- *   1. Read the dataset manifest (one key)
- *   2. For each manifest key, fetch + deserialize ONE dataset,
- *      immediately call `onDataset(key, dataset)` so the parent
- *      commits it via `setDatasets(prev => ({...prev, [key]: ds}))`
- *   3. `priorityKeys` is a set of dataset keys the active tab
- *      needs — those are processed first so whichever tab the
- *      user lands on has usable data ASAP
- *   4. `yield`-like microtask breaks between datasets keep the
- *      browser responsive for input/scroll
+ *   - PRIORITY batch: flushed as soon as every priority key has
+ *     been read. This is what makes the user's landing tab
+ *     interactive ASAP.
+ *   - BACKGROUND batch: flushed when everything else is loaded.
  *
- * Legacy record fallbacks still work — they resolve once at the
- * end through the same `onDataset` callback, preserving the
- * existing localStorage migration path.
+ * With ~6 dataset slots feeding the `systems` memo, the pre-17c
+ * flow fired `systems` ~6 times during hydrate. With 17c it fires
+ * at most 2 times — close to the theoretical minimum for
+ * progressive-plus-priority loading.
+ *
+ * `onProgress(loaded, total)` still fires per dataset so the UI
+ * can show a fine-grained counter.
+ *
+ * Legacy record fallbacks still flush once through `onBatch`.
  */
 interface ProgressiveHydrationOptions {
   priorityKeys?: Set<DatasetKey>;
-  onDataset: (key: DatasetKey, dataset: CsvDataset) => void;
+  onBatch: (batch: Partial<Record<DatasetKey, CsvDataset>>, phase: "priority" | "background") => void;
   onProgress?: (loaded: number, total: number) => void;
 }
 
 async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
-  const { priorityKeys, onDataset, onProgress } = options;
+  const { priorityKeys, onBatch, onProgress } = options;
   if (typeof window === "undefined") return;
 
-  const commit = (key: DatasetKey, dataset: CsvDataset) => {
+  // Phase 17c: buffers that accumulate datasets between flushes.
+  // `priorityBatch` drains at the priority/background boundary;
+  // `backgroundBatch` drains at the end. Both paths also update
+  // the signature cache immediately (per dataset) so the next
+  // save's diff-save sees the freshly-loaded values.
+  const priorityBatch: Partial<Record<DatasetKey, CsvDataset>> = {};
+  const backgroundBatch: Partial<Record<DatasetKey, CsvDataset>> = {};
+
+  const recordLoad = (
+    target: Partial<Record<DatasetKey, CsvDataset>>,
+    key: DatasetKey,
+    dataset: CsvDataset,
+  ) => {
+    target[key] = dataset;
     lastSavedDatasetSignatures[key] = buildSingleDatasetSignature(dataset);
-    onDataset(key, dataset);
+  };
+
+  const flushPriority = () => {
+    if (Object.keys(priorityBatch).length === 0) return;
+    onBatch({ ...priorityBatch }, "priority");
+    for (const key of Object.keys(priorityBatch) as DatasetKey[]) {
+      delete priorityBatch[key];
+    }
+  };
+
+  const flushBackground = () => {
+    if (Object.keys(backgroundBatch).length === 0) return;
+    onBatch({ ...backgroundBatch }, "background");
+    for (const key of Object.keys(backgroundBatch) as DatasetKey[]) {
+      delete backgroundBatch[key];
+    }
   };
 
   if (!("indexedDB" in window)) {
@@ -1286,9 +1312,10 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     onProgress?.(0, keys.length);
     keys.forEach((key, index) => {
       const dataset = legacyDatasets[key];
-      if (dataset) commit(key, dataset);
+      if (dataset) recordLoad(backgroundBatch, key, dataset);
       onProgress?.(index + 1, keys.length);
     });
+    flushBackground();
     return;
   }
 
@@ -1319,49 +1346,65 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
       if (manifestKeys.length > 0) {
         // Phase 16: reorder so the active tab's datasets load first.
         // Keys not in priorityKeys go to the back of the queue.
-        const orderedKeys = priorityKeys
-          ? [
-              ...manifestKeys.filter((key) => priorityKeys.has(key)),
-              ...manifestKeys.filter((key) => !priorityKeys.has(key)),
-            ]
+        const priorityOrdered = priorityKeys
+          ? manifestKeys.filter((key) => priorityKeys.has(key))
+          : [];
+        const backgroundOrdered = priorityKeys
+          ? manifestKeys.filter((key) => !priorityKeys.has(key))
           : manifestKeys;
 
-        onProgress?.(0, orderedKeys.length);
+        const total = priorityOrdered.length + backgroundOrdered.length;
+        onProgress?.(0, total);
 
         const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
         const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
 
-        let loadedCount = 0;
-        for (const key of orderedKeys) {
-          const serialized = (await idbRequestToPromise(
-            store.get(dashboardDatasetStorageKey(key))
-          )) as SerializedCsvDataset | undefined;
-          const dataset = deserializeDatasetRecord(serialized);
-          if (dataset) {
-            commit(key, dataset);
+        // Yields between each read so the browser can paint and
+        // respond to input during a cold hydrate. Keeping this
+        // scoped to a helper makes the two loops read identically.
+        const yieldToBrowser = () =>
+          new Promise<void>((resolve) => {
+            if (typeof queueMicrotask === "function") {
+              queueMicrotask(resolve);
+            } else {
+              setTimeout(resolve, 0);
+            }
+          });
+
+        const readPhase = async (
+          keys: DatasetKey[],
+          target: Partial<Record<DatasetKey, CsvDataset>>,
+          baseProgress: number,
+        ): Promise<number> => {
+          let loaded = baseProgress;
+          for (const key of keys) {
+            const serialized = (await idbRequestToPromise(
+              store.get(dashboardDatasetStorageKey(key))
+            )) as SerializedCsvDataset | undefined;
+            const dataset = deserializeDatasetRecord(serialized);
+            if (dataset) recordLoad(target, key, dataset);
+            loaded += 1;
+            onProgress?.(loaded, total);
+            if (loaded < total) {
+              await yieldToBrowser();
+            }
           }
-          loadedCount += 1;
-          onProgress?.(loadedCount, orderedKeys.length);
-          // Yield to the browser between datasets so the user can
-          // interact with the active tab while the rest hydrate in
-          // the background. Without this, the whole loop runs in
-          // one microtask-chain and we don't actually yield.
-          if (loadedCount < orderedKeys.length) {
-            await new Promise<void>((resolve) => {
-              if (typeof queueMicrotask === "function") {
-                queueMicrotask(resolve);
-              } else {
-                setTimeout(resolve, 0);
-              }
-            });
-          }
-        }
+          return loaded;
+        };
+
+        const afterPriority = await readPhase(priorityOrdered, priorityBatch, 0);
+        // Phase 17c: flush the priority bag BEFORE starting the
+        // background phase. This is what makes the landing tab's
+        // memos re-compute with data while the rest stream in.
+        flushPriority();
+        await readPhase(backgroundOrdered, backgroundBatch, afterPriority);
+        flushBackground();
         return;
       }
     }
 
     // Legacy fallback paths: one-shot returns that we shuttle through
-    // the same onDataset callback so the caller's state flow stays
+    // a single background flush so the caller's state flow stays
     // uniform. These are rare and small (one-time migration).
     if (stored.legacy) {
       const legacyDatasets = deserializeDatasets(stored.legacy);
@@ -1371,9 +1414,10 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
         onProgress?.(0, keys.length);
         keys.forEach((key, index) => {
           const dataset = legacyDatasets[key];
-          if (dataset) commit(key, dataset);
+          if (dataset) recordLoad(backgroundBatch, key, dataset);
           onProgress?.(index + 1, keys.length);
         });
+        flushBackground();
         return;
       }
     }
@@ -1386,9 +1430,10 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
       onProgress?.(0, localLegacyKeys.length);
       localLegacyKeys.forEach((key, index) => {
         const dataset = localLegacy[key];
-        if (dataset) commit(key, dataset);
+        if (dataset) recordLoad(backgroundBatch, key, dataset);
         onProgress?.(index + 1, localLegacyKeys.length);
       });
+      flushBackground();
       return;
     }
 
@@ -1402,9 +1447,10 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     onProgress?.(0, keys.length);
     keys.forEach((key, index) => {
       const dataset = legacy[key];
-      if (dataset) commit(key, dataset);
+      if (dataset) recordLoad(backgroundBatch, key, dataset);
       onProgress?.(index + 1, keys.length);
     });
+    flushBackground();
   }
 }
 
@@ -3099,7 +3145,26 @@ export default function SolarRecDashboard() {
         return byName;
       })
       .sort((a, b) => a.systemName.localeCompare(b.systemName));
-  }, [datasets, part2VerifiedAbpRows]);
+    // Phase 17a: narrow deps to ONLY the datasets this memo actually
+    // reads (grep'd from the body). Before this fix, adding the
+    // `datasets` bag to the dep array meant every progressive-hydration
+    // `setDatasets` call from Phase 16 re-fired the entire 436-line
+    // `systems` rebuild — 15 full rebuilds on cold hydrate instead of
+    // ~6. Same principle applies to every other memo that used to
+    // depend on the full `datasets` object: list only the slots you
+    // actually read so unrelated dataset arrivals don't invalidate
+    // you.
+  }, [
+    datasets.abpReport,
+    datasets.solarApplications,
+    datasets.contractedDate,
+    datasets.generatorDetails,
+    datasets.accountSolarGeneration,
+    datasets.generationEntry,
+    datasets.transferHistory,
+    datasets.deliveryScheduleBase,
+    part2VerifiedAbpRows,
+  ]);
 
   const summary = useMemo(() => {
     const eligiblePart2ApplicationIds = new Set<string>();
@@ -4131,13 +4196,25 @@ export default function SolarRecDashboard() {
         const [, loadedLogs] = await Promise.all([
           loadDatasetsFromStorage({
             priorityKeys,
-            onDataset: (key, dataset) => {
+            // Phase 17c: commits arrive as two batches (priority +
+            // background) rather than per-dataset, so the `systems`
+            // memo (and its downstream chain) re-fires at most
+            // twice during hydrate instead of once per incoming
+            // dataset. We still don't clobber anything the user
+            // uploaded between the mount and the first batch.
+            onBatch: (batch, _phase) => {
               if (cancelled) return;
               setDatasets((current) => {
-                // Don't clobber a dataset the user already uploaded
-                // while hydration was in flight.
-                if (current[key]) return current;
-                return { ...current, [key]: dataset };
+                const next = { ...current };
+                let changed = false;
+                for (const [key, dataset] of Object.entries(batch) as Array<
+                  [DatasetKey, CsvDataset]
+                >) {
+                  if (next[key]) continue;
+                  next[key] = dataset;
+                  changed = true;
+                }
+                return changed ? next : current;
               });
             },
             onProgress: (loaded, total) => {
