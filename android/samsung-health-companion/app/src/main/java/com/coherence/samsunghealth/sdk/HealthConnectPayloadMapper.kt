@@ -52,13 +52,22 @@ import java.time.ZoneId
 import kotlin.math.roundToInt
 
 /**
- * Reads every supported record type for a single date window and maps
- * them to a normalized [SamsungHealthPayload].
+ * Reads every supported record type for a date range and maps them to
+ * normalized [SamsungHealthPayload] objects, one per day.
  *
- * All property access is compile-time typed — no reflection. That is
- * the fix for the "broken" reads: the old reflection-based mapper
- * silently returned zeros on any property-name mismatch or library
- * upgrade.
+ * Two entry points:
+ *  - [collectForDate] for the regular daily sync.
+ *  - [collectForDateRange] for the historical backfill worker.
+ *
+ * Both paths go through [collectForDateRange] so there is one source
+ * of truth for how Health Connect records are read and partitioned.
+ * Prior versions of this class looped `collectForDate` per day inside
+ * a backfill, which issued ~22 API calls *per day* and reliably tripped
+ * Health Connect's rate limiter. The range path issues exactly 22 API
+ * calls total — one per record type — then partitions the returned
+ * records by calendar day client-side.
+ *
+ * All property access is compile-time typed — no reflection.
  */
 class HealthConnectPayloadMapper(
   private val reader: HealthConnectReader,
@@ -67,60 +76,174 @@ class HealthConnectPayloadMapper(
   private data class TimeInterval(val start: Instant, val end: Instant)
 
   /**
-   * Collect a payload for the local day that [date] represents in
-   * [zone]. [permissionsGranted] is wired in so the output's sync
-   * metadata reflects reality even when the core permission set
-   * happens to include optional reads that failed.
+   * Convenience wrapper for the single-day daily-sync path.
    */
   suspend fun collectForDate(
     date: LocalDate,
     zone: ZoneId,
     permissionsGranted: Boolean,
   ): SamsungHealthPayload {
+    return collectForDateRange(date, date, zone, permissionsGranted).first()
+  }
+
+  /**
+   * Fetch every supported record type ONCE across
+   * `[startDate, endDate]` (inclusive) and emit one payload per day.
+   *
+   * Read count is constant in the number of days requested: 22 typed
+   * [HealthConnectReader.read] calls regardless of whether the range
+   * is 1 day or 30. This is the rate-limit fix that makes historical
+   * backfill work without blowing Health Connect's per-app quota.
+   */
+  suspend fun collectForDateRange(
+    startDate: LocalDate,
+    endDate: LocalDate,
+    zone: ZoneId,
+    permissionsGranted: Boolean,
+  ): List<SamsungHealthPayload> {
+    require(!endDate.isBefore(startDate)) {
+      "endDate ($endDate) must not be before startDate ($startDate)"
+    }
+
     val capturedAt = OffsetDateTime.now(zone)
-    val dayStart = date.atStartOfDay(zone).toInstant()
-    val dayEnd = date.plusDays(1).atStartOfDay(zone).toInstant()
-    val dayRange = TimeRangeFilter.between(dayStart, dayEnd)
+    val rangeStart = startDate.atStartOfDay(zone).toInstant()
+    val rangeEnd = endDate.plusDays(1).atStartOfDay(zone).toInstant()
+    val rangeFilter = TimeRangeFilter.between(rangeStart, rangeEnd)
 
-    // Sleep often begins the evening before the target date. Widen the
-    // lookup window so a bedtime at 22:00 the previous day is captured,
-    // then clip individual stage intervals back into the date's window.
-    val sleepWindowStart = dayStart.minus(Duration.ofHours(18))
-    val sleepRange = TimeRangeFilter.between(sleepWindowStart, dayEnd)
+    // Sleep windows often start the evening before the target day.
+    // Widen the SleepSessionRecord read window by 18h on the leading
+    // edge so a 22:00-the-day-before bedtime is captured, then clip
+    // stage intervals back into each day's window.
+    val sleepRangeStart = rangeStart.minus(Duration.ofHours(18))
+    val sleepRangeFilter = TimeRangeFilter.between(sleepRangeStart, rangeEnd)
 
-    val stepsRecords = reader.read(StepsRecord::class, dayRange, "steps")
-    val distanceRecords = reader.read(DistanceRecord::class, dayRange, "distance")
-    val floorsRecords = reader.read(
+    // ── 22 reads, ONE per record type, across the full range ──────────
+    val stepsAll = reader.read(StepsRecord::class, rangeFilter, "steps")
+    val distanceAll = reader.read(DistanceRecord::class, rangeFilter, "distance")
+    val floorsAll = reader.read(
       FloorsClimbedRecord::class,
-      dayRange,
+      rangeFilter,
       "floors",
       warnIfMissing = false,
     )
-    val activeCalRecords = reader.read(ActiveCaloriesBurnedRecord::class, dayRange, "active_calories")
-    val totalCalRecords = reader.read(TotalCaloriesBurnedRecord::class, dayRange, "total_calories")
-    val exerciseRecords = reader.read(ExerciseSessionRecord::class, dayRange, "exercise_sessions")
-    val sleepRecords = reader.read(SleepSessionRecord::class, sleepRange, "sleep_sessions")
-    val heartRateRecords = reader.read(HeartRateRecord::class, dayRange, "heart_rate")
-    val restingHrRecords = reader.read(RestingHeartRateRecord::class, dayRange, "resting_heart_rate")
-    val hrvRecords = reader.read(HeartRateVariabilityRmssdRecord::class, dayRange, "hrv")
-    val respiratoryRecords = reader.read(RespiratoryRateRecord::class, dayRange, "respiratory_rate")
-    val spo2Records = reader.read(OxygenSaturationRecord::class, dayRange, "oxygen_saturation")
-    val bloodPressureRecords = reader.read(BloodPressureRecord::class, dayRange, "blood_pressure")
-    val glucoseRecords = reader.read(BloodGlucoseRecord::class, dayRange, "blood_glucose")
-    val weightRecords = reader.read(WeightRecord::class, dayRange, "weight")
-    val bodyFatRecords = reader.read(
+    val activeCalAll = reader.read(ActiveCaloriesBurnedRecord::class, rangeFilter, "active_calories")
+    val totalCalAll = reader.read(TotalCaloriesBurnedRecord::class, rangeFilter, "total_calories")
+    val exerciseAll = reader.read(ExerciseSessionRecord::class, rangeFilter, "exercise_sessions")
+    val sleepAll = reader.read(SleepSessionRecord::class, sleepRangeFilter, "sleep_sessions")
+    val heartRateAll = reader.read(HeartRateRecord::class, rangeFilter, "heart_rate")
+    val restingHrAll = reader.read(RestingHeartRateRecord::class, rangeFilter, "resting_heart_rate")
+    val hrvAll = reader.read(HeartRateVariabilityRmssdRecord::class, rangeFilter, "hrv")
+    val respiratoryAll = reader.read(RespiratoryRateRecord::class, rangeFilter, "respiratory_rate")
+    val spo2All = reader.read(OxygenSaturationRecord::class, rangeFilter, "oxygen_saturation")
+    val bloodPressureAll = reader.read(BloodPressureRecord::class, rangeFilter, "blood_pressure")
+    val glucoseAll = reader.read(BloodGlucoseRecord::class, rangeFilter, "blood_glucose")
+    val weightAll = reader.read(WeightRecord::class, rangeFilter, "weight")
+    val bodyFatAll = reader.read(
       BodyFatRecord::class,
-      dayRange,
+      rangeFilter,
       "body_fat",
       suppressForegroundRequirementWarning = true,
     )
-    val bodyWaterMassRecords = reader.read(BodyWaterMassRecord::class, dayRange, "body_water_mass")
-    val bmrRecords = reader.read(BasalMetabolicRateRecord::class, dayRange, "bmr")
-    val hydrationRecords = reader.read(HydrationRecord::class, dayRange, "hydration")
-    val nutritionRecords = reader.read(NutritionRecord::class, dayRange, "nutrition")
-    val vo2Records = reader.read(Vo2MaxRecord::class, dayRange, "vo2", warnIfMissing = false)
-    val bodyTempRecords = reader.read(BodyTemperatureRecord::class, dayRange, "body_temperature")
+    val bodyWaterAll = reader.read(BodyWaterMassRecord::class, rangeFilter, "body_water_mass")
+    val bmrAll = reader.read(BasalMetabolicRateRecord::class, rangeFilter, "bmr")
+    val hydrationAll = reader.read(HydrationRecord::class, rangeFilter, "hydration")
+    val nutritionAll = reader.read(NutritionRecord::class, rangeFilter, "nutrition")
+    val vo2All = reader.read(Vo2MaxRecord::class, rangeFilter, "vo2", warnIfMissing = false)
+    val bodyTempAll = reader.read(BodyTemperatureRecord::class, rangeFilter, "body_temperature")
 
+    // ── Partition records per day and build payloads ─────────────────
+    val payloads = mutableListOf<SamsungHealthPayload>()
+    var cursor = startDate
+    while (!cursor.isAfter(endDate)) {
+      val dayStart = cursor.atStartOfDay(zone).toInstant()
+      val dayEnd = cursor.plusDays(1).atStartOfDay(zone).toInstant()
+      // Sleep window extends 18h before the day start so that a sleep
+      // whose bedtime is the prior evening is still attributed to this
+      // morning's wake date.
+      val dayWithSleepStart = dayStart.minus(Duration.ofHours(18))
+
+      payloads += buildPayloadForDay(
+        date = cursor,
+        zone = zone,
+        capturedAt = capturedAt,
+        permissionsGranted = permissionsGranted,
+        dayStart = dayStart,
+        dayEnd = dayEnd,
+        // Interval-typed records: any record whose [startTime, endTime]
+        // overlaps [dayStart, dayEnd) is included for this day. Sum
+        // functions (steps, calories, distance) may double-count an
+        // interval that spans midnight — acceptable today given Health
+        // Connect sources don't emit large cross-midnight intervals,
+        // and can be refined later via per-record time slicing.
+        stepsRecords = stepsAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        distanceRecords = distanceAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        floorsRecords = floorsAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        activeCalRecords = activeCalAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        totalCalRecords = totalCalAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        exerciseRecords = exerciseAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        // Sleep uses the widened window so pre-midnight bedtimes land
+        // on the wake-up day. computeSleepMetrics re-clips below.
+        sleepRecords = sleepAll.filter { it.endTime.isAfter(dayWithSleepStart) && it.startTime.isBefore(dayEnd) },
+        heartRateRecords = heartRateAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        // Instantaneous records (have a single `time` property).
+        restingHrRecords = restingHrAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        hrvRecords = hrvAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        respiratoryRecords = respiratoryAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        spo2Records = spo2All.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        bloodPressureRecords = bloodPressureAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        glucoseRecords = glucoseAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        weightRecords = weightAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        bodyFatRecords = bodyFatAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        bodyWaterMassRecords = bodyWaterAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        bmrRecords = bmrAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        hydrationRecords = hydrationAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        nutritionRecords = nutritionAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        vo2Records = vo2All.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        bodyTempRecords = bodyTempAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+      )
+      cursor = cursor.plusDays(1)
+    }
+
+    return payloads
+  }
+
+  /**
+   * Build a single day's payload from *pre-filtered* record lists.
+   * No I/O happens in this function — it is a pure function of its
+   * inputs, which makes it trivial to unit-test and keeps the
+   * per-day cost constant once the range reads have completed.
+   */
+  @Suppress("LongParameterList")
+  private fun buildPayloadForDay(
+    date: LocalDate,
+    zone: ZoneId,
+    capturedAt: OffsetDateTime,
+    permissionsGranted: Boolean,
+    dayStart: Instant,
+    dayEnd: Instant,
+    stepsRecords: List<StepsRecord>,
+    distanceRecords: List<DistanceRecord>,
+    floorsRecords: List<FloorsClimbedRecord>,
+    activeCalRecords: List<ActiveCaloriesBurnedRecord>,
+    totalCalRecords: List<TotalCaloriesBurnedRecord>,
+    exerciseRecords: List<ExerciseSessionRecord>,
+    sleepRecords: List<SleepSessionRecord>,
+    heartRateRecords: List<HeartRateRecord>,
+    restingHrRecords: List<RestingHeartRateRecord>,
+    hrvRecords: List<HeartRateVariabilityRmssdRecord>,
+    respiratoryRecords: List<RespiratoryRateRecord>,
+    spo2Records: List<OxygenSaturationRecord>,
+    bloodPressureRecords: List<BloodPressureRecord>,
+    glucoseRecords: List<BloodGlucoseRecord>,
+    weightRecords: List<WeightRecord>,
+    bodyFatRecords: List<BodyFatRecord>,
+    bodyWaterMassRecords: List<BodyWaterMassRecord>,
+    bmrRecords: List<BasalMetabolicRateRecord>,
+    hydrationRecords: List<HydrationRecord>,
+    nutritionRecords: List<NutritionRecord>,
+    vo2Records: List<Vo2MaxRecord>,
+    bodyTempRecords: List<BodyTemperatureRecord>,
+  ): SamsungHealthPayload {
     // ── Activity ──────────────────────────────────────────────────────
     val steps = stepsRecords.sumOf { it.count }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val distanceMeters = distanceRecords.sumOf { it.distance.inMeters }
@@ -131,9 +254,6 @@ class HealthConnectPayloadMapper(
     val exerciseByType = exerciseRecords.groupBy { it.exerciseType }
     val exerciseMinutes = exerciseRecords.sumOf { durationMinutes(it.startTime, it.endTime) }
 
-    // Rough per-activity splits. Exact type constants live on
-    // ExerciseSessionRecord.ExerciseTypes but are many — we aggregate
-    // by a handful of coarse buckets below.
     val walkingMinutes = sumDurationForTypes(
       exerciseByType,
       ExerciseSessionRecord.EXERCISE_TYPE_WALKING,
@@ -158,11 +278,15 @@ class HealthConnectPayloadMapper(
     // ── Sleep ─────────────────────────────────────────────────────────
     val sleepResult = computeSleepMetrics(sleepRecords, dayStart, dayEnd)
 
-    // ── Cardio series & aggregates ────────────────────────────────────
+    // ── Cardio: only SAMPLES whose individual time falls in the day ──
+    // HeartRateRecord carries many per-second samples; filtering the
+    // record by interval gets us candidate records, but we still need
+    // to drop any samples that fall outside [dayStart, dayEnd).
     val heartRateSeries = mutableListOf<TimedValueSample>()
     val heartRateValues = mutableListOf<Double>()
     for (record in heartRateRecords) {
       for (sample in record.samples) {
+        if (sample.time.isBefore(dayStart) || !sample.time.isBefore(dayEnd)) continue
         val bpm = sample.beatsPerMinute.toDouble()
         heartRateValues += bpm
         heartRateSeries += TimedValueSample(
@@ -204,8 +328,6 @@ class HealthConnectPayloadMapper(
         atIso = record.time.toString(),
         systolicMmHg = record.systolic.inMillimetersOfMercury,
         diastolicMmHg = record.diastolic.inMillimetersOfMercury,
-        // BloodPressureRecord does not carry a pulse directly in
-        // Health Connect 1.1.0 — set to 0 and rely on HeartRateRecord.
         pulseBpm = 0.0,
       )
     }
@@ -257,10 +379,6 @@ class HealthConnectPayloadMapper(
         startIso = record.startTime.toString(),
         endIso = record.endTime.toString(),
         durationMinutes = durationMinutes(record.startTime, record.endTime),
-        // Detailed per-workout calories/HR live on related records in
-        // Health Connect rather than on the session itself. Left at 0
-        // until the mapper learns to join with totalCalories / HR by
-        // workout time window.
         caloriesKcal = 0.0,
         distanceMeters = 0.0,
         avgHeartRateBpm = 0.0,
@@ -282,17 +400,11 @@ class HealthConnectPayloadMapper(
         steps = steps,
         distanceMeters = distanceMeters,
         floorsClimbed = floorsClimbed,
-        // "activeMinutes" is a broader concept than "exerciseMinutes":
-        // until we compute sedentary minutes we treat "active" as a
-        // superset that equals exerciseMinutes plus non-exercise
-        // movement (walking/running/cycling totals that may overlap).
         activeMinutes = (exerciseMinutes +
           walkingMinutes +
           runningMinutes +
           cyclingMinutes +
           swimmingMinutes).coerceAtLeast(exerciseMinutes),
-        // No Health Connect record directly exposes sedentary time;
-        // leave at 0 rather than fabricating a value.
         sedentaryMinutes = 0,
         exerciseMinutes = exerciseMinutes,
         caloriesActiveKcal = caloriesActiveKcal,
@@ -330,9 +442,6 @@ class HealthConnectPayloadMapper(
       ),
       bodyComposition = BodyCompositionMetrics(
         weightKg = latestWeightKg,
-        // BMI requires a height reading, which we do not currently
-        // request. Report 0 until a HeightRecord reader is added
-        // rather than fabricating a value from weight alone.
         bmi = 0.0,
         bodyFatPercent = latestBodyFatPercent,
         skeletalMuscleMassKg = 0.0,
@@ -472,9 +581,6 @@ class HealthConnectPayloadMapper(
       sessionSamples += SleepSessionSample(
         startIso = clippedSession.start.toString(),
         endIso = clippedSession.end.toString(),
-        // Health Connect does not expose a sleep score. Leave at 0;
-        // a downstream manual-score edit in the dashboard overrides
-        // this field.
         score = 0.0,
       )
     }
@@ -508,9 +614,6 @@ class HealthConnectPayloadMapper(
       wakeAfterSleepOnsetMinutes = awakeMinutes,
       sleepEfficiencyPercent = efficiency,
       sleepConsistencyPercent = 0.0,
-      // Sleep score is *derived* from stages, not read from the record
-      // (`title` is a name, not a score). Downstream can rewrite this
-      // value with a manual score from the dashboard.
       sleepScore = deriveSleepScore(
         efficiencyPercent = efficiency,
         deepMinutes = deepMinutes,
@@ -611,7 +714,9 @@ class HealthConnectPayloadMapper(
   }
 
   companion object {
-    private const val APP_VERSION = "0.3.0"
+    // Bumped for the rate-limit fix so the debug endpoint shows
+    // "0.3.1" in payload.source.appVersion once the new APK is live.
+    private const val APP_VERSION = "0.3.1"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

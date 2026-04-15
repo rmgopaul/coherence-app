@@ -9,6 +9,7 @@ import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
+import androidx.work.workDataOf
 import androidx.work.WorkerParameters
 import com.coherence.samsunghealth.CoherenceApplication
 import com.coherence.samsunghealth.sdk.SamsungHealthRepository
@@ -34,6 +35,15 @@ class HistoricalSyncWorker(
   companion object {
     const val WORK_NAME = "samsung-health-historical-sync"
     const val KEY_DAYS_BACK = "days_back"
+
+    /**
+     * Key under which the worker publishes a human-readable failure
+     * reason on [androidx.work.Data] when a run ends in
+     * [androidx.work.ListenableWorker.Result.failure]. Observed by
+     * `SettingsScreen` to render the reason next to the button.
+     */
+    const val KEY_FAILURE_REASON = "failure_reason"
+
     const val DEFAULT_DAYS_BACK = 30
     const val MAX_DAYS_BACK = 30
 
@@ -100,12 +110,35 @@ class HistoricalSyncWorker(
               TAG,
               "Chunk ${index + 1}/${chunks.size} permanent (HTTP ${response.statusCode}): ${response.message}",
             )
-            return Result.failure()
+            return Result.failure(
+              workDataOf(
+                KEY_FAILURE_REASON to "Server rejected backfill (HTTP ${response.statusCode}): " +
+                  response.message.take(200),
+              ),
+            )
           }
         }
       }
 
-      if (hasRetryable) Result.retry() else Result.success()
+      if (hasRetryable) {
+        Result.retry()
+      } else {
+        // If the mapper surfaced rate-limit warnings on the payloads
+        // themselves, promote the first one into the WorkInfo output
+        // so the UI can show it even though the worker returned
+        // success (data archived, just with gaps).
+        val rateLimitWarning = payloads.asSequence()
+          .flatMap { it.sync.warnings.asSequence() }
+          .firstOrNull { it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) }
+        if (rateLimitWarning != null) {
+          Log.w(TAG, "Backfill completed with rate-limit warnings: $rateLimitWarning")
+          Result.success(
+            workDataOf(KEY_FAILURE_REASON to "Partial: $rateLimitWarning"),
+          )
+        } else {
+          Result.success()
+        }
+      }
     } catch (error: Throwable) {
       Log.e(TAG, "Historical sync threw", error)
       Result.retry()

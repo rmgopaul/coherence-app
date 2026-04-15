@@ -50,6 +50,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.coherence.samsunghealth.data.model.AppPreferences
 import com.coherence.samsunghealth.data.model.ThemeMode
 import com.coherence.samsunghealth.data.model.User
@@ -85,7 +88,18 @@ fun SettingsScreen(onBack: () -> Unit) {
   var serverReachable by remember { mutableStateOf<Boolean?>(null) }
   var showSignOutConfirm by remember { mutableStateOf(false) }
   var backfillDaysText by remember { mutableStateOf(HistoricalSyncWorker.DEFAULT_DAYS_BACK.toString()) }
-  var backfillQueued by remember { mutableStateOf(false) }
+
+  // Observe the backfill worker's live state instead of tracking a
+  // local "queued" flag. Local flags reset every time the Settings
+  // screen is popped and re-entered — WorkManager's state survives
+  // that because it lives in the app-wide WorkManager database.
+  val backfillWorkInfos by remember(context) {
+    WorkManager.getInstance(context)
+      .getWorkInfosForUniqueWorkFlow(HistoricalSyncWorker.WORK_NAME)
+  }.collectAsStateWithLifecycle(initialValue = emptyList())
+  val backfillState: WorkInfo.State? = backfillWorkInfos
+    .firstOrNull { it.state != WorkInfo.State.CANCELLED }?.state
+    ?: backfillWorkInfos.firstOrNull()?.state
 
   LaunchedEffect(Unit) {
     try {
@@ -185,18 +199,38 @@ fun SettingsScreen(onBack: () -> Unit) {
               },
             )
           }
+          val (buttonLabel, buttonEnabled) = when (backfillState) {
+            WorkInfo.State.ENQUEUED -> "Backfill queued — waiting for network" to false
+            WorkInfo.State.RUNNING -> "Backfill running…" to false
+            WorkInfo.State.BLOCKED -> "Backfill blocked by constraints" to false
+            WorkInfo.State.FAILED -> "Last backfill failed — tap to retry" to true
+            WorkInfo.State.CANCELLED -> "Backfill cancelled — tap to retry" to true
+            WorkInfo.State.SUCCEEDED -> "Backfill complete — run again" to true
+            null -> "Start backfill" to true
+          }
           Button(
             onClick = {
               val days = backfillDaysText.toIntOrNull()
                 ?: HistoricalSyncWorker.DEFAULT_DAYS_BACK
               AutoSyncScheduler.scheduleHistoricalBackfill(context, days)
-              backfillQueued = true
             },
+            enabled = buttonEnabled,
             modifier = Modifier.fillMaxWidth(),
           ) {
+            Text(buttonLabel)
+          }
+          // Surface the most recent failure reason if the worker put
+          // one in its output data. The Historical sync worker sets
+          // this when a rate-limit error finally exhausts retries.
+          val lastFailureMessage = backfillWorkInfos
+            .firstOrNull { it.state == WorkInfo.State.FAILED }
+            ?.outputData
+            ?.getString(HistoricalSyncWorker.KEY_FAILURE_REASON)
+          if (!lastFailureMessage.isNullOrBlank()) {
             Text(
-              if (backfillQueued) "Backfill queued — check back later"
-              else "Start backfill",
+              text = lastFailureMessage,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.error,
             )
           }
         }

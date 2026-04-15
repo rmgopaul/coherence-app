@@ -85,26 +85,66 @@ class SamsungHealthDataSdkRepository(
       "endDate ($endDate) must not be before startDate ($startDate)"
     }
 
-    val payloads = mutableListOf<SamsungHealthPayload>()
-    var cursor = startDate
-    while (!cursor.isAfter(endDate)) {
-      val payload = try {
-        collectPayloadForDate(cursor)
-      } catch (error: Throwable) {
+    val zone = ZoneId.systemDefault()
+    val status = permissionManager.getStatus()
+
+    if (!status.sdkAvailable) {
+      // Emit a stub payload per day so the webhook still gets a shape
+      // per requested date (matches the single-day path's behavior).
+      val warnings = listOf(
+        "Health Connect SDK not available (status=${status.sdkStatusCode}). " +
+          "Install/update Health Connect and retry.",
+      )
+      return generateSequence(startDate) { current ->
+        if (current.isBefore(endDate)) current.plusDays(1) else null
+      }.map { day ->
         emptyPayload(
-          date = cursor,
-          zone = ZoneId.systemDefault(),
+          date = day,
+          zone = zone,
           sdkLinked = false,
           permissionsGranted = false,
-          warnings = listOf(
-            "Failed to collect for $cursor: ${error.message ?: error.javaClass.simpleName}",
-          ),
+          warnings = warnings,
         )
-      }
-      payloads += payload
-      cursor = cursor.plusDays(1)
+      }.toList()
     }
-    return payloads
+
+    val client = HealthConnectClient.getOrCreate(context)
+    val reader = HealthConnectReader(
+      client = client,
+      grantedPermissions = status.grantedPermissions,
+    )
+    if (status.missingPermissions.isNotEmpty()) {
+      reader.warnings += "Missing permissions: ${status.missingPermissions.size}"
+    }
+
+    // Single set of range-scoped reads — 22 API calls total,
+    // regardless of how many days the range spans. This is the
+    // rate-limit fix for the historical backfill path.
+    val mapper = HealthConnectPayloadMapper(reader)
+    return try {
+      mapper.collectForDateRange(
+        startDate = startDate,
+        endDate = endDate,
+        zone = zone,
+        permissionsGranted = status.permissionsGranted,
+      )
+    } catch (error: Throwable) {
+      // If the whole range read fails at the mapper level (unlikely
+      // since the reader already swallows per-type errors), fall back
+      // to stub payloads so the caller still sees a shape per date.
+      val message = error.message ?: error.javaClass.simpleName
+      generateSequence(startDate) { current ->
+        if (current.isBefore(endDate)) current.plusDays(1) else null
+      }.map { day ->
+        emptyPayload(
+          date = day,
+          zone = zone,
+          sdkLinked = true,
+          permissionsGranted = status.permissionsGranted,
+          warnings = listOf("Range collection failed: $message"),
+        )
+      }.toList()
+    }
   }
 
   override suspend fun getConnectionStatus(): HealthConnectStatus {
