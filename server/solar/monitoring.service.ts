@@ -359,8 +359,12 @@ export async function executeMonitoringBatch(
     let ownerUserId: number | null = null;
     try {
       ownerUserId = await resolveSolarRecOwnerUserId();
-    } catch {
-      console.warn("[MonitoringBatch] Could not resolve owner userId — converted reads push will be skipped.");
+      console.log(`[MonitoringBatch] Resolved owner userId: ${ownerUserId}`);
+    } catch (err) {
+      console.error(
+        "[MonitoringBatch] Could not resolve owner userId — converted reads push will be skipped:",
+        err instanceof Error ? err.message : err
+      );
     }
 
     // Collect all completed runs across the batch for converted reads push
@@ -424,12 +428,29 @@ export async function executeMonitoringBatch(
     }
 
     // Push successful runs to Converted Reads dataset for Performance Ratio tab
-    if (ownerUserId && allCompletedRuns.length > 0) {
+    const successfulRuns = allCompletedRuns.filter(
+      (r) => r.status === "success" && r.lifetimeKwh != null && r.lifetimeKwh > 0
+    );
+    console.log(
+      `[MonitoringBatch] Collected ${allCompletedRuns.length} total runs, ${successfulRuns.length} with lifetime kWh data, ownerUserId=${ownerUserId}`
+    );
+
+    if (!ownerUserId) {
+      console.warn("[MonitoringBatch] Skipping converted reads push: no ownerUserId resolved.");
+    } else if (successfulRuns.length === 0) {
+      console.warn("[MonitoringBatch] Skipping converted reads push: no successful runs with lifetime kWh.");
+    } else {
       try {
         const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(ownerUserId, allCompletedRuns);
-        console.log(`[MonitoringBatch] Converted reads: ${pushed} pushed, ${skipped} skipped (dedup).`);
+        console.log(
+          `[MonitoringBatch] Converted reads push complete: ${pushed} pushed, ${skipped} skipped (dedup). userId=${ownerUserId}`
+        );
       } catch (err) {
-        console.error("[MonitoringBatch] Failed to push converted reads:", err instanceof Error ? err.message : err);
+        console.error(
+          "[MonitoringBatch] Failed to push converted reads:",
+          err instanceof Error ? err.message : err,
+          err instanceof Error && err.stack ? `\n${err.stack}` : ""
+        );
       }
     }
 

@@ -21,6 +21,7 @@ import {
   Minus,
   Loader2,
   Upload,
+  Bug,
 } from "lucide-react";
 import { useSolarRecAuth } from "../hooks/useSolarRecAuth";
 import { parseCsv } from "@/solar-rec-dashboard/lib/csvIo";
@@ -222,6 +223,130 @@ function SiteIdsUploadDialog({
           {saveMutation.error && (
             <p className="text-xs text-destructive">{saveMutation.error.message}</p>
           )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * Debug dialog — shows the raw state of `dataset:convertedReads` on the server.
+ * Use this to confirm whether the monitoring batch bridge actually wrote
+ * anything, and if so, what dates/rows are stored.
+ */
+function DebugConvertedReadsDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const query = trpc.monitoring.debugConvertedReadsState.useQuery(undefined, {
+    enabled: open,
+    refetchOnWindowFocus: false,
+  });
+
+  const data = query.data;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Converted Reads — Raw Server State</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3 text-sm">
+          {query.isLoading && <p className="text-muted-foreground">Loading…</p>}
+          {query.error && <p className="text-destructive">{query.error.message}</p>}
+          {data && (
+            <>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <p className="text-muted-foreground">Owner userId</p>
+                  <p className="font-mono">{data.ownerUserId}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Today (UTC)</p>
+                  <p className="font-mono">{data.todayIso}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Today (local M/D/YYYY)</p>
+                  <p className="font-mono">{data.todayLocal}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Dataset exists</p>
+                  <p className="font-mono">{data.exists ? "yes" : "no"}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">uploadedAt</p>
+                  <p className="font-mono text-[11px]">{data.uploadedAt ?? "n/a"}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Total rows stored</p>
+                  <p className="font-mono">{data.totalRows}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Rows matching today</p>
+                  <p className="font-mono">{data.todayRowCount}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">Payload bytes</p>
+                  <p className="font-mono">{data.rawPayloadBytes.toLocaleString()}</p>
+                </div>
+              </div>
+
+              {data.sources && data.sources.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    Sources (last 5)
+                  </p>
+                  <div className="space-y-0.5">
+                    {data.sources.slice(-5).map((s, i) => (
+                      <div key={i} className="text-[11px] font-mono text-muted-foreground">
+                        {s.uploadedAt.slice(0, 19)} — {s.fileName} ({s.rowCount})
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {data.sampleRows && data.sampleRows.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    Today's rows (first 10)
+                  </p>
+                  <div className="rounded border bg-muted/30 p-2 max-h-40 overflow-y-auto">
+                    {data.sampleRows.map((r, i) => (
+                      <div key={i} className="text-[11px] font-mono">
+                        {r.monitoring} | {r.monitoring_system_id} |{" "}
+                        {r.monitoring_system_name?.slice(0, 20)} | {r.lifetime_meter_read_wh} Wh |{" "}
+                        {r.read_date}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {data.lastRows && data.lastRows.length > 0 && data.todayRowCount === 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground mb-1">
+                    Last 5 rows in dataset (no today rows found)
+                  </p>
+                  <div className="rounded border bg-muted/30 p-2 max-h-40 overflow-y-auto">
+                    {data.lastRows.map((r: Record<string, string>, i: number) => (
+                      <div key={i} className="text-[11px] font-mono">
+                        {r.monitoring} | {r.monitoring_system_id} |{" "}
+                        {r.monitoring_system_name?.slice(0, 20)} | {r.lifetime_meter_read_wh} Wh |{" "}
+                        {r.read_date}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+          <Button onClick={() => query.refetch()} variant="outline" size="sm" className="w-full">
+            Refresh
+          </Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -468,6 +593,7 @@ export default function MonitoringDashboard() {
   const [selectedRun, setSelectedRun] = useState<ApiRun | null>(null);
   const [uploadCredentialId, setUploadCredentialId] = useState<string | null>(null);
   const [uploadCredentialLabel, setUploadCredentialLabel] = useState("");
+  const [debugOpen, setDebugOpen] = useState(false);
   const { isOperator } = useSolarRecAuth();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
@@ -665,6 +791,17 @@ export default function MonitoringDashboard() {
             <Download className="h-3.5 w-3.5 mr-1" />
             CSV
           </Button>
+          {isOperator && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setDebugOpen(true)}
+              title="Show raw converted reads state"
+            >
+              <Bug className="h-3.5 w-3.5 mr-1" />
+              Debug
+            </Button>
+          )}
           {isOperator && (
             <>
               <Button
@@ -1048,6 +1185,9 @@ export default function MonitoringDashboard() {
           }}
         />
       )}
+
+      {/* Debug: raw converted reads state dialog */}
+      <DebugConvertedReadsDialog open={debugOpen} onOpenChange={setDebugOpen} />
 
       {/* Run detail dialog */}
       <Dialog

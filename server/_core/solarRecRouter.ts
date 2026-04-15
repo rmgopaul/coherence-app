@@ -1038,9 +1038,15 @@ const credentialsRouter = t.router({
       if (!cred) return { siteIds: [] };
       const meta = parseMetadataRecord(cred.metadata);
       const raw = Array.isArray(meta.siteIds) ? meta.siteIds : [];
+      type RawSiteEntry = { siteId?: string | number; id?: string | number; name?: string };
       const siteIds = raw
-        .filter((s: any) => typeof s === "object" && s && (s.siteId || s.id))
-        .map((s: any) => ({
+        .filter((s: unknown): s is RawSiteEntry =>
+          typeof s === "object" && s !== null && (
+            (s as RawSiteEntry).siteId !== undefined ||
+            (s as RawSiteEntry).id !== undefined
+          )
+        )
+        .map((s: RawSiteEntry) => ({
           siteId: String(s.siteId ?? s.id).trim(),
           name: typeof s.name === "string" ? s.name : null,
         }));
@@ -1320,6 +1326,81 @@ const monitoringRouter = t.router({
 
       return { batchId, dateKey, selectedProviders, selectedCredentialIds };
     }),
+
+  /**
+   * Debug endpoint — dumps the raw `dataset:convertedReads` payload from the
+   * server DB so we can see exactly what the monitoring bridge has written.
+   * Returns metadata + a sample of rows matching today's date.
+   */
+  debugConvertedReadsState: solarRecOperatorProcedure.query(async () => {
+    const { getSolarRecDashboardPayload } = await import("../db");
+    const ownerUserId = await resolveSolarRecOwnerUserId();
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const todayLocal = `${new Date().getMonth() + 1}/${new Date().getDate()}/${new Date().getFullYear()}`;
+
+    const payload = await getSolarRecDashboardPayload(ownerUserId, "dataset:convertedReads");
+    if (!payload) {
+      return {
+        ownerUserId,
+        todayIso,
+        todayLocal,
+        exists: false,
+        uploadedAt: null,
+        totalRows: 0,
+        todayRowCount: 0,
+        sampleRows: [] as Array<Record<string, string>>,
+        sources: [] as Array<{ fileName: string; uploadedAt: string; rowCount: number }>,
+        rawPayloadBytes: 0,
+      };
+    }
+
+    let parsed: {
+      uploadedAt?: string;
+      rows?: Array<Record<string, string>>;
+      csvText?: string;
+      sources?: Array<{ fileName: string; uploadedAt: string; rowCount: number }>;
+    } = {};
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      return {
+        ownerUserId,
+        todayIso,
+        todayLocal,
+        exists: true,
+        uploadedAt: null,
+        totalRows: 0,
+        todayRowCount: 0,
+        sampleRows: [],
+        sources: [],
+        rawPayloadBytes: payload.length,
+        parseError: "Stored payload is not valid JSON",
+      };
+    }
+
+    const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+    const todayRows = rows.filter(
+      (r) =>
+        r.read_date === todayLocal ||
+        r.read_date === todayIso ||
+        // YYYY-MM-DD comparison (the raw ISO form)
+        (typeof r.read_date === "string" && r.read_date.startsWith(todayIso))
+    );
+
+    return {
+      ownerUserId,
+      todayIso,
+      todayLocal,
+      exists: true,
+      uploadedAt: parsed.uploadedAt ?? null,
+      totalRows: rows.length,
+      todayRowCount: todayRows.length,
+      sampleRows: todayRows.slice(0, 10),
+      lastRows: rows.slice(-5),
+      sources: parsed.sources ?? [],
+      rawPayloadBytes: payload.length,
+    };
+  }),
 
   getOverview: solarRecViewerProcedure
     .input(
