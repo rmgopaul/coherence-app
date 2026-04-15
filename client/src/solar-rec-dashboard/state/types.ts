@@ -564,3 +564,52 @@ export type RecPerformanceContractYearSummaryRow = {
   recDelta: number;
   totalDrawdownAmount: number;
 };
+
+/**
+ * One entry in the dashboard snapshot log — a point-in-time capture
+ * of portfolio metrics, dataset manifest, COO statuses, and REC
+ * performance shortfall data. Created by `createLogEntry()` and
+ * rendered by the Snapshot Log tab. Persisted via
+ * `serializeDashboardLogs` + `deserializeDashboardLogs`.
+ */
+export type DashboardLogEntry = {
+  id: string;
+  createdAt: Date;
+  totalSystems: number;
+  reportingSystems: number;
+  reportingPercent: number | null;
+  changeOwnershipSystems: number;
+  changeOwnershipPercent: number | null;
+  transferredReporting: number;
+  transferredNotReporting: number;
+  terminatedReporting: number;
+  terminatedNotReporting: number;
+  changedNotTransferredReporting: number;
+  changedNotTransferredNotReporting: number;
+  totalContractedValue: number;
+  totalDeliveredValue: number;
+  totalGap: number;
+  contractedValueReporting: number;
+  contractedValueNotReporting: number;
+  contractedValueReportingPercent: number | null;
+  datasets: Array<{
+    key: DatasetKey;
+    label: string;
+    fileName: string;
+    rows: number;
+    updatedAt: Date;
+  }>;
+  cooStatuses: Array<{
+    key: string;
+    systemName?: string;
+    status: ChangeOwnershipStatus;
+  }>;
+  recPerformanceContracts2025: Array<{
+    contractId: string;
+    deliveryYearLabel: string;
+    requiredToAvoidShortfallRecs: number;
+    deliveredTowardShortfallRecs: number;
+    deliveredPercentOfRequired: number | null;
+    unallocatedShortfallRecs: number;
+  }>;
+};
