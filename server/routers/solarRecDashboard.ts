@@ -35,6 +35,32 @@ import {
   upsertScheduleBImportFileUploadProgress,
 } from "../db";
 import { storageGet, storagePut } from "../storage";
+import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
+
+/**
+ * Dataset keys that are team-wide (shared across all Solar REC users) rather
+ * than per-user. For these keys, we always store/load under the Solar REC
+ * team owner's userId so that:
+ *   (a) the monitoring batch bridge (which runs server-side as the owner)
+ *       and the client-side dashboard uploads share the same storage slot
+ *   (b) every user on the team sees the same converted reads regardless
+ *       of who is currently logged in.
+ */
+const TEAM_WIDE_DATASET_KEYS = new Set(["convertedReads"]);
+
+async function resolveDatasetUserId(
+  inputKey: string,
+  fallbackUserId: number
+): Promise<number> {
+  if (TEAM_WIDE_DATASET_KEYS.has(inputKey)) {
+    try {
+      return await resolveSolarRecOwnerUserId();
+    } catch {
+      // Fall through to per-user storage if owner resolution fails.
+    }
+  }
+  return fallbackUserId;
+}
 import { getValidGoogleToken } from "../helpers/tokenRefresh";
 import {
   parseGoogleDriveFolderId,
@@ -130,11 +156,12 @@ export const solarRecDashboardRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
+      const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
+      const key = `solar-rec-dashboard/${storageUserId}/datasets/${input.key}.json`;
       const dbStorageKey = `dataset:${input.key}`;
 
       try {
-        const payload = await getSolarRecDashboardPayload(ctx.user.id, dbStorageKey);
+        const payload = await getSolarRecDashboardPayload(storageUserId, dbStorageKey);
         if (payload) return { key, payload };
       } catch {
         // Fall back to storage proxy.
@@ -159,12 +186,13 @@ export const solarRecDashboardRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const key = `solar-rec-dashboard/${ctx.user.id}/datasets/${input.key}.json`;
+      const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
+      const key = `solar-rec-dashboard/${storageUserId}/datasets/${input.key}.json`;
       const dbStorageKey = `dataset:${input.key}`;
       let persistedToDatabase = false;
 
       try {
-        persistedToDatabase = await saveSolarRecDashboardPayload(ctx.user.id, dbStorageKey, input.payload);
+        persistedToDatabase = await saveSolarRecDashboardPayload(storageUserId, dbStorageKey, input.payload);
       } catch {
         persistedToDatabase = false;
       }
