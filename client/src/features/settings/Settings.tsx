@@ -35,97 +35,21 @@ import {
 import { useState, useEffect, useMemo } from "react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
-const SECTION_LABELS: Record<string, string> = {
-  "section-headlines": "Headlines & Markets",
-  "section-overview": "Today's Plan",
-  "section-health": "Samsung Health",
-  "section-whoop": "WHOOP",
-  "section-dailylog": "Daily Log Trend",
-  "section-supplements": "Supplements",
-  "section-tracking": "Habits",
-  "section-notes": "Notes",
-  "section-triage": "Triage Inbox",
-  "section-calendar": "Calendar",
-  "section-todoist": "Todoist",
-  "section-emails": "Emails",
-  "section-drive": "Drive Files",
-  "section-workspace": "Workspace",
-  "section-chat": "Chat",
-};
-
-const RATING_COLORS: Record<string, string> = {
-  essential: "bg-emerald-100 text-emerald-800",
-  useful: "bg-blue-100 text-blue-800",
-  "rarely-use": "bg-amber-100 text-amber-800",
-  remove: "bg-red-100 text-red-800",
-};
-
-const OPENAI_MODELS = [
-  "gpt-5",
-  "gpt-5-mini",
-  "gpt-4.1",
-  "gpt-4.1-mini",
-  "gpt-4o",
-  "gpt-4o-mini",
-];
-
-const ANTHROPIC_MODELS = [
-  "claude-sonnet-4-20250514",
-  "claude-haiku-4-20250414",
-];
-
-const TODOIST_DEFAULT_OPTIONS = [
-  { value: "all", label: "All open tasks" },
-  { value: "#Inbox", label: "Inbox" },
-  { value: "today", label: "Today" },
-  { value: "upcoming", label: "Upcoming (7 days)" },
-];
-
-const HABIT_COLOR_OPTIONS = [
-  "slate",
-  "emerald",
-  "blue",
-  "violet",
-  "rose",
-  "amber",
-];
-
 import { SUPPLEMENT_UNITS } from "@shared/const";
-
-const toDateKeyLocal = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-type SupplementEditorState = {
-  name: string;
-  brand: string;
-  dose: string;
-  doseUnit: (typeof SUPPLEMENT_UNITS)[number];
-  dosePerUnit: string;
-  timing: "am" | "pm";
-  productUrl: string;
-  pricePerBottle: string;
-  quantityPerBottle: string;
-  isLocked: boolean;
-};
-
-type SupplementBottleScanSummary = {
-  definitionId: string;
-  definitionName: string;
-  existed: boolean;
-  pricePerBottle: number | null;
-  sourceUrl: string | null;
-  priceLogCreated: boolean;
-  priceCheckError: string | null;
-};
-
-type SupplementBottleScanBatch = {
-  imageUrl: string | null;
-  items: SupplementBottleScanSummary[];
-};
+import {
+  SECTION_LABELS,
+  RATING_COLORS,
+  OPENAI_MODELS,
+  ANTHROPIC_MODELS,
+  TODOIST_DEFAULT_OPTIONS,
+  HABIT_COLOR_OPTIONS,
+} from "./settings.constants";
+import {
+  type SupplementEditorState,
+  type SupplementBottleScanSummary,
+  type SupplementBottleScanBatch,
+} from "./settings.types";
+import { toDateKeyLocal, parseOptionalNonNegativeNumber } from "./settings.helpers";
 
 export default function Settings() {
   const { user, loading } = useAuth();
@@ -791,16 +715,6 @@ export default function Settings() {
     saveTodoistSettings.mutate({ defaultFilter: todoistDefaultFilter });
   };
 
-  const parseOptionalNumber = (raw: string, label: string): number | null => {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    const numeric = Number(trimmed);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      throw new Error(`${label} must be a valid non-negative number`);
-    }
-    return numeric;
-  };
-
   const handleSaveDisplayName = () => {
     const trimmed = displayName.trim();
     updatePreferences.mutate({
@@ -866,8 +780,8 @@ export default function Settings() {
     }
 
     try {
-      const pricePerBottle = parseOptionalNumber(newSupplementPricePerBottle, "Price per bottle");
-      const quantityPerBottle = parseOptionalNumber(
+      const pricePerBottle = parseOptionalNonNegativeNumber(newSupplementPricePerBottle, "Price per bottle");
+      const quantityPerBottle = parseOptionalNonNegativeNumber(
         newSupplementQuantityPerBottle,
         "Quantity per bottle"
       );
@@ -1004,8 +918,8 @@ export default function Settings() {
     }
 
     try {
-      const pricePerBottle = parseOptionalNumber(draft.pricePerBottle, "Price per bottle");
-      const quantityPerBottle = parseOptionalNumber(draft.quantityPerBottle, "Quantity per bottle");
+      const pricePerBottle = parseOptionalNonNegativeNumber(draft.pricePerBottle, "Price per bottle");
+      const quantityPerBottle = parseOptionalNonNegativeNumber(draft.quantityPerBottle, "Quantity per bottle");
 
       updateSupplementDefinition.mutate({
         definitionId,
