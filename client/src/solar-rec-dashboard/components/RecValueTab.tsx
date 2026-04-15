@@ -1,15 +1,23 @@
 /**
  * REC Value tab.
  *
- * Extracted from SolarRecDashboard.tsx. Phase 8. Owns:
- *   - 1 useState (recValuePage)
- *   - 1 useMemo (visibleRecValueRows — pagination slice)
+ * Extracted from SolarRecDashboard.tsx (Phase 8) and further cleaned
+ * up in Phase 12 to absorb 3 tab-specific memos from the parent:
+ * `recValueRows`, `recValueByStatusChartRows`, and `recTopGapChartRows`.
+ * All three were single-consumer feeds that are now computed inside
+ * this component from the shared `part2EligibleSystemsForSizeReporting`
+ * foundation memo.
  *
- * Receives the upstream memos `recValueRows`, `snapshotPart2ValueSummary`,
- * `recValueByStatusChartRows`, `recTopGapChartRows` as props. All four
- * stay in the parent: `snapshotPart2ValueSummary` is also consumed by
- * `createLogEntry` for dashboard snapshots, and the chart memos are
- * cheap derivations we keep colocated with their sources.
+ * State + memos:
+ *   - 1 useState (recValuePage)
+ *   - 4 useMemos (recValueRows, recValueByStatusChartRows,
+ *     recTopGapChartRows, visibleRecValueRows — the pagination slice)
+ *
+ * Props:
+ *   - `part2EligibleSystemsForSizeReporting` — the shared foundation
+ *     memo, stays in parent because every tab reads it
+ *   - `snapshotPart2ValueSummary` — stays in parent because
+ *     `createLogEntry` bakes it into every snapshot log entry
  */
 
 import { useMemo, useState } from "react";
@@ -53,15 +61,13 @@ import type { SystemRecord } from "@/solar-rec-dashboard/state/types";
 // Props
 // ---------------------------------------------------------------------------
 
-export type RecValueByStatusChartRow = {
+type RecValueByStatusChartRow = {
   label: string;
+  systems: number;
   contractedValue: number;
   deliveredValue: number;
-};
-
-export type RecTopGapChartRow = {
-  label: string;
   valueGap: number;
+  deliveredPercent: number | null;
 };
 
 export type RecValueSnapshotSummary = {
@@ -74,10 +80,16 @@ export type RecValueSnapshotSummary = {
 };
 
 export interface RecValueTabProps {
-  recValueRows: SystemRecord[];
+  /**
+   * The shared Part II verified scoped-systems slice. Foundation memo
+   * in the parent — RecValue computes its own rows/charts from it.
+   */
+  part2EligibleSystemsForSizeReporting: SystemRecord[];
+  /**
+   * Parent-computed snapshot summary. Stays in parent because
+   * `createLogEntry` bakes it into every snapshot log entry.
+   */
   snapshotPart2ValueSummary: RecValueSnapshotSummary;
-  recValueByStatusChartRows: RecValueByStatusChartRow[];
-  recTopGapChartRows: RecTopGapChartRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -85,14 +97,80 @@ export interface RecValueTabProps {
 // ---------------------------------------------------------------------------
 
 export default function RecValueTab(props: RecValueTabProps) {
-  const {
-    recValueRows,
-    snapshotPart2ValueSummary,
-    recValueByStatusChartRows,
-    recTopGapChartRows,
-  } = props;
+  const { part2EligibleSystemsForSizeReporting, snapshotPart2ValueSummary } = props;
 
   const [recValuePage, setRecValuePage] = useState(1);
+
+  // Part II systems with contracted or delivered value, sorted by
+  // largest value gap first (so the worst offenders show up on the
+  // default first page of the table below).
+  const recValueRows = useMemo(
+    () =>
+      part2EligibleSystemsForSizeReporting
+        .filter(
+          (system) =>
+            resolveContractValueAmount(system) > 0 ||
+            (system.deliveredValue ?? 0) > 0,
+        )
+        .sort((a, b) => resolveValueGapAmount(b) - resolveValueGapAmount(a)),
+    [part2EligibleSystemsForSizeReporting],
+  );
+
+  // Bucket the scoped systems into Reporting / Not Reporting /
+  // Terminated and sum up contracted + delivered values per bucket
+  // for the stacked bar chart.
+  const recValueByStatusChartRows = useMemo<RecValueByStatusChartRow[]>(() => {
+    const groups = new Map<
+      "Reporting" | "Not Reporting" | "Terminated",
+      {
+        label: string;
+        systems: number;
+        contractedValue: number;
+        deliveredValue: number;
+      }
+    >([
+      ["Reporting", { label: "Reporting", systems: 0, contractedValue: 0, deliveredValue: 0 }],
+      ["Not Reporting", { label: "Not Reporting", systems: 0, contractedValue: 0, deliveredValue: 0 }],
+      ["Terminated", { label: "Terminated", systems: 0, contractedValue: 0, deliveredValue: 0 }],
+    ]);
+
+    part2EligibleSystemsForSizeReporting.forEach((system) => {
+      const groupKey: "Reporting" | "Not Reporting" | "Terminated" = system.isTerminated
+        ? "Terminated"
+        : system.isReporting
+          ? "Reporting"
+          : "Not Reporting";
+      const group = groups.get(groupKey);
+      if (!group) return;
+      group.systems += 1;
+      group.contractedValue += resolveContractValueAmount(system);
+      group.deliveredValue += system.deliveredValue ?? 0;
+    });
+
+    return Array.from(groups.values()).map((group) => ({
+      ...group,
+      valueGap: group.contractedValue - group.deliveredValue,
+      deliveredPercent: toPercentValue(group.deliveredValue, group.contractedValue),
+    }));
+  }, [part2EligibleSystemsForSizeReporting]);
+
+  // Top 12 systems by dollar value gap for the horizontal bar
+  // chart. Uses labels truncated to 28 chars so the x-axis stays
+  // readable.
+  const recTopGapChartRows = useMemo(
+    () =>
+      [...recValueRows]
+        .map((row) => ({
+          label:
+            row.systemName.length > 28
+              ? `${row.systemName.slice(0, 25).trimEnd()}...`
+              : row.systemName,
+          valueGap: Math.max(0, resolveValueGapAmount(row)),
+        }))
+        .sort((a, b) => b.valueGap - a.valueGap)
+        .slice(0, 12),
+    [recValueRows],
+  );
 
   const recValueTotalPages = Math.max(
     1,

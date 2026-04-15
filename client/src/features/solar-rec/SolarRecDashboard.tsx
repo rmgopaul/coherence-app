@@ -11,7 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+// Sheet/SheetContent/Header/Title/Description — moved into
+// @/solar-rec-dashboard/components/SystemDetailSheet (Phase 11)
 import { trpc } from "@/lib/trpc";
 
 const TabAIChatLazy = lazy(() =>
@@ -78,6 +79,9 @@ const RecPerformanceEvaluationTabLazy = lazy(
 );
 const SnapshotLogTabLazy = lazy(
   () => import("@/solar-rec-dashboard/components/SnapshotLogTab")
+);
+const SystemDetailSheetLazy = lazy(
+  () => import("@/solar-rec-dashboard/components/SystemDetailSheet")
 );
 import { clean, formatPercent } from "@/lib/helpers";
 import { parseTabularFile } from "@/lib/csvParsing";
@@ -2870,26 +2874,7 @@ export default function SolarRecDashboard() {
       });
   }, [part2VerifiedAbpRows, systems]);
 
-  const overviewPart2Totals = useMemo(() => {
-    const totalContractedValuePart2 = part2EligibleSystemsForSizeReporting.reduce(
-      (sum, system) => sum + resolveContractValueAmount(system),
-      0
-    );
-    const cumulativeKwAcPart2 = part2EligibleSystemsForSizeReporting.reduce(
-      (sum, system) => sum + (system.installedKwAc ?? 0),
-      0
-    );
-    const cumulativeKwDcPart2 = part2EligibleSystemsForSizeReporting.reduce(
-      (sum, system) => sum + (system.installedKwDc ?? 0),
-      0
-    );
-
-    return {
-      totalContractedValuePart2,
-      cumulativeKwAcPart2,
-      cumulativeKwDcPart2,
-    };
-  }, [part2EligibleSystemsForSizeReporting]);
+  // overviewPart2Totals — moved to OverviewTab (Phase 12)
 
   const snapshotPart2ValueSummary = useMemo(() => {
     const totalContractedValue = part2EligibleSystemsForSizeReporting.reduce(
@@ -2939,22 +2924,11 @@ export default function SolarRecDashboard() {
     });
   }, [part2EligibleSystemsForSizeReporting]);
 
-  const sizeTabNotReportingPart2Rows = useMemo(() => {
-    return part2EligibleSystemsForSizeReporting
-      .filter((system) => !system.isReporting)
-      .sort((a, b) => a.systemName.localeCompare(b.systemName, undefined, { sensitivity: "base", numeric: true }));
-  }, [part2EligibleSystemsForSizeReporting]);
+  // sizeTabNotReportingPart2Rows + sizeSiteList pagination + visibleSizeSiteListRows
+  // — moved to SizeReportingTab
 
-  // sizeSiteList pagination + visibleSizeSiteListRows — moved to SizeReportingTab
-
-  const recValueRows = useMemo(
-    () =>
-      part2EligibleSystemsForSizeReporting
-        .filter((system) => resolveContractValueAmount(system) > 0 || (system.deliveredValue ?? 0) > 0)
-        .sort((a, b) => resolveValueGapAmount(b) - resolveValueGapAmount(a)),
-    [part2EligibleSystemsForSizeReporting]
-  );
-  // recValue pagination + visibleRecValueRows — moved to RecValueTab
+  // recValueRows + recValue pagination + visibleRecValueRows
+  // — moved to RecValueTab (Phase 12)
 
   // filteredOwnershipRows — moved to @/solar-rec-dashboard/components/OwnershipTab
 
@@ -4662,160 +4636,10 @@ export default function SolarRecDashboard() {
     part2VerifiedAbpRows.length,
   ]);
 
-  const sizeReportingChartRows = useMemo(
-    () =>
-      sizeBreakdownRows.map((row) => ({
-        bucket: row.bucket,
-        reporting: row.reporting,
-        notReporting: row.notReporting,
-      })),
-    [sizeBreakdownRows]
-  );
-
-  const ownershipStackedChartRows = useMemo(() => {
-    const eligiblePart2ApplicationIds = new Set<string>();
-    const eligiblePart2PortalSystemIds = new Set<string>();
-    const eligiblePart2TrackingIds = new Set<string>();
-    part2VerifiedAbpRows.forEach((row) => {
-      const applicationId = clean(row.Application_ID);
-      const portalSystemId = clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (applicationId) eligiblePart2ApplicationIds.add(applicationId);
-      if (portalSystemId) eligiblePart2PortalSystemIds.add(portalSystemId);
-      if (trackingId) eligiblePart2TrackingIds.add(trackingId);
-    });
-
-    const scopedPart2Systems = systems.filter((system) => {
-      const byPortalSystemId = system.systemId ? eligiblePart2PortalSystemIds.has(system.systemId) : false;
-      const byApplicationId = system.stateApplicationRefId
-        ? eligiblePart2ApplicationIds.has(system.stateApplicationRefId)
-        : false;
-      const byTrackingId = system.trackingSystemRefId ? eligiblePart2TrackingIds.has(system.trackingSystemRefId) : false;
-      return byPortalSystemId || byApplicationId || byTrackingId;
-    });
-
-    const systemsById = new Map<string, SystemRecord[]>();
-    const systemsByApplicationId = new Map<string, SystemRecord[]>();
-    const systemsByTrackingId = new Map<string, SystemRecord[]>();
-    const systemsByName = new Map<string, SystemRecord[]>();
-
-    const addIndexedSystem = (
-      map: Map<string, SystemRecord[]>,
-      key: string | null | undefined,
-      system: SystemRecord
-    ) => {
-      const normalized = clean(key);
-      if (!normalized) return;
-      const existing = map.get(normalized) ?? [];
-      existing.push(system);
-      map.set(normalized, existing);
-    };
-
-    scopedPart2Systems.forEach((system) => {
-      addIndexedSystem(systemsById, system.systemId, system);
-      addIndexedSystem(systemsByApplicationId, system.stateApplicationRefId, system);
-      addIndexedSystem(systemsByTrackingId, system.trackingSystemRefId, system);
-      addIndexedSystem(systemsByName, system.systemName.toLowerCase(), system);
-    });
-
-    const rows = [
-      { label: "Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
-      { label: "Not Reporting", notTransferred: 0, transferred: 0, changeOwnership: 0 },
-    ];
-
-    const uniquePart2Projects = new Set<string>();
-
-    part2VerifiedAbpRows.forEach((row, index) => {
-      const { applicationId, portalSystemId, trackingId, projectNameKey, dedupeKey } =
-        resolvePart2ProjectIdentity(row, index);
-      if (uniquePart2Projects.has(dedupeKey)) return;
-      uniquePart2Projects.add(dedupeKey);
-
-      const matchedSystems = new Map<string, SystemRecord>();
-      (systemsById.get(portalSystemId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByApplicationId.get(applicationId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-      (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
-
-      if (matchedSystems.size === 0) {
-        rows[1].notTransferred += 1;
-        return;
-      }
-
-      let isReporting = false;
-      let isTransferred = false;
-      let isTerminated = false;
-      let isChangeOwnershipNotTransferred = false;
-
-      matchedSystems.forEach((system) => {
-        if (system.isReporting) isReporting = true;
-        if (system.isTransferred) isTransferred = true;
-        if (system.isTerminated) isTerminated = true;
-        const normalizedChangeOwnershipStatus = clean(system.changeOwnershipStatus ?? "");
-        if (normalizedChangeOwnershipStatus.startsWith("Change of Ownership - Not Transferred")) {
-          isChangeOwnershipNotTransferred = true;
-        }
-      });
-
-      if (isTerminated) return;
-
-      const target = isReporting ? rows[0] : rows[1];
-      if (isChangeOwnershipNotTransferred) {
-        target.changeOwnership += 1;
-      } else if (isTransferred) {
-        target.transferred += 1;
-      } else {
-        target.notTransferred += 1;
-      }
-    });
-
-    return rows;
-  }, [part2VerifiedAbpRows, systems]);
-
-  const recValueByStatusChartRows = useMemo(() => {
-    const groups = new Map<
-      "Reporting" | "Not Reporting" | "Terminated",
-      { label: string; systems: number; contractedValue: number; deliveredValue: number }
-    >([
-      ["Reporting", { label: "Reporting", systems: 0, contractedValue: 0, deliveredValue: 0 }],
-      ["Not Reporting", { label: "Not Reporting", systems: 0, contractedValue: 0, deliveredValue: 0 }],
-      ["Terminated", { label: "Terminated", systems: 0, contractedValue: 0, deliveredValue: 0 }],
-    ]);
-
-    part2EligibleSystemsForSizeReporting.forEach((system) => {
-      const groupKey: "Reporting" | "Not Reporting" | "Terminated" = system.isTerminated
-        ? "Terminated"
-        : system.isReporting
-          ? "Reporting"
-          : "Not Reporting";
-      const group = groups.get(groupKey);
-      if (!group) return;
-      group.systems += 1;
-      group.contractedValue += resolveContractValueAmount(system);
-      group.deliveredValue += system.deliveredValue ?? 0;
-    });
-
-    return Array.from(groups.values()).map((group) => ({
-      ...group,
-      valueGap: group.contractedValue - group.deliveredValue,
-      deliveredPercent: toPercentValue(group.deliveredValue, group.contractedValue),
-    }));
-  }, [part2EligibleSystemsForSizeReporting]);
-
-  const recTopGapChartRows = useMemo(
-    () =>
-      [...recValueRows]
-        .map((row) => ({
-          label:
-            row.systemName.length > 28
-              ? `${row.systemName.slice(0, 25).trimEnd()}...`
-              : row.systemName,
-          valueGap: Math.max(0, resolveValueGapAmount(row)),
-        }))
-        .sort((a, b) => b.valueGap - a.valueGap)
-        .slice(0, 12),
-    [recValueRows]
-  );
+  // sizeReportingChartRows, ownershipStackedChartRows
+  // — moved to OverviewTab (Phase 12)
+  // recValueByStatusChartRows, recTopGapChartRows
+  // — moved to RecValueTab (Phase 12)
 
   // contractPerformanceChartRows, annualVintageTrendChartRows
   // — moved to @/solar-rec-dashboard/components/{ContractsTab,AnnualReviewTab}
@@ -5500,11 +5324,12 @@ const aiDataContext = useMemo(() => {
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading overview tab...</div>}>
               <OverviewTabLazy
                 summary={summary}
-                overviewPart2Totals={overviewPart2Totals}
                 financialProfitData={financialProfitData}
-                sizeReportingChartRows={sizeReportingChartRows}
-                ownershipStackedChartRows={ownershipStackedChartRows}
                 changeOwnershipSummary={changeOwnershipSummary}
+                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                sizeBreakdownRows={sizeBreakdownRows}
+                part2VerifiedAbpRows={part2VerifiedAbpRows}
+                systems={systems}
                 onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
                 onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
                 onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}
@@ -5515,7 +5340,7 @@ const aiDataContext = useMemo(() => {
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading size tab...</div>}>
               <SizeReportingTabLazy
                 sizeBreakdownRows={sizeBreakdownRows}
-                sizeTabNotReportingPart2Rows={sizeTabNotReportingPart2Rows}
+                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
               />
             </Suspense>
           )}
@@ -5523,10 +5348,8 @@ const aiDataContext = useMemo(() => {
           {activeTab === "value" && (
             <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC value tab...</div>}>
               <RecValueTabLazy
-                recValueRows={recValueRows}
+                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
                 snapshotPart2ValueSummary={snapshotPart2ValueSummary}
-                recValueByStatusChartRows={recValueByStatusChartRows}
-                recTopGapChartRows={recTopGapChartRows}
               />
             </Suspense>
           )}
@@ -6177,101 +6000,19 @@ const aiDataContext = useMemo(() => {
         </Card>
 
         {/* ── System Detail Sheet ───────────────────────────────────── */}
-        <Sheet open={selectedSystemKey !== null} onOpenChange={(open) => { if (!open) setSelectedSystemKey(null); }}>
-          <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
-            <SheetHeader>
-              <SheetTitle className="text-base">System Details</SheetTitle>
-              <SheetDescription>Full details for the selected system.</SheetDescription>
-            </SheetHeader>
-            {(() => {
-              const sys = systems.find((s) => s.key === selectedSystemKey);
-              if (!sys) return <p className="text-sm text-slate-500 mt-4">System not found.</p>;
-
-              // Find converted reads for this system
-              const sysReads = (datasets.convertedReads?.rows ?? []).filter((r) => {
-                const rId = (r.monitoring_system_id || "").toLowerCase();
-                const rName = (r.monitoring_system_name || "").toLowerCase();
-                const sysId = (sys.systemId || "").toLowerCase();
-                const sysName = sys.systemName.toLowerCase();
-                return (sysId && rId === sysId) || (sysName && rName === sysName);
-              }).slice(0, 20);
-
-              return (
-                <div className="space-y-4 mt-4">
-                  {/* Identifiers */}
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-semibold uppercase text-slate-500">Identifiers</h4>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                      <span className="text-slate-500">Name</span><span className="font-medium">{sys.systemName}</span>
-                      {sys.systemId && <><span className="text-slate-500">System ID</span><span className="font-medium">{sys.systemId}</span></>}
-                      {sys.trackingSystemRefId && <><span className="text-slate-500">Tracking ID</span><span className="font-medium">{sys.trackingSystemRefId}</span></>}
-                      {sys.stateApplicationRefId && <><span className="text-slate-500">App Ref ID</span><span className="font-medium">{sys.stateApplicationRefId}</span></>}
-                    </div>
-                  </div>
-
-                  {/* REC Contract */}
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-semibold uppercase text-slate-500">REC Contract</h4>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                      <span className="text-slate-500">REC Price</span><span className="font-medium">{sys.recPrice !== null ? `$${sys.recPrice}` : "N/A"}</span>
-                      <span className="text-slate-500">Contracted RECs</span><span className="font-medium">{formatNumber(sys.contractedRecs)}</span>
-                      <span className="text-slate-500">Delivered RECs</span><span className="font-medium">{formatNumber(sys.deliveredRecs)}</span>
-                      <span className="text-slate-500">Contracted Value</span><span className="font-medium">{sys.contractedValue !== null ? `$${formatNumber(sys.contractedValue)}` : "N/A"}</span>
-                      <span className="text-slate-500">Delivered Value</span><span className="font-medium">{sys.deliveredValue !== null ? `$${formatNumber(sys.deliveredValue)}` : "N/A"}</span>
-                      <span className="text-slate-500">Value Gap</span><span className={`font-medium ${(sys.valueGap ?? 0) > 0 ? "text-rose-600" : "text-emerald-600"}`}>{sys.valueGap !== null ? `$${formatNumber(sys.valueGap)}` : "N/A"}</span>
-                    </div>
-                  </div>
-
-                  {/* Status */}
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-semibold uppercase text-slate-500">Status</h4>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                      <span className="text-slate-500">Reporting</span><span><Badge variant={sys.isReporting ? "default" : "destructive"}>{sys.isReporting ? "Yes" : "No"}</Badge></span>
-                      <span className="text-slate-500">Last Reported</span><span className="font-medium">{sys.latestReportingDate?.toLocaleDateString() ?? "Never"}</span>
-                      <span className="text-slate-500">Ownership</span><span><Badge variant="outline">{sys.ownershipStatus}</Badge></span>
-                      <span className="text-slate-500">Contract Status</span><span className="font-medium">{sys.contractStatusText || "N/A"}</span>
-                    </div>
-                  </div>
-
-                  {/* System Details */}
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-semibold uppercase text-slate-500">System</h4>
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                      <span className="text-slate-500">Size (AC)</span><span className="font-medium">{sys.installedKwAc !== null ? `${formatCapacityKw(sys.installedKwAc)} kW` : "N/A"}</span>
-                      <span className="text-slate-500">Size (DC)</span><span className="font-medium">{sys.installedKwDc !== null ? `${formatCapacityKw(sys.installedKwDc)} kW` : "N/A"}</span>
-                      <span className="text-slate-500">Monitoring</span><span className="font-medium">{sys.monitoringPlatform || "N/A"}</span>
-                      <span className="text-slate-500">Type</span><span className="font-medium">{sys.monitoringType || "N/A"}</span>
-                      <span className="text-slate-500">Installer</span><span className="font-medium">{sys.installerName || "N/A"}</span>
-                    </div>
-                  </div>
-
-                  {/* Recent Converted Reads */}
-                  {sysReads.length > 0 && (
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-semibold uppercase text-slate-500">Recent Meter Reads ({sysReads.length})</h4>
-                      <Table>
-                        <TableHeader><TableRow>
-                          <TableHead className="text-xs">Date</TableHead>
-                          <TableHead className="text-xs">Platform</TableHead>
-                          <TableHead className="text-xs text-right">Lifetime (Wh)</TableHead>
-                        </TableRow></TableHeader>
-                        <TableBody>
-                          {sysReads.map((r, i) => (
-                            <TableRow key={i}>
-                              <TableCell className="text-xs">{r.read_date}</TableCell>
-                              <TableCell className="text-xs">{r.monitoring}</TableCell>
-                              <TableCell className="text-xs text-right">{formatNumber(parseFloat(r.lifetime_meter_read_wh || "0"))}</TableCell>
-                            </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-          </SheetContent>
-        </Sheet>
+        {/* The sheet component itself is lazy-loaded — it's an
+            infrequently-used side panel, so there's no reason to
+            eager-load ~12 KB of sheet/table markup on first page
+            paint. Parent retains the selectedSystemKey state
+            because any tab can open the sheet. */}
+        <Suspense fallback={null}>
+          <SystemDetailSheetLazy
+            selectedSystemKey={selectedSystemKey}
+            onClose={() => setSelectedSystemKey(null)}
+            systems={systems}
+            convertedReads={datasets.convertedReads ?? null}
+          />
+        </Suspense>
       </div>
     </div>
   );

@@ -1,15 +1,20 @@
 /**
  * Size + Reporting tab.
  *
- * Extracted from SolarRecDashboard.tsx. Phase 8. Owns:
+ * Extracted from SolarRecDashboard.tsx (Phase 8) and further cleaned
+ * up in Phase 12 to absorb the tab-specific `sizeTabNotReportingPart2Rows`
+ * memo from the parent. Now owns:
  *   - 2 useStates (sizeSiteListPage, sizeSiteListCollapsed)
- *   - 1 useMemo (visibleSizeSiteListRows — pagination slice)
+ *   - 2 useMemos (sizeTabNotReportingPart2Rows — the sorted
+ *     non-reporting Part II list; and visibleSizeSiteListRows —
+ *     pagination slice)
  *   - 1 callback (downloadSizeSiteListCsv)
  *
- * Receives the upstream `sizeBreakdownRows` and
- * `sizeTabNotReportingPart2Rows` memos as props. Both stay in the
- * parent because the Overview tab reads `sizeBreakdownRows` too (via
- * `sizeReportingChartRows`).
+ * Receives:
+ *   - `sizeBreakdownRows` from the parent (shared with Overview tab
+ *     via sizeReportingChartRows).
+ *   - `part2EligibleSystemsForSizeReporting` from the parent (one
+ *     of the foundation memos — shared across many tabs).
  */
 
 import { useMemo, useState } from "react";
@@ -60,8 +65,12 @@ export type SizeBreakdownRow = {
 export interface SizeReportingTabProps {
   /** Per-size-bucket totals (parent's `sizeBreakdownRows` memo). */
   sizeBreakdownRows: SizeBreakdownRow[];
-  /** Part-2-verified non-reporting systems (sorted, for the site list). */
-  sizeTabNotReportingPart2Rows: SystemRecord[];
+  /**
+   * The Part II verified, scoped systems slice. Input for the
+   * non-reporting site list below. Parent stays the single source
+   * of truth for the scoped list; this tab filters/sorts from it.
+   */
+  part2EligibleSystemsForSizeReporting: SystemRecord[];
 }
 
 // ---------------------------------------------------------------------------
@@ -69,10 +78,23 @@ export interface SizeReportingTabProps {
 // ---------------------------------------------------------------------------
 
 export default function SizeReportingTab(props: SizeReportingTabProps) {
-  const { sizeBreakdownRows, sizeTabNotReportingPart2Rows } = props;
+  const { sizeBreakdownRows, part2EligibleSystemsForSizeReporting } = props;
 
   const [sizeSiteListPage, setSizeSiteListPage] = useState(1);
   const [sizeSiteListCollapsed, setSizeSiteListCollapsed] = useState(false);
+
+  const sizeTabNotReportingPart2Rows = useMemo(
+    () =>
+      part2EligibleSystemsForSizeReporting
+        .filter((system) => !system.isReporting)
+        .sort((a, b) =>
+          a.systemName.localeCompare(b.systemName, undefined, {
+            sensitivity: "base",
+            numeric: true,
+          }),
+        ),
+    [part2EligibleSystemsForSizeReporting],
+  );
 
   const sizeSiteListTotalPages = Math.max(
     1,
