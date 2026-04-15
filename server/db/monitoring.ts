@@ -183,3 +183,36 @@ export async function getLatestMonitoringBatchRun() {
     return row ?? null;
   });
 }
+
+/**
+ * Mark all MonitoringBatchRun rows that are still in `running` status as
+ * `failed`. Called on server startup to clean up orphaned batches from
+ * the prior Node process (killed by deploy, crash, OOM, etc.) — without
+ * this, the dashboard's UI polls these rows forever.
+ *
+ * Returns the number of rows updated.
+ */
+export async function failOrphanedRunningBatches(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  return withDbRetry("fail orphaned running batches", async () => {
+    const runningRows = await db
+      .select({ id: monitoringBatchRuns.id })
+      .from(monitoringBatchRuns)
+      .where(eq(monitoringBatchRuns.status, "running"));
+
+    if (runningRows.length === 0) return 0;
+
+    await db
+      .update(monitoringBatchRuns)
+      .set({
+        status: "failed",
+        currentProvider: null,
+        currentCredentialName: null,
+        completedAt: new Date(),
+      })
+      .where(eq(monitoringBatchRuns.status, "running"));
+
+    return runningRows.length;
+  });
+}

@@ -53,12 +53,17 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 // client which goes through /solar-rec/api/main-trpc. See the
 // 2026-04-10 entry in SESSIONS_POSTMORTEM.md and
 // productivity-hub/docs/server-routing.md for the full story.
+// 2026-04-15: "auth" and "enphaseV2" removed alongside their dead
+// sub-routers in _core/solarRecRouter.ts. The solar-rec standalone
+// client never called solarRecTrpc.auth.* or solarRecTrpc.enphaseV2.*
+// — main-app pages use the main appRouter's auth/enphaseV2 routers
+// via the primary trpc client, not solarRecTrpc. Any legacy request
+// that happens to hit /solar-rec/api/trpc/{auth,enphaseV2}.* now
+// falls through this dispatcher to the main appRouter.
 const SOLAR_REC_ROUTER_ROOTS = new Set([
-  "auth",
   "users",
   "credentials",
   "monitoring",
-  "enphaseV2",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
@@ -115,6 +120,24 @@ async function startServer() {
   assertServerRuntimeSafety();
   startNightlySnapshotScheduler();
   startMonitoringScheduler();
+
+  // Mark any MonitoringBatchRun rows left in "running" state by the prior
+  // Node process (killed by deploy, crash, OOM) as "failed" so the client
+  // dashboard stops polling them forever. Fire-and-forget — don't block
+  // server startup if this fails.
+  void (async () => {
+    try {
+      const { failOrphanedRunningBatches } = await import("../db");
+      const count = await failOrphanedRunningBatches();
+      if (count > 0) {
+        console.log(
+          `[Monitoring] Marked ${count} orphaned "running" batch${count === 1 ? "" : "es"} as failed on startup.`
+        );
+      }
+    } catch (err) {
+      console.error("[Monitoring] Orphan cleanup failed on startup:", err);
+    }
+  })();
 
   const app = express();
   const server = createServer(app);
