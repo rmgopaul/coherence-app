@@ -435,6 +435,57 @@ const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
   "generationEntry",
   "accountSolarGeneration",
 ];
+
+/**
+ * Phase 16: per-tab dataset priority. When the dashboard mounts with
+ * `?tab=X`, we hydrate these datasets first so the user's landing
+ * tab has data ASAP; everything else streams in after. Every list
+ * implicitly inherits `CORE_REQUIRED_DATASET_KEYS` because
+ * `summary` + `systems` depend on them.
+ *
+ * Tabs not listed here hydrate in manifest order behind the core set.
+ */
+const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
+  "performance-ratio": [
+    "convertedReads",
+    "annualProductionEstimates",
+    "generatorDetails",
+    "generationEntry",
+    "accountSolarGeneration",
+  ],
+  "delivery-tracker": ["deliveryScheduleBase", "transferHistory"],
+  "contracts": ["deliveryScheduleBase", "transferHistory"],
+  "annual-review": ["deliveryScheduleBase", "transferHistory"],
+  "performance-eval": ["deliveryScheduleBase", "transferHistory"],
+  "snapshot-log": ["deliveryScheduleBase", "transferHistory"],
+  "forecast": [
+    "deliveryScheduleBase",
+    "transferHistory",
+    "annualProductionEstimates",
+    "accountSolarGeneration",
+    "generationEntry",
+  ],
+  "financials": [
+    "abpProjectApplicationRows",
+    "abpUtilityInvoiceRows",
+    "abpQuickBooksRows",
+    "abpPortalInvoiceMapRows",
+    "abpCsgPortalDatabaseRows",
+    "abpIccReport2Rows",
+    "abpIccReport3Rows",
+  ],
+  "app-pipeline": ["generatorDetails", "abpCsgSystemMapping", "abpIccReport3Rows"],
+  "trends": ["convertedReads", "transferHistory", "deliveryScheduleBase"],
+};
+
+function buildHydrationPriorityKeys(activeTab: string): Set<DatasetKey> {
+  const keys = new Set<DatasetKey>(CORE_REQUIRED_DATASET_KEYS);
+  const tabExtras = TAB_PRIORITY_DATASETS[activeTab];
+  if (tabExtras) {
+    for (const key of tabExtras) keys.add(key);
+  }
+  return keys;
+}
 type DashboardTabId = (typeof DASHBOARD_TAB_VALUES)[number];
 
 function isDashboardTabId(value: string): value is DashboardTabId {
@@ -1187,11 +1238,58 @@ function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, CsvDataset>>> {
-  if (typeof window === "undefined") return {};
+/**
+ * Phase 16: progressive, prioritized dataset hydration.
+ *
+ * The old `loadDatasetsFromStorage` fetched ALL 15 dataset records
+ * from IndexedDB, deserialized them all, then returned one big
+ * object that the parent landed with a single `setDatasets` call.
+ * On a fresh tab with real user data (100k+ rows across multiple
+ * datasets) this meant:
+ *   - one huge structured-clone hit on the main thread
+ *   - one huge React re-render fanning out to every memo
+ *   - several seconds of blank dashboard before first paint
+ *
+ * The new flow:
+ *   1. Read the dataset manifest (one key)
+ *   2. For each manifest key, fetch + deserialize ONE dataset,
+ *      immediately call `onDataset(key, dataset)` so the parent
+ *      commits it via `setDatasets(prev => ({...prev, [key]: ds}))`
+ *   3. `priorityKeys` is a set of dataset keys the active tab
+ *      needs — those are processed first so whichever tab the
+ *      user lands on has usable data ASAP
+ *   4. `yield`-like microtask breaks between datasets keep the
+ *      browser responsive for input/scroll
+ *
+ * Legacy record fallbacks still work — they resolve once at the
+ * end through the same `onDataset` callback, preserving the
+ * existing localStorage migration path.
+ */
+interface ProgressiveHydrationOptions {
+  priorityKeys?: Set<DatasetKey>;
+  onDataset: (key: DatasetKey, dataset: CsvDataset) => void;
+  onProgress?: (loaded: number, total: number) => void;
+}
+
+async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
+  const { priorityKeys, onDataset, onProgress } = options;
+  if (typeof window === "undefined") return;
+
+  const commit = (key: DatasetKey, dataset: CsvDataset) => {
+    lastSavedDatasetSignatures[key] = buildSingleDatasetSignature(dataset);
+    onDataset(key, dataset);
+  };
 
   if (!("indexedDB" in window)) {
-    return loadLegacyDatasetsFromLocalStorage();
+    const legacyDatasets = loadLegacyDatasetsFromLocalStorage();
+    const keys = Object.keys(legacyDatasets) as DatasetKey[];
+    onProgress?.(0, keys.length);
+    keys.forEach((key, index) => {
+      const dataset = legacyDatasets[key];
+      if (dataset) commit(key, dataset);
+      onProgress?.(index + 1, keys.length);
+    });
+    return;
   }
 
   try {
@@ -1217,57 +1315,97 @@ async function loadDatasetsFromStorage(): Promise<Partial<Record<DatasetKey, Csv
     });
 
     if (stored.manifest && Array.isArray(stored.manifest.keys) && stored.manifest.keys.length > 0) {
-      const keys = stored.manifest.keys.filter((key): key is DatasetKey => isDatasetKey(key));
-      if (keys.length > 0) {
+      const manifestKeys = stored.manifest.keys.filter((key): key is DatasetKey => isDatasetKey(key));
+      if (manifestKeys.length > 0) {
+        // Phase 16: reorder so the active tab's datasets load first.
+        // Keys not in priorityKeys go to the back of the queue.
+        const orderedKeys = priorityKeys
+          ? [
+              ...manifestKeys.filter((key) => priorityKeys.has(key)),
+              ...manifestKeys.filter((key) => !priorityKeys.has(key)),
+            ]
+          : manifestKeys;
+
+        onProgress?.(0, orderedKeys.length);
+
         const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
         const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-        const rows = await Promise.all(
-          keys.map(async (key) => {
-            const serialized = (await idbRequestToPromise(
-              store.get(dashboardDatasetStorageKey(key))
-            )) as SerializedCsvDataset | undefined;
-            return { key, serialized };
-          })
-        );
-        const loaded: Partial<Record<DatasetKey, CsvDataset>> = {};
-        rows.forEach(({ key, serialized }) => {
+
+        let loadedCount = 0;
+        for (const key of orderedKeys) {
+          const serialized = (await idbRequestToPromise(
+            store.get(dashboardDatasetStorageKey(key))
+          )) as SerializedCsvDataset | undefined;
           const dataset = deserializeDatasetRecord(serialized);
-          if (!dataset) return;
-          loaded[key] = dataset;
-        });
-        if (Object.keys(loaded).length > 0) {
-          // Phase 13c: hydrate the signature cache from disk so the
-          // first save after mount doesn't rewrite every dataset.
-          (Object.keys(loaded) as DatasetKey[]).forEach((key) => {
-            lastSavedDatasetSignatures[key] = buildSingleDatasetSignature(loaded[key]);
-          });
-          return loaded;
+          if (dataset) {
+            commit(key, dataset);
+          }
+          loadedCount += 1;
+          onProgress?.(loadedCount, orderedKeys.length);
+          // Yield to the browser between datasets so the user can
+          // interact with the active tab while the rest hydrate in
+          // the background. Without this, the whole loop runs in
+          // one microtask-chain and we don't actually yield.
+          if (loadedCount < orderedKeys.length) {
+            await new Promise<void>((resolve) => {
+              if (typeof queueMicrotask === "function") {
+                queueMicrotask(resolve);
+              } else {
+                setTimeout(resolve, 0);
+              }
+            });
+          }
         }
+        return;
       }
     }
 
+    // Legacy fallback paths: one-shot returns that we shuttle through
+    // the same onDataset callback so the caller's state flow stays
+    // uniform. These are rare and small (one-time migration).
     if (stored.legacy) {
       const legacyDatasets = deserializeDatasets(stored.legacy);
-      if (Object.keys(legacyDatasets).length > 0) {
+      const keys = Object.keys(legacyDatasets) as DatasetKey[];
+      if (keys.length > 0) {
         await saveDatasetsToStorage(legacyDatasets);
-        return legacyDatasets;
+        onProgress?.(0, keys.length);
+        keys.forEach((key, index) => {
+          const dataset = legacyDatasets[key];
+          if (dataset) commit(key, dataset);
+          onProgress?.(index + 1, keys.length);
+        });
+        return;
       }
     }
 
-    const legacy = loadLegacyDatasetsFromLocalStorage();
-    if (Object.keys(legacy).length > 0) {
-      await saveDatasetsToStorage(legacy);
+    const localLegacy = loadLegacyDatasetsFromLocalStorage();
+    const localLegacyKeys = Object.keys(localLegacy) as DatasetKey[];
+    if (localLegacyKeys.length > 0) {
+      await saveDatasetsToStorage(localLegacy);
       globalThis.localStorage.removeItem(LEGACY_DATASETS_STORAGE_KEY);
-      return legacy;
+      onProgress?.(0, localLegacyKeys.length);
+      localLegacyKeys.forEach((key, index) => {
+        const dataset = localLegacy[key];
+        if (dataset) commit(key, dataset);
+        onProgress?.(index + 1, localLegacyKeys.length);
+      });
+      return;
     }
 
-    return {};
+    onProgress?.(0, 0);
   } catch {
     invalidateCachedDashboardDb();
-    return loadLegacyDatasetsFromLocalStorage();
+    // Last-resort synchronous fallback — same shape as the IDB-less
+    // branch above.
+    const legacy = loadLegacyDatasetsFromLocalStorage();
+    const keys = Object.keys(legacy) as DatasetKey[];
+    onProgress?.(0, keys.length);
+    keys.forEach((key, index) => {
+      const dataset = legacy[key];
+      if (dataset) commit(key, dataset);
+      onProgress?.(index + 1, keys.length);
+    });
   }
-  // Phase 13c: no more `db.close()` in a finally block — the cached
-  // connection stays open for the life of the tab.
 }
 
 async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDataset>>): Promise<void> {
@@ -1634,6 +1772,13 @@ export default function SolarRecDashboard() {
   const search = useSearch();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
   const [datasetsHydrated, setDatasetsHydrated] = useState(false);
+  // Phase 16: progress counter for the streaming hydration path, so
+  // the data-health header can show "Loading 3/15 datasets…" while
+  // the active tab is already interactive.
+  const [hydrationProgress, setHydrationProgress] = useState<{ loaded: number; total: number }>({
+    loaded: 0,
+    total: 0,
+  });
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
@@ -3972,12 +4117,37 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        const [loadedDatasets, loadedLogs] = await Promise.all([
-          loadDatasetsFromStorage(),
+        // Phase 16: progressive hydration. Datasets arrive one at a
+        // time via the onDataset callback — each call into setDatasets
+        // only updates ONE key, producing a small re-render rather
+        // than one giant initial landing. The priority key set makes
+        // the active tab's datasets load first so the user's landing
+        // tab becomes interactive within a few hundred ms, even if
+        // total hydration takes several seconds.
+        const priorityKeys = buildHydrationPriorityKeys(
+          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB,
+        );
+
+        const [, loadedLogs] = await Promise.all([
+          loadDatasetsFromStorage({
+            priorityKeys,
+            onDataset: (key, dataset) => {
+              if (cancelled) return;
+              setDatasets((current) => {
+                // Don't clobber a dataset the user already uploaded
+                // while hydration was in flight.
+                if (current[key]) return current;
+                return { ...current, [key]: dataset };
+              });
+            },
+            onProgress: (loaded, total) => {
+              if (cancelled) return;
+              setHydrationProgress({ loaded, total });
+            },
+          }),
           loadLogsFromStorage(),
         ]);
         if (cancelled) return;
-        setDatasets((current) => (Object.keys(current).length > 0 ? current : loadedDatasets));
         if (loadedLogs.length > 0) {
           setLogEntries((current) => {
             if (current.length === 0) return loadedLogs;
@@ -3995,6 +4165,7 @@ export default function SolarRecDashboard() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -5593,6 +5764,13 @@ const aiDataContext = useMemo(() => {
                 <p className="text-lg font-semibold text-slate-900">
                   {formatNumber(dataHealthSummary.loadedDatasetCount)} / {formatNumber(dataHealthSummary.totalDatasetCount)}
                 </p>
+                {/* Phase 16: progressive hydration progress. Disappears
+                    once hydration finishes or no records exist. */}
+                {!datasetsHydrated && hydrationProgress.total > 0 ? (
+                  <p className="mt-1 text-[11px] text-sky-700">
+                    Loading cache: {formatNumber(hydrationProgress.loaded)} / {formatNumber(hydrationProgress.total)}
+                  </p>
+                ) : null}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Rows Loaded</p>
