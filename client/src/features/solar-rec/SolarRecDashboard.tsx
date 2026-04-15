@@ -10,9 +10,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-// Sheet/SheetContent/Header/Title/Description — moved into
-// @/solar-rec-dashboard/components/SystemDetailSheet (Phase 11)
+// Table primitives + Sheet — removed in Phases 11–12; the only
+// remaining parent-level table consumers were the SystemDetailSheet
+// (now its own component) and chart memos that moved into tabs.
 import { trpc } from "@/lib/trpc";
 
 const TabAIChatLazy = lazy(() =>
@@ -166,7 +166,6 @@ import {
   parseAbpAcSizeKw,
   parseEnergyToWh,
   formatNumber,
-  formatCapacityKw,
   roundMoney,
   toPercentValue,
   isStaleUpload,
