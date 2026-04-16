@@ -90,10 +90,6 @@ import {
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 import { buildSystems } from "@/solar-rec-dashboard/lib/buildSystems";
-import type {
-  SystemsWorkerRequest,
-  SystemsWorkerResponse,
-} from "@/workers/systems.worker";
 // transferHistoryDeliveries helpers are now used only by
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
@@ -2676,28 +2672,17 @@ export default function SolarRecDashboard() {
     return ids;
   }, [part2VerifiedAbpRows]);
 
-  // Phase 19: systems is now built off the main thread in a Web
-  // Worker (see workers/systems.worker.ts + lib/buildSystems.ts).
-  // We keep a local state so downstream memos can still read a
-  // `SystemRecord[]`, but the expensive ~436-line reducer runs
-  // off-thread. The `systemsRequestIdRef` guards against stale
-  // responses: every time the effect posts a new request it bumps
-  // the id, and the onmessage handler ignores any response whose id
-  // doesn't match the latest. This means rapid dataset changes
-  // (e.g. Phase 16 hydration) never race.
-  const [systems, setSystems] = useState<SystemRecord[]>([]);
-  const systemsWorkerRef = useRef<Worker | null>(null);
-  const systemsRequestIdRef = useRef(0);
-
-  // Stable refs to the current dataset row slices so the worker
-  // effect can read them without listing `datasets` as a dep (which
-  // would re-fire on every unrelated dataset arrival during Phase 16
-  // progressive hydration).
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof Worker === "undefined") {
-      // Main-thread fallback: run the builder synchronously. This
-      // only hits in SSR or ancient browsers; prod always has Workers.
-      const result = buildSystems({
+  // Phase 19 attempted to run buildSystems in a Web Worker, but the
+  // structured-clone of 100k+ CsvRow objects to the worker hit a
+  // DataCloneError: out of memory. Reverted to a synchronous useMemo
+  // that calls the same pure buildSystems function. The function is
+  // still cleanly extracted to lib/buildSystems.ts for testability
+  // and separation of concerns; it just runs on the main thread.
+  // Phase 17's dep-narrowing + batched hydration keeps this memo
+  // from firing too often.
+  const systems = useMemo<SystemRecord[]>(
+    () =>
+      buildSystems({
         part2VerifiedAbpRows,
         solarApplicationsRows: datasets.solarApplications?.rows ?? [],
         contractedDateRows: datasets.contractedDate?.rows ?? [],
@@ -2705,69 +2690,17 @@ export default function SolarRecDashboard() {
         generationEntryRows: datasets.generationEntry?.rows ?? [],
         transferHistoryRows: datasets.transferHistory?.rows ?? [],
         deliveryScheduleBaseRows: datasets.deliveryScheduleBase?.rows ?? [],
-      });
-      setSystems(result);
-      return;
-    }
-
-    if (!systemsWorkerRef.current) {
-      systemsWorkerRef.current = new Worker(
-        new URL("../../workers/systems.worker.ts", import.meta.url),
-        { type: "module" },
-      );
-      systemsWorkerRef.current.onmessage = (event: MessageEvent<SystemsWorkerResponse>) => {
-        const message = event.data;
-        // Stale response — another request has already been posted
-        // that supersedes this one.
-        if (message.id !== systemsRequestIdRef.current) return;
-        if (message.ok) {
-          setSystems(message.systems);
-        } else {
-          // Keep whatever the previous `systems` value was — empty
-          // array on first error is still correct (downstream memos
-          // handle empty input), and we don't want to flash a blank
-          // UI on transient failures.
-          console.error("[systems worker] build failed:", message.error);
-        }
-      };
-      systemsWorkerRef.current.onerror = (event) => {
-        console.error("[systems worker] crashed:", event.message);
-        systemsWorkerRef.current?.terminate();
-        systemsWorkerRef.current = null;
-      };
-    }
-
-    const requestId = ++systemsRequestIdRef.current;
-    const request: SystemsWorkerRequest = {
-      id: requestId,
-      input: {
-        part2VerifiedAbpRows,
-        solarApplicationsRows: datasets.solarApplications?.rows ?? [],
-        contractedDateRows: datasets.contractedDate?.rows ?? [],
-        accountSolarGenerationRows: datasets.accountSolarGeneration?.rows ?? [],
-        generationEntryRows: datasets.generationEntry?.rows ?? [],
-        transferHistoryRows: datasets.transferHistory?.rows ?? [],
-        deliveryScheduleBaseRows: datasets.deliveryScheduleBase?.rows ?? [],
-      },
-    };
-    systemsWorkerRef.current.postMessage(request);
-  }, [
-    part2VerifiedAbpRows,
-    datasets.solarApplications,
-    datasets.contractedDate,
-    datasets.accountSolarGeneration,
-    datasets.generationEntry,
-    datasets.transferHistory,
-    datasets.deliveryScheduleBase,
-  ]);
-
-  // Terminate the worker on unmount so it doesn't leak.
-  useEffect(() => {
-    return () => {
-      systemsWorkerRef.current?.terminate();
-      systemsWorkerRef.current = null;
-    };
-  }, []);
+      }),
+    [
+      part2VerifiedAbpRows,
+      datasets.solarApplications,
+      datasets.contractedDate,
+      datasets.accountSolarGeneration,
+      datasets.generationEntry,
+      datasets.transferHistory,
+      datasets.deliveryScheduleBase,
+    ],
+  );
 
 
   const summary = useMemo(() => {
