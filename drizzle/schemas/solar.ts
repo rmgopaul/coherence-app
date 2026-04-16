@@ -473,3 +473,203 @@ export const solarRecComputeRuns = mysqlTable(
     ),
   })
 );
+
+// ---------------------------------------------------------------------------
+// Solar REC Normalized Dataset Tables (Step 3)
+// Core 7 datasets. Each row belongs to a batch (via batchId).
+// Typed columns for commonly-queried fields + rawRow JSON for the long tail.
+// ---------------------------------------------------------------------------
+
+export const srDsSolarApplications = mysqlTable(
+  "srDsSolarApplications",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    applicationId: varchar("applicationId", { length: 64 }),
+    systemId: varchar("systemId", { length: 64 }),
+    trackingSystemRefId: varchar("trackingSystemRefId", { length: 64 }),
+    stateCertificationNumber: varchar("stateCertificationNumber", { length: 64 }),
+    systemName: varchar("systemName", { length: 255 }),
+    installedKwAc: double("installedKwAc"),
+    installedKwDc: double("installedKwDc"),
+    recPrice: double("recPrice"),
+    totalContractAmount: double("totalContractAmount"),
+    annualRecs: double("annualRecs"),
+    contractType: varchar("contractType", { length: 128 }),
+    installerName: varchar("installerName", { length: 255 }),
+    county: varchar("county", { length: 128 }),
+    state: varchar("state", { length: 64 }),
+    zipCode: varchar("zipCode", { length: 16 }),
+    rawRow: mediumtext("rawRow"), // JSON of full CsvRow for all other fields
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_solar_apps_batch_idx").on(table.batchId),
+    scopeTrackingIdx: index("sr_ds_solar_apps_scope_tracking_idx").on(
+      table.scopeId,
+      table.trackingSystemRefId
+    ),
+    scopeAppIdIdx: index("sr_ds_solar_apps_scope_appid_idx").on(
+      table.scopeId,
+      table.applicationId
+    ),
+  })
+);
+
+export type SrDsSolarApplication = typeof srDsSolarApplications.$inferSelect;
+export type InsertSrDsSolarApplication = typeof srDsSolarApplications.$inferInsert;
+
+export const srDsAbpReport = mysqlTable(
+  "srDsAbpReport",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    applicationId: varchar("applicationId", { length: 64 }),
+    systemId: varchar("systemId", { length: 64 }),
+    trackingSystemRefId: varchar("trackingSystemRefId", { length: 64 }),
+    projectName: varchar("projectName", { length: 255 }),
+    part2AppVerificationDate: varchar("part2AppVerificationDate", { length: 32 }),
+    inverterSizeKwAc: double("inverterSizeKwAc"),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_report_batch_idx").on(table.batchId),
+    scopeAppIdIdx: index("sr_ds_abp_report_scope_appid_idx").on(
+      table.scopeId,
+      table.applicationId
+    ),
+  })
+);
+
+export type SrDsAbpReport = typeof srDsAbpReport.$inferSelect;
+export type InsertSrDsAbpReport = typeof srDsAbpReport.$inferInsert;
+
+export const srDsGenerationEntry = mysqlTable(
+  "srDsGenerationEntry",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    unitId: varchar("unitId", { length: 64 }),
+    facilityName: varchar("facilityName", { length: 255 }),
+    lastMonthOfGen: varchar("lastMonthOfGen", { length: 32 }),
+    effectiveDate: varchar("effectiveDate", { length: 32 }),
+    onlineMonitoring: varchar("onlineMonitoring", { length: 255 }),
+    onlineMonitoringAccessType: varchar("onlineMonitoringAccessType", { length: 64 }),
+    onlineMonitoringSystemId: varchar("onlineMonitoringSystemId", { length: 255 }),
+    onlineMonitoringSystemName: varchar("onlineMonitoringSystemName", { length: 255 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_gen_entry_batch_idx").on(table.batchId),
+    scopeUnitIdx: index("sr_ds_gen_entry_scope_unit_idx").on(
+      table.scopeId,
+      table.unitId
+    ),
+  })
+);
+
+export type SrDsGenerationEntry = typeof srDsGenerationEntry.$inferSelect;
+export type InsertSrDsGenerationEntry = typeof srDsGenerationEntry.$inferInsert;
+
+export const srDsAccountSolarGeneration = mysqlTable(
+  "srDsAccountSolarGeneration",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    gatsGenId: varchar("gatsGenId", { length: 64 }),
+    facilityName: varchar("facilityName", { length: 255 }),
+    monthOfGeneration: varchar("monthOfGeneration", { length: 32 }),
+    lastMeterReadDate: varchar("lastMeterReadDate", { length: 32 }),
+    lastMeterReadKwh: varchar("lastMeterReadKwh", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_acct_solar_gen_batch_idx").on(table.batchId),
+    scopeGatsIdx: index("sr_ds_acct_solar_gen_scope_gats_idx").on(
+      table.scopeId,
+      table.gatsGenId
+    ),
+  })
+);
+
+export type SrDsAccountSolarGeneration = typeof srDsAccountSolarGeneration.$inferSelect;
+export type InsertSrDsAccountSolarGeneration = typeof srDsAccountSolarGeneration.$inferInsert;
+
+export const srDsContractedDate = mysqlTable(
+  "srDsContractedDate",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    systemId: varchar("systemId", { length: 64 }),
+    contractedDate: varchar("contractedDate", { length: 32 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_contracted_date_batch_idx").on(table.batchId),
+    scopeSystemIdx: index("sr_ds_contracted_date_scope_system_idx").on(
+      table.scopeId,
+      table.systemId
+    ),
+  })
+);
+
+export type SrDsContractedDate = typeof srDsContractedDate.$inferSelect;
+export type InsertSrDsContractedDate = typeof srDsContractedDate.$inferInsert;
+
+export const srDsDeliverySchedule = mysqlTable(
+  "srDsDeliverySchedule",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    trackingSystemRefId: varchar("trackingSystemRefId", { length: 64 }),
+    systemName: varchar("systemName", { length: 255 }),
+    utilityContractNumber: varchar("utilityContractNumber", { length: 64 }),
+    batchIdRef: varchar("batchIdRef", { length: 64 }),
+    stateCertificationNumber: varchar("stateCertificationNumber", { length: 64 }),
+    rawRow: mediumtext("rawRow"), // Contains year1-15 columns as JSON
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_delivery_schedule_batch_idx").on(table.batchId),
+    scopeTrackingIdx: index("sr_ds_delivery_schedule_scope_tracking_idx").on(
+      table.scopeId,
+      table.trackingSystemRefId
+    ),
+  })
+);
+
+export type SrDsDeliverySchedule = typeof srDsDeliverySchedule.$inferSelect;
+export type InsertSrDsDeliverySchedule = typeof srDsDeliverySchedule.$inferInsert;
+
+export const srDsTransferHistory = mysqlTable(
+  "srDsTransferHistory",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    transactionId: varchar("transactionId", { length: 64 }),
+    unitId: varchar("unitId", { length: 64 }),
+    transferCompletionDate: varchar("transferCompletionDate", { length: 32 }),
+    quantity: double("quantity"),
+    transferor: varchar("transferor", { length: 255 }),
+    transferee: varchar("transferee", { length: 255 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_transfer_history_batch_idx").on(table.batchId),
+    scopeUnitIdx: index("sr_ds_transfer_history_scope_unit_idx").on(
+      table.scopeId,
+      table.unitId
+    ),
+  })
+);
