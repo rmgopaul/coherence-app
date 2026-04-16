@@ -19,7 +19,7 @@
  * component — the gate IS the mount.
  */
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
 import {
@@ -162,7 +162,7 @@ function loadPersistedCompliantSources(): CompliantSourceEntry[] {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function PerformanceRatioTab(props: PerformanceRatioTabProps) {
+export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps) {
   const {
     convertedReads,
     annualProductionEstimates,
@@ -2119,4 +2119,4 @@ export default function PerformanceRatioTab(props: PerformanceRatioTabProps) {
       )}
     </div>
   );
-}
+});

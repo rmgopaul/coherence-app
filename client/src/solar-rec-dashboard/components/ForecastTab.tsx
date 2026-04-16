@@ -20,7 +20,7 @@
  * memos.
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -115,7 +115,7 @@ export interface ForecastTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function ForecastTab(props: ForecastTabProps) {
+export default memo(function ForecastTab(props: ForecastTabProps) {
   const {
     performanceSourceRows,
     systems,
@@ -531,4 +531,4 @@ export default function ForecastTab(props: ForecastTabProps) {
       </Card>
     </div>
   );
-}
+});

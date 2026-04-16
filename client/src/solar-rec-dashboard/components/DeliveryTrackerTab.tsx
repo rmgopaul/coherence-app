@@ -21,6 +21,7 @@
  * the cloud sync glue; the child owns the visualization layout.
  */
 
+import { memo } from "react";
 import type { ReactNode } from "react";
 import {
   Bar,
@@ -67,7 +68,7 @@ export interface DeliveryTrackerTabProps {
   deliveryTrackerData: DeliveryTrackerData;
 }
 
-export default function DeliveryTrackerTab(props: DeliveryTrackerTabProps) {
+export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) {
   const { scheduleBImportSlot, deliveryTrackerData } = props;
 
   return (
@@ -422,4 +423,4 @@ export default function DeliveryTrackerTab(props: DeliveryTrackerTabProps) {
       )}
     </div>
   );
-}
+});

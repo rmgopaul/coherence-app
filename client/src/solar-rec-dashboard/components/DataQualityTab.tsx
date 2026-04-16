@@ -11,7 +11,7 @@
  * them on every tab. Only the data-quality-tab-specific memos move.
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -63,7 +63,7 @@ const DATASET_LABELS: Record<string, string> = {
   transferHistory: "Transfer History (GATS)",
 };
 
-export default function DataQualityTab(props: DataQualityTabProps) {
+export default memo(function DataQualityTab(props: DataQualityTabProps) {
   const { datasets } = props;
 
   const dataQualityFreshness = useMemo(() => {
@@ -238,4 +238,4 @@ export default function DataQualityTab(props: DataQualityTabProps) {
       </Card>
     </div>
   );
-}
+});

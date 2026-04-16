@@ -33,7 +33,7 @@
  * persistence machinery. All flow down as props.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { Trash2 } from "lucide-react";
 import {
   Area,
@@ -154,7 +154,7 @@ export interface SnapshotLogTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function SnapshotLogTab(props: SnapshotLogTabProps) {
+export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
   const {
     logEntries,
     recPerformanceSnapshotContracts2025,
@@ -1104,4 +1104,4 @@ export default function SnapshotLogTab(props: SnapshotLogTabProps) {
       </Card>
     </div>
   );
-}
+});

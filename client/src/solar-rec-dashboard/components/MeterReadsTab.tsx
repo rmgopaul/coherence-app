@@ -11,7 +11,7 @@
  * any of the dashboard's derived memos or persistence layer.
  */
 
-import { useCallback, useState } from "react";
+import { memo, useCallback, useState } from "react";
 import { Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,7 +37,7 @@ import {
 } from "@/lib/meterReads";
 import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
 
-export default function MeterReadsTab() {
+export default memo(function MeterReadsTab() {
   const [meterReadsResult, setMeterReadsResult] =
     useState<MeterReadsConversionResult | null>(null);
   const [meterReadsError, setMeterReadsError] = useState<string | null>(null);
@@ -202,4 +202,4 @@ export default function MeterReadsTab() {
       ) : null}
     </div>
   );
-}
+});

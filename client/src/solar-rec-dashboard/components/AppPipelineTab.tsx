@@ -26,7 +26,7 @@
  * user is on any other tab.
  */
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { FileText, Loader2 } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable, { type CellHookData } from "jspdf-autotable";
@@ -107,7 +107,7 @@ export interface AppPipelineTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function AppPipelineTab(props: AppPipelineTabProps) {
+export default memo(function AppPipelineTab(props: AppPipelineTabProps) {
   const {
     abpReport,
     generatorDetails,
@@ -1511,4 +1511,4 @@ export default function AppPipelineTab(props: AppPipelineTabProps) {
       </Card>
     </div>
   );
-}
+});

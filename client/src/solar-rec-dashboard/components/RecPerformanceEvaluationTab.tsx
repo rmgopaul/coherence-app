@@ -26,7 +26,7 @@
  * `createLogEntry` snapshot builder. Flows in as the single prop.
  */
 
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -88,7 +88,7 @@ export interface RecPerformanceEvaluationTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function RecPerformanceEvaluationTab(
+export default memo(function RecPerformanceEvaluationTab(
   props: RecPerformanceEvaluationTabProps,
 ) {
   const { performanceSourceRows } = props;
@@ -1130,4 +1130,4 @@ export default function RecPerformanceEvaluationTab(
       )}
     </div>
   );
-}
+});

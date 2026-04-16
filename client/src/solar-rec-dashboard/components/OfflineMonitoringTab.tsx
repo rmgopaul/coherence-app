@@ -20,7 +20,7 @@
  * Switching away unmounts the whole subtree.
  */
 
-import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
   Card,
@@ -93,7 +93,7 @@ type OfflineDetailSortKey =
 // Component
 // ---------------------------------------------------------------------------
 
-export default function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
+export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
   const {
     part2EligibleSystemsForSizeReporting,
     abpEligibleTrackingIdsStrict,
@@ -1389,4 +1389,4 @@ export default function OfflineMonitoringTab(props: OfflineMonitoringTabProps) {
       </Card>
     </div>
   );
-}
+});

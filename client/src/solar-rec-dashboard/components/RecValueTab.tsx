@@ -20,7 +20,7 @@
  *     `createLogEntry` bakes it into every snapshot log entry
  */
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -96,7 +96,7 @@ export interface RecValueTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function RecValueTab(props: RecValueTabProps) {
+export default memo(function RecValueTab(props: RecValueTabProps) {
   const { part2EligibleSystemsForSizeReporting, snapshotPart2ValueSummary } = props;
 
   const [recValuePage, setRecValuePage] = useState(1);
@@ -388,4 +388,4 @@ export default function RecValueTab(props: RecValueTabProps) {
       </Card>
     </div>
   );
-}
+});

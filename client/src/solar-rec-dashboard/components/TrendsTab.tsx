@@ -11,7 +11,7 @@
  * to detect delivery pace alerts.
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -65,7 +65,7 @@ export interface TrendsTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function TrendsTab(props: TrendsTabProps) {
+export default memo(function TrendsTab(props: TrendsTabProps) {
   const { convertedReads, deliveryScheduleBase, transferDeliveryLookup, logEntries } =
     props;
 
@@ -310,4 +310,4 @@ export default function TrendsTab(props: TrendsTabProps) {
       </Card>
     </div>
   );
-}
+});

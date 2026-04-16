@@ -17,7 +17,7 @@
  *     of the foundation memos — shared across many tabs).
  */
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -77,7 +77,7 @@ export interface SizeReportingTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function SizeReportingTab(props: SizeReportingTabProps) {
+export default memo(function SizeReportingTab(props: SizeReportingTabProps) {
   const { sizeBreakdownRows, part2EligibleSystemsForSizeReporting } = props;
 
   const [sizeSiteListPage, setSizeSiteListPage] = useState(1);
@@ -294,4 +294,4 @@ export default function SizeReportingTab(props: SizeReportingTabProps) {
       </Card>
     </div>
   );
-}
+});

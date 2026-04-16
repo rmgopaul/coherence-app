@@ -24,7 +24,7 @@
  * runs on other tabs.
  */
 
-import { useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -157,7 +157,7 @@ type EditingFinancialRow = {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function FinancialsTab(props: FinancialsTabProps) {
+export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const {
     systems,
     part2VerifiedAbpRows,
@@ -1523,4 +1523,4 @@ export default function FinancialsTab(props: FinancialsTabProps) {
       )}
     </div>
   );
-}
+});

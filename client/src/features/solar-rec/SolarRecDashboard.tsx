@@ -1852,6 +1852,10 @@ export default function SolarRecDashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTabId>(
     () => (getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB) as DashboardTabId
   );
+  const visitedTabsRef = useRef(new Set<string>([activeTab]));
+  useEffect(() => {
+    visitedTabsRef.current.add(activeTab);
+  }, [activeTab]);
   // pipeline{Count,Kw,Interconnected,CashFlow}Range, pipelineReportLoading,
   // generatePipelineReport — moved to @/solar-rec-dashboard/components/AppPipelineTab
   // Tab-active flags kept in the parent are the ones that still
@@ -2680,9 +2684,14 @@ export default function SolarRecDashboard() {
   // and separation of concerns; it just runs on the main thread.
   // Phase 17's dep-narrowing + batched hydration keeps this memo
   // from firing too often.
+  // Gate: skip expensive buildSystems during progressive hydration.
+  // Datasets arrive one at a time — without this gate, buildSystems fires
+  // up to 7 times with partial data before hydration completes. The UI
+  // already shows a loading state, so empty systems during hydration is fine.
   const systems = useMemo<SystemRecord[]>(
-    () =>
-      buildSystems({
+    () => {
+      if (!datasetsHydrated) return [];
+      return buildSystems({
         part2VerifiedAbpRows,
         solarApplicationsRows: datasets.solarApplications?.rows ?? [],
         contractedDateRows: datasets.contractedDate?.rows ?? [],
@@ -2690,8 +2699,10 @@ export default function SolarRecDashboard() {
         generationEntryRows: datasets.generationEntry?.rows ?? [],
         transferHistoryRows: datasets.transferHistory?.rows ?? [],
         deliveryScheduleBaseRows: datasets.deliveryScheduleBase?.rows ?? [],
-      }),
+      });
+    },
     [
+      datasetsHydrated,
       part2VerifiedAbpRows,
       datasets.solarApplications,
       datasets.contractedDate,
@@ -5501,218 +5512,256 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
 
-          {activeTab === "overview" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading overview tab...</div>}>
-              <OverviewTabLazy
-                summary={summary}
-                financialProfitData={financialProfitData}
-                changeOwnershipSummary={changeOwnershipSummary}
-                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                sizeBreakdownRows={sizeBreakdownRows}
-                part2VerifiedAbpRows={part2VerifiedAbpRows}
-                systems={systems}
-                onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
-                onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
-                onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("overview") && (
+            <div style={{ display: activeTab === "overview" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading overview tab...</div>}>
+                <OverviewTabLazy
+                  summary={summary}
+                  financialProfitData={financialProfitData}
+                  changeOwnershipSummary={changeOwnershipSummary}
+                  part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                  sizeBreakdownRows={sizeBreakdownRows}
+                  part2VerifiedAbpRows={part2VerifiedAbpRows}
+                  systems={systems}
+                  onDownloadOwnershipTile={downloadOwnershipCountTileCsv}
+                  onDownloadChangeOwnershipTile={downloadChangeOwnershipCountTileCsv}
+                  onJumpToOfflineMonitoring={() => handleActiveTabChange("offline-monitoring")}
+                />
+              </Suspense>
+            </div>
           )}
-          {activeTab === "size" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading size tab...</div>}>
-              <SizeReportingTabLazy
-                sizeBreakdownRows={sizeBreakdownRows}
-                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-              />
-            </Suspense>
-          )}
-
-          {activeTab === "value" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC value tab...</div>}>
-              <RecValueTabLazy
-                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                snapshotPart2ValueSummary={snapshotPart2ValueSummary}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("size") && (
+            <div style={{ display: activeTab === "size" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading size tab...</div>}>
+                <SizeReportingTabLazy
+                  sizeBreakdownRows={sizeBreakdownRows}
+                  part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "contracts" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading utility contracts tab...</div>}>
-              <ContractsTabLazy
-                deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                eligibleTrackingIds={eligibleTrackingIds}
-                recPriceByTrackingId={recPriceByTrackingId}
-                transferDeliveryLookup={transferDeliveryLookup}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("value") && (
+            <div style={{ display: activeTab === "value" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC value tab...</div>}>
+                <RecValueTabLazy
+                  part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                  snapshotPart2ValueSummary={snapshotPart2ValueSummary}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "annual-review" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading annual REC review tab...</div>}>
-              <AnnualReviewTabLazy
-                deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                eligibleTrackingIds={eligibleTrackingIds}
-                recPriceByTrackingId={recPriceByTrackingId}
-                systemsByTrackingId={systemsByTrackingId}
-                transferDeliveryLookup={transferDeliveryLookup}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("contracts") && (
+            <div style={{ display: activeTab === "contracts" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading utility contracts tab...</div>}>
+                <ContractsTabLazy
+                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
+                  eligibleTrackingIds={eligibleTrackingIds}
+                  recPriceByTrackingId={recPriceByTrackingId}
+                  transferDeliveryLookup={transferDeliveryLookup}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "performance-eval" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC performance evaluation tab...</div>}>
-              <RecPerformanceEvaluationTabLazy
-                performanceSourceRows={performanceSourceRows}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("annual-review") && (
+            <div style={{ display: activeTab === "annual-review" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading annual REC review tab...</div>}>
+                <AnnualReviewTabLazy
+                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
+                  eligibleTrackingIds={eligibleTrackingIds}
+                  recPriceByTrackingId={recPriceByTrackingId}
+                  systemsByTrackingId={systemsByTrackingId}
+                  transferDeliveryLookup={transferDeliveryLookup}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "change-ownership" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading change of ownership tab...</div>}>
-              <ChangeOwnershipTabLazy
-                changeOwnershipRows={changeOwnershipRows}
-                changeOwnershipSummary={changeOwnershipSummary}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("performance-eval") && (
+            <div style={{ display: activeTab === "performance-eval" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading REC performance evaluation tab...</div>}>
+                <RecPerformanceEvaluationTabLazy
+                  performanceSourceRows={performanceSourceRows}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "ownership" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading ownership tab...</div>}>
-              <OwnershipTabLazy
-                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("change-ownership") && (
+            <div style={{ display: activeTab === "change-ownership" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading change of ownership tab...</div>}>
+                <ChangeOwnershipTabLazy
+                  changeOwnershipRows={changeOwnershipRows}
+                  changeOwnershipSummary={changeOwnershipSummary}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "offline-monitoring" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading offline monitoring tab...</div>}>
-              <OfflineMonitoringTabLazy
-                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                abpEligibleTrackingIdsStrict={abpEligibleTrackingIdsStrict}
-                abpApplicationIdBySystemKey={abpApplicationIdBySystemKey}
-                monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
-                jumpToSection={jumpToSection}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("ownership") && (
+            <div style={{ display: activeTab === "ownership" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading ownership tab...</div>}>
+                <OwnershipTabLazy
+                  part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "meter-reads" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading meter reads tab...</div>}>
-              <MeterReadsTabLazy />
-            </Suspense>
+          {visitedTabsRef.current.has("offline-monitoring") && (
+            <div style={{ display: activeTab === "offline-monitoring" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading offline monitoring tab...</div>}>
+                <OfflineMonitoringTabLazy
+                  part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                  abpEligibleTrackingIdsStrict={abpEligibleTrackingIdsStrict}
+                  abpApplicationIdBySystemKey={abpApplicationIdBySystemKey}
+                  monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
+                  jumpToSection={jumpToSection}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "performance-ratio" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading performance ratio tab...</div>}>
-              <PerformanceRatioTabLazy
-                convertedReads={datasets.convertedReads ?? null}
-                annualProductionEstimates={datasets.annualProductionEstimates ?? null}
-                generatorDetails={datasets.generatorDetails ?? null}
-                convertedReadsLabel={DATASET_DEFINITIONS.convertedReads.label}
-                annualProductionEstimatesLabel={DATASET_DEFINITIONS.annualProductionEstimates.label}
-                part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
-                monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
-                abpAcSizeKwByApplicationId={abpAcSizeKwByApplicationId}
-                abpPart2VerificationDateByApplicationId={abpPart2VerificationDateByApplicationId}
-                abpAcSizeKwBySystemKey={abpAcSizeKwBySystemKey}
-                annualProductionByTrackingId={annualProductionByTrackingId}
-                generationBaselineByTrackingId={generationBaselineByTrackingId}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("meter-reads") && (
+            <div style={{ display: activeTab === "meter-reads" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading meter reads tab...</div>}>
+                <MeterReadsTabLazy />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "snapshot-log" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading snapshot log tab...</div>}>
-              <SnapshotLogTabLazy
-                logEntries={logEntries}
-                recPerformanceSnapshotContracts2025={recPerformanceSnapshotContracts2025}
-                cooNotTransferredNotReportingCurrentCount={cooNotTransferredNotReportingCurrentCount}
-                onCreateLogEntry={createLogEntry}
-                onClearLogs={clearLogs}
-                onDeleteLogEntry={deleteLogEntry}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("performance-ratio") && (
+            <div style={{ display: activeTab === "performance-ratio" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading performance ratio tab...</div>}>
+                <PerformanceRatioTabLazy
+                  convertedReads={datasets.convertedReads ?? null}
+                  annualProductionEstimates={datasets.annualProductionEstimates ?? null}
+                  generatorDetails={datasets.generatorDetails ?? null}
+                  convertedReadsLabel={DATASET_DEFINITIONS.convertedReads.label}
+                  annualProductionEstimatesLabel={DATASET_DEFINITIONS.annualProductionEstimates.label}
+                  part2EligibleSystemsForSizeReporting={part2EligibleSystemsForSizeReporting}
+                  monitoringDetailsBySystemKey={monitoringDetailsBySystemKey}
+                  abpAcSizeKwByApplicationId={abpAcSizeKwByApplicationId}
+                  abpPart2VerificationDateByApplicationId={abpPart2VerificationDateByApplicationId}
+                  abpAcSizeKwBySystemKey={abpAcSizeKwBySystemKey}
+                  annualProductionByTrackingId={annualProductionByTrackingId}
+                  generationBaselineByTrackingId={generationBaselineByTrackingId}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "app-pipeline" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading app pipeline tab...</div>}>
-              <AppPipelineTabLazy
-                abpReport={datasets.abpReport ?? null}
-                generatorDetails={datasets.generatorDetails ?? null}
-                abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
-                abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
-                systems={systems}
-                part2VerifiedAbpRows={part2VerifiedAbpRows}
-                contractScanResults={contractScanResultsQuery.data ?? []}
-                localOverrides={localOverrides}
-                financialCsgIdCount={financialCsgIds.length}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("snapshot-log") && (
+            <div style={{ display: activeTab === "snapshot-log" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading snapshot log tab...</div>}>
+                <SnapshotLogTabLazy
+                  logEntries={logEntries}
+                  recPerformanceSnapshotContracts2025={recPerformanceSnapshotContracts2025}
+                  cooNotTransferredNotReportingCurrentCount={cooNotTransferredNotReportingCurrentCount}
+                  onCreateLogEntry={createLogEntry}
+                  onClearLogs={clearLogs}
+                  onDeleteLogEntry={deleteLogEntry}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "trends" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading trends tab...</div>}>
-              <TrendsTabLazy
-                convertedReads={datasets.convertedReads ?? null}
-                deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                transferDeliveryLookup={transferDeliveryLookup}
-                logEntries={logEntries}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("app-pipeline") && (
+            <div style={{ display: activeTab === "app-pipeline" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading app pipeline tab...</div>}>
+                <AppPipelineTabLazy
+                  abpReport={datasets.abpReport ?? null}
+                  generatorDetails={datasets.generatorDetails ?? null}
+                  abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
+                  abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
+                  systems={systems}
+                  part2VerifiedAbpRows={part2VerifiedAbpRows}
+                  contractScanResults={contractScanResultsQuery.data ?? []}
+                  localOverrides={localOverrides}
+                  financialCsgIdCount={financialCsgIds.length}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "forecast" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading forecast tab...</div>}>
-              <ForecastTabLazy
-                performanceSourceRows={performanceSourceRows}
-                systems={systems}
-                annualProductionByTrackingId={annualProductionByTrackingId}
-                generationBaselineByTrackingId={generationBaselineByTrackingId}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("trends") && (
+            <div style={{ display: activeTab === "trends" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading trends tab...</div>}>
+                <TrendsTabLazy
+                  convertedReads={datasets.convertedReads ?? null}
+                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
+                  transferDeliveryLookup={transferDeliveryLookup}
+                  logEntries={logEntries}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "alerts" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading alerts tab...</div>}>
-              <AlertsTabLazy
-                systems={systems}
-                datasets={datasets}
-                deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                transferDeliveryLookup={transferDeliveryLookup}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("forecast") && (
+            <div style={{ display: activeTab === "forecast" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading forecast tab...</div>}>
+                <ForecastTabLazy
+                  performanceSourceRows={performanceSourceRows}
+                  systems={systems}
+                  annualProductionByTrackingId={annualProductionByTrackingId}
+                  generationBaselineByTrackingId={generationBaselineByTrackingId}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "comparisons" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading comparisons tab...</div>}>
-              <ComparisonsTabLazy systems={systems} />
-            </Suspense>
+          {visitedTabsRef.current.has("alerts") && (
+            <div style={{ display: activeTab === "alerts" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading alerts tab...</div>}>
+                <AlertsTabLazy
+                  systems={systems}
+                  datasets={datasets}
+                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
+                  transferDeliveryLookup={transferDeliveryLookup}
+                />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "financials" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
-              <FinancialsTabLazy
-                systems={systems}
-                part2VerifiedAbpRows={part2VerifiedAbpRows}
-                financialProfitData={financialProfitData}
-                contractScanResults={contractScanResultsQuery.data ?? []}
-                contractScanStatus={contractScanResultsQuery.status}
-                contractScanIsFetching={contractScanResultsQuery.isFetching}
-                contractScanError={contractScanResultsQuery.error}
-                contractScanRefetch={contractScanResultsQuery.refetch}
-                financialCsgIds={financialCsgIds}
-                abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
-                abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
-                localOverrides={localOverrides}
-                setLocalOverrides={setLocalOverrides}
-                onSelectSystem={setSelectedSystemKey}
-              />
-            </Suspense>
+          {visitedTabsRef.current.has("comparisons") && (
+            <div style={{ display: activeTab === "comparisons" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading comparisons tab...</div>}>
+                <ComparisonsTabLazy systems={systems} />
+              </Suspense>
+            </div>
           )}
 
-          {activeTab === "data-quality" && (
-            <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading data quality tab...</div>}>
-              <DataQualityTabLazy datasets={datasets} />
-            </Suspense>
+          {visitedTabsRef.current.has("financials") && (
+            <div style={{ display: activeTab === "financials" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading financials tab...</div>}>
+                <FinancialsTabLazy
+                  systems={systems}
+                  part2VerifiedAbpRows={part2VerifiedAbpRows}
+                  financialProfitData={financialProfitData}
+                  contractScanResults={contractScanResultsQuery.data ?? []}
+                  contractScanStatus={contractScanResultsQuery.status}
+                  contractScanIsFetching={contractScanResultsQuery.isFetching}
+                  contractScanError={contractScanResultsQuery.error}
+                  contractScanRefetch={contractScanResultsQuery.refetch}
+                  financialCsgIds={financialCsgIds}
+                  abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
+                  abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
+                  localOverrides={localOverrides}
+                  setLocalOverrides={setLocalOverrides}
+                  onSelectSystem={setSelectedSystemKey}
+                />
+              </Suspense>
+            </div>
+          )}
+
+          {visitedTabsRef.current.has("data-quality") && (
+            <div style={{ display: activeTab === "data-quality" ? "contents" : "none" }}>
+              <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading data quality tab...</div>}>
+                <DataQualityTabLazy datasets={datasets} />
+              </Suspense>
+            </div>
           )}
 
           {activeTab === "delivery-tracker" && (

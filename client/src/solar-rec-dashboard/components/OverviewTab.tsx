@@ -15,7 +15,7 @@
  * summaries that `createLogEntry` still reads.
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -107,7 +107,7 @@ export interface OverviewTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function OverviewTab(props: OverviewTabProps) {
+export default memo(function OverviewTab(props: OverviewTabProps) {
   const {
     summary,
     financialProfitData,
@@ -569,4 +569,4 @@ export default function OverviewTab(props: OverviewTabProps) {
       </Card>
     </div>
   );
-}
+});

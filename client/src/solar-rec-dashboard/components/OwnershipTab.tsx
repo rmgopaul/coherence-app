@@ -15,7 +15,7 @@
  * Mounts only when `activeTab === "ownership"`.
  */
 
-import { useDeferredValue, useMemo, useState } from "react";
+import { memo, useDeferredValue, useMemo, useState } from "react";
 import {
   Card,
   CardContent,
@@ -59,7 +59,7 @@ export interface OwnershipTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function OwnershipTab(props: OwnershipTabProps) {
+export default memo(function OwnershipTab(props: OwnershipTabProps) {
   const { part2EligibleSystemsForSizeReporting } = props;
 
   const [ownershipFilter, setOwnershipFilter] = useState<
@@ -176,4 +176,4 @@ export default function OwnershipTab(props: OwnershipTabProps) {
       </Card>
     </div>
   );
-}
+});

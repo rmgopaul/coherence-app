@@ -18,7 +18,7 @@
  * ContractsTab.
  */
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   CartesianGrid,
   Legend,
@@ -89,7 +89,7 @@ export interface AnnualReviewTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function AnnualReviewTab(props: AnnualReviewTabProps) {
+export default memo(function AnnualReviewTab(props: AnnualReviewTabProps) {
   const {
     deliveryScheduleBase,
     eligibleTrackingIds,
@@ -918,4 +918,4 @@ export default function AnnualReviewTab(props: AnnualReviewTabProps) {
       </Card>
     </div>
   );
-}
+});

@@ -8,7 +8,7 @@
  *     installer and by monitoring platform
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Bar,
   BarChart,
@@ -57,7 +57,7 @@ export interface ComparisonsTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function ComparisonsTab(props: ComparisonsTabProps) {
+export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
   const { systems } = props;
 
   const comparisonInstallers = useMemo(() => {
@@ -360,4 +360,4 @@ export default function ComparisonsTab(props: ComparisonsTabProps) {
       </Card>
     </div>
   );
-}
+});

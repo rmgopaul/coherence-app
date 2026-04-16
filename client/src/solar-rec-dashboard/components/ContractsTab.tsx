@@ -20,7 +20,7 @@
  * AI chat context also depend on them.
  */
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -85,7 +85,7 @@ export interface ContractsTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function ContractsTab(props: ContractsTabProps) {
+export default memo(function ContractsTab(props: ContractsTabProps) {
   const {
     deliveryScheduleBase,
     eligibleTrackingIds,
@@ -557,4 +557,4 @@ export default function ContractsTab(props: ContractsTabProps) {
       </Card>
     </div>
   );
-}
+});

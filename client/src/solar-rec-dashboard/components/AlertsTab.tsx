@@ -18,7 +18,7 @@
  * Alerts tab).
  */
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -73,7 +73,7 @@ const OFFLINE_DAYS_THRESHOLD = 90;
 const PACE_THRESHOLD = 0.8;
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 } as const;
 
-export default function AlertsTab(props: AlertsTabProps) {
+export default memo(function AlertsTab(props: AlertsTabProps) {
   const { systems, datasets, deliveryScheduleBase, transferDeliveryLookup } = props;
 
   // Local trend delivery pace — same calculation TrendsTab makes, called
@@ -287,4 +287,4 @@ export default function AlertsTab(props: AlertsTabProps) {
       </Card>
     </div>
   );
-}
+});

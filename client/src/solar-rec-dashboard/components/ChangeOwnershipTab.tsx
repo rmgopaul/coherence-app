@@ -16,7 +16,7 @@
  * filter/sort closure is garbage collected when the user switches away.
  */
 
-import { useCallback, useDeferredValue, useMemo, useState } from "react";
+import { memo, useCallback, useDeferredValue, useMemo, useState } from "react";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
   Card,
@@ -91,7 +91,7 @@ type ChangeOwnershipSortKey =
 // Component
 // ---------------------------------------------------------------------------
 
-export default function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
+export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
   const { changeOwnershipRows, changeOwnershipSummary } = props;
 
   const [changeOwnershipFilter, setChangeOwnershipFilter] = useState<
@@ -485,4 +485,4 @@ export default function ChangeOwnershipTab(props: ChangeOwnershipTabProps) {
       </Card>
     </div>
   );
-}
+});
