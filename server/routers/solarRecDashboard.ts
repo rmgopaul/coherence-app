@@ -1678,4 +1678,21 @@ export const solarRecDashboardRouter = router({
         inputVersionHash: result.inputVersionHash,
       };
     }),
+
+  // -- Financials (Step 7) -----------------------------------------------
+
+  /**
+   * Get the current financials version hash.
+   * Includes CSV dataset versions + completed scan job + latest override.
+   * Clients use this to check if their cached financials data is stale.
+   */
+  getFinancialsHash: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { computeFinancialsHash } = await import(
+        "../services/solar/financialsVersion"
+      );
+      const hash = await computeFinancialsHash(input.scopeId);
+      return { inputVersionHash: hash };
+    }),
 });

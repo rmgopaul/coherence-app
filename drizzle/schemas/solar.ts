@@ -673,3 +673,14 @@ export const srDsTransferHistory = mysqlTable(
     ),
   })
 );
+
+// Step 7: Scope-Aware Contract Scan Bridge
+export const solarRecScopeContractScanVersion = mysqlTable(
+  "solarRecScopeContractScanVersion",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).primaryKey(),
+    latestCompletedJobId: varchar("latestCompletedJobId", { length: 64 }),
+    latestOverrideAt: timestamp("latestOverrideAt"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  }
+);

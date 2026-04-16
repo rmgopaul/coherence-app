@@ -329,6 +329,68 @@ export async function completeComputeRun(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Scope Contract Scan Version Bridge
+// ---------------------------------------------------------------------------
+
+export async function getScopeContractScanVersion(scopeId: string) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
+  const rows = await withDbRetry("get scope scan version", () =>
+    db
+      .select()
+      .from(solarRecScopeContractScanVersion)
+      .where(eq(solarRecScopeContractScanVersion.scopeId, scopeId))
+      .limit(1)
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function bumpScopeContractScanJobVersion(
+  scopeId: string,
+  completedJobId: string
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
+  try {
+    await db.insert(solarRecScopeContractScanVersion).values({
+      scopeId,
+      latestCompletedJobId: completedJobId,
+    });
+  } catch {
+    await db
+      .update(solarRecScopeContractScanVersion)
+      .set({ latestCompletedJobId: completedJobId })
+      .where(eq(solarRecScopeContractScanVersion.scopeId, scopeId));
+  }
+}
+
+export async function bumpScopeContractScanOverrideVersion(
+  scopeId: string,
+  overrideAt: Date
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  const { solarRecScopeContractScanVersion } = await import("../../drizzle/schema");
+  try {
+    await db.insert(solarRecScopeContractScanVersion).values({
+      scopeId,
+      latestOverrideAt: overrideAt,
+    });
+  } catch {
+    await db
+      .update(solarRecScopeContractScanVersion)
+      .set({ latestOverrideAt: overrideAt })
+      .where(eq(solarRecScopeContractScanVersion.scopeId, scopeId));
+  }
+}
+
 export async function failComputeRun(
   runId: string,
   error: string
