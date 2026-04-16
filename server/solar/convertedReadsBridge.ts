@@ -2,14 +2,23 @@
  * Bridge: pushes successful monitoring API runs into the Converted Reads
  * dataset so they appear in the Solar REC Dashboard's Performance Ratio tab.
  *
- * Server-side equivalent of client/src/lib/convertedReads.ts — duplicates
- * only the pure CSV/merge logic (no React, no tRPC client).
+ * Uses the dashboard's `_rawSourcesV1` source-manifest format:
+ *   - The main `dataset:convertedReads` key holds a manifest JSON listing
+ *     individual source files.
+ *   - Each source's actual data (CSV text) is stored in chunks under keys
+ *     like `dataset:src_convertedReads_<sourceId>_chunk_NNNN`.
+ *   - The dashboard's load path fetches every source's chunks, parses each
+ *     as CSV, and merges them into a single deduplicated dataset.
+ *
+ * Each provider gets ONE stable source entry `mon_batch_<providerSlug>`
+ * that gets replaced on every bridge run — so the manifest stays bounded
+ * at N user CSV uploads + M active providers. User uploads coexist as
+ * separate source entries because we only touch our own source.
  */
 import {
   getSolarRecDashboardPayload,
   saveSolarRecDashboardPayload,
 } from "../db";
-import { parseCsvText } from "../routers/helpers";
 import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 
 // ---------------------------------------------------------------------------
@@ -26,7 +35,16 @@ const CONVERTED_READS_HEADERS = [
   "read_date",
 ] as const;
 
-const DB_STORAGE_KEY = "dataset:convertedReads";
+const DATASET_KEY = "convertedReads";
+const DB_STORAGE_KEY = `dataset:${DATASET_KEY}`;
+
+/**
+ * Max characters per chunk. Mirrors REMOTE_DATASET_CHUNK_CHAR_LIMIT from
+ * client/src/solar-rec-dashboard/lib/constants.ts — the dashboard uses
+ * this same limit when splitting its own uploads, and the tRPC saveDataset
+ * input schema is sized to accept payloads up to this size.
+ */
+const CHUNK_CHAR_LIMIT = 250_000;
 
 /**
  * Map adapter provider keys to the canonical display labels from
@@ -58,23 +76,32 @@ const PROVIDER_LABELS: Record<string, string> = {
   ekm: MONITORING_CANONICAL_NAMES.ekm,
 };
 
+export function providerCanonicalLabel(providerKey: string): string {
+  return PROVIDER_LABELS[providerKey] ?? providerKey;
+}
+
 // ---------------------------------------------------------------------------
-// Types
+// Types (mirrored from SolarRecDashboard.tsx RemoteDatasetSourceRef)
 // ---------------------------------------------------------------------------
 
 type ConvertedReadRow = Record<string, string>;
 
-type SerializedCsvDataset = {
+type RemoteDatasetSourceRef = {
+  id: string;
   fileName: string;
   uploadedAt: string;
-  headers: string[];
-  csvText: string;
-  rows: ConvertedReadRow[];
-  sources?: Array<{
-    fileName: string;
-    uploadedAt: string;
-    rowCount: number;
-  }>;
+  rowCount: number;
+  sizeBytes: number;
+  storageKey: string;
+  chunkKeys?: string[];
+  encoding: "utf8" | "base64";
+  contentType: string;
+};
+
+type RemoteDatasetSourceManifestPayload = {
+  _rawSourcesV1: true;
+  version: 1;
+  sources: RemoteDatasetSourceRef[];
 };
 
 export type MonitoringRunRow = {
@@ -87,7 +114,7 @@ export type MonitoringRunRow = {
 };
 
 // ---------------------------------------------------------------------------
-// Pure helpers (mirrored from client/src/lib/convertedReads.ts)
+// Helpers
 // ---------------------------------------------------------------------------
 
 function formatReadDate(isoDate: string): string {
@@ -96,16 +123,6 @@ function formatReadDate(isoDate: string): string {
   const month = Number(parts[1]);
   const day = Number(parts[2]);
   return `${month}/${day}/${parts[0]}`;
-}
-
-function convertedReadsRowKey(row: ConvertedReadRow): string {
-  return [
-    row.monitoring ?? "",
-    row.monitoring_system_id ?? "",
-    row.monitoring_system_name ?? "",
-    row.lifetime_meter_read_wh ?? "",
-    row.read_date ?? "",
-  ].join("|");
 }
 
 function csvEscape(value: string | number | null | undefined): string {
@@ -120,21 +137,6 @@ function buildCsvText(headers: readonly string[], rows: ConvertedReadRow[]): str
   const headerLine = headers.map((h) => csvEscape(h)).join(",");
   const bodyLines = rows.map((row) => headers.map((h) => csvEscape(row[h])).join(","));
   return [headerLine, ...bodyLines].join("\n");
-}
-
-/**
- * Parse CSV text into rows, respecting RFC 4180 quoted fields.
- * Uses the project's shared parseCsvText parser which correctly handles
- * values containing commas, newlines, and escaped quotes (e.g. "Knepp, Ryan").
- *
- * The previous implementation used a naive `line.split(",")` which mangled
- * quoted fields on every round-trip, corrupting the dataset and causing
- * new reads to fail to merge properly.
- */
-function parseCsvRows(csvText: string): ConvertedReadRow[] {
-  if (!csvText.trim()) return [];
-  const { rows } = parseCsvText(csvText.replace(/^\uFEFF/, ""));
-  return rows;
 }
 
 function buildConvertedReadRow(
@@ -155,116 +157,180 @@ function buildConvertedReadRow(
   };
 }
 
+/**
+ * Build a stable source ID for a provider. Using a stable ID means each
+ * bridge run replaces the previous source for that provider — the manifest
+ * never grows unboundedly. Normalize the key the same way the dashboard
+ * does in buildRemoteSourceStorageKey().
+ */
+function providerSourceId(providerKey: string): string {
+  return `mon_batch_${providerKey.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
+}
+
+/**
+ * Build the source's base storage key. Matches the dashboard's
+ * buildRemoteSourceStorageKey() which truncates to 52 chars to leave
+ * room for the "_chunk_0000" suffix within the 64-char key limit.
+ */
+function buildSourceStorageKey(datasetKey: string, sourceId: string): string {
+  const normalizedDataset = datasetKey.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const normalizedSource = sourceId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return `src_${normalizedDataset}_${normalizedSource}`.slice(0, 52);
+}
+
+function buildChunkKey(storageKey: string, chunkIndex: number): string {
+  return `${storageKey}_chunk_${String(chunkIndex).padStart(4, "0")}`;
+}
+
+/** Slice text into chunks of at most `limit` characters. */
+function splitTextIntoChunks(text: string, limit: number): string[] {
+  if (text.length === 0) return [];
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += limit) {
+    chunks.push(text.slice(i, i + limit));
+  }
+  return chunks;
+}
+
+/**
+ * Read the current manifest from `dataset:convertedReads`. Returns the
+ * parsed sources array. Handles three cases:
+ *   - Source-manifest format (`_rawSourcesV1`) → parse and return sources
+ *   - Plain format (old bridge writes, no sources tracked) → treat as empty
+ *     (the plain data in the main key is orphaned by design; the dashboard's
+ *     local state holds it in memory until next full reload)
+ *   - Missing/null → empty sources array
+ */
+async function readExistingManifest(userId: number): Promise<RemoteDatasetSourceRef[]> {
+  const payload = await getSolarRecDashboardPayload(userId, DB_STORAGE_KEY);
+  if (!payload) return [];
+  try {
+    const parsed = JSON.parse(payload);
+    if (parsed && parsed._rawSourcesV1 === true && Array.isArray(parsed.sources)) {
+      return parsed.sources as RemoteDatasetSourceRef[];
+    }
+  } catch {
+    // Invalid JSON — treat as empty
+  }
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // Core push function
 // ---------------------------------------------------------------------------
 
 /**
- * Push successful monitoring runs into the Converted Reads dataset,
- * merging with existing rows and deduplicating.
+ * Push a provider's successful monitoring runs into the Converted Reads
+ * dataset as a source-manifest source entry.
+ *
+ * Behavior:
+ *   - Builds a CSV from the runs
+ *   - Splits into chunks, writes each chunk to its own storage key
+ *   - Reads the existing manifest, removes any prior source for this
+ *     provider (`mon_batch_<providerKey>`), appends the new source, writes back
+ *   - Orphaned chunks from the prior source (if the new run needs fewer
+ *     chunks than before) get cleared to empty strings
+ *
+ * Returns null if no rows qualified (no source created).
  */
 export async function pushMonitoringRunsToConvertedReads(
   userId: number,
+  providerKey: string,
+  providerLabel: string,
   runs: MonitoringRunRow[]
-): Promise<{ pushed: number; skipped: number }> {
-  // Filter to successful runs with lifetime kWh data
+): Promise<{ pushed: number; skipped: number; sourceId: string } | null> {
+  // 1. Filter to successful runs with lifetime kWh data
   const validRuns = runs.filter(
     (r) => r.status === "success" && r.lifetimeKwh != null && r.lifetimeKwh > 0
   );
   if (validRuns.length === 0) {
-    return { pushed: 0, skipped: 0 };
+    return null;
   }
 
-  // Build new rows
-  const newRows = validRuns.map((r) =>
+  // 2. Build CSV rows + text
+  const csvRows = validRuns.map((r) =>
     buildConvertedReadRow(
-      PROVIDER_LABELS[r.provider] ?? r.provider,
+      providerLabel,
       r.siteId,
       r.siteName ?? r.siteId,
       r.lifetimeKwh!,
       r.dateKey
     )
   );
+  const csvText = buildCsvText(CONVERTED_READS_HEADERS, csvRows);
 
-  const now = new Date().toISOString();
+  // 3. Generate stable source ID + storage + chunk keys
+  const sourceId = providerSourceId(providerKey);
+  const storageKey = buildSourceStorageKey(DATASET_KEY, sourceId);
+  const chunks = splitTextIntoChunks(csvText, CHUNK_CHAR_LIMIT);
+  const newChunkKeys = chunks.map((_, i) => buildChunkKey(storageKey, i));
 
-  // Fetch existing dataset
-  let existingDataset: SerializedCsvDataset | null = null;
-  try {
-    const payload = await getSolarRecDashboardPayload(userId, DB_STORAGE_KEY);
-    if (payload) {
-      existingDataset = JSON.parse(payload) as SerializedCsvDataset;
+  // 4. Write each chunk
+  for (let i = 0; i < chunks.length; i += 1) {
+    await saveSolarRecDashboardPayload(
+      userId,
+      `dataset:${newChunkKeys[i]}`,
+      chunks[i]
+    );
+  }
+
+  // 5. Read existing manifest
+  const existingSources = await readExistingManifest(userId);
+
+  // 6. Locate any prior source with the same ID — capture its chunk keys so
+  //    we can empty any orphans that aren't in our new chunk list.
+  const priorSource = existingSources.find((s) => s.id === sourceId);
+  if (priorSource?.chunkKeys && priorSource.chunkKeys.length > 0) {
+    const newChunkKeySet = new Set(newChunkKeys);
+    const orphanKeys = priorSource.chunkKeys.filter((k) => !newChunkKeySet.has(k));
+    for (const orphan of orphanKeys) {
+      try {
+        await saveSolarRecDashboardPayload(userId, `dataset:${orphan}`, "");
+      } catch (err) {
+        console.warn(
+          `[ConvertedReadsBridge] Failed to clear orphaned chunk ${orphan}:`,
+          err instanceof Error ? err.message : err
+        );
+      }
     }
-  } catch {
-    // No existing dataset — start fresh
   }
 
-  // Parse existing rows
-  const existingRows: ConvertedReadRow[] =
-    (existingDataset?.csvText
-      ? parseCsvRows(existingDataset.csvText)
-      : null) ??
-    existingDataset?.rows ??
-    [];
-  const existingKeys = new Set(existingRows.map(convertedReadsRowKey));
-
-  // Deduplicate
-  const uniqueNewRows = newRows.filter((row) => {
-    const key = convertedReadsRowKey(row);
-    if (existingKeys.has(key)) return false;
-    existingKeys.add(key);
-    return true;
-  });
-
-  if (uniqueNewRows.length === 0) {
-    return { pushed: 0, skipped: newRows.length };
-  }
-
-  // Merge headers
-  const existingHeaders = existingDataset?.headers ?? [];
-  const mergedHeaders = Array.from(
-    new Set([...existingHeaders, ...CONVERTED_READS_HEADERS])
-  );
-
-  // Build sources array
-  const existingSources = existingDataset?.sources ?? (existingDataset ? [{
-    fileName: existingDataset.fileName,
-    uploadedAt: existingDataset.uploadedAt,
-    rowCount: existingRows.length,
-  }] : []);
-
-  // Group new rows by provider for the source label
-  const providerCounts = new Map<string, number>();
-  for (const row of uniqueNewRows) {
-    const p = row.monitoring ?? "Unknown";
-    providerCounts.set(p, (providerCounts.get(p) ?? 0) + 1);
-  }
-  const sourceLabel = Array.from(providerCounts.entries())
-    .map(([p, c]) => `${p} (${c})`)
-    .join(", ");
-
-  const sources = [
-    ...existingSources,
-    {
-      fileName: `Monitoring batch: ${sourceLabel}`,
-      uploadedAt: now,
-      rowCount: uniqueNewRows.length,
-    },
-  ];
-
-  // Build merged dataset
-  const allRows = [...existingRows, ...uniqueNewRows];
-  const merged: SerializedCsvDataset = {
-    fileName: `${sources.length} files loaded`,
+  // 7. Build the new source entry
+  const now = new Date().toISOString();
+  const newSource: RemoteDatasetSourceRef = {
+    id: sourceId,
+    fileName: `Monitoring batch: ${providerLabel} (${csvRows.length})`,
     uploadedAt: now,
-    headers: mergedHeaders,
-    csvText: buildCsvText(mergedHeaders, allRows),
-    rows: allRows,
-    sources,
+    rowCount: csvRows.length,
+    sizeBytes: csvText.length,
+    storageKey,
+    chunkKeys: newChunkKeys,
+    encoding: "utf8",
+    contentType: "text/csv",
   };
 
-  // Persist
-  await saveSolarRecDashboardPayload(userId, DB_STORAGE_KEY, JSON.stringify(merged));
+  // 8. Replace or append: keep everything except the prior entry for this ID,
+  //    then append the new one at the end.
+  const nextSources = existingSources
+    .filter((s) => s.id !== sourceId)
+    .concat(newSource);
 
-  return { pushed: uniqueNewRows.length, skipped: newRows.length - uniqueNewRows.length };
+  // 9. Write the updated manifest back to the main key
+  const manifest: RemoteDatasetSourceManifestPayload = {
+    _rawSourcesV1: true,
+    version: 1,
+    sources: nextSources,
+  };
+  await saveSolarRecDashboardPayload(
+    userId,
+    DB_STORAGE_KEY,
+    JSON.stringify(manifest)
+  );
+
+  return {
+    pushed: csvRows.length,
+    skipped: runs.length - csvRows.length,
+    sourceId,
+  };
 }

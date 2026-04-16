@@ -10,6 +10,7 @@ import * as db from "../db";
 import { mapWithConcurrency } from "../services/core/concurrency";
 import {
   pushMonitoringRunsToConvertedReads,
+  providerCanonicalLabel,
   type MonitoringRunRow,
 } from "./convertedReadsBridge";
 import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
@@ -370,9 +371,9 @@ export async function executeMonitoringBatch(
     // Collect all completed runs across the batch. We push to converted
     // reads INCREMENTALLY after each provider finishes — this way if the
     // server process dies mid-batch, the data from completed providers
-    // is already persisted to the Performance Ratio dataset.
+    // is already persisted to the Performance Ratio dataset as stable
+    // per-provider source entries in the `_rawSourcesV1` manifest format.
     const allCompletedRuns: MonitoringRunRow[] = [];
-    let pushedThroughIndex = 0;
 
     let providersCompleted = 0;
     for (const provider of providers) {
@@ -422,26 +423,35 @@ export async function executeMonitoringBatch(
       // The onSiteProgress callbacks already incremented, so don't double-count
       providersCompleted++;
 
-      // Incremental converted reads push: any runs collected since the last
-      // push get written to the Performance Ratio dataset now. If the batch
-      // dies before the next provider finishes, the data from this provider
-      // is already safe.
-      if (ownerUserId && allCompletedRuns.length > pushedThroughIndex) {
-        const newRuns = allCompletedRuns.slice(pushedThroughIndex);
-        try {
-          const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(
-            ownerUserId,
-            newRuns
-          );
-          pushedThroughIndex = allCompletedRuns.length;
-          console.log(
-            `[MonitoringBatch] Incremental converted reads push after ${provider}: ${pushed} pushed, ${skipped} skipped (dedup).`
-          );
-        } catch (err) {
-          console.error(
-            `[MonitoringBatch] Incremental converted reads push after ${provider} failed:`,
-            err instanceof Error ? err.message : err
-          );
+      // Incremental converted reads push: write/replace this provider's
+      // stable source entry in the manifest. Runs are filtered to only
+      // this provider (not the accumulated `allCompletedRuns` across
+      // previous providers, since each provider owns its own source).
+      if (ownerUserId) {
+        const providerRuns = allCompletedRuns.filter((r) => r.provider === provider);
+        if (providerRuns.length > 0) {
+          try {
+            const result = await pushMonitoringRunsToConvertedReads(
+              ownerUserId,
+              provider,
+              providerCanonicalLabel(provider),
+              providerRuns
+            );
+            if (result) {
+              console.log(
+                `[MonitoringBatch] Converted reads source "${result.sourceId}" updated: ${result.pushed} rows (provider=${provider}).`
+              );
+            } else {
+              console.log(
+                `[MonitoringBatch] Converted reads push for ${provider} skipped: no valid rows (all 0 kWh or errored).`
+              );
+            }
+          } catch (err) {
+            console.error(
+              `[MonitoringBatch] Converted reads push for ${provider} failed:`,
+              err instanceof Error ? err.message : err
+            );
+          }
         }
       }
 
@@ -454,29 +464,16 @@ export async function executeMonitoringBatch(
       });
     }
 
-    // Final safety-net push for anything collected after the last provider's
-    // incremental push (e.g. if sites completed between the push and the
-    // provider loop exiting). Almost always a no-op.
-    if (ownerUserId && allCompletedRuns.length > pushedThroughIndex) {
-      const newRuns = allCompletedRuns.slice(pushedThroughIndex);
-      try {
-        const { pushed, skipped } = await pushMonitoringRunsToConvertedReads(ownerUserId, newRuns);
-        pushedThroughIndex = allCompletedRuns.length;
-        console.log(
-          `[MonitoringBatch] Final converted reads push: ${pushed} pushed, ${skipped} skipped (dedup).`
-        );
-      } catch (err) {
-        console.error(
-          "[MonitoringBatch] Final converted reads push failed:",
-          err instanceof Error ? err.message : err,
-          err instanceof Error && err.stack ? `\n${err.stack}` : ""
-        );
-      }
-    } else if (!ownerUserId) {
-      console.warn("[MonitoringBatch] Converted reads push was skipped entirely: no ownerUserId resolved.");
+    // No final push needed — each provider writes/replaces its own source
+    // in the manifest during the per-provider loop above. The manifest
+    // always reflects the latest completed providers.
+    if (!ownerUserId) {
+      console.warn(
+        "[MonitoringBatch] Converted reads pushes were skipped: no ownerUserId resolved."
+      );
     }
     console.log(
-      `[MonitoringBatch] Total runs collected: ${allCompletedRuns.length}, rows pushed to converted reads: ${pushedThroughIndex}`
+      `[MonitoringBatch] Total runs collected: ${allCompletedRuns.length}`
     );
 
     await db.updateMonitoringBatchRun(batchId, {
