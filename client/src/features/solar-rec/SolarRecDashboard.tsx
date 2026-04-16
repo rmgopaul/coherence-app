@@ -690,6 +690,33 @@ function isCsvLikeFile(fileName: string, contentType?: string): boolean {
   return lowerName.endsWith(".csv") || lowerType.includes("csv") || lowerType.startsWith("text/");
 }
 
+/**
+ * Run async tasks with bounded concurrency to avoid exhausting browser
+ * connection limits. Without this, Promise.all on 50+ tRPC mutations
+ * causes ERR_INSUFFICIENT_RESOURCES crashes.
+ */
+async function mapWithBoundedConcurrency<TInput, TOutput>(
+  items: TInput[],
+  concurrency: number,
+  mapper: (item: TInput) => Promise<TOutput>
+): Promise<TOutput[]> {
+  if (items.length === 0) return [];
+  const results: TOutput[] = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await mapper(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
+
+/** Max concurrent tRPC mutations for remote dataset sync (read + write). */
+const REMOTE_SYNC_CONCURRENCY = 4;
+
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3, initialDelayMs = 250): Promise<T> {
   let lastError: unknown = null;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -2088,15 +2115,16 @@ export default function SolarRecDashboard() {
     }
 
     const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
-    await Promise.all(
-      chunks.map((chunk, index) =>
+    await mapWithBoundedConcurrency(
+      chunks.map((chunk, index) => ({ chunk, index })),
+      REMOTE_SYNC_CONCURRENCY,
+      ({ chunk, index }) =>
         withRetry(() =>
           saveRemoteDatasetRef.current.mutateAsync({
             key: chunkKeys[index],
             payload: chunk,
           })
         )
-      )
     );
     await withRetry(() =>
       saveRemoteDatasetRef.current.mutateAsync({
@@ -2114,10 +2142,8 @@ export default function SolarRecDashboard() {
   const clearRemotePayloadWithChunks = useCallback(async (key: string, chunkKeys: string[] | undefined) => {
     await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
     if (!Array.isArray(chunkKeys) || chunkKeys.length === 0) return;
-    await Promise.all(
-      chunkKeys.map((chunkKey) =>
-        withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
-      )
+    await mapWithBoundedConcurrency(chunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+      withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
     );
   }, []);
 
@@ -3819,14 +3845,15 @@ export default function SolarRecDashboard() {
         // on a 200ms link was 1.2s of pure latency.
         const loadChunkedPayload = async (chunkKeys: string[]): Promise<string | null> => {
           if (cancelled || chunkKeys.length === 0) return null;
-          const responses = await Promise.all(
-            chunkKeys.map((chunkKey) =>
+          const responses = await mapWithBoundedConcurrency(
+            chunkKeys,
+            REMOTE_SYNC_CONCURRENCY,
+            (chunkKey) =>
               withRetry(
                 () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
                 3,
                 250
               ).catch(() => null)
-            )
           );
           if (cancelled) return null;
           let combined = "";
@@ -3914,8 +3941,10 @@ export default function SolarRecDashboard() {
               // Fetch every source's payload in parallel, then parse in
               // parallel, preserving the original manifest order so
               // "latest source" semantics match what the sync path wrote.
-              const sourcePayloads = await Promise.all(
-                sourceManifest.sources.map(async (source) => {
+              const sourcePayloads = await mapWithBoundedConcurrency(
+                sourceManifest.sources,
+                REMOTE_SYNC_CONCURRENCY,
+                async (source) => {
                   if (cancelled) return null;
                   const sourcePayload = await loadPayloadByKey(source.storageKey);
                   if (!sourcePayload?.payload) return null;
@@ -3931,7 +3960,7 @@ export default function SolarRecDashboard() {
                     },
                     parsed,
                   };
-                })
+                }
               );
               const parsedSourceData = sourcePayloads.filter(
                 (entry): entry is NonNullable<typeof entry> => entry !== null,
@@ -4013,7 +4042,7 @@ export default function SolarRecDashboard() {
           }
         };
 
-        await Promise.all(keys.map((rawKey) => loadSingleDataset(rawKey)));
+        await mapWithBoundedConcurrency(keys, REMOTE_SYNC_CONCURRENCY, (rawKey) => loadSingleDataset(rawKey));
 
         return { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests };
       };
@@ -4081,14 +4110,15 @@ export default function SolarRecDashboard() {
               // if any chunk comes back empty (partial log history
               // is worse than no log history here).
               if (!cancelled && chunkKeys.length > 0) {
-                const chunkResponses = await Promise.all(
-                  chunkKeys.map((chunkKey) =>
+                const chunkResponses = await mapWithBoundedConcurrency(
+                  chunkKeys,
+                  REMOTE_SYNC_CONCURRENCY,
+                  (chunkKey) =>
                     withRetry(
                       () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
                       3,
                       250
                     ).catch(() => null)
-                  )
                 );
                 if (!cancelled) {
                   let combinedLogsPayload = "";
@@ -4366,12 +4396,13 @@ export default function SolarRecDashboard() {
             if (sourceManifest?.sources && sourceManifest.sources.length > 0) {
               // Phase 13a: source cleanups are best-effort and fully
               // independent — fan them out.
-              await Promise.all(
-                sourceManifest.sources.map((source) =>
+              await mapWithBoundedConcurrency(
+                sourceManifest.sources,
+                REMOTE_SYNC_CONCURRENCY,
+                (source) =>
                   clearRemotePayloadWithChunks(source.storageKey, source.chunkKeys).catch(() => {
                     // Best effort source cleanup.
                   })
-                )
               );
               setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
             }
@@ -4383,10 +4414,8 @@ export default function SolarRecDashboard() {
               // slots in parallel.
               await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
               if (previousChunkKeys.length > 0) {
-                await Promise.all(
-                  previousChunkKeys.map((chunkKey) =>
-                    withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
-                  )
+                await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
                 );
               }
               delete remoteDatasetSignatureRef.current[key];
@@ -4504,10 +4533,8 @@ export default function SolarRecDashboard() {
               // chunks in parallel (all independent mutations).
               await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
               if (previousChunkKeys.length > 0) {
-                await Promise.all(
-                  previousChunkKeys.map((chunkKey) =>
-                    withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
-                  )
+                await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
                 );
               }
               remoteDatasetChunkKeysRef.current[key] = [];
@@ -4516,22 +4543,21 @@ export default function SolarRecDashboard() {
               // stale ones concurrently too, then commit the chunk
               // pointer last so readers never observe a partial state.
               const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
-              await Promise.all(
-                chunks.map((chunk, index) =>
+              await mapWithBoundedConcurrency(
+                chunks.map((chunk, index) => ({ chunk, index })),
+                REMOTE_SYNC_CONCURRENCY,
+                ({ chunk, index }) =>
                   withRetry(() =>
                     saveRemoteDatasetRef.current.mutateAsync({
                       key: chunkKeys[index],
                       payload: chunk,
                     })
                   )
-                )
               );
               const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
               if (staleChunkKeys.length > 0) {
-                await Promise.all(
-                  staleChunkKeys.map((staleChunkKey) =>
-                    withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
-                  )
+                await mapWithBoundedConcurrency(staleChunkKeys, REMOTE_SYNC_CONCURRENCY, (staleChunkKey) =>
+                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
                 );
               }
               await withRetry(() =>
@@ -4617,32 +4643,29 @@ export default function SolarRecDashboard() {
               saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload })
             );
             if (previousChunkKeys.length > 0) {
-              await Promise.all(
-                previousChunkKeys.map((chunkKey) =>
-                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
-                )
+              await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+                withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
               );
             }
             return [] as string[];
           }
 
           const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(REMOTE_SNAPSHOT_LOGS_KEY, index));
-          await Promise.all(
-            chunks.map((chunk, index) =>
+          await mapWithBoundedConcurrency(
+            chunks.map((chunk, index) => ({ chunk, index })),
+            REMOTE_SYNC_CONCURRENCY,
+            ({ chunk, index }) =>
               withRetry(() =>
                 saveRemoteDatasetRef.current.mutateAsync({
                   key: chunkKeys[index],
                   payload: chunk,
                 })
               )
-            )
           );
           const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
           if (staleChunkKeys.length > 0) {
-            await Promise.all(
-              staleChunkKeys.map((staleChunkKey) =>
-                withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
-              )
+            await mapWithBoundedConcurrency(staleChunkKeys, REMOTE_SYNC_CONCURRENCY, (staleChunkKey) =>
+              withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
             );
           }
           await withRetry(() =>
@@ -4658,10 +4681,8 @@ export default function SolarRecDashboard() {
           try {
             await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload: "" }));
             if (previousChunkKeys.length > 0) {
-              await Promise.all(
-                previousChunkKeys.map((chunkKey) =>
-                  withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
-                )
+              await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+                withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
               );
             }
             remoteLogsChunkKeysRef.current = [];
