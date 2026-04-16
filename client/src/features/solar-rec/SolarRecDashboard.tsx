@@ -126,6 +126,7 @@ import {
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEncoding";
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
+import ServerMigrationBanner from "@/solar-rec-dashboard/components/ServerMigrationBanner";
 import {
   COO_TARGET_STATUS,
   LEGACY_DATASETS_STORAGE_KEY,
@@ -1831,6 +1832,13 @@ export default function SolarRecDashboard() {
   >({});
   const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
+  // Server-side storage: resolve scopeId for migration + tab endpoints
+  const scopeIdQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
+    retry: 2,
+    staleTime: 5 * 60 * 1000,
+  });
+  const scopeId = scopeIdQuery.data?.scopeId ?? null;
+
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
     retry: 4,
     retryDelay: (attempt) => Math.min(2000 * (attempt + 1), 10_000),
@@ -5564,6 +5572,8 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="data-quality">Data Quality</TabsTrigger>
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
+
+          <ServerMigrationBanner scopeId={scopeId} />
 
           {visitedTabsRef.current.has("overview") && (
             <div style={{ display: activeTab === "overview" ? "contents" : "none" }}>

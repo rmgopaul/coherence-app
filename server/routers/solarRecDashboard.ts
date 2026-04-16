@@ -116,6 +116,20 @@ import {
 import type { ParsedRemoteCsvDataset } from "./helpers";
 
 export const solarRecDashboardRouter = router({
+  /**
+   * Returns the scopeId for the current user's Solar REC context.
+   * Used by the client to pass to server-side dataset endpoints.
+   */
+  getScopeId: protectedProcedure.query(async () => {
+    const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
+    const { resolveSolarRecOwnerUserId } = await import("../_core/solarRecAuth");
+    const { getOrCreateScope } = await import("../db");
+    const scopeId = await resolveSolarRecScopeId();
+    const ownerUserId = await resolveSolarRecOwnerUserId();
+    await getOrCreateScope(scopeId, ownerUserId);
+    return { scopeId };
+  }),
+
   getState: protectedProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
     const dbStorageKey = "state";
