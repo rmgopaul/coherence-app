@@ -130,6 +130,58 @@ export const solarRecDashboardRouter = router({
     return { scopeId };
   }),
 
+  /**
+   * Start a server-side migration of the 7 core datasets from
+   * solarRecDashboardStorage into the new srDs* tables. Fire-and-
+   * forget: returns a jobId immediately. Client polls
+   * `getServerSideMigrationStatus` to track progress.
+   *
+   * This sidesteps the browser-based migration for users whose
+   * datasets are too large for the tab to hold in memory.
+   */
+  startServerSideMigration: protectedProcedure.mutation(async () => {
+    const { resolveSolarRecScopeId, resolveSolarRecOwnerUserId } = await import(
+      "../_core/solarRecAuth"
+    );
+    const { getOrCreateScope } = await import("../db");
+    const { startServerSideMigration } = await import(
+      "../services/solar/serverSideMigration"
+    );
+    const scopeId = await resolveSolarRecScopeId();
+    const ownerUserId = await resolveSolarRecOwnerUserId();
+    await getOrCreateScope(scopeId, ownerUserId);
+    const jobId = startServerSideMigration(scopeId, ownerUserId);
+    return { jobId, scopeId };
+  }),
+
+  /**
+   * Poll the status of a server-side migration job.
+   */
+  getServerSideMigrationStatus: protectedProcedure
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { getServerMigrationJob } = await import(
+        "../services/solar/serverSideMigration"
+      );
+      const job = getServerMigrationJob(input.jobId);
+      if (!job) return null;
+      return job;
+    }),
+
+  /**
+   * Return the currently-active server-side migration job for
+   * this scope, or null. Lets the client resume polling after a
+   * tab reload without needing to persist the jobId.
+   */
+  getActiveServerSideMigration: protectedProcedure.query(async () => {
+    const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
+    const { getActiveJobForScope } = await import(
+      "../services/solar/serverSideMigration"
+    );
+    const scopeId = await resolveSolarRecScopeId();
+    return getActiveJobForScope(scopeId);
+  }),
+
   getState: protectedProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
     const dbStorageKey = "state";

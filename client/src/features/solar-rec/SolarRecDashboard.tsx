@@ -127,6 +127,7 @@ import {
 import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEncoding";
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
 import ServerMigrationBanner from "@/solar-rec-dashboard/components/ServerMigrationBanner";
+import ServerSideMigrationPanel from "@/solar-rec-dashboard/components/ServerSideMigrationPanel";
 import ParityReportPanel from "@/solar-rec-dashboard/components/ParityReportPanel";
 import {
   COO_TARGET_STATUS,
@@ -5575,6 +5576,7 @@ const aiDataContext = useMemo(() => {
           </TabsList>
 
           <ServerMigrationBanner />
+          <ServerSideMigrationPanel />
           <ParityReportPanel />
 
           {visitedTabsRef.current.has("overview") && (
