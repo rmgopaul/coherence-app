@@ -3669,6 +3669,8 @@ export default function SolarRecDashboard() {
 
   // offlineDetailPage clamping useEffect — moved to OfflineMonitoringTab
 
+  // Phase E: depend on individual dataset slots instead of the entire
+  // `datasets` object to avoid recomputation when unrelated datasets change.
   const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
       const manifest: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
@@ -3689,7 +3691,19 @@ export default function SolarRecDashboard() {
       });
       return manifest;
     },
-    [datasets]
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
+    // listing individual slots instead of the whole `datasets` object so
+    // unchanged slots don't trigger recomputation.
+    [
+      datasets.solarApplications, datasets.abpReport, datasets.generationEntry,
+      datasets.accountSolarGeneration, datasets.contractedDate, datasets.convertedReads,
+      datasets.annualProductionEstimates, datasets.generatorDetails,
+      datasets.abpUtilityInvoiceRows, datasets.abpCsgSystemMapping,
+      datasets.abpQuickBooksRows, datasets.abpProjectApplicationRows,
+      datasets.abpPortalInvoiceMapRows, datasets.abpCsgPortalDatabaseRows,
+      datasets.abpIccReport2Rows, datasets.abpIccReport3Rows,
+      datasets.deliveryScheduleBase, datasets.transferHistory,
+    ]
   );
 
   const manifestOnlyRemoteStatePayload = useMemo(() => {
@@ -4784,8 +4798,16 @@ export default function SolarRecDashboard() {
       missingRequiredCount: missingCoreDatasets.length,
       syncStatus,
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- individual slots
   }, [
-    datasets,
+    datasets.solarApplications, datasets.abpReport, datasets.generationEntry,
+    datasets.accountSolarGeneration, datasets.contractedDate, datasets.convertedReads,
+    datasets.annualProductionEstimates, datasets.generatorDetails,
+    datasets.abpUtilityInvoiceRows, datasets.abpCsgSystemMapping,
+    datasets.abpQuickBooksRows, datasets.abpProjectApplicationRows,
+    datasets.abpPortalInvoiceMapRows, datasets.abpCsgPortalDatabaseRows,
+    datasets.abpIccReport2Rows, datasets.abpIccReport3Rows,
+    datasets.deliveryScheduleBase, datasets.transferHistory,
     missingCoreDatasets.length,
     remoteDashboardStateQuery.status,
     saveRemoteDashboardState.isPending,
