@@ -16,6 +16,10 @@ import {
   getActiveBatchForDataset,
 } from "../../db";
 import { storagePut } from "../../storage";
+import {
+  persistDatasetRows,
+  hasPersistence,
+} from "./datasetRowPersistence";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -302,6 +306,38 @@ export async function ingestDataset(
           message: err.message,
         }))
       );
+    }
+
+    // Persist rows into the typed dataset table BEFORE activating.
+    // If this fails, the batch stays in "processing" and the previous
+    // active batch remains the authoritative source for reads.
+    if (hasPersistence(datasetKey) && finalRows.length > 0) {
+      try {
+        const inserted = await persistDatasetRows(
+          scopeId,
+          batchId,
+          datasetKey,
+          finalRows
+        );
+        if (inserted !== finalRows.length) {
+          console.warn(
+            `[datasetIngestion] ${datasetKey}: inserted ${inserted}/${finalRows.length} rows`
+          );
+        }
+      } catch (persistErr) {
+        const message =
+          persistErr instanceof Error
+            ? persistErr.message
+            : "Row persistence failed";
+        await updateImportBatchStatus(batchId, "failed", { error: message });
+        return {
+          batchId,
+          status: "failed",
+          rowCount: 0,
+          dedupedCount: 0,
+          errors: [{ rowIndex: -1, message: `Row persistence: ${message}` }],
+        };
+      }
     }
 
     // Activate the batch
