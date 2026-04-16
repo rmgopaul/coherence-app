@@ -1566,4 +1566,32 @@ export const solarRecDashboardRouter = router({
       if (!text) throw new Error("Empty response from Claude.");
       return { answer: text };
     }),
+
+  // -- Server-side dataset architecture (Step 2) -------------------------
+
+  getImportStatus: protectedProcedure
+    .input(z.object({ batchId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { getImportBatch, getImportErrors } = await import("../db");
+      const batch = await getImportBatch(input.batchId);
+      if (!batch) return { found: false as const };
+
+      const errors =
+        batch.status === "failed" ? await getImportErrors(input.batchId) : [];
+
+      return {
+        found: true as const,
+        batchId: batch.id,
+        datasetKey: batch.datasetKey,
+        status: batch.status,
+        rowCount: batch.rowCount,
+        error: batch.error,
+        errors: errors.map((e) => ({
+          rowIndex: e.rowIndex,
+          message: e.message,
+        })),
+        createdAt: batch.createdAt,
+        completedAt: batch.completedAt,
+      };
+    }),
 });

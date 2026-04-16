@@ -164,6 +164,62 @@ async function startServer() {
   app.use("/api", oauthRouter);
   // Solar REC standalone auth + tRPC (must be before main tRPC)
   registerSolarRecAuth(app);
+
+  // Solar REC dataset upload endpoint (Step 2 of server-side migration).
+  // Accepts CSV text as the request body (Content-Type: text/csv or text/plain).
+  // NOT tRPC — Express route for direct file upload without base64 encoding.
+  app.post(
+    "/solar-rec/api/datasets/upload",
+    express.text({ limit: "50mb", type: ["text/csv", "text/plain"] }),
+    async (req, res) => {
+      try {
+        const solarRecUser = await authenticateSolarRecRequest(req);
+        if (!solarRecUser) {
+          res.status(401).json({ error: "Authentication required" });
+          return;
+        }
+
+        const datasetKey = req.query.datasetKey as string;
+        const fileName = (req.query.fileName as string) || "upload.csv";
+        const mode = (req.query.mode as string) === "append" ? "append" : "replace";
+
+        if (!datasetKey) {
+          res.status(400).json({ error: "datasetKey query parameter is required" });
+          return;
+        }
+
+        const csvText = typeof req.body === "string" ? req.body : "";
+        if (!csvText) {
+          res.status(400).json({ error: "Request body must contain CSV text" });
+          return;
+        }
+
+        const scopeId = await resolveSolarRecScopeId();
+        const ownerUserId = await resolveSolarRecOwnerUserId();
+
+        // Ensure scope exists
+        const { getOrCreateScope } = await import("../db");
+        await getOrCreateScope(scopeId, ownerUserId);
+
+        const { ingestDataset } = await import("../services/solar/datasetIngestion");
+        const result = await ingestDataset(
+          scopeId,
+          datasetKey,
+          csvText,
+          fileName,
+          mode as "replace" | "append",
+          ownerUserId
+        );
+
+        res.json(result);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Upload failed";
+        console.error("[Solar REC Upload]", message);
+        res.status(500).json({ error: message });
+      }
+    }
+  );
+
   // allowMethodOverride: true is REQUIRED because the client's httpLink
   // instances (client/src/main.tsx + client/src/solar-rec-main.tsx) all
   // use `methodOverride: "POST"`. Without this flag the tRPC server
