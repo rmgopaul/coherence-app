@@ -1594,4 +1594,65 @@ export const solarRecDashboardRouter = router({
         completedAt: batch.completedAt,
       };
     }),
+
+  // -- Server-side tab data endpoints (Step 5) ---------------------------
+
+  /**
+   * Fetch the pre-computed system snapshot for a scope.
+   *
+   * Returns SystemRecord[] equivalent data. If the snapshot is stale
+   * (input version hash mismatch), recomputes from normalized DB tables
+   * using the same buildSystems() function as the client.
+   *
+   * Tabs that consume this: Overview, Ownership, Offline, Size, Value,
+   * Change Ownership, and any tab that reads the `systems` prop.
+   */
+  getSystemSnapshot: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { getOrBuildSystemSnapshot } = await import(
+        "../services/solar/buildSystemSnapshot"
+      );
+
+      const result = await getOrBuildSystemSnapshot(input.scopeId);
+
+      return {
+        systems: result.systems,
+        fromCache: result.fromCache,
+        inputVersionHash: result.inputVersionHash,
+        systemCount: result.systems.length,
+      };
+    }),
+
+  /**
+   * Get the current input version hash for the system snapshot.
+   * Clients use this to check freshness without fetching the full payload.
+   */
+  getSystemSnapshotHash: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { computeSystemSnapshotHash } = await import(
+        "../services/solar/buildSystemSnapshot"
+      );
+      const hash = await computeSystemSnapshotHash(input.scopeId);
+      return { inputVersionHash: hash };
+    }),
+
+  /**
+   * Get the active dataset versions for a scope.
+   * Used by the client to show which datasets are loaded and their batch IDs.
+   */
+  getActiveDatasetVersions: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { getActiveDatasetVersions } = await import("../db");
+      const versions = await getActiveDatasetVersions(input.scopeId);
+      return {
+        versions: versions.map((v) => ({
+          datasetKey: v.datasetKey,
+          batchId: v.batchId,
+          activatedAt: v.activatedAt,
+        })),
+      };
+    }),
 });
