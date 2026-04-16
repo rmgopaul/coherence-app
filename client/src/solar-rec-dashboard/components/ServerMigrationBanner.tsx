@@ -14,18 +14,12 @@ import { Button } from "@/components/ui/button";
 import { CloudUpload, Check, Loader2, X, Database } from "lucide-react";
 import { useServerSideStorage } from "../hooks/useServerSideStorage";
 
-type Props = {
-  scopeId: string | null;
-};
-
-export default memo(function ServerMigrationBanner({ scopeId }: Props) {
+export default memo(function ServerMigrationBanner() {
   const {
-    enabled,
     needsMigration,
     startMigration,
     migrationProgress,
-    toggle,
-  } = useServerSideStorage(scopeId);
+  } = useServerSideStorage();
 
   const [dismissed, setDismissed] = useState(false);
 
@@ -73,7 +67,6 @@ export default memo(function ServerMigrationBanner({ scopeId }: Props) {
               variant="default"
               className="h-7 gap-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs"
               onClick={startMigration}
-              disabled={!scopeId}
             >
               <CloudUpload className="h-3.5 w-3.5" />
               Migrate Now

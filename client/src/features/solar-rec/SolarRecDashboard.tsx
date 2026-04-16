@@ -5573,7 +5573,7 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
 
-          <ServerMigrationBanner scopeId={scopeId} />
+          <ServerMigrationBanner />
 
           {visitedTabsRef.current.has("overview") && (
             <div style={{ display: activeTab === "overview" ? "contents" : "none" }}>

@@ -14,6 +14,7 @@ import {
   migrateIndexedDbToServer,
   type MigrationProgress,
 } from "../lib/migrateToServer";
+import { trpc } from "@/lib/trpc";
 
 const FEATURE_FLAG_KEY = "solarRec:serverSideStorage";
 
@@ -28,12 +29,14 @@ export function isServerSideStorageEnabled(): boolean {
 
 /**
  * Hook for managing server-side storage feature flag + migration.
+ * Fetches scopeId on demand when migration is triggered — no prop required.
  */
-export function useServerSideStorage(scopeId: string | null) {
+export function useServerSideStorage() {
   const [enabled, setEnabled] = useState(() => isServerSideStorageEnabled());
   const [hasLocalData, setHasLocalData] = useState(false);
   const [migrationProgress, setMigrationProgress] =
     useState<MigrationProgress | null>(null);
+  const trpcUtils = trpc.useUtils();
 
   // Check for IndexedDB data on mount
   useEffect(() => {
@@ -46,20 +49,33 @@ export function useServerSideStorage(scopeId: string | null) {
   }, []);
 
   const startMigration = useCallback(async () => {
-    if (!scopeId) return;
+    // Fetch scopeId on demand via imperative query fetch
+    let scopeId: string;
+    try {
+      const result = await trpcUtils.solarRecDashboard.getScopeId.fetch();
+      scopeId = result.scopeId;
+    } catch {
+      setMigrationProgress({
+        status: "error",
+        totalDatasets: 0,
+        completedDatasets: 0,
+        currentDataset: null,
+        errors: [{ datasetKey: "system", error: "Could not connect to server. Please try again." }],
+      });
+      return;
+    }
 
     const result = await migrateIndexedDbToServer(scopeId, (progress) => {
       setMigrationProgress({ ...progress });
     });
 
     if (result.status === "done" && result.errors.length === 0) {
-      // Migration successful — enable server-side storage
       toggle(true);
       setHasLocalData(false);
     }
 
     return result;
-  }, [scopeId, toggle]);
+  }, [trpcUtils, toggle]);
 
   return {
     /** Whether server-side storage is currently enabled */
