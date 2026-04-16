@@ -1472,6 +1472,10 @@ const monitoringRouter = t.router({
         lastRows: [] as Array<Record<string, string>>,
         sources: [] as Array<{ fileName: string; uploadedAt: string; rowCount: number }>,
         rawPayloadBytes: 0,
+        rawPayloadPreview: "",
+        topLevelKeys: [] as string[],
+        isSourceManifest: false,
+        manifestSourceCount: 0,
         latestBatch,
       };
     }
@@ -1482,11 +1486,26 @@ const monitoringRouter = t.router({
     let chunked = false;
     let chunkKeys: string[] = [];
     let combinedBytes = payloadRaw.length;
+    type ManifestSource = {
+      id: string;
+      fileName: string;
+      uploadedAt: string;
+      rowCount: number;
+      sizeBytes?: number;
+      storageKey: string;
+      chunkKeys?: string[];
+    };
+    let sourceManifest: { sources: ManifestSource[] } | null = null;
     try {
-      const maybePointer = JSON.parse(payloadRaw) as { _chunkedDataset?: unknown; chunkKeys?: unknown };
-      if (maybePointer && maybePointer._chunkedDataset === true && Array.isArray(maybePointer.chunkKeys)) {
+      const maybeWrapper = JSON.parse(payloadRaw) as {
+        _chunkedDataset?: unknown;
+        _rawSourcesV1?: unknown;
+        chunkKeys?: unknown;
+        sources?: unknown;
+      };
+      if (maybeWrapper && maybeWrapper._chunkedDataset === true && Array.isArray(maybeWrapper.chunkKeys)) {
         chunked = true;
-        chunkKeys = maybePointer.chunkKeys.filter((k): k is string => typeof k === "string");
+        chunkKeys = maybeWrapper.chunkKeys.filter((k): k is string => typeof k === "string");
         const parts: string[] = [];
         for (const chunkKey of chunkKeys) {
           const chunkPayload = await getSolarRecDashboardPayload(ownerUserId, `dataset:${chunkKey}`);
@@ -1494,9 +1513,106 @@ const monitoringRouter = t.router({
         }
         effectivePayload = parts.join("");
         combinedBytes = effectivePayload.length;
+      } else if (
+        maybeWrapper &&
+        maybeWrapper._rawSourcesV1 === true &&
+        Array.isArray(maybeWrapper.sources)
+      ) {
+        // Source-manifest format: main key is a pointer to individual source
+        // files stored under src_convertedReads_<id>_chunk_NNNN. Fetch each
+        // source's chunks, reassemble as CSV text, and count rows.
+        sourceManifest = {
+          sources: maybeWrapper.sources as ManifestSource[],
+        };
       }
     } catch {
       // Not a JSON pointer — assume it's the full dataset JSON below.
+    }
+
+    // If source-manifest format, walk all sources, fetch their chunks,
+    // parse each as CSV, and aggregate into a single row count + sample.
+    if (sourceManifest) {
+      const { parseCsvText } = await import("../routers/helpers");
+      const aggregatedRows: Array<Record<string, string>> = [];
+      const sourcesSummary: Array<{
+        fileName: string;
+        uploadedAt: string;
+        rowCount: number;
+      }> = [];
+      let totalSourceBytes = payloadRaw.length;
+      let lastUploadedAt: string | null = null;
+
+      for (const source of sourceManifest.sources) {
+        sourcesSummary.push({
+          fileName: source.fileName,
+          uploadedAt: source.uploadedAt,
+          rowCount: source.rowCount,
+        });
+        if (!lastUploadedAt || source.uploadedAt > lastUploadedAt) {
+          lastUploadedAt = source.uploadedAt;
+        }
+
+        // Fetch each chunk for this source and concatenate
+        const chunkKeyList = Array.isArray(source.chunkKeys) ? source.chunkKeys : [];
+        const parts: string[] = [];
+        for (const ck of chunkKeyList) {
+          const p = await getSolarRecDashboardPayload(ownerUserId, `dataset:${ck}`);
+          if (p) parts.push(p);
+        }
+        const sourcePayload = parts.join("");
+        totalSourceBytes += sourcePayload.length;
+
+        if (!sourcePayload) continue;
+        // Each source payload may itself be JSON-wrapped or raw CSV text.
+        // Try JSON first (utf8 encoding wraps with fileName metadata in some
+        // versions); fall back to treating it as CSV text directly.
+        let csvText = sourcePayload;
+        try {
+          const maybeJson = JSON.parse(sourcePayload);
+          if (maybeJson && typeof maybeJson === "object" && typeof maybeJson.csvText === "string") {
+            csvText = maybeJson.csvText;
+          } else if (typeof maybeJson === "string") {
+            csvText = maybeJson;
+          }
+        } catch {
+          // Not JSON — use as-is
+        }
+
+        try {
+          const parsed = parseCsvText(csvText);
+          aggregatedRows.push(...parsed.rows);
+        } catch {
+          // Ignore parse failures
+        }
+      }
+
+      const todayRowsFromManifest = aggregatedRows.filter(
+        (r) =>
+          r.read_date === todayLocal ||
+          r.read_date === todayIso ||
+          (typeof r.read_date === "string" && r.read_date.startsWith(todayIso))
+      );
+
+      return {
+        ownerUserId,
+        todayIso,
+        todayLocal,
+        exists: true,
+        chunked: false,
+        chunkKeys: [],
+        uploadedAt: lastUploadedAt,
+        totalRows: aggregatedRows.length,
+        todayRowCount: todayRowsFromManifest.length,
+        sampleRows: todayRowsFromManifest.slice(0, 10),
+        lastRows: aggregatedRows.slice(-5),
+        sources: sourcesSummary,
+        rawPayloadBytes: totalSourceBytes,
+        rawPayloadPreview: payloadRaw.slice(0, 400),
+        topLevelKeys: ["_rawSourcesV1", "sources"],
+        isSourceManifest: true,
+        manifestSourceCount: sourceManifest.sources.length,
+        latestBatch,
+      };
     }
 
     let parsed: {
@@ -1523,6 +1639,10 @@ const monitoringRouter = t.router({
         lastRows: [],
         sources: [],
         rawPayloadBytes: combinedBytes,
+        rawPayloadPreview: payloadRaw.slice(0, 400),
+        topLevelKeys: [] as string[],
+        isSourceManifest: false,
+        manifestSourceCount: 0,
         parseError: "Stored payload is not valid JSON",
         latestBatch,
       };
@@ -1565,6 +1685,8 @@ const monitoringRouter = t.router({
       rawPayloadBytes: combinedBytes,
       rawPayloadPreview,
       topLevelKeys,
+      isSourceManifest: false,
+      manifestSourceCount: 0,
       latestBatch,
     };
   }),

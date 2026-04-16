@@ -388,6 +388,14 @@ function DebugConvertedReadsDialog({
                     {data.chunked ? `yes (${data.chunkKeys.length} chunks)` : "no"}
                   </p>
                 </div>
+                <div>
+                  <p className="text-muted-foreground">Format</p>
+                  <p className="font-mono">
+                    {data.isSourceManifest
+                      ? `source-manifest (${data.manifestSourceCount})`
+                      : "plain"}
+                  </p>
+                </div>
               </div>
 
               {data.latestBatch && (
