@@ -81,38 +81,7 @@ function readRecord<T>(db: IDBDatabase, key: string): Promise<T | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Columnar → CsvRow[] reconstruction
-// ---------------------------------------------------------------------------
-
-function rowsFromColumnar(
-  headers: string[],
-  columnData: string[][],
-  rowCount: number
-): CsvRow[] {
-  const rows: CsvRow[] = new Array(rowCount);
-  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
-    const row: CsvRow = {};
-    for (let colIndex = 0; colIndex < headers.length; colIndex++) {
-      row[headers[colIndex]] = columnData[colIndex]?.[rowIndex] ?? "";
-    }
-    rows[rowIndex] = row;
-  }
-  return rows;
-}
-
-function deserializeRows(dataset: SerializedDataset): CsvRow[] {
-  if (dataset._v === 2 && dataset.columnData) {
-    return rowsFromColumnar(
-      dataset.headers,
-      dataset.columnData,
-      dataset.rowCount ?? dataset.columnData[0]?.length ?? 0
-    );
-  }
-  return dataset.rows ?? [];
-}
-
-// ---------------------------------------------------------------------------
-// CsvRow[] → CSV text
+// CSV building helpers (chunked)
 // ---------------------------------------------------------------------------
 
 function csvEscape(value: string): string {
@@ -125,90 +94,172 @@ function yieldToBrowser(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-/**
- * Build the CSV text directly from columnar storage, yielding to
- * the browser every YIELD_EVERY rows so the tab stays responsive.
- * Skips the intermediate CsvRow[] allocation — roughly halves peak
- * memory use for wide datasets.
- */
-async function columnarToCsvText(
-  headers: string[],
-  columnData: string[][],
-  rowCount: number
-): Promise<string> {
-  const YIELD_EVERY = 2000;
-  const parts: string[] = [headers.map(csvEscape).join(",")];
-  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
-    const cells: string[] = new Array(headers.length);
-    for (let colIndex = 0; colIndex < headers.length; colIndex++) {
-      cells[colIndex] = csvEscape(columnData[colIndex]?.[rowIndex] ?? "");
-    }
-    parts.push(cells.join(","));
-    if ((rowIndex + 1) % YIELD_EVERY === 0) {
-      await yieldToBrowser();
-    }
-  }
-  return parts.join("\n");
-}
-
-/**
- * Build the CSV text from an already-materialized CsvRow[] (v1 / legacy
- * format). Same yielding pattern as columnarToCsvText.
- */
-async function rowsToCsvTextAsync(
-  headers: string[],
-  rows: CsvRow[]
-): Promise<string> {
-  const YIELD_EVERY = 2000;
-  const parts: string[] = [headers.map(csvEscape).join(",")];
-  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
-    const row = rows[rowIndex];
-    parts.push(headers.map((h) => csvEscape(row[h] ?? "")).join(","));
-    if ((rowIndex + 1) % YIELD_EVERY === 0) {
-      await yieldToBrowser();
-    }
-  }
-  return parts.join("\n");
-}
-
 // ---------------------------------------------------------------------------
-// Upload to server
+// Upload to server — chunked
 // ---------------------------------------------------------------------------
 
-async function uploadDataset(
-  scopeId: string,
+/**
+ * Rows per chunk. 10k rows × ~300 cols = ~15-30MB of CSV text per
+ * chunk, safely under the 50MB express limit and small enough that
+ * Render's request timeout won't kill the parse+insert cycle.
+ */
+const ROWS_PER_CHUNK = 10_000;
+
+type ChunkIngestResult = {
+  batchId: string;
+  status: "processing" | "active" | "failed";
+  chunkRowCount: number;
+  totalRowCountSoFar: number | null;
+  errors: Array<{ rowIndex: number; message: string }>;
+};
+
+async function uploadOneChunk(
   datasetKey: string,
   csvText: string,
-  fileName: string
-): Promise<{ success: boolean; error?: string }> {
+  fileName: string,
+  batchId: string | null,
+  finalize: boolean
+): Promise<{ success: boolean; batchId?: string; error?: string }> {
+  const params = new URLSearchParams({
+    datasetKey,
+    fileName,
+    finalize: String(finalize),
+  });
+  if (batchId) params.set("batchId", batchId);
+
   try {
     const response = await fetch(
-      `/solar-rec/api/datasets/upload?datasetKey=${encodeURIComponent(datasetKey)}&fileName=${encodeURIComponent(fileName)}&mode=replace`,
+      `/solar-rec/api/datasets/upload-chunk?${params.toString()}`,
       {
         method: "POST",
         headers: { "Content-Type": "text/csv" },
         body: csvText,
-        credentials: "include", // send auth cookies
+        credentials: "include",
       }
     );
-
     if (!response.ok) {
       const errorBody = await response.text();
-      return { success: false, error: `HTTP ${response.status}: ${errorBody}` };
+      return {
+        success: false,
+        error: `HTTP ${response.status}: ${errorBody.slice(0, 200)}`,
+      };
     }
-
-    const result = await response.json();
+    const result: ChunkIngestResult = await response.json();
     if (result.status === "failed") {
-      return { success: false, error: result.errors?.[0]?.message ?? "Upload failed" };
+      return {
+        success: false,
+        batchId: result.batchId,
+        error: result.errors?.[0]?.message ?? "Chunk upload failed",
+      };
     }
-
-    return { success: true };
+    return { success: true, batchId: result.batchId };
   } catch (err) {
     return {
       success: false,
       error: err instanceof Error ? err.message : "Network error",
     };
   }
+}
+
+/**
+ * Stream a columnar dataset to the server in 10k-row chunks. Never
+ * materializes more than one chunk's worth of CSV text at a time
+ * in client memory.
+ */
+async function uploadColumnarDataset(
+  datasetKey: string,
+  headers: string[],
+  columnData: string[][],
+  rowCount: number,
+  fileName: string,
+  onChunkComplete: (chunkIndex: number, totalChunks: number) => void
+): Promise<{ success: boolean; error?: string }> {
+  const totalChunks = Math.max(1, Math.ceil(rowCount / ROWS_PER_CHUNK));
+  let batchId: string | null = null;
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const startRow = chunkIndex * ROWS_PER_CHUNK;
+    const endRow = Math.min(startRow + ROWS_PER_CHUNK, rowCount);
+    const isLast = chunkIndex === totalChunks - 1;
+
+    // Build only this chunk's CSV text.
+    const parts: string[] = [headers.map(csvEscape).join(",")];
+    for (let rowIndex = startRow; rowIndex < endRow; rowIndex++) {
+      const cells: string[] = new Array(headers.length);
+      for (let colIndex = 0; colIndex < headers.length; colIndex++) {
+        cells[colIndex] = csvEscape(columnData[colIndex]?.[rowIndex] ?? "");
+      }
+      parts.push(cells.join(","));
+      if ((rowIndex - startRow + 1) % 2000 === 0) {
+        await yieldToBrowser();
+      }
+    }
+    const csvText = parts.join("\n");
+
+    const result = await uploadOneChunk(
+      datasetKey,
+      csvText,
+      fileName,
+      batchId,
+      isLast
+    );
+    if (!result.success) {
+      return {
+        success: false,
+        error: `chunk ${chunkIndex + 1}/${totalChunks}: ${result.error}`,
+      };
+    }
+    if (result.batchId) batchId = result.batchId;
+    onChunkComplete(chunkIndex + 1, totalChunks);
+  }
+  return { success: true };
+}
+
+/**
+ * Same as uploadColumnarDataset but for v1 CsvRow[] format.
+ */
+async function uploadRowsDataset(
+  datasetKey: string,
+  headers: string[],
+  rows: CsvRow[],
+  fileName: string,
+  onChunkComplete: (chunkIndex: number, totalChunks: number) => void
+): Promise<{ success: boolean; error?: string }> {
+  const totalChunks = Math.max(1, Math.ceil(rows.length / ROWS_PER_CHUNK));
+  let batchId: string | null = null;
+
+  for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+    const startRow = chunkIndex * ROWS_PER_CHUNK;
+    const endRow = Math.min(startRow + ROWS_PER_CHUNK, rows.length);
+    const isLast = chunkIndex === totalChunks - 1;
+
+    const parts: string[] = [headers.map(csvEscape).join(",")];
+    for (let rowIndex = startRow; rowIndex < endRow; rowIndex++) {
+      const row = rows[rowIndex];
+      parts.push(headers.map((h) => csvEscape(row[h] ?? "")).join(","));
+      if ((rowIndex - startRow + 1) % 2000 === 0) {
+        await yieldToBrowser();
+      }
+    }
+    const csvText = parts.join("\n");
+
+    const result = await uploadOneChunk(
+      datasetKey,
+      csvText,
+      fileName,
+      batchId,
+      isLast
+    );
+    if (!result.success) {
+      return {
+        success: false,
+        error: `chunk ${chunkIndex + 1}/${totalChunks}: ${result.error}`,
+      };
+    }
+    if (result.batchId) batchId = result.batchId;
+    onChunkComplete(chunkIndex + 1, totalChunks);
+  }
+  return { success: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,10 +321,16 @@ export async function migrateIndexedDbToServer(
           continue; // Skip empty datasets
         }
 
-        // Build CSV text lazily with yields so the tab stays responsive.
-        // Prefer the direct columnar path — it skips the intermediate
-        // CsvRow[] allocation for v2 datasets.
-        let csvText: string;
+        const fileName = serialized.fileName || `${key}.csv`;
+
+        // Surface per-chunk progress in the currentDataset label so
+        // the UI shows something like "solarApplications (chunk 2/4)".
+        const reportChunk = (chunkIndex: number, totalChunks: number) => {
+          progress.currentDataset = `${key} (chunk ${chunkIndex}/${totalChunks})`;
+          onProgress({ ...progress });
+        };
+
+        let uploadResult: { success: boolean; error?: string };
         if (serialized._v === 2 && serialized.columnData) {
           const rowCount =
             serialized.rowCount ?? serialized.columnData[0]?.length ?? 0;
@@ -281,10 +338,13 @@ export async function migrateIndexedDbToServer(
             progress.completedDatasets++;
             continue;
           }
-          csvText = await columnarToCsvText(
+          uploadResult = await uploadColumnarDataset(
+            key,
             serialized.headers,
             serialized.columnData,
-            rowCount
+            rowCount,
+            fileName,
+            reportChunk
           );
         } else {
           const rows = serialized.rows ?? [];
@@ -292,16 +352,19 @@ export async function migrateIndexedDbToServer(
             progress.completedDatasets++;
             continue;
           }
-          csvText = await rowsToCsvTextAsync(serialized.headers, rows);
+          uploadResult = await uploadRowsDataset(
+            key,
+            serialized.headers,
+            rows,
+            fileName,
+            reportChunk
+          );
         }
 
-        const fileName = serialized.fileName || `${key}.csv`;
-
-        const result = await uploadDataset(scopeId, key, csvText, fileName);
-        if (!result.success) {
+        if (!uploadResult.success) {
           progress.errors.push({
             datasetKey: key,
-            error: result.error ?? "Unknown upload error",
+            error: uploadResult.error ?? "Unknown upload error",
           });
         }
       } catch (err) {
