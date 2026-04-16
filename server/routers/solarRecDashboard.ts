@@ -1655,4 +1655,27 @@ export const solarRecDashboardRouter = router({
         })),
       };
     }),
+
+  // -- Delivery Tracker (Step 6) -----------------------------------------
+
+  /**
+   * Fetch the pre-computed delivery tracker data for a scope.
+   *
+   * Returns DeliveryTrackerData equivalent. Depends on 2 datasets:
+   * deliveryScheduleBase + transferHistory. Independent version hash
+   * from the system snapshot.
+   */
+  getDeliverySnapshot: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { getOrBuildDeliverySnapshot } = await import(
+        "../services/solar/buildDeliverySnapshot"
+      );
+      const result = await getOrBuildDeliverySnapshot(input.scopeId);
+      return {
+        data: result.data,
+        fromCache: result.fromCache,
+        inputVersionHash: result.inputVersionHash,
+      };
+    }),
 });
