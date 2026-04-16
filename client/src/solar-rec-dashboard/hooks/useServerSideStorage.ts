@@ -49,18 +49,32 @@ export function useServerSideStorage() {
   }, []);
 
   const startMigration = useCallback(async () => {
+    // Set initial state SYNCHRONOUSLY so the UI updates immediately on click
+    setMigrationProgress({
+      status: "reading",
+      totalDatasets: 0,
+      completedDatasets: 0,
+      currentDataset: "Connecting to server...",
+      errors: [],
+    });
+
     // Fetch scopeId on demand via imperative query fetch
     let scopeId: string;
     try {
       const result = await trpcUtils.solarRecDashboard.getScopeId.fetch();
       scopeId = result.scopeId;
-    } catch {
+    } catch (err) {
       setMigrationProgress({
         status: "error",
         totalDatasets: 0,
         completedDatasets: 0,
         currentDataset: null,
-        errors: [{ datasetKey: "system", error: "Could not connect to server. Please try again." }],
+        errors: [{
+          datasetKey: "system",
+          error: err instanceof Error
+            ? `Could not connect to server: ${err.message}`
+            : "Could not connect to server. Please try again.",
+        }],
       });
       return;
     }

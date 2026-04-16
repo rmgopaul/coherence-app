@@ -27,6 +27,7 @@ export default memo(function ServerMigrationBanner() {
 
   const isRunning = migrationProgress?.status === "uploading" || migrationProgress?.status === "reading";
   const isDone = migrationProgress?.status === "done";
+  const isError = migrationProgress?.status === "error";
   const hasErrors = (migrationProgress?.errors.length ?? 0) > 0;
 
   return (
@@ -45,11 +46,17 @@ export default memo(function ServerMigrationBanner() {
                 Migration completed with {migrationProgress!.errors.length} error(s).
                 Some datasets may need to be re-uploaded.
               </span>
+            ) : isError ? (
+              <span className="font-medium text-red-800">
+                <X className="mr-1 inline h-4 w-4" />
+                {migrationProgress!.errors[0]?.error ?? "Migration failed."}
+              </span>
             ) : isRunning ? (
               <span>
                 <Loader2 className="mr-1 inline h-4 w-4 animate-spin" />
-                Migrating {migrationProgress!.currentDataset ?? "datasets"}...
-                ({migrationProgress!.completedDatasets}/{migrationProgress!.totalDatasets})
+                {migrationProgress!.totalDatasets === 0
+                  ? migrationProgress!.currentDataset ?? "Preparing migration..."
+                  : `Migrating ${migrationProgress!.currentDataset ?? "datasets"}... (${migrationProgress!.completedDatasets}/${migrationProgress!.totalDatasets})`}
               </span>
             ) : (
               <span>
@@ -69,7 +76,7 @@ export default memo(function ServerMigrationBanner() {
               onClick={startMigration}
             >
               <CloudUpload className="h-3.5 w-3.5" />
-              Migrate Now
+              {isError ? "Retry Migration" : "Migrate Now"}
             </Button>
           )}
           {!isRunning && (
