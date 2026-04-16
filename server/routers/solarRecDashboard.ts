@@ -46,13 +46,32 @@ import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
  *   (b) every user on the team sees the same converted reads regardless
  *       of who is currently logged in.
  */
-const TEAM_WIDE_DATASET_KEYS = new Set(["convertedReads"]);
+/**
+ * Check whether a dataset key is team-wide. Matches both the main dataset
+ * key (e.g. "convertedReads") AND any chunk/source sub-keys that the
+ * dashboard's _rawSourcesV1 source-manifest format stores alongside it
+ * (e.g. "src_convertedReads_mon_batch_solaredge_chunk_0000").
+ *
+ * Without this prefix check, the bridge writes chunks under the owner's
+ * userId but the dashboard reads them under ctx.user.id — mismatch means
+ * the chunks are invisible and the page crashes on load.
+ */
+const TEAM_WIDE_DATASET_KEY_PREFIXES = [
+  "convertedReads",
+  "src_convertedReads",
+];
+
+function isTeamWideDatasetKey(inputKey: string): boolean {
+  return TEAM_WIDE_DATASET_KEY_PREFIXES.some(
+    (prefix) => inputKey === prefix || inputKey.startsWith(`${prefix}_`)
+  );
+}
 
 async function resolveDatasetUserId(
   inputKey: string,
   fallbackUserId: number
 ): Promise<number> {
-  if (TEAM_WIDE_DATASET_KEYS.has(inputKey)) {
+  if (isTeamWideDatasetKey(inputKey)) {
     try {
       return await resolveSolarRecOwnerUserId();
     } catch {
