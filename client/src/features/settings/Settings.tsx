@@ -49,7 +49,8 @@ import {
   type SupplementBottleScanSummary,
   type SupplementBottleScanBatch,
 } from "./settings.types";
-import { toDateKeyLocal, parseOptionalNonNegativeNumber } from "./settings.helpers";
+import { parseOptionalNonNegativeNumber } from "./settings.helpers";
+import { toLocalDateKey } from "@/lib/helpers";
 
 export default function Settings() {
   const { user, loading } = useAuth();
@@ -75,7 +76,7 @@ export default function Settings() {
   const [marketCryptoSymbolsInput, setMarketCryptoSymbolsInput] = useState("");
   const [newHabitName, setNewHabitName] = useState("");
   const [newHabitColor, setNewHabitColor] = useState("slate");
-  const [habitHistoryDate, setHabitHistoryDate] = useState(() => toDateKeyLocal(new Date()));
+  const [habitHistoryDate, setHabitHistoryDate] = useState(() => toLocalDateKey());
   const [newSupplementName, setNewSupplementName] = useState("");
   const [newSupplementBrand, setNewSupplementBrand] = useState("");
   const [newSupplementDose, setNewSupplementDose] = useState("");
@@ -2434,7 +2435,7 @@ export default function Settings() {
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => setHabitHistoryDate(toDateKeyLocal(new Date()))}
+                        onClick={() => setHabitHistoryDate(toLocalDateKey())}
                       >
                         Today
                       </Button>

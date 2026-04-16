@@ -94,6 +94,18 @@ export function formatDateTime(iso: string | null | undefined): string {
   return date.toLocaleString("en-US");
 }
 
+/**
+ * Format a Date as a local-time `YYYY-MM-DD` string. Does NOT use UTC —
+ * uses the local timezone, so the resulting key matches what the user
+ * sees on their calendar that day.
+ */
+export function toLocalDateKey(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /** Format milliseconds to HH:MM:SS. */
 export function formatDuration(valueMs: number | null | undefined): string {
   if (valueMs === null || valueMs === undefined || !Number.isFinite(valueMs) || valueMs < 0) {

@@ -105,14 +105,13 @@ import {
 } from "./dashboard.constants";
 import {
   getWeatherLabel,
-  decodeHtmlEntities,
   toPlainText,
   formatCalendarEventLabel,
   normalizeEventText,
-  buildLocalDateKey,
   isSameLocalDay,
   isIgnoredStatusEvent,
 } from "./dashboard.helpers";
+import { toLocalDateKey } from "@/lib/helpers";
 
 function LiveClockValue() {
   const [currentTime, setCurrentTime] = useState(() => new Date());
@@ -189,7 +188,7 @@ export default function Dashboard() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const metricCaptureStartedRef = useRef(false);
   const lastSamsungSyncSeenRef = useRef<string | null>(null);
-  const todayKey = buildLocalDateKey();
+  const todayKey = toLocalDateKey();
   const trpcUtils = trpc.useUtils();
 
   const TRACKED_SECTIONS = useMemo(

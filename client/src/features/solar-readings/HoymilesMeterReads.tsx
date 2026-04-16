@@ -16,7 +16,6 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 import {
   parseCsv,
-  csvEscape,
   buildCsv,
   formatDateInput,
   chunkArray,
@@ -62,7 +61,6 @@ type BulkSnapshotRow = {
   profileStatusSummary?: string;
 };
 
-type CsvRow = Record<string, string>;
 
 function extractStationIdsFromCsv(text: string): string[] {
   const parsed = parseCsv(text);

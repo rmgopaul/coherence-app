@@ -16,7 +16,6 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 import {
   parseCsv,
-  csvEscape,
   buildCsv,
   formatDateInput,
   chunkArray,
@@ -103,7 +102,6 @@ type BulkSnapshotRow = {
   profileStatusSummary?: string;
 };
 
-type CsvRow = Record<string, string>;
 
 function normalizeDateOnly(date: Date): Date {
   const normalized = new Date(date);
