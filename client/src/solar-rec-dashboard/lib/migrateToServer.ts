@@ -120,12 +120,55 @@ function csvEscape(value: string): string {
   return value;
 }
 
-function rowsToCsvText(headers: string[], rows: CsvRow[]): string {
-  const headerLine = headers.map(csvEscape).join(",");
-  const bodyLines = rows.map((row) =>
-    headers.map((h) => csvEscape(row[h] ?? "")).join(",")
-  );
-  return [headerLine, ...bodyLines].join("\n");
+/** Yield to the browser so the tab stays responsive during big builds. */
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+/**
+ * Build the CSV text directly from columnar storage, yielding to
+ * the browser every YIELD_EVERY rows so the tab stays responsive.
+ * Skips the intermediate CsvRow[] allocation — roughly halves peak
+ * memory use for wide datasets.
+ */
+async function columnarToCsvText(
+  headers: string[],
+  columnData: string[][],
+  rowCount: number
+): Promise<string> {
+  const YIELD_EVERY = 2000;
+  const parts: string[] = [headers.map(csvEscape).join(",")];
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex++) {
+    const cells: string[] = new Array(headers.length);
+    for (let colIndex = 0; colIndex < headers.length; colIndex++) {
+      cells[colIndex] = csvEscape(columnData[colIndex]?.[rowIndex] ?? "");
+    }
+    parts.push(cells.join(","));
+    if ((rowIndex + 1) % YIELD_EVERY === 0) {
+      await yieldToBrowser();
+    }
+  }
+  return parts.join("\n");
+}
+
+/**
+ * Build the CSV text from an already-materialized CsvRow[] (v1 / legacy
+ * format). Same yielding pattern as columnarToCsvText.
+ */
+async function rowsToCsvTextAsync(
+  headers: string[],
+  rows: CsvRow[]
+): Promise<string> {
+  const YIELD_EVERY = 2000;
+  const parts: string[] = [headers.map(csvEscape).join(",")];
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    const row = rows[rowIndex];
+    parts.push(headers.map((h) => csvEscape(row[h] ?? "")).join(","));
+    if ((rowIndex + 1) % YIELD_EVERY === 0) {
+      await yieldToBrowser();
+    }
+  }
+  return parts.join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -227,13 +270,31 @@ export async function migrateIndexedDbToServer(
           continue; // Skip empty datasets
         }
 
-        const rows = deserializeRows(serialized);
-        if (rows.length === 0) {
-          progress.completedDatasets++;
-          continue;
+        // Build CSV text lazily with yields so the tab stays responsive.
+        // Prefer the direct columnar path — it skips the intermediate
+        // CsvRow[] allocation for v2 datasets.
+        let csvText: string;
+        if (serialized._v === 2 && serialized.columnData) {
+          const rowCount =
+            serialized.rowCount ?? serialized.columnData[0]?.length ?? 0;
+          if (rowCount === 0) {
+            progress.completedDatasets++;
+            continue;
+          }
+          csvText = await columnarToCsvText(
+            serialized.headers,
+            serialized.columnData,
+            rowCount
+          );
+        } else {
+          const rows = serialized.rows ?? [];
+          if (rows.length === 0) {
+            progress.completedDatasets++;
+            continue;
+          }
+          csvText = await rowsToCsvTextAsync(serialized.headers, rows);
         }
 
-        const csvText = rowsToCsvText(serialized.headers, rows);
         const fileName = serialized.fileName || `${key}.csv`;
 
         const result = await uploadDataset(scopeId, key, csvText, fileName);

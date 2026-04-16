@@ -170,7 +170,10 @@ async function startServer() {
   // NOT tRPC — Express route for direct file upload without base64 encoding.
   app.post(
     "/solar-rec/api/datasets/upload",
-    express.text({ limit: "50mb", type: ["text/csv", "text/plain"] }),
+    // 500MB covers the largest expected dataset (~300-col × 35k-row CSVs).
+    // Larger than that should use the chunked/async path described in the
+    // plan (not yet implemented).
+    express.text({ limit: "500mb", type: ["text/csv", "text/plain"] }),
     async (req, res) => {
       try {
         const solarRecUser = await authenticateSolarRecRequest(req);
