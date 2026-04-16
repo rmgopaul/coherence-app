@@ -714,8 +714,10 @@ async function mapWithBoundedConcurrency<TInput, TOutput>(
   return results;
 }
 
-/** Max concurrent tRPC mutations for remote dataset sync (read + write). */
-const REMOTE_SYNC_CONCURRENCY = 4;
+/** Max concurrent tRPC mutations for remote dataset WRITES (saves, chunk deletes). */
+const REMOTE_WRITE_CONCURRENCY = 4;
+/** Max concurrent tRPC mutations for remote dataset READS (hydration fetches). */
+const REMOTE_READ_CONCURRENCY = 12;
 
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3, initialDelayMs = 250): Promise<T> {
   let lastError: unknown = null;
@@ -2117,7 +2119,7 @@ export default function SolarRecDashboard() {
     const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
     await mapWithBoundedConcurrency(
       chunks.map((chunk, index) => ({ chunk, index })),
-      REMOTE_SYNC_CONCURRENCY,
+      REMOTE_WRITE_CONCURRENCY,
       ({ chunk, index }) =>
         withRetry(() =>
           saveRemoteDatasetRef.current.mutateAsync({
@@ -2142,7 +2144,7 @@ export default function SolarRecDashboard() {
   const clearRemotePayloadWithChunks = useCallback(async (key: string, chunkKeys: string[] | undefined) => {
     await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
     if (!Array.isArray(chunkKeys) || chunkKeys.length === 0) return;
-    await mapWithBoundedConcurrency(chunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+    await mapWithBoundedConcurrency(chunkKeys, REMOTE_WRITE_CONCURRENCY, (chunkKey) =>
       withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
     );
   }, []);
@@ -3847,7 +3849,7 @@ export default function SolarRecDashboard() {
           if (cancelled || chunkKeys.length === 0) return null;
           const responses = await mapWithBoundedConcurrency(
             chunkKeys,
-            REMOTE_SYNC_CONCURRENCY,
+            REMOTE_READ_CONCURRENCY,
             (chunkKey) =>
               withRetry(
                 () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
@@ -3943,7 +3945,7 @@ export default function SolarRecDashboard() {
               // "latest source" semantics match what the sync path wrote.
               const sourcePayloads = await mapWithBoundedConcurrency(
                 sourceManifest.sources,
-                REMOTE_SYNC_CONCURRENCY,
+                REMOTE_READ_CONCURRENCY,
                 async (source) => {
                   if (cancelled) return null;
                   const sourcePayload = await loadPayloadByKey(source.storageKey);
@@ -4042,7 +4044,7 @@ export default function SolarRecDashboard() {
           }
         };
 
-        await mapWithBoundedConcurrency(keys, REMOTE_SYNC_CONCURRENCY, (rawKey) => loadSingleDataset(rawKey));
+        await mapWithBoundedConcurrency(keys, REMOTE_READ_CONCURRENCY, (rawKey) => loadSingleDataset(rawKey));
 
         return { loadedDatasets, loadedSignatures, loadedChunkKeys, loadedSourceManifests };
       };
@@ -4112,7 +4114,7 @@ export default function SolarRecDashboard() {
               if (!cancelled && chunkKeys.length > 0) {
                 const chunkResponses = await mapWithBoundedConcurrency(
                   chunkKeys,
-                  REMOTE_SYNC_CONCURRENCY,
+                  REMOTE_READ_CONCURRENCY,
                   (chunkKey) =>
                     withRetry(
                       () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
@@ -4398,7 +4400,7 @@ export default function SolarRecDashboard() {
               // independent — fan them out.
               await mapWithBoundedConcurrency(
                 sourceManifest.sources,
-                REMOTE_SYNC_CONCURRENCY,
+                REMOTE_WRITE_CONCURRENCY,
                 (source) =>
                   clearRemotePayloadWithChunks(source.storageKey, source.chunkKeys).catch(() => {
                     // Best effort source cleanup.
@@ -4414,7 +4416,7 @@ export default function SolarRecDashboard() {
               // slots in parallel.
               await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload: "" }));
               if (previousChunkKeys.length > 0) {
-                await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+                await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_WRITE_CONCURRENCY, (chunkKey) =>
                   withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
                 );
               }
@@ -4533,7 +4535,7 @@ export default function SolarRecDashboard() {
               // chunks in parallel (all independent mutations).
               await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
               if (previousChunkKeys.length > 0) {
-                await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+                await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_WRITE_CONCURRENCY, (chunkKey) =>
                   withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
                 );
               }
@@ -4545,7 +4547,7 @@ export default function SolarRecDashboard() {
               const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(key, index));
               await mapWithBoundedConcurrency(
                 chunks.map((chunk, index) => ({ chunk, index })),
-                REMOTE_SYNC_CONCURRENCY,
+                REMOTE_WRITE_CONCURRENCY,
                 ({ chunk, index }) =>
                   withRetry(() =>
                     saveRemoteDatasetRef.current.mutateAsync({
@@ -4556,7 +4558,7 @@ export default function SolarRecDashboard() {
               );
               const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
               if (staleChunkKeys.length > 0) {
-                await mapWithBoundedConcurrency(staleChunkKeys, REMOTE_SYNC_CONCURRENCY, (staleChunkKey) =>
+                await mapWithBoundedConcurrency(staleChunkKeys, REMOTE_WRITE_CONCURRENCY, (staleChunkKey) =>
                   withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
                 );
               }
@@ -4643,7 +4645,7 @@ export default function SolarRecDashboard() {
               saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload })
             );
             if (previousChunkKeys.length > 0) {
-              await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+              await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_WRITE_CONCURRENCY, (chunkKey) =>
                 withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
               );
             }
@@ -4653,7 +4655,7 @@ export default function SolarRecDashboard() {
           const chunkKeys = chunks.map((_, index) => buildRemoteDatasetChunkKey(REMOTE_SNAPSHOT_LOGS_KEY, index));
           await mapWithBoundedConcurrency(
             chunks.map((chunk, index) => ({ chunk, index })),
-            REMOTE_SYNC_CONCURRENCY,
+            REMOTE_WRITE_CONCURRENCY,
             ({ chunk, index }) =>
               withRetry(() =>
                 saveRemoteDatasetRef.current.mutateAsync({
@@ -4664,7 +4666,7 @@ export default function SolarRecDashboard() {
           );
           const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
           if (staleChunkKeys.length > 0) {
-            await mapWithBoundedConcurrency(staleChunkKeys, REMOTE_SYNC_CONCURRENCY, (staleChunkKey) =>
+            await mapWithBoundedConcurrency(staleChunkKeys, REMOTE_WRITE_CONCURRENCY, (staleChunkKey) =>
               withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: staleChunkKey, payload: "" }))
             );
           }
@@ -4681,7 +4683,7 @@ export default function SolarRecDashboard() {
           try {
             await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: REMOTE_SNAPSHOT_LOGS_KEY, payload: "" }));
             if (previousChunkKeys.length > 0) {
-              await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_SYNC_CONCURRENCY, (chunkKey) =>
+              await mapWithBoundedConcurrency(previousChunkKeys, REMOTE_WRITE_CONCURRENCY, (chunkKey) =>
                 withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key: chunkKey, payload: "" }))
               );
             }
