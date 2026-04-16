@@ -17,6 +17,7 @@ import {
   registerSolarRecAuth,
   authenticateSolarRecRequest,
   resolveSolarRecOwnerUserId,
+  resolveSolarRecScopeId,
 } from "./solarRecAuth";
 import { solarRecAppRouter, createSolarRecContext } from "./solarRecRouter";
 import { getLocalStorageRoot, isStorageProxyConfigured, LOCAL_STORAGE_ROUTE_PREFIX } from "../storage";
@@ -84,9 +85,11 @@ async function createSolarRecMainContext(
   if (solarRecUser) {
     const now = new Date();
     const ownerUserId = await resolveSolarRecOwnerUserId();
+    const scopeId = await resolveSolarRecScopeId();
     return {
       req: opts.req,
       res: opts.res,
+      scopeId,
       user: {
         id: ownerUserId,
         openId: `solar-rec:${solarRecUser.id}`,

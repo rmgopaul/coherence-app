@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   authenticateSolarRecRequest,
   resolveSolarRecOwnerUserId,
+  resolveSolarRecScopeId,
   type SolarRecAuthenticatedUser,
 } from "./solarRecAuth";
 
@@ -17,6 +18,7 @@ type SolarRecContext = {
   res: CreateExpressContextOptions["res"];
   user: SolarRecAuthenticatedUser | null;
   userId: number;
+  scopeId: string;
 };
 
 export async function createSolarRecContext(
@@ -31,11 +33,14 @@ export async function createSolarRecContext(
     });
   }
 
+  const scopeId = await resolveSolarRecScopeId();
+
   return {
     req: opts.req,
     res: opts.res,
     user,
     userId: user.id,
+    scopeId,
   };
 }
 

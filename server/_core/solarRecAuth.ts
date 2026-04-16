@@ -219,6 +219,20 @@ const SOLAR_PROVIDER_HINTS = new Set([
 let resolvedOwnerUserIdCache: number | null = null;
 let resolvingOwnerUserIdPromise: Promise<number> | null = null;
 
+/**
+ * Resolve the default scope ID for the Solar REC dashboard.
+ *
+ * For now this is a 1:1 mapping from the owner user ID — single-scope
+ * model. The scope ID is a stable string that will be used as the
+ * tenancy key for all new normalized dataset tables. Using a dedicated
+ * scope ID (rather than raw userId) gives us a migration path to
+ * multi-scope without changing every query.
+ */
+export async function resolveSolarRecScopeId(): Promise<string> {
+  const ownerUserId = await resolveSolarRecOwnerUserId();
+  return `scope-user-${ownerUserId}`;
+}
+
 export async function resolveSolarRecOwnerUserId(): Promise<number> {
   const configured = getSolarRecOwnerUserId();
   if (process.env.SOLAR_REC_OWNER_USER_ID?.trim()) {
