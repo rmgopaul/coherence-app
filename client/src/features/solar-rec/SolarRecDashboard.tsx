@@ -1866,10 +1866,12 @@ export default function SolarRecDashboard() {
   const isContractsTabActive = activeTab === "contracts";
   const isAnnualReviewTabActive = activeTab === "annual-review";
   const isPerformanceEvalTabActive = activeTab === "performance-eval" || activeTab === "snapshot-log";
+  const isPerformanceRatioTabActive = activeTab === "performance-ratio";
   const isForecastTabActive = activeTab === "forecast";
   const isOverviewTabActive = activeTab === "overview";
   const isPipelineTabActive = activeTab === "app-pipeline";
   const isFinancialsTabActive = activeTab === "financials";
+  const isDeliveryTrackerTabActive = activeTab === "delivery-tracker";
   // Removed dead flags whose consumer memos moved out of the parent:
   // isTrendsTabActive, isAlertsTabActive, isComparisonsTabActive,
   // isDataQualityTabActive, isOfflineTabActive.
@@ -3323,24 +3325,24 @@ export default function SolarRecDashboard() {
     return mapping;
   }, [datasets.solarApplications]);
 
-  // Phase B optimization: tabs stay mounted, so this memo computes once
-  // and persists — no need to gate by active tab.
-  const annualProductionByTrackingId = useMemo(
-    () => buildAnnualProductionByTrackingId(datasets.annualProductionEstimates?.rows ?? []),
-    [datasets.annualProductionEstimates],
-  );
+  // Gate: only compute when perf-ratio or forecast tab is active.
+  // These tabs have heavy internal memos that process this data — computing
+  // eagerly caused browser crashes from cascading O(n²) operations.
+  const annualProductionByTrackingId = useMemo(() => {
+    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, AnnualProductionProfile>();
+    return buildAnnualProductionByTrackingId(datasets.annualProductionEstimates?.rows ?? []);
+  }, [datasets.annualProductionEstimates, isPerformanceRatioTabActive, isForecastTabActive]);
 
   // Shared between the Performance Ratio tab (via props) and Forecast tab
   // (directly in forecastProjections). Stays in the parent so both callers
   // share one computation when both tabs use the same dataset snapshot.
-  // Phase B optimization: tabs stay mounted — remove tab gate.
-  const generationBaselineByTrackingId = useMemo(
-    () => buildGenerationBaselineByTrackingId(
+  const generationBaselineByTrackingId = useMemo(() => {
+    if (!isPerformanceRatioTabActive && !isForecastTabActive) return new Map<string, GenerationBaseline>();
+    return buildGenerationBaselineByTrackingId(
       datasets.generationEntry?.rows ?? [],
       datasets.accountSolarGeneration?.rows ?? [],
-    ),
-    [datasets.accountSolarGeneration, datasets.generationEntry],
-  );
+    );
+  }, [datasets.accountSolarGeneration, datasets.generationEntry, isPerformanceRatioTabActive, isForecastTabActive]);
 
   // generatorDateOnlineByTrackingId, portalMonitoringCandidates, performanceRatioMatchIndexes,
   // convertedReadRows, performanceRatioResult, performanceRatioMonitoringOptions, filteredPerformanceRatioRows,
@@ -3527,8 +3529,8 @@ export default function SolarRecDashboard() {
     return lookup;
   }, [datasets.transferHistory]);
 
-  // Phase B optimization: tabs stay mounted — remove tab gate.
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
+    if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
     // Phase 1a: obligations come from deliveryScheduleBase exclusively.
     // Deliveries are always derived from transferDeliveryLookup (which
     // is itself derived from transferHistory). No more conditional
@@ -3579,7 +3581,7 @@ export default function SolarRecDashboard() {
         } satisfies PerformanceSourceRow;
       })
       .filter((row): row is PerformanceSourceRow => row !== null);
-  }, [datasets.deliveryScheduleBase, eligibleTrackingIds, systemsByTrackingId, transferDeliveryLookup]);
+  }, [datasets.deliveryScheduleBase, eligibleTrackingIds, isPerformanceEvalTabActive, isForecastTabActive, systemsByTrackingId, transferDeliveryLookup]);
 
   // performanceContractOptions, effectivePerformanceContractId,
   // performanceDeliveryYearOptions, defaultPerformanceDeliveryYearKey,
@@ -4858,13 +4860,13 @@ export default function SolarRecDashboard() {
 // The tracker now also surfaces `transfersMissingObligation` — distinct
 // tracking IDs that have transfers but no matching Schedule B PDF yet,
 // so the user can see exactly which systems still need scraping.
-// Phase B optimization: tabs stay mounted — remove tab gate.
-const deliveryTrackerData = useMemo(
-  () => buildDeliveryTrackerData({
+const deliveryTrackerData = useMemo(() => {
+  if (!isDeliveryTrackerTabActive) return EMPTY_DELIVERY_TRACKER_DATA;
+  return buildDeliveryTrackerData({
     scheduleRows: datasets.deliveryScheduleBase?.rows ?? [],
     transferRows: datasets.transferHistory?.rows ?? [],
-  }),
-  [datasets.deliveryScheduleBase, datasets.transferHistory],
+  });
+}, [isDeliveryTrackerTabActive, datasets.deliveryScheduleBase, datasets.transferHistory],
 );
 
 // ── Alerts ──────────────────────────────────────────────────────
