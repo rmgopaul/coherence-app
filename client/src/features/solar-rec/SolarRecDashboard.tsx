@@ -3097,8 +3097,31 @@ export default function SolarRecDashboard() {
       (systemsByTrackingId.get(trackingId) ?? []).forEach((system) => matchedSystems.set(system.key, system));
       (systemsByName.get(projectNameKey) ?? []).forEach((system) => matchedSystems.set(system.key, system));
 
-      const nonTerminatedSystems = Array.from(matchedSystems.values()).filter((system) => !system.isTerminated);
-      if (nonTerminatedSystems.length === 0) return;
+      const allMatched = Array.from(matchedSystems.values());
+      const nonTerminatedSystems = allMatched.filter((system) => !system.isTerminated);
+      if (nonTerminatedSystems.length === 0) {
+        const hasChangedOwnership = allMatched.some((system) => system.hasChangedOwnership);
+        if (hasChangedOwnership) {
+          const representative = allMatched[0];
+          const isReporting = allMatched.some((system) => system.isReporting);
+          const latestReportingDate = allMatched.reduce<Date | null>(
+            (latest, system) => maxDate(latest, system.latestReportingDate),
+            null
+          );
+          rows.push({
+            ...representative,
+            key: `coo:${dedupeKey}`,
+            latestReportingDate,
+            isReporting,
+            isTerminated: true,
+            isTransferred: false,
+            hasChangedOwnership: true,
+            changeOwnershipStatus: "Terminated",
+            ownershipStatus: isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting",
+          });
+        }
+        return;
+      }
 
       const hasChangedOwnership = nonTerminatedSystems.some((system) => system.hasChangedOwnership);
       if (!hasChangedOwnership) return;
