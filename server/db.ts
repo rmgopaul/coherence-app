@@ -28,3 +28,4 @@ export * from "./db/solarRec";
 export * from "./db/monitoring";
 export * from "./db/contractScans";
 export * from "./db/scheduleB";
+export * from "./db/solarRecDatasets";

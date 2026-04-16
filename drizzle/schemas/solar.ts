@@ -366,3 +366,110 @@ export const scheduleBImportCsgIds = mysqlTable(
     jobIdx: index("schedule_b_csg_ids_job_idx").on(table.jobId),
   })
 );
+
+// ---------------------------------------------------------------------------
+// Solar REC Server-Side Architecture — Foundational Tables
+// ---------------------------------------------------------------------------
+
+export const solarRecScopes = mysqlTable("solarRecScopes", {
+  id: varchar("id", { length: 64 }).primaryKey(),
+  name: varchar("name", { length: 255 }),
+  ownerUserId: int("ownerUserId").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export const solarRecImportBatches = mysqlTable(
+  "solarRecImportBatches",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    datasetKey: varchar("datasetKey", { length: 64 }).notNull(),
+    ingestSource: varchar("ingestSource", { length: 16 }).notNull(),
+    mergeStrategy: varchar("mergeStrategy", { length: 16 }).notNull(),
+    status: varchar("status", { length: 16 }).notNull(),
+    rowCount: int("rowCount"),
+    error: text("error"),
+    importedBy: int("importedBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    completedAt: timestamp("completedAt"),
+  },
+  (table) => ({
+    scopeDatasetStatusIdx: index("sr_import_batches_scope_ds_status_idx").on(
+      table.scopeId,
+      table.datasetKey,
+      table.status
+    ),
+  })
+);
+
+export const solarRecImportFiles = mysqlTable(
+  "solarRecImportFiles",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    fileName: varchar("fileName", { length: 255 }).notNull(),
+    storageKey: varchar("storageKey", { length: 512 }),
+    sizeBytes: int("sizeBytes"),
+    rowCount: int("rowCount"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_import_files_batch_idx").on(table.batchId),
+  })
+);
+
+export const solarRecImportErrors = mysqlTable(
+  "solarRecImportErrors",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    rowIndex: int("rowIndex"),
+    columnName: varchar("columnName", { length: 128 }),
+    errorType: varchar("errorType", { length: 64 }),
+    message: text("message"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_import_errors_batch_idx").on(table.batchId),
+  })
+);
+
+export const solarRecActiveDatasetVersions = mysqlTable(
+  "solarRecActiveDatasetVersions",
+  {
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    datasetKey: varchar("datasetKey", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    activatedAt: timestamp("activatedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: uniqueIndex("sr_active_versions_pk").on(table.scopeId, table.datasetKey),
+  })
+);
+
+export const solarRecComputeRuns = mysqlTable(
+  "solarRecComputeRuns",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    artifactType: varchar("artifactType", { length: 64 }).notNull(),
+    inputVersionHash: varchar("inputVersionHash", { length: 64 }).notNull(),
+    status: varchar("status", { length: 16 }).notNull(),
+    rowCount: int("rowCount"),
+    error: text("error"),
+    startedAt: timestamp("startedAt").defaultNow().notNull(),
+    completedAt: timestamp("completedAt"),
+  },
+  (table) => ({
+    claimIdx: uniqueIndex("sr_compute_runs_claim_idx").on(
+      table.scopeId,
+      table.artifactType,
+      table.inputVersionHash
+    ),
+    scopeArtifactStatusIdx: index("sr_compute_runs_scope_artifact_status_idx").on(
+      table.scopeId,
+      table.artifactType,
+      table.status
+    ),
+  })
+);
