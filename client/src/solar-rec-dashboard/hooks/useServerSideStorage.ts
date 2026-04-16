@@ -83,9 +83,34 @@ export function useServerSideStorage() {
       setMigrationProgress({ ...progress });
     });
 
-    if (result.status === "done" && result.errors.length === 0) {
+    // Only flip the feature flag if the migration actually uploaded
+    // something. A "done" status with totalDatasets=0 (empty manifest)
+    // or completedDatasets=0 is a silent no-op we must NOT treat as
+    // successful — otherwise the dashboard switches to an empty
+    // server-side store.
+    const uploadedAnything =
+      result.status === "done" &&
+      result.errors.length === 0 &&
+      result.totalDatasets > 0 &&
+      result.completedDatasets > 0;
+
+    if (uploadedAnything) {
       toggle(true);
       setHasLocalData(false);
+    } else if (result.status === "done" && result.errors.length === 0) {
+      // Explicit fall-through for the "no datasets in IDB" edge case —
+      // surface an error instead of silently flipping the flag.
+      setMigrationProgress({
+        ...result,
+        status: "error",
+        errors: [
+          {
+            datasetKey: "system",
+            error:
+              "No datasets were migrated. Your local IndexedDB may be empty or the data structure is unexpected. Please check the browser console.",
+          },
+        ],
+      });
     }
 
     return result;

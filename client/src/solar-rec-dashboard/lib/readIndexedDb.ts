@@ -124,13 +124,18 @@ export async function readIndexedDbDatasets(
     );
     if (!manifest?.keys?.length) return null;
 
+    // The dashboard stores each dataset under a prefixed key —
+    // see `dashboardDatasetStorageKey` in SolarRecDashboard.tsx.
+    // The manifest stores short names, but the object store uses
+    // the prefixed name. Without this, every read returns null.
     const result: Record<string, CsvRow[]> = {};
     for (const key of datasetKeys) {
       if (!manifest.keys.includes(key)) {
         result[key] = [];
         continue;
       }
-      const serialized = await readRecord<SerializedDataset>(db, key);
+      const storageKey = `dataset:${key}`;
+      const serialized = await readRecord<SerializedDataset>(db, storageKey);
       result[key] = serialized ? deserializeRows(serialized) : [];
     }
     return result;

@@ -209,14 +209,19 @@ export async function migrateIndexedDbToServer(
     progress.totalDatasets = datasetKeys.length;
     onProgress({ ...progress });
 
-    // 2. For each dataset, read from IndexedDB and upload
+    // 2. For each dataset, read from IndexedDB and upload.
+    // NOTE: The object store uses prefixed keys (`dataset:${key}`),
+    // but the manifest stores short names. Without the prefix every
+    // readRecord returns null and the migration silently completes
+    // with zero uploads.
     progress.status = "uploading";
     for (const key of datasetKeys) {
       progress.currentDataset = key;
       onProgress({ ...progress });
 
       try {
-        const serialized = await readRecord<SerializedDataset>(db, key);
+        const storageKey = `dataset:${key}`;
+        const serialized = await readRecord<SerializedDataset>(db, storageKey);
         if (!serialized || !serialized.headers?.length) {
           progress.completedDatasets++;
           continue; // Skip empty datasets
