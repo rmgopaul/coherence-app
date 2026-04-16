@@ -89,10 +89,13 @@ import {
   buildDeliveryTrackerData,
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
-import {
-  buildTransferDeliveryLookup,
-  getDeliveredLifetime,
-} from "@/solar-rec-dashboard/lib/transferHistoryDeliveries";
+import { buildSystems } from "@/solar-rec-dashboard/lib/buildSystems";
+import type {
+  SystemsWorkerRequest,
+  SystemsWorkerResponse,
+} from "@/workers/systems.worker";
+// transferHistoryDeliveries helpers are now used only by
+// @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
   AnnualContractVintageAggregate,
   AnnualProductionProfile,
@@ -148,7 +151,6 @@ import {
   MAX_LOCAL_LOG_STORAGE_CHARS,
   REMOTE_DATASET_KEY_MANIFEST,
   REMOTE_SNAPSHOT_LOGS_KEY,
-  GENERATION_BASELINE_VALUE_HEADERS,
   MAX_SINGLE_CSV_UPLOAD_BYTES,
   DASHBOARD_TAB_VALUES,
   DEFAULT_DASHBOARD_TAB,
@@ -158,27 +160,20 @@ import {
   resolvePart2ProjectIdentity,
   getCsvValueByHeader,
   resolveLastMeterReadRawValue,
-  resolveStateApplicationRefId,
   parseNumber,
   parseDate,
   parsePart2VerificationDate,
   isPart2VerifiedAbpRow,
   parseAbpAcSizeKw,
-  parseEnergyToWh,
   formatNumber,
   roundMoney,
   toPercentValue,
   isStaleUpload,
-  isTransferredContractType,
-  isTerminatedContractType,
   maxDate,
-  firstNonNull,
-  firstNonEmptyString,
   resolveContractValueAmount,
   resolveValueGapAmount,
   buildAnnualProductionByTrackingId,
   buildGenerationBaselineByTrackingId,
-  normalizeMonitoringPlatform,
   getMonitoringDetailsForSystem,
   createLogId,
   classifyMonitoringAccessType,
@@ -502,25 +497,9 @@ function getTabFromSearch(search: string): DashboardTabId | null {
 // resolveContractValueAmount, resolveValueGapAmount — moved to @/solar-rec-dashboard/lib/helpers
 
 
-function normalizeMonitoringMethod(accessTypeRaw: string, entryMethodRaw: string, selfReportRaw: string): string {
-  const accessType = clean(accessTypeRaw).toLowerCase();
-  if (accessType === "granted") return "Granted Access";
-  if (accessType === "pwd" || accessType === "password") return "Password";
-  if (accessType === "link") return "Link";
-  if (accessType === "self") return "Self-Report";
-  if (accessType.includes("grant")) return "Granted Access";
-  if (accessType.includes("pass")) return "Password";
-  if (accessType.includes("link")) return "Link";
-  if (accessType.includes("self")) return "Self-Report";
-
-  const selfReport = clean(selfReportRaw).toLowerCase();
-  if (["1", "true", "yes", "y"].includes(selfReport)) return "Self-Report";
-
-  const entryMethod = clean(entryMethodRaw);
-  if (entryMethod) return `Other - ${entryMethod}`;
-
-  return "Unknown";
-}
+// normalizeMonitoringMethod — inlined as a private helper inside
+// @/solar-rec-dashboard/lib/buildSystems (Phase 19). It was only
+// used by the `systems` builder and is now worker-side.
 
 // normalizeMonitoringPlatform — moved to @/solar-rec-dashboard/lib/helpers
 
@@ -807,20 +786,8 @@ function deserializeRemoteDatasetPayload(payload: string): CsvDataset | null {
   }
 }
 
-function sumSchedule(row: CsvRow, suffix: "_quantity_required" | "_quantity_delivered"): number | null {
-  let total = 0;
-  let hasData = false;
-
-  Object.entries(row).forEach(([header, value]) => {
-    if (!header.endsWith(suffix)) return;
-    const parsed = parseNumber(value);
-    if (parsed === null) return;
-    total += parsed;
-    hasData = true;
-  });
-
-  return hasData ? total : null;
-}
+// sumSchedule — inlined as a private helper inside
+// @/solar-rec-dashboard/lib/buildSystems (Phase 19).
 
 // ownershipBadgeClass, changeOwnershipBadgeClass — moved to @/solar-rec-dashboard/lib/helpers
 
@@ -2709,462 +2676,99 @@ export default function SolarRecDashboard() {
     return ids;
   }, [part2VerifiedAbpRows]);
 
-  const systems = useMemo<SystemRecord[]>(() => {
-    const abpReportRows = part2VerifiedAbpRows;
-    const eligibleAbpSystemIds = new Set<string>();
-    const eligibleAbpTrackingIds = new Set<string>();
-    const eligibleAbpNames = new Set<string>();
+  // Phase 19: systems is now built off the main thread in a Web
+  // Worker (see workers/systems.worker.ts + lib/buildSystems.ts).
+  // We keep a local state so downstream memos can still read a
+  // `SystemRecord[]`, but the expensive ~436-line reducer runs
+  // off-thread. The `systemsRequestIdRef` guards against stale
+  // responses: every time the effect posts a new request it bumps
+  // the id, and the onmessage handler ignores any response whose id
+  // doesn't match the latest. This means rapid dataset changes
+  // (e.g. Phase 16 hydration) never race.
+  const [systems, setSystems] = useState<SystemRecord[]>([]);
+  const systemsWorkerRef = useRef<Worker | null>(null);
+  const systemsRequestIdRef = useRef(0);
 
-    abpReportRows.forEach((row) => {
-      const systemId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      const name = clean(row.Project_Name) || clean(row.system_name);
-
-      if (systemId) eligibleAbpSystemIds.add(systemId);
-      if (trackingId) eligibleAbpTrackingIds.add(trackingId);
-      if (name) eligibleAbpNames.add(name.toLowerCase());
-    });
-
-    if (abpReportRows.length === 0) {
-      return [];
+  // Stable refs to the current dataset row slices so the worker
+  // effect can read them without listing `datasets` as a dep (which
+  // would re-fire on every unrelated dataset arrival during Phase 16
+  // progressive hydration).
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof Worker === "undefined") {
+      // Main-thread fallback: run the builder synchronously. This
+      // only hits in SSR or ancient browsers; prod always has Workers.
+      const result = buildSystems({
+        part2VerifiedAbpRows,
+        solarApplicationsRows: datasets.solarApplications?.rows ?? [],
+        contractedDateRows: datasets.contractedDate?.rows ?? [],
+        accountSolarGenerationRows: datasets.accountSolarGeneration?.rows ?? [],
+        generationEntryRows: datasets.generationEntry?.rows ?? [],
+        transferHistoryRows: datasets.transferHistory?.rows ?? [],
+        deliveryScheduleBaseRows: datasets.deliveryScheduleBase?.rows ?? [],
+      });
+      setSystems(result);
+      return;
     }
 
-    const contractedBySystemId = new Map<string, Date>();
-    (datasets.contractedDate?.rows ?? []).forEach((row) => {
-      const systemId = clean(row.id);
-      const contractedDate = parseDate(row.contracted);
-      if (!systemId || !contractedDate) return;
-      contractedBySystemId.set(systemId, contractedDate);
-    });
-
-    const builders = new Map<string, SystemBuilder>();
-    const keyByTracking = new Map<string, string>();
-    const keyBySystemId = new Map<string, string>();
-
-    const ensureBuilder = (trackingSystemRefId: string | null, systemId: string | null): SystemBuilder => {
-      const existingKeyByTracking = trackingSystemRefId ? keyByTracking.get(trackingSystemRefId) : undefined;
-      if (existingKeyByTracking) return builders.get(existingKeyByTracking)!;
-
-      const existingKeyBySystemId = systemId ? keyBySystemId.get(systemId) : undefined;
-      if (existingKeyBySystemId) {
-        if (trackingSystemRefId) keyByTracking.set(trackingSystemRefId, existingKeyBySystemId);
-        return builders.get(existingKeyBySystemId)!;
-      }
-
-      const key = trackingSystemRefId || (systemId ? `system-${systemId}` : `unknown-${builders.size + 1}`);
-      const created: SystemBuilder = {
-        key,
-        systemId: systemId || null,
-        stateApplicationRefId: null,
-        trackingSystemRefId: trackingSystemRefId || null,
-        primaryName: null,
-        names: new Set<string>(),
-        installedKwAc: null,
-        installedKwDc: null,
-        recPrice: null,
-        totalContractAmount: null,
-        annualRecs: null,
-        recsOnContract: null,
-        recsDeliveredQty: null,
-        scheduleRequired: null,
-        scheduleDelivered: null,
-        latestGenerationDate: null,
-        latestGenerationReadDate: null,
-        latestGenerationReadWh: null,
-        lastRecDeliveredGenerationDate: null,
-        contractedDate: null,
-        contractType: null,
-        zillowStatus: null,
-        zillowSoldDate: null,
-        transferSeen: false,
-        statusText: "",
-        monitoringType: null,
-        monitoringPlatform: null,
-        installerName: null,
-        part2VerificationDate: null,
-      };
-
-      builders.set(key, created);
-      if (trackingSystemRefId) keyByTracking.set(trackingSystemRefId, key);
-      if (systemId) keyBySystemId.set(systemId, key);
-      return created;
-    };
-
-    const updateLatestGenerationRead = (builder: SystemBuilder, candidateDate: Date | null, candidateWh: number | null) => {
-      if (!candidateDate || candidateWh === null) return;
-      const existingTime = builder.latestGenerationReadDate?.getTime() ?? Number.NEGATIVE_INFINITY;
-      const candidateTime = candidateDate.getTime();
-      if (candidateTime > existingTime || (candidateTime === existingTime && builder.latestGenerationReadWh === null)) {
-        builder.latestGenerationReadDate = candidateDate;
-        builder.latestGenerationReadWh = candidateWh;
-      }
-    };
-
-    (datasets.solarApplications?.rows ?? []).forEach((row) => {
-      const systemId = clean(row.system_id) || clean(row.Application_ID) || null;
-      const stateApplicationRefId = resolveStateApplicationRefId(row);
-      const trackingSystemRefId =
-        clean(row.tracking_system_ref_id) ||
-        clean(row.reporting_entity_ref_id) ||
-        clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) ||
-        null;
-      const builder = ensureBuilder(trackingSystemRefId, systemId);
-
-      if (systemId) builder.systemId = systemId;
-      if (stateApplicationRefId) builder.stateApplicationRefId = stateApplicationRefId;
-      if (trackingSystemRefId) builder.trackingSystemRefId = trackingSystemRefId;
-
-      const systemName = clean(row.system_name) || clean(row.Project_Name);
-      if (systemName) {
-        builder.names.add(systemName);
-        if (!builder.primaryName) builder.primaryName = systemName;
-      }
-
-      const installed = firstNonNull(
-        parseNumber(row.installed_system_size_kw_ac),
-        parseNumber(row.planned_system_size_kw_ac),
-        parseNumber(row["financialDetail.contract_kw_ac"]),
-        parseNumber(row.Inverter_Size_kW_AC_Part_2),
-        parseNumber(row.Inverter_Size_kW_AC_Part_1)
+    if (!systemsWorkerRef.current) {
+      systemsWorkerRef.current = new Worker(
+        new URL("../../workers/systems.worker.ts", import.meta.url),
+        { type: "module" },
       );
-      if (installed !== null) builder.installedKwAc = installed;
-
-      const installedDc = firstNonNull(
-        parseNumber(row.installed_system_size_kw_dc),
-        parseNumber(row.planned_system_size_kw_dc),
-        parseNumber(row["financialDetail.contract_kw_dc"]),
-        parseNumber(row.Inverter_Size_kW_DC_Part_2),
-        parseNumber(row.Inverter_Size_kW_DC_Part_1)
-      );
-      if (installedDc !== null) builder.installedKwDc = installedDc;
-
-      const part2DateRaw = clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      const part2Date = parsePart2VerificationDate(part2DateRaw);
-      if (part2Date && !builder.part2VerificationDate) builder.part2VerificationDate = part2Date;
-
-      const recPrice = parseNumber(row.rec_price);
-      if (recPrice !== null) builder.recPrice = recPrice;
-
-      const totalContractAmount = parseNumber(row.total_contract_amount);
-      if (totalContractAmount !== null) builder.totalContractAmount = totalContractAmount;
-
-      const annualRecs = parseNumber(row.annual_recs);
-      if (annualRecs !== null) builder.annualRecs = annualRecs;
-
-      const recsOnContract = parseNumber(row.recs_on_contract);
-      if (recsOnContract !== null) builder.recsOnContract = recsOnContract;
-
-      const recsDeliveredQuantity = parseNumber(row.recs_delivered_quantity);
-      if (recsDeliveredQuantity !== null) builder.recsDeliveredQty = recsDeliveredQuantity;
-
-      if (builder.recsOnContract === null) {
-        builder.recsOnContract = firstNonNull(
-          parseNumber(row["_15_Year_REC_Estimate_MWh_PVWatts_Part_2"]),
-          parseNumber(row["_15_Year_REC_Estimate_MWh_Custom_Part_2"]),
-          parseNumber(row["_15_Year_REC_Estimate_MWh_Calculated_Part_1"]),
-          parseNumber(row["_20_Year_REC_Estimate_MWh_PVWatts_Part_2"]),
-          parseNumber(row["_20_Year_REC_Estimate_MWh_Custom_Part_2"]),
-          parseNumber(row["_20_Year_REC_Estimate_MWh_Calculated_Part_1"])
-        );
-      }
-
-      builder.lastRecDeliveredGenerationDate = maxDate(
-        builder.lastRecDeliveredGenerationDate,
-        parseDate(row.last_rec_delivered_generation_date)
-      );
-
-      builder.contractedDate = maxDate(
-        builder.contractedDate,
-        contractedBySystemId.get(systemId ?? "") ??
-          parseDate(row.contract_execution_date) ??
-          parseDate(row.contract_start_date) ??
-          parseDate(row.Part_1_Submission_Date) ??
-          parseDate(row.Part_1_Original_Submission_Date)
-      );
-
-      const contractType = clean(row.contract_type);
-      if (contractType) {
-        builder.contractType = contractType;
-        if (isTransferredContractType(contractType)) {
-          builder.transferSeen = true;
-        }
-      }
-
-      const zillowStatus = clean(row["zillowData.status"]) || clean(row.Zillow_Status);
-      if (zillowStatus) builder.zillowStatus = zillowStatus;
-
-      builder.monitoringType = normalizeMonitoringMethod(
-        row.online_monitoring_access_type,
-        row.online_monitoring_entry_method,
-        row.online_monitoring_self_report
-      );
-      builder.monitoringPlatform = normalizeMonitoringPlatform(
-        row.online_monitoring,
-        row.online_monitoring_website_api_link,
-        row.online_monitoring_notes
-      );
-
-      const installerName = firstNonEmptyString(
-        clean(row["partnerCompany.name"]),
-        clean(row.installer_company_name),
-        clean(row.installer_name),
-        clean(row.system_installer),
-        clean(row["lastInstallerUpdatedBy.name"])
-      );
-      if (installerName) builder.installerName = installerName;
-
-      builder.zillowSoldDate = maxDate(
-        builder.zillowSoldDate,
-        parseDate(row["zillowData.last_price_action_date"]) ??
-          parseDate(row.zillow_last_price_action_date) ??
-          parseDate(row["zillowData.updated_at"])
-      );
-
-      const zillowEvent = clean(row["zillowData.last_price_action_event"]).toLowerCase();
-      if (zillowEvent.includes("sold")) {
-        builder.zillowStatus = builder.zillowStatus || "Sold";
-      }
-
-      const statusParts = [
-        clean(row.contract_status),
-        clean(row.contract_type),
-        clean(row.internal_status),
-        clean(row["project.status"]),
-        clean(row.tracking_system_status),
-        clean(row.Part_1_Status),
-        clean(row.Part_2_Status),
-        clean(row.Batch_Status),
-      ].filter(Boolean);
-      if (statusParts.length > 0) builder.statusText = statusParts.join(" | ");
-    });
-
-    // Set Part II verification date from ABP report rows onto matching builders.
-    // The ABP report has Part_2_App_Verification_Date which solarApplications may not.
-    abpReportRows.forEach((row) => {
-      const systemId = clean(row.Application_ID) || clean(row.system_id);
-      const trackingId = clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) || clean(row.tracking_system_ref_id);
-      if (!systemId && !trackingId) return;
-
-      const part2DateRaw = clean(row.Part_2_App_Verification_Date) || clean(row.part_2_app_verification_date);
-      const part2Date = parsePart2VerificationDate(part2DateRaw);
-      if (!part2Date) return;
-
-      // Find matching builder by systemId or trackingId
-      const key = (trackingId ? keyByTracking.get(trackingId) : undefined) ??
-        (systemId ? keyBySystemId.get(systemId) : undefined);
-      if (!key) return;
-      const builder = builders.get(key);
-      if (builder && !builder.part2VerificationDate) {
-        builder.part2VerificationDate = part2Date;
-      }
-    });
-
-    // Phase 1a: obligations come exclusively from deliveryScheduleBase
-    // (Schedule B scrape output). Deliveries come exclusively from
-    // transferHistory, aggregated lifetime-total per tracking ID via
-    // the shared buildTransferDeliveryLookup helper.
-    const scheduleSourceRows = datasets.deliveryScheduleBase?.rows ?? [];
-    const transferLookup = buildTransferDeliveryLookup(datasets.transferHistory?.rows ?? []);
-
-    scheduleSourceRows.forEach((row) => {
-      const trackingSystemRefId = clean(row.tracking_system_ref_id) || null;
-      if (!trackingSystemRefId) return;
-      const builder = ensureBuilder(trackingSystemRefId, null);
-
-      const systemName = clean(row.system_name);
-      if (systemName) {
-        builder.names.add(systemName);
-        if (!builder.primaryName) builder.primaryName = systemName;
-      }
-
-      const required = sumSchedule(row, "_quantity_required");
-      if (required !== null) builder.scheduleRequired = required;
-
-      // Delivered is always transferHistory-derived. No more fallback
-      // to the (now-deleted) year{N}_quantity_delivered column on RDS.
-      builder.scheduleDelivered = getDeliveredLifetime(transferLookup, trackingSystemRefId);
-    });
-
-    (datasets.accountSolarGeneration?.rows ?? []).forEach((row) => {
-      const trackingSystemRefId = clean(row["GATS Gen ID"]) || null;
-      if (!trackingSystemRefId) return;
-      const builder = ensureBuilder(trackingSystemRefId, null);
-
-      const systemName = clean(row["Facility Name"]);
-      if (systemName) {
-        builder.names.add(systemName);
-        if (!builder.primaryName) builder.primaryName = systemName;
-      }
-
-      const monthOfGeneration = parseDate(row["Month of Generation"]);
-      builder.latestGenerationDate = maxDate(builder.latestGenerationDate, monthOfGeneration);
-
-      const latestMeterReadWh = parseEnergyToWh(resolveLastMeterReadRawValue(row), "Last Meter Read (kWh)", "kwh");
-      const latestMeterReadDate = parseDate(row["Last Meter Read Date"]) ?? monthOfGeneration;
-      updateLatestGenerationRead(builder, latestMeterReadDate, latestMeterReadWh);
-    });
-
-    (datasets.generationEntry?.rows ?? []).forEach((row) => {
-      const trackingSystemRefId = clean(row["Unit ID"]) || null;
-      if (!trackingSystemRefId) return;
-      const builder = ensureBuilder(trackingSystemRefId, null);
-
-      const systemName = clean(row["Facility Name"]);
-      if (systemName) {
-        builder.names.add(systemName);
-        if (!builder.primaryName) builder.primaryName = systemName;
-      }
-
-      const lastMonthOfGen = parseDate(row["Last Month of Gen"]);
-      builder.latestGenerationDate = maxDate(builder.latestGenerationDate, lastMonthOfGen);
-
-      let latestReadWh: number | null = null;
-      for (const header of GENERATION_BASELINE_VALUE_HEADERS) {
-        latestReadWh = parseEnergyToWh(row[header], header, "kwh");
-        if (latestReadWh !== null) break;
-      }
-      const latestReadDate =
-        parseDate(row["Last Meter Read Date"]) ??
-        parseDate(row["Effective Date"]) ??
-        parseDate(row["Month of Generation"]) ??
-        lastMonthOfGen;
-      updateLatestGenerationRead(builder, latestReadDate, latestReadWh);
-    });
-
-    const threshold = new Date();
-    // Reporting is month-based, so use the first day of the month three months back.
-    threshold.setHours(0, 0, 0, 0);
-    threshold.setDate(1);
-    threshold.setMonth(threshold.getMonth() - 3);
-
-    return Array.from(builders.values())
-      .map((builder) => {
-        const latestReportingDate = maxDate(builder.latestGenerationDate, builder.lastRecDeliveredGenerationDate);
-        const isReporting = latestReportingDate ? latestReportingDate >= threshold : false;
-
-        const sizeBucket: SizeBucket =
-          builder.installedKwAc === null
-            ? "Unknown"
-            : builder.installedKwAc <= 10
-              ? "<=10 kW AC"
-              : ">10 kW AC";
-
-        const contractedRecs = firstNonNull(builder.scheduleRequired, builder.recsOnContract, builder.annualRecs);
-        const deliveredRecs = firstNonNull(builder.scheduleDelivered, builder.recsDeliveredQty);
-
-        const contractedValue =
-          builder.recPrice !== null && contractedRecs !== null ? builder.recPrice * contractedRecs : null;
-        const deliveredValue =
-          builder.recPrice !== null && deliveredRecs !== null ? builder.recPrice * deliveredRecs : null;
-        const valueGap =
-          contractedValue !== null && deliveredValue !== null ? contractedValue - deliveredValue : null;
-        const latestReportingKwh =
-          builder.latestGenerationReadWh !== null ? Math.round((builder.latestGenerationReadWh / 1_000) * 1_000) / 1_000 : null;
-
-        const isContractTransferred = isTransferredContractType(builder.contractType);
-        const isContractTerminated = isTerminatedContractType(builder.contractType);
-        const isTerminated = isContractTerminated;
-        const zillowStatusNormalized = clean(builder.zillowStatus).toLowerCase();
-        const isZillowSold = zillowStatusNormalized.includes("sold");
-        const hasZillowConfirmedOwnershipChange =
-          isZillowSold &&
-          !!builder.zillowSoldDate &&
-          !!builder.contractedDate &&
-          builder.zillowSoldDate > builder.contractedDate;
-        const hasChangedOwnership = isContractTransferred || isContractTerminated || hasZillowConfirmedOwnershipChange;
-
-        let ownershipStatus: OwnershipStatus;
-        if (isTerminated) {
-          ownershipStatus = isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting";
-        } else if (builder.transferSeen || isContractTransferred) {
-          ownershipStatus = isReporting ? "Transferred and Reporting" : "Transferred and Not Reporting";
+      systemsWorkerRef.current.onmessage = (event: MessageEvent<SystemsWorkerResponse>) => {
+        const message = event.data;
+        // Stale response — another request has already been posted
+        // that supersedes this one.
+        if (message.id !== systemsRequestIdRef.current) return;
+        if (message.ok) {
+          setSystems(message.systems);
         } else {
-          ownershipStatus = isReporting ? "Not Transferred and Reporting" : "Not Transferred and Not Reporting";
+          // Keep whatever the previous `systems` value was — empty
+          // array on first error is still correct (downstream memos
+          // handle empty input), and we don't want to flash a blank
+          // UI on transient failures.
+          console.error("[systems worker] build failed:", message.error);
         }
+      };
+      systemsWorkerRef.current.onerror = (event) => {
+        console.error("[systems worker] crashed:", event.message);
+        systemsWorkerRef.current?.terminate();
+        systemsWorkerRef.current = null;
+      };
+    }
 
-        let changeOwnershipStatus: ChangeOwnershipStatus | null = null;
-        if (hasChangedOwnership) {
-          if (isContractTransferred) {
-            changeOwnershipStatus = isReporting ? "Transferred and Reporting" : "Transferred and Not Reporting";
-          } else if (isContractTerminated) {
-            changeOwnershipStatus = isReporting ? "Terminated and Reporting" : "Terminated and Not Reporting";
-          } else {
-            changeOwnershipStatus = isReporting
-              ? "Change of Ownership - Not Transferred and Reporting"
-              : "Change of Ownership - Not Transferred and Not Reporting";
-          }
-        }
-
-        const fallbackName = builder.names.values().next().value;
-        const systemName = builder.primaryName || fallbackName || builder.trackingSystemRefId || builder.key;
-
-        return {
-          key: builder.key,
-          systemId: builder.systemId,
-          stateApplicationRefId: builder.stateApplicationRefId,
-          trackingSystemRefId: builder.trackingSystemRefId,
-          systemName,
-          installedKwAc: builder.installedKwAc,
-          installedKwDc: builder.installedKwDc,
-          sizeBucket,
-          recPrice: builder.recPrice,
-          totalContractAmount: builder.totalContractAmount,
-          contractedRecs,
-          deliveredRecs,
-          contractedValue,
-          deliveredValue,
-          valueGap,
-          latestReportingDate,
-          latestReportingKwh,
-          isReporting,
-          isTerminated,
-          isTransferred: builder.transferSeen,
-          ownershipStatus,
-          hasChangedOwnership,
-          changeOwnershipStatus,
-          contractStatusText: builder.statusText || "N/A",
-          contractType: builder.contractType,
-          zillowStatus: builder.zillowStatus,
-          zillowSoldDate: builder.zillowSoldDate,
-          contractedDate: builder.contractedDate,
-          monitoringType: builder.monitoringType || "Unknown",
-          monitoringPlatform: builder.monitoringPlatform || "Unknown",
-          installerName: builder.installerName || "Unknown",
-          part2VerificationDate: builder.part2VerificationDate,
-        } satisfies SystemRecord;
-      })
-      .filter((system) => {
-        const bySystemId = system.systemId ? eligibleAbpSystemIds.has(system.systemId) : false;
-        const byTrackingId = system.trackingSystemRefId
-          ? eligibleAbpTrackingIds.has(system.trackingSystemRefId)
-          : false;
-        const byName = eligibleAbpNames.has(system.systemName.toLowerCase());
-        if (system.systemId || system.trackingSystemRefId) {
-          return bySystemId || byTrackingId;
-        }
-        return byName;
-      })
-      .sort((a, b) => a.systemName.localeCompare(b.systemName));
-    // Phase 17a: narrow deps to ONLY the datasets this memo actually
-    // reads (grep'd from the body). Before this fix, adding the
-    // `datasets` bag to the dep array meant every progressive-hydration
-    // `setDatasets` call from Phase 16 re-fired the entire 436-line
-    // `systems` rebuild — 15 full rebuilds on cold hydrate instead of
-    // ~6. Same principle applies to every other memo that used to
-    // depend on the full `datasets` object: list only the slots you
-    // actually read so unrelated dataset arrivals don't invalidate
-    // you.
+    const requestId = ++systemsRequestIdRef.current;
+    const request: SystemsWorkerRequest = {
+      id: requestId,
+      input: {
+        part2VerifiedAbpRows,
+        solarApplicationsRows: datasets.solarApplications?.rows ?? [],
+        contractedDateRows: datasets.contractedDate?.rows ?? [],
+        accountSolarGenerationRows: datasets.accountSolarGeneration?.rows ?? [],
+        generationEntryRows: datasets.generationEntry?.rows ?? [],
+        transferHistoryRows: datasets.transferHistory?.rows ?? [],
+        deliveryScheduleBaseRows: datasets.deliveryScheduleBase?.rows ?? [],
+      },
+    };
+    systemsWorkerRef.current.postMessage(request);
   }, [
-    datasets.abpReport,
+    part2VerifiedAbpRows,
     datasets.solarApplications,
     datasets.contractedDate,
-    datasets.generatorDetails,
     datasets.accountSolarGeneration,
     datasets.generationEntry,
     datasets.transferHistory,
     datasets.deliveryScheduleBase,
-    part2VerifiedAbpRows,
   ]);
+
+  // Terminate the worker on unmount so it doesn't leak.
+  useEffect(() => {
+    return () => {
+      systemsWorkerRef.current?.terminate();
+      systemsWorkerRef.current = null;
+    };
+  }, []);
+
 
   const summary = useMemo(() => {
     const eligiblePart2ApplicationIds = new Set<string>();
