@@ -3173,14 +3173,13 @@ export default function SolarRecDashboard() {
       .filter((system) => system.isReporting)
       .reduce((sum, system) => sum + resolveContractValueAmount(system), 0);
     const contractedValueNotReporting = contractedValueTotal - contractedValueReporting;
-    const counts = CHANGE_OWNERSHIP_ORDER.map((status) => ({
-      status,
-      count: changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length,
-      percent: toPercentValue(
-        changeOwnershipRows.filter((system) => system.changeOwnershipStatus === status).length,
-        total
-      ),
-    }));
+    const counts = CHANGE_OWNERSHIP_ORDER.map((status) => {
+      const count =
+        status === "Terminated"
+          ? changeOwnershipRows.filter((s) => s.changeOwnershipStatus?.startsWith("Terminated")).length
+          : changeOwnershipRows.filter((s) => s.changeOwnershipStatus === status).length;
+      return { status, count, percent: toPercentValue(count, total) };
+    });
     return {
       total,
       reporting,

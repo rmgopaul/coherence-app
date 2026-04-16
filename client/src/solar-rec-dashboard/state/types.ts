@@ -66,6 +66,7 @@ export type OwnershipStatus =
 export type ChangeOwnershipStatus =
   | "Transferred and Reporting"
   | "Transferred and Not Reporting"
+  | "Terminated"
   | "Terminated and Reporting"
   | "Terminated and Not Reporting"
   | "Change of Ownership - Not Transferred and Reporting"

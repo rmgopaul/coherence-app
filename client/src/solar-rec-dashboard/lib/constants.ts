@@ -207,8 +207,7 @@ export const OWNERSHIP_ORDER: OwnershipStatus[] = [
 export const CHANGE_OWNERSHIP_ORDER: ChangeOwnershipStatus[] = [
   "Transferred and Reporting",
   "Transferred and Not Reporting",
-  "Terminated and Reporting",
-  "Terminated and Not Reporting",
+  "Terminated",
   "Change of Ownership - Not Transferred and Reporting",
   "Change of Ownership - Not Transferred and Not Reporting",
 ];
