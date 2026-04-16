@@ -47,24 +47,21 @@ import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
  *       of who is currently logged in.
  */
 /**
- * Check whether a dataset key is team-wide. Matches both the main dataset
- * key (e.g. "convertedReads") AND any chunk/source sub-keys that the
- * dashboard's _rawSourcesV1 source-manifest format stores alongside it
- * (e.g. "src_convertedReads_mon_batch_solaredge_chunk_0000").
+ * Check whether a dataset key is team-wide. Matches:
+ *   - "convertedReads" — the main manifest key
+ *   - "src_convertedReads_mon_batch_*" — the monitoring bridge's source
+ *     chunks (stable IDs like mon_batch_solaredge, mon_batch_hoymiles)
  *
- * Without this prefix check, the bridge writes chunks under the owner's
- * userId but the dashboard reads them under ctx.user.id — mismatch means
- * the chunks are invisible and the page crashes on load.
+ * Does NOT match user-uploaded source chunks like
+ * "src_convertedReads_mo0rczoydl24xs0j_chunk_0000" — those are stored
+ * under ctx.user.id by the dashboard's auto-sync and must stay per-user
+ * for backward compatibility with chunks written before the team-wide fix.
  */
-const TEAM_WIDE_DATASET_KEY_PREFIXES = [
-  "convertedReads",
-  "src_convertedReads",
-];
-
 function isTeamWideDatasetKey(inputKey: string): boolean {
-  return TEAM_WIDE_DATASET_KEY_PREFIXES.some(
-    (prefix) => inputKey === prefix || inputKey.startsWith(`${prefix}_`)
-  );
+  if (inputKey === "convertedReads") return true;
+  // Bridge source chunk keys start with "src_convertedReads_mon_batch_"
+  if (inputKey.startsWith("src_convertedReads_mon_batch_")) return true;
+  return false;
 }
 
 async function resolveDatasetUserId(
