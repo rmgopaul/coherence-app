@@ -194,6 +194,19 @@ export const solarRecDashboardRouter = router({
    *
    * Returns a DatasetMigrationStatus so the client can log failures.
    */
+  /**
+   * Kick off (or attach to an existing) background sync job for
+   * one core dataset. Returns immediately with a jobId — the ingest
+   * runs on the event loop and the client polls
+   * `getCoreDatasetSyncStatus({ jobId })` until it reaches a
+   * terminal state.
+   *
+   * Single-flight: if there's already a pending or running job for
+   * (scope, datasetKey) the existing jobId is returned, so
+   * duplicate save calls are a no-op instead of launching
+   * overlapping ingests that would strand each other's processing
+   * batches.
+   */
   syncCoreDatasetFromStorage: protectedProcedure
     .input(z.object({ datasetKey: z.string().min(1) }))
     .mutation(async ({ input }) => {
@@ -203,45 +216,63 @@ export const solarRecDashboardRouter = router({
       const { syncOneCoreDatasetFromStorage } = await import(
         "../services/solar/serverSideMigration"
       );
+      const { startSyncJob } = await import(
+        "../services/solar/coreDatasetSyncJobs"
+      );
       const scopeId = await resolveSolarRecScopeId();
       const ownerUserId = await resolveSolarRecOwnerUserId();
       await getOrCreateScope(scopeId, ownerUserId);
-      return syncOneCoreDatasetFromStorage(
-        scopeId,
-        input.datasetKey,
-        ownerUserId
+      const jobId = startSyncJob(scopeId, input.datasetKey, () =>
+        syncOneCoreDatasetFromStorage(scopeId, input.datasetKey, ownerUserId)
       );
+      return { jobId, state: "pending" as const };
     }),
 
   /**
-   * Stub for the async-job polling endpoint the client is wired for
-   * (pollCoreDatasetSyncJob in SolarRecDashboard.tsx). The current
-   * sync flow runs the ingest inside the request-response cycle of
-   * `syncCoreDatasetFromStorage`, so by the time the client has a
-   * jobId the result is already known. This stub exists so the
-   * client's polling code typechecks; it returns `state: "done"`
-   * immediately.
-   *
-   * TODO: wire this to a real in-memory or DB-backed job registry
-   * once `syncCoreDatasetFromStorage` is refactored to fire the
-   * ingest in the background and return a jobId immediately. Then
-   * the client's fire-and-forget + 502-on-timeout pattern goes
-   * away — the HTTP request returns in ~10ms, and the client
-   * polls until the ingest is done.
+   * Poll the status of a previously-started sync job. State
+   * machine: pending → running → (done | failed). Terminal states
+   * persist for up to 30 min so a slow poller doesn't miss the
+   * transition.
    */
   getCoreDatasetSyncStatus: protectedProcedure
     .input(z.object({ jobId: z.string().min(1) }))
-    .query(
-      async (): Promise<{
-        state: "pending" | "running" | "done" | "failed";
-        error: string | null;
-      }> => {
+    .query(async ({ input }) => {
+      const { getSyncJob } = await import(
+        "../services/solar/coreDatasetSyncJobs"
+      );
+      const job = getSyncJob(input.jobId);
+      if (!job) {
         return {
-          state: "done",
+          state: "unknown" as const,
           error: null,
         };
       }
-    ),
+      return {
+        state: job.state,
+        error: job.error,
+      };
+    }),
+
+  /**
+   * Return every in-flight sync job for the current scope. Called
+   * by the client on mount so a tab reload during a running sync
+   * resumes polling instead of losing track of the background
+   * work.
+   */
+  getActiveCoreDatasetSyncJobs: protectedProcedure.query(async () => {
+    const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
+    const { listActiveJobsForScope } = await import(
+      "../services/solar/coreDatasetSyncJobs"
+    );
+    const scopeId = await resolveSolarRecScopeId();
+    const jobs = listActiveJobsForScope(scopeId);
+    return jobs.map((job) => ({
+      jobId: job.jobId,
+      datasetKey: job.datasetKey,
+      state: job.state,
+      startedAt: job.startedAt,
+    }));
+  }),
 
   getState: protectedProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;

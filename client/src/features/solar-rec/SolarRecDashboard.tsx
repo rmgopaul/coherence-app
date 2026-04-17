@@ -1890,40 +1890,88 @@ export default function SolarRecDashboard() {
   );
 
   /**
-   * Fire-and-forget trigger. Called after a successful cloud sync of
-   * a core dataset; the server re-reads the payload from
-   * solarRecDashboardStorage and rebuilds the srDs* table. Errors
-   * are logged to the console but don't surface to the user — the
-   * old srDs data stays active until a successful sync lands.
+   * Fire-and-forget trigger for a core-dataset srDs sync. Starts
+   * a background job on the server (returning a jobId immediately)
+   * and polls for completion in the background. On terminal
+   * success, invalidates every tRPC query downstream of srDs*.
    *
-   * On success, invalidates the tRPC queries whose results depend
-   * on the new srDs batch (system snapshot, transfer delivery
-   * lookup, active dataset versions, snapshot hash). Without this
-   * invalidation React Query would keep serving its cached pre-
-   * upload result until some unrelated refetch happened, and the
-   * dashboard would render stale data even though the server
-   * cache correctly invalidated itself via the new batch's
-   * inputVersionHash change.
+   * Server-side contract:
+   *   - syncCoreDatasetFromStorage returns { jobId, state:"pending" }
+   *     immediately. The ingest runs on the Node event loop; no
+   *     single HTTP request spans it, so Render's ~100s proxy
+   *     timeout no longer matters.
+   *   - getCoreDatasetSyncStatus({ jobId }) returns the current
+   *     state: pending → running → (done | failed | unknown).
+   *
+   * Single-flight is enforced server-side: repeated saves for the
+   * same (scope, datasetKey) return the same jobId and launch one
+   * ingest.
+   *
+   * The invalidation list is inlined rather than going through the
+   * invalidateServerDerivedSolarData helper so this callback can
+   * live above that helper's declaration without a TDZ.
    */
   const triggerCoreDatasetSrDsSync = useCallback(
     (key: string) => {
       if (!CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) return;
-      void syncCoreDatasetToSrDsRef.current
-        .mutateAsync({ datasetKey: key })
-        .then(async (result) => {
-          if (result.state === "failed") {
+
+      void (async () => {
+        let jobId: string;
+        try {
+          const startResult = await syncCoreDatasetToSrDsRef.current.mutateAsync(
+            { datasetKey: key }
+          );
+          jobId = startResult.jobId;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[solar-rec] srDs sync for ${key} failed to start:`,
+            err
+          );
+          return;
+        }
+
+        activeCoreDatasetSyncJobRef.current[key as DatasetKey] = jobId;
+
+        const deadlineMs = Date.now() + 10 * 60 * 1000; // 10-min cap
+        const POLL_INTERVAL_MS = 2000;
+
+        while (Date.now() < deadlineMs) {
+          // Skip if a newer job for this key has since started —
+          // the later trigger's polling loop owns the invalidation.
+          if (activeCoreDatasetSyncJobRef.current[key as DatasetKey] !== jobId) {
+            return;
+          }
+
+          const status = await trpcUtils.solarRecDashboard.getCoreDatasetSyncStatus
+            .fetch({ jobId })
+            .catch(() => null);
+
+          if (!status || status.state === "pending" || status.state === "running") {
+            await new Promise<void>((resolve) =>
+              window.setTimeout(resolve, POLL_INTERVAL_MS)
+            );
+            continue;
+          }
+
+          if (activeCoreDatasetSyncJobRef.current[key as DatasetKey] === jobId) {
+            delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
+          }
+
+          if (status.state === "failed") {
             // eslint-disable-next-line no-console
             console.warn(
               `[solar-rec] srDs sync for ${key} failed:`,
-              result.error
+              status.error
             );
             return;
           }
-          // Success (state === "done" or "skipped"): refresh every
-          // tRPC query that reads srDs* downstream. Silently
-          // inline the invalidation rather than going through the
-          // helper hoist so this callback can live above the
-          // helper definition without a TDZ.
+
+          // state === "done" | "unknown" — invalidate downstream
+          // queries. "unknown" means the job state was pruned
+          // (e.g. after a server restart); we still invalidate
+          // because the underlying batch may have activated
+          // before the restart.
           const sid = scopeIdRef.current;
           if (!sid) return;
           await Promise.all([
@@ -1932,11 +1980,17 @@ export default function SolarRecDashboard() {
             trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
             trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
           ]);
-        })
-        .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn(`[solar-rec] srDs sync for ${key} threw:`, err);
-        });
+          return;
+        }
+
+        if (activeCoreDatasetSyncJobRef.current[key as DatasetKey] === jobId) {
+          delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
+        }
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[solar-rec] srDs sync for ${key} polling timed out after 10min`
+        );
+      })();
     },
     [CORE_DATASET_KEYS_FOR_SNAPSHOT, trpcUtils]
   );
@@ -2234,15 +2288,19 @@ export default function SolarRecDashboard() {
           delete activeCoreDatasetSyncJobRef.current[key];
         }
 
-        if (status.state === "done") {
-          await invalidateServerDerivedSolarData();
-          return;
-        }
-
         if (status.state === "failed") {
           // eslint-disable-next-line no-console
           console.warn(`[solar-rec] srDs sync for ${key} failed:`, status.error);
+          return;
         }
+
+        // "done" | "unknown" — both trigger a refresh of
+        // downstream queries. "unknown" means the job's in-memory
+        // state was pruned (e.g. after a server restart); we
+        // still invalidate because a batch may have activated
+        // before the restart and the client would otherwise keep
+        // serving its stale cache forever.
+        await invalidateServerDerivedSolarData();
         return;
       }
 
@@ -2254,6 +2312,34 @@ export default function SolarRecDashboard() {
     },
     [invalidateServerDerivedSolarData, trpcUtils]
   );
+
+  // Resume polling for any background sync job that was already
+  // in flight when the tab mounted (e.g. the user reloaded during
+  // a long ingest). Without this, the server keeps running the
+  // job to completion but the client loses track of it and
+  // downstream tRPC queries stay stale until the next unrelated
+  // invalidation.
+  useEffect(() => {
+    if (!scopeId) return;
+    let cancelled = false;
+    void (async () => {
+      const active = await trpcUtils.solarRecDashboard.getActiveCoreDatasetSyncJobs
+        .fetch()
+        .catch(() => null);
+      if (cancelled || !active) return;
+      for (const job of active) {
+        if (!isDatasetKey(job.datasetKey)) continue;
+        if (activeCoreDatasetSyncJobRef.current[job.datasetKey] === job.jobId) {
+          continue;
+        }
+        activeCoreDatasetSyncJobRef.current[job.datasetKey] = job.jobId;
+        void pollCoreDatasetSyncJob(job.datasetKey, job.jobId);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [scopeId, trpcUtils, pollCoreDatasetSyncJob]);
 
   const uploadRemoteChunkPayload = useCallback(async (key: string, payload: string) => {
     await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
