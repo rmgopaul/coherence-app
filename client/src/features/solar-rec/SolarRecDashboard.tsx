@@ -126,8 +126,6 @@ import {
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEncoding";
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
-import ServerMigrationBanner from "@/solar-rec-dashboard/components/ServerMigrationBanner";
-import ServerSideMigrationPanel from "@/solar-rec-dashboard/components/ServerSideMigrationPanel";
 import ParityReportPanel from "@/solar-rec-dashboard/components/ParityReportPanel";
 import {
   COO_TARGET_STATUS,
@@ -5625,8 +5623,6 @@ const aiDataContext = useMemo(() => {
             <TabsTrigger className="h-8 px-2 text-xs md:text-sm" value="delivery-tracker">Delivery Tracker</TabsTrigger>
           </TabsList>
 
-          <ServerMigrationBanner />
-          <ServerSideMigrationPanel />
           <ParityReportPanel />
 
           {visitedTabsRef.current.has("overview") && (
