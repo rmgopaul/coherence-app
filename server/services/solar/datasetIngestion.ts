@@ -19,7 +19,10 @@ import { storagePut } from "../../storage";
 import {
   persistDatasetRows,
   hasPersistence,
+  appendRowExists,
+  cloneDatasetBatchRows,
 } from "./datasetRowPersistence";
+import { mapWithConcurrency } from "../core/concurrency";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -179,6 +182,56 @@ function deduplicateRows(
   };
 }
 
+const APPEND_EXISTS_CHECK_CONCURRENCY = 16;
+
+async function filterAppendRows(
+  scopeId: string,
+  batchId: string | null,
+  datasetKey: string,
+  newRows: Record<string, string>[],
+  keyFields: string[]
+): Promise<{ rows: Record<string, string>[]; dedupedCount: number }> {
+  const uniqueUploadRows: Record<string, string>[] = [];
+  const seenUploadKeys = new Set<string>();
+  let dedupedCount = 0;
+
+  for (const row of newRows) {
+    const key = buildRowKey(row, keyFields);
+    if (!key) {
+      uniqueUploadRows.push(row);
+      continue;
+    }
+    if (seenUploadKeys.has(key)) {
+      dedupedCount += 1;
+      continue;
+    }
+    seenUploadKeys.add(key);
+    uniqueUploadRows.push(row);
+  }
+
+  if (!batchId) {
+    return { rows: uniqueUploadRows, dedupedCount };
+  }
+
+  const existenceChecks = await mapWithConcurrency(
+    uniqueUploadRows,
+    APPEND_EXISTS_CHECK_CONCURRENCY,
+    async (row) => ({
+      row,
+      exists: await appendRowExists(scopeId, batchId, datasetKey, row),
+    })
+  );
+
+  const rows = existenceChecks
+    .filter((entry) => {
+      if (entry.exists) dedupedCount += 1;
+      return !entry.exists;
+    })
+    .map((entry) => entry.row);
+
+  return { rows, dedupedCount };
+}
+
 // ---------------------------------------------------------------------------
 // Main ingestion function
 // ---------------------------------------------------------------------------
@@ -274,21 +327,44 @@ export async function ingestDataset(
     }
 
     // Handle append vs replace
-    let finalRows = parsed.rows;
+    let rowsToPersist = parsed.rows;
     let dedupedCount = 0;
+    let totalRowCount = parsed.rows.length;
 
     if (
       mode === "append" &&
       definition.multiFileAppend &&
       definition.rowKeyFields
     ) {
-      // Load existing active batch rows
       const activeBatch = await getActiveBatchForDataset(scopeId, datasetKey);
       if (activeBatch) {
-        // TODO: In Step 3, load existing rows from the normalized dataset table.
-        // For now, we store the merged rows as a new batch without dedup
-        // against existing data (dedup will be added when dataset tables exist).
-        // This is a valid intermediate state — the batch contains only this upload's rows.
+        const clonedRowCount = await cloneDatasetBatchRows(
+          scopeId,
+          activeBatch.id,
+          batchId,
+          datasetKey
+        );
+        const filtered = await filterAppendRows(
+          scopeId,
+          batchId,
+          datasetKey,
+          parsed.rows,
+          definition.rowKeyFields
+        );
+        rowsToPersist = filtered.rows;
+        dedupedCount = filtered.dedupedCount;
+        totalRowCount = clonedRowCount + rowsToPersist.length;
+      } else {
+        const filtered = await filterAppendRows(
+          scopeId,
+          null,
+          datasetKey,
+          parsed.rows,
+          definition.rowKeyFields
+        );
+        rowsToPersist = filtered.rows;
+        dedupedCount = filtered.dedupedCount;
+        totalRowCount = rowsToPersist.length;
       }
     }
 
@@ -311,17 +387,17 @@ export async function ingestDataset(
     // Persist rows into the typed dataset table BEFORE activating.
     // If this fails, the batch stays in "processing" and the previous
     // active batch remains the authoritative source for reads.
-    if (hasPersistence(datasetKey) && finalRows.length > 0) {
+    if (hasPersistence(datasetKey) && rowsToPersist.length > 0) {
       try {
         const inserted = await persistDatasetRows(
           scopeId,
           batchId,
           datasetKey,
-          finalRows
+          rowsToPersist
         );
-        if (inserted !== finalRows.length) {
+        if (inserted !== rowsToPersist.length) {
           console.warn(
-            `[datasetIngestion] ${datasetKey}: inserted ${inserted}/${finalRows.length} rows`
+            `[datasetIngestion] ${datasetKey}: inserted ${inserted}/${rowsToPersist.length} rows`
           );
         }
       } catch (persistErr) {
@@ -343,14 +419,14 @@ export async function ingestDataset(
     // Activate the batch
     await activateDatasetVersion(scopeId, datasetKey, batchId);
     await updateImportBatchStatus(batchId, "active", {
-      rowCount: finalRows.length,
+      rowCount: totalRowCount,
       completedAt: new Date(),
     });
 
     return {
       batchId,
       status: "active",
-      rowCount: finalRows.length,
+      rowCount: totalRowCount,
       dedupedCount,
       errors: validationErrors,
     };
@@ -378,4 +454,3 @@ export function getDatasetDefinition(
 }
 
 export { CORE_DATASET_DEFINITIONS };
-

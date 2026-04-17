@@ -14,6 +14,7 @@ import {
   solarRecImportErrors,
   solarRecActiveDatasetVersions,
   solarRecComputeRuns,
+  solarRecComputedArtifacts,
   type InsertSolarRecScope,
   type InsertSolarRecImportBatch,
   type InsertSolarRecImportFile,
@@ -21,6 +22,30 @@ import {
   type InsertSolarRecComputeRun,
 } from "../../drizzle/schema";
 import { getDb, withDbRetry } from "./_core";
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+function getErrorMessage(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const message = (error as { message?: unknown }).message;
+  return typeof message === "string" ? message : "";
+}
+
+function isDuplicateKeyError(error: unknown): boolean {
+  const code = getErrorCode(error);
+  if (code === "ER_DUP_ENTRY" || code === "ER_DUP_KEY") return true;
+
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("duplicate entry") ||
+    message.includes("duplicate key") ||
+    message.includes("unique constraint")
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Scopes
@@ -216,26 +241,17 @@ export async function activateDatasetVersion(
   const db = await getDb();
   if (!db) return;
 
-  // Upsert: insert or update the active version for this scope+dataset.
-  // MySQL ON DUPLICATE KEY UPDATE handles the upsert atomically.
-  await withDbRetry("activate dataset version", async () => {
-    // Try insert first; if the unique index fires, update.
-    try {
-      await db
-        .insert(solarRecActiveDatasetVersions)
-        .values({ scopeId, datasetKey, batchId });
-    } catch {
-      await db
-        .update(solarRecActiveDatasetVersions)
-        .set({ batchId, activatedAt: new Date() })
-        .where(
-          and(
-            eq(solarRecActiveDatasetVersions.scopeId, scopeId),
-            eq(solarRecActiveDatasetVersions.datasetKey, datasetKey)
-          )
-        );
-    }
-  });
+  await withDbRetry("activate dataset version", () =>
+    db
+      .insert(solarRecActiveDatasetVersions)
+      .values({ scopeId, datasetKey, batchId })
+      .onDuplicateKeyUpdate({
+        set: {
+          batchId,
+          activatedAt: new Date(),
+        },
+      })
+  );
 
   // Mark previous batches as superseded.
   await withDbRetry("supersede old batches", () =>
@@ -313,8 +329,10 @@ export async function claimComputeRun(
       status: "running",
     });
     return id;
-  } catch {
-    // UNIQUE constraint violation — another process claimed it.
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) {
+      throw error;
+    }
     return null;
   }
 }
@@ -388,6 +406,66 @@ export async function completeComputeRun(
         completedAt: new Date(),
       })
       .where(eq(solarRecComputeRuns.id, runId))
+  );
+}
+
+export async function getComputedArtifact(
+  scopeId: string,
+  artifactType: string,
+  inputVersionHash: string
+) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const rows = await withDbRetry("get computed artifact", () =>
+    db
+      .select()
+      .from(solarRecComputedArtifacts)
+      .where(
+        and(
+          eq(solarRecComputedArtifacts.scopeId, scopeId),
+          eq(solarRecComputedArtifacts.artifactType, artifactType),
+          eq(solarRecComputedArtifacts.inputVersionHash, inputVersionHash)
+        )
+      )
+      .limit(1)
+  );
+
+  return rows[0] ?? null;
+}
+
+export async function upsertComputedArtifact(data: {
+  scopeId: string;
+  artifactType: string;
+  inputVersionHash: string;
+  payload: string;
+  rowCount: number;
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  const now = new Date();
+
+  await withDbRetry("upsert computed artifact", () =>
+    db
+      .insert(solarRecComputedArtifacts)
+      .values({
+        id: nanoid(),
+        scopeId: data.scopeId,
+        artifactType: data.artifactType,
+        inputVersionHash: data.inputVersionHash,
+        payload: data.payload,
+        rowCount: data.rowCount,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onDuplicateKeyUpdate({
+        set: {
+          payload: data.payload,
+          rowCount: data.rowCount,
+          updatedAt: now,
+        },
+      })
   );
 }
 

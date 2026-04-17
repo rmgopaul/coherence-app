@@ -25,7 +25,12 @@ import {
   srDsDeliverySchedule,
   srDsTransferHistory,
 } from "../../../drizzle/schema";
-import { getDb, withDbRetry } from "../../db/_core";
+import {
+  getDb,
+  withDbRetry,
+  sql,
+  getDbExecuteAffectedRows,
+} from "../../db/_core";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,6 +74,18 @@ type DatasetInserter = (
   scopeId: string,
   batchId: string,
   rows: CsvRow[]
+) => Promise<number>;
+
+type AppendRowChecker = (
+  scopeId: string,
+  batchId: string,
+  row: CsvRow
+) => Promise<boolean>;
+
+type BatchRowCloner = (
+  scopeId: string,
+  fromBatchId: string,
+  toBatchId: string
 ) => Promise<number>;
 
 /** Execute inserts in chunks. Returns the number of rows persisted. */
@@ -310,4 +327,191 @@ export async function persistDatasetRows(
  */
 export function hasPersistence(datasetKey: string): boolean {
   return datasetKey in PERSISTERS;
+}
+
+const accountSolarGenerationRowExists: AppendRowChecker = async (
+  scopeId,
+  batchId,
+  row
+) => {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const gatsGenId = clip(pick(row, "GATS Gen ID"), 64);
+  const facilityName = clip(pick(row, "Facility Name"), 255);
+  const monthOfGeneration = clip(pick(row, "Month of Generation"), 32);
+  const lastMeterReadDate = clip(pick(row, "Last Meter Read Date"), 32);
+  const lastMeterReadKwh = clip(pick(row, "Last Meter Read (kWh)"), 64);
+
+  const rows = await withDbRetry(
+    "check account solar generation append row",
+    () =>
+      db
+        .select({ id: srDsAccountSolarGeneration.id })
+        .from(srDsAccountSolarGeneration)
+        .where(sql`
+          ${srDsAccountSolarGeneration.scopeId} = ${scopeId}
+          AND ${srDsAccountSolarGeneration.batchId} = ${batchId}
+          AND ${srDsAccountSolarGeneration.gatsGenId} <=> ${gatsGenId}
+          AND ${srDsAccountSolarGeneration.facilityName} <=> ${facilityName}
+          AND ${srDsAccountSolarGeneration.monthOfGeneration} <=> ${monthOfGeneration}
+          AND ${srDsAccountSolarGeneration.lastMeterReadDate} <=> ${lastMeterReadDate}
+          AND ${srDsAccountSolarGeneration.lastMeterReadKwh} <=> ${lastMeterReadKwh}
+        `)
+        .limit(1)
+  );
+
+  return rows.length > 0;
+};
+
+const transferHistoryRowExists: AppendRowChecker = async (
+  scopeId,
+  batchId,
+  row
+) => {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const transactionId = clip(pick(row, "Transaction ID", "transaction_id"), 64);
+  const unitId = clip(pick(row, "Unit ID", "unit_id"), 64);
+  const transferCompletionDate = clip(
+    pick(row, "Transfer Completion Date", "Transfer Date", "transfer_date"),
+    32
+  );
+  const quantity = parseNum(row.Quantity ?? row.quantity);
+
+  const rows = await withDbRetry("check transfer history append row", () =>
+    db
+      .select({ id: srDsTransferHistory.id })
+      .from(srDsTransferHistory)
+      .where(sql`
+        ${srDsTransferHistory.scopeId} = ${scopeId}
+        AND ${srDsTransferHistory.batchId} = ${batchId}
+        AND ${srDsTransferHistory.transactionId} <=> ${transactionId}
+        AND ${srDsTransferHistory.unitId} <=> ${unitId}
+        AND ${srDsTransferHistory.transferCompletionDate} <=> ${transferCompletionDate}
+        AND ${srDsTransferHistory.quantity} <=> ${quantity}
+      `)
+      .limit(1)
+  );
+
+  return rows.length > 0;
+};
+
+const cloneAccountSolarGenerationBatch: BatchRowCloner = async (
+  scopeId,
+  fromBatchId,
+  toBatchId
+) => {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await withDbRetry("clone account solar generation batch", () =>
+    db.execute(sql`
+      INSERT INTO srDsAccountSolarGeneration (
+        id,
+        scopeId,
+        batchId,
+        gatsGenId,
+        facilityName,
+        monthOfGeneration,
+        lastMeterReadDate,
+        lastMeterReadKwh,
+        rawRow,
+        createdAt
+      )
+      SELECT
+        REPLACE(UUID(), '-', ''),
+        ${scopeId},
+        ${toBatchId},
+        gatsGenId,
+        facilityName,
+        monthOfGeneration,
+        lastMeterReadDate,
+        lastMeterReadKwh,
+        rawRow,
+        CURRENT_TIMESTAMP
+      FROM srDsAccountSolarGeneration
+      WHERE scopeId = ${scopeId}
+        AND batchId = ${fromBatchId}
+    `)
+  );
+
+  return getDbExecuteAffectedRows(result);
+};
+
+const cloneTransferHistoryBatch: BatchRowCloner = async (
+  scopeId,
+  fromBatchId,
+  toBatchId
+) => {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await withDbRetry("clone transfer history batch", () =>
+    db.execute(sql`
+      INSERT INTO srDsTransferHistory (
+        id,
+        scopeId,
+        batchId,
+        transactionId,
+        unitId,
+        transferCompletionDate,
+        quantity,
+        transferor,
+        transferee,
+        rawRow,
+        createdAt
+      )
+      SELECT
+        REPLACE(UUID(), '-', ''),
+        ${scopeId},
+        ${toBatchId},
+        transactionId,
+        unitId,
+        transferCompletionDate,
+        quantity,
+        transferor,
+        transferee,
+        rawRow,
+        CURRENT_TIMESTAMP
+      FROM srDsTransferHistory
+      WHERE scopeId = ${scopeId}
+        AND batchId = ${fromBatchId}
+    `)
+  );
+
+  return getDbExecuteAffectedRows(result);
+};
+
+const APPEND_ROW_CHECKERS: Record<string, AppendRowChecker> = {
+  accountSolarGeneration: accountSolarGenerationRowExists,
+  transferHistory: transferHistoryRowExists,
+};
+
+const BATCH_CLONERS: Record<string, BatchRowCloner> = {
+  accountSolarGeneration: cloneAccountSolarGenerationBatch,
+  transferHistory: cloneTransferHistoryBatch,
+};
+
+export async function appendRowExists(
+  scopeId: string,
+  batchId: string,
+  datasetKey: string,
+  row: CsvRow
+): Promise<boolean> {
+  const checker = APPEND_ROW_CHECKERS[datasetKey];
+  if (!checker) return false;
+  return checker(scopeId, batchId, row);
+}
+
+export async function cloneDatasetBatchRows(
+  scopeId: string,
+  fromBatchId: string,
+  toBatchId: string,
+  datasetKey: string
+): Promise<number> {
+  const cloner = BATCH_CLONERS[datasetKey];
+  if (!cloner) return 0;
+  return cloner(scopeId, fromBatchId, toBatchId);
 }

@@ -47,6 +47,21 @@ export function isCoreDatasetKey(key: string): key is CoreDatasetKey {
   return (CORE_DATASETS as readonly string[]).includes(key);
 }
 
+/**
+ * Core datasets that accumulate across uploads rather than being
+ * replaced wholesale. Must match CORE_DATASET_DEFINITIONS's
+ * multiFileAppend flag in datasetIngestion.ts — any drift will
+ * silently fall back to replace and truncate data.
+ */
+const APPEND_CORE_DATASETS: ReadonlySet<CoreDatasetKey> = new Set<CoreDatasetKey>([
+  "accountSolarGeneration",
+  "transferHistory",
+]);
+
+function modeForDataset(datasetKey: CoreDatasetKey): "replace" | "append" {
+  return APPEND_CORE_DATASETS.has(datasetKey) ? "append" : "replace";
+}
+
 // ---------------------------------------------------------------------------
 // Job state
 // ---------------------------------------------------------------------------
@@ -275,12 +290,22 @@ async function migrateOneDataset(
   const fileName = `${datasetKey}.csv`;
 
   try {
+    // Append-style datasets (accountSolarGeneration, transferHistory)
+    // need dedupe-append semantics so re-syncing from
+    // solarRecDashboardStorage can't truncate accumulated rows that
+    // a previous active batch already has. The server's
+    // ingestDataset append path clones the previous batch's rows
+    // into the new batch and then filters the upload for rows that
+    // are already present (by dataset-specific key fields), so
+    // re-ingesting the same data is a no-op and re-ingesting
+    // partial data preserves everything.
+    const mode = modeForDataset(datasetKey);
     const result = await ingestDataset(
       scopeId,
       datasetKey,
       csvText,
       fileName,
-      "replace",
+      mode,
       ownerUserId
     );
 

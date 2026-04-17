@@ -1014,6 +1014,40 @@ export type SolarRecComputeRun = typeof solarRecComputeRuns.$inferSelect;
 export type InsertSolarRecComputeRun = typeof solarRecComputeRuns.$inferInsert;
 
 // ---------------------------------------------------------------------------
+// Solar REC Computed Artifacts
+//
+// Cache table for expensive per-scope computations (system snapshot,
+// delivery allocations, financials). Keyed by (scopeId, artifactType,
+// inputVersionHash) with a UNIQUE index so upserts can be atomic.
+// The payload column holds the serialized result (typically JSON);
+// row counts are tracked separately for telemetry / UI display.
+// ---------------------------------------------------------------------------
+
+export const solarRecComputedArtifacts = mysqlTable(
+  "solarRecComputedArtifacts",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    artifactType: varchar("artifactType", { length: 64 }).notNull(),
+    inputVersionHash: varchar("inputVersionHash", { length: 64 }).notNull(),
+    payload: mediumtext("payload").notNull(),
+    rowCount: int("rowCount").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    lookupIdx: uniqueIndex("sr_computed_artifacts_lookup_idx").on(
+      table.scopeId,
+      table.artifactType,
+      table.inputVersionHash
+    ),
+  })
+);
+
+export type SolarRecComputedArtifact = typeof solarRecComputedArtifacts.$inferSelect;
+export type InsertSolarRecComputedArtifact = typeof solarRecComputedArtifacts.$inferInsert;
+
+// ---------------------------------------------------------------------------
 // Solar REC Normalized Dataset Tables (Step 3)
 // Core 7 datasets. Each row belongs to a batch (via batchId).
 // Typed columns for commonly-queried fields + rawRow JSON for the long tail.
