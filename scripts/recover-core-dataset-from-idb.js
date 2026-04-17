@@ -220,13 +220,18 @@
    * The main recovery routine for one dataset key.
    */
   async function runOne(datasetKey) {
-    const CORE_APPEND_KEYS = new Set([
-      "transferHistory",
+    const CORE_DATASET_KEYS = new Set([
+      "solarApplications",
+      "abpReport",
+      "generationEntry",
       "accountSolarGeneration",
+      "contractedDate",
+      "deliveryScheduleBase",
+      "transferHistory",
     ]);
-    if (!CORE_APPEND_KEYS.has(datasetKey)) {
+    if (!CORE_DATASET_KEYS.has(datasetKey)) {
       throw new Error(
-        `Recovery only supports dedupe-append datasets. "${datasetKey}" is not one of ${[...CORE_APPEND_KEYS].join(", ")}`
+        `Recovery only supports the 7 core datasets. "${datasetKey}" is not one of ${[...CORE_DATASET_KEYS].join(", ")}`
       );
     }
 
@@ -298,9 +303,11 @@
 
   window.__solarRecRecovery = {
     run: runOne,
-    runAll: async function () {
+    runAll: async function (keys) {
+      const defaults = ["transferHistory", "accountSolarGeneration"];
+      const toRun = Array.isArray(keys) && keys.length > 0 ? keys : defaults;
       const results = {};
-      for (const key of ["transferHistory", "accountSolarGeneration"]) {
+      for (const key of toRun) {
         console.log(`\n=== ${key} ===`);
         try {
           results[key] = await runOne(key);
