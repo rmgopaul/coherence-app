@@ -27,6 +27,7 @@ import {
 import { getDb, withDbRetry } from "../../db/_core";
 import {
   claimComputeRun,
+  reclaimComputeRun,
   getComputeRun,
   completeComputeRun,
   failComputeRun,
@@ -143,26 +144,54 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
     // return { systems: cachedRows, fromCache: true, inputVersionHash, runId: existing.id };
   }
 
+  // Stuck-run self-heal: a compute_run row left in "running" state
+  // because the previous request was killed (Render restart, timeout,
+  // uncaught exception) will otherwise block every subsequent request
+  // forever since the UNIQUE(scopeId, artifactType, hash) constraint
+  // prevents a fresh claim.
+  const STUCK_RUN_THRESHOLD_MS = 10 * 60 * 1000; // 10 min
+  const now = Date.now();
+
   if (existing?.status === "running") {
-    // Another process is computing — wait briefly then check again.
-    // For now, just return empty and let the client retry.
-    return {
-      systems: [],
-      fromCache: false,
-      inputVersionHash,
-      runId: existing.id,
-    };
+    const startedAtMs = existing.startedAt
+      ? new Date(existing.startedAt).getTime()
+      : 0;
+    const ageMs = now - startedAtMs;
+    if (ageMs < STUCK_RUN_THRESHOLD_MS) {
+      // Still actively running elsewhere; client should retry.
+      return {
+        systems: [],
+        fromCache: false,
+        inputVersionHash,
+        runId: existing.id,
+      };
+    }
+    // Stale — reclaim the existing row so we can recompute below.
+    console.warn(
+      `[buildSystemSnapshot] reclaiming stale run ${existing.id} (age ${Math.round(ageMs / 1000)}s)`
+    );
+    await reclaimComputeRun(existing.id);
   }
 
-  // Claim the run
-  const runId = await claimComputeRun({
-    scopeId,
-    artifactType: "system_snapshot",
-    inputVersionHash,
-    status: "running",
-    rowCount: null,
-    error: null,
-  });
+  // Claim (or reclaim) the run.
+  let runId: string | null;
+  if (existing && (existing.status === "running" || existing.status === "failed")) {
+    // We either just reclaimed it above (stuck run) or it previously
+    // failed. Either way the row already exists — reuse its id.
+    if (existing.status === "failed") {
+      await reclaimComputeRun(existing.id);
+    }
+    runId = existing.id;
+  } else {
+    runId = await claimComputeRun({
+      scopeId,
+      artifactType: "system_snapshot",
+      inputVersionHash,
+      status: "running",
+      rowCount: null,
+      error: null,
+    });
+  }
 
   if (!runId) {
     // Another process claimed it — concurrent race. Return empty.

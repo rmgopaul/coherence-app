@@ -285,6 +285,34 @@ export async function claimComputeRun(
   }
 }
 
+/**
+ * Reclaim an existing compute_run row for (scope, artifact, hash) by
+ * resetting it to running=now. Used when the previous run is stale
+ * (status=running but startedAt older than the self-heal threshold)
+ * or failed — this swaps the row back into the runnable state without
+ * hitting the UNIQUE constraint that blocks fresh claims.
+ *
+ * Returns the existing row id.
+ */
+export async function reclaimComputeRun(
+  runId: string
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("reclaim compute run", () =>
+    db
+      .update(solarRecComputeRuns)
+      .set({
+        status: "running",
+        error: null,
+        rowCount: null,
+        startedAt: new Date(),
+        completedAt: null,
+      })
+      .where(eq(solarRecComputeRuns.id, runId))
+  );
+}
+
 export async function getComputeRun(
   scopeId: string,
   artifactType: string,
