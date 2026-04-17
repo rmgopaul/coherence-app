@@ -72,6 +72,20 @@ export async function computeSystemSnapshotHash(
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-table mapping of typed column name → original CSV header name.
+ * Only needed for tables that don't have a rawRow column (where we
+ * must reconstruct the CSV-style keys buildSystems reads from the
+ * typed columns alone). For tables WITH rawRow, all CSV keys come
+ * from the JSON blob and this mapping is a no-op.
+ */
+const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
+  srDsContractedDate: {
+    systemId: "id",
+    contractedDate: "contracted",
+  },
+};
+
+/**
  * Load rows from a dataset table and reconstruct CsvRow[] from
  * typed columns + rawRow JSON. Works with any of the 7 tables.
  */
@@ -92,15 +106,35 @@ async function loadDatasetRows(
       .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
   );
 
-  // Reconstruct CsvRow from rawRow JSON + typed columns
+  const tableName: string | undefined =
+    (table as { _?: { name?: string } })?._?.name ??
+    (table as { name?: string })?.name;
+  const remap = tableName ? TYPED_COLUMN_TO_CSV_KEY[tableName] : undefined;
+
+  // Reconstruct CsvRow from rawRow JSON + typed columns.
   return (rows as Record<string, unknown>[]).map((row) => {
     const rawRowStr = row.rawRow as string | null;
     const base: CsvRow = rawRowStr ? JSON.parse(rawRowStr) : {};
 
-    // Typed columns override rawRow values (they're the canonical source)
+    // For tables without rawRow, the typed columns are the only
+    // source of truth. Apply the per-table column→CSV mapping so
+    // buildSystems finds the keys it expects (e.g. `id`, `contracted`
+    // for contractedDate rather than `systemId`, `contractedDate`).
     for (const [key, value] of Object.entries(row)) {
-      if (key === "id" || key === "scopeId" || key === "batchId" || key === "rawRow" || key === "createdAt") continue;
-      if (value !== null && value !== undefined) {
+      if (
+        key === "id" ||
+        key === "scopeId" ||
+        key === "batchId" ||
+        key === "rawRow" ||
+        key === "createdAt"
+      ) {
+        continue;
+      }
+      if (value === null || value === undefined) continue;
+      const mapped = remap?.[key];
+      if (mapped) {
+        base[mapped] = String(value);
+      } else {
         base[key] = String(value);
       }
     }
@@ -128,28 +162,40 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
   fromCache: boolean;
   inputVersionHash: string;
   runId: string | null;
+  building: boolean;
 }> {
   const inputVersionHash = await computeSystemSnapshotHash(scopeId);
+  const { resolveSolarRecOwnerUserId } = await import("../../_core/solarRecAuth");
+  const ownerUserId = await resolveSolarRecOwnerUserId();
+  const { readCachedSnapshot, writeCachedSnapshot } = await import(
+    "./systemSnapshotCache"
+  );
 
-  // Check for existing completed run
+  // ------------------------------------------------------------
+  // Fast path: serve from cache if we have a result for this hash.
+  // ------------------------------------------------------------
+  const cached = await readCachedSnapshot(ownerUserId, inputVersionHash);
+  if (cached) {
+    return {
+      systems: cached,
+      fromCache: true,
+      inputVersionHash,
+      runId: null,
+      building: false,
+    };
+  }
+
+  // ------------------------------------------------------------
+  // No cache — check for an in-progress compute. Stuck-run self-
+  // heal kicks in if the row has been in "running" for > 10 min.
+  // ------------------------------------------------------------
   const existing = await getComputeRun(
     scopeId,
     "system_snapshot",
     inputVersionHash
   );
 
-  if (existing?.status === "completed") {
-    // TODO: In a future step, load the cached snapshot rows from the
-    // solar_rec_system_snapshot table. For now, recompute.
-    // return { systems: cachedRows, fromCache: true, inputVersionHash, runId: existing.id };
-  }
-
-  // Stuck-run self-heal: a compute_run row left in "running" state
-  // because the previous request was killed (Render restart, timeout,
-  // uncaught exception) will otherwise block every subsequent request
-  // forever since the UNIQUE(scopeId, artifactType, hash) constraint
-  // prevents a fresh claim.
-  const STUCK_RUN_THRESHOLD_MS = 10 * 60 * 1000; // 10 min
+  const STUCK_RUN_THRESHOLD_MS = 10 * 60 * 1000;
   const now = Date.now();
 
   if (existing?.status === "running") {
@@ -158,26 +204,29 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
       : 0;
     const ageMs = now - startedAtMs;
     if (ageMs < STUCK_RUN_THRESHOLD_MS) {
-      // Still actively running elsewhere; client should retry.
+      // Compute actively running — client should poll.
       return {
         systems: [],
         fromCache: false,
         inputVersionHash,
         runId: existing.id,
+        building: true,
       };
     }
-    // Stale — reclaim the existing row so we can recompute below.
     console.warn(
       `[buildSystemSnapshot] reclaiming stale run ${existing.id} (age ${Math.round(ageMs / 1000)}s)`
     );
     await reclaimComputeRun(existing.id);
   }
 
-  // Claim (or reclaim) the run.
+  // ------------------------------------------------------------
+  // Claim a run (or reuse an existing row in running/failed state)
+  // and kick off the actual compute in the background. We DO NOT
+  // await it — the tRPC request returns immediately with
+  // building=true and the client polls until fromCache=true.
+  // ------------------------------------------------------------
   let runId: string | null;
   if (existing && (existing.status === "running" || existing.status === "failed")) {
-    // We either just reclaimed it above (stuck run) or it previously
-    // failed. Either way the row already exists — reuse its id.
     if (existing.status === "failed") {
       await reclaimComputeRun(existing.id);
     }
@@ -194,78 +243,98 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
   }
 
   if (!runId) {
-    // Another process claimed it — concurrent race. Return empty.
-    return { systems: [], fromCache: false, inputVersionHash, runId: null };
-  }
-
-  try {
-    // Load active batch IDs for each dataset
-    const versions = await getActiveVersionsForKeys(
-      scopeId,
-      SYSTEM_SNAPSHOT_DEPS as unknown as string[]
-    );
-    const versionMap = new Map(versions.map((v) => [v.datasetKey, v.batchId]));
-
-    // Load rows from each dataset table
-    const [
-      solarApplicationsRows,
-      abpReportRows,
-      generationEntryRows,
-      accountSolarGenerationRows,
-      contractedDateRows,
-      deliveryScheduleBaseRows,
-      transferHistoryRows,
-    ] = await Promise.all([
-      loadDatasetRows(scopeId, versionMap.get("solarApplications") ?? null, srDsSolarApplications),
-      loadDatasetRows(scopeId, versionMap.get("abpReport") ?? null, srDsAbpReport),
-      loadDatasetRows(scopeId, versionMap.get("generationEntry") ?? null, srDsGenerationEntry),
-      loadDatasetRows(scopeId, versionMap.get("accountSolarGeneration") ?? null, srDsAccountSolarGeneration),
-      loadDatasetRows(scopeId, versionMap.get("contractedDate") ?? null, srDsContractedDate),
-      loadDatasetRows(scopeId, versionMap.get("deliveryScheduleBase") ?? null, srDsDeliverySchedule),
-      loadDatasetRows(scopeId, versionMap.get("transferHistory") ?? null, srDsTransferHistory),
-    ]);
-
-    // Filter abpReport to Part 2 verified rows (same as client-side)
-    // The client filters by parsePart2VerificationDate() !== null.
-    // For now, pass all ABP rows and let buildSystems handle it
-    // (it builds eligibility sets from the ABP rows it receives).
-    const part2VerifiedAbpRows = abpReportRows;
-
-    // Call the EXISTING buildSystems function — identical to client-side
-    // This is a dynamic import because buildSystems is a client module
-    // that uses path aliases (@/...). We import it at runtime.
-    // TODO: Move buildSystems to a shared/isomorphic location.
-    // For now, this import works because the server's tsconfig resolves @/ paths.
-    const { buildSystems } = await import(
-      "../../../client/src/solar-rec-dashboard/lib/buildSystems"
-    );
-
-    const systems = buildSystems({
-      part2VerifiedAbpRows,
-      solarApplicationsRows,
-      contractedDateRows,
-      accountSolarGenerationRows,
-      generationEntryRows,
-      transferHistoryRows,
-      deliveryScheduleBaseRows,
-    });
-
-    // Mark run as completed
-    await completeComputeRun(runId, systems.length);
-
-    // TODO: In a future step, store the SystemRecord[] rows in
-    // solar_rec_system_snapshot table for cache reads.
-
+    // Another process won the claim race — return building=true so
+    // the client polls for its result.
     return {
-      systems,
+      systems: [],
       fromCache: false,
       inputVersionHash,
-      runId,
+      runId: null,
+      building: true,
     };
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "System snapshot build failed";
-    await failComputeRun(runId, message);
-    throw err;
   }
+
+  // Fire-and-forget background compute. Errors are logged and
+  // recorded on the compute_run row; the HTTP caller does not wait.
+  const claimedRunId = runId;
+  void (async () => {
+    try {
+      const systems = await runComputeInline(scopeId, inputVersionHash);
+      await writeCachedSnapshot(ownerUserId, inputVersionHash, systems);
+      await completeComputeRun(claimedRunId, systems.length);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "System snapshot build failed";
+      console.error(
+        `[buildSystemSnapshot] compute ${claimedRunId} failed:`,
+        message
+      );
+      await failComputeRun(claimedRunId, message);
+    }
+  })();
+
+  return {
+    systems: [],
+    fromCache: false,
+    inputVersionHash,
+    runId: claimedRunId,
+    building: true,
+  };
+}
+
+/**
+ * The actual compute work — synchronous from the caller's view but
+ * invoked from a fire-and-forget wrapper so the HTTP request that
+ * triggered it doesn't block.
+ */
+async function runComputeInline(
+  scopeId: string,
+  inputVersionHash: string
+): Promise<unknown[]> {
+  const startTime = Date.now();
+  const versions = await getActiveVersionsForKeys(
+    scopeId,
+    SYSTEM_SNAPSHOT_DEPS as unknown as string[]
+  );
+  const versionMap = new Map(versions.map((v) => [v.datasetKey, v.batchId]));
+
+  const [
+    solarApplicationsRows,
+    abpReportRows,
+    generationEntryRows,
+    accountSolarGenerationRows,
+    contractedDateRows,
+    deliveryScheduleBaseRows,
+    transferHistoryRows,
+  ] = await Promise.all([
+    loadDatasetRows(scopeId, versionMap.get("solarApplications") ?? null, srDsSolarApplications),
+    loadDatasetRows(scopeId, versionMap.get("abpReport") ?? null, srDsAbpReport),
+    loadDatasetRows(scopeId, versionMap.get("generationEntry") ?? null, srDsGenerationEntry),
+    loadDatasetRows(scopeId, versionMap.get("accountSolarGeneration") ?? null, srDsAccountSolarGeneration),
+    loadDatasetRows(scopeId, versionMap.get("contractedDate") ?? null, srDsContractedDate),
+    loadDatasetRows(scopeId, versionMap.get("deliveryScheduleBase") ?? null, srDsDeliverySchedule),
+    loadDatasetRows(scopeId, versionMap.get("transferHistory") ?? null, srDsTransferHistory),
+  ]);
+
+  const loadMs = Date.now() - startTime;
+  const part2VerifiedAbpRows = abpReportRows;
+  const { buildSystems } = await import(
+    "../../../client/src/solar-rec-dashboard/lib/buildSystems"
+  );
+  const systems = buildSystems({
+    part2VerifiedAbpRows,
+    solarApplicationsRows,
+    contractedDateRows,
+    accountSolarGenerationRows,
+    generationEntryRows,
+    transferHistoryRows,
+    deliveryScheduleBaseRows,
+  });
+  const totalMs = Date.now() - startTime;
+  console.log(
+    `[buildSystemSnapshot] hash=${inputVersionHash.slice(0, 10)} ` +
+      `loaded=${solarApplicationsRows.length + abpReportRows.length + generationEntryRows.length + accountSolarGenerationRows.length + contractedDateRows.length + deliveryScheduleBaseRows.length + transferHistoryRows.length}rows ` +
+      `systems=${systems.length} loadMs=${loadMs} totalMs=${totalMs}`
+  );
+  return systems;
 }

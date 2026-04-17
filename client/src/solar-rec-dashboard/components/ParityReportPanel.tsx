@@ -71,10 +71,34 @@ export default memo(function ParityReportPanel() {
       // 1. Resolve scope
       const { scopeId } = await trpcUtils.solarRecDashboard.getScopeId.fetch();
 
-      // 2. Fetch server snapshot
-      const serverResult = await trpcUtils.solarRecDashboard.getSystemSnapshot.fetch({
+      // 2. Fetch server snapshot — may return building=true on first call
+      //    while the server computes asynchronously. Poll until ready.
+      let serverResult = await trpcUtils.solarRecDashboard.getSystemSnapshot.fetch({
         scopeId,
       });
+
+      const MAX_POLL_SECONDS = 300;
+      const POLL_INTERVAL_MS = 3000;
+      const pollStart = Date.now();
+
+      while (serverResult.building) {
+        const elapsed = Math.round((Date.now() - pollStart) / 1000);
+        if (elapsed > MAX_POLL_SECONDS) {
+          setState({
+            status: "error",
+            message: `Server compute did not finish within ${MAX_POLL_SECONDS}s`,
+          });
+          return;
+        }
+        setState({
+          status: "running",
+          stage: `Server computing snapshot (${elapsed}s)...`,
+        });
+        await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+        serverResult = await trpcUtils.solarRecDashboard.getSystemSnapshot.fetch({
+          scopeId,
+        });
+      }
 
       // 3. Read IndexedDB rows
       setState({ status: "running", stage: "Reading local datasets..." });

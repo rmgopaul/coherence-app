@@ -1687,6 +1687,7 @@ export const solarRecDashboardRouter = router({
         fromCache: result.fromCache,
         inputVersionHash: result.inputVersionHash,
         systemCount: result.systems.length,
+        building: result.building,
       };
     }),
 
