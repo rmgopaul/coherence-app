@@ -34,7 +34,11 @@
 
 (() => {
   const DB_NAME = "solarRecDashboardDb";
-  const DB_VERSION = 1;
+  // Matches client/src/solar-rec-dashboard/lib/constants.ts
+  // DASHBOARD_DB_VERSION. Must be kept in sync or indexedDB.open
+  // throws "VersionError: The requested version (N) is less than the
+  // existing version (M)".
+  const DB_VERSION = 2;
   const STORE_NAME = "datasets";
   const MANIFEST_KEY = "__dataset_manifest_v2__";
   const CHUNK_CHAR_LIMIT = 8 * 1024 * 1024; // matches server's SOLAR_REC_DB_CHUNK_CHARS
