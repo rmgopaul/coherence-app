@@ -2475,18 +2475,18 @@ export default function SolarRecDashboard() {
       const storageKey = buildRemoteSourceStorageKey(key, sourceId);
       const contentType = source.file.type || "application/octet-stream";
       const csvLike = isCsvLikeFile(source.file.name, contentType);
-      let encoding: RemoteDatasetSourceEncoding = "utf8";
-      let payload = "";
+      const encoding: RemoteDatasetSourceEncoding = csvLike ? "utf8" : "base64";
 
-      if (csvLike) {
-        payload = await source.file.text();
-      } else {
-        encoding = "base64";
-        const bytes = new Uint8Array(await source.file.arrayBuffer());
-        payload = bytesToBase64(bytes);
-      }
+      // Stream the file in slices — never more than
+      // REMOTE_FILE_STREAM_SLICE_BYTES of raw bytes (plus one chunk
+      // worth of encoded text) resident in memory at once. The
+      // earlier `file.text()` / `file.arrayBuffer()` approach put
+      // the entire payload in browser memory before chunking,
+      // which could OOM the tab on large CSVs (200MB+).
+      const chunkKeys = csvLike
+        ? await saveRemoteTextFileWithChunks(storageKey, source.file)
+        : await saveRemoteBinaryFileWithChunks(storageKey, source.file);
 
-      const chunkKeys = await saveRemotePayloadWithChunks(storageKey, payload);
       return {
         id: sourceId,
         fileName: source.file.name,
@@ -2499,7 +2499,7 @@ export default function SolarRecDashboard() {
         contentType,
       } satisfies RemoteDatasetSourceRef;
     },
-    [saveRemotePayloadWithChunks]
+    [saveRemoteTextFileWithChunks, saveRemoteBinaryFileWithChunks]
   );
 
   const persistDatasetSourceFilesToCloud = useCallback(
