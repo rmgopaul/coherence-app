@@ -254,6 +254,26 @@ export const solarRecDashboardRouter = router({
     }),
 
   /**
+   * One-shot aggressive purge of orphaned typed srDs* rows left
+   * behind by superseded/failed batches. Doesn't touch batches
+   * referenced by the current active version pointers, so live
+   * reads are unaffected.
+   *
+   * Distinct from the 14-day retention-window cleanup that runs
+   * on server startup. Call this manually (DevTools console or a
+   * future admin button) after big migration/recovery events
+   * that leave the DB with gigabytes of orphan data. Limits to
+   * 200 batches per call so the request doesn't exceed Render's
+   * proxy timeout; run twice if `skippedDueToLimit` is true.
+   */
+  purgeOrphanedDatasetRows: protectedProcedure.mutation(async () => {
+    const { purgeOrphanedDatasetRowsNow } = await import(
+      "../db/solarRecDatasets"
+    );
+    return purgeOrphanedDatasetRowsNow();
+  }),
+
+  /**
    * Return every in-flight sync job for the current scope. Called
    * by the client on mount so a tab reload during a running sync
    * resumes polling instead of losing track of the background

@@ -5,7 +5,7 @@
  * active dataset versions, and compute runs.
  */
 
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, asc, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import {
   solarRecScopes,
@@ -45,6 +45,39 @@ function isDuplicateKeyError(error: unknown): boolean {
     message.includes("duplicate key") ||
     message.includes("unique constraint")
   );
+}
+
+function isMissingTableError(error: unknown): boolean {
+  const code = getErrorCode(error);
+  if (code === "ER_NO_SUCH_TABLE") return true;
+
+  const message = getErrorMessage(error).toLowerCase();
+  return (
+    message.includes("doesn't exist") ||
+    message.includes("does not exist") ||
+    message.includes("unknown table")
+  );
+}
+
+function truncateComputeRunError(value: string, maxChars = 16_000): string {
+  if (value.length <= maxChars) return value;
+  const suffix = "... [truncated]";
+  return `${value.slice(0, maxChars - suffix.length)}${suffix}`;
+}
+
+const ARCHIVED_BATCH_STATUS = "archived";
+const SUPERSEDED_BATCH_RETENTION_DAYS = 14;
+const STARTUP_BATCH_ARCHIVE_LIMIT = 2;
+
+function isOlderThanRetentionWindow(
+  candidateDate: Date | string | null | undefined,
+  retentionDays: number,
+  nowMs = Date.now()
+): boolean {
+  if (!candidateDate) return false;
+  const timestamp = new Date(candidateDate).getTime();
+  if (!Number.isFinite(timestamp)) return false;
+  return timestamp < nowMs - retentionDays * 24 * 60 * 60 * 1000;
 }
 
 // ---------------------------------------------------------------------------
@@ -236,41 +269,250 @@ export async function getActiveVersionsForKeys(
 export async function activateDatasetVersion(
   scopeId: string,
   datasetKey: string,
-  batchId: string
+  batchId: string,
+  options: { rowCount?: number; completedAt?: Date } = {}
 ): Promise<void> {
   const db = await getDb();
   if (!db) return;
 
-  await withDbRetry("activate dataset version", () =>
-    db
-      .insert(solarRecActiveDatasetVersions)
-      .values({ scopeId, datasetKey, batchId })
-      .onDuplicateKeyUpdate({
-        set: {
-          batchId,
-          activatedAt: new Date(),
-        },
-      })
-  );
+  const activatedAt = new Date();
+  const completedAt = options.completedAt ?? activatedAt;
 
-  // Mark previous batches as superseded.
-  await withDbRetry("supersede old batches", () =>
+  await withDbRetry("activate dataset version", () =>
+    db.transaction(async (tx) => {
+      // Supersede the prior active batch BEFORE swapping the pointer so we
+      // don't accidentally match the new batch in the status update below.
+      await tx
+        .update(solarRecImportBatches)
+        .set({ status: "superseded" })
+        .where(
+          and(
+            eq(solarRecImportBatches.scopeId, scopeId),
+            eq(solarRecImportBatches.datasetKey, datasetKey),
+            eq(solarRecImportBatches.status, "active")
+          )
+        );
+
+      await tx
+        .insert(solarRecActiveDatasetVersions)
+        .values({ scopeId, datasetKey, batchId, activatedAt })
+        .onDuplicateKeyUpdate({
+          set: {
+            batchId,
+            activatedAt,
+          },
+        });
+
+      await tx
+        .update(solarRecImportBatches)
+        .set({
+          status: "active",
+          ...(options.rowCount !== undefined
+            ? { rowCount: options.rowCount }
+            : {}),
+          completedAt,
+        })
+        .where(eq(solarRecImportBatches.id, batchId));
+    })
+  );
+}
+
+/**
+ * Mark import batches left mid-ingest by a prior Node process as failed so
+ * the UI does not poll "processing" forever after a restart.
+ *
+ * Safe for the current single-dyno deployment because startup runs before
+ * the server begins accepting new ingest requests.
+ */
+export async function clearOrphanedImportBatchesOnStartup(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const now = new Date();
+  const result = await withDbRetry("clear orphaned import batches", () =>
     db
       .update(solarRecImportBatches)
-      .set({ status: "superseded" })
+      .set({
+        status: "failed",
+        error: "orphaned by server restart",
+        completedAt: now,
+      })
       .where(
-        and(
-          eq(solarRecImportBatches.scopeId, scopeId),
-          eq(solarRecImportBatches.datasetKey, datasetKey),
-          eq(solarRecImportBatches.status, "active")
-        )
+        sql`${solarRecImportBatches.status} IN ('uploading', 'processing')`
       )
   );
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (result as any)?.[0]?.affectedRows ?? 0;
+}
 
-  // Mark the new batch as active.
-  await updateImportBatchStatus(batchId, "active", {
-    completedAt: new Date(),
-  });
+/**
+ * Purge typed dataset rows for old superseded batches, then mark those
+ * batches as archived so the cleanup does not repeat on every restart.
+ *
+ * We intentionally keep the import batch + file metadata for auditability and
+ * to retain references to the original uploaded raw files. The expensive part
+ * is the typed srDs* row data; that is what this startup cleanup reclaims.
+ */
+export async function archiveSupersededImportBatchesOnStartup(
+  limit = STARTUP_BATCH_ARCHIVE_LIMIT
+): Promise<{ archivedBatches: number; purgedRows: number }> {
+  const db = await getDb();
+  if (!db || limit <= 0) {
+    return { archivedBatches: 0, purgedRows: 0 };
+  }
+
+  const [activeVersions, candidates] = await Promise.all([
+    withDbRetry("load active dataset versions for archive cleanup", () =>
+      db
+        .select({ batchId: solarRecActiveDatasetVersions.batchId })
+        .from(solarRecActiveDatasetVersions)
+    ),
+    withDbRetry("load superseded import batches for archive cleanup", () =>
+      db
+        .select({
+          id: solarRecImportBatches.id,
+          datasetKey: solarRecImportBatches.datasetKey,
+          completedAt: solarRecImportBatches.completedAt,
+        })
+        .from(solarRecImportBatches)
+        .where(eq(solarRecImportBatches.status, "superseded"))
+        .orderBy(
+          asc(solarRecImportBatches.completedAt),
+          asc(solarRecImportBatches.createdAt)
+        )
+        .limit(limit * 10)
+    ),
+  ]);
+
+  const activeBatchIds = new Set(activeVersions.map((row) => row.batchId));
+  const batchesToArchive = candidates
+    .filter(
+      (batch) =>
+        !activeBatchIds.has(batch.id) &&
+        isOlderThanRetentionWindow(
+          batch.completedAt,
+          SUPERSEDED_BATCH_RETENTION_DAYS
+        )
+    )
+    .slice(0, limit);
+
+  if (batchesToArchive.length === 0) {
+    return { archivedBatches: 0, purgedRows: 0 };
+  }
+
+  const { deleteDatasetBatchRows } = await import(
+    "../services/solar/datasetRowPersistence"
+  );
+
+  let archivedBatches = 0;
+  let purgedRows = 0;
+
+  for (const batch of batchesToArchive) {
+    purgedRows += await deleteDatasetBatchRows(batch.datasetKey, batch.id);
+
+    await withDbRetry("mark import batch archived", () =>
+      db
+        .update(solarRecImportBatches)
+        .set({
+          status: ARCHIVED_BATCH_STATUS,
+        })
+        .where(eq(solarRecImportBatches.id, batch.id))
+    );
+    archivedBatches += 1;
+  }
+
+  return { archivedBatches, purgedRows };
+}
+
+/**
+ * Aggressive one-shot cleanup: purges typed srDs* rows and marks
+ * batches as archived for every superseded/failed batch that is
+ * not currently referenced by `solarRecActiveDatasetVersions`,
+ * regardless of retention window.
+ *
+ * Distinct from `archiveSupersededImportBatchesOnStartup` which
+ * respects the 14-day retention window and a 2-batch-per-startup
+ * throttle — appropriate for steady-state operation, but too
+ * conservative when the DB has built up chaos from a migration
+ * or heavy recovery flow.
+ *
+ * Intended to be called manually via a tRPC endpoint, not on a
+ * schedule. Hard upper bound on batches processed per call so
+ * the request doesn't exceed Render's proxy timeout on a very
+ * bloated database.
+ */
+export async function purgeOrphanedDatasetRowsNow(
+  maxBatches = 200
+): Promise<{
+  archivedBatches: number;
+  purgedRows: number;
+  skippedDueToLimit: boolean;
+}> {
+  const db = await getDb();
+  if (!db) {
+    return { archivedBatches: 0, purgedRows: 0, skippedDueToLimit: false };
+  }
+
+  // Load active batch ids once; anything referenced is off-limits.
+  const activeVersions = await withDbRetry(
+    "load active dataset versions for purge",
+    () =>
+      db
+        .select({ batchId: solarRecActiveDatasetVersions.batchId })
+        .from(solarRecActiveDatasetVersions)
+  );
+  const activeBatchIds = new Set(
+    activeVersions.map((row) => row.batchId).filter(Boolean) as string[]
+  );
+
+  // Candidates: any batch in superseded OR failed state. Archived
+  // batches we leave alone — they've already had their rows
+  // purged by a previous run.
+  const candidates = await withDbRetry(
+    "load candidate batches for aggressive purge",
+    () =>
+      db
+        .select({
+          id: solarRecImportBatches.id,
+          datasetKey: solarRecImportBatches.datasetKey,
+        })
+        .from(solarRecImportBatches)
+        .where(
+          sql`${solarRecImportBatches.status} IN ('superseded', 'failed')`
+        )
+        .orderBy(asc(solarRecImportBatches.createdAt))
+        .limit(maxBatches + 1)
+  );
+
+  const skippedDueToLimit = candidates.length > maxBatches;
+  const batchesToArchive = candidates
+    .slice(0, maxBatches)
+    .filter((batch) => !activeBatchIds.has(batch.id));
+
+  if (batchesToArchive.length === 0) {
+    return { archivedBatches: 0, purgedRows: 0, skippedDueToLimit };
+  }
+
+  const { deleteDatasetBatchRows } = await import(
+    "../services/solar/datasetRowPersistence"
+  );
+
+  let archivedBatches = 0;
+  let purgedRows = 0;
+
+  for (const batch of batchesToArchive) {
+    purgedRows += await deleteDatasetBatchRows(batch.datasetKey, batch.id);
+
+    await withDbRetry("mark import batch archived (aggressive purge)", () =>
+      db
+        .update(solarRecImportBatches)
+        .set({ status: ARCHIVED_BATCH_STATUS })
+        .where(eq(solarRecImportBatches.id, batch.id))
+    );
+    archivedBatches += 1;
+  }
+
+  return { archivedBatches, purgedRows, skippedDueToLimit };
 }
 
 // ---------------------------------------------------------------------------
@@ -417,19 +659,27 @@ export async function getComputedArtifact(
   const db = await getDb();
   if (!db) return null;
 
-  const rows = await withDbRetry("get computed artifact", () =>
-    db
-      .select()
-      .from(solarRecComputedArtifacts)
-      .where(
-        and(
-          eq(solarRecComputedArtifacts.scopeId, scopeId),
-          eq(solarRecComputedArtifacts.artifactType, artifactType),
-          eq(solarRecComputedArtifacts.inputVersionHash, inputVersionHash)
+  let rows;
+  try {
+    rows = await withDbRetry("get computed artifact", () =>
+      db
+        .select()
+        .from(solarRecComputedArtifacts)
+        .where(
+          and(
+            eq(solarRecComputedArtifacts.scopeId, scopeId),
+            eq(solarRecComputedArtifacts.artifactType, artifactType),
+            eq(solarRecComputedArtifacts.inputVersionHash, inputVersionHash)
+          )
         )
-      )
-      .limit(1)
-  );
+        .limit(1)
+    );
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return null;
+    }
+    throw error;
+  }
 
   return rows[0] ?? null;
 }
@@ -446,27 +696,34 @@ export async function upsertComputedArtifact(data: {
 
   const now = new Date();
 
-  await withDbRetry("upsert computed artifact", () =>
-    db
-      .insert(solarRecComputedArtifacts)
-      .values({
-        id: nanoid(),
-        scopeId: data.scopeId,
-        artifactType: data.artifactType,
-        inputVersionHash: data.inputVersionHash,
-        payload: data.payload,
-        rowCount: data.rowCount,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .onDuplicateKeyUpdate({
-        set: {
+  try {
+    await withDbRetry("upsert computed artifact", () =>
+      db
+        .insert(solarRecComputedArtifacts)
+        .values({
+          id: nanoid(),
+          scopeId: data.scopeId,
+          artifactType: data.artifactType,
+          inputVersionHash: data.inputVersionHash,
           payload: data.payload,
           rowCount: data.rowCount,
+          createdAt: now,
           updatedAt: now,
-        },
-      })
-  );
+        })
+        .onDuplicateKeyUpdate({
+          set: {
+            payload: data.payload,
+            rowCount: data.rowCount,
+            updatedAt: now,
+          },
+        })
+    );
+  } catch (error) {
+    if (isMissingTableError(error)) {
+      return;
+    }
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -537,13 +794,14 @@ export async function failComputeRun(
 ): Promise<void> {
   const db = await getDb();
   if (!db) return;
+  const safeError = truncateComputeRunError(error);
 
   await withDbRetry("fail compute run", () =>
     db
       .update(solarRecComputeRuns)
       .set({
         status: "failed",
-        error,
+        error: safeError,
         completedAt: new Date(),
       })
       .where(eq(solarRecComputeRuns.id, runId))
