@@ -89,7 +89,6 @@ import {
   buildDeliveryTrackerData,
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
-import { buildSystems } from "@/solar-rec-dashboard/lib/buildSystems";
 import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
 // transferHistoryDeliveries helpers are now used only by
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
@@ -2783,56 +2782,28 @@ export default function SolarRecDashboard() {
   // and separation of concerns; it just runs on the main thread.
   // Phase 17's dep-narrowing + batched hydration keeps this memo
   // from firing too often.
-  // Phase 8.1 of the server-side architecture migration:
+  // Phase 8.2 of the server-side architecture migration:
   //
-  // Two sources of SystemRecord[] now exist:
-  //   - clientSystems: the original buildSystems() compute on IDB rows
-  //   - serverSnapshot.systems: the server-computed snapshot fetched
-  //     from trpc.solarRecDashboard.getSystemSnapshot
+  // The client no longer runs buildSystems() on the main thread.
+  // SystemRecord[] comes exclusively from the server snapshot
+  // (via useSystemSnapshot hook), which fetches from tRPC and
+  // polls during build. The ~200ms buildSystems compute on the
+  // main thread is eliminated entirely.
   //
-  // We prefer the server snapshot when it's ready (non-null), and
-  // fall back to client compute otherwise. This "stale-while-
-  // revalidate" pattern means users never see a loading flash for
-  // the systems array — the client compute keeps them productive
-  // while the server catches up on first mount / after invalidation.
+  // Empty-array states while the server is loading or building
+  // are fine — the rest of the dashboard already handles dataset
+  // hydration loading states the same way.
   //
-  // Phase 8.2 will delete clientSystems entirely once 8.1 has
-  // been stable in production.
-  //
-  // Gate: skip expensive buildSystems during progressive hydration.
-  // Datasets arrive one at a time — without this gate, buildSystems fires
-  // up to 7 times with partial data before hydration completes. The UI
-  // already shows a loading state, so empty systems during hydration is fine.
-  const clientSystems = useMemo<SystemRecord[]>(
-    () => {
-      if (!datasetsHydrated) return [];
-      return buildSystems({
-        part2VerifiedAbpRows,
-        solarApplicationsRows: datasets.solarApplications?.rows ?? [],
-        contractedDateRows: datasets.contractedDate?.rows ?? [],
-        accountSolarGenerationRows: datasets.accountSolarGeneration?.rows ?? [],
-        generationEntryRows: datasets.generationEntry?.rows ?? [],
-        transferHistoryRows: datasets.transferHistory?.rows ?? [],
-        deliveryScheduleBaseRows: datasets.deliveryScheduleBase?.rows ?? [],
-      });
-    },
-    [
-      datasetsHydrated,
-      part2VerifiedAbpRows,
-      datasets.solarApplications,
-      datasets.contractedDate,
-      datasets.accountSolarGeneration,
-      datasets.generationEntry,
-      datasets.transferHistory,
-      datasets.deliveryScheduleBase,
-    ],
-  );
-
+  // Phase 8.3 (future) removes the IDB-based dataset loading once
+  // non-core datasets (Financials, Invoice Match, etc.) have
+  // server-backed equivalents. For now the datasets state map
+  // stays populated to support those tabs that still read raw
+  // CSV rows (e.g. AlertsTab reading deliveryScheduleBase rows).
   const serverSnapshot = useSystemSnapshot();
 
   const systems = useMemo<SystemRecord[]>(
-    () => serverSnapshot.systems ?? clientSystems,
-    [serverSnapshot.systems, clientSystems],
+    () => serverSnapshot.systems ?? [],
+    [serverSnapshot.systems],
   );
 
 
