@@ -1,0 +1,133 @@
+/**
+ * Server-side system snapshot reader.
+ *
+ * Phase 8.1 of the server-side architecture migration: replaces the
+ * client's buildSystems() compute with a tRPC fetch from the new
+ * server snapshot endpoint. Keeps the client-side compute as a
+ * fallback when the flag is off, the server hasn't finished its
+ * first compute, or an error occurs.
+ *
+ * Uses "stale-while-revalidate": when the server reports
+ * `building: true` the hook's `isReady` stays false and the caller
+ * falls back to client compute; once the server result arrives we
+ * flip `isReady` and return the authoritative server snapshot.
+ * The caller renders continuously with no loading flash.
+ */
+
+import { useMemo } from "react";
+import { trpc } from "@/lib/trpc";
+import { isServerSideStorageEnabled } from "./useServerSideStorage";
+import type { SystemRecord } from "../state/types";
+
+/**
+ * Escape hatch: set `localStorage["solarRec:preferServerSnapshot"] = "false"`
+ * in DevTools to force the dashboard to stay on client-compute even
+ * if the feature flag + snapshot are available. Default: enabled.
+ * This is a belt-and-braces for Phase 8.1 rollout so a surprise on
+ * the server side (e.g. the 647 server-only systems) can be
+ * disabled in-flight without a deploy.
+ */
+const PREFER_SERVER_KEY = "solarRec:preferServerSnapshot";
+function isServerSnapshotPreferred(): boolean {
+  if (typeof window === "undefined") return false;
+  const raw = localStorage.getItem(PREFER_SERVER_KEY);
+  if (raw === null) return true; // default: prefer server when available
+  return raw !== "false";
+}
+
+type SnapshotRow = Omit<
+  SystemRecord,
+  "latestReportingDate" | "zillowSoldDate" | "contractedDate" | "part2VerificationDate"
+> & {
+  latestReportingDate: string | null;
+  zillowSoldDate: string | null;
+  contractedDate: string | null;
+  part2VerificationDate: string | null;
+};
+
+const POLL_INTERVAL_MS = 3000;
+
+function reviveDate(value: string | null): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function reviveSystem(row: SnapshotRow): SystemRecord {
+  return {
+    ...(row as unknown as SystemRecord),
+    latestReportingDate: reviveDate(row.latestReportingDate),
+    zillowSoldDate: reviveDate(row.zillowSoldDate),
+    contractedDate: reviveDate(row.contractedDate),
+    part2VerificationDate: reviveDate(row.part2VerificationDate),
+  };
+}
+
+export type SystemSnapshotState = {
+  /**
+   * Server-computed SystemRecord[] if available AND fully built.
+   * Null during the first compute, on error, or when the feature
+   * flag is off. Callers should fall back to client compute in
+   * those cases.
+   */
+  systems: SystemRecord[] | null;
+  /** True once the server has returned a non-building result. */
+  isReady: boolean;
+  /** True while the server is computing (first fetch for this hash). */
+  isBuilding: boolean;
+  /** True if the snapshot fetch hit a network/tRPC error. */
+  isError: boolean;
+  /** Server-reported hash of the inputs used to compute the snapshot. */
+  inputVersionHash: string | null;
+};
+
+/**
+ * Fetch the server-computed system snapshot for the Solar REC
+ * dashboard. Returns a `systems` array only when the server has
+ * finished building — callers should keep using client compute
+ * until then.
+ */
+export function useSystemSnapshot(): SystemSnapshotState {
+  const enabled = isServerSideStorageEnabled() && isServerSnapshotPreferred();
+
+  // Resolve scopeId first so we can key the snapshot query.
+  const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
+    enabled,
+    staleTime: Infinity,
+    retry: 1,
+  });
+  const scopeId = scopeQuery.data?.scopeId ?? null;
+
+  const snapshotQuery = trpc.solarRecDashboard.getSystemSnapshot.useQuery(
+    { scopeId: scopeId ?? "" },
+    {
+      enabled: enabled && !!scopeId,
+      // While the server reports building=true, poll every 3s so we
+      // flip to the real result as soon as it's cached server-side.
+      refetchInterval: (query) => {
+        const data = query.state.data;
+        return data && data.building ? POLL_INTERVAL_MS : false;
+      },
+      // Don't retry aggressively on transient errors — one retry is
+      // enough, the 3s poll will pick up again soon anyway.
+      retry: 1,
+    }
+  );
+
+  const systems = useMemo<SystemRecord[] | null>(() => {
+    if (!enabled) return null;
+    const data = snapshotQuery.data;
+    if (!data) return null;
+    if (data.building) return null;
+    if (!Array.isArray(data.systems)) return null;
+    return (data.systems as SnapshotRow[]).map(reviveSystem);
+  }, [enabled, snapshotQuery.data]);
+
+  return {
+    systems,
+    isReady: systems !== null,
+    isBuilding: snapshotQuery.data?.building === true,
+    isError: snapshotQuery.isError || scopeQuery.isError,
+    inputVersionHash: snapshotQuery.data?.inputVersionHash ?? null,
+  };
+}

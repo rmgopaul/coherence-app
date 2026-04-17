@@ -90,6 +90,7 @@ import {
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 import { buildSystems } from "@/solar-rec-dashboard/lib/buildSystems";
+import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
 // transferHistoryDeliveries helpers are now used only by
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
@@ -2722,11 +2723,27 @@ export default function SolarRecDashboard() {
   // and separation of concerns; it just runs on the main thread.
   // Phase 17's dep-narrowing + batched hydration keeps this memo
   // from firing too often.
+  // Phase 8.1 of the server-side architecture migration:
+  //
+  // Two sources of SystemRecord[] now exist:
+  //   - clientSystems: the original buildSystems() compute on IDB rows
+  //   - serverSnapshot.systems: the server-computed snapshot fetched
+  //     from trpc.solarRecDashboard.getSystemSnapshot
+  //
+  // We prefer the server snapshot when it's ready (non-null), and
+  // fall back to client compute otherwise. This "stale-while-
+  // revalidate" pattern means users never see a loading flash for
+  // the systems array — the client compute keeps them productive
+  // while the server catches up on first mount / after invalidation.
+  //
+  // Phase 8.2 will delete clientSystems entirely once 8.1 has
+  // been stable in production.
+  //
   // Gate: skip expensive buildSystems during progressive hydration.
   // Datasets arrive one at a time — without this gate, buildSystems fires
   // up to 7 times with partial data before hydration completes. The UI
   // already shows a loading state, so empty systems during hydration is fine.
-  const systems = useMemo<SystemRecord[]>(
+  const clientSystems = useMemo<SystemRecord[]>(
     () => {
       if (!datasetsHydrated) return [];
       return buildSystems({
@@ -2749,6 +2766,13 @@ export default function SolarRecDashboard() {
       datasets.transferHistory,
       datasets.deliveryScheduleBase,
     ],
+  );
+
+  const serverSnapshot = useSystemSnapshot();
+
+  const systems = useMemo<SystemRecord[]>(
+    () => serverSnapshot.systems ?? clientSystems,
+    [serverSnapshot.systems, clientSystems],
   );
 
 
