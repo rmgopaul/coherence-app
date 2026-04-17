@@ -73,17 +73,48 @@ export async function computeSystemSnapshotHash(
 
 /**
  * Per-table mapping of typed column name → original CSV header name.
- * Only needed for tables that don't have a rawRow column (where we
- * must reconstruct the CSV-style keys buildSystems reads from the
- * typed columns alone). For tables WITH rawRow, all CSV keys come
- * from the JSON blob and this mapping is a no-op.
+ * Required for:
+ *   (a) tables with no rawRow column (contractedDate), where typed
+ *       columns are the only source of truth
+ *   (b) large tables where we deliberately skip rawRow to keep
+ *       server memory under Render's ~1GB heap ceiling
+ *       (accountSolarGeneration, transferHistory)
+ * For remaining tables the rawRow JSON provides all original CSV
+ * keys and this mapping is a no-op.
  */
 const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
   srDsContractedDate: {
     systemId: "id",
     contractedDate: "contracted",
   },
+  srDsAccountSolarGeneration: {
+    gatsGenId: "GATS Gen ID",
+    facilityName: "Facility Name",
+    monthOfGeneration: "Month of Generation",
+    lastMeterReadDate: "Last Meter Read Date",
+    lastMeterReadKwh: "Last Meter Read (kWh)",
+  },
+  srDsTransferHistory: {
+    unitId: "Unit ID",
+    transferor: "Transferor",
+    transferee: "Transferee",
+    transferCompletionDate: "Transfer Completion Date",
+    quantity: "Quantity",
+    transactionId: "Transaction ID",
+  },
 };
+
+/**
+ * Tables where rawRow is NOT fetched at read time. Every field
+ * buildSystems reads from these rows is already covered by a
+ * typed column (see TYPED_COLUMN_TO_CSV_KEY). Skipping rawRow
+ * drops roughly 500MB of wire transfer + JSON parse work on a
+ * million-row dataset.
+ */
+const SKIP_RAW_ROW_TABLES = new Set<string>([
+  "srDsAccountSolarGeneration",
+  "srDsTransferHistory",
+]);
 
 /**
  * Load rows from a dataset table and reconstruct CsvRow[] from
@@ -99,17 +130,39 @@ async function loadDatasetRows(
   const db = await getDb();
   if (!db) return [];
 
-  const rows = await withDbRetry("load dataset rows", () =>
-    db
-      .select()
-      .from(table)
-      .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
-  );
-
   const tableName: string | undefined =
     (table as { _?: { name?: string } })?._?.name ??
     (table as { name?: string })?.name;
   const remap = tableName ? TYPED_COLUMN_TO_CSV_KEY[tableName] : undefined;
+  const skipRawRow = tableName ? SKIP_RAW_ROW_TABLES.has(tableName) : false;
+
+  // For big tables we build an explicit select that omits rawRow —
+  // saves ~500MB of wire transfer on the accountSolarGeneration +
+  // transferHistory pair, which is what was OOMing Render.
+  const selectCols = skipRawRow
+    ? (() => {
+        const cols: Record<string, unknown> = {};
+        const fromTable = table as Record<string, unknown>;
+        for (const [col, val] of Object.entries(fromTable)) {
+          if (col === "rawRow") continue;
+          cols[col] = val;
+        }
+        return cols;
+      })()
+    : undefined;
+
+  const rows = await withDbRetry("load dataset rows", () =>
+    selectCols
+      ? db
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic column set
+          .select(selectCols as any)
+          .from(table)
+          .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
+      : db
+          .select()
+          .from(table)
+          .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
+  );
 
   // Reconstruct CsvRow from rawRow JSON + typed columns.
   return (rows as Record<string, unknown>[]).map((row) => {
