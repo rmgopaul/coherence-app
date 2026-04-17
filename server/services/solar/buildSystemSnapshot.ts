@@ -110,9 +110,18 @@ const TYPED_COLUMN_TO_CSV_KEY: Record<string, Record<string, string>> = {
  * typed column (see TYPED_COLUMN_TO_CSV_KEY). Skipping rawRow
  * drops roughly 500MB of wire transfer + JSON parse work on a
  * million-row dataset.
+ *
+ * NOTE: accountSolarGeneration was also here originally, but
+ * buildSystems uses `resolveLastMeterReadRawValue` which does a
+ * case-insensitive substring search across all row keys for
+ * "last meter read". The actual CSV uses column header
+ * "Last Meter Read (kWh/Btu)" (not "Last Meter Read (kWh)" as
+ * the typed column mapping assumed), so without rawRow the
+ * fallback search has nothing to scan. We now preserve rawRow
+ * for accountSolarGeneration at the cost of ~170MB more wire
+ * transfer — still fits comfortably under the 2GB Node heap.
  */
 const SKIP_RAW_ROW_TABLES = new Set<string>([
-  "srDsAccountSolarGeneration",
   "srDsTransferHistory",
 ]);
 
