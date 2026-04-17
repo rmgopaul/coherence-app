@@ -136,25 +136,49 @@ async function loadTransferRows(batchId: string): Promise<
   );
 }
 
+const TRANSFER_DELIVERY_ARTIFACT_TYPE = "transfer_delivery_lookup";
+
 /**
  * Build the delivery lookup from the active transferHistory batch
  * for a scope. The result object is safe to serialize (plain
- * object, no Maps) and compact enough to return over tRPC without
- * async building.
+ * object, no Maps).
+ *
+ * Cached in `solarRecComputedArtifacts` keyed by the active
+ * transferHistory batchId (batch IDs change atomically when a new
+ * upload activates, so this is a perfect content hash). Cache hit
+ * serves in ~1ms; cache miss runs the 200-500ms algorithm and
+ * writes the result for next time.
+ *
+ * A per-process single-flight guard (`inFlightBuilds`) collapses
+ * concurrent requests that miss the cache simultaneously onto one
+ * promise — otherwise an N-user cold start would do N identical
+ * iterations over 579k rows.
  */
-export async function buildTransferDeliveryLookupForScope(
-  scopeId: string
-): Promise<TransferDeliveryLookupPayload> {
-  const batchId = await getActiveTransferHistoryBatchId(scopeId);
-  if (!batchId) {
-    return {
-      byTrackingId: {},
-      inputVersionHash: null,
-      transferHistoryBatchId: null,
-    };
-  }
+const inFlightBuilds = new Map<
+  string,
+  Promise<TransferDeliveryLookupPayload>
+>();
 
-  const rows = await loadTransferRows(batchId);
+/** Typed-row shape loadTransferRows returns (exported for tests). */
+export type TypedTransferRow = {
+  unitId: string | null;
+  transferor: string | null;
+  transferee: string | null;
+  transferCompletionDate: string | null;
+  quantity: number | null;
+};
+
+/**
+ * Pure algorithm: given a batch's typed rows, produce the lookup
+ * payload. Exported for direct unit-testing — the full
+ * buildTransferDeliveryLookupForScope path also exercises cache
+ * + single-flight machinery, which we don't want every test to
+ * mock out.
+ */
+export function computeTransferDeliveryLookupFromRows(
+  rows: readonly TypedTransferRow[],
+  batchId: string
+): TransferDeliveryLookupPayload {
   const byTrackingId: Record<string, Record<string, number>> = {};
 
   for (const row of rows) {
@@ -194,12 +218,95 @@ export async function buildTransferDeliveryLookupForScope(
 
   return {
     byTrackingId,
-    // The batch ID is the hash — simpler and stronger than a content
-    // hash because ingestDataset always creates a new batch on
-    // successful upload.
     inputVersionHash: batchId,
     transferHistoryBatchId: batchId,
   };
+}
+
+async function computeFresh(
+  batchId: string
+): Promise<TransferDeliveryLookupPayload> {
+  const rows = await loadTransferRows(batchId);
+  return computeTransferDeliveryLookupFromRows(rows, batchId);
+}
+
+export async function buildTransferDeliveryLookupForScope(
+  scopeId: string
+): Promise<TransferDeliveryLookupPayload> {
+  const batchId = await getActiveTransferHistoryBatchId(scopeId);
+  if (!batchId) {
+    return {
+      byTrackingId: {},
+      inputVersionHash: null,
+      transferHistoryBatchId: null,
+    };
+  }
+
+  // Cache read.
+  const { getComputedArtifact, upsertComputedArtifact } = await import(
+    "../../db/solarRecDatasets"
+  );
+  const cached = await getComputedArtifact(
+    scopeId,
+    TRANSFER_DELIVERY_ARTIFACT_TYPE,
+    batchId
+  );
+  if (cached?.payload) {
+    try {
+      const parsed = JSON.parse(cached.payload) as {
+        byTrackingId: Record<string, Record<string, number>>;
+      };
+      if (parsed && typeof parsed === "object" && parsed.byTrackingId) {
+        return {
+          byTrackingId: parsed.byTrackingId,
+          inputVersionHash: batchId,
+          transferHistoryBatchId: batchId,
+        };
+      }
+    } catch {
+      // Malformed cache payload — fall through to recompute.
+    }
+  }
+
+  // Single-flight: if someone else is already building this lookup
+  // for this scope+batchId, await their promise rather than
+  // launching a duplicate 579k-row iteration.
+  const flightKey = `${scopeId}:${batchId}`;
+  const existing = inFlightBuilds.get(flightKey);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const result = await computeFresh(batchId);
+
+      // Best-effort cache write — don't fail the request if it fails.
+      try {
+        const serialized = JSON.stringify({
+          byTrackingId: result.byTrackingId,
+        });
+        const rowCount = Object.keys(result.byTrackingId).length;
+        await upsertComputedArtifact({
+          scopeId,
+          artifactType: TRANSFER_DELIVERY_ARTIFACT_TYPE,
+          inputVersionHash: batchId,
+          payload: serialized,
+          rowCount,
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[buildTransferDeliveryLookup] cache write failed:`,
+          err instanceof Error ? err.message : err
+        );
+      }
+
+      return result;
+    } finally {
+      inFlightBuilds.delete(flightKey);
+    }
+  })();
+  inFlightBuilds.set(flightKey, promise);
+  return promise;
 }
 
 // Lightweight hash-only accessor in case a consumer wants to check
