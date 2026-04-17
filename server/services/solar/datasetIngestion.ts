@@ -19,10 +19,8 @@ import { storagePut } from "../../storage";
 import {
   persistDatasetRows,
   hasPersistence,
-  appendRowExists,
   cloneDatasetBatchRows,
 } from "./datasetRowPersistence";
-import { mapWithConcurrency } from "../core/concurrency";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -142,94 +140,39 @@ function validateHeaders(
 }
 
 // ---------------------------------------------------------------------------
-// Row dedup (first-write-wins)
+// Row dedup (first-write-wins) — key builder lives in
+// datasetRowPersistence.ts alongside the bulk key-set loader so the
+// upload-side key and the DB-side key stay defined in one place.
 // ---------------------------------------------------------------------------
-
-function buildRowKey(
-  row: Record<string, string>,
-  keyFields: string[]
-): string {
-  return keyFields
-    .map((field) => (row[field] ?? "").trim().toLowerCase())
-    .join("|");
-}
-
-function deduplicateRows(
-  existingRows: Record<string, string>[],
-  newRows: Record<string, string>[],
-  keyFields: string[]
-): { merged: Record<string, string>[]; dedupedCount: number } {
-  const existingKeys = new Set(
-    existingRows.map((row) => buildRowKey(row, keyFields))
-  );
-
-  let dedupedCount = 0;
-  const uniqueNew: Record<string, string>[] = [];
-
-  for (const row of newRows) {
-    const key = buildRowKey(row, keyFields);
-    if (existingKeys.has(key)) {
-      dedupedCount++;
-    } else {
-      existingKeys.add(key);
-      uniqueNew.push(row);
-    }
-  }
-
-  return {
-    merged: [...existingRows, ...uniqueNew],
-    dedupedCount,
-  };
-}
-
-const APPEND_EXISTS_CHECK_CONCURRENCY = 16;
 
 async function filterAppendRows(
   scopeId: string,
   batchId: string | null,
   datasetKey: string,
   newRows: Record<string, string>[],
-  keyFields: string[]
+  _keyFields: string[]
 ): Promise<{ rows: Record<string, string>[]; dedupedCount: number }> {
-  const uniqueUploadRows: Record<string, string>[] = [];
-  const seenUploadKeys = new Set<string>();
-  let dedupedCount = 0;
-
-  for (const row of newRows) {
-    const key = buildRowKey(row, keyFields);
-    if (!key) {
-      uniqueUploadRows.push(row);
-      continue;
-    }
-    if (seenUploadKeys.has(key)) {
-      dedupedCount += 1;
-      continue;
-    }
-    seenUploadKeys.add(key);
-    uniqueUploadRows.push(row);
-  }
-
-  if (!batchId) {
-    return { rows: uniqueUploadRows, dedupedCount };
-  }
-
-  const existenceChecks = await mapWithConcurrency(
-    uniqueUploadRows,
-    APPEND_EXISTS_CHECK_CONCURRENCY,
-    async (row) => ({
-      row,
-      exists: await appendRowExists(scopeId, batchId, datasetKey, row),
-    })
+  // Load every existing dedupe key from the target batch in ONE
+  // query, then do all comparisons in memory. Previous approach did
+  // N serial SELECTs (one per upload row) which put the request
+  // over Render's 100s proxy timeout on 500k+ row uploads.
+  //
+  // When batchId is null (no previous active batch to clone from
+  // or first-time ingest), the existing set is empty and we only
+  // dedupe within the upload itself.
+  const { loadExistingRowKeys, partitionAppendRowsByKeySet } = await import(
+    "./datasetRowPersistence"
   );
+  const existingKeys = batchId
+    ? await loadExistingRowKeys(scopeId, batchId, datasetKey)
+    : new Set<string>();
 
-  const rows = existenceChecks
-    .filter((entry) => {
-      if (entry.exists) dedupedCount += 1;
-      return !entry.exists;
-    })
-    .map((entry) => entry.row);
-
-  return { rows, dedupedCount };
+  const { toInsert, dedupedCount } = partitionAppendRowsByKeySet(
+    datasetKey,
+    newRows,
+    existingKeys
+  );
+  return { rows: toInsert, dedupedCount };
 }
 
 // ---------------------------------------------------------------------------
