@@ -334,6 +334,32 @@ async function migrateOneDataset(
 }
 
 /**
+ * Per-process single-flight map: while an ingest for a given
+ * (scope, datasetKey) pair is in flight, concurrent requests for
+ * the same pair reuse the same Promise rather than launching a
+ * second ingest.
+ *
+ * This is the fix for the production failure mode where a user
+ * double-clicking upload (or the client retrying on a 502) would
+ * trigger two overlapping `syncOneCoreDatasetFromStorage` calls.
+ * Both would clone the previous active batch, both would insert
+ * rows into their own new processing batches, and the second
+ * activate would supersede the first — leaving the first's
+ * processing batch orphaned. We observed 19 such orphans on
+ * 2026-04-17.
+ *
+ * The key is `${scopeId}:${datasetKey}`. The value is the
+ * currently-running Promise. Entries are deleted after the
+ * Promise settles so the next legitimate sync is free to start.
+ *
+ * Note: this is per-process. Multi-dyno deploys would need a
+ * claim-row pattern against a DB table (similar to compute_runs'
+ * UNIQUE constraint). Acceptable for the current single-dyno
+ * Render setup.
+ */
+const inFlightSyncs = new Map<string, Promise<DatasetMigrationStatus>>();
+
+/**
  * Public entry point to sync ONE core dataset from
  * solarRecDashboardStorage into its typed srDs* table. Intended
  * to be called after the main dashboard's saveDataset flow
@@ -359,7 +385,22 @@ export async function syncOneCoreDatasetFromStorage(
       reason: "Not a core dataset — no srDs* table for this key",
     };
   }
-  return migrateOneDataset(scopeId, datasetKey, ownerUserId);
+
+  const flightKey = `${scopeId}:${datasetKey}`;
+  const existing = inFlightSyncs.get(flightKey);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      return await migrateOneDataset(scopeId, datasetKey, ownerUserId);
+    } finally {
+      // Always clear, even on error, so the next legitimate sync
+      // can start immediately.
+      inFlightSyncs.delete(flightKey);
+    }
+  })();
+  inFlightSyncs.set(flightKey, promise);
+  return promise;
 }
 
 // ---------------------------------------------------------------------------

@@ -720,6 +720,17 @@ async function mapWithBoundedConcurrency<TInput, TOutput>(
 const REMOTE_WRITE_CONCURRENCY = 4;
 /** Max concurrent tRPC mutations for remote dataset READS (hydration fetches). */
 const REMOTE_READ_CONCURRENCY = 12;
+/** Byte slice size for streamed remote file uploads. Keeps browser memory bounded. */
+const REMOTE_FILE_STREAM_SLICE_BYTES = 256 * 1024;
+
+function concatUint8Arrays(left: Uint8Array, right: Uint8Array): Uint8Array {
+  if (left.length === 0) return right;
+  if (right.length === 0) return left;
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left, 0);
+  merged.set(right, left.length);
+  return merged;
+}
 
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3, initialDelayMs = 250): Promise<T> {
   let lastError: unknown = null;
@@ -1810,6 +1821,7 @@ async function saveLogsToStorage(logEntries: DashboardLogEntry[]): Promise<void>
 export default function SolarRecDashboard() {
   const [location, setLocation] = useLocation();
   const search = useSearch();
+  const trpcUtils = trpc.useUtils();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
   const [datasetsHydrated, setDatasetsHydrated] = useState(false);
   // Phase 16: progress counter for the streaming hydration path, so
@@ -1839,6 +1851,8 @@ export default function SolarRecDashboard() {
     staleTime: 5 * 60 * 1000,
   });
   const scopeId = scopeIdQuery.data?.scopeId ?? null;
+  const scopeIdRef = useRef<string | null>(scopeId);
+  scopeIdRef.current = scopeId;
 
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
     retry: 4,
@@ -1853,6 +1867,7 @@ export default function SolarRecDashboard() {
     trpc.solarRecDashboard.syncCoreDatasetFromStorage.useMutation();
   const syncCoreDatasetToSrDsRef = useRef(syncCoreDatasetToSrDs);
   syncCoreDatasetToSrDsRef.current = syncCoreDatasetToSrDs;
+  const activeCoreDatasetSyncJobRef = useRef<Partial<Record<DatasetKey, string>>>({});
 
   /**
    * Core-dataset keys whose uploads should re-sync into the typed
@@ -1880,27 +1895,50 @@ export default function SolarRecDashboard() {
    * solarRecDashboardStorage and rebuilds the srDs* table. Errors
    * are logged to the console but don't surface to the user — the
    * old srDs data stays active until a successful sync lands.
+   *
+   * On success, invalidates the tRPC queries whose results depend
+   * on the new srDs batch (system snapshot, transfer delivery
+   * lookup, active dataset versions, snapshot hash). Without this
+   * invalidation React Query would keep serving its cached pre-
+   * upload result until some unrelated refetch happened, and the
+   * dashboard would render stale data even though the server
+   * cache correctly invalidated itself via the new batch's
+   * inputVersionHash change.
    */
   const triggerCoreDatasetSrDsSync = useCallback(
     (key: string) => {
       if (!CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) return;
       void syncCoreDatasetToSrDsRef.current
         .mutateAsync({ datasetKey: key })
-        .then((result) => {
+        .then(async (result) => {
           if (result.state === "failed") {
             // eslint-disable-next-line no-console
             console.warn(
               `[solar-rec] srDs sync for ${key} failed:`,
               result.error
             );
+            return;
           }
+          // Success (state === "done" or "skipped"): refresh every
+          // tRPC query that reads srDs* downstream. Silently
+          // inline the invalidation rather than going through the
+          // helper hoist so this callback can live above the
+          // helper definition without a TDZ.
+          const sid = scopeIdRef.current;
+          if (!sid) return;
+          await Promise.all([
+            trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
+            trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
+            trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
+            trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
+          ]);
         })
         .catch((err) => {
           // eslint-disable-next-line no-console
           console.warn(`[solar-rec] srDs sync for ${key} threw:`, err);
         });
     },
-    [CORE_DATASET_KEYS_FOR_SNAPSHOT]
+    [CORE_DATASET_KEYS_FOR_SNAPSHOT, trpcUtils]
   );
   const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
@@ -2165,6 +2203,62 @@ export default function SolarRecDashboard() {
     [pickCsvParserWorker],
   );
 
+  const invalidateServerDerivedSolarData = useCallback(async () => {
+    if (!scopeId) return;
+    await Promise.all([
+      trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId }),
+      trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId }),
+      trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId }),
+      trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId }),
+    ]);
+  }, [scopeId, trpcUtils]);
+
+  const pollCoreDatasetSyncJob = useCallback(
+    async (key: DatasetKey, jobId: string) => {
+      const deadlineMs = Date.now() + 5 * 60 * 1000;
+
+      while (Date.now() < deadlineMs) {
+        if (activeCoreDatasetSyncJobRef.current[key] !== jobId) return;
+
+        const status =
+          await trpcUtils.solarRecDashboard.getCoreDatasetSyncStatus.fetch({
+            jobId,
+          }).catch(() => null);
+
+        if (!status || status.state === "running" || status.state === "pending") {
+          await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
+          continue;
+        }
+
+        if (activeCoreDatasetSyncJobRef.current[key] === jobId) {
+          delete activeCoreDatasetSyncJobRef.current[key];
+        }
+
+        if (status.state === "done") {
+          await invalidateServerDerivedSolarData();
+          return;
+        }
+
+        if (status.state === "failed") {
+          // eslint-disable-next-line no-console
+          console.warn(`[solar-rec] srDs sync for ${key} failed:`, status.error);
+        }
+        return;
+      }
+
+      if (activeCoreDatasetSyncJobRef.current[key] === jobId) {
+        delete activeCoreDatasetSyncJobRef.current[key];
+      }
+      // eslint-disable-next-line no-console
+      console.warn(`[solar-rec] srDs sync for ${key} did not finish before client polling timed out.`);
+    },
+    [invalidateServerDerivedSolarData, trpcUtils]
+  );
+
+  const uploadRemoteChunkPayload = useCallback(async (key: string, payload: string) => {
+    await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
+  }, []);
+
   // Phase 13a: chunk uploads now run in parallel via Promise.all.
   // Each chunk is an independent mutation keyed by its chunk index,
   // so order doesn't matter and the existing per-call withRetry
@@ -2174,7 +2268,7 @@ export default function SolarRecDashboard() {
   const saveRemotePayloadWithChunks = useCallback(async (key: string, payload: string): Promise<string[]> => {
     const chunks = splitTextIntoChunks(payload, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
     if (chunks.length === 1) {
-      await withRetry(() => saveRemoteDatasetRef.current.mutateAsync({ key, payload }));
+      await uploadRemoteChunkPayload(key, payload);
       return [];
     }
 
@@ -2183,21 +2277,101 @@ export default function SolarRecDashboard() {
       chunks.map((chunk, index) => ({ chunk, index })),
       REMOTE_WRITE_CONCURRENCY,
       ({ chunk, index }) =>
-        withRetry(() =>
-          saveRemoteDatasetRef.current.mutateAsync({
-            key: chunkKeys[index],
-            payload: chunk,
-          })
-        )
+        uploadRemoteChunkPayload(chunkKeys[index]!, chunk)
     );
-    await withRetry(() =>
-      saveRemoteDatasetRef.current.mutateAsync({
-        key,
-        payload: buildChunkPointerPayload(chunkKeys),
-      })
-    );
+    await uploadRemoteChunkPayload(key, buildChunkPointerPayload(chunkKeys));
     return chunkKeys;
-  }, []);
+  }, [uploadRemoteChunkPayload]);
+
+  const saveRemoteTextFileWithChunks = useCallback(
+    async (key: string, file: File): Promise<string[]> => {
+      const chunkKeys: string[] = [];
+      const decoder = new TextDecoder();
+      let chunkIndex = 0;
+      let bufferedText = "";
+
+      const flushBufferedText = async (force = false) => {
+        while (
+          bufferedText.length >= REMOTE_DATASET_CHUNK_CHAR_LIMIT ||
+          (force && bufferedText.length > 0)
+        ) {
+          const nextChunk = bufferedText.slice(0, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+          bufferedText = bufferedText.slice(REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+          const chunkKey = buildRemoteDatasetChunkKey(key, chunkIndex++);
+          await uploadRemoteChunkPayload(chunkKey, nextChunk);
+          chunkKeys.push(chunkKey);
+        }
+      };
+
+      for (let offset = 0; offset < file.size; offset += REMOTE_FILE_STREAM_SLICE_BYTES) {
+        const slice = file.slice(offset, offset + REMOTE_FILE_STREAM_SLICE_BYTES);
+        const bytes = new Uint8Array(await slice.arrayBuffer());
+        const isLastSlice = offset + REMOTE_FILE_STREAM_SLICE_BYTES >= file.size;
+        bufferedText += decoder.decode(bytes, { stream: !isLastSlice });
+        await flushBufferedText(false);
+      }
+
+      await flushBufferedText(true);
+      if (chunkKeys.length === 0) {
+        await uploadRemoteChunkPayload(key, "");
+        return [];
+      }
+
+      await uploadRemoteChunkPayload(key, buildChunkPointerPayload(chunkKeys));
+      return chunkKeys;
+    },
+    [uploadRemoteChunkPayload]
+  );
+
+  const saveRemoteBinaryFileWithChunks = useCallback(
+    async (key: string, file: File): Promise<string[]> => {
+      const chunkKeys: string[] = [];
+      let chunkIndex = 0;
+      let bufferedBase64 = "";
+      let carryBytes = new Uint8Array(0);
+
+      const flushBufferedBase64 = async (force = false) => {
+        while (
+          bufferedBase64.length >= REMOTE_DATASET_CHUNK_CHAR_LIMIT ||
+          (force && bufferedBase64.length > 0)
+        ) {
+          const nextChunk = bufferedBase64.slice(0, REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+          bufferedBase64 = bufferedBase64.slice(REMOTE_DATASET_CHUNK_CHAR_LIMIT);
+          const chunkKey = buildRemoteDatasetChunkKey(key, chunkIndex++);
+          await uploadRemoteChunkPayload(chunkKey, nextChunk);
+          chunkKeys.push(chunkKey);
+        }
+      };
+
+      for (let offset = 0; offset < file.size; offset += REMOTE_FILE_STREAM_SLICE_BYTES) {
+        const slice = file.slice(offset, offset + REMOTE_FILE_STREAM_SLICE_BYTES);
+        const bytes = new Uint8Array(await slice.arrayBuffer());
+        const combined = concatUint8Arrays(carryBytes, bytes);
+        const fullGroupLength = combined.length - (combined.length % 3);
+
+        if (fullGroupLength > 0) {
+          bufferedBase64 += bytesToBase64(combined.subarray(0, fullGroupLength));
+          await flushBufferedBase64(false);
+        }
+
+        carryBytes = combined.slice(fullGroupLength);
+      }
+
+      if (carryBytes.length > 0) {
+        bufferedBase64 += bytesToBase64(carryBytes);
+      }
+
+      await flushBufferedBase64(true);
+      if (chunkKeys.length === 0) {
+        await uploadRemoteChunkPayload(key, "");
+        return [];
+      }
+
+      await uploadRemoteChunkPayload(key, buildChunkPointerPayload(chunkKeys));
+      return chunkKeys;
+    },
+    [uploadRemoteChunkPayload]
+  );
 
   // Phase 13a: chunk clears are also independent mutations — parallel
   // them too. The primary-key clear (empty payload) is kept as its

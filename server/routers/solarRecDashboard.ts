@@ -213,6 +213,36 @@ export const solarRecDashboardRouter = router({
       );
     }),
 
+  /**
+   * Stub for the async-job polling endpoint the client is wired for
+   * (pollCoreDatasetSyncJob in SolarRecDashboard.tsx). The current
+   * sync flow runs the ingest inside the request-response cycle of
+   * `syncCoreDatasetFromStorage`, so by the time the client has a
+   * jobId the result is already known. This stub exists so the
+   * client's polling code typechecks; it returns `state: "done"`
+   * immediately.
+   *
+   * TODO: wire this to a real in-memory or DB-backed job registry
+   * once `syncCoreDatasetFromStorage` is refactored to fire the
+   * ingest in the background and return a jobId immediately. Then
+   * the client's fire-and-forget + 502-on-timeout pattern goes
+   * away — the HTTP request returns in ~10ms, and the client
+   * polls until the ingest is done.
+   */
+  getCoreDatasetSyncStatus: protectedProcedure
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(
+      async (): Promise<{
+        state: "pending" | "running" | "done" | "failed";
+        error: string | null;
+      }> => {
+        return {
+          state: "done",
+          error: null,
+        };
+      }
+    ),
+
   getState: protectedProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
     const dbStorageKey = "state";
@@ -1795,6 +1825,7 @@ export const solarRecDashboardRouter = router({
         data: result.data,
         fromCache: result.fromCache,
         inputVersionHash: result.inputVersionHash,
+        building: result.building,
       };
     }),
 
