@@ -1,39 +1,21 @@
 /**
  * Server-side system snapshot reader.
  *
- * Phase 8.1 of the server-side architecture migration: replaces the
- * client's buildSystems() compute with a tRPC fetch from the new
- * server snapshot endpoint. Keeps the client-side compute as a
- * fallback when the flag is off, the server hasn't finished its
- * first compute, or an error occurs.
+ * Fetches the server-computed SystemRecord[] snapshot via tRPC and
+ * handles the async "building" state with 3-second polling. When
+ * the server reports `building: true` the returned `systems` is
+ * null and `isBuilding` is true; consumers should treat that
+ * exactly like "data not loaded yet".
  *
- * Uses "stale-while-revalidate": when the server reports
- * `building: true` the hook's `isReady` stays false and the caller
- * falls back to client compute; once the server result arrives we
- * flip `isReady` and return the authoritative server snapshot.
- * The caller renders continuously with no loading flash.
+ * Date fields on the wire are ISO strings (tRPC JSON serialization)
+ * and get revived to Date objects here so downstream code can treat
+ * them as SystemRecord's declared `Date | null` type.
  */
 
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import { isServerSideStorageEnabled } from "./useServerSideStorage";
 import type { SystemRecord } from "../state/types";
-
-/**
- * Escape hatch: set `localStorage["solarRec:preferServerSnapshot"] = "false"`
- * in DevTools to force the dashboard to stay on client-compute even
- * if the feature flag + snapshot are available. Default: enabled.
- * This is a belt-and-braces for Phase 8.1 rollout so a surprise on
- * the server side (e.g. the 647 server-only systems) can be
- * disabled in-flight without a deploy.
- */
-const PREFER_SERVER_KEY = "solarRec:preferServerSnapshot";
-function isServerSnapshotPreferred(): boolean {
-  if (typeof window === "undefined") return false;
-  const raw = localStorage.getItem(PREFER_SERVER_KEY);
-  if (raw === null) return true; // default: prefer server when available
-  return raw !== "false";
-}
 
 type SnapshotRow = Omit<
   SystemRecord,
@@ -66,9 +48,8 @@ function reviveSystem(row: SnapshotRow): SystemRecord {
 export type SystemSnapshotState = {
   /**
    * Server-computed SystemRecord[] if available AND fully built.
-   * Null during the first compute, on error, or when the feature
-   * flag is off. Callers should fall back to client compute in
-   * those cases.
+   * Null during the first compute (building=true), on error, or
+   * when the feature flag is off.
    */
   systems: SystemRecord[] | null;
   /** True once the server has returned a non-building result. */
@@ -83,12 +64,10 @@ export type SystemSnapshotState = {
 
 /**
  * Fetch the server-computed system snapshot for the Solar REC
- * dashboard. Returns a `systems` array only when the server has
- * finished building — callers should keep using client compute
- * until then.
+ * dashboard.
  */
 export function useSystemSnapshot(): SystemSnapshotState {
-  const enabled = isServerSideStorageEnabled() && isServerSnapshotPreferred();
+  const enabled = isServerSideStorageEnabled();
 
   // Resolve scopeId first so we can key the snapshot query.
   const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
