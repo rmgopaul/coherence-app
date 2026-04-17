@@ -31,7 +31,7 @@ import {
 // Dataset list
 // ---------------------------------------------------------------------------
 
-const CORE_DATASETS = [
+export const CORE_DATASETS = [
   "solarApplications",
   "abpReport",
   "generationEntry",
@@ -41,7 +41,11 @@ const CORE_DATASETS = [
   "transferHistory",
 ] as const;
 
-type CoreDatasetKey = (typeof CORE_DATASETS)[number];
+export type CoreDatasetKey = (typeof CORE_DATASETS)[number];
+
+export function isCoreDatasetKey(key: string): key is CoreDatasetKey {
+  return (CORE_DATASETS as readonly string[]).includes(key);
+}
 
 // ---------------------------------------------------------------------------
 // Job state
@@ -302,6 +306,35 @@ async function migrateOneDataset(
       error: err instanceof Error ? err.message : "Ingest threw",
     };
   }
+}
+
+/**
+ * Public entry point to sync ONE core dataset from
+ * solarRecDashboardStorage into its typed srDs* table. Intended
+ * to be called after the main dashboard's saveDataset flow
+ * completes a core-dataset write, so the server-side snapshot
+ * stays fresh without the user having to re-trigger a full
+ * server migration.
+ *
+ * Fire-and-forget safe: returns a DatasetMigrationStatus object
+ * instead of throwing on ingest failure. The snapshot cache is
+ * keyed by the activeDatasetVersion hash, so activating a new
+ * batch (which ingestDataset does on success) naturally
+ * invalidates the old cache — no explicit bust is required.
+ */
+export async function syncOneCoreDatasetFromStorage(
+  scopeId: string,
+  datasetKey: string,
+  ownerUserId: number
+): Promise<DatasetMigrationStatus> {
+  if (!isCoreDatasetKey(datasetKey)) {
+    return {
+      datasetKey,
+      state: "skipped",
+      reason: "Not a core dataset — no srDs* table for this key",
+    };
+  }
+  return migrateOneDataset(scopeId, datasetKey, ownerUserId);
 }
 
 // ---------------------------------------------------------------------------

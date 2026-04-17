@@ -1851,6 +1851,59 @@ export default function SolarRecDashboard() {
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const syncCoreDatasetToSrDs =
+    trpc.solarRecDashboard.syncCoreDatasetFromStorage.useMutation();
+  const syncCoreDatasetToSrDsRef = useRef(syncCoreDatasetToSrDs);
+  syncCoreDatasetToSrDsRef.current = syncCoreDatasetToSrDs;
+
+  /**
+   * Core-dataset keys whose uploads should re-sync into the typed
+   * srDs* tables so the server-side system snapshot stays fresh.
+   * Other keys (non-core datasets that don't feed the snapshot)
+   * are skipped — saving time.
+   */
+  const CORE_DATASET_KEYS_FOR_SNAPSHOT = useMemo(
+    () =>
+      new Set<string>([
+        "solarApplications",
+        "abpReport",
+        "generationEntry",
+        "accountSolarGeneration",
+        "contractedDate",
+        "deliveryScheduleBase",
+        "transferHistory",
+      ]),
+    []
+  );
+
+  /**
+   * Fire-and-forget trigger. Called after a successful cloud sync of
+   * a core dataset; the server re-reads the payload from
+   * solarRecDashboardStorage and rebuilds the srDs* table. Errors
+   * are logged to the console but don't surface to the user — the
+   * old srDs data stays active until a successful sync lands.
+   */
+  const triggerCoreDatasetSrDsSync = useCallback(
+    (key: string) => {
+      if (!CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) return;
+      void syncCoreDatasetToSrDsRef.current
+        .mutateAsync({ datasetKey: key })
+        .then((result) => {
+          if (result.state === "failed") {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[solar-rec] srDs sync for ${key} failed:`,
+              result.error
+            );
+          }
+        })
+        .catch((err) => {
+          // eslint-disable-next-line no-console
+          console.warn(`[solar-rec] srDs sync for ${key} threw:`, err);
+        });
+    },
+    [CORE_DATASET_KEYS_FOR_SNAPSHOT]
+  );
   const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
   const getRemoteDatasetRef = useRef(getRemoteDataset);
@@ -2218,6 +2271,13 @@ export default function SolarRecDashboard() {
 
         setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
         setDatasetCloudSyncBadge(key, "synced");
+
+        // Phase 8.1.5: fire-and-forget srDs sync for core datasets
+        // so the server-side system snapshot rebuilds with the new
+        // rows. Doesn't block the user — if the sync fails the old
+        // srDs batch stays active as the reader's source of truth.
+        triggerCoreDatasetSrDsSync(key);
+
         return true;
       } catch (error) {
         setDatasetCloudSyncBadge(key, "failed");
@@ -2227,7 +2287,7 @@ export default function SolarRecDashboard() {
         return false;
       }
     },
-    [saveRemotePayloadWithChunks, setDatasetCloudSyncBadge]
+    [saveRemotePayloadWithChunks, setDatasetCloudSyncBadge, triggerCoreDatasetSrDsSync]
   );
 
   const uploadRemoteSourceFile = useCallback(
@@ -4524,6 +4584,8 @@ export default function SolarRecDashboard() {
                 setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
               }
               setDatasetCloudSyncBadge(key, "synced");
+              // Phase 8.1.5: keep srDs* in sync for core datasets.
+              triggerCoreDatasetSrDsSync(key);
             } catch {
               if (forceSyncRequested) {
                 forcedRemoteDatasetSyncKeysRef.current.delete(key);
@@ -4675,6 +4737,7 @@ export default function SolarRecDashboard() {
     remoteStateHydrated,
     saveRemotePayloadWithChunks,
     setDatasetCloudSyncBadge,
+    triggerCoreDatasetSrDsSync,
   ]);
 
   useEffect(() => {

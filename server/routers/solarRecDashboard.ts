@@ -182,6 +182,37 @@ export const solarRecDashboardRouter = router({
     return getActiveJobForScope(scopeId);
   }),
 
+  /**
+   * Sync a single core dataset from solarRecDashboardStorage into
+   * its typed srDs* table. Called by the dashboard's upload path
+   * after a core-dataset saveDataset completes, so the server-side
+   * system snapshot stays fresh.
+   *
+   * Runs synchronously inside the request because it's a single
+   * dataset (biggest is ~75MB solarApplications, ~20-30s of work)
+   * — well within Render's request timeout at the 2GB heap budget.
+   *
+   * Returns a DatasetMigrationStatus so the client can log failures.
+   */
+  syncCoreDatasetFromStorage: protectedProcedure
+    .input(z.object({ datasetKey: z.string().min(1) }))
+    .mutation(async ({ input }) => {
+      const { resolveSolarRecScopeId, resolveSolarRecOwnerUserId } =
+        await import("../_core/solarRecAuth");
+      const { getOrCreateScope } = await import("../db");
+      const { syncOneCoreDatasetFromStorage } = await import(
+        "../services/solar/serverSideMigration"
+      );
+      const scopeId = await resolveSolarRecScopeId();
+      const ownerUserId = await resolveSolarRecOwnerUserId();
+      await getOrCreateScope(scopeId, ownerUserId);
+      return syncOneCoreDatasetFromStorage(
+        scopeId,
+        input.datasetKey,
+        ownerUserId
+      );
+    }),
+
   getState: protectedProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
     const dbStorageKey = "state";
