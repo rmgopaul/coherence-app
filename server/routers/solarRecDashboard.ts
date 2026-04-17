@@ -1723,6 +1723,27 @@ export const solarRecDashboardRouter = router({
     }),
 
   /**
+   * Fetch the (trackingId → energyYear → deliveredQuantity) lookup
+   * computed from the active transferHistory batch. Used by tabs
+   * that need per-system delivery totals without the client having
+   * to load 579k+ transferHistory rows into IDB and recompute on
+   * every render.
+   *
+   * Cheap to compute (~200ms on the server for ~600k rows using the
+   * typed-column-only read path) and small to ship (~3MB JSON for
+   * 25k tracking IDs × ~3 years), so runs synchronously without
+   * the snapshot-style async build machinery.
+   */
+  getTransferDeliveryLookup: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const { buildTransferDeliveryLookupForScope } = await import(
+        "../services/solar/buildTransferDeliveryLookup"
+      );
+      return buildTransferDeliveryLookupForScope(input.scopeId);
+    }),
+
+  /**
    * Get the current input version hash for the system snapshot.
    * Clients use this to check freshness without fetching the full payload.
    */

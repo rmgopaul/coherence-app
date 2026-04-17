@@ -90,6 +90,7 @@ import {
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
+import { useTransferDeliveryLookup } from "@/solar-rec-dashboard/hooks/useTransferDeliveryLookup";
 // transferHistoryDeliveries helpers are now used only by
 // @/solar-rec-dashboard/lib/buildSystems (worker-side).
 import type {
@@ -3593,7 +3594,22 @@ export default function SolarRecDashboard() {
   }, [isContractsComputationActive, part2EligibleSystemsForSizeReporting]);
 
   // ── Transfer-Based Delivery Lookup (shared by Perf Eval + Forecast + Delivery Tracker) ──
+  //
+  // Phase 8.4 of the server-side architecture migration:
+  // The server now computes this lookup from the active
+  // transferHistory batch and returns it via tRPC. We prefer the
+  // server result when available, falling back to a client-side
+  // build only while the server fetch is in flight. This is the
+  // same stale-while-revalidate pattern as useSystemSnapshot.
+  //
+  // Once we retire IDB dataset loading (Phase 8.6+), the client
+  // fallback can be dropped entirely.
+  const serverTransferDeliveryLookup = useTransferDeliveryLookup();
+
   const transferDeliveryLookup = useMemo(() => {
+    if (serverTransferDeliveryLookup.lookup) {
+      return serverTransferDeliveryLookup.lookup;
+    }
     const lookup = new Map<string, Map<number, number>>();
     const transferRows = datasets.transferHistory?.rows ?? [];
     if (transferRows.length === 0) return lookup;
@@ -3632,7 +3648,7 @@ export default function SolarRecDashboard() {
     }
 
     return lookup;
-  }, [datasets.transferHistory]);
+  }, [serverTransferDeliveryLookup.lookup, datasets.transferHistory]);
 
   const performanceSourceRows = useMemo<PerformanceSourceRow[]>(() => {
     if (!isPerformanceEvalTabActive && !isForecastTabActive) return [];
