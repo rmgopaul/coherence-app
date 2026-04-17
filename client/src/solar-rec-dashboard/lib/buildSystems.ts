@@ -30,8 +30,9 @@
  *   });
  *
  * The function is a pure reducer over its inputs — no React, no
- * closures, no browser globals — which is what lets it run inside
- * a `self.onmessage` handler in `workers/systems.worker.ts`.
+ * closures, no browser globals — which lets it run isomorphically
+ * on the server (dynamic-imported by buildSystemSnapshot.ts) and
+ * in the ParityReportPanel's client-side recompute verification.
  */
 
 import { clean } from "@/lib/helpers";
@@ -182,10 +183,10 @@ export interface BuildSystemsInput {
  * Build the `SystemRecord[]` array from the raw dataset rows.
  *
  * This function is pure: given the same input it produces the same
- * output, touches no shared state, and has no side effects. That
- * makes it safe to call from a Web Worker (via
- * `workers/systems.worker.ts`) or from the main thread (as a
- * fallback for environments where Workers aren't available).
+ * output, touches no shared state, and has no side effects. It runs
+ * isomorphically on the Node server (from
+ * `server/services/solar/buildSystemSnapshot.ts`) and in the
+ * ParityReportPanel's client-side recompute verification.
  */
 export function buildSystems(input: BuildSystemsInput): SystemRecord[] {
   const {

@@ -2774,14 +2774,6 @@ export default function SolarRecDashboard() {
     return ids;
   }, [part2VerifiedAbpRows]);
 
-  // Phase 19 attempted to run buildSystems in a Web Worker, but the
-  // structured-clone of 100k+ CsvRow objects to the worker hit a
-  // DataCloneError: out of memory. Reverted to a synchronous useMemo
-  // that calls the same pure buildSystems function. The function is
-  // still cleanly extracted to lib/buildSystems.ts for testability
-  // and separation of concerns; it just runs on the main thread.
-  // Phase 17's dep-narrowing + batched hydration keeps this memo
-  // from firing too often.
   // Phase 8.2 of the server-side architecture migration:
   //
   // The client no longer runs buildSystems() on the main thread.
