@@ -22,7 +22,10 @@
 import { nanoid } from "nanoid";
 import { getSolarRecDashboardPayload } from "../../db";
 import { ingestDataset } from "./datasetIngestion";
-import { parseChunkPointerPayload } from "../../routers/helpers";
+import {
+  parseChunkPointerPayload,
+  parseScheduleBRemoteSourceManifest,
+} from "../../routers/helpers";
 
 // ---------------------------------------------------------------------------
 // Dataset list
@@ -101,22 +104,34 @@ export function getActiveJobForScope(
 }
 
 // ---------------------------------------------------------------------------
-// Payload loading — handles the chunk-pointer indirection used by the
-// existing dashboard storage for large datasets.
+// Payload loading — unwraps the two-level indirection used by the
+// existing dashboard storage for large multi-source datasets.
+//
+// `dataset:${datasetKey}` stores one of:
+//   1. A `_rawSourcesV1` manifest listing one or more sources. Each
+//      source has a storageKey that points at either a chunked
+//      dataset or a direct payload. After concatenating each source's
+//      CSV the migrator merges them into a single CSV (header from
+//      the first source is kept; headers from other sources are
+//      stripped so rows line up).
+//   2. A `_chunkedDataset` pointer — rare for top-level datasets but
+//      handled for completeness.
+//   3. The raw payload directly (small legacy datasets).
 // ---------------------------------------------------------------------------
 
-async function loadDatasetPayload(
+async function loadRawSource(
   userId: number,
-  datasetKey: string
+  storageKey: string
 ): Promise<string | null> {
   const basePayload = await getSolarRecDashboardPayload(
     userId,
-    `dataset:${datasetKey}`
+    `dataset:${storageKey}`
   );
   if (!basePayload) return null;
 
   const chunkKeys = parseChunkPointerPayload(basePayload);
   if (!chunkKeys || chunkKeys.length === 0) {
+    // Not chunked — the base payload IS the content.
     return basePayload;
   }
 
@@ -129,7 +144,7 @@ async function loadDatasetPayload(
     );
     if (typeof chunk !== "string") {
       throw new Error(
-        `Missing chunk '${chunkKey}' for dataset '${datasetKey}'`
+        `Missing chunk '${chunkKey}' for source '${storageKey}'`
       );
     }
     merged += chunk;
@@ -137,16 +152,80 @@ async function loadDatasetPayload(
   return merged;
 }
 
+/**
+ * Merge multiple CSV texts into one by keeping the first CSV's
+ * header line and stripping the header line from subsequent CSVs.
+ * Assumes all sources have the same schema (they're uploads of the
+ * same logical dataset).
+ */
+function mergeCsvTexts(csvs: string[]): string {
+  if (csvs.length === 0) return "";
+  if (csvs.length === 1) return csvs[0];
+  const parts: string[] = [csvs[0]];
+  for (let i = 1; i < csvs.length; i++) {
+    const csv = csvs[i];
+    // Find the end of the header line. Handle \r\n or \n.
+    const newlineIdx = csv.indexOf("\n");
+    if (newlineIdx === -1) continue;
+    const body = csv.slice(newlineIdx + 1);
+    if (body.length > 0) parts.push(body);
+  }
+  return parts.join("\n");
+}
+
+async function loadDatasetPayload(
+  userId: number,
+  datasetKey: string
+): Promise<string | null> {
+  const basePayload = await getSolarRecDashboardPayload(
+    userId,
+    `dataset:${datasetKey}`
+  );
+  if (!basePayload) return null;
+
+  // Case 1: multi-source manifest (the common case for real datasets).
+  const sourceManifest = parseScheduleBRemoteSourceManifest(basePayload);
+  if (sourceManifest && sourceManifest.length > 0) {
+    const sourceCsvs: string[] = [];
+    for (const source of sourceManifest) {
+      const raw = await loadRawSource(userId, source.storageKey);
+      if (!raw) continue;
+      const decoded =
+        source.encoding === "base64"
+          ? Buffer.from(raw, "base64").toString("utf8")
+          : raw;
+      if (decoded.length > 0) sourceCsvs.push(decoded);
+    }
+    if (sourceCsvs.length === 0) return null;
+    return mergeCsvTexts(sourceCsvs);
+  }
+
+  // Case 2: top-level chunk pointer (legacy).
+  const chunkKeys = parseChunkPointerPayload(basePayload);
+  if (chunkKeys && chunkKeys.length > 0) {
+    let merged = "";
+    for (const chunkKey of chunkKeys) {
+      const chunk = await getSolarRecDashboardPayload(
+        userId,
+        `dataset:${chunkKey}`
+      );
+      if (typeof chunk !== "string") {
+        throw new Error(
+          `Missing chunk '${chunkKey}' for dataset '${datasetKey}'`
+        );
+      }
+      merged += chunk;
+    }
+    return merged;
+  }
+
+  // Case 3: direct payload (very small datasets only).
+  return basePayload;
+}
+
 // ---------------------------------------------------------------------------
 // Single-dataset migration
 // ---------------------------------------------------------------------------
-
-type RemoteDatasetPayload = {
-  fileName?: string;
-  uploadedAt?: string;
-  headers?: string[];
-  csvText?: string;
-};
 
 async function migrateOneDataset(
   scopeId: string,
@@ -154,9 +233,13 @@ async function migrateOneDataset(
   ownerUserId: number
 ): Promise<DatasetMigrationStatus> {
   const start = Date.now();
-  let payload: string | null = null;
+
+  // loadDatasetPayload returns the raw, assembled CSV text — the
+  // source manifest / chunk pointer indirection is unwrapped
+  // internally.
+  let csvText: string | null = null;
   try {
-    payload = await loadDatasetPayload(ownerUserId, datasetKey);
+    csvText = await loadDatasetPayload(ownerUserId, datasetKey);
   } catch (err) {
     return {
       datasetKey,
@@ -165,7 +248,7 @@ async function migrateOneDataset(
     };
   }
 
-  if (!payload) {
+  if (!csvText || csvText.length === 0) {
     return {
       datasetKey,
       state: "skipped",
@@ -173,29 +256,19 @@ async function migrateOneDataset(
     };
   }
 
-  let parsed: RemoteDatasetPayload;
-  try {
-    parsed = JSON.parse(payload) as RemoteDatasetPayload;
-  } catch (err) {
+  // Sanity check: first line should contain the header with a comma.
+  const firstNewline = csvText.indexOf("\n");
+  const firstLine =
+    firstNewline === -1 ? csvText : csvText.slice(0, firstNewline);
+  if (!firstLine.includes(",")) {
     return {
       datasetKey,
       state: "failed",
-      error: `JSON parse failed: ${err instanceof Error ? err.message : "unknown"}`,
+      error: `Payload does not look like CSV (first line: "${firstLine.slice(0, 80)}")`,
     };
   }
 
-  // Free the original payload string for GC ASAP.
-  payload = null;
-
-  const csvText = parsed.csvText;
-  const fileName = parsed.fileName ?? `${datasetKey}.csv`;
-  if (!csvText || csvText.length === 0) {
-    return {
-      datasetKey,
-      state: "skipped",
-      reason: "Payload has empty csvText",
-    };
-  }
+  const fileName = `${datasetKey}.csv`;
 
   try {
     const result = await ingestDataset(
