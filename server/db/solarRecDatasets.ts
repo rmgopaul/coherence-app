@@ -262,6 +262,40 @@ export async function activateDatasetVersion(
 // ---------------------------------------------------------------------------
 
 /**
+ * Mark every compute_run still in "running" state as failed. Intended
+ * to run exactly once at process startup so that a previous process's
+ * orphaned runs (killed mid-compute by a Render restart, OOM, or
+ * deploy) don't block new requests for up to 10 minutes while the
+ * self-heal threshold waits them out.
+ *
+ * Safe because this process is, by definition, fresh — there can be
+ * no compute run genuinely running inside THIS process at startup.
+ * Other concurrent processes are a non-concern for the current
+ * single-dyno Render setup, but when we eventually scale out this
+ * should switch to a heartbeat-based liveness check instead.
+ */
+export async function clearOrphanedComputeRunsOnStartup(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+
+  const now = new Date();
+  const result = await withDbRetry("clear orphaned compute runs", () =>
+    db
+      .update(solarRecComputeRuns)
+      .set({
+        status: "failed",
+        error: "orphaned by server restart",
+        completedAt: now,
+      })
+      .where(eq(solarRecComputeRuns.status, "running"))
+  );
+  // drizzle mysql result shape is driver-specific; the caller only
+  // needs a rough number for logging.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (result as any)?.[0]?.affectedRows ?? 0;
+}
+
+/**
  * Claim a compute run. Returns the run ID if claimed, or null if another
  * process already claimed this (scopeId, artifactType, inputVersionHash).
  */

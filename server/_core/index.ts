@@ -145,6 +145,27 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
+  // Startup housekeeping: any compute_run left in "running" state is
+  // by definition orphaned (killed mid-compute by a Render restart,
+  // OOM, or deploy) — clear them so new requests don't have to wait
+  // 10 minutes for the self-heal threshold. Fire and forget; the DB
+  // layer is retryable and startup shouldn't block on this.
+  void (async () => {
+    try {
+      const { clearOrphanedComputeRunsOnStartup } = await import(
+        "../db/solarRecDatasets"
+      );
+      const cleared = await clearOrphanedComputeRunsOnStartup();
+      if (cleared > 0) {
+        console.log(
+          `[startup] cleared ${cleared} orphaned solar-rec compute run(s)`
+        );
+      }
+    } catch (err) {
+      console.warn("[startup] could not clear orphaned compute runs:", err);
+    }
+  })();
+
   // Security middleware (helmet, CORS, rate limiting) — must come first
   registerSecurityMiddleware(app);
 
