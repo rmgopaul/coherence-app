@@ -130,9 +130,16 @@ async function loadDatasetRows(
   const db = await getDb();
   if (!db) return [];
 
+  // Drizzle stores the table name on a Symbol-keyed property. The
+  // obvious paths (table._.name, table.name) are BOTH undefined, which
+  // previously silently disabled every per-table remap and caused
+  // ~24k contractedDate mismatches + transferHistory / accountSolar-
+  // Generation lookup failures.
+  const NAME_SYMBOL = Symbol.for("drizzle:Name");
   const tableName: string | undefined =
-    (table as { _?: { name?: string } })?._?.name ??
-    (table as { name?: string })?.name;
+    (table as unknown as { [k: symbol]: unknown })?.[NAME_SYMBOL] as
+      | string
+      | undefined;
   const remap = tableName ? TYPED_COLUMN_TO_CSV_KEY[tableName] : undefined;
   const skipRawRow = tableName ? SKIP_RAW_ROW_TABLES.has(tableName) : false;
 
