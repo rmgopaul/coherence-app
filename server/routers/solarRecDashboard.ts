@@ -183,18 +183,6 @@ export const solarRecDashboardRouter = router({
   }),
 
   /**
-   * Sync a single core dataset from solarRecDashboardStorage into
-   * its typed srDs* table. Called by the dashboard's upload path
-   * after a core-dataset saveDataset completes, so the server-side
-   * system snapshot stays fresh.
-   *
-   * Runs synchronously inside the request because it's a single
-   * dataset (biggest is ~75MB solarApplications, ~20-30s of work)
-   * — well within Render's request timeout at the 2GB heap budget.
-   *
-   * Returns a DatasetMigrationStatus so the client can log failures.
-   */
-  /**
    * Kick off (or attach to an existing) background sync job for
    * one core dataset. Returns immediately with a jobId — the ingest
    * runs on the event loop and the client polls
@@ -206,6 +194,13 @@ export const solarRecDashboardRouter = router({
    * duplicate save calls are a no-op instead of launching
    * overlapping ingests that would strand each other's processing
    * batches.
+   *
+   * Previous contract ran the full ingest inside the request-
+   * response cycle. That hit Render's ~100s proxy timeout on
+   * multi-million-row datasets, 502'd the client, and stranded
+   * processing batches when the ingest was killed server-side.
+   * See commits de59fca (in-process single-flight v1) and
+   * 06fdda4 (move to background job) for the history.
    */
   syncCoreDatasetFromStorage: protectedProcedure
     .input(z.object({ datasetKey: z.string().min(1) }))
