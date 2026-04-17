@@ -293,7 +293,25 @@ export async function migrateIndexedDbToServer(
       DASHBOARD_DATASETS_MANIFEST_KEY
     );
 
-    const datasetKeys = manifest?.keys ?? [];
+    // Only migrate the 7 core datasets that feed the system snapshot.
+    // The other 11 dataset keys (abpCsgSystemMapping, abpUtilityInvoiceRows,
+    // etc.) are used by tabs that haven't been rebuilt server-side yet —
+    // they have no typed landing table, so the server would reject them
+    // with "Unknown dataset key: X".
+    const CORE_DATASETS_TO_MIGRATE = new Set<string>([
+      "solarApplications",
+      "abpReport",
+      "generationEntry",
+      "accountSolarGeneration",
+      "contractedDate",
+      "deliveryScheduleBase",
+      "transferHistory",
+    ]);
+
+    const allKeys = manifest?.keys ?? [];
+    const datasetKeys = allKeys.filter((k) =>
+      CORE_DATASETS_TO_MIGRATE.has(k)
+    );
     if (datasetKeys.length === 0) {
       progress.status = "done";
       onProgress({ ...progress });
