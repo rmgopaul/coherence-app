@@ -4426,26 +4426,35 @@ export default function SolarRecDashboard() {
   }, [datasetCloudStatusesQuery.data?.statuses]);
 
   useEffect(() => {
+    // Clear any lingering overrideCloudStatus once the server confirms
+    // the dataset is recoverable. Previously this effect gated the
+    // clear on a local/server hash match, but those hashes are not
+    // directly comparable (see the badge derivation comment). When
+    // localDatasetPayloadHashes is populated via the
+    // serializeDatasetForRemote fallback it permanently disagrees with
+    // the server's manifest hash, leaving "pending" glued on.
+    //
+    // Upload flows still clear their own override on success (by
+    // setting the status to undefined), or mark "failed" on failure.
+    // This effect is the safety net for stale "pending" overrides
+    // left behind when an upload's success path didn't run — e.g.
+    // tab closed mid-sync.
     setDatasetCloudSyncStatus((current) => {
       let changed = false;
       const next = { ...current };
       allDatasetKeys.forEach((key) => {
         const status = serverDatasetCloudStatusByKey[key];
         if (!status?.recoverable) return;
-        const localHash = localDatasetPayloadHashes[key];
-        if (datasets[key] && !localHash) {
-          return;
-        }
-        if (localHash && status.payloadSha256 && localHash !== status.payloadSha256) {
-          return;
-        }
         if (!next[key]) return;
+        // Preserve "failed" so the user still sees the error even
+        // when server eventually has the data from a later retry.
+        if (next[key] === "failed") return;
         delete next[key];
         changed = true;
       });
       return changed ? next : current;
     });
-  }, [allDatasetKeys, datasets, localDatasetPayloadHashes, serverDatasetCloudStatusByKey]);
+  }, [allDatasetKeys, serverDatasetCloudStatusByKey]);
 
   const manifestOnlyRemoteStatePayload = useMemo(() => {
     return (
@@ -6925,18 +6934,34 @@ const aiDataContext = useMemo(() => {
                 let cloudStatusForDataset: DatasetCloudSyncStatus | undefined = overrideCloudStatus;
                 if (!cloudStatusForDataset && !localOnlyDatasets[key]) {
                   if (serverCloudStatus?.recoverable) {
-                    const hashesMatch =
-                      dataset
-                        ? Boolean(
-                            localPayloadHash &&
-                              (!serverCloudStatus.payloadSha256 ||
-                                localPayloadHash === serverCloudStatus.payloadSha256)
-                          )
-                        : true;
-                    cloudStatusForDataset =
-                      dataset && !hashesMatch
-                        ? "pending"
-                        : "synced";
+                    // Trust the server's recoverable flag as the source of
+                    // truth for "synced" vs "pending". The earlier
+                    // derivation compared localPayloadHash against
+                    // serverCloudStatus.payloadSha256, but those hashes
+                    // aren't comparable: the server stores a hash of the
+                    // exact POST body for the top-level key (a
+                    // _rawSourcesV1 source manifest), while the client's
+                    // fallback hash is computed from
+                    // serializeDatasetForRemote(dataset) — a different
+                    // serialization. That meant every dataset hydrated
+                    // from IDB without a matching remoteSourceManifest
+                    // permanently mismatched and showed "Cloud sync
+                    // pending" forever, even when the server's data was
+                    // fully recoverable.
+                    //
+                    // Active upload flows still set overrideCloudStatus =
+                    // "pending" via setDatasetCloudSyncBadge, so genuine
+                    // in-flight syncs keep their amber badge. Once the
+                    // upload lands and the server reports recoverable, we
+                    // clear the override (see the useEffect that reacts
+                    // to serverDatasetCloudStatusByKey changes).
+                    //
+                    // localPayloadHash / serverCloudStatus.payloadSha256
+                    // are intentionally unused here — kept available on
+                    // the render scope for future per-chunk divergence
+                    // detection when we align the hashes.
+                    void localPayloadHash;
+                    cloudStatusForDataset = "synced";
                   } else if (dataset || manifestEntry || hasCloudBackfillMarker) {
                     cloudStatusForDataset = "not-synced";
                   }
