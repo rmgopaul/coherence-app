@@ -7,9 +7,17 @@
  * transition from IndexedDB to server-side storage is complete, and
  * the on-flag path is the only supported runtime.
  *
- * The flag stays in localStorage so the useSystemSnapshot escape
- * hatch (and any future parity/debug tooling) can still read it
- * synchronously from non-React code.
+ * Default: ON. The previous default (OFF, requiring an explicit
+ * "true" string in localStorage) left freshly-provisioned sessions
+ * with an empty `systems` snapshot — every Part II / Forecast /
+ * Performance Eval / Ownership tab rendered empty because all of
+ * them depend on `systems`. Since the off-path is dead code per the
+ * Phase 8.3b+ note above, the only thing the previous default
+ * achieved was a silent production outage.
+ *
+ * Opt-out remains: set localStorage["solarRec:serverSideStorage"]
+ * to the literal string "false" to force the empty-snapshot path,
+ * e.g. for parity diff tooling.
  */
 
 const FEATURE_FLAG_KEY = "solarRec:serverSideStorage";
@@ -21,5 +29,9 @@ const FEATURE_FLAG_KEY = "solarRec:serverSideStorage";
  */
 export function isServerSideStorageEnabled(): boolean {
   if (typeof window === "undefined") return false;
-  return localStorage.getItem(FEATURE_FLAG_KEY) === "true";
+  const raw = localStorage.getItem(FEATURE_FLAG_KEY);
+  // Explicit "false" → off. Everything else (null, "true", missing key,
+  // unrecognized value) → on. This preserves the opt-out escape hatch
+  // for parity/debug tooling while defaulting to the supported runtime.
+  return raw !== "false";
 }
