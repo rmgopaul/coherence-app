@@ -6,6 +6,18 @@ import {
 } from "../../db";
 import { storageExists, storageGet } from "../../storage";
 import { parseChunkPointerPayload } from "../../routers/helpers/scheduleB";
+import { mapWithConcurrency } from "../core/concurrency";
+
+// Outer concurrency: number of datasets whose status we verify in
+// parallel. Kept modest because each dataset fans out ~N chunks of
+// backend work beneath it.
+const DATASET_STATUS_CONCURRENCY = 4;
+
+// Inner concurrency: how many chunk-recoverability checks run in
+// parallel within a single dataset. Each check is a DB read plus
+// (possibly) a storage HEAD; 16 saturates the DB pool's useful
+// parallelism without starving other request handlers.
+const CHUNK_CHECK_CONCURRENCY = 16;
 
 const DATASET_KEY_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
@@ -153,67 +165,84 @@ export async function getRawDatasetCloudStatuses(
   datasetKeys: string[],
   resolveStorageUserId: (datasetKey: string) => Promise<number>
 ): Promise<RawDatasetCloudStatus[]> {
-  const statuses: RawDatasetCloudStatus[] = [];
+  // Fully parallel implementation. The prior version processed
+  // datasets sequentially and within each dataset walked every
+  // referenced chunk key with sequential awaits. For a user with 14
+  // chunked datasets averaging ~150 chunks each, that was roughly
+  // 2,000 serialized DB+storage round-trips per call — ~14 seconds
+  // wall time in the live log, pinning the badge query and blocking
+  // refetchOnWindowFocus.
+  //
+  // Now: datasets verified in parallel (bounded), and chunk-level
+  // recoverability checks within each dataset also run in parallel
+  // (bounded). Top-level payload load and sync-state row read are
+  // issued as a single Promise.all per dataset.
+  return mapWithConcurrency(
+    datasetKeys,
+    DATASET_STATUS_CONCURRENCY,
+    async (datasetKey): Promise<RawDatasetCloudStatus> => {
+      const storageUserId = await resolveStorageUserId(datasetKey);
+      const topLevelStorageKey = buildDatasetDbStorageKey(datasetKey);
 
-  for (const datasetKey of datasetKeys) {
-    const storageUserId = await resolveStorageUserId(datasetKey);
-    const topLevelStorageKey = buildDatasetDbStorageKey(datasetKey);
-    const topLevelRecords = await getSolarRecDatasetSyncStates(storageUserId, [
-      topLevelStorageKey,
-    ]);
-    const topLevelRecord = topLevelRecords[0];
+      const [topLevelRecords, topLevelPayload] = await Promise.all([
+        getSolarRecDatasetSyncStates(storageUserId, [topLevelStorageKey]),
+        loadDatasetPayload(storageUserId, datasetKey),
+      ]);
+      const topLevelRecord = topLevelRecords[0];
 
-    const topLevelPayload = await loadDatasetPayload(storageUserId, datasetKey);
-    if (!topLevelPayload) {
-      statuses.push({
+      if (!topLevelPayload) {
+        return {
+          datasetKey,
+          storageUserId,
+          recoverable: false,
+          payloadSha256:
+            topLevelRecord?.payloadSha256 && topLevelRecord.payloadSha256.length > 0
+              ? topLevelRecord.payloadSha256
+              : null,
+          updatedAt: topLevelRecord?.updatedAt?.toISOString() ?? null,
+          missingKeys: [datasetKey],
+        };
+      }
+
+      const referencedKeys = collectReferencedDatasetKeys(topLevelPayload);
+      const referencedRecords = referencedKeys.length
+        ? await getSolarRecDatasetSyncStates(
+            storageUserId,
+            referencedKeys.map((rawKey) => buildDatasetDbStorageKey(rawKey))
+          )
+        : [];
+      const referencedRecordMap = new Map(
+        referencedRecords.map((record) => [record.storageKey, record])
+      );
+
+      const recoverabilityResults = await mapWithConcurrency(
+        referencedKeys,
+        CHUNK_CHECK_CONCURRENCY,
+        async (rawKey) => {
+          const recoverable = await isChildKeyRecoverable(
+            storageUserId,
+            rawKey,
+            referencedRecordMap.get(buildDatasetDbStorageKey(rawKey))
+          );
+          return { rawKey, recoverable };
+        }
+      );
+
+      const missingKeys = recoverabilityResults
+        .filter((result) => !result.recoverable)
+        .map((result) => result.rawKey);
+
+      return {
         datasetKey,
         storageUserId,
-        recoverable: false,
+        recoverable: missingKeys.length === 0,
         payloadSha256:
           topLevelRecord?.payloadSha256 && topLevelRecord.payloadSha256.length > 0
             ? topLevelRecord.payloadSha256
-            : null,
+            : hashSolarRecPayload(topLevelPayload),
         updatedAt: topLevelRecord?.updatedAt?.toISOString() ?? null,
-        missingKeys: [datasetKey],
-      });
-      continue;
+        missingKeys,
+      };
     }
-
-    const referencedKeys = collectReferencedDatasetKeys(topLevelPayload);
-    const referencedRecords = referencedKeys.length
-      ? await getSolarRecDatasetSyncStates(
-          storageUserId,
-          referencedKeys.map((rawKey) => buildDatasetDbStorageKey(rawKey))
-        )
-      : [];
-    const referencedRecordMap = new Map(
-      referencedRecords.map((record) => [record.storageKey, record])
-    );
-
-    const missingKeys: string[] = [];
-    for (const rawKey of referencedKeys) {
-      const isRecoverable = await isChildKeyRecoverable(
-        storageUserId,
-        rawKey,
-        referencedRecordMap.get(buildDatasetDbStorageKey(rawKey))
-      );
-      if (!isRecoverable) {
-        missingKeys.push(rawKey);
-      }
-    }
-
-    statuses.push({
-      datasetKey,
-      storageUserId,
-      recoverable: missingKeys.length === 0,
-      payloadSha256:
-        topLevelRecord?.payloadSha256 && topLevelRecord.payloadSha256.length > 0
-          ? topLevelRecord.payloadSha256
-          : hashSolarRecPayload(topLevelPayload),
-      updatedAt: topLevelRecord?.updatedAt?.toISOString() ?? null,
-      missingKeys,
-    });
-  }
-
-  return statuses;
+  );
 }
