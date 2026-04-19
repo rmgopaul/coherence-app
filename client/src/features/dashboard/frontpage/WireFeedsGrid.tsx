@@ -19,6 +19,10 @@
  */
 import type { ReactNode } from "react";
 import type { DashboardData } from "../useDashboardData";
+import { SolarFeedCell } from "./feeds/SolarFeedCell";
+import { SupplementsFeedCell } from "./feeds/SupplementsFeedCell";
+import { HabitsFeedCell } from "./feeds/HabitsFeedCell";
+import { SportsFeedCell } from "./feeds/SportsFeedCell";
 
 /* ------------------------------------------------------------------ */
 /*  Shared shell                                                       */
@@ -154,15 +158,6 @@ function NewsCell() {
   );
 }
 
-function PhaseBTwoStub({ label }: { label: string }) {
-  return (
-    <WireCard label={label} tone="placeholder">
-      <p className="fp-empty">legacy card here.</p>
-      <p className="mono-label wire-card__hint">RESKINNING · PHASE B.2</p>
-    </WireCard>
-  );
-}
-
 /* ------------------------------------------------------------------ */
 /*  Grid                                                               */
 /* ------------------------------------------------------------------ */
@@ -172,6 +167,7 @@ interface WireFeedsGridProps {
 }
 
 export function WireFeedsGrid({ data }: WireFeedsGridProps) {
+  const updatedLabel = nowShort();
   return (
     <section
       aria-label="Wire feeds"
@@ -181,10 +177,10 @@ export function WireFeedsGrid({ data }: WireFeedsGridProps) {
       <MarketsCell market={data.market} />
       <NewsCell />
       <WeatherCell />
-      <PhaseBTwoStub label="SOLAR" />
-      <PhaseBTwoStub label="SUPPLEMENTS" />
-      <PhaseBTwoStub label="HABITS" />
-      <PhaseBTwoStub label="SPORTS" />
+      <SolarFeedCell updatedLabel={updatedLabel} />
+      <SupplementsFeedCell updatedLabel={updatedLabel} />
+      <HabitsFeedCell updatedLabel={updatedLabel} />
+      <SportsFeedCell updatedLabel={updatedLabel} />
     </section>
   );
 }
