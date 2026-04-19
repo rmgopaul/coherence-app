@@ -478,20 +478,6 @@ function buildHydrationPriorityKeys(activeTab: string): Set<DatasetKey> {
   return keys;
 }
 
-function buildVisitedTabDatasetKeys(tabs: Iterable<string>): Set<DatasetKey> {
-  const keys = new Set<DatasetKey>();
-  Array.from(tabs).forEach((tab) => {
-    Array.from(buildHydrationPriorityKeys(tab)).forEach((key) => {
-      keys.add(key);
-    });
-  });
-  if (keys.size === 0) {
-    CORE_REQUIRED_DATASET_KEYS.forEach((key) => {
-      keys.add(key);
-    });
-  }
-  return keys;
-}
 type DashboardTabId = (typeof DASHBOARD_TAB_VALUES)[number];
 
 function isDashboardTabId(value: string): value is DashboardTabId {
@@ -738,7 +724,7 @@ const REMOTE_WRITE_CONCURRENCY = 4;
  * memory spikes in Chrome. Keep reads parallel, just not explosively
  * parallel.
  */
-const REMOTE_READ_CONCURRENCY = 4;
+const REMOTE_READ_CONCURRENCY = 1;
 /** Byte slice size for streamed remote file uploads. Keeps browser memory bounded. */
 const REMOTE_FILE_STREAM_SLICE_BYTES = 256 * 1024;
 
@@ -1899,8 +1885,13 @@ export default function SolarRecDashboard() {
   const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
     retry: 4,
     retryDelay: (attempt) => Math.min(2000 * (attempt + 1), 10_000),
-    refetchOnWindowFocus: true,
-    refetchOnReconnect: true,
+    staleTime: 5 * 60 * 1000,
+    // This query only seeds legacy cloud hydration metadata. Once
+    // the tab is open we explicitly invalidate on successful uploads,
+    // so focus/reconnect refetches just re-trigger expensive remote
+    // hydrate work and can stampede the server.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
@@ -4222,7 +4213,9 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        const allowedKeys = buildVisitedTabDatasetKeys(visitedTabsRef.current);
+        const allowedKeys = buildHydrationPriorityKeys(
+          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
+        );
         // Phase 16: progressive hydration. Datasets arrive one at a
         // time via the onDataset callback — each call into setDatasets
         // only updates ONE key, producing a small re-render rather
@@ -4526,7 +4519,9 @@ export default function SolarRecDashboard() {
           manifest = parsed.datasetManifest ?? {};
         }
 
-        const allowedKeys = buildVisitedTabDatasetKeys(visitedTabsRef.current);
+        const allowedKeys = buildHydrationPriorityKeys(
+          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
+        );
         const keysToLoad = new Set<DatasetKey>();
         Object.keys(manifest).forEach((rawKey) => {
           if (!isDatasetKey(rawKey)) return;

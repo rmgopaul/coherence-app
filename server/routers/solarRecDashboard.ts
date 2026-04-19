@@ -64,6 +64,11 @@ function isTeamWideDatasetKey(inputKey: string): boolean {
   return false;
 }
 
+const inFlightDashboardPayloadLoads = new Map<
+  string,
+  Promise<{ key: string; payload: string } | null>
+>();
+
 async function resolveDatasetUserId(
   inputKey: string,
   fallbackUserId: number
@@ -76,6 +81,58 @@ async function resolveDatasetUserId(
     }
   }
   return fallbackUserId;
+}
+
+async function loadDashboardPayload(
+  userId: number,
+  dbStorageKey: string,
+  storagePath: string
+): Promise<{ key: string; payload: string } | null> {
+  try {
+    const payload = await getSolarRecDashboardPayload(userId, dbStorageKey);
+    if (payload) {
+      return {
+        key: storagePath,
+        payload,
+      };
+    }
+  } catch (error) {
+    console.warn(
+      "[solarRec] DB read failed, falling back to storage:",
+      error instanceof Error ? error.message : error
+    );
+  }
+
+  try {
+    const { url } = await storageGet(storagePath);
+    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!response.ok) return null;
+    const payload = await response.text();
+    if (!payload) return null;
+    return { key: storagePath, payload };
+  } catch {
+    return null;
+  }
+}
+
+async function loadDashboardPayloadSingleFlight(
+  flightKey: string,
+  loader: () => Promise<{ key: string; payload: string } | null>
+): Promise<{ key: string; payload: string } | null> {
+  const existing = inFlightDashboardPayloadLoads.get(flightKey);
+  if (existing) {
+    return existing;
+  }
+
+  const promise = (async () => {
+    try {
+      return await loader();
+    } finally {
+      inFlightDashboardPayloadLoads.delete(flightKey);
+    }
+  })();
+  inFlightDashboardPayloadLoads.set(flightKey, promise);
+  return promise;
 }
 import { getValidGoogleToken } from "../helpers/tokenRefresh";
 import {
@@ -292,24 +349,10 @@ export const solarRecDashboardRouter = router({
   getState: protectedProcedure.query(async ({ ctx }) => {
     const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
     const dbStorageKey = "state";
-
-    try {
-      const payload = await getSolarRecDashboardPayload(ctx.user.id, dbStorageKey);
-      if (payload) return { key, payload };
-    } catch (error) {
-      console.warn("[solarRec] DB read failed, falling back to storage:", error instanceof Error ? error.message : error);
-    }
-
-    try {
-      const { url } = await storageGet(key);
-      const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!response.ok) return null;
-      const payload = await response.text();
-      if (!payload) return null;
-      return { key, payload };
-    } catch {
-      return null;
-    }
+    return loadDashboardPayloadSingleFlight(
+      `state:${ctx.user.id}`,
+      () => loadDashboardPayload(ctx.user.id, dbStorageKey, key)
+    );
   }),
   saveState: protectedProcedure
     .input(
@@ -348,24 +391,10 @@ export const solarRecDashboardRouter = router({
       const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
       const key = `solar-rec-dashboard/${storageUserId}/datasets/${input.key}.json`;
       const dbStorageKey = `dataset:${input.key}`;
-
-      try {
-        const payload = await getSolarRecDashboardPayload(storageUserId, dbStorageKey);
-        if (payload) return { key, payload };
-      } catch {
-        // Fall back to storage proxy.
-      }
-
-      try {
-        const { url } = await storageGet(key);
-        const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-        if (!response.ok) return null;
-        const payload = await response.text();
-        if (!payload) return null;
-        return { key, payload };
-      } catch {
-        return null;
-      }
+      return loadDashboardPayloadSingleFlight(
+        `dataset:${storageUserId}:${input.key}`,
+        () => loadDashboardPayload(storageUserId, dbStorageKey, key)
+      );
     }),
   saveDataset: protectedProcedure
     .input(
