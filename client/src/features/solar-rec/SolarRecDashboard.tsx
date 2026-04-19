@@ -4968,17 +4968,26 @@ export default function SolarRecDashboard() {
           }));
         }
 
-        const allowedKeys = buildHydrationPriorityKeys(
+        // Previously filtered to buildHydrationPriorityKeys(activeTab),
+        // which silently dropped datasets that weren't in the current
+        // tab's priority list. The Data Quality tab's Financials memo
+        // saw empty `abpIccReport3Rows.rows` because ICC Report 3
+        // isn't in any tab's priority set, so it was never fetched
+        // from cloud on mount — even though the server had it and the
+        // UI card (rendering from the manifest, not the rows) advertised
+        // "99,947 rows loaded". Lazy rows (bf58b52) makes it safe to
+        // hydrate every manifest entry up front: tabs that don't touch
+        // a dataset pay zero row-materialization cost.
+        const priorityKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
         );
         const keysToLoad = new Set<DatasetKey>();
         Object.keys(manifest).forEach((rawKey) => {
           if (!isDatasetKey(rawKey)) return;
-          if (!allowedKeys.has(rawKey)) return;
           keysToLoad.add(rawKey);
         });
 
-        allowedKeys.forEach((key) => {
+        priorityKeys.forEach((key) => {
           keysToLoad.add(key);
         });
 
