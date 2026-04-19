@@ -13,6 +13,7 @@ import { AppShell } from "./components/layout/AppShell";
 
 const Home = lazy(() => import("@/features/dashboard/Home"));
 const Dashboard = lazy(() => import("@/features/dashboard/Dashboard"));
+const DashboardLegacy = lazy(() => import("@/features/dashboard/DashboardLegacy"));
 const SolarRecDashboard = lazy(() => import("@/features/solar-rec/SolarRecDashboard"));
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
 const EnphaseV4MeterReads = lazy(() => import("@/features/solar-readings/EnphaseV4MeterReads"));
@@ -71,6 +72,7 @@ function AppRoutes() {
   return (
     <Switch>
       <Route path={"/dashboard"} component={withRouteSuspense(Dashboard)} />
+      <Route path={"/dashboard-legacy"} component={withRouteSuspense(DashboardLegacy)} />
       <Route path={"/solar-rec-dashboard"} component={withRouteSuspense(SolarRecDashboard)} />
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
       <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
