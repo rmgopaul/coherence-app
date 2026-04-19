@@ -5,6 +5,7 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import android.util.Log
 import kotlinx.coroutines.delay
 import kotlin.reflect.KClass
 
@@ -74,7 +75,6 @@ class HealthConnectReader(
 
     attempted += label
 
-    var lastErrorMessage: String? = null
     for (attempt in 0 until MAX_ATTEMPTS) {
       try {
         val all = mutableListOf<T>()
@@ -113,25 +113,41 @@ class HealthConnectReader(
           return emptyList()
         }
 
-        lastErrorMessage = combined
+        val rateLimited = isRateLimitError(combined)
 
-        val isRetryable = isRateLimitError(combined) && attempt < MAX_ATTEMPTS - 1
-        if (isRetryable) {
+        if (rateLimited && attempt < MAX_ATTEMPTS - 1) {
+          // Transient rate-limit: wait and retry.
           delay(RATE_LIMIT_BACKOFFS_MS[attempt])
           continue
         }
 
-        warnings += "$label read failed: ${error.message ?: error.javaClass.simpleName}"
+        // Non-retryable, or last rate-limited attempt — surface the
+        // warning and stop. Previous versions tried to mark the
+        // cooldown *after* the for-loop, but the loop always returns
+        // from inside, so that code was unreachable. Promote cooldown
+        // here, inside the catch, whenever we've exhausted retries
+        // against a rate limit.
+        if (rateLimited && attempt == MAX_ATTEMPTS - 1) {
+          cooldown?.markRateLimited(combined)
+          Log.w(
+            TAG,
+            "$label exhausted $MAX_ATTEMPTS rate-limit retries; cooldown engaged",
+          )
+          warnings += "$label read failed after $MAX_ATTEMPTS attempts (rate limited): " +
+            (error.message ?: "unknown")
+        } else {
+          warnings += "$label read failed: ${error.message ?: error.javaClass.simpleName}"
+        }
         return emptyList()
       }
     }
 
-    // Retries exhausted — all attempts hit a rate-limit error.
-    // Promote this into a global cooldown so the next periodic worker
-    // run skips Health Connect entirely instead of retrying again.
-    val finalMessage = lastErrorMessage ?: "unknown"
-    cooldown?.markRateLimited(finalMessage)
-    warnings += "$label read failed after $MAX_ATTEMPTS attempts (rate limited): $finalMessage"
+    // Unreachable: the for-loop always either returns on success or
+    // returns from the catch block. Kept as a belt-and-braces fallback
+    // so the function compiles cleanly and any future refactor that
+    // introduces a path out of the loop still lands in a defined
+    // state.
+    warnings += "$label read failed: retry loop exited without result"
     return emptyList()
   }
 
@@ -157,6 +173,7 @@ class HealthConnectReader(
   }
 
   companion object {
+    private const val TAG = "HealthConnectReader"
     private const val MAX_ATTEMPTS = 3
     private const val POST_READ_SPACING_MS = 50L
 

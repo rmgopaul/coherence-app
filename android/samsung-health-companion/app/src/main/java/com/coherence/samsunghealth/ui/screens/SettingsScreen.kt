@@ -266,11 +266,17 @@ fun SettingsScreen(onBack: () -> Unit) {
           }
           val (buttonLabel, buttonEnabled) = when {
             cooldownState.active -> "Sync paused (rate limited)" to false
-            backfillState == WorkInfo.State.ENQUEUED ->
-              "Backfill queued — waiting for network" to false
+            // Only RUNNING is truly non-interactive — tapping during
+            // RUNNING could start a second copy mid-execution.
+            // ENQUEUED/BLOCKED are interactive: `REPLACE` policy on the
+            // unique work cancels any pending backoff and starts fresh,
+            // which is what the user almost always wants when they see
+            // a stale "queued" label.
             backfillState == WorkInfo.State.RUNNING -> "Backfill running…" to false
+            backfillState == WorkInfo.State.ENQUEUED ->
+              "Backfill queued — tap to restart now" to true
             backfillState == WorkInfo.State.BLOCKED ->
-              "Backfill blocked by constraints" to false
+              "Backfill blocked — tap to retry" to true
             backfillState == WorkInfo.State.FAILED ->
               "Last backfill failed — tap to retry" to true
             backfillState == WorkInfo.State.CANCELLED ->

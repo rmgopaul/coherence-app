@@ -714,10 +714,11 @@ class HealthConnectPayloadMapper(
   }
 
   companion object {
-    // 0.3.2 — adds rate-limit cooldown short-circuit. Once the new
-    // APK is installed and run, the debug endpoint should show this
-    // string in payload.source.appVersion.
-    private const val APP_VERSION = "0.3.2"
+    // 0.3.3 — fixes the cooldown reachability bug in
+    // HealthConnectReader.read(): previous versions had the
+    // markRateLimited() call after the for-loop, but the loop always
+    // returns from inside, making the cooldown write unreachable.
+    private const val APP_VERSION = "0.3.3"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }
