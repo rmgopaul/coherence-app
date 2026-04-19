@@ -80,6 +80,8 @@ import { DashboardSkeleton } from "@/components/dashboard/DashboardSkeleton";
 import { WorkspaceSection } from "@/components/dashboard/WorkspaceSection";
 import { ChatPanel } from "@/components/dashboard/ChatPanel";
 import { SupplementsCard } from "@/components/dashboard/SupplementsCard";
+import { buildDashboardSummary } from "@/features/supplements/supplements.helpers";
+import { DEFAULT_DASHBOARD_ADHERENCE_WINDOW_DAYS } from "@/features/supplements/supplements.constants";
 import { NotesCard } from "@/components/dashboard/NotesCard";
 import { useSectionVisibilityTracker } from "@/hooks/useSectionVisibilityTracker";
 import { SectionRating } from "@/components/SectionRating";
@@ -295,6 +297,8 @@ export default function Dashboard() {
         spo2AvgPercent: toNullableNumber(summary?.spo2AvgPercent),
         sleepSessionsCount: toNullableNumber(summary?.sleepSessionsCount),
         heartRateSamplesCount: toNullableNumber(summary?.heartRateSamplesCount),
+        recordTypesAttempted: toNullableNumber(summary?.recordTypesAttempted),
+        recordTypesSucceeded: toNullableNumber(summary?.recordTypesSucceeded),
         permissionsGranted: Boolean(sync?.permissionsGranted),
         warnings: Array.isArray(sync?.warnings) ? (sync.warnings as string[]) : [],
       };
@@ -529,6 +533,14 @@ export default function Dashboard() {
       enabled: !!user && isSectionVisible("supplements"),
       retry: false,
     });
+
+  const { data: supplementAdherence } = trpc.supplements.getAdherenceStats.useQuery(
+    { windowDays: DEFAULT_DASHBOARD_ADHERENCE_WINDOW_DAYS },
+    {
+      enabled: !!user && isSectionVisible("supplements"),
+      retry: false,
+    }
+  );
 
   const { data: habitsForToday, refetch: refetchHabitsForToday } = trpc.habits.getForDate.useQuery(
     { dateKey: todayKey },
@@ -2207,6 +2219,14 @@ export default function Dashboard() {
           </DashboardWidget>
 
           {isSectionVisible("supplements") ? (
+            (() => {
+              const supplementSummary = buildDashboardSummary(
+                supplementDefinitions ?? [],
+                supplementLogs ?? [],
+                supplementAdherence ?? [],
+                todayKey
+              );
+              return (
             <SupplementsCard
               supplementName={supplementName}
               supplementDose={supplementDose}
@@ -2215,6 +2235,13 @@ export default function Dashboard() {
               supplementDefinitions={supplementDefinitions}
               supplementLogs={supplementLogs}
               sectionRating={sectionRatingMap["section-supplements"] }
+              todayProgress={{
+                taken: supplementSummary.takenLockedToday,
+                locked: supplementSummary.lockedCount,
+              }}
+              monthlyProtocolCost={supplementSummary.monthlyProtocolCost}
+              adherenceByDefinitionId={supplementSummary.adherenceByDefinitionId}
+              adherenceWindowDays={DEFAULT_DASHBOARD_ADHERENCE_WINDOW_DAYS}
               setSupplementName={setSupplementName}
               setSupplementDose={setSupplementDose}
               setSupplementDoseUnit={setSupplementDoseUnit}
@@ -2227,6 +2254,8 @@ export default function Dashboard() {
               addDefinitionPending={createSupplementDefinition.isPending}
               addLogPending={addSupplementLog.isPending}
             />
+              );
+            })()
           ) : null}
 
           <HabitsCard

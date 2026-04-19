@@ -21,6 +21,25 @@ import java.util.concurrent.TimeUnit
 object AutoSyncScheduler {
   private const val PREFS_NAME = "coherence_samsung_sync_prefs"
   private const val KEY_AUTO_SYNC_ENABLED = "auto_sync_enabled"
+  private const val KEY_LAST_MANUAL_TRIGGER_MS = "last_manual_trigger_ms"
+
+  /**
+   * How long to wait before allowing another app-resume-triggered
+   * sync. Protects against tab swipes + app re-entry hammering the
+   * sync worker whenever the user bounces around the app.
+   */
+  private const val RESUME_DEBOUNCE_MS = 5L * 60L * 1000L // 5 min
+
+  /**
+   * Periodic sync cadence. Health Connect's per-app rate limit is a
+   * rolling 24h window at ~2000 reads/day for foreground and lower
+   * for background. Each sync issues 22 typed reads, so 15-min
+   * cadence = 2112 reads/day = guaranteed saturation. 60-min cadence
+   * = 528 reads/day = comfortable headroom that leaves room for
+   * backfills and other HC consumers (Google Fit, third-party apps).
+   */
+  private const val PERIODIC_INTERVAL_MINUTES = 60L
+  private const val PERIODIC_FLEX_MINUTES = 15L
 
   fun enable(context: Context) {
     setEnabled(context, true)
@@ -44,6 +63,28 @@ object AutoSyncScheduler {
   fun ensureScheduledIfEnabled(context: Context) {
     if (!isEnabled(context)) return
     schedulePeriodic(context)
+  }
+
+  /**
+   * Public "user just asked for a sync" entry point. Used by:
+   *  - `MainActivity.onResume` (debounced — won't fire more than
+   *    once per [RESUME_DEBOUNCE_MS]).
+   *  - The dashboard "Sync Now" button (bypasses the debounce by
+   *    passing `force = true`).
+   *
+   * Respects the cooldown via the worker itself — this function just
+   * enqueues; the worker decides whether to actually hit HC.
+   */
+  fun triggerManualSync(context: Context, force: Boolean = false) {
+    if (!isEnabled(context)) return
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val now = System.currentTimeMillis()
+    if (!force) {
+      val last = prefs.getLong(KEY_LAST_MANUAL_TRIGGER_MS, 0L)
+      if (now - last < RESUME_DEBOUNCE_MS) return
+    }
+    prefs.edit().putLong(KEY_LAST_MANUAL_TRIGGER_MS, now).apply()
+    scheduleImmediate(context)
   }
 
   /**
@@ -88,9 +129,9 @@ object AutoSyncScheduler {
       .build()
 
     val periodicWork = PeriodicWorkRequestBuilder<SamsungHealthSyncWorker>(
-      15,
+      PERIODIC_INTERVAL_MINUTES,
       TimeUnit.MINUTES,
-      5,
+      PERIODIC_FLEX_MINUTES,
       TimeUnit.MINUTES,
     )
       .setConstraints(constraints)

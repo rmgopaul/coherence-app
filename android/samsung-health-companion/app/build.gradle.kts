@@ -13,14 +13,26 @@ android {
     applicationId = "com.coherence.samsunghealth"
     minSdk = 29
     targetSdk = 36
-    versionCode = 4
-    versionName = "0.3.3"
+    versionCode = 5
+    versionName = "0.4.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    buildConfigField("String", "WEBHOOK_URL", "\"https://app.coherence-rmg.com/api/webhooks/samsung-health\"")
-    buildConfigField("String", "SYNC_KEY", "\"V5PYAoAFr6qjTSQ_hUtv5ZexAsh2PzX_OkdmZVCIyHM\"")
-    buildConfigField("String", "BASE_URL", "\"https://app.coherence-rmg.com\"")
+    // Secrets — read from `local.properties` (gitignored) or the
+    // project's Gradle properties. Falls back to a "REPLACE_ME"
+    // sentinel that `SyncConfig.isConfigured()` detects, so a fresh
+    // checkout builds but refuses to call the webhook until the
+    // developer populates the property.
+    val samsungSyncKey = project.findProperty("SAMSUNG_HEALTH_SYNC_KEY") as String?
+      ?: "REPLACE_ME_SYNC_KEY"
+    val samsungWebhookUrl = project.findProperty("SAMSUNG_HEALTH_WEBHOOK_URL") as String?
+      ?: "https://app.coherence-rmg.com/api/webhooks/samsung-health"
+    val baseUrl = project.findProperty("COHERENCE_BASE_URL") as String?
+      ?: "https://app.coherence-rmg.com"
+
+    buildConfigField("String", "WEBHOOK_URL", "\"$samsungWebhookUrl\"")
+    buildConfigField("String", "SYNC_KEY", "\"$samsungSyncKey\"")
+    buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
     buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${project.findProperty("GOOGLE_CLIENT_ID") ?: ""}\"")
     buildConfigField("String", "OAUTH_REDIRECT_SCHEME", "\"coherence\"")
   }

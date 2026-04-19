@@ -17,12 +17,16 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.FloorsClimbedRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.HeightRecord
 import androidx.health.connect.client.records.HydrationRecord
 import androidx.health.connect.client.records.NutritionRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.PowerRecord
 import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
+import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.SleepSessionRecord
+import androidx.health.connect.client.records.SpeedRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
@@ -83,14 +87,18 @@ class HealthConnectPermissionManager(
       HealthPermission.getReadPermission(Vo2MaxRecord::class),
       HealthPermission.getReadPermission(OxygenSaturationRecord::class),
       HealthPermission.getReadPermission(BodyTemperatureRecord::class),
+      HealthPermission.getReadPermission(SkinTemperatureRecord::class),
       HealthPermission.getReadPermission(BloodPressureRecord::class),
       HealthPermission.getReadPermission(BloodGlucoseRecord::class),
       HealthPermission.getReadPermission(WeightRecord::class),
+      HealthPermission.getReadPermission(HeightRecord::class),
       HealthPermission.getReadPermission(BodyFatRecord::class),
       HealthPermission.getReadPermission(BodyWaterMassRecord::class),
       HealthPermission.getReadPermission(BasalMetabolicRateRecord::class),
       HealthPermission.getReadPermission(HydrationRecord::class),
       HealthPermission.getReadPermission(NutritionRecord::class),
+      HealthPermission.getReadPermission(PowerRecord::class),
+      HealthPermission.getReadPermission(SpeedRecord::class),
     )
 
     /** The full set of permissions requested in the permission prompt. */

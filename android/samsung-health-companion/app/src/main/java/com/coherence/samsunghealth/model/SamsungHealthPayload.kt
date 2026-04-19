@@ -78,6 +78,19 @@ data class CardioMetrics(
   val vo2MaxMlKgMin: Double,
   val stressScore: Double,
   val stressMinutes: Int,
+  /**
+   * Peak + average output from [androidx.health.connect.client.records.PowerRecord].
+   * Samsung Health writes this for cycling and some treadmill workouts.
+   * Defaults keep backward compatibility with older payloads.
+   */
+  val peakPowerWatts: Double = 0.0,
+  val averagePowerWatts: Double = 0.0,
+  /**
+   * Peak + average from [androidx.health.connect.client.records.SpeedRecord]
+   * in meters per second. Used for pace derivation server-side.
+   */
+  val peakSpeedMps: Double = 0.0,
+  val averageSpeedMps: Double = 0.0,
 )
 
 @Serializable
@@ -103,6 +116,12 @@ data class BodyCompositionMetrics(
   val skeletalMuscleMassKg: Double,
   val bodyWaterPercent: Double,
   val basalMetabolicRateKcal: Double,
+  /**
+   * Latest height in meters from Health Connect [HeightRecord]. Used
+   * alongside [weightKg] to compute [bmi]. Defaults to 0 on older
+   * payload versions that predate height reads.
+   */
+  val heightMeters: Double = 0.0,
 )
 
 @Serializable

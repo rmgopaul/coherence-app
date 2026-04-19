@@ -1,0 +1,20 @@
+# Copy this file to `local.properties` and fill in real values.
+# `local.properties` is gitignored — never commit your actual secrets.
+
+# Android SDK location. Android Studio fills this in automatically
+# on first sync; `gradlew` needs it present to build from the CLI.
+sdk.dir=/Users/YOUR_USERNAME/Library/Android/sdk
+
+# Samsung Health webhook credentials. Must match the server-side
+# SAMSUNG_HEALTH_SYNC_KEY environment variable that authenticates
+# POST /api/webhooks/samsung-health and its batch + debug siblings.
+SAMSUNG_HEALTH_SYNC_KEY=REPLACE_ME_SYNC_KEY
+SAMSUNG_HEALTH_WEBHOOK_URL=https://app.coherence-rmg.com/api/webhooks/samsung-health
+
+# Base URL used by the TrpcClient to reach the productivity-hub
+# server. Same host as the webhook, minus the path.
+COHERENCE_BASE_URL=https://app.coherence-rmg.com
+
+# Google OAuth (CustomTabs sign-in). Lives in gradle.properties by
+# convention but can be overridden here for local testing.
+# GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com

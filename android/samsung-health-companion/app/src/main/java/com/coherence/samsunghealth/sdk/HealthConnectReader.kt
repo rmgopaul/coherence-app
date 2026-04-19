@@ -31,6 +31,23 @@ class HealthConnectReader(
   private val client: HealthConnectClient,
   private val grantedPermissions: Set<String>,
   private val cooldown: HealthConnectCooldown? = null,
+  /**
+   * Records whose `metadata.dataOrigin.packageName` is in this set
+   * are dropped client-side after the read returns, never reaching
+   * the mapper.
+   *
+   * Use case: WHOOP stays a *separate* dashboard integration that
+   * goes through our server's WHOOP OAuth pipeline, NOT through
+   * Health Connect. If WHOOP's Android app ever starts writing to
+   * Health Connect, this filter keeps our HC sync from
+   * double-counting metrics that already arrive via the WHOOP
+   * server-side path.
+   *
+   * Also useful for deduping: when two apps (e.g. Samsung Health +
+   * Renpho scale) both write the same metric, filtering lets us
+   * pick a primary source per metric category.
+   */
+  private val excludedPackageNames: Set<String> = DEFAULT_EXCLUDED_PACKAGES,
 ) {
 
   /** Mutable log of record-type labels that were read attempted. */
@@ -96,6 +113,22 @@ class HealthConnectReader(
         // recovered enough to make progress, so clear any prior
         // cooldown marker.
         cooldown?.clear()
+        // Strip records from excluded data sources (e.g. WHOOP) so
+        // they never reach the mapper. Done after the HC call so the
+        // quota debit is identical — there's no way to pre-filter at
+        // the HC API level.
+        val filtered = if (excludedPackageNames.isEmpty()) {
+          all
+        } else {
+          val kept = all.filterNot { record ->
+            record.metadata.dataOrigin.packageName in excludedPackageNames
+          }
+          val dropped = all.size - kept.size
+          if (dropped > 0) {
+            Log.d(TAG, "$label dropped $dropped records from excluded sources")
+          }
+          kept
+        }
         // Post-success spacing: when many read() calls run back-to-back
         // (e.g. a 22-type range fetch during a historical backfill),
         // Health Connect's per-app rate limiter treats bursts more
@@ -103,7 +136,7 @@ class HealthConnectReader(
         // extra latency per sync, which is invisible to the user but
         // keeps us comfortably inside the quota.
         delay(POST_READ_SPACING_MS)
-        return all
+        return filtered
       } catch (error: Throwable) {
         val combined = buildErrorMessage(error)
         if (
@@ -176,6 +209,17 @@ class HealthConnectReader(
     private const val TAG = "HealthConnectReader"
     private const val MAX_ATTEMPTS = 3
     private const val POST_READ_SPACING_MS = 50L
+
+    /**
+     * Package names whose records are filtered out of every HC read
+     * by default. WHOOP is excluded because the dashboard surfaces
+     * WHOOP metrics via a separate server-side OAuth integration —
+     * mixing the two sources would double-count calories, exercise,
+     * and sleep.
+     */
+    val DEFAULT_EXCLUDED_PACKAGES: Set<String> = setOf(
+      "com.whoop.android",
+    )
 
     /**
      * Exponential backoff applied between retry attempts on rate-limit

@@ -13,12 +13,16 @@ import androidx.health.connect.client.records.ExerciseSessionRecord
 import androidx.health.connect.client.records.FloorsClimbedRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
+import androidx.health.connect.client.records.HeightRecord
 import androidx.health.connect.client.records.HydrationRecord
 import androidx.health.connect.client.records.NutritionRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.PowerRecord
 import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.RestingHeartRateRecord
+import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.SleepSessionRecord
+import androidx.health.connect.client.records.SpeedRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
@@ -150,6 +154,15 @@ class HealthConnectPayloadMapper(
     val nutritionAll = reader.read(NutritionRecord::class, rangeFilter, "nutrition")
     val vo2All = reader.read(Vo2MaxRecord::class, rangeFilter, "vo2", warnIfMissing = false)
     val bodyTempAll = reader.read(BodyTemperatureRecord::class, rangeFilter, "body_temperature")
+    val heightAll = reader.read(HeightRecord::class, rangeFilter, "height", warnIfMissing = false)
+    val skinTempAll = reader.read(
+      SkinTemperatureRecord::class,
+      rangeFilter,
+      "skin_temperature",
+      warnIfMissing = false,
+    )
+    val powerAll = reader.read(PowerRecord::class, rangeFilter, "power", warnIfMissing = false)
+    val speedAll = reader.read(SpeedRecord::class, rangeFilter, "speed", warnIfMissing = false)
 
     // ── Partition records per day and build payloads ─────────────────
     val payloads = mutableListOf<SamsungHealthPayload>()
@@ -200,6 +213,10 @@ class HealthConnectPayloadMapper(
         nutritionRecords = nutritionAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
         vo2Records = vo2All.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
         bodyTempRecords = bodyTempAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        heightRecords = heightAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
+        skinTempRecords = skinTempAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        powerRecords = powerAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        speedRecords = speedAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
       )
       cursor = cursor.plusDays(1)
     }
@@ -243,6 +260,10 @@ class HealthConnectPayloadMapper(
     nutritionRecords: List<NutritionRecord>,
     vo2Records: List<Vo2MaxRecord>,
     bodyTempRecords: List<BodyTemperatureRecord>,
+    heightRecords: List<HeightRecord>,
+    skinTempRecords: List<SkinTemperatureRecord>,
+    powerRecords: List<PowerRecord>,
+    speedRecords: List<SpeedRecord>,
   ): SamsungHealthPayload {
     // ── Activity ──────────────────────────────────────────────────────
     val steps = stepsRecords.sumOf { it.count }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
@@ -357,6 +378,16 @@ class HealthConnectPayloadMapper(
       0.0
     }
 
+    // Height is instantaneous and rarely changes, so the latest read
+    // within the day window is authoritative. Used to derive BMI.
+    val latestHeightMeters = heightRecords.maxByOrNull { it.time }?.height?.inMeters ?: 0.0
+    val bmiDerived = if (latestWeightKg > 0 && latestHeightMeters > 0) {
+      val value = latestWeightKg / (latestHeightMeters * latestHeightMeters)
+      ((value * 10.0).roundToInt() / 10.0) // 1dp
+    } else {
+      0.0
+    }
+
     // ── Hydration & nutrition ─────────────────────────────────────────
     val waterMl = hydrationRecords.sumOf { it.volume.inMilliliters }
     val caloriesIntake = nutritionRecords.sumOf { it.energy?.inKilocalories ?: 0.0 }
@@ -372,17 +403,80 @@ class HealthConnectPayloadMapper(
 
     val latestBodyTempC = bodyTempRecords.maxByOrNull { it.time }?.temperature?.inCelsius ?: 0.0
 
-    // ── Workouts ──────────────────────────────────────────────────────
+    // Skin temperature: SkinTemperatureRecord stores a baseline + a
+    // list of deltas. Average the absolute skin temperature by adding
+    // each delta to its parent baseline when both are present. If the
+    // record only has a baseline, that's our best estimate.
+    val skinTempValues = skinTempRecords.flatMap { record ->
+      val baseline = record.baseline?.inCelsius
+      if (baseline == null) return@flatMap emptyList<Double>()
+      if (record.deltas.isEmpty()) return@flatMap listOf(baseline)
+      record.deltas.map { baseline + it.delta.inCelsius }
+    }
+    val latestSkinTempC = skinTempValues.averageOrZero()
+
+    // Power samples come in as a list inside each record. Filter
+    // samples to the day's window so a record spanning midnight
+    // only contributes samples in the correct day. Samsung Health
+    // writes these for cycling workouts + occasionally treadmill.
+    val powerWatts = powerRecords.flatMap { record ->
+      record.samples.mapNotNull { sample ->
+        if (sample.time.isBefore(dayStart) || !sample.time.isBefore(dayEnd)) null
+        else sample.power.inWatts
+      }
+    }
+    val peakPowerWatts = powerWatts.maxOrNull() ?: 0.0
+    val averagePowerWatts = powerWatts.averageOrZero()
+
+    // Speed samples: same pattern. Samsung Health writes these for
+    // running + cycling; useful for pace computation server-side.
+    val speedMps = speedRecords.flatMap { record ->
+      record.samples.mapNotNull { sample ->
+        if (sample.time.isBefore(dayStart) || !sample.time.isBefore(dayEnd)) null
+        else sample.speed.inMetersPerSecond
+      }
+    }
+    val peakSpeedMps = speedMps.maxOrNull() ?: 0.0
+    val averageSpeedMps = speedMps.averageOrZero()
+
+    // ── Workouts (joined with calories + HR by time window) ──────────
+    // ExerciseSessionRecord carries only metadata — calories and HR
+    // live on other record types. For each session we window-join to
+    // the records that overlap its [startTime, endTime]. Calories +
+    // distance use the session window on their *interval* records
+    // (overlap rule); HR uses per-sample filtering since those are
+    // point-in-time.
     val workouts = exerciseRecords.map { record ->
+      val sessionStart = record.startTime
+      val sessionEnd = record.endTime
+
+      val sessionCalories = activeCalRecords
+        .filter { it.endTime.isAfter(sessionStart) && it.startTime.isBefore(sessionEnd) }
+        .sumOf { it.energy.inKilocalories }
+      val sessionDistance = distanceRecords
+        .filter { it.endTime.isAfter(sessionStart) && it.startTime.isBefore(sessionEnd) }
+        .sumOf { it.distance.inMeters }
+
+      val sessionHr = heartRateRecords
+        .filter { it.endTime.isAfter(sessionStart) && it.startTime.isBefore(sessionEnd) }
+        .flatMap { rec ->
+          rec.samples.mapNotNull { s ->
+            if (s.time.isBefore(sessionStart) || !s.time.isBefore(sessionEnd)) null
+            else s.beatsPerMinute.toDouble()
+          }
+        }
+      val avgHr = sessionHr.averageOrZero()
+      val maxHr = sessionHr.maxOrNull() ?: 0.0
+
       WorkoutSample(
         type = record.exerciseType.toString(),
         startIso = record.startTime.toString(),
         endIso = record.endTime.toString(),
         durationMinutes = durationMinutes(record.startTime, record.endTime),
-        caloriesKcal = 0.0,
-        distanceMeters = 0.0,
-        avgHeartRateBpm = 0.0,
-        maxHeartRateBpm = 0.0,
+        caloriesKcal = sessionCalories,
+        distanceMeters = sessionDistance,
+        avgHeartRateBpm = avgHr,
+        maxHeartRateBpm = maxHr,
       )
     }
 
@@ -428,11 +522,15 @@ class HealthConnectPayloadMapper(
         vo2MaxMlKgMin = vo2,
         stressScore = 0.0,
         stressMinutes = 0,
+        peakPowerWatts = peakPowerWatts,
+        averagePowerWatts = averagePowerWatts,
+        peakSpeedMps = peakSpeedMps,
+        averageSpeedMps = averageSpeedMps,
       ),
       oxygenAndTemperature = OxygenAndTemperatureMetrics(
         spo2AvgPercent = spo2Values.averageOrZero(),
         spo2MinPercent = spo2Values.minOrNull() ?: 0.0,
-        skinTemperatureCelsius = 0.0,
+        skinTemperatureCelsius = latestSkinTempC,
         bodyTemperatureCelsius = latestBodyTempC,
       ),
       bloodPressure = BloodPressureMetrics(
@@ -442,11 +540,12 @@ class HealthConnectPayloadMapper(
       ),
       bodyComposition = BodyCompositionMetrics(
         weightKg = latestWeightKg,
-        bmi = 0.0,
+        bmi = bmiDerived,
         bodyFatPercent = latestBodyFatPercent,
         skeletalMuscleMassKg = 0.0,
         bodyWaterPercent = bodyWaterPercent,
         basalMetabolicRateKcal = bmrKcal,
+        heightMeters = latestHeightMeters,
       ),
       nutrition = NutritionMetrics(
         caloriesIntakeKcal = caloriesIntake,
@@ -714,11 +813,18 @@ class HealthConnectPayloadMapper(
   }
 
   companion object {
-    // 0.3.3 — fixes the cooldown reachability bug in
-    // HealthConnectReader.read(): previous versions had the
-    // markRateLimited() call after the for-loop, but the loop always
-    // returns from inside, making the cooldown write unreachable.
-    private const val APP_VERSION = "0.3.3"
+    // 0.4.0 — feature bump:
+    //   - 60-min cadence + onResume debounce (was 15-min, quota
+    //     saturation)
+    //   - HeightRecord, SkinTemperatureRecord, PowerRecord,
+    //     SpeedRecord support
+    //   - BMI derivation from weight + height
+    //   - Workouts now carry joined calories + HR per session
+    //   - WHOOP dataOrigin filter (records from com.whoop.android
+    //     are dropped so HC stays WHOOP-free; WHOOP keeps its own
+    //     server-side OAuth pipeline)
+    //   - SYNC_KEY moved from build.gradle.kts to local.properties
+    private const val APP_VERSION = "0.4.0"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

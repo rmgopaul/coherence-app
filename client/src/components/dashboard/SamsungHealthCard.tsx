@@ -41,6 +41,39 @@ export interface SamsungHealthSnapshot {
   heartRateSamplesCount: number | null;
   permissionsGranted: boolean;
   warnings: string[];
+  /**
+   * Number of Health Connect record types the last sync tried to
+   * read vs. how many actually returned data. Used for the "18/22"
+   * status pill — a full success is 22/22, a partial sync shows
+   * the breakdown.
+   */
+  recordTypesAttempted?: number | null;
+  recordTypesSucceeded?: number | null;
+}
+
+/**
+ * Categorize a warnings array into one of three status tiers so the
+ * card can render an appropriately-toned pill:
+ *  - `rate-limited` — a cooldown-class error (at least one warning
+ *    mentions rate limit / cooldown / quota). Amber/red tone.
+ *  - `partial`    — some reads failed but not due to rate limits
+ *    (e.g. "body_fat read failed: must be in foreground"). Neutral tone.
+ *  - `ok`         — clean sync. No pill needed.
+ */
+function classifyWarnings(warnings: string[]): "rate-limited" | "partial" | "ok" {
+  if (!warnings.length) return "ok";
+  const joined = warnings.join(" ").toLowerCase();
+  if (
+    joined.includes("rate limit") ||
+    joined.includes("rate-limited") ||
+    joined.includes("rate limited") ||
+    joined.includes("quota") ||
+    joined.includes("cooldown") ||
+    joined.includes("throttled")
+  ) {
+    return "rate-limited";
+  }
+  return "partial";
 }
 
 interface SamsungHealthCardProps {
@@ -129,31 +162,60 @@ export function SamsungHealthCard({
         ) : (
           <>
             {(() => {
-              const isStale = snapshot.receivedAt
-                ? Date.now() - new Date(snapshot.receivedAt).getTime() > 24 * 60 * 60 * 1000
-                : false;
-              const ageLabel = snapshot.receivedAt
-                ? (() => {
-                    const diffMs = Date.now() - new Date(snapshot.receivedAt).getTime();
-                    const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
-                    if (diffDays >= 1) return `${diffDays}d ago`;
-                    const diffHrs = Math.floor(diffMs / (60 * 60 * 1000));
-                    if (diffHrs >= 1) return `${diffHrs}h ago`;
-                    return "just now";
-                  })()
+              const receivedAtMs = snapshot.receivedAt
+                ? new Date(snapshot.receivedAt).getTime()
                 : null;
+              const isStale =
+                receivedAtMs !== null &&
+                Date.now() - receivedAtMs > 24 * 60 * 60 * 1000;
+              const ageLabel =
+                receivedAtMs !== null
+                  ? (() => {
+                      const diffMs = Date.now() - receivedAtMs;
+                      const diffDays = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+                      if (diffDays >= 1) return `${diffDays}d ago`;
+                      const diffHrs = Math.floor(diffMs / (60 * 60 * 1000));
+                      if (diffHrs >= 1) return `${diffHrs}h ago`;
+                      const diffMins = Math.floor(diffMs / (60 * 1000));
+                      if (diffMins >= 1) return `${diffMins}m ago`;
+                      return "just now";
+                    })()
+                  : null;
+
+              const status = classifyWarnings(snapshot.warnings ?? []);
+              const attempted = snapshot.recordTypesAttempted ?? null;
+              const succeeded = snapshot.recordTypesSucceeded ?? null;
+              const coverage =
+                attempted !== null && succeeded !== null && attempted > 0
+                  ? `${succeeded}/${attempted} data types`
+                  : null;
+
               return (
-                <>
-                  {isStale && (
-                    <div className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 px-2 py-1 rounded mb-2">
-                      Data Stale ({ageLabel}) — Check Sync App
+                <div className="space-y-1.5">
+                  {status === "rate-limited" && (
+                    <div className="text-xs font-medium text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/50 px-2 py-1 rounded">
+                      Sync paused (Health Connect rate limit). The app will
+                      auto-resume once the 24h quota replenishes.
+                    </div>
+                  )}
+                  {status === "partial" && (
+                    <div className="text-xs font-medium text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/50 px-2 py-1 rounded">
+                      Partial sync{coverage ? ` — ${coverage} succeeded` : ""}.
+                      Some record types couldn&apos;t be read.
+                    </div>
+                  )}
+                  {status === "ok" && isStale && (
+                    <div className="text-xs font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 px-2 py-1 rounded">
+                      Data stale ({ageLabel}) — open the companion app to
+                      re-sync.
                     </div>
                   )}
                   <p className="text-xs text-muted-foreground">
-                    Source: {snapshot.sourceProvider}.{" "}
-                    {ageLabel ? `Last sync ${ageLabel}.` : "No sync timestamp."}
+                    Source: {snapshot.sourceProvider}.
+                    {ageLabel ? ` Last sync ${ageLabel}.` : " No sync timestamp."}
+                    {coverage && status === "ok" ? ` ${coverage}.` : ""}
                   </p>
-                </>
+                </div>
               );
             })()}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">

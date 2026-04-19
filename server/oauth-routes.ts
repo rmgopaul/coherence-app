@@ -168,6 +168,16 @@ function buildSamsungMetadata(
     spo2SamplesCount: listCount(samples.spo2Series),
     bloodPressureSamplesCount: listCount(samples.bloodPressureSeries),
     glucoseSamplesCount: listCount(samples.glucoseSeries),
+    // Record-type coverage counts — used by the dashboard card to
+    // render "18/22 data types" coverage pills. Driven straight from
+    // the Android payload's sync.recordTypesAttempted /
+    // .recordTypesSucceeded arrays.
+    recordTypesAttempted: Array.isArray(sync.recordTypesAttempted)
+      ? (sync.recordTypesAttempted as unknown[]).length
+      : null,
+    recordTypesSucceeded: Array.isArray(sync.recordTypesSucceeded)
+      ? (sync.recordTypesSucceeded as unknown[]).length
+      : null,
   };
 
   if (options?.preservePreviousIfDegraded && options.previousSummary) {

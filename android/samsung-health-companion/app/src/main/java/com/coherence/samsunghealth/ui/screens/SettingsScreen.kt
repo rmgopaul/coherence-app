@@ -243,6 +243,39 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
           }
 
+          // ── Sync Now (today only) ───────────────────────────────
+          Text(
+            "Sync today's data",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Medium,
+          )
+          Text(
+            "Pulls today's Health Connect data immediately. Useful " +
+              "when your watch or scale just finished syncing and you " +
+              "want the dashboard to reflect it without waiting for " +
+              "the hourly schedule.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          Button(
+            onClick = {
+              // Force-trigger bypasses the onResume debounce so the
+              // user gets immediate feedback regardless of how long
+              // ago the previous sync fired.
+              AutoSyncScheduler.triggerManualSync(context, force = true)
+            },
+            enabled = !cooldownState.active,
+            modifier = Modifier.fillMaxWidth(),
+          ) {
+            Text(
+              if (cooldownState.active) "Sync paused (rate limited)"
+              else "Sync Now",
+            )
+          }
+
+          Spacer(Modifier.height(8.dp))
+
+          // ── Historical backfill ─────────────────────────────────
           Text(
             "Backfill history",
             style = MaterialTheme.typography.labelLarge,

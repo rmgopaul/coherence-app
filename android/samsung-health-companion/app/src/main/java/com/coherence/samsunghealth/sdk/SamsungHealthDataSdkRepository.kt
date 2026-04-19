@@ -316,6 +316,6 @@ class SamsungHealthDataSdkRepository(
 
   companion object {
     // Keep in sync with HealthConnectPayloadMapper.APP_VERSION.
-    private const val APP_VERSION = "0.3.3"
+    private const val APP_VERSION = "0.4.0"
   }
 }

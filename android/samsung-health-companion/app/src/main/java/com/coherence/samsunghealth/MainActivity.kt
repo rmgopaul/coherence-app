@@ -25,7 +25,11 @@ class MainActivity : ComponentActivity() {
 
   override fun onResume() {
     super.onResume()
-    // Re-ensure health sync is scheduled
+    // Keep the periodic worker scheduled, then opportunistically fire
+    // a manual sync. `triggerManualSync` is debounced internally so
+    // tab swipes and frequent app re-entries don't hammer the
+    // HealthConnect quota.
     AutoSyncScheduler.ensureScheduledIfEnabled(this)
+    AutoSyncScheduler.triggerManualSync(this)
   }
 }
