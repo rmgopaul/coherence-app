@@ -1,0 +1,115 @@
+/*
+ * King of the Day — hero styles
+ * Archivo Black for display type; Caveat for hand-scrawled annotations.
+ * If you self-host, swap these @imports for @font-face rules.
+ */
+@import url("https://fonts.googleapis.com/css2?family=Archivo+Black&family=Caveat:wght@500;700&display=swap");
+
+.kotd-display {
+  font-family: "Archivo Black", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-weight: 900;
+  letter-spacing: -0.045em;
+  line-height: 0.88;
+  text-transform: uppercase;
+}
+
+.kotd-scribble {
+  font-family: "Caveat", "Bradley Hand", cursive;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+/* Yellow Basquiat highlighter — clipped to text baseline */
+.kotd-highlight {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 35%,
+    oklch(0.92 0.18 95) 35%,
+    oklch(0.92 0.18 95) 92%,
+    transparent 92%
+  );
+  padding: 0 0.12em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Red hand-drawn strike — two slightly offset lines for a scrawled feel */
+.kotd-strike {
+  position: relative;
+  color: inherit;
+  opacity: 0.55;
+}
+.kotd-strike::before,
+.kotd-strike::after {
+  content: "";
+  position: absolute;
+  left: -2%;
+  right: -2%;
+  height: 0.08em;
+  background: oklch(0.58 0.22 27);
+  border-radius: 9999px;
+}
+.kotd-strike::before { top: 48%; transform: rotate(-1.2deg); }
+.kotd-strike::after  { top: 56%; transform: rotate(0.6deg); opacity: 0.55; }
+
+/* Crown SVG baseline */
+.kotd-crown path {
+  stroke: oklch(0.92 0.18 95);
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+/* Card chrome */
+.kotd-hero {
+  background: #0a0a0a;
+  color: #f5f2ea;
+  border: 2px solid #0a0a0a;
+  border-radius: 0;
+  position: relative;
+  overflow: hidden;
+}
+.kotd-hero::after {
+  /* faint horizontal rule — newspaper column divider */
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2px;
+  background: #f5f2ea;
+  opacity: 0.15;
+}
+
+.dark .kotd-hero {
+  background: #0a0a0a;
+  color: #f5f2ea;
+  border-color: #2a2a2a;
+}
+
+/* Giant stat tile */
+.kotd-stat-value {
+  font-family: "Archivo Black", "Helvetica Neue", sans-serif;
+  font-size: clamp(3rem, 6vw, 5.5rem);
+  line-height: 0.9;
+  letter-spacing: -0.04em;
+}
+.kotd-stat-label {
+  font-family: "Archivo Black", "Helvetica Neue", sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+.kotd-stat-delta {
+  font-family: "Caveat", cursive;
+  font-size: 1.4rem;
+  line-height: 1;
+}
+
+/* Tighten display headline at small widths */
+@media (max-width: 640px) {
+  .kotd-hero .kotd-headline {
+    font-size: clamp(2.75rem, 13vw, 5rem) !important;
+  }
+}

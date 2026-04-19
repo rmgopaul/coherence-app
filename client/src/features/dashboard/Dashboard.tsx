@@ -68,7 +68,7 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import { useState, useEffect, useMemo, useRef } from "react";
-import { DashboardHero } from "@/components/dashboard/DashboardHero";
+import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { DashboardWidget } from "@/components/dashboard/DashboardWidget";
 import MarketHeadlinesCard from "@/components/dashboard/MarketHeadlinesCard";
 import SportsCard from "@/components/dashboard/SportsCard";
@@ -497,6 +497,16 @@ export default function Dashboard() {
     refetchInterval: 300_000,
     refetchOnWindowFocus: true,
   });
+
+  const { data: marketData } = trpc.marketDashboard.getMarketData.useQuery(
+    undefined,
+    {
+      enabled: !!user,
+      refetchOnWindowFocus: false,
+      refetchInterval: 5 * 60_000,
+      staleTime: 4 * 60_000,
+    }
+  );
 
   const { data: metricHistory, refetch: refetchMetricHistory } = trpc.metrics.getHistory.useQuery(
     { limit: 30 },
@@ -1912,14 +1922,19 @@ export default function Dashboard() {
     <div id="dashboard-top" className="min-h-screen overflow-x-clip bg-gradient-to-br from-slate-100 via-white to-emerald-50 dark:from-slate-950 dark:via-slate-900 dark:to-blue-950 flex flex-col">
       {/* Hero */}
       <div className="container mx-auto px-4 pt-4">
-        <DashboardHero
+        <KingOfTheDayHero
           userName={preferences?.displayName || user?.name?.split(" ")[0]}
-          stats={[
-            { label: "Tasks", value: (allTodoistTasks || []).filter((t) => t.due?.date && t.due.date <= todayKey).length, icon: CheckSquare },
-            { label: "Events", value: todayEventCount, icon: Calendar },
-            { label: "Recovery", value: whoopSummary?.recoveryScore != null ? `${Math.round(whoopSummary.recoveryScore)}%` : "--", icon: HeartPulse },
-            { label: "Completed", value: todoistCompletedLoading ? "..." : (todoistCompletedToday?.count ?? 0), icon: CheckSquare },
-          ]}
+          todayTasks={dueTodayTasks ?? []}
+          completedCount={todoistCompletedToday?.count ?? 0}
+          whoopSummary={whoopSummary ?? null}
+          marketQuotes={marketData?.quotes ?? []}
+          dailyBrief={dailyBrief}
+          calendarEvents={calendarEvents ?? []}
+          unreadGmailCount={
+            (gmailMessages ?? []).filter((m) =>
+              Array.isArray(m.labelIds) && m.labelIds.includes("UNREAD")
+            ).length
+          }
         />
       </div>
 
