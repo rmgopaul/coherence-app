@@ -4484,20 +4484,9 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        // Previously this also set `allowedKeys` to the same priority
-        // set, which HARD-filtered the manifest down — any dataset
-        // not listed for the active tab would never hydrate. That
-        // broke every tab whose datasets weren't explicitly
-        // enumerated in TAB_PRIORITY_DATASETS (Forecast, Utility
-        // Contracts, Size+Reporting, etc.): the Forecast tab's
-        // "upload Transfer History and Annual Production Estimates"
-        // empty-state would show even when those datasets existed in
-        // IDB and on the server.
-        //
-        // Now: no allowedKeys filter. Everything in the manifest
-        // hydrates. priorityKeys still determines ORDER (landing
-        // tab's datasets load first for fast first paint), but
-        // background phase eventually loads the rest.
+        const allowedKeys = buildHydrationPriorityKeys(
+          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
+        );
         // Phase 16: progressive hydration. Datasets arrive one at a
         // time via the onDataset callback — each call into setDatasets
         // only updates ONE key, producing a small re-render rather
@@ -4511,7 +4500,7 @@ export default function SolarRecDashboard() {
 
         const [, loadedLogs] = await Promise.all([
           loadDatasetsFromStorage({
-            // allowedKeys intentionally omitted — see comment above.
+            allowedKeys,
             priorityKeys,
             // Phase 17c: commits arrive as two batches (priority +
             // background) rather than per-dataset, so the `systems`
