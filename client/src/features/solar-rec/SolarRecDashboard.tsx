@@ -1350,25 +1350,51 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     const stored = await new Promise<{
       manifest: SerializedDatasetsManifest | null;
       legacy: Record<string, SerializedCsvDataset | undefined> | null;
+      allStoreKeys: IDBValidKey[];
     }>((resolve, reject) => {
       const transaction = openDb.transaction(DASHBOARD_DATASETS_STORE, "readonly");
       const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
       const manifestRequest = store.get(DASHBOARD_DATASETS_MANIFEST_KEY);
       const legacyRequest = store.get(DASHBOARD_DATASETS_RECORD_KEY);
+      const allKeysRequest = store.getAllKeys();
 
       transaction.oncomplete = () => {
         resolve({
           manifest: (manifestRequest.result as SerializedDatasetsManifest | undefined) ?? null,
           legacy:
             (legacyRequest.result as Record<string, SerializedCsvDataset | undefined> | undefined) ?? null,
+          allStoreKeys: (allKeysRequest.result as IDBValidKey[] | undefined) ?? [],
         });
       };
       transaction.onabort = () => reject(transaction.error ?? new Error("Failed reading datasets from IndexedDB."));
       transaction.onerror = () => reject(transaction.error ?? new Error("Failed reading datasets from IndexedDB."));
     });
 
-    if (stored.manifest && Array.isArray(stored.manifest.keys) && stored.manifest.keys.length > 0) {
-      const manifestKeys = stored.manifest.keys.filter(
+    // Self-heal: a prior save may have truncated the manifest while
+    // leaving orphan `dataset:<key>` records in IndexedDB. Scan the
+    // store, merge any orphans that aren't tracked by the manifest,
+    // and then persist the repaired manifest so subsequent loads take
+    // the fast path. Preserves user data across incomplete manifest
+    // writes (e.g. a partially-hydrated save during an OOM window).
+    const manifestKeyArray =
+      stored.manifest && Array.isArray(stored.manifest.keys)
+        ? stored.manifest.keys
+        : [];
+    const manifestKeySet = new Set<string>(manifestKeyArray);
+    const orphanDatasetKeys: DatasetKey[] = [];
+    const DATASET_STORAGE_KEY_PREFIX = "dataset:";
+    for (const rawKey of stored.allStoreKeys) {
+      if (typeof rawKey !== "string") continue;
+      if (!rawKey.startsWith(DATASET_STORAGE_KEY_PREFIX)) continue;
+      const candidate = rawKey.slice(DATASET_STORAGE_KEY_PREFIX.length);
+      if (!candidate || manifestKeySet.has(candidate)) continue;
+      if (!isDatasetKey(candidate)) continue;
+      orphanDatasetKeys.push(candidate);
+    }
+    const effectiveManifestKeys: string[] = [...manifestKeyArray, ...orphanDatasetKeys];
+
+    if (effectiveManifestKeys.length > 0) {
+      const manifestKeys = effectiveManifestKeys.filter(
         (key): key is DatasetKey =>
           isDatasetKey(key) && (!allowedKeys || allowedKeys.has(key))
       );
@@ -1428,6 +1454,40 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
         flushPriority();
         await readPhase(backgroundOrdered, backgroundBatch, afterPriority);
         flushBackground();
+
+        // If we recovered orphan dataset records not referenced by the
+        // stored manifest, persist a healed manifest so subsequent loads
+        // take the fast path without re-running the orphan scan. Fire
+        // and forget — failure here is non-fatal, the heal repeats next
+        // load.
+        if (orphanDatasetKeys.length > 0) {
+          const healedKeys = effectiveManifestKeys.filter((key): key is DatasetKey =>
+            isDatasetKey(key)
+          );
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const writeTx = openDb.transaction(
+                DASHBOARD_DATASETS_STORE,
+                "readwrite"
+              );
+              const writeStore = writeTx.objectStore(DASHBOARD_DATASETS_STORE);
+              writeStore.put(
+                {
+                  keys: healedKeys,
+                  updatedAt: new Date().toISOString(),
+                } satisfies SerializedDatasetsManifest,
+                DASHBOARD_DATASETS_MANIFEST_KEY
+              );
+              writeTx.oncomplete = () => resolve();
+              writeTx.onabort = () =>
+                reject(writeTx.error ?? new Error("manifest heal write aborted"));
+              writeTx.onerror = () =>
+                reject(writeTx.error ?? new Error("manifest heal write errored"));
+            });
+          } catch {
+            // Non-fatal — orphan scan will repeat next load.
+          }
+        }
         return;
       }
     }
