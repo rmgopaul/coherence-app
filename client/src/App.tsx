@@ -9,6 +9,7 @@ import GlobalClockifyTimer from "./components/GlobalClockifyTimer";
 import PinGate from "./components/PinGate";
 import TwoFactorGate from "./components/TwoFactorGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { FocusModeProvider } from "./contexts/FocusModeContext";
 import { AppShell } from "./components/layout/AppShell";
 
 const Home = lazy(() => import("@/features/dashboard/Home"));
@@ -128,11 +129,13 @@ function Router() {
 
   // All other routes render inside the app shell (sidebar + command palette)
   return (
-    <AppShell>
-      <AppRoutes />
-      <GlobalClockifyTimer />
-      <GlobalFeedbackWidget />
-    </AppShell>
+    <FocusModeProvider>
+      <AppShell>
+        <AppRoutes />
+        <GlobalClockifyTimer />
+        <GlobalFeedbackWidget />
+      </AppShell>
+    </FocusModeProvider>
   );
 }
 
