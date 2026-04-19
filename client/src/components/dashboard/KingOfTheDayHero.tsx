@@ -25,6 +25,15 @@ interface WhoopSummary {
   restingHeartRate: number | null;
 }
 
+export interface KingOfDayServerRow {
+  source: "auto" | "manual" | "ai";
+  title: string;
+  reason: string | null;
+  taskId: string | null;
+  eventId: string | null;
+  pinnedAt: Date | string | null;
+}
+
 export interface KingOfTheDayHeroProps {
   userName?: string | null;
   todayTasks: TodoistTask[];
@@ -34,6 +43,17 @@ export interface KingOfTheDayHeroProps {
   dailyBrief: DailyBrief | null;
   calendarEvents: CalendarEvent[];
   unreadGmailCount: number;
+  /**
+   * Server-picked headline from `trpc.kingOfDay.get` (Phase C).
+   * When present, overrides the client-side derivation; the fallback
+   * lives in `deriveHeadline` for loading/error states.
+   */
+  kingOfDay?: KingOfDayServerRow | null;
+  /**
+   * Fires when the user taps the × on a manual pin. Wire to
+   * `trpc.kingOfDay.unpin` at the call site.
+   */
+  onUnpin?: () => void;
   className?: string;
 }
 
@@ -193,13 +213,24 @@ export function KingOfTheDayHero({
   dailyBrief,
   calendarEvents,
   unreadGmailCount,
+  kingOfDay,
+  onUnpin,
   className,
 }: KingOfTheDayHeroProps) {
   const now = useNow(60_000);
-  const { headline, annotation } = useMemo(
-    () => deriveHeadline(dailyBrief, todayTasks),
-    [dailyBrief, todayTasks]
-  );
+  // Phase C: prefer the server-picked headline when present. Falls
+  // through to the existing client-side derivation on loading/error
+  // so the hero is never blank.
+  const { headline, annotation } = useMemo(() => {
+    if (kingOfDay?.title) {
+      return {
+        headline: kingOfDay.title,
+        annotation: kingOfDay.reason ?? "TODAY'S FOCUS",
+      };
+    }
+    return deriveHeadline(dailyBrief, todayTasks);
+  }, [kingOfDay, dailyBrief, todayTasks]);
+  const isPinned = kingOfDay?.source === "manual";
   const { h: hoursLeft, m: minutesLeft } = hoursLeftInDay(now);
   const greeting = greetingForHour(now.getHours());
 
@@ -268,8 +299,28 @@ export function KingOfTheDayHero({
 
       {/* Headline — the one thing */}
       <div className="mt-8">
-        <div className="kotd-scribble text-[1.2rem] leading-none text-[oklch(0.92_0.18_95)]">
-          {annotation}
+        <div className="flex items-center gap-3">
+          <div className="kotd-scribble text-[1.2rem] leading-none text-[oklch(0.92_0.18_95)]">
+            {annotation}
+          </div>
+          {isPinned && (
+            <span
+              className="kotd-pinned-badge"
+              role="status"
+              aria-label="Manually pinned — click the × to unpin"
+            >
+              PINNED
+              <button
+                type="button"
+                className="kotd-pinned-badge__close"
+                onClick={onUnpin}
+                aria-label="Unpin today's headline"
+                title="Unpin"
+              >
+                ×
+              </button>
+            </span>
+          )}
         </div>
         <h1
           className="kotd-display kotd-headline mt-3 text-[clamp(3rem,11vw,9rem)]"
