@@ -96,6 +96,25 @@ export function buildDeliveryTrackerData(input: {
 }): DeliveryTrackerData {
   const { scheduleRows, transferRows } = input;
 
+  // Guard against partial-hydration fluctuation.
+  //
+  // During progressive dataset hydration the transferHistory and
+  // deliveryScheduleBase datasets don't arrive atomically. The
+  // problematic ordering is transferHistory landing first: with
+  // scheduleRows empty, systemSchedules is empty too, and the loop
+  // below reports EVERY transfer as unmatched (~250K). Once Schedule B
+  // lands the count collapses to the real figure (~6K). That
+  // transient makes the Delivery Tracker card oscillate 6k ↔ 250k
+  // during mount and whenever a user force-syncs transferHistory.
+  //
+  // Short-circuit only in that specific ordering — transfers present,
+  // schedules absent. The inverse (schedules present, transfers
+  // empty) is a legitimate state because contracts are derivable from
+  // Schedule B alone; existing tests assert that structure.
+  if (scheduleRows.length === 0 && transferRows.length > 0) {
+    return EMPTY_DELIVERY_TRACKER_DATA;
+  }
+
   // Build schedule: system → year → { obligated, startDate, endDate }
   const systemSchedules = new Map<string, SystemSchedule>();
 

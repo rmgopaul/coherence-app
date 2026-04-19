@@ -142,4 +142,38 @@ describe("buildDeliveryTrackerData", () => {
     });
     expect(data.transfersMissingObligation).toEqual([]);
   });
+
+  it("returns empty when transfers arrive before schedules (hydration guard)", () => {
+    // Regression: during progressive hydration, transferHistory can
+    // land before deliveryScheduleBase. Previously the compute would
+    // mark every transfer as unmatched (scheduleCount=0 →
+    // systemSchedules empty), producing a transient 6k↔250k flicker
+    // on the Delivery Tracker card. Short-circuit to empty when the
+    // schedule side hasn't arrived yet.
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [],
+      transferRows: [
+        transferRow({ "Unit ID": "ABC" }),
+        transferRow({ "Unit ID": "DEF" }),
+        transferRow({ "Unit ID": "GHI" }),
+      ],
+    });
+    expect(data.unmatchedTransfers).toBe(0);
+    expect(data.totalTransfers).toBe(0);
+    expect(data.rows).toHaveLength(0);
+    expect(data.contracts).toHaveLength(0);
+  });
+
+  it("still computes when schedules are present but transfers empty (legit state)", () => {
+    // Inverse of the guard: Schedule B alone is sufficient to emit
+    // obligations. Do not collapse this case to empty.
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [scheduleRow()],
+      transferRows: [],
+    });
+    expect(data.scheduleCount).toBe(1);
+    expect(data.contracts).toHaveLength(1);
+    expect(data.rows[0].obligated).toBe(10);
+    expect(data.rows[0].delivered).toBe(0);
+  });
 });
