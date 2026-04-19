@@ -1871,6 +1871,11 @@ export default function SolarRecDashboard() {
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
+  const uploadQueueTailRef = useRef<Promise<void>>(Promise.resolve());
+  const activeUploadTaskRef = useRef(false);
+  const queuedUploadTaskCountRef = useRef(0);
+  const [activeUploadTaskLabel, setActiveUploadTaskLabel] = useState<string | null>(null);
+  const [queuedUploadTaskCount, setQueuedUploadTaskCount] = useState(0);
   const [localOnlyDatasets, setLocalOnlyDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
   const [datasetCloudSyncStatus, setDatasetCloudSyncStatus] = useState<
     Partial<Record<DatasetKey, DatasetCloudSyncStatus>>
@@ -2713,6 +2718,52 @@ export default function SolarRecDashboard() {
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  const enqueueDatasetUploadTask = async <T,>(
+    label: string,
+    task: () => Promise<T>
+  ): Promise<T> => {
+    const previousTail = uploadQueueTailRef.current;
+    const queuedBehindAnotherTask =
+      activeUploadTaskRef.current || queuedUploadTaskCountRef.current > 0;
+
+    if (queuedBehindAnotherTask) {
+      queuedUploadTaskCountRef.current += 1;
+      setQueuedUploadTaskCount(queuedUploadTaskCountRef.current);
+      setStorageNotice(
+        `${label} queued. Uploads now run one at a time to keep Chrome stable.`
+      );
+    }
+
+    const wrappedTask = previousTail.catch(() => undefined).then(async () => {
+      if (queuedBehindAnotherTask) {
+        queuedUploadTaskCountRef.current = Math.max(
+          0,
+          queuedUploadTaskCountRef.current - 1
+        );
+        setQueuedUploadTaskCount(queuedUploadTaskCountRef.current);
+      }
+
+      activeUploadTaskRef.current = true;
+      setActiveUploadTaskLabel(label);
+
+      try {
+        return await task();
+      } finally {
+        activeUploadTaskRef.current = false;
+        setActiveUploadTaskLabel((current) =>
+          current === label ? null : current
+        );
+      }
+    });
+
+    uploadQueueTailRef.current = wrappedTask.then(
+      () => undefined,
+      () => undefined
+    );
+
+    return wrappedTask;
+  };
+
   // saveCompliantSourceEntry, removeCompliantSourceEntry, importCompliantSourceCsv — moved to @/solar-rec-dashboard/components/PerformanceRatioTab
 
   const handleUpload = async (key: DatasetKey, file: File | null, mode: "replace" | "append" = "replace") => {
@@ -2728,78 +2779,83 @@ export default function SolarRecDashboard() {
     }
 
     try {
-      const parsed = TABULAR_DATASET_KEYS.has(key)
-        ? file.name.toLowerCase().endsWith(".csv")
-          ? await parseCsvFileAsync(file)
-          : await parseTabularFile(file)
-        : await (async () => {
-            return await parseCsvFileAsync(file);
-          })();
-      const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
+      await enqueueDatasetUploadTask(`${config.label} upload`, async () => {
+        const parsed = TABULAR_DATASET_KEYS.has(key)
+          ? file.name.toLowerCase().endsWith(".csv")
+            ? await parseCsvFileAsync(file)
+            : await parseTabularFile(file)
+          : await parseCsvFileAsync(file);
+        const isValid = config.requiredHeaderSets.some((set) =>
+          matchesExpectedHeaders(parsed.headers, set)
+        );
 
-      if (!isValid) {
-        setUploadErrors((previous) => ({
+        if (!isValid) {
+          setUploadErrors((previous) => ({
+            ...previous,
+            [key]: `This file does not match the expected ${config.label} format.`,
+          }));
+          return;
+        }
+
+        const uploadedAt = new Date();
+        const shouldAppend =
+          MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
+        setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
+        setDatasets((previous) => ({
           ...previous,
-          [key]: `This file does not match the expected ${config.label} format.`,
-        }));
-        return;
-      }
+          [key]: (() => {
+            const existing = previous[key];
 
-      const uploadedAt = new Date();
-      const shouldAppend = MULTI_APPEND_DATASET_KEYS.has(key) && mode === "append";
-      setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
-      setDatasets((previous) => ({
-        ...previous,
-        [key]: (() => {
-          const existing = previous[key];
+            if (shouldAppend && existing) {
+              const combinedHeaders = Array.from(
+                new Set([...existing.headers, ...parsed.headers])
+              );
+              const existingRows = existing.rows;
+              const dedupeKeys = new Set(
+                existingRows.map((row) => datasetAppendRowKey(key, row))
+              );
+              const appendedRows = parsed.rows.filter((row) => {
+                const dedupeKey = datasetAppendRowKey(key, row);
+                if (!dedupeKey) return true;
+                if (dedupeKeys.has(dedupeKey)) return false;
+                dedupeKeys.add(dedupeKey);
+                return true;
+              });
 
-          if (shouldAppend && existing) {
-            const combinedHeaders = Array.from(new Set([...existing.headers, ...parsed.headers]));
-            const existingRows = existing.rows;
-            const dedupeKeys = new Set(existingRows.map((row) => datasetAppendRowKey(key, row)));
-            const appendedRows = parsed.rows.filter((row) => {
-              const dedupeKey = datasetAppendRowKey(key, row);
-              if (!dedupeKey) return true;
-              if (dedupeKeys.has(dedupeKey)) return false;
-              dedupeKeys.add(dedupeKey);
-              return true;
-            });
+              const existingSources =
+                existing.sources && existing.sources.length > 0
+                  ? existing.sources
+                  : [
+                      {
+                        fileName: existing.fileName,
+                        uploadedAt: existing.uploadedAt,
+                        rowCount: existing.rows.length,
+                      },
+                    ];
+              const sources = [
+                ...existingSources,
+                {
+                  fileName: file.name,
+                  uploadedAt,
+                  rowCount: parsed.rows.length,
+                },
+              ];
 
-            const existingSources =
-              existing.sources && existing.sources.length > 0
-                ? existing.sources
-                : [
-                    {
-                      fileName: existing.fileName,
-                      uploadedAt: existing.uploadedAt,
-                      rowCount: existing.rows.length,
-                    },
-                  ];
-            const sources = [
-              ...existingSources,
-              {
-                fileName: file.name,
+              return {
+                fileName: `${sources.length} files loaded`,
                 uploadedAt,
-                rowCount: parsed.rows.length,
-              },
-            ];
+                headers: combinedHeaders,
+                rows: [...existingRows, ...appendedRows],
+                sources,
+              } satisfies CsvDataset;
+            }
 
             return {
-              fileName: `${sources.length} files loaded`,
+              fileName: file.name,
               uploadedAt,
-              headers: combinedHeaders,
-              rows: [...existingRows, ...appendedRows],
-              sources,
-            } satisfies CsvDataset;
-          }
-
-          return {
-            fileName: file.name,
-            uploadedAt,
-            headers: parsed.headers,
-            rows: parsed.rows,
-            sources:
-              MULTI_APPEND_DATASET_KEYS.has(key)
+              headers: parsed.headers,
+              rows: parsed.rows,
+              sources: MULTI_APPEND_DATASET_KEYS.has(key)
                 ? [
                     {
                       fileName: file.name,
@@ -2808,17 +2864,19 @@ export default function SolarRecDashboard() {
                     },
                   ]
                 : undefined,
-          } satisfies CsvDataset;
-        })(),
-      }));
+            } satisfies CsvDataset;
+          })(),
+        }));
 
-      void persistDatasetSourceFilesToCloud(
-        key,
-        shouldAppend ? "append" : "replace",
-        [{ file, uploadedAt, rowCount: parsed.rows.length }]
-      );
+        await persistDatasetSourceFilesToCloud(
+          key,
+          shouldAppend ? "append" : "replace",
+          [{ file, uploadedAt, rowCount: parsed.rows.length }]
+        );
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error while reading CSV.";
+      const message =
+        error instanceof Error ? error.message : "Unknown error while reading CSV.";
       setUploadErrors((previous) => ({ ...previous, [key]: message }));
     }
   };
@@ -2834,104 +2892,114 @@ export default function SolarRecDashboard() {
     const parsedFiles: Array<{ file: File; fileName: string; uploadedAt: Date; headers: string[]; rows: CsvRow[] }> = [];
 
     try {
-      for (const file of files) {
-        if (file.size > MAX_SINGLE_CSV_UPLOAD_BYTES) {
-          setUploadErrors((previous) => ({
-            ...previous,
-            [key]: `${file.name} is too large (${formatNumber(file.size / 1024 / 1024, 1)} MB). Please split files larger than ${formatNumber(MAX_SINGLE_CSV_UPLOAD_BYTES / 1024 / 1024)} MB.`,
-          }));
-          return;
-        }
-        const parsed = await parseCsvFileAsync(file);
-        const isValid = config.requiredHeaderSets.some((set) => matchesExpectedHeaders(parsed.headers, set));
-        if (!isValid) {
-          setUploadErrors((previous) => ({
-            ...previous,
-            [key]: `${file.name} does not match the expected ${config.label} format.`,
-          }));
-          return;
-        }
+      await enqueueDatasetUploadTask(`${config.label} upload`, async () => {
+        for (const file of files) {
+          if (file.size > MAX_SINGLE_CSV_UPLOAD_BYTES) {
+            setUploadErrors((previous) => ({
+              ...previous,
+              [key]: `${file.name} is too large (${formatNumber(file.size / 1024 / 1024, 1)} MB). Please split files larger than ${formatNumber(MAX_SINGLE_CSV_UPLOAD_BYTES / 1024 / 1024)} MB.`,
+            }));
+            return;
+          }
+          const parsed = await parseCsvFileAsync(file);
+          const isValid = config.requiredHeaderSets.some((set) =>
+            matchesExpectedHeaders(parsed.headers, set)
+          );
+          if (!isValid) {
+            setUploadErrors((previous) => ({
+              ...previous,
+              [key]: `${file.name} does not match the expected ${config.label} format.`,
+            }));
+            return;
+          }
 
-        parsedFiles.push({
-          file,
-          fileName: file.name,
-          uploadedAt: new Date(),
-          headers: parsed.headers,
-          rows: parsed.rows,
-        });
-
-        // Yield between files to keep the browser responsive during large multi-upload batches.
-        await new Promise<void>((resolve) => {
-          window.setTimeout(() => resolve(), 0);
-        });
-      }
-
-      setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
-      setDatasets((previous) => {
-        const existing = previous[key];
-        const combinedHeaders = existing ? [...existing.headers] : [];
-        parsedFiles.forEach((parsedFile) => {
-          parsedFile.headers.forEach((header) => {
-            if (!combinedHeaders.includes(header)) combinedHeaders.push(header);
+          parsedFiles.push({
+            file,
+            fileName: file.name,
+            uploadedAt: new Date(),
+            headers: parsed.headers,
+            rows: parsed.rows,
           });
-        });
 
-        const combinedRows = existing ? [...existing.rows] : [];
-        const dedupeKeys = new Set(combinedRows.map((row) => datasetAppendRowKey(key, row)));
-        parsedFiles.forEach((parsedFile) => {
-          parsedFile.rows.forEach((row) => {
-            const dedupeKey = datasetAppendRowKey(key, row);
-            if (dedupeKey && dedupeKeys.has(dedupeKey)) return;
-            if (dedupeKey) dedupeKeys.add(dedupeKey);
-            combinedRows.push(row);
+          // Yield between files to keep the browser responsive during large multi-upload batches.
+          await new Promise<void>((resolve) => {
+            window.setTimeout(() => resolve(), 0);
           });
+        }
+
+        setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
+        setDatasets((previous) => {
+          const existing = previous[key];
+          const combinedHeaders = existing ? [...existing.headers] : [];
+          parsedFiles.forEach((parsedFile) => {
+            parsedFile.headers.forEach((header) => {
+              if (!combinedHeaders.includes(header)) combinedHeaders.push(header);
+            });
+          });
+
+          const combinedRows = existing ? [...existing.rows] : [];
+          const dedupeKeys = new Set(
+            combinedRows.map((row) => datasetAppendRowKey(key, row))
+          );
+          parsedFiles.forEach((parsedFile) => {
+            parsedFile.rows.forEach((row) => {
+              const dedupeKey = datasetAppendRowKey(key, row);
+              if (dedupeKey && dedupeKeys.has(dedupeKey)) return;
+              if (dedupeKey) dedupeKeys.add(dedupeKey);
+              combinedRows.push(row);
+            });
+          });
+
+          const existingSources =
+            existing?.sources && existing.sources.length > 0
+              ? existing.sources
+              : existing
+                ? [
+                    {
+                      fileName: existing.fileName,
+                      uploadedAt: existing.uploadedAt,
+                      rowCount: existing.rows.length,
+                    },
+                  ]
+                : [];
+
+          const newSources = parsedFiles.map((parsedFile) => ({
+            fileName: parsedFile.fileName,
+            uploadedAt: parsedFile.uploadedAt,
+            rowCount: parsedFile.rows.length,
+          }));
+          const sources = [...existingSources, ...newSources];
+
+          const uploadedAt =
+            parsedFiles[parsedFiles.length - 1]?.uploadedAt ?? new Date();
+
+          return {
+            ...previous,
+            [key]: {
+              fileName: `${sources.length} files loaded`,
+              uploadedAt,
+              headers: combinedHeaders,
+              rows: combinedRows,
+              sources,
+            } satisfies CsvDataset,
+          };
         });
 
-        const existingSources =
-          existing?.sources && existing.sources.length > 0
-            ? existing.sources
-            : existing
-              ? [
-                  {
-                    fileName: existing.fileName,
-                    uploadedAt: existing.uploadedAt,
-                    rowCount: existing.rows.length,
-                  },
-                ]
-              : [];
-
-        const newSources = parsedFiles.map((parsedFile) => ({
-          fileName: parsedFile.fileName,
-          uploadedAt: parsedFile.uploadedAt,
-          rowCount: parsedFile.rows.length,
-        }));
-        const sources = [...existingSources, ...newSources];
-
-        const uploadedAt = parsedFiles[parsedFiles.length - 1]?.uploadedAt ?? new Date();
-
-        return {
-          ...previous,
-          [key]: {
-            fileName: `${sources.length} files loaded`,
-            uploadedAt,
-            headers: combinedHeaders,
-            rows: combinedRows,
-            sources,
-          } satisfies CsvDataset,
-        };
+        await persistDatasetSourceFilesToCloud(
+          key,
+          "append",
+          parsedFiles.map((parsedFile) => ({
+            file: parsedFile.file,
+            uploadedAt: parsedFile.uploadedAt,
+            rowCount: parsedFile.rows.length,
+          }))
+        );
       });
-
-      void persistDatasetSourceFilesToCloud(
-        key,
-        "append",
-        parsedFiles.map((parsedFile) => ({
-          file: parsedFile.file,
-          uploadedAt: parsedFile.uploadedAt,
-          rowCount: parsedFile.rows.length,
-        }))
-      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error while reading CSV files.";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unknown error while reading CSV files.";
       setUploadErrors((previous) => ({ ...previous, [key]: message }));
     }
   };
@@ -5203,7 +5271,11 @@ export default function SolarRecDashboard() {
     const totalRowsLoaded = loadedDatasetKeys.reduce((sum, key) => sum + (datasets[key]?.rows.length ?? 0), 0);
     const staleDatasets = loadedDatasetKeys.filter((key) => isStaleUpload(datasets[key]?.uploadedAt));
     const syncStatus =
-      remoteDashboardStateQuery.status === "pending"
+      activeUploadTaskLabel
+        ? queuedUploadTaskCount > 0
+          ? `Processing ${activeUploadTaskLabel} (${formatNumber(queuedUploadTaskCount)} queued)`
+          : `Processing ${activeUploadTaskLabel}`
+        : remoteDashboardStateQuery.status === "pending"
         ? "Checking cloud sync..."
         : saveRemoteDashboardState.isPending || saveRemoteDataset.isPending
           ? "Syncing to cloud..."
@@ -5231,6 +5303,8 @@ export default function SolarRecDashboard() {
     datasets.abpIccReport2Rows, datasets.abpIccReport3Rows,
     datasets.deliveryScheduleBase, datasets.transferHistory,
     missingCoreDatasets.length,
+    activeUploadTaskLabel,
+    queuedUploadTaskCount,
     remoteDashboardStateQuery.status,
     saveRemoteDashboardState.isPending,
     saveRemoteDataset.isPending,
