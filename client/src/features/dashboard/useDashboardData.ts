@@ -60,6 +60,14 @@ export function useDashboardData() {
     { refetchInterval: ONE_MIN }
   );
 
+  // `getGmailWaitingOn` already exists on the google router — the
+  // Phase D §4 "server-side detection" deviation is already shipped.
+  // We just consume it.
+  const { data: gmailWaitingOn } = trpc.google.getGmailWaitingOn.useQuery(
+    { maxResults: 25 },
+    { refetchInterval: FIVE_MIN }
+  );
+
   const { data: whoopSummary } = trpc.whoop.getSummary.useQuery(undefined, {
     refetchInterval: FIVE_MIN,
   });
@@ -84,7 +92,6 @@ export function useDashboardData() {
   const kingOfDay = null;
   const weather = null;
   const news: unknown[] = [];
-  const waitingOn: unknown[] = [];
 
   return {
     user,
@@ -98,6 +105,7 @@ export function useDashboardData() {
     },
     calendar: calendarEvents ?? [],
     inbox: gmailMessages ?? [],
+    waitingOn: gmailWaitingOn ?? [],
     unreadGmailCount,
     health: { whoop: whoopSummary ?? null },
     market: marketData ?? null,
@@ -107,7 +115,6 @@ export function useDashboardData() {
     kingOfDay,
     weather,
     news,
-    waitingOn,
   };
 }
 

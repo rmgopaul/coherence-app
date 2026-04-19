@@ -1,13 +1,18 @@
 /**
  * FrontPageDashboard — new broadsheet layout.
  *
- * Phase B commit 2: shell only. Masthead + hero. Newsprint columns,
- * wire feeds, and focus rail land in commit 3.
+ * Masthead · Hero · Newsprint columns · Wire feeds grid.
+ * Focus mode unmounts newsprint + wire grid (so their queries skip via
+ * React reconciliation, not `display:none`) and shows FocusModeRail
+ * instead.
  *
  * Spec: handoff/web-spec.md
  */
 import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { Masthead } from "./frontpage/Masthead";
+import { NewsprintColumns } from "./frontpage/NewsprintColumns";
+import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
+import { FocusModeRail } from "./frontpage/FocusModeRail";
 import { useDashboardData } from "./useDashboardData";
 import { useFocusMode } from "@/contexts/FocusModeContext";
 import "./frontpage/dashboard.css";
@@ -31,20 +36,17 @@ export default function FrontPageDashboard() {
         unreadGmailCount={data.unreadGmailCount}
       />
 
-      {!focusMode && (
-        <section
-          aria-label="Newsprint columns and wire feeds"
-          className="fp-placeholder mono-label"
-          style={{
-            marginTop: 48,
-            padding: 24,
-            border: "2px dashed currentColor",
-            opacity: 0.5,
-            textAlign: "center",
-          }}
-        >
-          NEWSPRINT COLUMNS · WIRE FEEDS — LANDING IN COMMIT 3
-        </section>
+      {focusMode ? (
+        <FocusModeRail calendar={data.calendar} />
+      ) : (
+        <>
+          <NewsprintColumns
+            calendar={data.calendar}
+            tasks={data.tasks}
+            waitingOn={data.waitingOn}
+          />
+          <WireFeedsGrid data={data} />
+        </>
       )}
     </div>
   );
