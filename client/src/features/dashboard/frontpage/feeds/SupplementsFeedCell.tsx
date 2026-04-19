@@ -16,6 +16,22 @@ function formatTodayKey(now: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+/**
+ * Some supplement logs store the dose as "3G" (value + unit baked in)
+ * while others store dose "3" with doseUnit "G". Guard against the
+ * double-unit render ("3G G") by dropping the suffix when the dose
+ * already ends with the unit letters.
+ */
+function formatDose(dose?: string | null, doseUnit?: string | null): string {
+  const d = (dose ?? "").toString().trim();
+  const u = (doseUnit ?? "").toString().trim();
+  if (!d && !u) return "—";
+  if (!d) return u;
+  if (!u) return d;
+  if (d.toLowerCase().endsWith(u.toLowerCase())) return d;
+  return `${d} ${u}`;
+}
+
 interface Props {
   updatedLabel: string;
 }
@@ -76,7 +92,7 @@ export function SupplementsFeedCell({ updatedLabel }: Props) {
                   {String(log.name ?? log.definitionId ?? "").slice(0, 18)}
                 </span>
                 <span className="wire-list__val mono-label">
-                  {log.dose ?? "—"} {log.doseUnit ?? ""}
+                  {formatDose(log.dose, log.doseUnit)}
                 </span>
               </li>
             ))}

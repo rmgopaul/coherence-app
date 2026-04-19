@@ -19,7 +19,7 @@
  */
 import type { ReactNode } from "react";
 import type { DashboardData } from "../useDashboardData";
-import { SolarFeedCell } from "./feeds/SolarFeedCell";
+import { WorkFeedCell } from "./feeds/WorkFeedCell";
 import { SupplementsFeedCell } from "./feeds/SupplementsFeedCell";
 import { HabitsFeedCell } from "./feeds/HabitsFeedCell";
 import { SportsFeedCell } from "./feeds/SportsFeedCell";
@@ -75,28 +75,34 @@ function HealthCell({ whoop }: { whoop: DashboardData["health"]["whoop"] }) {
   const recovery = whoop.recoveryScore ?? null;
   const sleep = whoop.sleepHours ?? null;
   const strain = whoop.dayStrain ?? null;
+
+  // Condensed layout: one headline stat (RECOVERY) + a compact mono
+  // row for sleep + strain. Lets the cell breathe at 4-col desktop
+  // widths without clipping.
+  const recoveryBucket =
+    recovery == null
+      ? null
+      : recovery >= 67
+        ? "GREEN"
+        : recovery >= 34
+          ? "YELLOW"
+          : "RED";
+
   return (
     <WireCard label="HEALTH · WHOOP" updated={nowShort()}>
-      <div className="wire-stat-row">
-        <div className="wire-stat">
-          <span className="mono-label">RECOVERY</span>
-          <span className="fp-stat-big">
-            {recovery !== null ? recovery : "—"}
-          </span>
-        </div>
-        <div className="wire-stat">
-          <span className="mono-label">SLEEP</span>
-          <span className="fp-stat-big">
-            {sleep !== null ? `${sleep.toFixed(1)}h` : "—"}
-          </span>
-        </div>
-        <div className="wire-stat">
-          <span className="mono-label">STRAIN</span>
-          <span className="fp-stat-big">
-            {strain !== null ? strain.toFixed(1) : "—"}
-          </span>
-        </div>
+      <div className="wire-stat">
+        <span className="mono-label">
+          RECOVERY{recoveryBucket ? ` · ${recoveryBucket}` : ""}
+        </span>
+        <span className="fp-stat-big">
+          {recovery !== null ? recovery : "—"}
+        </span>
       </div>
+      <p className="mono-label wire-card__hint">
+        {sleep !== null ? `${sleep.toFixed(1)}H SLEEP` : "NO SLEEP"}
+        {" · "}
+        {strain !== null ? `${strain.toFixed(1)} STRAIN` : "NO STRAIN"}
+      </p>
     </WireCard>
   );
 }
@@ -177,7 +183,7 @@ export function WireFeedsGrid({ data }: WireFeedsGridProps) {
       <MarketsCell market={data.market} />
       <NewsCell />
       <WeatherCell />
-      <SolarFeedCell updatedLabel={updatedLabel} />
+      <WorkFeedCell updatedLabel={updatedLabel} />
       <SupplementsFeedCell updatedLabel={updatedLabel} />
       <HabitsFeedCell updatedLabel={updatedLabel} />
       <SportsFeedCell updatedLabel={updatedLabel} />
