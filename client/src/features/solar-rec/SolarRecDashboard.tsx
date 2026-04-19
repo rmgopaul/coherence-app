@@ -1605,12 +1605,42 @@ async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDat
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
       const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
-      const manifest: SerializedDatasetsManifest = {
-        keys: activeKeys,
-        updatedAt: new Date().toISOString(),
+
+      // Read the existing manifest first so we can MERGE rather than
+      // overwrite. Previously this function set manifest.keys = activeKeys
+      // unconditionally, which truncated the manifest any time a save
+      // happened while state was only partially hydrated (e.g. a fresh
+      // mount that had only loaded 1 of N datasets before the user
+      // triggered a state-touching action). Subsequent reads then
+      // returned a shrunken manifest, making previously-uploaded
+      // datasets appear gone.
+      //
+      // New semantics: manifest keys = existingKeys ∪ activeKeys − removedKeys.
+      // Additions always land; explicit user-initiated removals still
+      // win; partial-hydration saves can no longer silently drop keys.
+      const existingManifestRequest = store.get(DASHBOARD_DATASETS_MANIFEST_KEY);
+      existingManifestRequest.onsuccess = () => {
+        const existing = existingManifestRequest.result as
+          | SerializedDatasetsManifest
+          | undefined;
+        const mergedKeys = new Set<string>();
+        if (existing && Array.isArray(existing.keys)) {
+          for (const key of existing.keys) {
+            if (typeof key === "string") mergedKeys.add(key);
+          }
+        }
+        for (const key of activeKeys) mergedKeys.add(key);
+        for (const key of removedKeys) mergedKeys.delete(key);
+
+        const manifest: SerializedDatasetsManifest = {
+          keys: Array.from(mergedKeys).filter(
+            (key): key is DatasetKey => isDatasetKey(key)
+          ),
+          updatedAt: new Date().toISOString(),
+        };
+        store.put(manifest, DASHBOARD_DATASETS_MANIFEST_KEY);
       };
 
-      store.put(manifest, DASHBOARD_DATASETS_MANIFEST_KEY);
       // Tombstone the legacy single-blob record on every save so a
       // partially-migrated cache can't resurrect.
       store.delete(DASHBOARD_DATASETS_RECORD_KEY);
