@@ -10,6 +10,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
 import {
   srDsDeliverySchedule,
   srDsTransferHistory,
@@ -17,9 +18,12 @@ import {
 import {
   claimComputeRun,
   getComputeRun,
+  reclaimComputeRun,
   completeComputeRun,
   failComputeRun,
   getActiveVersionsForKeys,
+  getComputedArtifact,
+  upsertComputedArtifact,
 } from "../../db/solarRecDatasets";
 
 // Re-use the same loadDatasetRows helper pattern from buildSystemSnapshot.
@@ -30,6 +34,8 @@ import { and, eq } from "drizzle-orm";
 type CsvRow = Record<string, string>;
 
 const DELIVERY_DEPS = ["deliveryScheduleBase", "transferHistory"] as const;
+const DELIVERY_ARTIFACT_TYPE = "delivery_allocations";
+const STUCK_RUN_THRESHOLD_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Version hash (2-dataset dependency)
@@ -79,31 +85,98 @@ export async function getOrBuildDeliverySnapshot(scopeId: string): Promise<{
   data: unknown;
   fromCache: boolean;
   inputVersionHash: string;
+  runId: string | null;
+  building: boolean;
 }> {
   const inputVersionHash = await computeDeliveryHash(scopeId);
+  const cached = await readDeliverySnapshotCache(scopeId, inputVersionHash);
 
-  // Check for existing completed run
-  const existing = await getComputeRun(scopeId, "delivery_allocations", inputVersionHash);
-  if (existing?.status === "completed") {
-    // TODO: Load cached result from a delivery fact table.
+  if (cached !== null) {
+    return {
+      data: cached,
+      fromCache: true,
+      inputVersionHash,
+      runId: null,
+      building: false,
+    };
   }
+
+  const existing = await getComputeRun(
+    scopeId,
+    DELIVERY_ARTIFACT_TYPE,
+    inputVersionHash
+  );
 
   if (existing?.status === "running") {
-    return { data: null, fromCache: false, inputVersionHash };
+    const startedAtMs = existing.startedAt
+      ? new Date(existing.startedAt).getTime()
+      : 0;
+    const ageMs = Date.now() - startedAtMs;
+    if (ageMs < STUCK_RUN_THRESHOLD_MS) {
+      const racedCache = await readDeliverySnapshotCache(scopeId, inputVersionHash);
+      if (racedCache !== null) {
+        return {
+          data: racedCache,
+          fromCache: true,
+          inputVersionHash,
+          runId: existing.id,
+          building: false,
+        };
+      }
+
+      return {
+        data: null,
+        fromCache: false,
+        inputVersionHash,
+        runId: existing.id,
+        building: true,
+      };
+    }
+
+    await reclaimComputeRun(existing.id);
   }
 
-  // Claim the run
-  const runId = await claimComputeRun({
-    scopeId,
-    artifactType: "delivery_allocations",
-    inputVersionHash,
-    status: "running",
-    rowCount: null,
-    error: null,
-  });
+  let runId: string | null;
+  if (
+    existing &&
+    (existing.status === "running" ||
+      existing.status === "failed" ||
+      existing.status === "completed")
+  ) {
+    if (existing.status !== "running") {
+      await reclaimComputeRun(existing.id);
+    }
+    runId = existing.id;
+  } else {
+    runId = await claimComputeRun({
+      scopeId,
+      artifactType: DELIVERY_ARTIFACT_TYPE,
+      inputVersionHash,
+      status: "running",
+      rowCount: null,
+      error: null,
+    });
+  }
 
   if (!runId) {
-    return { data: null, fromCache: false, inputVersionHash };
+    const racedCache = await readDeliverySnapshotCache(scopeId, inputVersionHash);
+    if (racedCache !== null) {
+      return {
+        data: racedCache,
+        fromCache: true,
+        inputVersionHash,
+        runId: null,
+        building: false,
+      };
+    }
+
+    return {
+      data: null,
+      fromCache: false,
+      inputVersionHash,
+      runId: null,
+      building: true,
+    };
   }
 
   try {
@@ -125,12 +198,77 @@ export async function getOrBuildDeliverySnapshot(scopeId: string): Promise<{
 
     const data = buildDeliveryTrackerData({ scheduleRows, transferRows });
 
-    await completeComputeRun(runId, data.rows?.length ?? 0);
+    await writeDeliverySnapshotCache(scopeId, inputVersionHash, data);
+    await completeComputeRun(runId, getDeliverySnapshotRowCount(data));
 
-    return { data, fromCache: false, inputVersionHash };
+    return {
+      data,
+      fromCache: false,
+      inputVersionHash,
+      runId,
+      building: false,
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Delivery snapshot build failed";
     await failComputeRun(runId, message);
     throw err;
   }
+}
+
+async function readDeliverySnapshotCache(
+  scopeId: string,
+  inputVersionHash: string
+): Promise<unknown | null> {
+  const artifact = await getComputedArtifact(
+    scopeId,
+    DELIVERY_ARTIFACT_TYPE,
+    inputVersionHash
+  );
+  if (!artifact?.payload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(artifact.payload);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      (parsed as { encoding?: unknown }).encoding === "gzip-base64-json" &&
+      typeof (parsed as { data?: unknown }).data === "string"
+    ) {
+      const json = gunzipSync(
+        Buffer.from((parsed as { data: string }).data, "base64")
+      ).toString("utf8");
+      return JSON.parse(json);
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function getDeliverySnapshotRowCount(data: unknown): number {
+  if (!data || typeof data !== "object") return 0;
+  const rows = (data as { rows?: unknown }).rows;
+  return Array.isArray(rows) ? rows.length : 0;
+}
+
+async function writeDeliverySnapshotCache(
+  scopeId: string,
+  inputVersionHash: string,
+  data: unknown
+): Promise<void> {
+  const serializedData = JSON.stringify(data);
+  const compressedPayload = JSON.stringify({
+    encoding: "gzip-base64-json",
+    data: gzipSync(Buffer.from(serializedData, "utf8")).toString("base64"),
+  });
+
+  await upsertComputedArtifact({
+    scopeId,
+    artifactType: DELIVERY_ARTIFACT_TYPE,
+    inputVersionHash,
+    payload: compressedPayload,
+    rowCount: getDeliverySnapshotRowCount(data),
+  });
 }

@@ -48,7 +48,7 @@ export const solarRecDashboardStorage = mysqlTable(
     userId: int("userId").notNull(),
     storageKey: varchar("storageKey", { length: 191 }).notNull(),
     chunkIndex: int("chunkIndex").notNull(),
-    payload: text("payload").notNull(),
+    payload: mediumtext("payload").notNull(),
     createdAt: timestamp("createdAt").defaultNow(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
   },
@@ -219,6 +219,11 @@ export const contractScanResults = mysqlTable(
     pdfFileName: varchar("pdfFileName", { length: 255 }),
     error: text("error"),
     scannedAt: timestamp("scannedAt").defaultNow(),
+    // Manual overrides — take precedence over scanned values when present.
+    overrideVendorFeePercent: double("overrideVendorFeePercent"),
+    overrideAdditionalCollateralPercent: double("overrideAdditionalCollateralPercent"),
+    overrideNotes: varchar("overrideNotes", { length: 512 }),
+    overriddenAt: timestamp("overriddenAt"),
   },
   (table) => ({
     jobIdx: index("contract_scan_results_job_idx").on(table.jobId),
@@ -473,6 +478,35 @@ export const solarRecComputeRuns = mysqlTable(
     ),
   })
 );
+
+export const solarRecComputedArtifacts = mysqlTable(
+  "solarRecComputedArtifacts",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    artifactType: varchar("artifactType", { length: 64 }).notNull(),
+    inputVersionHash: varchar("inputVersionHash", { length: 64 }).notNull(),
+    payload: mediumtext("payload").notNull(),
+    rowCount: int("rowCount"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    keyIdx: uniqueIndex("sr_computed_artifacts_key_idx").on(
+      table.scopeId,
+      table.artifactType,
+      table.inputVersionHash
+    ),
+    scopeTypeUpdatedIdx: index("sr_computed_artifacts_scope_type_updated_idx").on(
+      table.scopeId,
+      table.artifactType,
+      table.updatedAt
+    ),
+  })
+);
+
+export type SolarRecComputedArtifact = typeof solarRecComputedArtifacts.$inferSelect;
+export type InsertSolarRecComputedArtifact = typeof solarRecComputedArtifacts.$inferInsert;
 
 // ---------------------------------------------------------------------------
 // Solar REC Normalized Dataset Tables (Step 3)

@@ -57,6 +57,18 @@ export async function writeCachedSnapshot(
 ): Promise<boolean> {
   try {
     const payload = JSON.stringify(systems);
+    return await writeSerializedCachedSnapshot(userId, hash, payload);
+  } catch {
+    return false;
+  }
+}
+
+export async function writeSerializedCachedSnapshot(
+  userId: number,
+  hash: string,
+  payload: string
+): Promise<boolean> {
+  try {
     return await saveSolarRecDashboardPayload(userId, cacheKey(hash), payload);
   } catch {
     return false;

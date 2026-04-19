@@ -152,9 +152,25 @@ async function startServer() {
   // layer is retryable and startup shouldn't block on this.
   void (async () => {
     try {
-      const { clearOrphanedComputeRunsOnStartup } = await import(
+      const {
+        clearOrphanedComputeRunsOnStartup,
+        clearOrphanedImportBatchesOnStartup,
+        archiveSupersededImportBatchesOnStartup,
+      } = await import(
         "../db/solarRecDatasets"
       );
+      const clearedBatches = await clearOrphanedImportBatchesOnStartup();
+      if (clearedBatches > 0) {
+        console.log(
+          `[startup] cleared ${clearedBatches} orphaned solar-rec import batch${clearedBatches === 1 ? "" : "es"}`
+        );
+      }
+      const archived = await archiveSupersededImportBatchesOnStartup();
+      if (archived.archivedBatches > 0) {
+        console.log(
+          `[startup] archived ${archived.archivedBatches} superseded solar-rec batch${archived.archivedBatches === 1 ? "" : "es"} and purged ${archived.purgedRows} retained row${archived.purgedRows === 1 ? "" : "s"}`
+        );
+      }
       const cleared = await clearOrphanedComputeRunsOnStartup();
       if (cleared > 0) {
         console.log(
@@ -162,7 +178,10 @@ async function startServer() {
         );
       }
     } catch (err) {
-      console.warn("[startup] could not clear orphaned compute runs:", err);
+      console.warn(
+        "[startup] could not clear orphaned solar-rec jobs:",
+        err
+      );
     }
   })();
 

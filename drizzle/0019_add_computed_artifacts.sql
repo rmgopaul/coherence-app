@@ -9,10 +9,13 @@ CREATE TABLE IF NOT EXISTS `solarRecComputedArtifacts` (
   `artifactType` varchar(64) NOT NULL,
   `inputVersionHash` varchar(64) NOT NULL,
   `payload` mediumtext NOT NULL,
-  `rowCount` int NOT NULL,
+  `rowCount` int,
   `createdAt` timestamp NOT NULL DEFAULT (now()),
-  `updatedAt` timestamp NOT NULL DEFAULT (now())
+  `updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX `sr_computed_artifacts_lookup_idx`
+CREATE UNIQUE INDEX `sr_computed_artifacts_key_idx`
   ON `solarRecComputedArtifacts` (`scopeId`, `artifactType`, `inputVersionHash`);
+
+CREATE INDEX `sr_computed_artifacts_scope_type_updated_idx`
+  ON `solarRecComputedArtifacts` (`scopeId`, `artifactType`, `updatedAt`);

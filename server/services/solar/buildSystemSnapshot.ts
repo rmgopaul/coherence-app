@@ -3,8 +3,8 @@
  *
  * Loads the 7 core datasets from normalized DB tables, reconstructs
  * CsvRow[] arrays, calls the EXISTING buildSystems() pure function
- * (identical to the client-side version), and stores the output
- * as solar_rec_system_snapshot rows.
+ * (identical to the client-side version), and caches the output
+ * by input version hash for fast re-use.
  *
  * This approach preserves golden-test parity: same function, same
  * input format, same output. The only difference is where the data
@@ -12,8 +12,8 @@
  */
 
 import { eq, and } from "drizzle-orm";
-import { nanoid } from "nanoid";
 import { createHash } from "node:crypto";
+import { gzipSync, gunzipSync } from "node:zlib";
 import {
   srDsSolarApplications,
   srDsAbpReport,
@@ -22,7 +22,6 @@ import {
   srDsContractedDate,
   srDsDeliverySchedule,
   srDsTransferHistory,
-  solarRecActiveDatasetVersions,
 } from "../../../drizzle/schema";
 import { getDb, withDbRetry } from "../../db/_core";
 import {
@@ -32,6 +31,8 @@ import {
   completeComputeRun,
   failComputeRun,
   getActiveVersionsForKeys,
+  getComputedArtifact,
+  upsertComputedArtifact,
 } from "../../db/solarRecDatasets";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,8 @@ const SYSTEM_SNAPSHOT_DEPS = [
   "deliveryScheduleBase",
   "transferHistory",
 ] as const;
+const SYSTEM_SNAPSHOT_ARTIFACT_TYPE = "system_snapshot";
+const STUCK_RUN_THRESHOLD_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Version hash
@@ -236,15 +239,12 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
   const inputVersionHash = await computeSystemSnapshotHash(scopeId);
   const { resolveSolarRecOwnerUserId } = await import("../../_core/solarRecAuth");
   const ownerUserId = await resolveSolarRecOwnerUserId();
-  const { readCachedSnapshot, writeCachedSnapshot } = await import(
-    "./systemSnapshotCache"
+  const cached = await readSystemSnapshotCache(
+    scopeId,
+    inputVersionHash,
+    ownerUserId
   );
-
-  // ------------------------------------------------------------
-  // Fast path: serve from cache if we have a result for this hash.
-  // ------------------------------------------------------------
-  const cached = await readCachedSnapshot(ownerUserId, inputVersionHash);
-  if (cached) {
+  if (cached !== null) {
     return {
       systems: cached,
       fromCache: true,
@@ -260,12 +260,11 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
   // ------------------------------------------------------------
   const existing = await getComputeRun(
     scopeId,
-    "system_snapshot",
+    SYSTEM_SNAPSHOT_ARTIFACT_TYPE,
     inputVersionHash
   );
-
-  const STUCK_RUN_THRESHOLD_MS = 10 * 60 * 1000;
   const now = Date.now();
+  let reclaimedExistingRun = false;
 
   if (existing?.status === "running") {
     const startedAtMs = existing.startedAt
@@ -273,7 +272,21 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
       : 0;
     const ageMs = now - startedAtMs;
     if (ageMs < STUCK_RUN_THRESHOLD_MS) {
-      // Compute actively running — client should poll.
+      const racedCache = await readSystemSnapshotCache(
+        scopeId,
+        inputVersionHash,
+        ownerUserId
+      );
+      if (racedCache !== null) {
+        return {
+          systems: racedCache,
+          fromCache: true,
+          inputVersionHash,
+          runId: existing.id,
+          building: false,
+        };
+      }
+
       return {
         systems: [],
         fromCache: false,
@@ -286,24 +299,30 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
       `[buildSystemSnapshot] reclaiming stale run ${existing.id} (age ${Math.round(ageMs / 1000)}s)`
     );
     await reclaimComputeRun(existing.id);
+    reclaimedExistingRun = true;
   }
 
   // ------------------------------------------------------------
-  // Claim a run (or reuse an existing row in running/failed state)
-  // and kick off the actual compute in the background. We DO NOT
+  // Claim a run (or reuse an existing row) and kick off the actual
+  // compute in the background. We do not
   // await it — the tRPC request returns immediately with
   // building=true and the client polls until fromCache=true.
   // ------------------------------------------------------------
   let runId: string | null;
-  if (existing && (existing.status === "running" || existing.status === "failed")) {
-    if (existing.status === "failed") {
+  if (
+    existing &&
+    (existing.status === "running" ||
+      existing.status === "failed" ||
+      existing.status === "completed")
+  ) {
+    if (!reclaimedExistingRun) {
       await reclaimComputeRun(existing.id);
     }
     runId = existing.id;
   } else {
     runId = await claimComputeRun({
       scopeId,
-      artifactType: "system_snapshot",
+      artifactType: SYSTEM_SNAPSHOT_ARTIFACT_TYPE,
       inputVersionHash,
       status: "running",
       rowCount: null,
@@ -312,8 +331,21 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
   }
 
   if (!runId) {
-    // Another process won the claim race — return building=true so
-    // the client polls for its result.
+    const racedCache = await readSystemSnapshotCache(
+      scopeId,
+      inputVersionHash,
+      ownerUserId
+    );
+    if (racedCache !== null) {
+      return {
+        systems: racedCache,
+        fromCache: true,
+        inputVersionHash,
+        runId: null,
+        building: false,
+      };
+    }
+
     return {
       systems: [],
       fromCache: false,
@@ -329,7 +361,12 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
   void (async () => {
     try {
       const systems = await runComputeInline(scopeId, inputVersionHash);
-      await writeCachedSnapshot(ownerUserId, inputVersionHash, systems);
+      await writeSystemSnapshotCache(
+        scopeId,
+        inputVersionHash,
+        ownerUserId,
+        systems
+      );
       await completeComputeRun(claimedRunId, systems.length);
     } catch (err) {
       const message =
@@ -349,6 +386,97 @@ export async function getOrBuildSystemSnapshot(scopeId: string): Promise<{
     runId: claimedRunId,
     building: true,
   };
+}
+
+function parseSystemSnapshotPayload(payload: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(payload);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      (parsed as { encoding?: unknown }).encoding === "gzip-base64-json" &&
+      typeof (parsed as { data?: unknown }).data === "string"
+    ) {
+      const compressed = Buffer.from(
+        (parsed as { data: string }).data,
+        "base64"
+      );
+      const json = gunzipSync(compressed).toString("utf8");
+      const decoded = JSON.parse(json);
+      return Array.isArray(decoded) ? decoded : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function readSystemSnapshotCache(
+  scopeId: string,
+  inputVersionHash: string,
+  ownerUserId: number
+): Promise<unknown[] | null> {
+  const artifact = await getComputedArtifact(
+    scopeId,
+    SYSTEM_SNAPSHOT_ARTIFACT_TYPE,
+    inputVersionHash
+  );
+  if (artifact?.payload) {
+    const parsed = parseSystemSnapshotPayload(artifact.payload);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+
+  // Temporary fallback until the computed-artifact migration is applied.
+  const { readCachedSnapshot } = await import("./systemSnapshotCache");
+  return readCachedSnapshot(ownerUserId, inputVersionHash);
+}
+
+async function writeSystemSnapshotCache(
+  scopeId: string,
+  inputVersionHash: string,
+  ownerUserId: number,
+  systems: unknown[]
+): Promise<void> {
+  const serializedSystems = JSON.stringify(systems);
+  const { writeSerializedCachedSnapshot } = await import("./systemSnapshotCache");
+
+  // The legacy chunked cache is proven to handle the current 50MB+ payload,
+  // so write it first and treat the single-row artifact cache as best-effort.
+  const legacyStored = await writeSerializedCachedSnapshot(
+    ownerUserId,
+    inputVersionHash,
+    serializedSystems
+  );
+
+  let artifactStored = false;
+  try {
+    const compressedPayload = JSON.stringify({
+      encoding: "gzip-base64-json",
+      data: gzipSync(Buffer.from(serializedSystems, "utf8")).toString("base64"),
+    });
+
+    await upsertComputedArtifact({
+      scopeId,
+      artifactType: SYSTEM_SNAPSHOT_ARTIFACT_TYPE,
+      inputVersionHash,
+      payload: compressedPayload,
+      rowCount: systems.length,
+    });
+    artifactStored = true;
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unknown system snapshot cache error";
+    console.warn(`[buildSystemSnapshot] artifact cache write skipped: ${message}`);
+  }
+
+  if (!legacyStored && !artifactStored) {
+    throw new Error("Failed to persist system snapshot cache");
+  }
 }
 
 /**

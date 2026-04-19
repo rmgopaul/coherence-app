@@ -359,9 +359,9 @@ export async function ingestDataset(
       }
     }
 
-    // Activate the batch
-    await activateDatasetVersion(scopeId, datasetKey, batchId);
-    await updateImportBatchStatus(batchId, "active", {
+    // Atomically promote the new batch so the active pointer, row count,
+    // and batch statuses never diverge across a mid-request crash.
+    await activateDatasetVersion(scopeId, datasetKey, batchId, {
       rowCount: totalRowCount,
       completedAt: new Date(),
     });

@@ -113,6 +113,34 @@
       "when": 1775521137222,
       "tag": "0015_useful_blonde_phantom",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1776354244000,
+      "tag": "0016_add_solar_rec_server_architecture",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1776355533000,
+      "tag": "0017_add_solar_rec_dataset_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "5",
+      "when": 1776358883000,
+      "tag": "0018_add_scope_contract_scan_bridge",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1776455647000,
+      "tag": "0019_add_computed_artifacts",
+      "breakpoints": true
     }
   ]
 }

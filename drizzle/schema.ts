@@ -911,7 +911,7 @@ export const solarRecImportBatches = mysqlTable(
     datasetKey: varchar("datasetKey", { length: 64 }).notNull(),
     ingestSource: varchar("ingestSource", { length: 16 }).notNull(), // upload | scanner | migration
     mergeStrategy: varchar("mergeStrategy", { length: 16 }).notNull(), // replace | append
-    status: varchar("status", { length: 16 }).notNull(), // uploading | processing | active | superseded | failed
+    status: varchar("status", { length: 16 }).notNull(), // uploading | processing | active | superseded | archived | failed
     rowCount: int("rowCount"),
     error: text("error"),
     importedBy: int("importedBy"),
@@ -1031,15 +1031,20 @@ export const solarRecComputedArtifacts = mysqlTable(
     artifactType: varchar("artifactType", { length: 64 }).notNull(),
     inputVersionHash: varchar("inputVersionHash", { length: 64 }).notNull(),
     payload: mediumtext("payload").notNull(),
-    rowCount: int("rowCount").notNull(),
+    rowCount: int("rowCount"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
-    updatedAt: timestamp("updatedAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
-    lookupIdx: uniqueIndex("sr_computed_artifacts_lookup_idx").on(
+    keyIdx: uniqueIndex("sr_computed_artifacts_key_idx").on(
       table.scopeId,
       table.artifactType,
       table.inputVersionHash
+    ),
+    scopeTypeUpdatedIdx: index("sr_computed_artifacts_scope_type_updated_idx").on(
+      table.scopeId,
+      table.artifactType,
+      table.updatedAt
     ),
   })
 );
