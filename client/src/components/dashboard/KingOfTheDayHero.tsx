@@ -263,7 +263,7 @@ export function KingOfTheDayHero({
             </div>
           )}
         </div>
-        <Crown className="h-16 w-28 shrink-0 sm:h-20 sm:w-36" />
+        <Crown className="h-20 w-36 shrink-0 sm:h-28 sm:w-48" />
       </header>
 
       {/* Headline — the one thing */}
@@ -292,8 +292,12 @@ export function KingOfTheDayHero({
         <StatTile
           emphasize
           label="Time left"
-          value={`${hoursLeft}h`}
-          delta={`${minutesLeft}m to midnight`}
+          value={
+            hoursLeft > 0
+              ? `${hoursLeft}h ${minutesLeft.toString().padStart(2, "0")}m`
+              : `${minutesLeft}m`
+          }
+          delta="to midnight"
         />
         <StatTile
           label="Tasks"
@@ -326,11 +330,8 @@ export function KingOfTheDayHero({
           label="Top mover"
           value={
             topMover ? (
-              <span>
+              <span className="block truncate">
                 {topMover.symbol.replace("-USD", "")}
-                <span className="ml-2 text-[0.5em] text-white/50 align-middle">
-                  ${topMover.price.toFixed(2)}
-                </span>
               </span>
             ) : (
               "—"
@@ -339,14 +340,23 @@ export function KingOfTheDayHero({
           delta={
             topMover ? (
               <span
-                className={
+                className={cn(
+                  "flex flex-wrap items-baseline gap-x-2",
                   topMover.changePercent >= 0
                     ? "text-[oklch(0.75_0.18_145)]"
                     : "text-[oklch(0.68_0.22_27)]"
-                }
+                )}
               >
-                {topMover.changePercent >= 0 ? "▲" : "▼"}{" "}
-                {Math.abs(topMover.changePercent).toFixed(2)}%
+                <span>
+                  {topMover.changePercent >= 0 ? "▲" : "▼"}{" "}
+                  {Math.abs(topMover.changePercent).toFixed(2)}%
+                </span>
+                <span className="text-white/50">
+                  $
+                  {topMover.price >= 100
+                    ? topMover.price.toFixed(0)
+                    : topMover.price.toFixed(2)}
+                </span>
               </span>
             ) : null
           }
