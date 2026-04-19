@@ -208,6 +208,22 @@ export function ScheduleBImport({
   } | null>(null);
   const [showAlreadyInDatabase, setShowAlreadyInDatabase] = useState(false);
 
+  // csv-upload-v1: persistent result panel for the manual CSV upload
+  // path. Mirrors the lastApplyPanel shape/styling so the user always
+  // sees what the most recent upload did.
+  const [lastCsvUploadPanel, setLastCsvUploadPanel] = useState<{
+    at: number;
+    fileName: string;
+    receivedRows: number;
+    inserted: number;
+    skippedAlreadyPresent: number;
+    skippedBlankKey: number;
+    totalRows: number;
+    checkpoint: string;
+  } | null>(null);
+  const csvUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [csvUploading, setCsvUploading] = useState(false);
+
   // Results table controls: filter, sort, pagination
   const [resultFilter, setResultFilter] = useState<"all" | "errors" | "success">("all");
   const [resultSortField, setResultSortField] = useState<"fileName" | "gatsId" | "error" | null>(null);
@@ -248,6 +264,10 @@ export function ScheduleBImport({
     trpc.solarRecDashboard.importScheduleBFromCsgPortal.useMutation();
   const applyScheduleBToDeliveryObligations =
     trpc.solarRecDashboard.applyScheduleBToDeliveryObligations.useMutation();
+  // csv-upload-v1: manual Delivery Schedule CSV fallback for systems
+  // the Schedule B PDF scrape is missing or erroring on.
+  const uploadDeliveryScheduleCsv =
+    trpc.solarRecDashboard.uploadDeliveryScheduleCsv.useMutation();
   // contract-id-mapping-v1: server-persisted GATS ID → Contract ID
   // mapping. The query hydrates the textarea on mount; the mutation
   // saves the text + patches deliveryScheduleBase server-side + returns
@@ -1291,6 +1311,166 @@ export function ScheduleBImport({
             ) : null}
           </div>
         ) : null}
+        {/* csv-upload-v1: manual Delivery Schedule CSV fallback. Used
+            for systems whose Schedule B PDF scrape is missing or
+            erroring. Upload only FILLS missing rows — tracking IDs
+            already present in deliveryScheduleBase are skipped.
+            Schedule B re-applies will overwrite CSV rows because the
+            existing merge uses {...existing, ...incoming}. */}
+        <div className="rounded border border-dashed border-slate-300 bg-slate-50/50 px-3 py-2 text-xs">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="font-medium text-slate-800">
+                Upload Delivery Schedule CSV
+              </div>
+              <div className="text-slate-600 mt-0.5">
+                Fallback for systems the Schedule B scrape is missing. Requires
+                a <code>tracking_system_ref_id</code> column. Rows whose
+                tracking ID is already in the delivery schedule are skipped —
+                a later Schedule B apply will overwrite CSV rows automatically.
+                Max 10 MB.
+              </div>
+            </div>
+            <input
+              ref={csvUploadInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                // Reset the input so the same file can be re-uploaded.
+                if (csvUploadInputRef.current) {
+                  csvUploadInputRef.current.value = "";
+                }
+                if (!file) return;
+                if (file.size > 10 * 1024 * 1024) {
+                  toast.error(
+                    `CSV is ${Math.round(file.size / 1024 / 1024)} MB; 10 MB max.`
+                  );
+                  return;
+                }
+                setCsvUploading(true);
+                try {
+                  const csvText = await file.text();
+                  const result =
+                    await uploadDeliveryScheduleCsv.mutateAsync({
+                      csvText,
+                      fileName: file.name,
+                    });
+                  setLastCsvUploadPanel({
+                    at: Date.now(),
+                    fileName: file.name,
+                    receivedRows: result.receivedRows,
+                    inserted: result.inserted,
+                    skippedAlreadyPresent: result.skippedAlreadyPresent,
+                    skippedBlankKey: result.skippedBlankKey,
+                    totalRows: result.totalRows,
+                    checkpoint: result._checkpoint,
+                  });
+                  toast.success(
+                    `Inserted ${formatNumber(result.inserted)} of ${formatNumber(
+                      result.receivedRows
+                    )} rows (skipped ${formatNumber(
+                      result.skippedAlreadyPresent
+                    )} already present${
+                      result.skippedBlankKey > 0
+                        ? `, ${formatNumber(result.skippedBlankKey)} blank`
+                        : ""
+                    }).`
+                  );
+                  if (onApplyComplete) {
+                    try {
+                      await onApplyComplete();
+                    } catch (reloadErr) {
+                      console.warn(
+                        "[ScheduleBImport] onApplyComplete after CSV upload failed",
+                        reloadErr
+                      );
+                    }
+                  }
+                } catch (err) {
+                  toast.error(
+                    err instanceof Error
+                      ? err.message
+                      : "Failed to upload delivery schedule CSV"
+                  );
+                } finally {
+                  setCsvUploading(false);
+                }
+              }}
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={csvUploading}
+              onClick={() => csvUploadInputRef.current?.click()}
+            >
+              {csvUploading ? (
+                <>
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  Uploading…
+                </>
+              ) : (
+                "Select CSV"
+              )}
+            </Button>
+          </div>
+          {lastCsvUploadPanel ? (
+            <div className="mt-2 rounded border border-emerald-200 bg-emerald-50/50 px-2 py-1.5 text-[11px] text-slate-800">
+              <div className="flex items-center justify-between mb-0.5">
+                <strong>
+                  Last CSV upload (
+                  {Math.max(
+                    0,
+                    Math.round(
+                      (Date.now() - lastCsvUploadPanel.at) / 1000
+                    )
+                  )}
+                  s ago):
+                </strong>
+                <button
+                  type="button"
+                  className="text-slate-500 hover:text-slate-800 underline"
+                  onClick={() => setLastCsvUploadPanel(null)}
+                >
+                  dismiss
+                </button>
+              </div>
+              <div className="truncate font-mono text-slate-600">
+                {lastCsvUploadPanel.fileName}
+              </div>
+              <div>
+                Inserted{" "}
+                <strong>
+                  {formatNumber(lastCsvUploadPanel.inserted)}
+                </strong>{" "}
+                of{" "}
+                <strong>
+                  {formatNumber(lastCsvUploadPanel.receivedRows)}
+                </strong>{" "}
+                rows · Skipped{" "}
+                <strong>
+                  {formatNumber(lastCsvUploadPanel.skippedAlreadyPresent)}
+                </strong>{" "}
+                already present
+                {lastCsvUploadPanel.skippedBlankKey > 0 ? (
+                  <>
+                    {" · "}
+                    <strong>
+                      {formatNumber(lastCsvUploadPanel.skippedBlankKey)}
+                    </strong>{" "}
+                    blank tracking IDs
+                  </>
+                ) : null}{" "}
+                · Dataset now{" "}
+                <strong>
+                  {formatNumber(lastCsvUploadPanel.totalRows)}
+                </strong>{" "}
+                rows
+              </div>
+            </div>
+          ) : null}
+        </div>
         {/* drive-link-v1: paste a Google Drive folder URL and the
             server enumerates + downloads the PDFs directly. Eliminates
             browser memory pressure for large batches (the 18k+ file

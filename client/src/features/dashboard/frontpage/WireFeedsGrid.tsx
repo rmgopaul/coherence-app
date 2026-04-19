@@ -107,6 +107,20 @@ function HealthCell({ whoop }: { whoop: DashboardData["health"]["whoop"] }) {
   );
 }
 
+// Always renders 2 decimals (cents). Adds thousands separators once
+// values cross $1,000 so crypto prices like BTC stay readable without
+// overflowing the cell. Intentionally drops the thousandths/millionths
+// precision that was previously shown for sub-$10 tickers.
+function formatMarketPrice(value: number): string {
+  if (value >= 1000) {
+    return `$${value.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+  return `$${value.toFixed(2)}`;
+}
+
 function MarketsCell({ market }: { market: DashboardData["market"] }) {
   const quotes = market?.quotes ?? [];
   if (quotes.length === 0) {
@@ -116,18 +130,20 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
       </WireCard>
     );
   }
-  const top = [...quotes].slice(0, 4);
+  // Show every configured ticker (stocks + crypto) — the server already
+  // combines both into `quotes`. Prior cap of 4 was hiding configured
+  // symbols.
   return (
     <WireCard label="MARKETS" updated={nowShort()}>
       <ol className="wire-ticker">
-        {top.map((q) => {
+        {quotes.map((q) => {
           const changeClass =
             q.changePercent >= 0 ? "wire-ticker__up" : "wire-ticker__down";
           return (
             <li key={q.symbol} className="wire-ticker__row">
               <span className="wire-ticker__sym mono-label">{q.symbol}</span>
               <span className="wire-ticker__px">
-                ${q.price.toFixed(q.price < 10 ? 4 : 2)}
+                {formatMarketPrice(q.price)}
               </span>
               <span className={`wire-ticker__pct mono-label ${changeClass}`}>
                 {q.changePercent >= 0 ? "▲" : "▼"}{" "}

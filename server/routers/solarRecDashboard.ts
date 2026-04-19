@@ -1315,6 +1315,201 @@ export const solarRecDashboardRouter = router({
       };
     }),
   /**
+   * csv-upload-v1: Manually upload a Delivery Schedule CSV as a fallback
+   * for systems the Schedule B PDF scrape is missing or erroring on.
+   *
+   * Semantics:
+   *   - CSV columns MUST include tracking_system_ref_id. The other
+   *     expected columns mirror the deliveryScheduleBase dataset:
+   *     system_name, state_certification_number, utility_contract_number,
+   *     year1..year15_{quantity_required, quantity_delivered,
+   *     start_date, end_date}.
+   *   - Rows whose tracking_system_ref_id already exists in
+   *     deliveryScheduleBase are SKIPPED (Schedule B scrape wins).
+   *   - Rows with a blank tracking_system_ref_id are SKIPPED.
+   *   - New rows are APPENDED to the existing dataset and persisted via
+   *     the same DB + S3 two-sink pattern used by
+   *     applyScheduleBToDeliveryObligations.
+   *   - Schedule B re-applies will naturally overwrite CSV rows because
+   *     mergeDeliveryRows(existing, incoming) uses
+   *     { ...existing, ...incoming } — no merge-flow change needed.
+   *
+   * Returns _checkpoint so the client can confirm live deployment via
+   * the browser devtools Network tab (per CLAUDE.md convention).
+   */
+  uploadDeliveryScheduleCsv: protectedProcedure
+    .input(
+      z.object({
+        csvText: z.string().min(1).max(10 * 1024 * 1024),
+        fileName: z.string().min(1).max(255).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const parsed = parseCsvText(input.csvText);
+      if (!parsed.headers.includes("tracking_system_ref_id")) {
+        throw new Error(
+          "CSV must contain a 'tracking_system_ref_id' column."
+        );
+      }
+
+      // Load existing deliveryScheduleBase dataset — same loader as
+      // applyScheduleBToDeliveryObligations. Supports the three payload
+      // shapes: chunk-pointer, source-manifest, and flat remote CSV.
+      const loadDatasetPayloadByKey = async (
+        key: string
+      ): Promise<string | null> => {
+        const basePayload = await getSolarRecDashboardPayload(
+          ctx.user.id,
+          `dataset:${key}`
+        );
+        if (!basePayload) return null;
+
+        const chunkKeys = parseChunkPointerPayload(basePayload);
+        if (!chunkKeys || chunkKeys.length === 0) {
+          return basePayload;
+        }
+
+        let merged = "";
+        for (const chunkKey of chunkKeys) {
+          const chunk = await getSolarRecDashboardPayload(
+            ctx.user.id,
+            `dataset:${chunkKey}`
+          );
+          if (typeof chunk !== "string") {
+            return null;
+          }
+          merged += chunk;
+        }
+        return merged;
+      };
+
+      const existingPayload = await loadDatasetPayloadByKey(
+        "deliveryScheduleBase"
+      );
+      let existingDataset: ParsedRemoteCsvDataset = {
+        fileName: "Schedule B Import",
+        uploadedAt: new Date().toISOString(),
+        headers: [],
+        rows: [],
+      };
+
+      if (existingPayload) {
+        const sourceManifest =
+          parseScheduleBRemoteSourceManifest(existingPayload);
+        if (sourceManifest && sourceManifest.length > 0) {
+          const latestSource = sourceManifest[sourceManifest.length - 1];
+          const sourcePayload = await loadDatasetPayloadByKey(
+            latestSource.storageKey
+          );
+          if (sourcePayload) {
+            const decoded =
+              latestSource.encoding === "base64"
+                ? Buffer.from(sourcePayload, "base64").toString("utf8")
+                : sourcePayload;
+            const parsedCsv = parseCsvText(decoded);
+            existingDataset = {
+              fileName: "Schedule B Import",
+              uploadedAt: new Date().toISOString(),
+              headers: parsedCsv.headers,
+              rows: parsedCsv.rows,
+            };
+          }
+        } else {
+          const parsedExisting = parseRemoteCsvDataset(existingPayload);
+          if (parsedExisting) {
+            existingDataset = parsedExisting;
+          }
+        }
+      }
+
+      // Build a Set of keys already in the dataset — keys match
+      // makeDeliveryRowKey semantics (uppercased tracking_system_ref_id).
+      const existingKeys = new Set<string>();
+      existingDataset.rows.forEach((row, idx) => {
+        existingKeys.add(makeDeliveryRowKey(row, "existing", idx));
+      });
+
+      const insertedRows: Array<Record<string, string>> = [];
+      let skippedAlreadyPresent = 0;
+      let skippedBlankKey = 0;
+
+      for (let i = 0; i < parsed.rows.length; i += 1) {
+        const row = parsed.rows[i];
+        const trackingId = cleanScheduleBCell(row.tracking_system_ref_id);
+        if (!trackingId) {
+          skippedBlankKey += 1;
+          continue;
+        }
+        const key = makeDeliveryRowKey(row, "csv", i);
+        if (existingKeys.has(key)) {
+          skippedAlreadyPresent += 1;
+          continue;
+        }
+        insertedRows.push(row);
+        existingKeys.add(key);
+      }
+
+      // Compose merged headers preserving original order, then appending
+      // any new columns from the CSV. Same dedupe logic as
+      // applyScheduleBToDeliveryObligations.
+      const mergedHeaders: string[] = [];
+      const pushHeader = (header: string) => {
+        const cleanHeader = cleanScheduleBCell(header);
+        if (!cleanHeader || mergedHeaders.includes(cleanHeader)) return;
+        mergedHeaders.push(cleanHeader);
+      };
+      existingDataset.headers.forEach(pushHeader);
+      parsed.headers.forEach(pushHeader);
+      insertedRows.forEach((row) => Object.keys(row).forEach(pushHeader));
+
+      const mergedRows = [...existingDataset.rows, ...insertedRows];
+
+      const uploadedAt = new Date().toISOString();
+      const finalPayload = JSON.stringify({
+        fileName:
+          input.fileName?.trim() ||
+          existingDataset.fileName ||
+          "Delivery Schedule CSV",
+        uploadedAt,
+        headers: mergedHeaders,
+        csvText: buildCsvText(mergedHeaders, mergedRows),
+      });
+
+      let persistedToDatabase = false;
+      try {
+        persistedToDatabase = await saveSolarRecDashboardPayload(
+          ctx.user.id,
+          "dataset:deliveryScheduleBase",
+          finalPayload
+        );
+      } catch {
+        persistedToDatabase = false;
+      }
+
+      const storageKey = `solar-rec-dashboard/${ctx.user.id}/datasets/deliveryScheduleBase.json`;
+      let storageSynced = false;
+      try {
+        await storagePut(storageKey, finalPayload, "application/json");
+        storageSynced = true;
+      } catch (storageError) {
+        if (!persistedToDatabase) {
+          throw storageError;
+        }
+      }
+
+      return {
+        success: true,
+        _checkpoint: "csv-upload-v1" as const,
+        receivedRows: parsed.rows.length,
+        inserted: insertedRows.length,
+        skippedAlreadyPresent,
+        skippedBlankKey,
+        totalRows: mergedRows.length,
+        persistedToDatabase,
+        storageSynced,
+      };
+    }),
+  /**
    * contract-id-mapping-v1: persist a GATS ID → Contract ID mapping
    * server-side and patch utility_contract_number across the
    * deliveryScheduleBase rows in cloud storage.
