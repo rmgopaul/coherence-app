@@ -1957,6 +1957,15 @@ export default function SolarRecDashboard() {
     loaded: 0,
     total: 0,
   });
+  // "Load all" toggle state. The default mount hydration is filtered
+  // to the active tab's priority keys (memory-bounded landing). Users
+  // who want the full set in state (for cross-tab work or exports)
+  // can click Load All, which calls loadDatasetsFromStorage with no
+  // allowedKeys filter so every manifest entry lands.
+  const [loadingAllDatasets, setLoadingAllDatasets] = useState(false);
+  const [loadAllProgress, setLoadAllProgress] = useState<{ loaded: number; total: number } | null>(
+    null
+  );
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
@@ -4532,6 +4541,59 @@ export default function SolarRecDashboard() {
     };
   }, [activeTab, search]);
 
+  /**
+   * User-invoked "load every remaining dataset into React state" path.
+   *
+   * Mount-time hydration is filtered to the active tab's priority set
+   * so the landing page is interactive fast and memory stays bounded.
+   * But cross-tab work (exports, global filters, reports that span
+   * multiple datasets) needs the full set in state. This callback
+   * re-runs loadDatasetsFromStorage with NO allowedKeys filter so
+   * every manifest entry lands. Previously-loaded datasets are
+   * preserved via the `if (next[key]) continue` check below.
+   *
+   * Memory note: reconstructing all datasets can push the tab past
+   * ~1.5 GB. Chrome's per-tab ceiling is ~4 GB, so this is safe on
+   * modern machines but not free. The UI gates the button on the
+   * remaining dataset count so it's only offered when there's actually
+   * work to do.
+   */
+  const loadAllDatasets = useCallback(async () => {
+    if (loadingAllDatasets) return;
+    setLoadingAllDatasets(true);
+    setLoadAllProgress({ loaded: 0, total: 0 });
+    try {
+      await loadDatasetsFromStorage({
+        // No allowedKeys / priorityKeys filter — every manifest entry
+        // hydrates. Already-loaded keys are skipped by onBatch.
+        onBatch: (batch) => {
+          setDatasets((current) => {
+            const next = { ...current };
+            let changed = false;
+            for (const [key, dataset] of Object.entries(batch) as Array<
+              [DatasetKey, CsvDataset]
+            >) {
+              if (next[key]) continue;
+              next[key] = dataset;
+              changed = true;
+            }
+            return changed ? next : current;
+          });
+        },
+        onProgress: (loaded, total) => {
+          setLoadAllProgress({ loaded, total });
+        },
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[loadAllDatasets] failed:", err);
+      setStorageNotice("Could not finish loading all datasets. Try again.");
+    } finally {
+      setLoadingAllDatasets(false);
+      setLoadAllProgress(null);
+    }
+  }, [loadingAllDatasets]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -6155,6 +6217,28 @@ const aiDataContext = useMemo(() => {
                   <p className="mt-1 text-[11px] text-sky-700">
                     Loading cache: {formatNumber(hydrationProgress.loaded)} / {formatNumber(hydrationProgress.total)}
                   </p>
+                ) : null}
+                {/* Load All toggle — only shown after initial hydration
+                    settled AND there are still unloaded datasets. Mount
+                    hydration is tab-priority-filtered; this bypasses
+                    that filter and hydrates the rest. */}
+                {datasetsHydrated &&
+                dataHealthSummary.loadedDatasetCount < dataHealthSummary.totalDatasetCount ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={loadingAllDatasets}
+                    onClick={() => void loadAllDatasets()}
+                    className="mt-2 h-7 w-full px-2 text-[11px]"
+                  >
+                    {loadingAllDatasets
+                      ? loadAllProgress && loadAllProgress.total > 0
+                        ? `Loading ${formatNumber(loadAllProgress.loaded)}/${formatNumber(loadAllProgress.total)}…`
+                        : "Loading…"
+                      : `Load all (${formatNumber(
+                          dataHealthSummary.totalDatasetCount - dataHealthSummary.loadedDatasetCount
+                        )} remaining)`}
+                  </Button>
                 ) : null}
               </div>
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
