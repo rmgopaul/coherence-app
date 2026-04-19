@@ -38,6 +38,7 @@ import {
 } from "../db";
 import { storageGet, storagePut } from "../storage";
 import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
+import { Semaphore } from "../services/core/concurrency";
 
 /**
  * Dataset keys that are team-wide (shared across all Solar REC users) rather
@@ -117,6 +118,38 @@ async function loadDashboardPayload(
   }
 }
 
+/**
+ * Maximum number of dataset-load operations that may run concurrently
+ * on a single Node process. Chunked datasets cause chunk-storm
+ * fan-outs (distinct keys, so single-flight dedupe doesn't collapse
+ * them); the semaphore caps the heap blast radius even when the cache
+ * is cold.
+ *
+ * 8 is conservative for a Render 4 GB box — each slot can buffer a
+ * ~250 KB chunk (Node UTF-16 overhead included) without approaching
+ * the 3.5 GB max-old-space ceiling set in package.json.
+ */
+const DASHBOARD_LOAD_CONCURRENCY = 8;
+
+/**
+ * Soft heap ceiling at which we reject new dataset-load work with
+ * 429 (TOO_MANY_REQUESTS) instead of queueing more callers. Queued
+ * callers also take memory, so we need a circuit breaker below V8's
+ * --max-old-space-size limit of 3584 MB. 3.0 GB leaves ~500 MB for
+ * V8 to GC into before fatal OOM.
+ */
+const HEAP_SOFT_LIMIT_BYTES = 3.0 * 1024 * 1024 * 1024;
+
+const dashboardLoadSemaphore = new Semaphore(DASHBOARD_LOAD_CONCURRENCY);
+
+function isHeapOverSoftLimit(): boolean {
+  try {
+    return process.memoryUsage().heapUsed > HEAP_SOFT_LIMIT_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 async function loadDashboardPayloadSingleFlight(
   flightKey: string,
   loader: () => Promise<{ key: string; payload: string } | null>
@@ -126,9 +159,18 @@ async function loadDashboardPayloadSingleFlight(
     return existing;
   }
 
+  // Shed load aggressively when heap is near the V8 ceiling; the
+  // client (React Query) will retry on 429 once pressure drops.
+  if (isHeapOverSoftLimit()) {
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: "Server heap pressure — retry in a moment",
+    });
+  }
+
   const promise = (async () => {
     try {
-      return await loader();
+      return await dashboardLoadSemaphore.run(loader);
     } finally {
       inFlightDashboardPayloadLoads.delete(flightKey);
     }

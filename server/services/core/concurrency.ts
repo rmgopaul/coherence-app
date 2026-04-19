@@ -30,3 +30,49 @@ export async function mapWithConcurrency<TInput, TOutput>(
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 }
+
+/**
+ * Process-wide semaphore that caps the number of concurrent executions
+ * of a wrapped function across unrelated callers.
+ *
+ * Unlike mapWithConcurrency (which bounds parallelism for a single
+ * array-mapping call) and loadDashboardPayloadSingleFlight (which
+ * dedupes callers sharing an identical key), Semaphore bounds the
+ * TOTAL number of in-flight operations across all keys and callers.
+ *
+ * Used on the dataset-load path to prevent chunk-storm fan-outs from
+ * stacking up in Node heap even when each individual chunk key is
+ * distinct (and therefore immune to single-flight dedupe).
+ *
+ * Excess callers queue FIFO. Exceptions in the wrapped function
+ * propagate normally; the slot is always released via try/finally.
+ */
+export class Semaphore {
+  private active = 0;
+  private readonly queue: Array<() => void> = [];
+  private readonly limit: number;
+
+  constructor(limit: number) {
+    this.limit = Math.max(1, Math.floor(limit));
+  }
+
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.active >= this.limit) {
+      await new Promise<void>((resolve) => {
+        this.queue.push(resolve);
+      });
+    }
+    this.active += 1;
+    try {
+      return await fn();
+    } finally {
+      this.active -= 1;
+      const next = this.queue.shift();
+      if (next) next();
+    }
+  }
+
+  stats(): { active: number; waiting: number; limit: number } {
+    return { active: this.active, waiting: this.queue.length, limit: this.limit };
+  }
+}
