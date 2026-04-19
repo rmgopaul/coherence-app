@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, appendFile, readFile, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "../_core/trpc";
 import { eq, sql } from "drizzle-orm";
 import { scheduleBImportFiles, scheduleBImportResults } from "../../drizzle/schema";
@@ -32,6 +33,7 @@ import {
   requeueScheduleBImportRetryableFiles,
   saveSolarRecDashboardPayload,
   updateScheduleBImportJob,
+  upsertSolarRecDatasetSyncState,
   upsertScheduleBImportFileUploadProgress,
 } from "../db";
 import { storageGet, storagePut } from "../storage";
@@ -319,10 +321,22 @@ export const solarRecDashboardRouter = router({
    * proxy timeout; run twice if `skippedDueToLimit` is true.
    */
   purgeOrphanedDatasetRows: protectedProcedure.mutation(async () => {
-    const { purgeOrphanedDatasetRowsNow } = await import(
-      "../db/solarRecDatasets"
-    );
-    return purgeOrphanedDatasetRowsNow();
+    try {
+      const { purgeOrphanedDatasetRowsNow } = await import(
+        "../db/solarRecDatasets"
+      );
+      return await purgeOrphanedDatasetRowsNow();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      // eslint-disable-next-line no-console
+      console.error("[purgeOrphanedDatasetRows] failed:", message, stack);
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `purgeOrphanedDatasetRows failed: ${message}`,
+        cause: err,
+      });
+    }
   }),
 
   /**
@@ -396,6 +410,129 @@ export const solarRecDashboardRouter = router({
         () => loadDashboardPayload(storageUserId, dbStorageKey, key)
       );
     }),
+  getDatasetCloudStatuses: protectedProcedure
+    .input(
+      z.object({
+        keys: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/)).min(1).max(32),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getRawDatasetCloudStatuses } = await import(
+        "../services/solar/datasetCloudStatus"
+      );
+      const uniqueKeys = Array.from(new Set(input.keys));
+      const statuses = await getRawDatasetCloudStatuses(uniqueKeys, (datasetKey) =>
+        resolveDatasetUserId(datasetKey, ctx.user.id)
+      );
+      return {
+        // Version marker for CLAUDE.md "is my code actually running" checks.
+        // Bump the suffix when the status derivation semantics change.
+        _checkpoint: "dataset-sync-status-v1",
+        statuses,
+      };
+    }),
+  /**
+   * Raw-state debug endpoint for diagnosing Cloud-verified / Not-synced
+   * discrepancies per CLAUDE.md "long-running server jobs must expose a
+   * raw-state debug endpoint" rule.
+   *
+   * For a given dataset key, returns:
+   *   - the sync-state row (or null)
+   *   - whether the top-level blob is present in DB and/or storage
+   *   - for chunked datasets, the same for up to `sampleChunks` chunks
+   *
+   * Diagnostic use only — not wired into the UI path. Callers should
+   * treat this as slow (O(chunks) HEAD checks) and not poll it.
+   */
+  debugDatasetSyncStateRaw: protectedProcedure
+    .input(
+      z.object({
+        datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+        sampleChunks: z.number().int().min(0).max(100).optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const sampleChunks = input.sampleChunks ?? 10;
+      const { getSolarRecDatasetSyncStates } = await import("../db");
+      const { storageExists } = await import("../storage");
+      const { parseChunkPointerPayload } = await import("./helpers/scheduleB");
+
+      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.user.id);
+      const dbStorageKey = `dataset:${input.datasetKey}`;
+      const storagePath = `solar-rec-dashboard/${storageUserId}/datasets/${input.datasetKey}.json`;
+
+      const [syncRow] = await getSolarRecDatasetSyncStates(storageUserId, [dbStorageKey]);
+      const dbPayload = await getSolarRecDashboardPayload(storageUserId, dbStorageKey);
+      const topLevelStoragePresent = await storageExists(storagePath);
+
+      // Extract chunk references (either _rawSourcesV1 manifest or Schedule-B chunk pointer)
+      const chunkKeys: string[] = [];
+      if (dbPayload) {
+        try {
+          const parsed = JSON.parse(dbPayload) as {
+            _rawSourcesV1?: unknown;
+            sources?: unknown;
+          };
+          if (parsed._rawSourcesV1 === true && Array.isArray(parsed.sources)) {
+            for (const src of parsed.sources) {
+              if (src && typeof src === "object") {
+                const ck = (src as { chunkKeys?: unknown }).chunkKeys;
+                if (Array.isArray(ck)) {
+                  for (const k of ck) if (typeof k === "string") chunkKeys.push(k);
+                }
+              }
+            }
+          }
+        } catch {
+          // fall through to pointer-style parse
+        }
+        if (chunkKeys.length === 0) {
+          const ptrChunks = parseChunkPointerPayload(dbPayload);
+          if (ptrChunks) chunkKeys.push(...ptrChunks);
+        }
+      }
+
+      const chunkKeysToProbe = chunkKeys.slice(0, sampleChunks);
+      const chunkSyncRows = chunkKeysToProbe.length
+        ? await getSolarRecDatasetSyncStates(
+            storageUserId,
+            chunkKeysToProbe.map((k) => `dataset:${k}`)
+          )
+        : [];
+      const rowByKey = new Map(chunkSyncRows.map((r) => [r.storageKey, r]));
+
+      const chunkDiagnostics = [];
+      for (const chunkKey of chunkKeysToProbe) {
+        const childDbKey = `dataset:${chunkKey}`;
+        const childStoragePath = `solar-rec-dashboard/${storageUserId}/datasets/${chunkKey}.json`;
+        const childDb = await getSolarRecDashboardPayload(storageUserId, childDbKey);
+        const childStoragePresent = await storageExists(childStoragePath);
+        chunkDiagnostics.push({
+          key: chunkKey,
+          syncRow: rowByKey.get(childDbKey) ?? null,
+          dbPresent: childDb !== null && childDb.length > 0,
+          dbBytes: childDb ? childDb.length : 0,
+          storagePresent: childStoragePresent,
+        });
+      }
+
+      return {
+        _checkpoint: "debug-dataset-sync-state-v1",
+        datasetKey: input.datasetKey,
+        storageUserId,
+        dbStorageKey,
+        storagePath,
+        topLevel: {
+          syncRow: syncRow ?? null,
+          dbPresent: dbPayload !== null && dbPayload.length > 0,
+          dbBytes: dbPayload ? dbPayload.length : 0,
+          storagePresent: topLevelStoragePresent,
+        },
+        totalChunkCount: chunkKeys.length,
+        sampledChunkCount: chunkKeysToProbe.length,
+        chunkDiagnostics,
+      };
+    }),
   saveDataset: protectedProcedure
     .input(
       z.object({
@@ -417,9 +554,37 @@ export const solarRecDashboardRouter = router({
 
       try {
         await storagePut(key, input.payload, "application/json");
+        await upsertSolarRecDatasetSyncState({
+          userId: storageUserId,
+          storageKey: dbStorageKey,
+          payload: input.payload,
+          dbPersisted: persistedToDatabase,
+          storageSynced: true,
+        }).catch((err) => {
+          console.warn(
+            "[saveDataset] sync-state upsert failed (storage ok):",
+            dbStorageKey,
+            err instanceof Error ? err.message : err
+          );
+          return false;
+        });
         return { success: true, key, persistedToDatabase, storageSynced: true };
       } catch (storageError) {
         if (persistedToDatabase) {
+          await upsertSolarRecDatasetSyncState({
+            userId: storageUserId,
+            storageKey: dbStorageKey,
+            payload: input.payload,
+            dbPersisted: true,
+            storageSynced: false,
+          }).catch((err) => {
+            console.warn(
+              "[saveDataset] sync-state upsert failed (storage failed):",
+              dbStorageKey,
+              err instanceof Error ? err.message : err
+            );
+            return false;
+          });
           return { success: true, key, persistedToDatabase, storageSynced: false };
         }
         throw storageError;

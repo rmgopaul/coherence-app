@@ -1,4 +1,4 @@
-import { eq, and, desc, asc, sql, gte } from "drizzle-orm";
+import { eq, and, desc, asc, sql, gte, inArray } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { createPool, type PoolOptions } from "mysql2";
 
@@ -6,7 +6,7 @@ import { ENV } from "../_core/env";
 
 // Re-export commonly used drizzle helpers so sub-modules can import
 // them from "./_core" without duplicating the import.
-export { eq, and, desc, asc, sql, gte };
+export { eq, and, desc, asc, sql, gte, inArray };
 
 // Re-export the schema so other modules can import everything from
 // a single source if they prefer.
@@ -18,6 +18,7 @@ export * as schema from "../../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _solarRecDashboardTableEnsured = false;
+let _solarRecDatasetSyncStateTableEnsured = false;
 let _userFeedbackTableEnsured = false;
 let _scheduleBImportTablesEnsured = false;
 let _contractScanOverrideColumnsEnsured = false;
@@ -246,6 +247,34 @@ export async function ensureSolarRecDashboardStorageTable() {
   });
 
   _solarRecDashboardTableEnsured = true;
+  return true;
+}
+
+export async function ensureSolarRecDatasetSyncStateTable() {
+  const db = await getDb();
+  if (!db) return false;
+  if (_solarRecDatasetSyncStateTableEnsured) return true;
+
+  await withDbRetry("ensure solar rec dataset sync state table", async () => {
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS solarRecDatasetSyncState (
+        id varchar(64) NOT NULL,
+        userId int NOT NULL,
+        storageKey varchar(191) NOT NULL,
+        payloadSha256 varchar(64) NOT NULL DEFAULT '',
+        payloadBytes int NOT NULL DEFAULT 0,
+        dbPersisted tinyint(1) NOT NULL DEFAULT 0,
+        storageSynced tinyint(1) NOT NULL DEFAULT 0,
+        createdAt timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY solar_rec_dataset_sync_state_user_key_idx (userId, storageKey),
+        KEY solar_rec_dataset_sync_state_user_updated_idx (userId, updatedAt)
+      )
+    `);
+  });
+
+  _solarRecDatasetSyncStateTableEnsured = true;
   return true;
 }
 

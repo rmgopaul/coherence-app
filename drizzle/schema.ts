@@ -401,6 +401,34 @@ export const solarRecDashboardStorage = mysqlTable(
 export type SolarRecDashboardStorage = typeof solarRecDashboardStorage.$inferSelect;
 export type InsertSolarRecDashboardStorage = typeof solarRecDashboardStorage.$inferInsert;
 
+export const solarRecDatasetSyncState = mysqlTable(
+  "solarRecDatasetSyncState",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    storageKey: varchar("storageKey", { length: 191 }).notNull(),
+    payloadSha256: varchar("payloadSha256", { length: 64 }).notNull().default(""),
+    payloadBytes: int("payloadBytes").notNull().default(0),
+    dbPersisted: boolean("dbPersisted").notNull().default(false),
+    storageSynced: boolean("storageSynced").notNull().default(false),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userStorageKeyIdx: uniqueIndex("solar_rec_dataset_sync_state_user_key_idx").on(
+      table.userId,
+      table.storageKey
+    ),
+    userUpdatedAtIdx: index("solar_rec_dataset_sync_state_user_updated_idx").on(
+      table.userId,
+      table.updatedAt
+    ),
+  })
+);
+
+export type SolarRecDatasetSyncState = typeof solarRecDatasetSyncState.$inferSelect;
+export type InsertSolarRecDatasetSyncState = typeof solarRecDatasetSyncState.$inferInsert;
+
 // Section engagement tracking for dashboard utility feedback.
 export const sectionEngagement = mysqlTable(
   "sectionEngagement",

@@ -931,7 +931,7 @@ type RemoteDatasetManifestEntry = {
   }>;
 };
 
-type DatasetCloudSyncStatus = "pending" | "synced" | "failed";
+type DatasetCloudSyncStatus = "pending" | "synced" | "failed" | "not-synced";
 
 type SerializedDashboardLogEntry = Omit<DashboardLogEntry, "createdAt" | "datasets" | "cooStatuses"> & {
   createdAt: string;
@@ -1002,6 +1002,19 @@ function parseRemoteSourceManifestPayload(payload: string): RemoteDatasetSourceM
       version: 1,
       sources,
     };
+  } catch {
+    return null;
+  }
+}
+
+async function computeSha256Hex(value: string): Promise<string | null> {
+  try {
+    if (!globalThis.crypto?.subtle) return null;
+    const bytes = new TextEncoder().encode(value);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
   } catch {
     return null;
   }
@@ -1871,8 +1884,18 @@ export default function SolarRecDashboard() {
   const [remoteSourceManifests, setRemoteSourceManifests] = useState<
     Partial<Record<DatasetKey, RemoteDatasetSourceManifestPayload>>
   >({});
+  const [serverCloudDatasetManifest, setServerCloudDatasetManifest] = useState<
+    Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>
+  >({});
+  const [localDatasetPayloadHashes, setLocalDatasetPayloadHashes] = useState<
+    Partial<Record<DatasetKey, string>>
+  >({});
   const [forceDatasetSyncTick, setForceDatasetSyncTick] = useState(0);
   const [remoteStateHydrated, setRemoteStateHydrated] = useState(false);
+  const allDatasetKeys = useMemo(
+    () => Object.keys(DATASET_DEFINITIONS) as DatasetKey[],
+    []
+  );
   // Server-side storage: resolve scopeId for migration + tab endpoints
   const scopeIdQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
     retry: 2,
@@ -1893,6 +1916,15 @@ export default function SolarRecDashboard() {
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+  const datasetCloudStatusesQuery =
+    trpc.solarRecDashboard.getDatasetCloudStatuses.useQuery(
+      { keys: allDatasetKeys },
+      {
+        staleTime: 30_000,
+        refetchOnWindowFocus: true,
+        refetchOnReconnect: true,
+      }
+    );
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
@@ -2033,6 +2065,11 @@ export default function SolarRecDashboard() {
   getRemoteDatasetRef.current = getRemoteDataset;
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
+  const invalidateDatasetCloudStatuses = useCallback(() => {
+    void trpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate({
+      keys: allDatasetKeys,
+    });
+  }, [allDatasetKeys, trpcUtils]);
   const remoteDatasetSignatureRef = useRef<Partial<Record<DatasetKey, string>>>({});
   const remoteDatasetChunkKeysRef = useRef<Partial<Record<DatasetKey, string[]>>>({});
   const forcedRemoteDatasetSyncKeysRef = useRef<Set<DatasetKey>>(new Set());
@@ -2147,6 +2184,54 @@ export default function SolarRecDashboard() {
   const csvParserPendingRef = useRef(
     new Map<number, { resolve: (value: { headers: string[]; rows: CsvRow[] }) => void; reject: (error: Error) => void }>()
   );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      const nextHashes: Partial<Record<DatasetKey, string>> = {};
+
+      for (const key of allDatasetKeys) {
+        if (localOnlyDatasets[key]) continue;
+        const sourceManifest = remoteSourceManifests[key];
+        const dataset = datasets[key];
+        const payload =
+          sourceManifest?.sources?.length
+            ? safeJsonStringify(sourceManifest)
+            : dataset
+              ? serializeDatasetForRemote(dataset)
+              : null;
+        if (!payload) continue;
+        const hash = await computeSha256Hex(payload);
+        if (!hash) continue;
+        nextHashes[key] = hash;
+      }
+
+      if (cancelled) return;
+
+      setLocalDatasetPayloadHashes((current) => {
+        const next: Partial<Record<DatasetKey, string>> = {};
+        allDatasetKeys.forEach((key) => {
+          const hash = nextHashes[key];
+          if (hash) {
+            next[key] = hash;
+            return;
+          }
+          if (!datasets[key] && !remoteSourceManifests[key]?.sources?.length) {
+            return;
+          }
+          if (current[key]) {
+            next[key] = current[key];
+          }
+        });
+        return next;
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [allDatasetKeys, datasets, localOnlyDatasets, remoteSourceManifests]);
 
   useEffect(() => {
     const tabFromQuery = getTabFromSearch(search);
@@ -2561,7 +2646,8 @@ export default function SolarRecDashboard() {
         }
 
         setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
-        setDatasetCloudSyncBadge(key, "synced");
+        setDatasetCloudSyncBadge(key, "pending");
+        invalidateDatasetCloudStatuses();
 
         // Phase 8.1.5: fire-and-forget srDs sync for core datasets
         // so the server-side system snapshot rebuilds with the new
@@ -2578,7 +2664,12 @@ export default function SolarRecDashboard() {
         return false;
       }
     },
-    [saveRemotePayloadWithChunks, setDatasetCloudSyncBadge, triggerCoreDatasetSrDsSync]
+    [
+      invalidateDatasetCloudStatuses,
+      saveRemotePayloadWithChunks,
+      setDatasetCloudSyncBadge,
+      triggerCoreDatasetSrDsSync,
+    ]
   );
 
   const uploadRemoteSourceFile = useCallback(
@@ -4150,7 +4241,7 @@ export default function SolarRecDashboard() {
 
   // Phase E: depend on individual dataset slots instead of the entire
   // `datasets` object to avoid recomputation when unrelated datasets change.
-  const remoteDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
+  const localDatasetManifest = useMemo<Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>>(
     () => {
       const manifest: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {};
       (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
@@ -4185,14 +4276,86 @@ export default function SolarRecDashboard() {
     ]
   );
 
+  const mergedRemoteDatasetManifest = useMemo<
+    Partial<Record<DatasetKey, RemoteDatasetManifestEntry>>
+  >(() => {
+    const merged: Partial<Record<DatasetKey, RemoteDatasetManifestEntry>> = {
+      ...serverCloudDatasetManifest,
+    };
+    allDatasetKeys.forEach((key) => {
+      const localEntry = localDatasetManifest[key];
+      if (localEntry) {
+        merged[key] = localEntry;
+        return;
+      }
+      const status = datasetCloudStatusesQuery.data?.statuses.find(
+        (entry) => entry.datasetKey === key
+      );
+      if (status?.recoverable === false) {
+        delete merged[key];
+      }
+    });
+    return merged;
+  }, [
+    allDatasetKeys,
+    datasetCloudStatusesQuery.data?.statuses,
+    localDatasetManifest,
+    serverCloudDatasetManifest,
+  ]);
+
+  const serverDatasetCloudStatusByKey = useMemo(() => {
+    const entries = datasetCloudStatusesQuery.data?.statuses ?? [];
+    return entries.reduce<
+      Partial<
+        Record<
+          DatasetKey,
+          {
+            recoverable: boolean;
+            payloadSha256: string | null;
+          }
+        >
+      >
+    >((accumulator, entry) => {
+      if (isDatasetKey(entry.datasetKey)) {
+        accumulator[entry.datasetKey] = {
+          recoverable: entry.recoverable,
+          payloadSha256: entry.payloadSha256,
+        };
+      }
+      return accumulator;
+    }, {});
+  }, [datasetCloudStatusesQuery.data?.statuses]);
+
+  useEffect(() => {
+    setDatasetCloudSyncStatus((current) => {
+      let changed = false;
+      const next = { ...current };
+      allDatasetKeys.forEach((key) => {
+        const status = serverDatasetCloudStatusByKey[key];
+        if (!status?.recoverable) return;
+        const localHash = localDatasetPayloadHashes[key];
+        if (datasets[key] && !localHash) {
+          return;
+        }
+        if (localHash && status.payloadSha256 && localHash !== status.payloadSha256) {
+          return;
+        }
+        if (!next[key]) return;
+        delete next[key];
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  }, [allDatasetKeys, datasets, localDatasetPayloadHashes, serverDatasetCloudStatusByKey]);
+
   const manifestOnlyRemoteStatePayload = useMemo(() => {
     return (
       safeJsonStringify({
-        datasetManifest: remoteDatasetManifest,
+        datasetManifest: mergedRemoteDatasetManifest,
         logs: [],
       }) ?? "{\"datasetManifest\":{},\"logs\":[]}"
     );
-  }, [remoteDatasetManifest]);
+  }, [mergedRemoteDatasetManifest]);
 
   const remoteStatePayload = useMemo(() => {
     return {
@@ -4519,6 +4682,13 @@ export default function SolarRecDashboard() {
           manifest = parsed.datasetManifest ?? {};
         }
 
+        if (!cancelled && Object.keys(manifest).length > 0) {
+          setServerCloudDatasetManifest((current) => ({
+            ...current,
+            ...manifest,
+          }));
+        }
+
         const allowedKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
         );
@@ -4634,7 +4804,7 @@ export default function SolarRecDashboard() {
               const next = { ...current };
               (Object.keys(loadedDatasets) as DatasetKey[]).forEach((key) => {
                 if (loadedDatasets[key]) {
-                  next[key] = "synced";
+                  delete next[key];
                 }
               });
               return next;
@@ -4880,6 +5050,7 @@ export default function SolarRecDashboard() {
               delete remoteDatasetSignatureRef.current[key];
               delete remoteDatasetChunkKeysRef.current[key];
               setDatasetCloudSyncBadge(key, undefined);
+              invalidateDatasetCloudStatuses();
             } catch {
               setDatasetCloudSyncBadge(key, "failed");
               setStorageNotice(`Could not clear ${DATASET_DEFINITIONS[key].label} dataset from cloud storage.`);
@@ -4900,7 +5071,6 @@ export default function SolarRecDashboard() {
                 setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
                 setStorageNotice(`${DATASET_DEFINITIONS[key].label} is already synced to cloud.`);
               }
-              setDatasetCloudSyncBadge(key, "synced");
               continue;
             }
 
@@ -4924,7 +5094,8 @@ export default function SolarRecDashboard() {
                 setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
                 setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
               }
-              setDatasetCloudSyncBadge(key, "synced");
+              setDatasetCloudSyncBadge(key, "pending");
+              invalidateDatasetCloudStatuses();
               // Phase 8.1.5: keep srDs* in sync for core datasets.
               triggerCoreDatasetSrDsSync(key);
             } catch {
@@ -5036,7 +5207,8 @@ export default function SolarRecDashboard() {
               setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
               setStorageNotice(`Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`);
             }
-            setDatasetCloudSyncBadge(key, "synced");
+            setDatasetCloudSyncBadge(key, "pending");
+            invalidateDatasetCloudStatuses();
           } catch {
             if (forceSyncRequested) {
               forcedRemoteDatasetSyncKeysRef.current.delete(key);
@@ -5074,6 +5246,7 @@ export default function SolarRecDashboard() {
     datasets,
     datasetsHydrated,
     forceDatasetSyncTick,
+    invalidateDatasetCloudStatuses,
     remoteDashboardStateQuery.status,
     remoteStateHydrated,
     saveRemotePayloadWithChunks,
@@ -6563,23 +6736,37 @@ const aiDataContext = useMemo(() => {
               {(Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).map((key) => {
                 const config = DATASET_DEFINITIONS[key];
                 const dataset = datasets[key];
+                const manifestEntry = mergedRemoteDatasetManifest[key];
                 const error = uploadErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
                 const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
+                const serverCloudStatus = serverDatasetCloudStatusByKey[key];
+                const localPayloadHash = localDatasetPayloadHashes[key];
                 const hasCloudBackfillMarker = Boolean(
                   dataset &&
                     (dataset.fileName.toLowerCase().includes("cloud-backfill") ||
                       dataset.sources?.some((source) => source.fileName.toLowerCase().includes("cloud-backfill")))
                 );
-                const cloudStatusForDataset: DatasetCloudSyncStatus | undefined =
-                  datasetCloudSyncStatus[key] ??
-                  (localOnlyDatasets[key]
-                    ? undefined
-                    : remoteSourceManifests[key]?.sources?.length
-                      ? "synced"
-                      : hasCloudBackfillMarker
-                        ? "synced"
-                      : undefined);
+                const overrideCloudStatus = datasetCloudSyncStatus[key];
+                let cloudStatusForDataset: DatasetCloudSyncStatus | undefined = overrideCloudStatus;
+                if (!cloudStatusForDataset && !localOnlyDatasets[key]) {
+                  if (serverCloudStatus?.recoverable) {
+                    const hashesMatch =
+                      dataset
+                        ? Boolean(
+                            localPayloadHash &&
+                              (!serverCloudStatus.payloadSha256 ||
+                                localPayloadHash === serverCloudStatus.payloadSha256)
+                          )
+                        : true;
+                    cloudStatusForDataset =
+                      dataset && !hashesMatch
+                        ? "pending"
+                        : "synced";
+                  } else if (dataset || manifestEntry || hasCloudBackfillMarker) {
+                    cloudStatusForDataset = "not-synced";
+                  }
+                }
 
                 return (
                   <div key={key} className="space-y-3 rounded-lg border border-slate-200 bg-white p-4">
@@ -6614,6 +6801,11 @@ const aiDataContext = useMemo(() => {
                               Cloud sync failed
                             </Badge>
                           ) : null}
+                          {cloudStatusForDataset === "not-synced" ? (
+                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
+                              Not synced to cloud
+                            </Badge>
+                          ) : null}
                           {forceSyncingDatasets[key] ? (
                             <Badge className="border-blue-200 bg-blue-100 text-blue-900">
                               Forcing cloud sync...
@@ -6641,6 +6833,54 @@ const aiDataContext = useMemo(() => {
                               ))}
                           </div>
                         ) : null}
+                      </div>
+                    ) : manifestEntry ? (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="border-slate-200 bg-slate-100 text-slate-700">
+                            {manifestEntry.rowCount} rows saved
+                          </Badge>
+                          {cloudStatusForDataset === "pending" ? (
+                            <Badge className="border-blue-200 bg-blue-100 text-blue-900">
+                              Cloud sync pending
+                            </Badge>
+                          ) : null}
+                          {cloudStatusForDataset === "synced" ? (
+                            <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                              Cloud verified
+                            </Badge>
+                          ) : null}
+                          {cloudStatusForDataset === "failed" ? (
+                            <Badge className="border-rose-200 bg-rose-100 text-rose-800">
+                              Cloud sync failed
+                            </Badge>
+                          ) : null}
+                          {cloudStatusForDataset === "not-synced" ? (
+                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
+                              Not synced to cloud
+                            </Badge>
+                          ) : null}
+                        </div>
+                        <p className="truncate text-xs text-slate-600">
+                          {manifestEntry.fileName}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Last updated {new Date(manifestEntry.uploadedAt).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          Full rows reload when this dataset's tab is opened.
+                        </p>
+                      </div>
+                    ) : serverCloudStatus?.recoverable ? (
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
+                            Cloud verified
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          Saved in cloud. Full rows reload when this dataset's tab is opened.
+                        </p>
                       </div>
                     ) : (
                       <Badge variant="outline" className="text-slate-600">
