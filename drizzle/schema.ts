@@ -1295,3 +1295,37 @@ export const solarRecScopeContractScanVersion = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   }
 );
+
+// ---------------------------------------------------------------------------
+// King of the Day — Phase C
+// One row per (user, dateKey) capturing the headline for the
+// KingOfTheDayHero. Rows are auto-created by `selectKingOfDay` and
+// replaced on manual pin. `unpin` deletes the row so the next .get()
+// re-runs the rules-based picker.
+// ---------------------------------------------------------------------------
+
+export const userKingOfDay = mysqlTable(
+  "userKingOfDay",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(), // YYYY-MM-DD, local TZ
+    source: mysqlEnum("source", ["auto", "manual", "ai"]).notNull(),
+    title: varchar("title", { length: 200 }).notNull(),
+    reason: varchar("reason", { length: 500 }),
+    taskId: varchar("taskId", { length: 128 }),
+    eventId: varchar("eventId", { length: 128 }),
+    pinnedAt: timestamp("pinnedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userDateIdx: uniqueIndex("userKingOfDay_user_date_idx").on(
+      table.userId,
+      table.dateKey
+    ),
+  })
+);
+
+export type UserKingOfDay = typeof userKingOfDay.$inferSelect;
+export type InsertUserKingOfDay = typeof userKingOfDay.$inferInsert;

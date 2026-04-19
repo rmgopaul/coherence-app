@@ -60,6 +60,7 @@ import {
   hoymilesRouter,
   solarLogRouter,
 } from "./routers/solarCloud";
+import { kingOfDayRouter } from "./routers/kingOfDay";
 
 // ---------------------------------------------------------------------------
 // App Router — thin composition of all sub-routers
@@ -129,6 +130,9 @@ export const appRouter = router({
   ekm: ekmRouter,
   hoymiles: hoymilesRouter,
   solarLog: solarLogRouter,
+
+  // Front-page
+  kingOfDay: kingOfDayRouter,
 });
 
 export type AppRouter = typeof appRouter;

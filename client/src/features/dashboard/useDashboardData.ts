@@ -89,7 +89,15 @@ export function useDashboardData() {
   // Phase C / D placeholders — keep the shape stable so call sites can
   // destructure today and not change when the real routers ship.
   const dailyBrief: DailyBrief | null = null;
-  const kingOfDay = null;
+
+  // Phase C — server-picked King of the Day. Falls back to the hero's
+  // client-side headline derivation while loading or on error.
+  const { data: kingOfDayServer } = trpc.kingOfDay.get.useQuery(
+    { dateKey: todayKey },
+    { refetchInterval: ONE_MIN, staleTime: 30_000 }
+  );
+  const kingOfDay = kingOfDayServer ?? null;
+
   const weather = null;
   const news: unknown[] = [];
 

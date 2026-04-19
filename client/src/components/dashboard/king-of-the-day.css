@@ -107,6 +107,40 @@
   line-height: 1;
 }
 
+/* PINNED badge — shown when kingOfDay.source === 'manual' */
+.kotd-pinned-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 10px;
+  border: 1.5px solid oklch(0.92 0.18 95);
+  color: oklch(0.92 0.18 95);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.kotd-pinned-badge__close {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  font-family: inherit;
+}
+
+.kotd-pinned-badge__close:hover,
+.kotd-pinned-badge__close:focus-visible {
+  color: oklch(0.68 0.22 27);
+  outline: none;
+}
+
 /* Tighten display headline at small widths */
 @media (max-width: 640px) {
   .kotd-hero .kotd-headline {

@@ -15,11 +15,18 @@ import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
 import { FocusModeRail } from "./frontpage/FocusModeRail";
 import { useDashboardData } from "./useDashboardData";
 import { useFocusMode } from "@/contexts/FocusModeContext";
+import { trpc } from "@/lib/trpc";
 import "./frontpage/dashboard.css";
 
 export default function FrontPageDashboard() {
   const data = useDashboardData();
   const { focusMode } = useFocusMode();
+  const utils = trpc.useUtils();
+  const unpinKing = trpc.kingOfDay.unpin.useMutation({
+    onSuccess: () => {
+      utils.kingOfDay.get.invalidate();
+    },
+  });
 
   return (
     <div className="fp-root" data-focus={focusMode ? "1" : "0"}>
@@ -34,6 +41,8 @@ export default function FrontPageDashboard() {
         dailyBrief={data.dailyBrief}
         calendarEvents={data.calendar}
         unreadGmailCount={data.unreadGmailCount}
+        kingOfDay={data.kingOfDay}
+        onUnpin={() => unpinKing.mutate({ dateKey: data.todayKey })}
       />
 
       {focusMode ? (
