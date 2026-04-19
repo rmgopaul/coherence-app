@@ -195,8 +195,12 @@ export default function MarketHeadlinesCard() {
   );
 
   const fetchedAt = data?.fetchedAt ? new Date(data.fetchedAt) : null;
-  const marketRateLimited = Boolean((data as any)?.marketRateLimited);
-  const approvalRatings = ((data as any)?.approvalRatings ?? []) as ApprovalRatingSource[];
+  const dataExtras = data as (typeof data & {
+    marketRateLimited?: boolean;
+    approvalRatings?: ApprovalRatingSource[];
+  }) | undefined;
+  const marketRateLimited = Boolean(dataExtras?.marketRateLimited);
+  const approvalRatings = dataExtras?.approvalRatings ?? [];
 
   const stocksOverallChange = useMemo(() => {
     if (stocks.length === 0) return null;

@@ -45,9 +45,10 @@ function loadResponseMetrics(): ResponseMetric[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map((entry) => {
-        const at = Number((entry as any)?.at);
-        const durationMs = Number((entry as any)?.durationMs);
+      .map((entry: unknown) => {
+        const record = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+        const at = Number(record.at);
+        const durationMs = Number(record.durationMs);
         if (!Number.isFinite(at) || !Number.isFinite(durationMs)) return null;
         return { at, durationMs };
       })

@@ -1969,10 +1969,18 @@ export default function AbpInvoiceSettlement() {
           rows: chunk,
         });
 
-        const serverWarnings: string[] = (response as any).warnings ?? [];
-        const serverStats = (response as any).stats as
-          | { sent: number; returnedByAi: number; missing: number; keptOriginal: number; fieldWarnings: number }
-          | undefined;
+        const responseExtras = response as typeof response & {
+          warnings?: string[];
+          stats?: {
+            sent: number;
+            returnedByAi: number;
+            missing: number;
+            keptOriginal: number;
+            fieldWarnings: number;
+          };
+        };
+        const serverWarnings: string[] = responseExtras.warnings ?? [];
+        const serverStats = responseExtras.stats;
 
         if (serverWarnings.length > 0) {
           allWarnings.push(...serverWarnings.map((w: string) => `Batch ${batchNum}: ${w}`));

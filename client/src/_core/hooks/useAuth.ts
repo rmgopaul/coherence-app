@@ -59,12 +59,17 @@ export function useAuth(options?: UseAuthOptions) {
     logoutMutation.isPending,
   ]);
 
+  // Historically this hook mirrored the auth user into
+  // localStorage("coherence-user-info"). Nothing reads it, so we only
+  // clear any stale entry left behind by older builds — keeping user
+  // email/name out of localStorage reduces XSS blast radius.
   useEffect(() => {
-    localStorage.setItem(
-      "coherence-user-info",
-      JSON.stringify(meQuery.data ?? null)
-    );
-  }, [meQuery.data]);
+    try {
+      localStorage.removeItem("coherence-user-info");
+    } catch {
+      // ignore (Safari private mode, quota, etc.)
+    }
+  }, []);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated) return;

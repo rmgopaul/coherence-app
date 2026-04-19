@@ -238,8 +238,12 @@ export default function Dashboard() {
     refetch: refetchIntegrations,
   } = trpc.integrations.list.useQuery(undefined, {
     enabled: !!user,
-    refetchInterval: 20_000,
-    refetchOnWindowFocus: true,
+    // Integrations change rarely (OAuth connect/disconnect). Mutations that
+    // change this data should invalidate the query explicitly; a 5-minute
+    // poll is a cheap safety net vs. the prior 20s hammering.
+    refetchInterval: 300_000,
+    refetchOnWindowFocus: false,
+    staleTime: 60_000,
   });
 
   const { data: preferences, refetch: refetchPreferences } = trpc.preferences.get.useQuery(undefined, {
@@ -355,40 +359,45 @@ export default function Dashboard() {
     retry: false,
   });
   
-  // Filter to show only upcoming events (not past events) in Central Time
-  const upcomingEvents = calendarEvents?.filter((event) => {
-    const startTime = event.start?.dateTime || event.start?.date;
-    if (!startTime) return false;
-    
-    const eventDate = new Date(startTime);
-    const now = new Date();
-    
-    // Only show events that haven't started yet
-    return eventDate > now;
-  }) || [];
-  
-  // Group events by date and assign colors
-  const groupedEvents = upcomingEvents.reduce((acc: Record<string, CalendarEvent[]>, event) => {
-    const startTime = event.start?.dateTime || event.start?.date;
-    const eventDate = new Date(startTime);
-    const dateKey = eventDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    
-    if (!acc[dateKey]) {
-      acc[dateKey] = [];
-    }
-    acc[dateKey].push(event);
-    return acc;
-  }, {});
-  
-  // Single consistent accent color for all calendar event days
+  // Single-pass filter + group: walk calendarEvents once, keep only
+  // future events, and build the by-date buckets inline. Memoized so
+  // consumers (useMemo deps, child props) get a stable reference across
+  // unrelated dashboard re-renders.
   const dayColor = { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", header: "bg-emerald-100" };
+  const { upcomingEvents, eventsByDate } = useMemo(() => {
+    const upcoming: CalendarEvent[] = [];
+    const buckets: Record<string, CalendarEvent[]> = {};
+    const keyOrder: string[] = [];
+    const now = Date.now();
 
-  const dateKeys = Object.keys(groupedEvents);
-  const eventsByDate = dateKeys.map((dateKey) => ({
-    date: dateKey,
-    events: groupedEvents[dateKey],
-    colors: dayColor,
-  }));
+    for (const event of calendarEvents ?? []) {
+      const startTime = event.start?.dateTime || event.start?.date;
+      if (!startTime) continue;
+      const eventDate = new Date(startTime);
+      if (eventDate.getTime() <= now) continue;
+
+      upcoming.push(event);
+      const dateKey = eventDate.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      if (!buckets[dateKey]) {
+        buckets[dateKey] = [];
+        keyOrder.push(dateKey);
+      }
+      buckets[dateKey].push(event);
+    }
+
+    return {
+      upcomingEvents: upcoming,
+      eventsByDate: keyOrder.map((dateKey) => ({
+        date: dateKey,
+        events: buckets[dateKey],
+        colors: dayColor,
+      })),
+    };
+  }, [calendarEvents]);
   
   // Fetch Todoist projects for the filter dropdown
   const { data: todoistProjects } = trpc.todoist.getProjects.useQuery(undefined, {
@@ -1179,6 +1188,8 @@ export default function Dashboard() {
   };
 
   const handleSubmitNote = () => {
+    // Drop duplicate submits while a save/update is already in flight.
+    if (createNoteMutation.isPending || updateNoteMutation.isPending) return;
     const title = noteTitleInput.trim();
     const notebook = noteNotebookInput.trim() || "General";
     if (!title) {
@@ -1251,6 +1262,7 @@ export default function Dashboard() {
   };
 
   const handleCreateNoteFromTask = (task: TodoistTask) => {
+    if (createNoteFromTaskMutation.isPending) return;
     createNoteFromTaskMutation.mutate({
       taskId: String(task.id),
       taskContent: String(task.content || "Untitled task"),
@@ -1264,6 +1276,7 @@ export default function Dashboard() {
   };
 
   const handleCreateNoteFromCalendarEvent = (event: CalendarEvent) => {
+    if (createNoteFromCalendarMutation.isPending) return;
     createNoteFromCalendarMutation.mutate({
       eventId: String(event.id || ""),
       eventSummary: String(event.summary || "Untitled event"),

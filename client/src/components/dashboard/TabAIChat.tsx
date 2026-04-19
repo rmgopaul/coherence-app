@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -139,12 +141,11 @@ export function TabAIChat({ tabId, dataContext, isActive }: TabAIChatProps) {
                   }`}
                 >
                   {msg.role === "assistant" ? (
-                    <div
-                      className="prose prose-sm dark:prose-invert max-w-none [&_table]:text-xs [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1 [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_td]:border [&_td]:border-border [&_th]:bg-muted/50"
-                      dangerouslySetInnerHTML={{
-                        __html: renderMarkdown(msg.content),
-                      }}
-                    />
+                    <div className="prose prose-sm dark:prose-invert max-w-none [&_table]:text-xs [&_th]:px-2 [&_th]:py-1 [&_td]:px-2 [&_td]:py-1 [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_td]:border [&_td]:border-border [&_th]:bg-muted/50">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
                   ) : (
                     <span>{msg.content}</span>
                   )}
@@ -206,71 +207,3 @@ export function TabAIChat({ tabId, dataContext, isActive }: TabAIChatProps) {
   );
 }
 
-/**
- * Simple markdown → HTML renderer for AI responses.
- * Handles: bold, italic, code, tables, lists, headers, line breaks.
- */
-function renderMarkdown(text: string): string {
-  let html = text
-    // Escape HTML
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    // Headers
-    .replace(/^### (.+)$/gm, "<h4>$1</h4>")
-    .replace(/^## (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^# (.+)$/gm, "<h2>$1</h2>")
-    // Bold and italic
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    // Inline code
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    // Horizontal rules
-    .replace(/^---$/gm, "<hr/>")
-    // Line breaks
-    .replace(/\n\n/g, "</p><p>")
-    .replace(/\n/g, "<br/>");
-
-  // Tables: detect | delimited lines
-  html = html.replace(
-    /(<p>)?((?:\|[^\n<]+\|(?:<br\/>)?)+)(<\/p>)?/g,
-    (_, _pre, tableBlock) => {
-      const lines = tableBlock.split("<br/>").filter((l: string) => l.trim());
-      if (lines.length < 2) return tableBlock;
-
-      const parseRow = (line: string) =>
-        line
-          .split("|")
-          .map((c: string) => c.trim())
-          .filter(Boolean);
-
-      const headerCells = parseRow(lines[0]);
-      // Skip separator line (---|---|---)
-      const startIdx = /^[\s|:-]+$/.test(
-        lines[1].replace(/<[^>]+>/g, "")
-      )
-        ? 2
-        : 1;
-
-      let table = "<table><thead><tr>";
-      for (const cell of headerCells) {
-        table += `<th>${cell}</th>`;
-      }
-      table += "</tr></thead><tbody>";
-
-      for (let i = startIdx; i < lines.length; i++) {
-        const cells = parseRow(lines[i]);
-        if (cells.length === 0) continue;
-        table += "<tr>";
-        for (const cell of cells) {
-          table += `<td>${cell}</td>`;
-        }
-        table += "</tr>";
-      }
-      table += "</tbody></table>";
-      return table;
-    }
-  );
-
-  return `<p>${html}</p>`;
-}

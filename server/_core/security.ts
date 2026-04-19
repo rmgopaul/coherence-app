@@ -17,8 +17,24 @@ export function registerSecurityMiddleware(app: Express) {
             directives: {
               defaultSrc: ["'self'"],
               scriptSrc: ["'self'"],
+              // Block inline event handlers (onclick=, etc.). React never
+              // emits them; any occurrence is almost certainly injection.
+              scriptSrcAttr: ["'none'"],
+              // 'unsafe-inline' is required for Radix UI / Recharts which
+              // set style="..." for positioning/animation. Switching to a
+              // nonce-based scheme is a larger effort tracked separately.
               styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-              imgSrc: ["'self'", "data:", "https:"],
+              // Drop the blanket "https:" and list the providers we
+              // actually load images from (avatar/thumbnail hosts).
+              imgSrc: [
+                "'self'",
+                "data:",
+                "blob:",
+                "https://*.googleusercontent.com",
+                "https://lh3.googleusercontent.com",
+                "https://ssl.gstatic.com",
+                "https://www.gstatic.com",
+              ],
               connectSrc: [
                 "'self'",
                 "https://api.openai.com",
@@ -30,6 +46,10 @@ export function registerSecurityMiddleware(app: Express) {
               ],
               fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
               objectSrc: ["'none'"],
+              // Prevent <base href=...> hijacks that rewrite relative URLs.
+              baseUri: ["'self'"],
+              // Restrict form submission targets.
+              formAction: ["'self'"],
               frameAncestors: ["'none'"],
               upgradeInsecureRequests: [],
             },

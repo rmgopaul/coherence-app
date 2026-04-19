@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import compression from "compression";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
@@ -187,6 +188,10 @@ async function startServer() {
 
   // Security middleware (helmet, CORS, rate limiting) — must come first
   registerSecurityMiddleware(app);
+
+  // gzip/deflate responses; critical for large tRPC JSON payloads (solar-rec
+  // datasets, dashboard hydration) and static assets.
+  app.use(compression());
 
   // Allow larger dashboard dataset payloads (large CSV-derived uploads) while still bounded.
   app.use(express.json({ limit: "50mb" }));
