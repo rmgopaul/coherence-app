@@ -422,30 +422,28 @@ const TABULAR_DATASET_KEYS = new Set<DatasetKey>(["abpIccReport2Rows", "abpIccRe
  * replaced with an explanatory badge pointing at the correct workflow.
  */
 const SCANNER_MANAGED_DATASET_KEYS = new Set<DatasetKey>(["deliveryScheduleBase"]);
-const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = [
-  "solarApplications",
-  "abpReport",
-  "generationEntry",
-  "accountSolarGeneration",
-];
+const CORE_REQUIRED_DATASET_KEYS: DatasetKey[] = ["abpReport"];
 
 /**
  * Phase 16: per-tab dataset priority. When the dashboard mounts with
  * `?tab=X`, we hydrate these datasets first so the user's landing
  * tab has data ASAP; everything else streams in after. Every list
- * implicitly inherits `CORE_REQUIRED_DATASET_KEYS` because
- * `summary` + `systems` depend on them.
+ * implicitly inherits `CORE_REQUIRED_DATASET_KEYS` because the
+ * top-level summary still reads ABP-derived counts even though the
+ * main SystemRecord[] snapshot now comes from the server.
  *
  * Tabs not listed here hydrate in manifest order behind the core set.
  */
 const TAB_PRIORITY_DATASETS: Record<string, DatasetKey[]> = {
   "performance-ratio": [
+    "solarApplications",
     "convertedReads",
     "annualProductionEstimates",
     "generatorDetails",
     "generationEntry",
     "accountSolarGeneration",
   ],
+  "offline-monitoring": ["solarApplications"],
   "delivery-tracker": ["deliveryScheduleBase", "transferHistory"],
   "contracts": ["deliveryScheduleBase", "transferHistory"],
   "annual-review": ["deliveryScheduleBase", "transferHistory"],
@@ -476,6 +474,21 @@ function buildHydrationPriorityKeys(activeTab: string): Set<DatasetKey> {
   const tabExtras = TAB_PRIORITY_DATASETS[activeTab];
   if (tabExtras) {
     for (const key of tabExtras) keys.add(key);
+  }
+  return keys;
+}
+
+function buildVisitedTabDatasetKeys(tabs: Iterable<string>): Set<DatasetKey> {
+  const keys = new Set<DatasetKey>();
+  Array.from(tabs).forEach((tab) => {
+    Array.from(buildHydrationPriorityKeys(tab)).forEach((key) => {
+      keys.add(key);
+    });
+  });
+  if (keys.size === 0) {
+    CORE_REQUIRED_DATASET_KEYS.forEach((key) => {
+      keys.add(key);
+    });
   }
   return keys;
 }
@@ -718,8 +731,14 @@ async function mapWithBoundedConcurrency<TInput, TOutput>(
 
 /** Max concurrent tRPC mutations for remote dataset WRITES (saves, chunk deletes). */
 const REMOTE_WRITE_CONCURRENCY = 4;
-/** Max concurrent tRPC mutations for remote dataset READS (hydration fetches). */
-const REMOTE_READ_CONCURRENCY = 12;
+/**
+ * Remote hydrate used to fan out very aggressively across datasets,
+ * source files, and chunk reads. That improved throughput on good
+ * networks, but on large portfolios it also created big short-lived
+ * memory spikes in Chrome. Keep reads parallel, just not explosively
+ * parallel.
+ */
+const REMOTE_READ_CONCURRENCY = 4;
 /** Byte slice size for streamed remote file uploads. Keeps browser memory bounded. */
 const REMOTE_FILE_STREAM_SLICE_BYTES = 256 * 1024;
 
@@ -1269,13 +1288,14 @@ function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
  * Legacy record fallbacks still flush once through `onBatch`.
  */
 interface ProgressiveHydrationOptions {
+  allowedKeys?: Set<DatasetKey>;
   priorityKeys?: Set<DatasetKey>;
   onBatch: (batch: Partial<Record<DatasetKey, CsvDataset>>, phase: "priority" | "background") => void;
   onProgress?: (loaded: number, total: number) => void;
 }
 
 async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
-  const { priorityKeys, onBatch, onProgress } = options;
+  const { allowedKeys, priorityKeys, onBatch, onProgress } = options;
   if (typeof window === "undefined") return;
 
   // Phase 17c: buffers that accumulate datasets between flushes.
@@ -1313,7 +1333,9 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
 
   if (!("indexedDB" in window)) {
     const legacyDatasets = loadLegacyDatasetsFromLocalStorage();
-    const keys = Object.keys(legacyDatasets) as DatasetKey[];
+    const keys = (Object.keys(legacyDatasets) as DatasetKey[]).filter(
+      (key) => !allowedKeys || allowedKeys.has(key)
+    );
     onProgress?.(0, keys.length);
     keys.forEach((key, index) => {
       const dataset = legacyDatasets[key];
@@ -1347,7 +1369,10 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     });
 
     if (stored.manifest && Array.isArray(stored.manifest.keys) && stored.manifest.keys.length > 0) {
-      const manifestKeys = stored.manifest.keys.filter((key): key is DatasetKey => isDatasetKey(key));
+      const manifestKeys = stored.manifest.keys.filter(
+        (key): key is DatasetKey =>
+          isDatasetKey(key) && (!allowedKeys || allowedKeys.has(key))
+      );
       if (manifestKeys.length > 0) {
         // Phase 16: reorder so the active tab's datasets load first.
         // Keys not in priorityKeys go to the back of the queue.
@@ -1413,12 +1438,17 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     // uniform. These are rare and small (one-time migration).
     if (stored.legacy) {
       const legacyDatasets = deserializeDatasets(stored.legacy);
-      const keys = Object.keys(legacyDatasets) as DatasetKey[];
+      const keys = (Object.keys(legacyDatasets) as DatasetKey[]).filter(
+        (key) => !allowedKeys || allowedKeys.has(key)
+      );
       if (keys.length > 0) {
-        await saveDatasetsToStorage(legacyDatasets);
+        const filteredLegacyDatasets = Object.fromEntries(
+          keys.map((key) => [key, legacyDatasets[key]])
+        ) as Partial<Record<DatasetKey, CsvDataset>>;
+        await saveDatasetsToStorage(filteredLegacyDatasets);
         onProgress?.(0, keys.length);
         keys.forEach((key, index) => {
-          const dataset = legacyDatasets[key];
+          const dataset = filteredLegacyDatasets[key];
           if (dataset) recordLoad(backgroundBatch, key, dataset);
           onProgress?.(index + 1, keys.length);
         });
@@ -1428,13 +1458,18 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     }
 
     const localLegacy = loadLegacyDatasetsFromLocalStorage();
-    const localLegacyKeys = Object.keys(localLegacy) as DatasetKey[];
+    const localLegacyKeys = (Object.keys(localLegacy) as DatasetKey[]).filter(
+      (key) => !allowedKeys || allowedKeys.has(key)
+    );
     if (localLegacyKeys.length > 0) {
-      await saveDatasetsToStorage(localLegacy);
+      const filteredLocalLegacy = Object.fromEntries(
+        localLegacyKeys.map((key) => [key, localLegacy[key]])
+      ) as Partial<Record<DatasetKey, CsvDataset>>;
+      await saveDatasetsToStorage(filteredLocalLegacy);
       globalThis.localStorage.removeItem(LEGACY_DATASETS_STORAGE_KEY);
       onProgress?.(0, localLegacyKeys.length);
       localLegacyKeys.forEach((key, index) => {
-        const dataset = localLegacy[key];
+        const dataset = filteredLocalLegacy[key];
         if (dataset) recordLoad(backgroundBatch, key, dataset);
         onProgress?.(index + 1, localLegacyKeys.length);
       });
@@ -1448,7 +1483,9 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     // Last-resort synchronous fallback — same shape as the IDB-less
     // branch above.
     const legacy = loadLegacyDatasetsFromLocalStorage();
-    const keys = Object.keys(legacy) as DatasetKey[];
+    const keys = (Object.keys(legacy) as DatasetKey[]).filter(
+      (key) => !allowedKeys || allowedKeys.has(key)
+    );
     onProgress?.(0, keys.length);
     keys.forEach((key, index) => {
       const dataset = legacy[key];
@@ -4117,6 +4154,7 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
+        const allowedKeys = buildVisitedTabDatasetKeys(visitedTabsRef.current);
         // Phase 16: progressive hydration. Datasets arrive one at a
         // time via the onDataset callback — each call into setDatasets
         // only updates ONE key, producing a small re-render rather
@@ -4130,6 +4168,7 @@ export default function SolarRecDashboard() {
 
         const [, loadedLogs] = await Promise.all([
           loadDatasetsFromStorage({
+            allowedKeys,
             priorityKeys,
             // Phase 17c: commits arrive as two batches (priority +
             // background) rather than per-dataset, so the `systems`
@@ -4177,8 +4216,7 @@ export default function SolarRecDashboard() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [activeTab, search]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4420,13 +4458,15 @@ export default function SolarRecDashboard() {
           manifest = parsed.datasetManifest ?? {};
         }
 
+        const allowedKeys = buildVisitedTabDatasetKeys(visitedTabsRef.current);
         const keysToLoad = new Set<DatasetKey>();
         Object.keys(manifest).forEach((rawKey) => {
           if (!isDatasetKey(rawKey)) return;
+          if (!allowedKeys.has(rawKey)) return;
           keysToLoad.add(rawKey);
         });
 
-        (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+        allowedKeys.forEach((key) => {
           keysToLoad.add(key);
         });
 
@@ -4572,6 +4612,7 @@ export default function SolarRecDashboard() {
       cancelled = true;
     };
   }, [
+    activeTab,
     parseCsvFileAsync,
     parseCsvTextAsync,
     remoteDashboardStateQuery.data,
