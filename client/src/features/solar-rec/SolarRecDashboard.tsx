@@ -1046,6 +1046,88 @@ function rowsFromColumnar(headers: string[], columnData: string[][], rowCount: n
 }
 
 /**
+ * Internal marker attached to datasets whose rows were hydrated from a
+ * columnar record. Lets `serializeDatasetRecord` reuse the original
+ * columnar arrays instead of walking the (possibly huge) materialized
+ * rows back into columns — a round-trip that defeats the memory win
+ * of lazy materialization and takes seconds for big datasets.
+ */
+const DATASET_COLUMNAR_SOURCE = Symbol.for("solarRec.datasetColumnarSource");
+
+type ColumnarSource = {
+  headers: string[];
+  columnData: string[][];
+  rowCount: number;
+};
+
+function getDatasetColumnarSource(dataset: CsvDataset | null | undefined): ColumnarSource | null {
+  if (!dataset) return null;
+  const raw = (dataset as unknown as Record<symbol, unknown>)[DATASET_COLUMNAR_SOURCE];
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<ColumnarSource>;
+  if (!Array.isArray(candidate.headers)) return null;
+  if (!Array.isArray(candidate.columnData)) return null;
+  if (typeof candidate.rowCount !== "number") return null;
+  return candidate as ColumnarSource;
+}
+
+/**
+ * Build a CsvDataset whose `rows` array materializes on first access
+ * and caches thereafter. For tabs that never read the rows (because
+ * their component didn't mount this session), the expensive
+ * row-object construction never happens at all. This is what makes
+ * it safe to hydrate every dataset into state on mount — previously
+ * the forced materialization of all 14 datasets at once drove
+ * Chrome's renderer into code-5 OOM crashes.
+ *
+ * A tab that DOES read rows pays exactly the same cost as before —
+ * one materialization, cached for subsequent reads. No per-access
+ * Proxy overhead on the hot path.
+ *
+ * The columnar arrays stay reachable via DATASET_COLUMNAR_SOURCE so
+ * serializeDatasetRecord can write them back to IDB without walking
+ * the rows.
+ */
+function buildLazyCsvDataset(input: {
+  fileName: string;
+  uploadedAt: Date;
+  headers: string[];
+  columnData: string[][];
+  rowCount: number;
+  sources: CsvDataset["sources"];
+}): CsvDataset {
+  const { fileName, uploadedAt, headers, columnData, rowCount, sources } = input;
+  const dataset: CsvDataset = {
+    fileName,
+    uploadedAt,
+    headers,
+    rows: [] as CsvRow[], // overwritten by the getter below
+    sources,
+  };
+  let cachedRows: CsvRow[] | null = null;
+  Object.defineProperty(dataset, "rows", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      if (cachedRows === null) {
+        cachedRows = rowsFromColumnar(headers, columnData, rowCount);
+      }
+      return cachedRows;
+    },
+    set(value: CsvRow[]) {
+      cachedRows = Array.isArray(value) ? value : [];
+    },
+  });
+  Object.defineProperty(dataset, DATASET_COLUMNAR_SOURCE, {
+    configurable: true,
+    enumerable: false,
+    writable: false,
+    value: { headers, columnData, rowCount },
+  });
+  return dataset;
+}
+
+/**
  * Phase 15: flip a row-oriented in-memory dataset into the
  * columnar on-disk shape. One inner array per header, aligned by
  * row index. Missing cells default to empty strings so the array
@@ -1089,16 +1171,22 @@ function deserializeDatasetRecord(dataset: SerializedCsvDataset | undefined): Cs
   // and a columnar payload; legacy records have a `rows` array. Both
   // shapes land in the same in-memory `CsvDataset` so callers don't
   // care.
+  //
+  // v2 (columnar) records now flow through buildLazyCsvDataset so
+  // rows only materialize when a tab actually reads them. The
+  // columnar arrays are kept on a hidden symbol field for
+  // serializeDatasetRecord to reuse.
   if (dataset._v === 2) {
     const rowCount = Number.isFinite(dataset.rowCount) ? dataset.rowCount : 0;
     const columnData = Array.isArray(dataset.columnData) ? dataset.columnData : [];
-    return {
+    return buildLazyCsvDataset({
       fileName: dataset.fileName,
       uploadedAt,
       headers,
-      rows: rowsFromColumnar(headers, columnData, rowCount),
+      columnData,
+      rowCount,
       sources,
-    };
+    });
   }
 
   const legacyRows = Array.isArray(dataset.rows) ? dataset.rows : [];
@@ -1136,6 +1224,24 @@ function serializeDatasetRecord(dataset: CsvDataset): SerializedCsvDataset {
     uploadedAt: source.uploadedAt.toISOString(),
     rowCount: source.rowCount,
   }));
+
+  // Fast-path: if this dataset came from the IDB hydration path via
+  // buildLazyCsvDataset, the original columnar arrays are cached on
+  // the hidden symbol slot. Reuse them instead of walking rows back
+  // into columns — that rebuild forces full materialization and
+  // defeats the lazy-rows memory win.
+  const columnarSource = getDatasetColumnarSource(dataset);
+  if (columnarSource) {
+    return {
+      _v: 2,
+      fileName: dataset.fileName,
+      uploadedAt: dataset.uploadedAt.toISOString(),
+      headers: columnarSource.headers,
+      columnData: columnarSource.columnData,
+      rowCount: columnarSource.rowCount,
+      sources,
+    };
+  }
 
   return {
     _v: 2,
@@ -1244,7 +1350,13 @@ function dashboardDatasetStorageKey(key: DatasetKey): string {
 // two can't drift out of sync.
 function buildSingleDatasetSignature(dataset: CsvDataset | undefined): string {
   if (!dataset) return "";
-  return `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${dataset.rows.length}|${dataset.sources?.length ?? 0}`;
+  // Prefer the cached columnar rowCount so we don't trigger lazy-rows
+  // materialization for every save-diff pass. Freshly uploaded
+  // datasets without a columnar source fall back to reading the
+  // materialized rows (cheap — they're already real arrays).
+  const columnarSource = getDatasetColumnarSource(dataset);
+  const rowCount = columnarSource ? columnarSource.rowCount : dataset.rows.length;
+  return `${dataset.fileName}|${dataset.uploadedAt.toISOString()}|${rowCount}|${dataset.sources?.length ?? 0}`;
 }
 
 // Module-level cache of "what we last wrote to IndexedDB per key",
@@ -4484,9 +4596,15 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        const allowedKeys = buildHydrationPriorityKeys(
-          getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
-        );
+        // No allowedKeys filter: every manifest entry hydrates. Safe
+        // now that CsvDataset.rows is lazy — hydrated datasets hold
+        // only columnar arrays in memory, and the expensive
+        // row-object materialization only runs for datasets whose
+        // tabs are actually mounted. That fixes the tab-level
+        // "please upload X" empty-state bug without the Chrome
+        // renderer OOM (code 5) crash that the earlier
+        // unconditional-rehydrate (a4a54c8, reverted in da4bed0)
+        // caused.
         // Phase 16: progressive hydration. Datasets arrive one at a
         // time via the onDataset callback — each call into setDatasets
         // only updates ONE key, producing a small re-render rather
@@ -4500,7 +4618,7 @@ export default function SolarRecDashboard() {
 
         const [, loadedLogs] = await Promise.all([
           loadDatasetsFromStorage({
-            allowedKeys,
+            // allowedKeys intentionally omitted — see comment above.
             priorityKeys,
             // Phase 17c: commits arrive as two batches (priority +
             // background) rather than per-dataset, so the `systems`
