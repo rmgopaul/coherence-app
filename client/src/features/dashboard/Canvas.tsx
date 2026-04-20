@@ -14,20 +14,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { trpc } from "@/lib/trpc";
 import { DashboardViewsNav } from "./DashboardViewsNav";
-import { StickyNote, type StickyColor, type StickyData } from "./canvas/StickyNote";
+import { StickyNote, type StickyData } from "./canvas/StickyNote";
+import {
+  applyDragDelta,
+  computeInitialPlacement,
+  nextStickyColor,
+  partitionDockItems,
+} from "./canvas/canvas.helpers";
 import "./frontpage/dashboard.css";
-
-const COLOR_CYCLE: StickyColor[] = ["paper", "yellow", "red", "blue", "black"];
 
 interface DragState {
   id: string;
   pointerStart: { x: number; y: number };
   noteStart: { x: number; y: number };
   current: { x: number; y: number };
-}
-
-function clamp(value: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, value));
 }
 
 export default function Canvas() {
@@ -45,28 +45,10 @@ export default function Canvas() {
   const [drag, setDrag] = useState<DragState | null>(null);
   const boardRef = useRef<HTMLDivElement | null>(null);
 
-  const { stickies, dockOnly } = useMemo(() => {
-    const onBoard: StickyData[] = [];
-    const offBoard: typeof items = [];
-    for (const it of items) {
-      if (typeof it.x === "number" && typeof it.y === "number") {
-        onBoard.push({
-          id: it.id,
-          source: it.source,
-          url: it.url,
-          title: it.title,
-          meta: it.meta,
-          x: it.x,
-          y: it.y,
-          tilt: typeof it.tilt === "number" ? it.tilt : 0,
-          color: ((it.color as StickyColor | null) ?? "paper") as StickyColor,
-        });
-      } else {
-        offBoard.push(it);
-      }
-    }
-    return { stickies: onBoard, dockOnly: offBoard };
-  }, [items]);
+  const { stickies, dockOnly } = useMemo(
+    () => partitionDockItems(items),
+    [items]
+  );
 
   // ---- Drag handlers --------------------------------------------------
 
@@ -91,15 +73,8 @@ export default function Canvas() {
     function onMove(e: MouseEvent) {
       setDrag((d) => {
         if (!d) return d;
-        const dx = e.clientX - d.pointerStart.x;
-        const dy = e.clientY - d.pointerStart.y;
-        return {
-          ...d,
-          current: {
-            x: clamp(d.noteStart.x + dx, -20, 4000),
-            y: clamp(d.noteStart.y + dy, -20, 4000),
-          },
-        };
+        const updated = applyDragDelta(d, { x: e.clientX, y: e.clientY });
+        return { ...d, current: updated.current };
       });
     }
     function onUp() {
@@ -121,20 +96,13 @@ export default function Canvas() {
   // ---- Action handlers ------------------------------------------------
 
   function placeOnBoard(itemId: string) {
-    // Drop a new sticky into a roughly empty spot — center-ish with
-    // some jitter so two consecutive adds don't perfectly overlap.
     const board = boardRef.current?.getBoundingClientRect();
-    const baseX = (board ? board.width / 2 : 400) - 130;
-    const baseY = (board ? board.height / 2 : 300) - 60;
-    const jitter = () => Math.round((Math.random() - 0.5) * 80);
-    const tilt = Math.round((Math.random() - 0.5) * 6);
+    const placement = computeInitialPlacement({
+      boardWidth: board?.width ?? 800,
+      boardHeight: board?.height ?? 600,
+    });
     moveMut.mutate(
-      {
-        id: itemId,
-        x: baseX + jitter(),
-        y: baseY + jitter(),
-        tilt,
-      },
+      { id: itemId, ...placement },
       { onSuccess: () => void utils.dock.list.invalidate() }
     );
   }
@@ -147,10 +115,8 @@ export default function Canvas() {
   }
 
   function cycleColor(sticky: StickyData) {
-    const idx = COLOR_CYCLE.indexOf(sticky.color);
-    const next = COLOR_CYCLE[(idx + 1) % COLOR_CYCLE.length];
     moveMut.mutate(
-      { id: sticky.id, color: next },
+      { id: sticky.id, color: nextStickyColor(sticky.color) },
       { onSuccess: () => void utils.dock.list.invalidate() }
     );
   }

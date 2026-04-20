@@ -17,78 +17,15 @@
 import { useMemo } from "react";
 import { useDashboardData } from "./useDashboardData";
 import { DashboardViewsNav } from "./DashboardViewsNav";
-import { isTaskOverdue, taskPriorityOrder } from "./frontpage/newsprint.helpers";
+import { deriveOneThing, pickAfterThat } from "./onething.helpers";
 import "./frontpage/dashboard.css";
-
-interface DerivedHeadline {
-  title: string;
-  reason: string;
-  meta: { dueLabel: string | null; sourceLabel: string };
-}
-
-function deriveOneThing(data: ReturnType<typeof useDashboardData>): DerivedHeadline {
-  // 1. Server-picked king is authoritative when present.
-  if (data.kingOfDay?.title) {
-    return {
-      title: data.kingOfDay.title,
-      reason: data.kingOfDay.reason ?? "today's headline",
-      meta: {
-        dueLabel: null,
-        sourceLabel:
-          data.kingOfDay.source === "manual"
-            ? "PINNED"
-            : data.kingOfDay.source === "ai"
-              ? "AI · KING OF DAY"
-              : "AUTO · KING OF DAY",
-      },
-    };
-  }
-
-  // 2. Fall back to the most-overdue / highest-priority task.
-  const sorted = [...data.tasks.dueToday].sort(
-    (a, b) => taskPriorityOrder(a) - taskPriorityOrder(b)
-  );
-  const overdue = sorted.find((t) => isTaskOverdue(t));
-  const top = overdue ?? sorted[0];
-  if (top) {
-    return {
-      title: top.content,
-      reason: overdue
-        ? "overdue — finish this first."
-        : "P1 today — start here.",
-      meta: { dueLabel: top.due?.date ?? null, sourceLabel: "TODOIST" },
-    };
-  }
-
-  // 3. Empty state — say so loudly.
-  return {
-    title: "nothing burning.",
-    reason: "pick one and ship it.",
-    meta: { dueLabel: null, sourceLabel: "EMPTY" },
-  };
-}
 
 export default function OneThing() {
   const data = useDashboardData();
   const headline = useMemo(() => deriveOneThing(data), [data]);
 
   // "After that" — next 3 calendar events that haven't started yet.
-  const afterThat = useMemo(() => {
-    const now = Date.now();
-    return [...data.calendar]
-      .filter((e) => {
-        const startIso = e.start?.dateTime ?? e.start?.date ?? null;
-        if (!startIso) return false;
-        const t = new Date(startIso).getTime();
-        return !Number.isNaN(t) && t > now;
-      })
-      .sort((a, b) => {
-        const aT = new Date(a.start?.dateTime ?? a.start?.date ?? 0).getTime();
-        const bT = new Date(b.start?.dateTime ?? b.start?.date ?? 0).getTime();
-        return aT - bT;
-      })
-      .slice(0, 3);
-  }, [data.calendar]);
+  const afterThat = useMemo(() => pickAfterThat(data.calendar), [data.calendar]);
 
   // Section counts for the right rail.
   const counts = {

@@ -16,7 +16,13 @@
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import type { TodoistTask } from "../types";
-import { isTaskOverdue, taskPriorityOrder } from "./newsprint.helpers";
+import {
+  dueLabel,
+  priorityClass,
+  priorityLabel,
+  projectLabel,
+  splitTriageBands,
+} from "./triage.helpers";
 
 interface TasksTriageProps {
   tasks: {
@@ -32,41 +38,6 @@ interface BandProps {
   items: TodoistTask[];
   onComplete: (taskId: string) => void;
   busyTaskId: string | null;
-}
-
-function priorityLabel(t: TodoistTask): string {
-  // Todoist priority: 4 = P1 (highest) … 1 = P4
-  const p = t.priority ?? 1;
-  return `P${5 - p}`;
-}
-
-function priorityClass(t: TodoistTask): string {
-  // Two band-internal markers we use to color the priority dot —
-  // P1 is filled red, P2 is striped, P3+ is plain.
-  const p = t.priority ?? 1;
-  if (p === 4) return "fp-triage-row__bx--p1";
-  if (p === 3) return "fp-triage-row__bx--p2";
-  return "fp-triage-row__bx--p3";
-}
-
-function projectLabel(t: TodoistTask): string | null {
-  // Todoist tasks may carry a `projectName` (when the server enriches)
-  // or a `projectId` (raw). Render the name when we have it, else null.
-  const anyT = t as unknown as { projectName?: string };
-  return anyT.projectName?.trim() || null;
-}
-
-function dueLabel(t: TodoistTask): string | null {
-  const date = t.due?.date;
-  if (!date) return null;
-  // If we have a datetime, show HH:MM; if a bare date, show "today".
-  const hasTime = /T\d{2}:\d{2}/.test(date);
-  if (!hasTime) return "today";
-  const d = new Date(date);
-  if (Number.isNaN(d.getTime())) return null;
-  return d
-    .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    .toLowerCase();
 }
 
 function Band({
@@ -137,22 +108,10 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
     },
   });
 
-  const { overdue, today } = useMemo(() => {
-    const sorted = [...tasks.dueToday].sort(
-      (a, b) => taskPriorityOrder(a) - taskPriorityOrder(b)
-    );
-    const overdueArr: TodoistTask[] = [];
-    const todayArr: TodoistTask[] = [];
-    for (const t of sorted) {
-      if (isTaskOverdue(t)) overdueArr.push(t);
-      else todayArr.push(t);
-    }
-    // Cap each band so the column stays scannable.
-    return {
-      overdue: overdueArr.slice(0, 6),
-      today: todayArr.slice(0, 8),
-    };
-  }, [tasks.dueToday]);
+  const { overdue, today } = useMemo(
+    () => splitTriageBands(tasks.dueToday),
+    [tasks.dueToday]
+  );
 
   const open = tasks.dueToday.length;
   const done = tasks.completedCount;

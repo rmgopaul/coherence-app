@@ -22,59 +22,13 @@
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import type { GmailMessage } from "../types";
-import { daysAgoLabel, extractName } from "./newsprint.helpers";
+import { buildInboxRow, type InboxRowData } from "./inbox.helpers";
 
 interface InboxPanelProps {
   messages: GmailMessage[];
 }
 
-interface MessageRow {
-  id: string;
-  threadId: string;
-  fromName: string;
-  fromTag: string | null;
-  subject: string;
-  snippet: string;
-  ts: string;
-  starred: boolean;
-}
-
-function getHeader(message: GmailMessage, headerName: string): string {
-  const headers = message.payload?.headers as
-    | Array<{ name?: string; value?: string }>
-    | undefined;
-  if (!Array.isArray(headers)) return "";
-  const found = headers.find(
-    (h) => (h.name ?? "").toLowerCase() === headerName.toLowerCase()
-  );
-  return found?.value ?? "";
-}
-
-/**
- * Pull a 2–4 char domain tag from the From header — IPA, CSG, AUTO,
- * UTIL, etc. Used as the colored label next to the sender name.
- */
-function inferDomainTag(rawFrom: string): string | null {
-  const match = /<([^>]+)>$/.exec(rawFrom.trim());
-  const email = match ? match[1] : rawFrom;
-  const at = email.indexOf("@");
-  if (at < 0) return null;
-  const host = email.slice(at + 1).toLowerCase();
-  // Strip the TLD, keep the right-most label of the SLD as the tag.
-  // gmail.com → gmail; carbonsolutionsgroup.com → carbonsolutionsgroup.
-  // Then upper-case + cap to 4 chars.
-  const sld = host.split(".").slice(-2, -1)[0] ?? "";
-  if (!sld) return null;
-  return sld.toUpperCase().slice(0, 4);
-}
-
-function relativeTime(internalDateMs: number, now = Date.now()): string {
-  const diff = now - internalDateMs;
-  if (diff < 60_000) return "now";
-  if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m`;
-  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)}h`;
-  return daysAgoLabel(new Date(internalDateMs).toISOString(), now);
-}
+type MessageRow = InboxRowData;
 
 export function InboxPanel({ messages }: InboxPanelProps) {
   const utils = trpc.useUtils();
@@ -86,26 +40,7 @@ export function InboxPanel({ messages }: InboxPanelProps) {
 
   const rows = useMemo<MessageRow[]>(() => {
     return (messages ?? [])
-      .map((m): MessageRow | null => {
-        if (!m.id) return null;
-        const internalMs = Number(
-          (m as { internalDate?: string | number }).internalDate ?? 0
-        );
-        const fromRaw = getHeader(m, "From");
-        const fromName = extractName(fromRaw);
-        const subjectRaw = getHeader(m, "Subject") || "(no subject)";
-        const labels = (m.labelIds ?? []) as string[];
-        return {
-          id: m.id,
-          threadId: m.threadId ?? m.id,
-          fromName,
-          fromTag: inferDomainTag(fromRaw),
-          subject: subjectRaw,
-          snippet: (m.snippet ?? "").slice(0, 140),
-          ts: relativeTime(internalMs),
-          starred: labels.includes("STARRED"),
-        };
-      })
+      .map((m) => buildInboxRow(m))
       .filter((row): row is MessageRow => row !== null);
   }, [messages]);
 

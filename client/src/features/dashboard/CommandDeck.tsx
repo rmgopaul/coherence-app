@@ -16,14 +16,14 @@
 import { useEffect, useState } from "react";
 import { useDashboardData } from "./useDashboardData";
 import { DashboardViewsNav } from "./DashboardViewsNav";
+import {
+  clockLabel,
+  deriveCommandHeadline,
+  pickNextEvent,
+  pickUpcomingAfter,
+} from "./command/command.helpers";
 import "./command-deck.css";
 import "./frontpage/dashboard.css";
-
-function clockLabel(now: Date): string {
-  return now
-    .toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    .toUpperCase();
-}
 
 export default function CommandDeck() {
   const data = useDashboardData();
@@ -36,32 +36,12 @@ export default function CommandDeck() {
 
   const quotes = data.market?.quotes ?? [];
   const tickerItems = quotes.slice(0, 8);
-  const overdueCount = data.tasks.dueToday.filter((t) => {
-    const due = t.due?.date;
-    if (!due) return false;
-    const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : due.slice(0, 10);
-    return dateOnly < new Date().toISOString().slice(0, 10);
-  }).length;
 
-  const headline =
-    data.kingOfDay?.title ??
-    data.tasks.dueToday[0]?.content ??
-    "ALL CLEAR";
-  const headlineReason =
-    data.kingOfDay?.reason ??
-    (overdueCount > 0
-      ? `${overdueCount} overdue — fix the bleed first.`
-      : "ship something small.");
-
-  const next = data.calendar.find((e) => {
-    const startIso = e.start?.dateTime ?? e.start?.date ?? null;
-    if (!startIso) return false;
-    return new Date(startIso).getTime() > Date.now();
+  const { headline, reason: headlineReason } = deriveCommandHeadline({
+    kingOfDay: data.kingOfDay,
+    tasks: data.tasks.dueToday,
   });
-  const nextStart = next?.start?.dateTime ?? next?.start?.date ?? null;
-  const minsUntil = nextStart
-    ? Math.max(0, Math.round((new Date(nextStart).getTime() - Date.now()) / 60_000))
-    : null;
+  const { event: next, minsUntil } = pickNextEvent(data.calendar);
 
   return (
     <div className="fp-cmd-root">
@@ -161,14 +141,7 @@ export default function CommandDeck() {
                     <p>{next.location ?? "no room"}</p>
                   </div>
                 </div>
-                {data.calendar
-                  .filter((e) => {
-                    const s = e.start?.dateTime ?? e.start?.date ?? null;
-                    if (!s || e.id === next.id) return false;
-                    return new Date(s).getTime() > Date.now();
-                  })
-                  .slice(0, 4)
-                  .map((e) => {
+                {pickUpcomingAfter(data.calendar, next.id, Date.now(), 4).map((e) => {
                     const startIso = e.start?.dateTime ?? e.start?.date ?? null;
                     const time = startIso
                       ? new Date(startIso)
