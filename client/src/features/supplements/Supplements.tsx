@@ -50,6 +50,7 @@ import { SupplementsAdherenceHeatmap } from "./SupplementsAdherenceHeatmap";
 import { SupplementsInsightsPanel } from "./SupplementsInsightsPanel";
 import { SupplementsRestockCard } from "./SupplementsRestockCard";
 import { SupplementsExperiments } from "./SupplementsExperiments";
+import { SupplementsPricesPanel } from "./SupplementsPricesPanel";
 
 type HistoryWindow = 30 | 90 | 365;
 const HISTORY_WINDOW_OPTIONS: HistoryWindow[] = [30, 90, 365];
@@ -168,6 +169,10 @@ export default function Supplements() {
             definitions={activeDefinitions}
             todayLogs={todayLogs}
           />
+        </TabsContent>
+
+        <TabsContent value="prices" className="pt-4">
+          <SupplementsPricesPanel definitions={activeDefinitions} />
         </TabsContent>
 
         <TabsContent value="insights" className="pt-4 space-y-4">
