@@ -135,6 +135,16 @@ function LiveClockValue() {
   );
 }
 
+// Single consistent accent color for all calendar event days.
+// Module-scoped so the useMemo below keeps a stable reference and
+// eslint-plugin-react-hooks doesn't flag a missing dep.
+const DAY_COLOR = {
+  bg: "bg-emerald-50",
+  border: "border-emerald-200",
+  text: "text-emerald-900",
+  header: "bg-emerald-100",
+} as const;
+
 export default function Dashboard() {
   const { user, loading } = useAuth();
   const [, setLocation] = useLocation();
@@ -238,12 +248,13 @@ export default function Dashboard() {
     refetch: refetchIntegrations,
   } = trpc.integrations.list.useQuery(undefined, {
     enabled: !!user,
-    // Integrations change rarely (OAuth connect/disconnect). Mutations that
-    // change this data should invalidate the query explicitly; a 5-minute
-    // poll is a cheap safety net vs. the prior 20s hammering.
-    refetchInterval: 300_000,
-    refetchOnWindowFocus: false,
+    // Integrations only change via Settings mutations (shared React
+    // Query cache propagates refetch()) or OAuth redirect flows (full
+    // page reload). staleTime throttles routine focus-refetches; the
+    // 5-minute interval is a safety net for cross-tab OAuth completion.
     staleTime: 60_000,
+    refetchInterval: 300_000,
+    refetchOnWindowFocus: true,
   });
 
   const { data: preferences, refetch: refetchPreferences } = trpc.preferences.get.useQuery(undefined, {
@@ -363,7 +374,6 @@ export default function Dashboard() {
   // future events, and build the by-date buckets inline. Memoized so
   // consumers (useMemo deps, child props) get a stable reference across
   // unrelated dashboard re-renders.
-  const dayColor = { bg: "bg-emerald-50", border: "border-emerald-200", text: "text-emerald-900", header: "bg-emerald-100" };
   const { upcomingEvents, eventsByDate } = useMemo(() => {
     const upcoming: CalendarEvent[] = [];
     const buckets: Record<string, CalendarEvent[]> = {};
@@ -394,7 +404,7 @@ export default function Dashboard() {
       eventsByDate: keyOrder.map((dateKey) => ({
         date: dateKey,
         events: buckets[dateKey],
-        colors: dayColor,
+        colors: DAY_COLOR,
       })),
     };
   }, [calendarEvents]);

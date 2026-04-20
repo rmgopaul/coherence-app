@@ -24,17 +24,13 @@ export function registerSecurityMiddleware(app: Express) {
               // set style="..." for positioning/animation. Switching to a
               // nonce-based scheme is a larger effort tracked separately.
               styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-              // Drop the blanket "https:" and list the providers we
-              // actually load images from (avatar/thumbnail hosts).
-              imgSrc: [
-                "'self'",
-                "data:",
-                "blob:",
-                "https://*.googleusercontent.com",
-                "https://lh3.googleusercontent.com",
-                "https://ssl.gstatic.com",
-                "https://www.gstatic.com",
-              ],
+              // Leaving "https:" as a broad allowlist: the app loads
+              // OAuth avatars, Gmail thumbnails, Drive file icons, and
+              // user-uploaded S3 assets from a long tail of hosts.
+              // Narrowing this needs a full audit first; the baseUri /
+              // formAction / scriptSrcAttr additions below cover the
+              // genuinely risky CSP gaps without regressing image loads.
+              imgSrc: ["'self'", "data:", "blob:", "https:"],
               connectSrc: [
                 "'self'",
                 "https://api.openai.com",

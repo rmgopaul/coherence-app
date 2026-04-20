@@ -39,18 +39,40 @@ export default defineConfig(({ mode }) => ({
         // that don't touch them skip the download, and routes that do
         // only pay for the shared chunk once (browser cache hit across
         // lazy-loaded tabs).
+        //
+        // Matches are scoped to `/node_modules/<pkg>/` to avoid false
+        // positives from repo paths (e.g. `src/xlsx-helpers.ts`) or
+        // unrelated packages whose names happen to share a substring.
         manualChunks(id) {
-          if (!id.includes("node_modules")) return undefined;
-          if (id.includes("pdfjs-dist")) return "vendor-pdfjs";
-          if (id.includes("jspdf")) return "vendor-jspdf";
-          if (id.includes("xlsx")) return "vendor-xlsx";
-          if (id.includes("recharts")) return "vendor-recharts";
-          if (id.includes("@tiptap") || id.includes("prosemirror")) return "vendor-tiptap";
-          if (id.includes("react-markdown") || id.includes("remark") || id.includes("micromark") || id.includes("mdast"))
+          const marker = "/node_modules/";
+          const idx = id.lastIndexOf(marker);
+          if (idx === -1) return undefined;
+          const rest = id.slice(idx + marker.length);
+          // Handle scoped packages: `@scope/name/...`
+          const pkg = rest.startsWith("@")
+            ? rest.split("/").slice(0, 2).join("/")
+            : rest.split("/")[0];
+
+          if (pkg === "pdfjs-dist") return "vendor-pdfjs";
+          if (pkg === "jspdf" || pkg === "jspdf-autotable") return "vendor-jspdf";
+          if (pkg === "xlsx") return "vendor-xlsx";
+          if (pkg === "recharts") return "vendor-recharts";
+          if (pkg.startsWith("@tiptap/") || pkg.startsWith("prosemirror-"))
+            return "vendor-tiptap";
+          if (
+            pkg === "react-markdown" ||
+            pkg === "remark-gfm" ||
+            pkg.startsWith("remark-") ||
+            pkg.startsWith("rehype-") ||
+            pkg.startsWith("micromark") ||
+            pkg.startsWith("mdast-") ||
+            pkg.startsWith("hast-") ||
+            pkg === "unified"
+          )
             return "vendor-markdown";
-          if (id.includes("framer-motion")) return "vendor-framer";
-          if (id.includes("date-fns")) return "vendor-datefns";
-          if (id.includes("@radix-ui")) return "vendor-radix";
+          if (pkg === "framer-motion") return "vendor-framer";
+          if (pkg === "date-fns") return "vendor-datefns";
+          if (pkg.startsWith("@radix-ui/")) return "vendor-radix";
           return undefined;
         },
       },

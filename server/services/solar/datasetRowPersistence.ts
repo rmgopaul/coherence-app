@@ -517,6 +517,46 @@ export async function cloneDatasetBatchRows(
 }
 
 /**
+ * DELETE all typed rows for (datasetKey, batchId). Returns affected
+ * row count. Unknown datasetKey returns 0 without throwing — same
+ * contract as persistDatasetRows / cloneDatasetBatchRows.
+ *
+ * Used by the orphaned-batch cleanup paths in server/db/solarRecDatasets.ts
+ * (archiveSupersededImportBatchesOnStartup + the manual aggressive purge)
+ * to reclaim storage once a batch row has been marked "archived".
+ */
+const SRDS_TABLE_BY_DATASET_KEY: Record<string, string> = {
+  solarApplications: "srDsSolarApplications",
+  abpReport: "srDsAbpReport",
+  generationEntry: "srDsGenerationEntry",
+  accountSolarGeneration: "srDsAccountSolarGeneration",
+  contractedDate: "srDsContractedDate",
+  deliveryScheduleBase: "srDsDeliverySchedule",
+  transferHistory: "srDsTransferHistory",
+};
+
+export async function deleteDatasetBatchRows(
+  datasetKey: string,
+  batchId: string
+): Promise<number> {
+  const tableName = SRDS_TABLE_BY_DATASET_KEY[datasetKey];
+  if (!tableName) return 0;
+
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  // Table name comes from a hard-coded allowlist above — sql.raw is
+  // safe here. batchId is parameterized.
+  const result = await withDbRetry(`delete ${datasetKey} batch rows`, () =>
+    db.execute(
+      sql`DELETE FROM ${sql.raw(tableName)} WHERE batchId = ${batchId}`
+    )
+  );
+
+  return getDbExecuteAffectedRows(result);
+}
+
+/**
  * Build a stable string key for a row based on its dataset's dedupe
  * fields. Matches the buildRowKey() helper in datasetIngestion.ts
  * and the SQL <=> comparisons in the *RowExists checkers above.
