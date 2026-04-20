@@ -132,6 +132,13 @@ import {
   getDatasetColumnarSource,
 } from "@/solar-rec-dashboard/lib/lazyDataset";
 import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
+import { isSolarRecDebugEnabled } from "@/solar-rec-dashboard/lib/debugFlag";
+import {
+  HYDRATE_LOG_PREFIX_CLOUD,
+  HYDRATE_LOG_PREFIX_IDB,
+  toUserFacingHydrationMessage,
+  type PerDatasetErrorMap,
+} from "@/solar-rec-dashboard/lib/hydrationErrors";
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
 import ParityReportPanel from "@/solar-rec-dashboard/components/ParityReportPanel";
 import {
@@ -1301,18 +1308,6 @@ interface ProgressiveHydrationOptions {
   onError?: (key: DatasetKey, error: unknown) => void;
 }
 
-// Debug flag, window-scoped so it survives hot reloads without a
-// build step. Read per-mount; flipping it mid-session takes effect on
-// the next hydrate.
-//
-// Usage (devtools console):
-//   window.__solarRecDebug = true;   // enable timing logs
-//   window.__solarRecDebug = false;  // disable
-function isSolarRecDebugEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  return (window as unknown as { __solarRecDebug?: boolean }).__solarRecDebug === true;
-}
-
 async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
   const { priorityKeys, onBatch, onProgress, onError } = options;
   if (typeof window === "undefined") return;
@@ -1472,13 +1467,13 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
                 const ms = Math.round(performance.now() - t0);
                 const rowCount = dataset?.rows.length ?? 0;
                 // eslint-disable-next-line no-console
-                console.log(`[hydrate:idb] ${key} ${ms}ms (${rowCount} rows)`);
+                console.log(`${HYDRATE_LOG_PREFIX_IDB} ${key} ${ms}ms (${rowCount} rows)`);
               }
             } catch (error) {
               if (debug) {
                 const ms = Math.round(performance.now() - t0);
                 // eslint-disable-next-line no-console
-                console.warn(`[hydrate:idb] ${key} FAILED after ${ms}ms`, error);
+                console.warn(`${HYDRATE_LOG_PREFIX_IDB} ${key} FAILED after ${ms}ms`, error);
               }
               onError?.(key, error);
             }
@@ -1993,11 +1988,26 @@ export default function SolarRecDashboard() {
   );
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
-  // Per-dataset hydration failures. Keyed on DatasetKey, value is a
-  // short error message surfaced on the card so the user can tell
-  // "hydration failed" apart from "never uploaded." Cleared for a
-  // key when that key next hydrates successfully.
-  const [hydrationErrors, setHydrationErrors] = useState<Partial<Record<DatasetKey, string>>>({});
+  // Per-dataset hydration failures. Value is a user-facing message
+  // surfaced on the card so the user can tell "hydration failed"
+  // apart from "never uploaded." Cleared when a key next hydrates
+  // successfully, or when the dataset is explicitly removed.
+  const [hydrationErrors, setHydrationErrors] = useState<PerDatasetErrorMap>({});
+  const recordHydrationError = useCallback((key: DatasetKey, error: unknown) => {
+    setHydrationErrors((current) => ({
+      ...current,
+      [key]: toUserFacingHydrationMessage(error),
+    }));
+  }, []);
+  const clearHydrationErrorsForKeys = useCallback((keys: readonly DatasetKey[]) => {
+    if (keys.length === 0) return;
+    setHydrationErrors((current) => {
+      if (keys.every((key) => !current[key])) return current;
+      const next = { ...current };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+  }, []);
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const uploadQueueTailRef = useRef<Promise<void>>(Promise.resolve());
   const activeUploadTaskRef = useRef(false);
@@ -4502,6 +4512,32 @@ export default function SolarRecDashboard() {
     remoteStateHydratedRef.current = remoteStateHydrated;
   }, [remoteStateHydrated]);
 
+  // Prune hydration errors on set → unset transitions — i.e., the
+  // user explicitly cleared a dataset (Remove button / clearDataset)
+  // that was previously loaded. Stale "Hydration failed" text would
+  // otherwise sit on an empty slot after the manual remove.
+  //
+  // Crucially we do NOT prune on "still empty" keys, because a key
+  // can legitimately have `hydrationErrors[key]` set while
+  // `datasets[key]` is undefined — that's the state immediately
+  // after onError fires for a dataset that never managed to hydrate.
+  // Only the transition matters.
+  const previousDatasetPresenceRef = useRef<Partial<Record<DatasetKey, boolean>>>({});
+  useEffect(() => {
+    const previous = previousDatasetPresenceRef.current;
+    const removed: DatasetKey[] = [];
+    const nextPresence: Partial<Record<DatasetKey, boolean>> = {};
+    (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).forEach((key) => {
+      const isPresent = Boolean(datasets[key]);
+      nextPresence[key] = isPresent;
+      if (previous[key] && !isPresent) removed.push(key);
+    });
+    previousDatasetPresenceRef.current = nextPresence;
+    if (removed.length > 0) {
+      clearHydrationErrorsForKeys(removed);
+    }
+  }, [datasets, clearHydrationErrorsForKeys]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -4533,26 +4569,13 @@ export default function SolarRecDashboard() {
                 }
                 return changed ? next : current;
               });
-              // Clear any prior hydration error for keys that just
-              // landed successfully — this covers the "retry
-              // recovered" case.
-              setHydrationErrors((current) => {
-                if (landedKeys.every((key) => !current[key])) return current;
-                const next = { ...current };
-                for (const key of landedKeys) delete next[key];
-                return next;
-              });
+              clearHydrationErrorsForKeys(landedKeys);
             },
             onProgress: (loaded, total) => {
               if (cancelled) return;
               setHydrationProgress({ loaded, total });
             },
-            onError: (key, error) => {
-              if (cancelled) return;
-              const message =
-                error instanceof Error ? error.message : "Failed to hydrate from local cache.";
-              setHydrationErrors((current) => ({ ...current, [key]: message }));
-            },
+            onError: recordHydrationError,
           }),
           loadLogsFromStorage(),
         ]);
@@ -4606,18 +4629,9 @@ export default function SolarRecDashboard() {
             }
             return changed ? next : current;
           });
-          setHydrationErrors((current) => {
-            if (landedKeys.every((key) => !current[key])) return current;
-            const next = { ...current };
-            for (const key of landedKeys) delete next[key];
-            return next;
-          });
+          clearHydrationErrorsForKeys(landedKeys);
         },
-        onError: (key, error) => {
-          const message =
-            error instanceof Error ? error.message : "Failed to hydrate from local cache.";
-          setHydrationErrors((current) => ({ ...current, [key]: message }));
-        },
+        onError: recordHydrationError,
         onProgress: (loaded, total) => {
           setLoadAllProgress({ loaded, total });
         },
@@ -4745,7 +4759,7 @@ export default function SolarRecDashboard() {
               if (debug) {
                 const ms = Math.round(performance.now() - t0);
                 // eslint-disable-next-line no-console
-                console.log(`[hydrate:cloud] ${rawKey} ${ms}ms (no payload)`);
+                console.log(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (no payload)`);
               }
               return;
             }
@@ -4857,7 +4871,7 @@ export default function SolarRecDashboard() {
               const ms = Math.round(performance.now() - t0);
               // eslint-disable-next-line no-console
               console.log(
-                `[hydrate:cloud] ${rawKey} ${ms}ms (${deserializedDataset.rows.length} rows)`,
+                `${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (${deserializedDataset.rows.length} rows)`,
               );
             }
           } catch (error) {
@@ -4867,14 +4881,10 @@ export default function SolarRecDashboard() {
             if (debug) {
               const ms = Math.round(performance.now() - t0);
               // eslint-disable-next-line no-console
-              console.warn(`[hydrate:cloud] ${rawKey} FAILED after ${ms}ms`, error);
+              console.warn(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} FAILED after ${ms}ms`, error);
             }
             if (!cancelled) {
-              setHydrationErrors((current) => ({
-                ...current,
-                [rawKey]:
-                  error instanceof Error ? error.message : "Failed to hydrate from cloud.",
-              }));
+              recordHydrationError(rawKey, error);
             }
           }
         };
@@ -5028,6 +5038,14 @@ export default function SolarRecDashboard() {
               });
               return next;
             });
+            // Parallels the IDB path's clear-on-success: a dataset
+            // that just successfully hydrated from cloud should lose
+            // any prior "Hydration failed" badge.
+            clearHydrationErrorsForKeys(
+              (Object.keys(loadedDatasets) as DatasetKey[]).filter(
+                (key) => loadedDatasets[key] !== undefined,
+              ),
+            );
           }
           remoteDatasetSignatureRef.current = loadedSignatures;
           remoteDatasetChunkKeysRef.current = loadedChunkKeys;
