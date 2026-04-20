@@ -168,10 +168,13 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                 size="sm"
                 onClick={() => {
                   const csv = buildCsv(
-                    ["tracking_system_ref_id"],
-                    deliveryTrackerData.transfersMissingObligation.map((id) => ({
-                      tracking_system_ref_id: id,
-                    })),
+                    ["tracking_system_ref_id", "transfer_count"],
+                    deliveryTrackerData.transfersMissingObligation.map(
+                      ({ trackingId, transferCount }) => ({
+                        tracking_system_ref_id: trackingId,
+                        transfer_count: String(transferCount),
+                      }),
+                    ),
                   );
                   triggerCsvDownload(
                     `delivery-tracker-missing-schedule-b-${timestampForCsvFileName()}.csv`,
@@ -189,14 +192,22 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                 <TableHeader>
                   <TableRow>
                     <TableHead>Tracking ID</TableHead>
+                    <TableHead className="text-right">Transfers</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {deliveryTrackerData.transfersMissingObligation.slice(0, 20).map((id) => (
-                    <TableRow key={id}>
-                      <TableCell className="font-mono text-xs">{id}</TableCell>
-                    </TableRow>
-                  ))}
+                  {deliveryTrackerData.transfersMissingObligation
+                    .slice(0, 20)
+                    .map(({ trackingId, transferCount }) => (
+                      <TableRow key={trackingId}>
+                        <TableCell className="font-mono text-xs">
+                          {trackingId}
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs">
+                          {formatNumber(transferCount)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
                 </TableBody>
               </Table>
             </div>

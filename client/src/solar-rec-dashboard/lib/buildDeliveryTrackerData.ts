@@ -58,10 +58,14 @@ export type DeliveryTrackerData = {
    * Distinct tracking IDs that have at least one transfer in the provided
    * transfer history rows but NO matching Schedule B obligation. These are
    * systems the user still needs to scrape Schedule B PDFs for in order
-   * to see obligations in the tracker. Populated only when transfer
-   * history exists.
+   * to see obligations in the tracker. `transferCount` is the number of
+   * utility transfer rows (after the direction/qty filter) that rolled up
+   * to each tracking ID. Populated only when transfer history exists.
    */
-  transfersMissingObligation: string[];
+  transfersMissingObligation: Array<{
+    trackingId: string;
+    transferCount: number;
+  }>;
 };
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
@@ -154,9 +158,10 @@ export function buildDeliveryTrackerData(input: {
   let totalTransfers = 0;
   let unmatchedTransfers = 0;
   // Tracking IDs that have at least one utility transfer but no matching
-  // Schedule B obligation. Surfaced in the UI so the user can see which
-  // Schedule B PDFs still need scraping.
-  const transfersMissingObligationSet = new Set<string>();
+  // Schedule B obligation, mapped to the count of such transfers.
+  // Surfaced in the UI so the user can see which Schedule B PDFs still
+  // need scraping and how much transfer volume each gap represents.
+  const transfersMissingObligationCounts = new Map<string, number>();
 
   for (const row of transferRows) {
     const unitId = clean(row["Unit ID"]);
@@ -189,7 +194,10 @@ export function buildDeliveryTrackerData(input: {
     const schedule = systemSchedules.get(unitId.toLowerCase());
     if (!schedule) {
       unmatchedTransfers++;
-      transfersMissingObligationSet.add(unitId);
+      transfersMissingObligationCounts.set(
+        unitId,
+        (transfersMissingObligationCounts.get(unitId) ?? 0) + 1,
+      );
       continue;
     }
 
@@ -288,6 +296,10 @@ export function buildDeliveryTrackerData(input: {
     scheduleIdSample,
     transferIdSample,
     scheduleCount: systemSchedules.size,
-    transfersMissingObligation: Array.from(transfersMissingObligationSet).sort(),
+    transfersMissingObligation: Array.from(
+      transfersMissingObligationCounts.entries(),
+    )
+      .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
+      .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
   };
 }

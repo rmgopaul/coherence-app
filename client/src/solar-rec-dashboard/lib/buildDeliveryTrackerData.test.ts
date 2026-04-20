@@ -132,7 +132,10 @@ describe("buildDeliveryTrackerData", () => {
         transferRow({ "Unit ID": "NON999" }), // duplicate, should dedupe
       ],
     });
-    expect(data.transfersMissingObligation).toEqual(["NON888", "NON999"]);
+    expect(data.transfersMissingObligation).toEqual([
+      { trackingId: "NON888", transferCount: 1 },
+      { trackingId: "NON999", transferCount: 2 },
+    ]);
   });
 
   it("does not list matched systems in transfersMissingObligation", () => {
