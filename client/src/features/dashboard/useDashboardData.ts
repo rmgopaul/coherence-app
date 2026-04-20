@@ -112,7 +112,10 @@ export function useDashboardData() {
     { count: 6 },
     { refetchInterval: 10 * ONE_MIN, staleTime: 5 * ONE_MIN }
   );
-  const news = newsData ?? [];
+  // Fallback payload preserves the `{ items, reason }` shape when the
+  // query is still loading or errored so NewsCell doesn't have to
+  // discriminate between "undefined" and "reason: fetch-failed".
+  const news = newsData ?? { items: [], reason: "fetch-failed" as const };
 
   return {
     user,

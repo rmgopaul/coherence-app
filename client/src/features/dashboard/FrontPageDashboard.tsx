@@ -72,6 +72,11 @@ export default function FrontPageDashboard() {
         kingOfDay={data.kingOfDay}
         onUnpin={() => unpinKing.mutate({ dateKey: data.todayKey })}
         onRequestPin={() => setPinDialogOpen(true)}
+        // Regenerate = unpin (deletes the persisted row) + refetch.
+        // `ensureKing` re-runs the selector end-to-end, which hits
+        // the AI layer again when SMART_KING_AI_ENABLED.
+        onRegenerate={() => unpinKing.mutate({ dateKey: data.todayKey })}
+        regenerating={unpinKing.isPending}
       />
 
       <PinDialog

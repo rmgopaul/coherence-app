@@ -59,6 +59,16 @@ export interface KingOfTheDayHeroProps {
    * Call site opens the pin dialog.
    */
   onRequestPin?: () => void;
+  /**
+   * Fires when the user clicks the REGENERATE affordance. Only shown
+   * for auto/ai picks — manual pins use the × on the PINNED badge
+   * instead. Call site should unpin + refetch to re-run the selector.
+   */
+  onRegenerate?: () => void;
+  /**
+   * When true, the REGENERATE button is disabled (mutation in flight).
+   */
+  regenerating?: boolean;
   className?: string;
 }
 
@@ -221,6 +231,8 @@ export function KingOfTheDayHero({
   kingOfDay,
   onUnpin,
   onRequestPin,
+  onRegenerate,
+  regenerating = false,
   className,
 }: KingOfTheDayHeroProps) {
   const now = useNow(60_000);
@@ -237,6 +249,13 @@ export function KingOfTheDayHero({
     return deriveHeadline(dailyBrief, todayTasks);
   }, [kingOfDay, dailyBrief, todayTasks]);
   const isPinned = kingOfDay?.source === "manual";
+  const source = kingOfDay?.source ?? null;
+  // Regenerate only makes sense for picks the selector produced
+  // (auto = rules, ai = LLM). A manual pin already has the × on the
+  // PINNED badge for the same "clear it" effect.
+  const showRegenerate = Boolean(
+    onRegenerate && (source === "auto" || source === "ai")
+  );
   const { h: hoursLeft, m: minutesLeft } = hoursLeftInDay(now);
   const greeting = greetingForHour(now.getHours());
 
@@ -324,6 +343,23 @@ export function KingOfTheDayHero({
                 title="Unpin"
               >
                 ×
+              </button>
+            </span>
+          )}
+          {showRegenerate && (
+            <span className="flex items-center">
+              {source === "ai" && (
+                <span className="kotd-regenerate__src">AI PICK</span>
+              )}
+              <button
+                type="button"
+                className="kotd-regenerate"
+                onClick={onRegenerate}
+                disabled={regenerating}
+                aria-label="Regenerate today's headline"
+                title="Re-run the selector"
+              >
+                {regenerating ? "REGENERATING…" : "↻ REGENERATE"}
               </button>
             </span>
           )}

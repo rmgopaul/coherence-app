@@ -130,28 +130,46 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
       </WireCard>
     );
   }
+  // Split gainers / losers and sort each bucket by magnitude so the
+  // biggest movers land at the top and bottom of the card. Flat
+  // changes (exact 0%) sort with the gainers (neutral bias toward
+  // "up"). A thin rule between the groups reads as a newspaper
+  // table divider — clearer than a single sorted list.
+  const gainers = quotes
+    .filter((q) => q.changePercent >= 0)
+    .slice()
+    .sort((a, b) => b.changePercent - a.changePercent);
+  const losers = quotes
+    .filter((q) => q.changePercent < 0)
+    .slice()
+    .sort((a, b) => a.changePercent - b.changePercent);
+
   // Show every configured ticker (stocks + crypto) — the server already
   // combines both into `quotes`. Prior cap of 4 was hiding configured
   // symbols.
+  const renderRow = (q: (typeof quotes)[number]) => {
+    const changeClass =
+      q.changePercent >= 0 ? "wire-ticker__up" : "wire-ticker__down";
+    return (
+      <li key={q.symbol} className="wire-ticker__row">
+        <span className="wire-ticker__sym mono-label">{q.symbol}</span>
+        <span className="wire-ticker__px">{formatMarketPrice(q.price)}</span>
+        <span className={`wire-ticker__pct mono-label ${changeClass}`}>
+          {q.changePercent >= 0 ? "▲" : "▼"}{" "}
+          {Math.abs(q.changePercent).toFixed(2)}%
+        </span>
+      </li>
+    );
+  };
+
   return (
     <WireCard label="MARKETS" updated={nowShort()}>
       <ol className="wire-ticker">
-        {quotes.map((q) => {
-          const changeClass =
-            q.changePercent >= 0 ? "wire-ticker__up" : "wire-ticker__down";
-          return (
-            <li key={q.symbol} className="wire-ticker__row">
-              <span className="wire-ticker__sym mono-label">{q.symbol}</span>
-              <span className="wire-ticker__px">
-                {formatMarketPrice(q.price)}
-              </span>
-              <span className={`wire-ticker__pct mono-label ${changeClass}`}>
-                {q.changePercent >= 0 ? "▲" : "▼"}{" "}
-                {Math.abs(q.changePercent).toFixed(2)}%
-              </span>
-            </li>
-          );
-        })}
+        {gainers.map(renderRow)}
+        {gainers.length > 0 && losers.length > 0 && (
+          <li className="wire-ticker__divider" aria-hidden="true" />
+        )}
+        {losers.map(renderRow)}
       </ol>
     </WireCard>
   );
@@ -216,19 +234,75 @@ function relativeTimeLabel(iso?: string | null): string {
 }
 
 function NewsCell({ news }: { news: DashboardData["news"] }) {
-  if (!Array.isArray(news) || news.length === 0) {
+  const items = news?.items ?? [];
+  const reason = news?.reason ?? "fetch-failed";
+
+  // Reason distinguishes five empty-state cases so the copy matches the
+  // underlying cause — "slow news morning" reads differently from
+  // "fetch failed". Config hints (the mono line) only show for states
+  // the operator can act on.
+  if (items.length === 0) {
+    const { headline, hint, label } = (() => {
+      switch (reason) {
+        case "off":
+          return {
+            label: "NEWS",
+            headline: "news feed disabled.",
+            hint: "NEWS_FEED_MODE=off",
+          };
+        case "no-api-key":
+          return {
+            label: "NEWS · NEWSAPI",
+            headline: "no key configured.",
+            hint: "SET NEWSAPI_KEY IN PROD ENV",
+          };
+        case "upstream-401":
+          return {
+            label: "NEWS · NEWSAPI",
+            headline: "key rejected.",
+            hint: "401 UNAUTHORIZED · ROTATE KEY",
+          };
+        case "upstream-429":
+          return {
+            label: "NEWS · NEWSAPI",
+            headline: "rate limited.",
+            hint: "429 · RETRY IN 10m",
+          };
+        case "upstream-timeout":
+          return {
+            label: "NEWS · AP",
+            headline: "feed timed out.",
+            hint: "UPSTREAM TIMEOUT · RETRY 10m",
+          };
+        case "fetch-failed":
+          return {
+            label: "NEWS · AP",
+            headline: "wire went dark.",
+            hint: "FETCH FAILED · RETRY 10m",
+          };
+        case "no-items":
+        default:
+          // AP RSS legitimately returned zero items — not an error,
+          // just a quiet news cycle. Editorial copy fits the paper.
+          return {
+            label: "NEWS · AP",
+            headline: "slow news morning.",
+            hint: null,
+          };
+      }
+    })();
     return (
-      <WireCard label="NEWS · AP" tone="offline">
-        <p className="fp-empty">no feed configured.</p>
-        <p className="mono-label wire-card__hint">
-          NEWS_FEED_MODE=ap-rss · PHASE D
-        </p>
+      <WireCard label={label} tone="offline">
+        <p className="fp-empty">{headline}</p>
+        {hint && <p className="mono-label wire-card__hint">{hint}</p>}
       </WireCard>
     );
   }
-  const top = news.slice(0, 4);
+
+  const top = items.slice(0, 4);
+  const sourceLabel = top[0]?.src?.toUpperCase() === "AP" ? "AP" : "NEWS";
   return (
-    <WireCard label="NEWS · AP" updated={nowShort()}>
+    <WireCard label={`NEWS · ${sourceLabel}`} updated={nowShort()}>
       <ol className="wire-newsfeed">
         {top.map((item) => (
           <li key={item.url} className="wire-newsfeed__row">

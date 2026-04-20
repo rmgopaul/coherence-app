@@ -4,9 +4,10 @@
  * Default source: AP's public RSS feed (free, unmetered). Optional
  * NewsAPI provider behind `NEWS_FEED_MODE=newsapi` + `NEWSAPI_KEY`.
  *
- * In-process 10-minute cache. Returns an empty array when the feed
- * is turned off or upstream fails — the client renders "NEWS · NO
- * FEED CONFIGURED" in those cases.
+ * In-process 10-minute cache. Always returns a `NewsPayload` with
+ * `items` + a `reason` discriminator — the client branches on the
+ * reason to pick editorial empty-state copy ("slow news morning"
+ * vs "wire went dark" vs "SET NEWSAPI_KEY").
  *
  * Env vars:
  *   NEWS_FEED_MODE = 'ap-rss' | 'newsapi' | 'off'   (default: 'ap-rss')
@@ -28,7 +29,36 @@ export interface NewsItem {
   publishedAt: string;
 }
 
-let cachedItems: { at: number; items: NewsItem[] } | null = null;
+/**
+ * Reason codes surfaced alongside the headline list so the client can
+ * distinguish "feed disabled" from "fetch failed" from "feed returned
+ * zero items" — each gets its own editorial empty-state copy.
+ *
+ *   ok              — items present, no problem
+ *   off             — NEWS_FEED_MODE=off (operator turned it off)
+ *   no-api-key      — mode=newsapi but NEWSAPI_KEY not set
+ *   no-items        — provider responded 200 but returned no articles
+ *   fetch-failed    — network/parse error or upstream non-2xx
+ *   upstream-401    — 401 from NewsAPI (key rejected)
+ *   upstream-429    — 429 rate limit
+ *   upstream-timeout — AbortSignal.timeout tripped
+ */
+export type NewsFetchReason =
+  | "ok"
+  | "off"
+  | "no-api-key"
+  | "no-items"
+  | "fetch-failed"
+  | "upstream-401"
+  | "upstream-429"
+  | "upstream-timeout";
+
+export interface NewsPayload {
+  items: NewsItem[];
+  reason: NewsFetchReason;
+}
+
+let cachedPayload: { at: number; payload: NewsPayload } | null = null;
 
 function resolveMode(): "ap-rss" | "newsapi" | "off" {
   const raw = (process.env.NEWS_FEED_MODE ?? "").trim().toLowerCase();
@@ -82,7 +112,13 @@ export function parseApRss(xml: string): NewsItem[] {
 /*  Provider fetchers                                                  */
 /* ------------------------------------------------------------------ */
 
-async function fetchApRss(): Promise<NewsItem[]> {
+function isTimeoutError(err: unknown): boolean {
+  if (err instanceof Error && err.name === "TimeoutError") return true;
+  if (err instanceof DOMException && err.name === "TimeoutError") return true;
+  return false;
+}
+
+async function fetchApRss(): Promise<NewsPayload> {
   try {
     const response = await fetch(AP_RSS_URL, {
       signal: AbortSignal.timeout(6_000),
@@ -94,19 +130,26 @@ async function fetchApRss(): Promise<NewsItem[]> {
       console.warn(
         `[news] AP RSS responded ${response.status} ${response.statusText}`
       );
-      return [];
+      return { items: [], reason: "fetch-failed" };
     }
     const xml = await response.text();
-    return parseApRss(xml).slice(0, 20);
+    const items = parseApRss(xml).slice(0, 20);
+    return {
+      items,
+      reason: items.length === 0 ? "no-items" : "ok",
+    };
   } catch (err) {
     console.warn("[news] AP RSS fetch failed:", err);
-    return [];
+    if (isTimeoutError(err)) {
+      return { items: [], reason: "upstream-timeout" };
+    }
+    return { items: [], reason: "fetch-failed" };
   }
 }
 
-async function fetchNewsApi(): Promise<NewsItem[]> {
+async function fetchNewsApi(): Promise<NewsPayload> {
   const key = process.env.NEWSAPI_KEY?.trim();
-  if (!key) return [];
+  if (!key) return { items: [], reason: "no-api-key" };
   try {
     const url = `${NEWS_API_URL}?country=us&pageSize=20&apiKey=${encodeURIComponent(key)}`;
     const response = await fetch(url, { signal: AbortSignal.timeout(6_000) });
@@ -114,7 +157,13 @@ async function fetchNewsApi(): Promise<NewsItem[]> {
       console.warn(
         `[news] NewsAPI responded ${response.status} ${response.statusText}`
       );
-      return [];
+      if (response.status === 401) {
+        return { items: [], reason: "upstream-401" };
+      }
+      if (response.status === 429) {
+        return { items: [], reason: "upstream-429" };
+      }
+      return { items: [], reason: "fetch-failed" };
     }
     const json = (await response.json()) as {
       articles?: Array<{
@@ -124,7 +173,7 @@ async function fetchNewsApi(): Promise<NewsItem[]> {
         publishedAt?: string;
       }>;
     };
-    return (json.articles ?? [])
+    const items = (json.articles ?? [])
       .filter((a) => a.title && a.url)
       .map((a) => ({
         src: a.source?.name ?? "News",
@@ -132,9 +181,16 @@ async function fetchNewsApi(): Promise<NewsItem[]> {
         url: a.url ?? "",
         publishedAt: a.publishedAt ?? "",
       }));
+    return {
+      items,
+      reason: items.length === 0 ? "no-items" : "ok",
+    };
   } catch (err) {
     console.warn("[news] NewsAPI fetch failed:", err);
-    return [];
+    if (isTimeoutError(err)) {
+      return { items: [], reason: "upstream-timeout" };
+    }
+    return { items: [], reason: "fetch-failed" };
   }
 }
 
@@ -151,20 +207,28 @@ export const newsRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => {
+    .query(async ({ input }): Promise<NewsPayload> => {
       const count = input?.count ?? 6;
       const mode = resolveMode();
-      if (mode === "off") return [] as NewsItem[];
-
-      if (cachedItems && Date.now() - cachedItems.at < CACHE_MS) {
-        return cachedItems.items.slice(0, count);
+      if (mode === "off") {
+        return { items: [], reason: "off" };
       }
 
-      const items =
+      if (cachedPayload && Date.now() - cachedPayload.at < CACHE_MS) {
+        return {
+          items: cachedPayload.payload.items.slice(0, count),
+          reason: cachedPayload.payload.reason,
+        };
+      }
+
+      const payload =
         mode === "newsapi" ? await fetchNewsApi() : await fetchApRss();
 
-      cachedItems = { at: Date.now(), items };
-      return items.slice(0, count);
+      cachedPayload = { at: Date.now(), payload };
+      return {
+        items: payload.items.slice(0, count),
+        reason: payload.reason,
+      };
     }),
 });
 

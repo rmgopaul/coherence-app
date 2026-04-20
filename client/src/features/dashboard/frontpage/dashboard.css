@@ -432,6 +432,17 @@ a.wire-card--link:focus-visible {
   color: var(--fp-red);
 }
 
+/* Thin horizontal rule splitting gainers (above) from losers (below).
+   Heavier than the intra-row 1px borders so the split reads as a
+   structural divider, not just another row line. */
+.wire-ticker__divider {
+  height: 0;
+  margin: 6px 0;
+  border: 0;
+  border-top: 2px solid var(--fp-ink);
+  list-style: none;
+}
+
 /* Denominator in stat ratios (LOGGED 2/5, TODAY 3/4) — smaller than
    the primary number so the numerator reads as the headline. */
 .wire-stat__denom {
