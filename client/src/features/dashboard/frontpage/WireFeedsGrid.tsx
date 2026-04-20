@@ -159,12 +159,25 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
 
 function WeatherCell({ weather }: { weather: DashboardData["weather"] }) {
   if (!weather || weather.offline || typeof weather.tempF !== "number") {
+    const reason = (weather && "reason" in weather ? (weather as { reason?: string | null }).reason : null) ?? null;
+    const hint =
+      reason === "no-api-key"
+        ? "SET OPENWEATHER_API_KEY IN PROD ENV"
+        : reason === "upstream-401"
+          ? "KEY REJECTED · 401 UNAUTHORIZED"
+          : reason === "upstream-429"
+            ? "RATE LIMITED · 429 · RETRY SOON"
+            : reason?.startsWith("upstream-")
+              ? `OPENWEATHERMAP ${reason.slice(9)}`
+              : reason === "upstream-timeout"
+                ? "OPENWEATHERMAP · TIMEOUT"
+                : reason === "fetch-failed"
+                  ? "NETWORK · FETCH FAILED"
+                  : "ADD OPENWEATHER_API_KEY · PHASE D";
     return (
       <WireCard label="WEATHER" tone="offline">
         <p className="fp-empty">no feed configured.</p>
-        <p className="mono-label wire-card__hint">
-          ADD OPENWEATHERMAP_API_KEY · PHASE D
-        </p>
+        <p className="mono-label wire-card__hint">{hint}</p>
       </WireCard>
     );
   }

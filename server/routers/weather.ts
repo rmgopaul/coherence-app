@@ -31,6 +31,11 @@ interface WeatherPayload {
   description?: string | null;
   icon?: string | null;
   fetchedAt: string;
+  /** Diagnostic for operators — "no-api-key", "upstream-401",
+   *  "upstream-error", "upstream-timeout", "fetch-failed". Only set
+   *  when offline is true. Client displays it in the hint line so
+   *  misconfiguration is easy to spot. */
+  reason?: string;
 }
 
 const cache = new Map<
@@ -52,10 +57,11 @@ function defaultLocation() {
   };
 }
 
-function offlinePayload(label: string): WeatherPayload {
+function offlinePayload(label: string, reason?: string): WeatherPayload {
   return {
     offline: true,
     label,
+    reason,
     fetchedAt: new Date().toISOString(),
   };
 }
@@ -84,7 +90,7 @@ export const weatherRouter = router({
 
       const apiKey = process.env.OPENWEATHER_API_KEY?.trim();
       if (!apiKey) {
-        return offlinePayload(label);
+        return offlinePayload(label, "no-api-key");
       }
 
       const key = cacheKey(lat, lng);
@@ -105,7 +111,13 @@ export const weatherRouter = router({
           console.warn(
             `[weather] OpenWeatherMap responded ${response.status} ${response.statusText}`
           );
-          return offlinePayload(label);
+          const reason =
+            response.status === 401
+              ? "upstream-401"
+              : response.status === 429
+                ? "upstream-429"
+                : `upstream-${response.status}`;
+          return offlinePayload(label, reason);
         }
         const json = (await response.json()) as {
           current?: {
@@ -153,9 +165,29 @@ export const weatherRouter = router({
         return payload;
       } catch (err) {
         console.warn("[weather] fetch failed:", err);
-        return offlinePayload(label);
+        const reason =
+          err instanceof Error && err.name === "TimeoutError"
+            ? "upstream-timeout"
+            : "fetch-failed";
+        return offlinePayload(label, reason);
       }
     }),
+
+  /**
+   * Operator diagnostic — confirms whether the server sees the env
+   * var, without ever echoing its value. Safe to call in prod; it
+   * returns booleans + lengths, never the secret itself.
+   */
+  config: protectedProcedure.query(() => {
+    const key = process.env.OPENWEATHER_API_KEY?.trim() ?? "";
+    return {
+      openweatherKeyPresent: key.length > 0,
+      openweatherKeyLength: key.length,
+      defaultLat: process.env.DEFAULT_WEATHER_LAT ?? null,
+      defaultLng: process.env.DEFAULT_WEATHER_LNG ?? null,
+      defaultLabel: process.env.DEFAULT_WEATHER_LABEL ?? null,
+    };
+  }),
 });
 
 export type WeatherResponse = WeatherPayload;
