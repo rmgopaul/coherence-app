@@ -105,6 +105,7 @@ import {
   findDockItemByCanonicalUrl,
   insertDockItem,
   listDockItems,
+  updateDockItemCanvas,
 } from "../db/dock";
 import { canonicalizeUrl } from "@shared/dropdock.helpers";
 
@@ -2355,6 +2356,11 @@ export const dockRouter = router({
       meta: parseDockMeta(row.meta),
       pinnedAt: row.pinnedAt ? row.pinnedAt.toISOString() : null,
       createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+      // Canvas (Phase F8) — null when the chip isn't placed on the board.
+      x: (row as { x?: number | null }).x ?? null,
+      y: (row as { y?: number | null }).y ?? null,
+      tilt: (row as { tilt?: number | null }).tilt ?? null,
+      color: (row as { color?: string | null }).color ?? null,
     }));
   }),
 
@@ -2425,6 +2431,29 @@ export const dockRouter = router({
     await clearDockItemsForUser(ctx.user.id);
     return { ok: true as const };
   }),
+
+  // ---- Phase F8 — canvas positioning ----------------------------------
+  // `move` updates an existing chip's x/y/tilt/color; pass null to clear.
+  // Sending `x:null,y:null` removes the chip from the canvas board while
+  // preserving the chip in the dock.
+  move: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1).max(64),
+        x: z.number().int().min(-2000).max(20000).nullable().optional(),
+        y: z.number().int().min(-2000).max(20000).nullable().optional(),
+        tilt: z.number().int().min(-15).max(15).nullable().optional(),
+        color: z
+          .enum(["paper", "yellow", "red", "blue", "black"])
+          .nullable()
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { id, ...patch } = input;
+      await updateDockItemCanvas(ctx.user.id, id, patch);
+      return { ok: true as const };
+    }),
 });
 
 function parseDockMeta(raw: string | null | undefined): Record<string, string> {

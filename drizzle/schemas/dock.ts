@@ -20,6 +20,7 @@ import {
   timestamp,
   varchar,
   int,
+  smallint,
   uniqueIndex,
   index,
 } from "drizzle-orm/mysql-core";
@@ -40,6 +41,13 @@ export const dockItems = mysqlTable(
     // to re-parse the URL.
     meta: text("meta"),
     pinnedAt: timestamp("pinnedAt"),
+    // Canvas (Phase F8) — when set, the chip is also rendered on
+    // /dashboard/canvas at this absolute position. Null = chip only,
+    // not on the canvas board.
+    x: int("x"),
+    y: int("y"),
+    tilt: smallint("tilt"),
+    color: varchar("color", { length: 16 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

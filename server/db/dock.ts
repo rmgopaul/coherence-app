@@ -72,3 +72,36 @@ export async function clearDockItemsForUser(userId: number): Promise<void> {
     await db.delete(dockItems).where(eq(dockItems.userId, userId));
   });
 }
+
+/**
+ * Update a dock item's canvas position. Pass `null` for any field to
+ * clear it (e.g. `{ x: null, y: null, tilt: null }` removes the chip
+ * from the canvas board entirely).
+ */
+export async function updateDockItemCanvas(
+  userId: number,
+  id: string,
+  patch: {
+    x?: number | null;
+    y?: number | null;
+    tilt?: number | null;
+    color?: string | null;
+  }
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  // Only include fields the caller named so we don't blast existing
+  // values back to null on a partial move.
+  const update: Record<string, unknown> = {};
+  if ("x" in patch) update.x = patch.x;
+  if ("y" in patch) update.y = patch.y;
+  if ("tilt" in patch) update.tilt = patch.tilt;
+  if ("color" in patch) update.color = patch.color;
+  if (Object.keys(update).length === 0) return;
+  await withDbRetry("update dock item canvas", async () => {
+    await db
+      .update(dockItems)
+      .set(update)
+      .where(and(eq(dockItems.userId, userId), eq(dockItems.id, id)));
+  });
+}

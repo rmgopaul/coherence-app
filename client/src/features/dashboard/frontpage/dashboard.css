@@ -1986,3 +1986,229 @@ a.wire-card--link:focus-visible {
   color: var(--fp-ink-3);
   text-align: center;
 }
+
+/* --- Canvas (D4 view, Phase F8) ---
+
+   /dashboard/canvas — sticky-note board over a graph-paper background.
+   Notes are absolutely positioned within .fp-canvas__board and dragged
+   with the mouse; commits happen on drop via trpc.dock.move. */
+
+.fp-canvas-root {
+  background: var(--fp-paper);
+}
+
+.fp-canvas {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 32px 16px 48px;
+}
+
+.fp-canvas__head h1 {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: clamp(36px, 4.5vw, 48px);
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+}
+.fp-canvas__head-em {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--fp-red);
+}
+.fp-canvas__sub {
+  margin: 0 0 20px;
+  color: var(--fp-ink-3);
+}
+
+.fp-canvas__board {
+  position: relative;
+  min-height: 720px;
+  border: 2px solid var(--fp-rule);
+  background:
+    linear-gradient(0deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px) 0 0/24px 24px,
+    linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px) 0 0/24px 24px,
+    var(--fp-paper);
+  overflow: hidden;
+}
+.fp-canvas__empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* --- Sticky note --- */
+
+.fp-sticky {
+  position: absolute;
+  width: 260px;
+  background: var(--fp-paper);
+  border: 2px solid var(--fp-rule);
+  box-shadow: 4px 5px 0 var(--fp-rule);
+  padding: 14px;
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow 100ms ease;
+}
+.fp-sticky:hover {
+  box-shadow: 5px 6px 0 var(--fp-rule);
+}
+.fp-sticky--dragging {
+  cursor: grabbing;
+  box-shadow: 8px 9px 0 var(--fp-rule);
+  z-index: 10;
+}
+
+.fp-sticky--paper { background: var(--fp-paper); color: var(--fp-ink); }
+.fp-sticky--yellow { background: var(--fp-yellow); color: var(--fp-ink); }
+.fp-sticky--red { background: var(--fp-red); color: var(--fp-paper); border-color: var(--fp-red); }
+.fp-sticky--blue { background: var(--fp-blue); color: var(--fp-paper); border-color: var(--fp-blue); }
+.fp-sticky--black { background: var(--fp-ink); color: var(--fp-paper); }
+
+.fp-sticky__tape {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%) rotate(-3deg);
+  width: 64px;
+  height: 22px;
+  background: rgba(247, 233, 160, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.18);
+}
+
+.fp-sticky__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.fp-sticky__cat {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+  flex: 1;
+}
+.fp-sticky--red .fp-sticky__cat,
+.fp-sticky--blue .fp-sticky__cat,
+.fp-sticky--black .fp-sticky__cat {
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+}
+.fp-sticky--black .fp-sticky__cat {
+  background: var(--fp-yellow);
+}
+
+.fp-sticky__color,
+.fp-sticky__x {
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid currentColor;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.fp-sticky__color:hover,
+.fp-sticky__x:hover { background: rgba(0, 0, 0, 0.18); }
+
+.fp-sticky__title {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 17px;
+  line-height: 1.1;
+  margin: 0 0 8px;
+  word-break: break-word;
+}
+
+.fp-sticky__open {
+  display: inline-block;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: inherit;
+  text-decoration: none;
+  border: 1.5px solid currentColor;
+  padding: 3px 8px;
+}
+.fp-sticky__open:hover { background: rgba(0, 0, 0, 0.18); }
+
+/* --- Dock shelf (chips not yet on the board) --- */
+
+.fp-canvas__dock-shelf {
+  margin-top: 24px;
+  border: 2px dashed var(--fp-rule);
+  padding: 12px 16px;
+  background: var(--fp-paper-2);
+}
+
+.fp-canvas__dock-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed var(--fp-rule);
+  padding-bottom: 6px;
+}
+
+.fp-canvas__dock-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.fp-canvas__shelf-chip {
+  display: inline-grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 280px;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  border: 2px solid var(--fp-rule);
+  box-shadow: 3px 3px 0 var(--fp-rule);
+  padding: 8px 10px;
+  font-family: "Inter", sans-serif;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.fp-canvas__shelf-chip:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--fp-rule);
+}
+
+.fp-canvas__shelf-src {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  padding: 3px 6px;
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+
+.fp-canvas__shelf-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.fp-canvas__shelf-add {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--fp-red);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
