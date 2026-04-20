@@ -182,6 +182,9 @@ class HealthConnectPayloadMapper(
         permissionsGranted = permissionsGranted,
         dayStart = dayStart,
         dayEnd = dayEnd,
+        recordTypesAttempted = reader.attempted.toList(),
+        recordTypesSucceeded = reader.succeeded.toList(),
+        syncWarnings = reader.warnings.toList(),
         // Interval-typed records: any record whose [startTime, endTime]
         // overlaps [dayStart, dayEnd) is included for this day. Sum
         // functions (steps, calories, distance) may double-count an
@@ -229,15 +232,23 @@ class HealthConnectPayloadMapper(
    * No I/O happens in this function — it is a pure function of its
    * inputs, which makes it trivial to unit-test and keeps the
    * per-day cost constant once the range reads have completed.
+   *
+   * Visibility: `internal` so the JVM unit test in the same Gradle
+   * module (`app/src/test`) can call this directly, without needing
+   * to stand up a Health Connect client or a reader mock.
    */
   @Suppress("LongParameterList")
-  private fun buildPayloadForDay(
+  internal fun buildPayloadForDay(
     date: LocalDate,
     zone: ZoneId,
     capturedAt: OffsetDateTime,
     permissionsGranted: Boolean,
     dayStart: Instant,
     dayEnd: Instant,
+    /** Labels from the reader's run, forwarded as-is into sync metadata. */
+    recordTypesAttempted: List<String>,
+    recordTypesSucceeded: List<String>,
+    syncWarnings: List<String>,
     stepsRecords: List<StepsRecord>,
     distanceRecords: List<DistanceRecord>,
     floorsRecords: List<FloorsClimbedRecord>,
@@ -582,9 +593,9 @@ class HealthConnectPayloadMapper(
       sync = SyncMetadata(
         sdkLinked = true,
         permissionsGranted = permissionsGranted,
-        recordTypesAttempted = reader.attempted.distinct(),
-        recordTypesSucceeded = reader.succeeded.distinct(),
-        warnings = reader.warnings.toList(),
+        recordTypesAttempted = recordTypesAttempted.distinct(),
+        recordTypesSucceeded = recordTypesSucceeded.distinct(),
+        warnings = syncWarnings,
       ),
     )
   }

@@ -117,4 +117,16 @@ dependencies {
   // Networking
   implementation("com.squareup.okhttp3:okhttp:4.12.0")
   implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+
+  // JVM unit tests (running on the host JVM, no Android runtime)
+  testImplementation("junit:junit:4.13.2")
+  testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
+  // mockk: stand up an unused HealthConnectClient so we can construct
+  // a HealthConnectReader just to satisfy the HealthConnectPayloadMapper
+  // constructor. The reader is never invoked during
+  // `buildPayloadForDay` — tests only exercise the pure mapping path.
+  testImplementation("io.mockk:mockk:1.13.10")
+  // Health Connect records + units are constructible directly via
+  // their public constructors (verified on the 1.1.0 source) —
+  // pulled in transitively via the `implementation` coord above.
 }
