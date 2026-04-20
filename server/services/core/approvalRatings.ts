@@ -250,7 +250,60 @@ async function fetchNytTrumpApproval(): Promise<ApprovalRatingSource> {
   }
 }
 
+/**
+ * Approval averages update once per day; polling every 5 minutes (the
+ * dashboard cadence) wastes requests and makes us more likely to trip
+ * DataDome / Cloudflare rate limits on RCP. Cache successful responses
+ * per source for up to 60 minutes, and independently keep a
+ * "last-known-good" copy indefinitely so a transient scraper failure
+ * (e.g. DataDome challenge page) falls back to the previous value
+ * instead of surfacing an error row in the UI.
+ */
+const FRESH_TTL_MS = 60 * 60_000;
+const lastGoodBySource = new Map<string, { at: number; value: ApprovalRatingSource }>();
+
+function withStaleFallback(
+  key: "RCP" | "NYT",
+  fresh: ApprovalRatingSource
+): ApprovalRatingSource {
+  const isFresh =
+    fresh.approve !== null && fresh.disapprove !== null && fresh.net !== null;
+  if (isFresh) {
+    lastGoodBySource.set(key, { at: Date.now(), value: fresh });
+    return fresh;
+  }
+  const cached = lastGoodBySource.get(key);
+  if (cached) {
+    // Serve the last-good value untouched. The `asOf` stamp already
+    // tells the UI how current the data actually is, so callers can
+    // still tell a stale value from a fresh one without a separate
+    // "stale" flag on the response shape.
+    return cached.value;
+  }
+  return fresh;
+}
+
 export async function fetchTrumpApprovalRatings(): Promise<ApprovalRatingSource[]> {
-  const [rcp, nyt] = await Promise.all([fetchRcpTrumpApproval(), fetchNytTrumpApproval()]);
-  return [rcp, nyt];
+  const now = Date.now();
+  const rcpCached = lastGoodBySource.get("RCP");
+  const nytCached = lastGoodBySource.get("NYT");
+
+  const needsRcp = !rcpCached || now - rcpCached.at >= FRESH_TTL_MS;
+  const needsNyt = !nytCached || now - nytCached.at >= FRESH_TTL_MS;
+
+  const [rcpResult, nytResult] = await Promise.all([
+    needsRcp
+      ? fetchRcpTrumpApproval().then((r) => withStaleFallback("RCP", r))
+      : Promise.resolve(rcpCached!.value),
+    needsNyt
+      ? fetchNytTrumpApproval().then((r) => withStaleFallback("NYT", r))
+      : Promise.resolve(nytCached!.value),
+  ]);
+  return [rcpResult, nytResult];
+}
+
+// Exposed for tests + operator tooling; lets a debug endpoint surface
+// the cache state without importing the Map directly.
+export function __getApprovalCacheSnapshot(): Record<string, { at: number; value: ApprovalRatingSource }> {
+  return Object.fromEntries(lastGoodBySource.entries());
 }

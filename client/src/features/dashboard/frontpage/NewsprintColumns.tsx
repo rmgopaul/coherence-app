@@ -154,8 +154,11 @@ function WaitingOnColumn({ items }: { items: GmailWaitingOnItem[] }) {
             const subject = item.subject || "(no subject)";
             return (
               <li key={item.id} className="fp-row">
-                <span className="fp-row__time mono-label">
-                  {name.slice(0, 14).toUpperCase()}
+                <span
+                  className="fp-row__time mono-label"
+                  title={name}
+                >
+                  {name.toUpperCase()}
                 </span>
                 <span className="fp-row__rule" aria-hidden="true" />
                 <span className="fp-row__title">{subject}</span>

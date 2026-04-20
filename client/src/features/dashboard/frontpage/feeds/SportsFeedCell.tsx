@@ -27,6 +27,26 @@ function formatKickoffLabel(gameTime?: string | null): string {
     .toUpperCase();
 }
 
+/**
+ * Collapse the server-side broadcasts array into a terse display
+ * string. ESPN returns channels + streaming services mixed together
+ * ("ESPN", "ESPN+", "Prime Video") — we dedupe, uppercase, and cap
+ * at 3 entries so the line doesn't wrap on narrow cells.
+ */
+function formatBroadcasts(broadcasts?: string[] | null): string {
+  if (!broadcasts || broadcasts.length === 0) return "";
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const raw of broadcasts) {
+    const norm = raw.trim().toUpperCase();
+    if (!norm || seen.has(norm)) continue;
+    seen.add(norm);
+    kept.push(norm);
+    if (kept.length === 3) break;
+  }
+  return kept.join(" · ");
+}
+
 export function SportsFeedCell({ updatedLabel }: Props) {
   const { data } = trpc.sports.getGames.useQuery(undefined, {
     refetchInterval: FIVE_MIN,
@@ -108,11 +128,19 @@ export function SportsFeedCell({ updatedLabel }: Props) {
     : spotlight.teamAbbreviation;
   const headline = `${awayAbbr} @ ${homeAbbr}`;
 
-  const subtitle = isLive
+  const spotlightBroadcast = formatBroadcasts(spotlight.broadcasts);
+  const subtitleBase = isLive
     ? `LIVE · ${spotlight.statusDetail}`
     : isFinal
       ? `FINAL · ${spotlight.statusDetail}`
       : formatKickoffLabel(spotlight.gameTime);
+  // Append broadcasts only when we have them and the game isn't
+  // final (post-game channel info is not useful). Keeps the mono
+  // subtitle single-line: kickoff label + " · ESPN · BSN".
+  const subtitle =
+    !isFinal && spotlightBroadcast
+      ? `${subtitleBase} · ${spotlightBroadcast}`
+      : subtitleBase;
 
   const scoreAvailable =
     spotlight.teamScore != null && spotlight.opponentScore != null;
@@ -161,11 +189,16 @@ export function SportsFeedCell({ updatedLabel }: Props) {
               const gAwayScore = game.isHome
                 ? game.opponentScore
                 : game.teamScore;
+              const gBroadcast = formatBroadcasts(game.broadcasts);
               const right = gLive
-                ? "LIVE"
+                ? gBroadcast
+                  ? `LIVE · ${gBroadcast}`
+                  : "LIVE"
                 : gFinal && gScoreReady
                   ? `${gAwayScore}–${gHomeScore}`
-                  : formatKickoffLabel(game.gameTime);
+                  : gBroadcast
+                    ? `${formatKickoffLabel(game.gameTime)} · ${gBroadcast}`
+                    : formatKickoffLabel(game.gameTime);
               return (
                 <li key={game.id} className="wire-list__row">
                   <span className="mono-label">

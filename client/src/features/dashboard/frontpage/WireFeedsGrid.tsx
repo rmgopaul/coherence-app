@@ -162,63 +162,35 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
       </WireCard>
     );
   }
-  // Split gainers / losers and sort each bucket by magnitude so the
-  // biggest movers land at the top and bottom of the card. Flat
-  // changes (exact 0%) sort with the gainers (neutral bias toward
-  // "up"). A thin rule between the groups reads as a newspaper
-  // table divider — clearer than a single sorted list.
-  const gainers = quotes
-    .filter((q) => q.changePercent >= 0)
-    .slice()
-    .sort((a, b) => b.changePercent - a.changePercent);
-  const losers = quotes
-    .filter((q) => q.changePercent < 0)
-    .slice()
-    .sort((a, b) => a.changePercent - b.changePercent);
 
-  // Two-column layout (gainers left, losers right). Rows only show
-  // symbol + % so each column fits without truncation. Clicking the
-  // cell header still jumps to the markets page (unchanged).
-  const renderRow = (q: (typeof quotes)[number]) => {
-    const changeClass =
-      q.changePercent >= 0 ? "wire-ticker__up" : "wire-ticker__down";
-    const displaySymbol = q.symbol.replace("-USD", "");
-    return (
-      <li key={q.symbol} className="wire-ticker2__row">
-        <span className="wire-ticker2__sym mono-label">{displaySymbol}</span>
-        <span className="wire-ticker2__px">{formatMarketPrice(q.price)}</span>
-        <span className={`mono-label wire-ticker2__pct ${changeClass}`}>
-          {q.changePercent >= 0 ? "▲" : "▼"}{" "}
-          {Math.abs(q.changePercent).toFixed(2)}%
-        </span>
-      </li>
-    );
-  };
+  // Show every configured ticker sorted by signed % change (biggest
+  // gainer first, biggest loser last). Single list — no bucket split
+  // — so the user can scan all symbols at a glance.
+  const sorted = [...quotes].sort((a, b) => b.changePercent - a.changePercent);
 
   return (
     <WireCard label="MARKETS" updated={nowShort()}>
-      <div className="wire-ticker2">
-        <div className="wire-ticker2__col">
-          <div className="mono-label wire-ticker2__colhead wire-ticker__up">
-            GAINERS
-          </div>
-          {gainers.length > 0 ? (
-            <ol className="wire-ticker2__list">{gainers.map(renderRow)}</ol>
-          ) : (
-            <p className="mono-label wire-ticker2__empty">—</p>
-          )}
-        </div>
-        <div className="wire-ticker2__col">
-          <div className="mono-label wire-ticker2__colhead wire-ticker__down">
-            LOSERS
-          </div>
-          {losers.length > 0 ? (
-            <ol className="wire-ticker2__list">{losers.map(renderRow)}</ol>
-          ) : (
-            <p className="mono-label wire-ticker2__empty">—</p>
-          )}
-        </div>
-      </div>
+      <ol className="wire-ticker2__list">
+        {sorted.map((q) => {
+          const isUp = q.changePercent >= 0;
+          const displaySymbol = q.symbol.replace("-USD", "");
+          return (
+            <li key={q.symbol} className="wire-ticker2__row">
+              <span className="wire-ticker2__sym mono-label">
+                {displaySymbol}
+              </span>
+              <span className="wire-ticker2__px">
+                {formatMarketPrice(q.price)}
+              </span>
+              <span
+                className={`mono-label wire-ticker2__pct ${isUp ? "wire-ticker__up" : "wire-ticker__down"}`}
+              >
+                {isUp ? "▲" : "▼"} {Math.abs(q.changePercent).toFixed(2)}%
+              </span>
+            </li>
+          );
+        })}
+      </ol>
     </WireCard>
   );
 }
@@ -384,9 +356,14 @@ function NewsCell({ news }: { news: DashboardData["news"] }) {
       <ol className="wire-newsfeed">
         {top.map((item) => (
           <li key={item.url} className="wire-newsfeed__row">
-            <span className="mono-label wire-newsfeed__src">
-              {(item.src ?? "AP").toUpperCase()}
-            </span>
+            <div className="wire-newsfeed__kicker">
+              <span className="mono-label wire-newsfeed__src">
+                {(item.src ?? "AP").toUpperCase()}
+              </span>
+              <span className="mono-label wire-newsfeed__ts">
+                {relativeTimeLabel(item.publishedAt)}
+              </span>
+            </div>
             <a
               href={item.url}
               target="_blank"
@@ -395,9 +372,6 @@ function NewsCell({ news }: { news: DashboardData["news"] }) {
             >
               {item.title}
             </a>
-            <span className="mono-label wire-newsfeed__ts">
-              {relativeTimeLabel(item.publishedAt)}
-            </span>
           </li>
         ))}
       </ol>

@@ -255,7 +255,12 @@ html[data-focus="1"] .fp-root {
 
 .fp-row {
   display: grid;
-  grid-template-columns: 72px 1fr;
+  /* minmax(0, …) on both tracks so long recipients / subjects can't
+     push the grid out of its column — `min-width: auto` is the grid
+     default and happily overflows. Combined with ellipsis on the
+     children below, this clips cleanly instead of bleeding into the
+     neighbouring column. */
+  grid-template-columns: minmax(0, 72px) minmax(0, 1fr);
   grid-template-areas:
     "time  title"
     ".     meta";
@@ -274,6 +279,9 @@ html[data-focus="1"] .fp-root {
   grid-area: time;
   color: var(--fp-ink-3);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .fp-row__rule {
@@ -287,6 +295,11 @@ html[data-focus="1"] .fp-root {
   font-size: var(--fp-fs-headline);
   line-height: 1.15;
   color: var(--fp-ink);
+  /* Subjects / task titles can be long; let them wrap rather than
+     ellipsing — the `minmax(0, 1fr)` on the grid column means they
+     fill their cell without pushing it. */
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .fp-row__meta {
@@ -472,37 +485,8 @@ a.wire-card--link:focus-visible {
   list-style: none;
 }
 
-/* Two-column markets layout (gainers left, losers right). Vertical
-   ink rule between the columns keeps the structural feel of the
-   single-column divider. */
-.wire-ticker2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0 14px;
-  min-width: 0;
-}
-
-.wire-ticker2__col {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.wire-ticker2__col + .wire-ticker2__col {
-  border-left: 1px solid
-    color-mix(in oklch, var(--fp-ink) 18%, transparent);
-  padding-left: 14px;
-}
-
-.wire-ticker2__colhead {
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  padding-bottom: 4px;
-  border-bottom: 1px solid
-    color-mix(in oklch, var(--fp-ink) 18%, transparent);
-}
-
+/* Unified single-column ticker list (sorted by signed % change).
+   Symbol on the left, price in the middle, signed % on the right. */
 .wire-ticker2__list {
   list-style: none;
   margin: 0;
@@ -550,13 +534,6 @@ a.wire-card--link:focus-visible {
   font-variant-numeric: tabular-nums;
   justify-self: end;
   white-space: nowrap;
-}
-
-.wire-ticker2__empty {
-  font-family: "Instrument Serif", Georgia, serif;
-  font-size: 14px;
-  color: var(--fp-ink-3);
-  margin: 4px 0;
 }
 
 /* --- Health cell (Whoop) --- */
@@ -765,16 +742,13 @@ a.wire-card--link:focus-visible {
 }
 
 .wire-newsfeed__row {
-  display: grid;
-  grid-template-columns: 32px 1fr auto;
-  grid-template-areas:
-    "src title title"
-    "src meta meta";
-  align-items: baseline;
-  gap: 2px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   padding-bottom: 8px;
   border-bottom: 1px solid
     color-mix(in oklch, var(--fp-ink) 10%, transparent);
+  min-width: 0;
 }
 
 .wire-newsfeed__row:last-child {
@@ -782,15 +756,30 @@ a.wire-card--link:focus-visible {
   padding-bottom: 0;
 }
 
+/* Newspaper-kicker row above the headline: source chip on the left,
+   relative timestamp on the right, both in mono. Source can grow to
+   fit long attributions ("THE NEW YORK TIMES") without encroaching on
+   the headline below. Ellipsis on the src keeps the kicker on a
+   single line even if Google News returns something unexpectedly
+   long. */
+.wire-newsfeed__kicker {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
 .wire-newsfeed__src {
-  grid-area: src;
   letter-spacing: 0.14em;
   color: var(--fp-ink-3);
-  padding-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .wire-newsfeed__title {
-  grid-area: title;
   font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
   font-weight: 500;
   font-size: 14px;
@@ -812,9 +801,9 @@ a.wire-card--link:focus-visible {
 }
 
 .wire-newsfeed__ts {
-  grid-area: meta;
-  justify-self: end;
   color: var(--fp-ink-3);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* --- Focus mode rail --- */
@@ -967,19 +956,6 @@ a.wire-card--link:focus-visible {
     gap: 4px;
   }
   .fp-focus-rail__count {
-    justify-self: start;
-  }
-
-  /* News feed — the 32-unit src column becomes cramped next to
-     the 2-line title. Stack src above title instead. */
-  .wire-newsfeed__row {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "src"
-      "title"
-      "meta";
-  }
-  .wire-newsfeed__ts {
     justify-self: start;
   }
 }
