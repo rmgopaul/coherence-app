@@ -30,7 +30,13 @@ import {
   METRIC_GROUPS,
   type HealthMetricKey,
 } from "./health.constants";
-import { pairForCorrelation, pearsonR } from "./health.helpers";
+import {
+  meanAndStd,
+  pairForCorrelation,
+  pearsonR,
+  pearsonStrength,
+  topQuartileContrast,
+} from "./health.helpers";
 
 const WINDOW_OPTIONS = [30, 90, 365] as const;
 
@@ -59,6 +65,11 @@ export function HealthInsightsPanel() {
   }, [history, metricA, metricB]);
 
   const r = useMemo(() => pearsonR(points), [points]);
+  const rSquared = useMemo(() => (r === null ? null : r * r), [r]);
+  const strength = useMemo(() => pearsonStrength(r), [r]);
+  const statsA = useMemo(() => meanAndStd(points.map((p) => p.x)), [points]);
+  const statsB = useMemo(() => meanAndStd(points.map((p) => p.y)), [points]);
+  const contrast = useMemo(() => topQuartileContrast(points), [points]);
 
   const labelA =
     HEALTH_METRICS.find((m) => m.key === metricA)?.label ?? metricA;
@@ -99,53 +110,136 @@ export function HealthInsightsPanel() {
       </Card>
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between gap-2 pb-2">
+        <CardHeader className="pb-2">
           <CardTitle className="text-sm">
-            {labelA} vs {labelB}
+            {labelA} × {labelB}
           </CardTitle>
-          <div className="flex items-center gap-2">
-            {r !== null ? (
-              <Badge variant="outline">Pearson r = {r.toFixed(2)}</Badge>
-            ) : (
-              <Badge variant="outline">r = —</Badge>
-            )}
-            <Badge variant="outline">{points.length} days</Badge>
-          </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           {isLoading ? (
-            <p className="text-xs text-muted-foreground">Loading…</p>
+            <p className="text-sm text-muted-foreground">Loading…</p>
           ) : points.length < 3 ? (
-            <p className="text-xs text-muted-foreground">
-              Need at least 3 days with both metrics present.
-            </p>
-          ) : (
-            <div style={{ width: "100%", height: 280 }}>
-              <ScatterChart
-                width={600}
-                height={280}
-                margin={{ top: 10, right: 16, left: 10, bottom: 10 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis
-                  type="number"
-                  dataKey="x"
-                  name={labelA}
-                  tick={{ fontSize: 11 }}
-                />
-                <YAxis
-                  type="number"
-                  dataKey="y"
-                  name={labelB}
-                  tick={{ fontSize: 11 }}
-                />
-                <Tooltip
-                  cursor={{ strokeDasharray: "3 3" }}
-                  formatter={(value: number, name: string) => [value.toFixed(2), name]}
-                />
-                <Scatter name={`${labelA} vs ${labelB}`} data={points} fill="#059669" />
-              </ScatterChart>
+            <div className="space-y-1 text-sm">
+              <p className="font-medium">Not enough data yet.</p>
+              <p className="text-muted-foreground">
+                Need at least 3 days where both metrics are present.
+                Currently <span className="font-medium text-foreground">{points.length}</span>{" "}
+                overlapping day{points.length === 1 ? "" : "s"} in this window.
+              </p>
             </div>
+          ) : (
+            <>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <MetricBlock
+                  label="Pearson r"
+                  value={r === null ? "—" : r.toFixed(2)}
+                  sample={strength}
+                  tone="neutral"
+                />
+                <MetricBlock
+                  label="Variance explained (r²)"
+                  value={
+                    rSquared === null
+                      ? "—"
+                      : `${Math.round(rSquared * 100)}%`
+                  }
+                  sample={rSquared === null ? "" : "of variance in Y"}
+                  tone="neutral"
+                />
+                <MetricBlock
+                  label="Sample"
+                  value={`${points.length}`}
+                  sample={`overlapping day${points.length === 1 ? "" : "s"}`}
+                  tone="neutral"
+                />
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <MetricBlock
+                  label={labelA}
+                  value={formatMean(statsA.mean)}
+                  sample={
+                    statsA.std === null
+                      ? ""
+                      : `± ${formatMean(statsA.std)} (std)`
+                  }
+                  tone="on"
+                />
+                <MetricBlock
+                  label={labelB}
+                  value={formatMean(statsB.mean)}
+                  sample={
+                    statsB.std === null
+                      ? ""
+                      : `± ${formatMean(statsB.std)} (std)`
+                  }
+                  tone="off"
+                />
+              </div>
+
+              {contrast.topMean !== null &&
+              contrast.overallMean !== null &&
+              contrast.threshold !== null ? (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs">
+                  <p className="font-medium">
+                    On top-quartile {labelA} days (N = {contrast.topN}, ≥{" "}
+                    {formatMean(contrast.threshold)}),
+                  </p>
+                  <p className="text-muted-foreground">
+                    {labelB} averaged{" "}
+                    <span className="font-semibold text-foreground">
+                      {formatMean(contrast.topMean)}
+                    </span>{" "}
+                    vs {formatMean(contrast.overallMean)} overall (Δ ={" "}
+                    {formatDelta(contrast.topMean - contrast.overallMean)}).
+                  </p>
+                </div>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Badge variant="outline">{windowDays} day window</Badge>
+                <Badge variant="outline">
+                  direction{" "}
+                  {r === null
+                    ? "—"
+                    : r > 0
+                      ? "positive"
+                      : r < 0
+                        ? "negative"
+                        : "zero"}
+                </Badge>
+              </div>
+
+              <div style={{ width: "100%", height: 280 }}>
+                <ScatterChart
+                  width={600}
+                  height={280}
+                  margin={{ top: 10, right: 16, left: 10, bottom: 10 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis
+                    type="number"
+                    dataKey="x"
+                    name={labelA}
+                    tick={{ fontSize: 11 }}
+                  />
+                  <YAxis
+                    type="number"
+                    dataKey="y"
+                    name={labelB}
+                    tick={{ fontSize: 11 }}
+                  />
+                  <Tooltip
+                    cursor={{ strokeDasharray: "3 3" }}
+                    formatter={(value: number, name: string) => [
+                      value.toFixed(2),
+                      name,
+                    ]}
+                  />
+                  <Scatter name={`${labelA} vs ${labelB}`} data={points} fill="#059669" />
+                </ScatterChart>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -173,6 +267,46 @@ function LabelledSelect({
       {children}
     </div>
   );
+}
+
+function MetricBlock({
+  label,
+  value,
+  sample,
+  tone,
+}: {
+  label: string;
+  value: string;
+  sample: string;
+  tone: "on" | "off" | "neutral";
+}) {
+  const toneClass =
+    tone === "on"
+      ? "border-emerald-200 bg-emerald-50"
+      : tone === "off"
+        ? "border-slate-200 bg-slate-50"
+        : "border-amber-200 bg-amber-50";
+  return (
+    <div className={`rounded-md border p-3 ${toneClass}`}>
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </p>
+      <p className="text-xl font-semibold">{value}</p>
+      {sample ? <p className="text-xs text-muted-foreground">{sample}</p> : null}
+    </div>
+  );
+}
+
+function formatMean(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—";
+  if (Math.abs(value) >= 100) return value.toFixed(0);
+  if (Math.abs(value) >= 10) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+function formatDelta(value: number): string {
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "±";
+  return `${sign}${formatMean(Math.abs(value))}`;
 }
 
 function MetricPicker({

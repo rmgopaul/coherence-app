@@ -84,3 +84,81 @@ export function pearsonR(points: readonly { x: number; y: number }[]): number | 
   if (!Number.isFinite(r)) return null;
   return Math.max(-1, Math.min(1, r));
 }
+
+/**
+ * Qualitative strength bucket for |Pearson r|. Thresholds mirror the
+ * conventions used in the Supplements/Habits insights modules.
+ */
+export function pearsonStrength(r: number | null): "—" | "negligible" | "weak" | "moderate" | "strong" {
+  if (r === null) return "—";
+  const abs = Math.abs(r);
+  if (abs < 0.1) return "negligible";
+  if (abs < 0.3) return "weak";
+  if (abs < 0.5) return "moderate";
+  return "strong";
+}
+
+/**
+ * Sample mean + population std dev (n divisor, matches `variance` in
+ * server/services/supplements/correlation.ts so visual numbers line up
+ * with the on/off-style modules).
+ */
+export function meanAndStd(values: readonly number[]): {
+  mean: number | null;
+  std: number | null;
+} {
+  if (values.length === 0) return { mean: null, std: null };
+  let sum = 0;
+  for (const v of values) sum += v;
+  const mean = sum / values.length;
+  let sumSq = 0;
+  for (const v of values) {
+    const d = v - mean;
+    sumSq += d * d;
+  }
+  const std = Math.sqrt(sumSq / values.length);
+  return { mean, std };
+}
+
+/**
+ * Contrast metric B's mean on days where metric A is in its top quartile
+ * vs overall. Mirrors the "on vs off" split used in the Supplements and
+ * Habits insights modules, but adapted for continuous × continuous data.
+ * Returns null values when the top-quartile slice has < MIN_CONTRAST_N
+ * points.
+ */
+export const MIN_CONTRAST_N = 5;
+
+export function topQuartileContrast(
+  points: readonly { x: number; y: number }[]
+): {
+  threshold: number | null;
+  topN: number;
+  topMean: number | null;
+  overallMean: number | null;
+} {
+  if (points.length < MIN_CONTRAST_N * 2) {
+    return { threshold: null, topN: 0, topMean: null, overallMean: null };
+  }
+  const xs = points.map((p) => p.x).slice().sort((a, b) => a - b);
+  const q3Index = Math.floor(xs.length * 0.75);
+  const threshold = xs[q3Index] ?? null;
+  if (threshold === null) {
+    return { threshold: null, topN: 0, topMean: null, overallMean: null };
+  }
+  const topY: number[] = [];
+  const allY: number[] = [];
+  for (const p of points) {
+    allY.push(p.y);
+    if (p.x >= threshold) topY.push(p.y);
+  }
+  if (topY.length < MIN_CONTRAST_N) {
+    return { threshold, topN: topY.length, topMean: null, overallMean: null };
+  }
+  return {
+    threshold,
+    topN: topY.length,
+    topMean: meanAndStd(topY).mean,
+    overallMean: meanAndStd(allY).mean,
+  };
+}
