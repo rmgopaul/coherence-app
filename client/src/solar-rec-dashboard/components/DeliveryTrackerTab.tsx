@@ -160,24 +160,42 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                   but no matching Schedule B PDF has been scraped yet. Their obligations
                   are therefore unknown and they are not counted in the contract summary
                   below. Upload and scrape the corresponding Schedule B PDFs to restore
-                  coverage.
+                  coverage. The export also includes a{" "}
+                  <code>year_mismatch</code> bucket — tracking IDs whose Schedule B
+                  exists but whose transfer dates landed outside every scraped year
+                  window (usually a malformed PDF parse or transfers outside the
+                  contract term).
                 </CardDescription>
               </div>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  const csv = buildCsv(
-                    ["tracking_system_ref_id", "transfer_count"],
-                    deliveryTrackerData.transfersMissingObligation.map(
+                  // Combined export: bucket A (missing_schedule_b) +
+                  // bucket B (year_mismatch). Sum of transfer_count
+                  // across both buckets equals unmatchedTransfers.
+                  const rows = [
+                    ...deliveryTrackerData.transfersMissingObligation.map(
                       ({ trackingId, transferCount }) => ({
                         tracking_system_ref_id: trackingId,
+                        bucket: "missing_schedule_b",
                         transfer_count: String(transferCount),
                       }),
                     ),
+                    ...deliveryTrackerData.transfersUnmatchedByYear.map(
+                      ({ trackingId, transferCount }) => ({
+                        tracking_system_ref_id: trackingId,
+                        bucket: "year_mismatch",
+                        transfer_count: String(transferCount),
+                      }),
+                    ),
+                  ];
+                  const csv = buildCsv(
+                    ["tracking_system_ref_id", "bucket", "transfer_count"],
+                    rows,
                   );
                   triggerCsvDownload(
-                    `delivery-tracker-missing-schedule-b-${timestampForCsvFileName()}.csv`,
+                    `delivery-tracker-unmatched-transfers-${timestampForCsvFileName()}.csv`,
                     csv,
                   );
                 }}

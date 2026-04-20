@@ -66,6 +66,21 @@ export type DeliveryTrackerData = {
     trackingId: string;
     transferCount: number;
   }>;
+  /**
+   * Distinct tracking IDs where a Schedule B exists but the transfer's
+   * completion date did NOT fall into any of the scraped 15 year slots
+   * (nor into the fallback energy-year match). Usually means the
+   * Schedule B year window is malformed/short, or the transfer predates
+   * the contract. These transfers are counted in `unmatchedTransfers`
+   * but are NOT in `transfersMissingObligation` because the system DOES
+   * have a scraped Schedule B. Separate so the UI can keep the
+   * "Missing Schedule B" card to bucket A, while exports can expose
+   * both.
+   */
+  transfersUnmatchedByYear: Array<{
+    trackingId: string;
+    transferCount: number;
+  }>;
 };
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
@@ -77,6 +92,7 @@ export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   transferIdSample: [],
   scheduleCount: 0,
   transfersMissingObligation: [],
+  transfersUnmatchedByYear: [],
 }) as DeliveryTrackerData;
 
 type YearSlot = {
@@ -162,6 +178,9 @@ export function buildDeliveryTrackerData(input: {
   // Surfaced in the UI so the user can see which Schedule B PDFs still
   // need scraping and how much transfer volume each gap represents.
   const transfersMissingObligationCounts = new Map<string, number>();
+  // Tracking IDs whose Schedule B exists but no year slot matched the
+  // transfer completion date. See `transfersUnmatchedByYear` docstring.
+  const transfersUnmatchedByYearCounts = new Map<string, number>();
 
   for (const row of transferRows) {
     const unitId = clean(row["Unit ID"]);
@@ -231,7 +250,13 @@ export function buildDeliveryTrackerData(input: {
           break;
         }
       }
-      if (!matched) unmatchedTransfers++;
+      if (!matched) {
+        unmatchedTransfers++;
+        transfersUnmatchedByYearCounts.set(
+          unitId,
+          (transfersUnmatchedByYearCounts.get(unitId) ?? 0) + 1,
+        );
+      }
     }
   }
 
@@ -298,6 +323,11 @@ export function buildDeliveryTrackerData(input: {
     scheduleCount: systemSchedules.size,
     transfersMissingObligation: Array.from(
       transfersMissingObligationCounts.entries(),
+    )
+      .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
+      .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
+    transfersUnmatchedByYear: Array.from(
+      transfersUnmatchedByYearCounts.entries(),
     )
       .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
       .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),

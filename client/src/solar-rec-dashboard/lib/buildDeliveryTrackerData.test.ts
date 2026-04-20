@@ -144,6 +144,33 @@ describe("buildDeliveryTrackerData", () => {
       transferRows: [transferRow()],
     });
     expect(data.transfersMissingObligation).toEqual([]);
+    expect(data.transfersUnmatchedByYear).toEqual([]);
+  });
+
+  it("surfaces year-mismatched transfers separately from missing Schedule B", () => {
+    // Schedule B exists but its year window is 2024-06-01..2025-05-31.
+    // A transfer in 2030 (way outside) cannot land in any year slot and
+    // also fails the energy-year fallback (no schedule year starts in
+    // 2030). That transfer should surface under transfersUnmatchedByYear
+    // with trackingId "NON100", not under transfersMissingObligation.
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [scheduleRow({ tracking_system_ref_id: "NON100" })],
+      transferRows: [
+        transferRow({
+          "Unit ID": "NON100",
+          "Transfer Completion Date": "2030-08-15",
+        }),
+        transferRow({
+          "Unit ID": "NON100",
+          "Transfer Completion Date": "2031-08-15",
+        }),
+      ],
+    });
+    expect(data.unmatchedTransfers).toBe(2);
+    expect(data.transfersMissingObligation).toEqual([]);
+    expect(data.transfersUnmatchedByYear).toEqual([
+      { trackingId: "NON100", transferCount: 2 },
+    ]);
   });
 
   it("returns empty when transfers arrive before schedules (hydration guard)", () => {
