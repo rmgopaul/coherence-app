@@ -24,8 +24,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
@@ -39,6 +41,7 @@ import com.coherence.healthconnect.ui.state.isLoading
 import com.coherence.healthconnect.ui.state.updatedAtOrNull
 import com.coherence.healthconnect.ui.widgets.CalendarWidget
 import com.coherence.healthconnect.ui.widgets.BasquiatDashboardHero
+import com.coherence.healthconnect.ui.widgets.FocusModeToggle
 import com.coherence.healthconnect.ui.widgets.FocusRail
 import com.coherence.healthconnect.ui.widgets.FocusTimerWidget
 import com.coherence.healthconnect.ui.widgets.GmailWidget
@@ -74,6 +77,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
   val health = state.healthState.dataOrNull()
   val hiddenWidgets = preferences.hiddenWidgets
   val focusMode = preferences.focusMode
+  val coroutineScope = rememberCoroutineScope()
   var searchQuery by rememberSaveable { mutableStateOf("") }
   val searchResults = remember { mutableStateListOf<SearchResultItem>() }
   var searchLoading by remember { mutableStateOf(false) }
@@ -131,6 +135,20 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
       contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
       verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+      // Phase G follow-up — small FOCUS [ ] toggle above the hero so
+      // the user can collapse the dashboard to King + FocusRail without
+      // poking DataStore. Mirrors the web masthead toggle.
+      item {
+        FocusModeToggle(
+          focusMode = focusMode,
+          onToggle = {
+            coroutineScope.launch {
+              app.container.appPreferencesRepository.setFocusMode(!focusMode)
+            }
+          },
+        )
+      }
+
       // Hero greeting card
       item {
         BasquiatDashboardHero(stats = heroStats)
