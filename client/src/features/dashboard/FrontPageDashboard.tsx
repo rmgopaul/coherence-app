@@ -58,8 +58,15 @@ export default function FrontPageDashboard() {
 
   return (
     <div className="fp-root" data-focus={focusMode ? "1" : "0"}>
+      {/* a11y: keyboard users Tab onto this first. Activating it moves
+          focus past the masthead straight to the hero headline. */}
+      <a href="#fp-main" className="fp-skip-link">
+        Skip to today&rsquo;s headline
+      </a>
+
       <Masthead dateKey={data.todayKey} weather={data.weather} />
 
+      <main id="fp-main" tabIndex={-1}>
       <KingOfTheDayHero
         userName={data.userName}
         todayTasks={data.tasks.dueToday}
@@ -99,6 +106,7 @@ export default function FrontPageDashboard() {
           <WireFeedsGrid data={data} />
         </>
       )}
+      </main>
     </div>
   );
 }

@@ -70,6 +70,35 @@ html[data-focus="1"] .fp-root {
   font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* Skip-to-content link — visually hidden until focused (keyboard users
+   get a prominent ink chip in the top-left so they can bypass the
+   masthead and jump straight to the hero). */
+.fp-skip-link {
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  z-index: 100;
+  padding: 10px 14px;
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  border: 2px solid var(--fp-ink);
+  transform: translateY(-200%);
+  transition: transform 120ms ease-out;
+}
+
+.fp-skip-link:focus,
+.fp-skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 3px solid var(--fp-yellow);
+  outline-offset: 2px;
+}
+
 /* --- Masthead --- */
 
 .fp-masthead {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { CalendarEvent, TodoistTask } from "@/features/dashboard/types";
@@ -256,6 +256,29 @@ export function KingOfTheDayHero({
   const showRegenerate = Boolean(
     onRegenerate && (source === "auto" || source === "ai")
   );
+
+  // Long-press to pin — touch equivalent of right-click. Starts a
+  // 500ms timer on touchstart; cancels on move/end/cancel. If the
+  // timer fires, we open the pin dialog via onRequestPin.
+  const longPressTimer = useRef<number | null>(null);
+  const longPressFired = useRef(false);
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimer.current !== null) {
+      window.clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  }, []);
+  const handleTouchStart = useCallback(() => {
+    if (!onRequestPin) return;
+    longPressFired.current = false;
+    cancelLongPress();
+    longPressTimer.current = window.setTimeout(() => {
+      longPressFired.current = true;
+      longPressTimer.current = null;
+      onRequestPin();
+    }, 500);
+  }, [onRequestPin, cancelLongPress]);
+  useEffect(() => cancelLongPress, [cancelLongPress]);
   const { h: hoursLeft, m: minutesLeft } = hoursLeftInDay(now);
   const greeting = greetingForHour(now.getHours());
 
@@ -371,6 +394,11 @@ export function KingOfTheDayHero({
               ? `${headline} — right-click or press K to pin a different headline`
               : headline
           }
+          // a11y: announce the headline when it changes (e.g., after
+          // a regenerate or pin). `polite` so we don't interrupt, and
+          // `atomic` so the whole headline is read as one chunk.
+          aria-live="polite"
+          aria-atomic="true"
           onContextMenu={
             onRequestPin
               ? (e) => {
@@ -379,6 +407,23 @@ export function KingOfTheDayHero({
                 }
               : undefined
           }
+          // Touch long-press = pin dialog (matches the right-click
+          // affordance on desktop). Tapping briefly does nothing —
+          // we explicitly cancel the timer on touchend/move/cancel.
+          onTouchStart={onRequestPin ? handleTouchStart : undefined}
+          onTouchEnd={onRequestPin ? cancelLongPress : undefined}
+          onTouchMove={onRequestPin ? cancelLongPress : undefined}
+          onTouchCancel={onRequestPin ? cancelLongPress : undefined}
+          style={{
+            // iOS Safari shows a grey highlight on touch; suppress
+            // it so the long-press feels intentional rather than
+            // accidental. Also disable the default text-selection
+            // callout which competes with our long-press gesture.
+            WebkitTapHighlightColor: "transparent",
+            WebkitTouchCallout: "none",
+            WebkitUserSelect: "none",
+            userSelect: "none",
+          }}
         >
           <span className="kotd-highlight text-black">{headline}</span>
         </h1>
