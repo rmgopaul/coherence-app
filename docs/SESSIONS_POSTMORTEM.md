@@ -180,6 +180,111 @@ can't be locally end-to-end tested:
 
 ---
 
+## 2026-04-20 — `local.properties` is a convention, not a Gradle source
+
+### What the user experienced
+
+Google OAuth failed the moment they tapped "Sign in" on the
+Android app — their Chrome-resident `@carbonsolutionsgroup.com`
+account was shown at the top of the error page but the request
+was rejected. User was convinced it was a test-user list issue
+and screenshotted the Google Cloud Console audience screen with
+the email clearly listed.
+
+### Actual root cause
+
+`app/build.gradle.kts` was reading all five of its secrets via
+`project.findProperty("GOOGLE_CLIENT_ID")`. That API consults
+`gradle.properties`, `~/.gradle/gradle.properties`, and `-P`
+CLI flags — but NOT `local.properties`. The file `local.properties`
+is an Android Studio convention, injected through the IDE's
+Gradle-tooling hook, not through Gradle itself.
+
+Every `./gradlew assembleDebug` on the command line produced an
+APK with:
+- `GOOGLE_CLIENT_ID = ""`
+- `SYNC_KEY = "REPLACE_ME_SYNC_KEY"` (the fallback sentinel)
+
+Android Studio builds worked because the IDE bridges the gap.
+Claude never noticed because the build "succeeded" and the APK
+installed fine — the failure only surfaced on the device when
+OAuth 404'd and the webhook 401'd.
+
+### Prevention
+
+1. `build.gradle.kts` now explicitly loads `local.properties` at
+   configuration time via `Properties().load()` and a small `prop()`
+   helper that prefers `local.properties` over `findProperty`.
+2. A `verifyBuildConfigSecrets` inline println prints one redacted
+   status line per secret at every build:
+   ```
+   [coherence:buildconfig] GOOGLE_CLIENT_ID ✓ (72 chars)
+   [coherence:buildconfig] SYNC_KEY ✗ MISSING — add to local.properties
+   ```
+   No secret values are ever printed — presence + length only.
+
+**Rule of thumb:** any Gradle template that uses `project.findProperty`
+for secrets MUST also explicitly load `local.properties`, AND must
+surface presence/absence at build time. If neither is true, the
+template is broken for command-line builds.
+
+---
+
+## 2026-04-20 — Permissions outlive reinstalls; edge-detection doesn't
+
+### What the user experienced
+
+New APK installed cleanly, OAuth login finally worked, user logged
+in as themselves — and no health data ever appeared on the
+dashboard. Force-stop, reinstall, reboot, nothing changed. The sync
+worker wasn't running at all — `dumpsys jobscheduler | grep
+com.coherence.healthconnect` showed only the `WidgetDataWorker`.
+
+### Actual root cause
+
+`HealthScreen.onStatusChanged` only called `AutoSyncScheduler.enable`
+on the TRANSITION from missing-permissions to granted-permissions:
+
+```kotlin
+val wasIncomplete = hcStatus?.permissionsGranted == false
+hcStatus = next
+if (wasIncomplete && next.permissionsGranted) { enable(context) }
+```
+
+Android's Health Connect permission grants are owned by the OS, not
+the app, and SURVIVE app reinstalls and data wipes. So on a
+post-login fresh launch, `HealthConnectPermissionManager.getStatus()`
+returned `permissionsGranted = true` from the very first callback —
+the "missing" side of the transition had never existed inside this
+session, so `wasIncomplete` was never `true`, and the scheduler was
+never enabled. The `coherence_samsung_sync_prefs.xml` file didn't
+exist at all.
+
+The `MainActivity.onResume` path that was supposed to ensure the
+worker kept running (`AutoSyncScheduler.ensureScheduledIfEnabled`)
+short-circuited immediately because `isEnabled()` returned `false`.
+
+### Prevention
+
+1. Replaced edge-detection with state-comparison:
+   ```kotlin
+   if (next.permissionsGranted) {
+     AutoSyncScheduler.enableIfNeeded(context)
+   }
+   ```
+2. Added `AutoSyncScheduler.enableIfNeeded(context)` — idempotent,
+   no-ops when already enabled. Callers no longer need to know the
+   scheduler has an enabled/disabled state.
+
+**Rule of thumb:** for boolean prefs whose initial-state-write is
+driven by a UI event, prefer "derive from current observable state"
+over "react to edge". Edge detection only works when both endpoints
+are observable within one app session. OS-owned state (OAuth tokens,
+permission grants, encrypted prefs) can cross session boundaries and
+defeat edge detection silently.
+
+---
+
 ## 2026-04-19 — Shipped-without-verification: two flavours of the same bug
 
 Two separate incidents in the Samsung Health rewrite session shared
