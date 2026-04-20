@@ -99,17 +99,80 @@ html[data-focus="1"] .fp-root {
   outline-offset: 2px;
 }
 
-/* --- Masthead --- */
+/* --- Masthead (broadsheet) ---
+
+   Two stacked rows:
+   1. .fp-masthead__nameplate — inverted ink strip: dot + nameplate text +
+      long date + timezone. ~32px tall.
+   2. .fp-masthead__live      — live row: short date · weather · LAST UPDATED · FOCUS.
+      Separated from the nameplate by a 3px double rule (drawn as the
+      live row's top border so we don't add a sibling div).
+
+   The whole component still terminates in a single 2px rule below
+   `.fp-masthead__live` so the rest of the page sits cleanly under it. */
 
 .fp-masthead {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 24px;
+  /* Pull the nameplate slightly into the gutter so it reads as a
+     full-bleed strip even though the rest of the page is padded. */
+  margin-left: -8px;
+  margin-right: -8px;
+}
+
+.fp-masthead__nameplate {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 16px;
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.fp-masthead__nameplate-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fp-masthead__nameplate-right {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  color: var(--fp-yellow);
+  white-space: nowrap;
+}
+
+/* The Basquiat dot — tiny yellow nameplate marker. Replaces the lucide
+   icons we'd otherwise reach for here; matches `.strip .dot` in the
+   wireframe. */
+.fp-masthead__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fp-yellow);
+  display: inline-block;
+}
+
+.fp-masthead__live {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 24px;
   height: 56px;
-  padding: 0 8px;
+  padding: 0 16px;
+  /* 3px double rule between nameplate and live row. */
+  border-top: 3px double var(--fp-rule);
+  /* Keep the existing trailing rule under the masthead. */
   border-bottom: 2px solid var(--fp-rule);
-  margin-bottom: 24px;
+  background: var(--fp-paper);
 }
 
 .fp-masthead__left {
@@ -126,6 +189,18 @@ html[data-focus="1"] .fp-root {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+/* On narrow screens the nameplate-right would push past the dateline —
+   stack it under the left segment instead of squishing the type. */
+@media (max-width: 640px) {
+  .fp-masthead__nameplate {
+    grid-template-columns: 1fr;
+    row-gap: 4px;
+  }
+  .fp-masthead__nameplate-right {
+    justify-self: start;
+  }
 }
 
 /* --- Shared primitives --- */

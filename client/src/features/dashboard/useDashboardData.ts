@@ -117,9 +117,16 @@ export function useDashboardData() {
   // discriminate between "undefined" and "reason: fetch-failed".
   const news = newsData ?? { items: [], reason: "fetch-failed" as const };
 
+  // Account creation date powers the broadsheet ISSUE counter in the
+  // Masthead. `auth.me` already returns the full user row; we just
+  // surface the field so consumers don't have to dig into `user`.
+  const accountCreatedAt =
+    (user as { createdAt?: string | Date | null } | null)?.createdAt ?? null;
+
   return {
     user,
     userName,
+    accountCreatedAt,
     preferences,
     todayKey,
 

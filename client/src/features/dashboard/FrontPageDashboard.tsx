@@ -64,7 +64,11 @@ export default function FrontPageDashboard() {
         Skip to today&rsquo;s headline
       </a>
 
-      <Masthead dateKey={data.todayKey} weather={data.weather} />
+      <Masthead
+        dateKey={data.todayKey}
+        weather={data.weather}
+        accountCreatedAt={data.accountCreatedAt}
+      />
 
       <main id="fp-main" tabIndex={-1}>
       <KingOfTheDayHero
