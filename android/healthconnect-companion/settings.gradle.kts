@@ -14,5 +14,5 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "samsung-health-companion"
+rootProject.name = "healthconnect-companion"
 include(":app")

@@ -2,7 +2,7 @@
 
 This project now contains a companion Android scaffold at:
 
-`/Users/rhettgopaul/Documents/New project/productivity-hub/android/samsung-health-companion`
+`/Users/rhettgopaul/Documents/New project/productivity-hub/android/healthconnect-companion`
 
 ## Maximum datapoint scope currently modeled
 

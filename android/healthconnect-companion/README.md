@@ -21,7 +21,7 @@ This Android app now includes Step 2 collection using Health Connect reads and p
 
 ## Configure
 
-1. Open this folder in Android Studio: `android/samsung-health-companion`.
+1. Open this folder in Android Studio: `android/healthconnect-companion`.
 2. In `app/build.gradle.kts`, set:
    - `WEBHOOK_URL` to your deployed endpoint (`https://app.coherence-rmg.com/api/webhooks/samsung-health`).
    - `SYNC_KEY` to your server sync key.

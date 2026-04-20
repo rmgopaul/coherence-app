@@ -88,7 +88,7 @@ The new files typecheck on their own (Kotlin + Compose imports) but
 the Android build hasn't been run in this session. Before merging:
 
 ```bash
-cd android/samsung-health-companion
+cd android/healthconnect-companion
 ./gradlew assembleDebug
 ```
 
