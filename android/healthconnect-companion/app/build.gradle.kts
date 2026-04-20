@@ -1,9 +1,21 @@
+import java.util.Properties
+
 plugins {
   id("com.android.application")
   id("org.jetbrains.kotlin.android")
   id("org.jetbrains.kotlin.plugin.serialization")
   id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Load local.properties so command-line `./gradlew` builds get the
+// same secrets Android Studio injects automatically. `project.findProperty()`
+// alone only reads gradle.properties — not local.properties.
+val localProperties = Properties().apply {
+  val f = rootProject.file("local.properties")
+  if (f.exists()) f.inputStream().use { load(it) }
+}
+fun prop(key: String): String? =
+  localProperties.getProperty(key) ?: project.findProperty(key) as String?
 
 android {
   namespace = "com.coherence.healthconnect"
@@ -13,8 +25,8 @@ android {
     applicationId = "com.coherence.healthconnect"
     minSdk = 29
     targetSdk = 36
-    versionCode = 9
-    versionName = "0.5.3"
+    versionCode = 12
+    versionName = "0.5.6"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -23,17 +35,16 @@ android {
     // sentinel that `SyncConfig.isConfigured()` detects, so a fresh
     // checkout builds but refuses to call the webhook until the
     // developer populates the property.
-    val samsungSyncKey = project.findProperty("SAMSUNG_HEALTH_SYNC_KEY") as String?
-      ?: "REPLACE_ME_SYNC_KEY"
-    val samsungWebhookUrl = project.findProperty("SAMSUNG_HEALTH_WEBHOOK_URL") as String?
+    val samsungSyncKey = prop("SAMSUNG_HEALTH_SYNC_KEY") ?: "REPLACE_ME_SYNC_KEY"
+    val samsungWebhookUrl = prop("SAMSUNG_HEALTH_WEBHOOK_URL")
       ?: "https://app.coherence-rmg.com/api/webhooks/samsung-health"
-    val baseUrl = project.findProperty("COHERENCE_BASE_URL") as String?
-      ?: "https://app.coherence-rmg.com"
+    val baseUrl = prop("COHERENCE_BASE_URL") ?: "https://app.coherence-rmg.com"
+    val googleClientId = prop("GOOGLE_CLIENT_ID") ?: ""
 
     buildConfigField("String", "WEBHOOK_URL", "\"$samsungWebhookUrl\"")
     buildConfigField("String", "SYNC_KEY", "\"$samsungSyncKey\"")
     buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
-    buildConfigField("String", "GOOGLE_CLIENT_ID", "\"${project.findProperty("GOOGLE_CLIENT_ID") ?: ""}\"")
+    buildConfigField("String", "GOOGLE_CLIENT_ID", "\"$googleClientId\"")
     buildConfigField("String", "OAUTH_REDIRECT_SCHEME", "\"coherence\"")
   }
 

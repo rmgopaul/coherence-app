@@ -3,6 +3,7 @@ package com.coherence.healthconnect.sdk
 import android.content.Context
 import android.os.Build
 import androidx.health.connect.client.HealthConnectClient
+import com.coherence.healthconnect.BuildConfig
 import com.coherence.healthconnect.model.ActivityMetrics
 import com.coherence.healthconnect.model.BloodPressureMetrics
 import com.coherence.healthconnect.model.BodyCompositionMetrics
@@ -218,7 +219,7 @@ class HealthConnectRepository(
       timezone = zone.id,
       source = SourceMetadata(
         provider = "health-connect",
-        appVersion = APP_VERSION,
+        appVersion = BuildConfig.VERSION_NAME,
         deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
         osVersion = "Android ${Build.VERSION.RELEASE}",
       ),
@@ -316,8 +317,4 @@ class HealthConnectRepository(
     )
   }
 
-  companion object {
-    // Keep in sync with HealthConnectPayloadMapper.APP_VERSION.
-    private const val APP_VERSION = "0.5.3"
-  }
 }

@@ -28,6 +28,7 @@ import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
 import androidx.health.connect.client.records.Vo2MaxRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.time.TimeRangeFilter
+import com.coherence.healthconnect.BuildConfig
 import com.coherence.healthconnect.model.ActivityMetrics
 import com.coherence.healthconnect.model.BloodPressureMetrics
 import com.coherence.healthconnect.model.BloodPressureSample
@@ -591,7 +592,7 @@ class HealthConnectPayloadMapper {
       timezone = zone.id,
       source = SourceMetadata(
         provider = "health-connect",
-        appVersion = APP_VERSION,
+        appVersion = BuildConfig.VERSION_NAME,
         deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
         osVersion = "Android ${Build.VERSION.RELEASE}",
       ),
@@ -947,7 +948,11 @@ class HealthConnectPayloadMapper {
     // unique-work name strings, and the SamsungHealthPayload wire
     // contract are unchanged — renaming those would require
     // coordinated DB + server + installed-device migrations.
-    private const val APP_VERSION = "0.5.3"
+    // 0.5.6 — collapsed the hand-maintained APP_VERSION consts
+    // (duplicated in HealthConnectPayloadMapper AND
+    // HealthConnectRepository, drifted between 0.5.3 / 0.5.5) down
+    // to a single reference to BuildConfig.VERSION_NAME. `versionName`
+    // in build.gradle.kts is now the only place to update on release.
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

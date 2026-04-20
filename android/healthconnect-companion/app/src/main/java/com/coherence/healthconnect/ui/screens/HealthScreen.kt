@@ -12,13 +12,9 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.coherence.healthconnect.sdk.HealthConnectStatus
 import com.coherence.healthconnect.sync.AutoSyncScheduler
 import com.coherence.healthconnect.ui.health.HealthConnectPermissionHost
 import com.coherence.healthconnect.ui.state.dataOrNull
@@ -33,7 +29,6 @@ import com.coherence.healthconnect.ui.widgets.WhoopWidget
 fun HealthScreen(viewModel: DashboardViewModel) {
   val state by viewModel.state.collectAsState()
   val context = LocalContext.current
-  var hcStatus by remember { mutableStateOf<HealthConnectStatus?>(null) }
 
   PullToRefreshBox(
     isRefreshing = state.isRefreshing,
@@ -53,15 +48,20 @@ fun HealthScreen(viewModel: DashboardViewModel) {
         )
       }
       item {
-        // First-run permission prompt. When permissions transition
-        // from missing → granted, trigger an immediate sync so the
-        // dashboard shows real data without waiting for the 15-min
-        // periodic worker.
+        // Enable auto-sync whenever permissions are granted and the
+        // scheduler isn't already running. This covers both paths:
+        //   (a) First run: user taps "Grant permissions" → status
+        //       callback fires with permissions granted → enable.
+        //   (b) Reinstall or login after data wipe: permissions from
+        //       a prior session were preserved, scheduler pref was
+        //       reset to default (false), LaunchedEffect fires the
+        //       callback on first composition → enable.
+        // `AutoSyncScheduler.enable` already schedules both the
+        // periodic worker and an immediate one-shot sync, so the user
+        // never waits for the next periodic tick to see fresh data.
         HealthConnectPermissionHost(
           onStatusChanged = { next ->
-            val wasIncomplete = hcStatus?.permissionsGranted == false
-            hcStatus = next
-            if (wasIncomplete && next.permissionsGranted) {
+            if (next.permissionsGranted && !AutoSyncScheduler.isEnabled(context)) {
               AutoSyncScheduler.enable(context)
             }
           },
