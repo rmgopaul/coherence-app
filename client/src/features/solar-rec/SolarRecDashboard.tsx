@@ -1291,11 +1291,32 @@ interface ProgressiveHydrationOptions {
   priorityKeys?: Set<DatasetKey>;
   onBatch: (batch: Partial<Record<DatasetKey, CsvDataset>>, phase: "priority" | "background") => void;
   onProgress?: (loaded: number, total: number) => void;
+  /**
+   * Fires when a single dataset fails to hydrate. Siblings continue —
+   * this is a signal, not a halt. Caller typically records the error
+   * in state so the card for that key can surface it instead of
+   * showing "Not uploaded" (which would misleadingly suggest the
+   * user had never uploaded it).
+   */
+  onError?: (key: DatasetKey, error: unknown) => void;
+}
+
+// Debug flag, window-scoped so it survives hot reloads without a
+// build step. Read per-mount; flipping it mid-session takes effect on
+// the next hydrate.
+//
+// Usage (devtools console):
+//   window.__solarRecDebug = true;   // enable timing logs
+//   window.__solarRecDebug = false;  // disable
+function isSolarRecDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return (window as unknown as { __solarRecDebug?: boolean }).__solarRecDebug === true;
 }
 
 async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
-  const { priorityKeys, onBatch, onProgress } = options;
+  const { priorityKeys, onBatch, onProgress, onError } = options;
   if (typeof window === "undefined") return;
+  const debug = isSolarRecDebugEnabled();
 
   // Phase 17c: buffers that accumulate datasets between flushes.
   // `priorityBatch` drains at the priority/background boundary;
@@ -1436,11 +1457,31 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
         ): Promise<number> => {
           let loaded = baseProgress;
           for (const key of keys) {
-            const serialized = (await idbRequestToPromise(
-              store.get(dashboardDatasetStorageKey(key))
-            )) as SerializedCsvDataset | undefined;
-            const dataset = deserializeDatasetRecord(serialized);
-            if (dataset) recordLoad(target, key, dataset);
+            // Per-key try/catch so a single rejected IDB read or
+            // malformed record can't abort the whole phase. Failed
+            // datasets are reported via onError and simply skipped —
+            // siblings hydrate normally.
+            const t0 = debug ? performance.now() : 0;
+            try {
+              const serialized = (await idbRequestToPromise(
+                store.get(dashboardDatasetStorageKey(key))
+              )) as SerializedCsvDataset | undefined;
+              const dataset = deserializeDatasetRecord(serialized);
+              if (dataset) recordLoad(target, key, dataset);
+              if (debug) {
+                const ms = Math.round(performance.now() - t0);
+                const rowCount = dataset?.rows.length ?? 0;
+                // eslint-disable-next-line no-console
+                console.log(`[hydrate:idb] ${key} ${ms}ms (${rowCount} rows)`);
+              }
+            } catch (error) {
+              if (debug) {
+                const ms = Math.round(performance.now() - t0);
+                // eslint-disable-next-line no-console
+                console.warn(`[hydrate:idb] ${key} FAILED after ${ms}ms`, error);
+              }
+              onError?.(key, error);
+            }
             loaded += 1;
             onProgress?.(loaded, total);
             if (loaded < total) {
@@ -1952,6 +1993,11 @@ export default function SolarRecDashboard() {
   );
   const [logEntries, setLogEntries] = useState<DashboardLogEntry[]>(() => loadPersistedLogs());
   const [uploadErrors, setUploadErrors] = useState<Partial<Record<DatasetKey, string>>>({});
+  // Per-dataset hydration failures. Keyed on DatasetKey, value is a
+  // short error message surfaced on the card so the user can tell
+  // "hydration failed" apart from "never uploaded." Cleared for a
+  // key when that key next hydrates successfully.
+  const [hydrationErrors, setHydrationErrors] = useState<Partial<Record<DatasetKey, string>>>({});
   const [storageNotice, setStorageNotice] = useState<string | null>(null);
   const uploadQueueTailRef = useRef<Promise<void>>(Promise.resolve());
   const activeUploadTaskRef = useRef(false);
@@ -4474,6 +4520,7 @@ export default function SolarRecDashboard() {
             priorityKeys,
             onBatch: (batch, _phase) => {
               if (cancelled) return;
+              const landedKeys = Object.keys(batch) as DatasetKey[];
               setDatasets((current) => {
                 const next = { ...current };
                 let changed = false;
@@ -4486,10 +4533,25 @@ export default function SolarRecDashboard() {
                 }
                 return changed ? next : current;
               });
+              // Clear any prior hydration error for keys that just
+              // landed successfully — this covers the "retry
+              // recovered" case.
+              setHydrationErrors((current) => {
+                if (landedKeys.every((key) => !current[key])) return current;
+                const next = { ...current };
+                for (const key of landedKeys) delete next[key];
+                return next;
+              });
             },
             onProgress: (loaded, total) => {
               if (cancelled) return;
               setHydrationProgress({ loaded, total });
+            },
+            onError: (key, error) => {
+              if (cancelled) return;
+              const message =
+                error instanceof Error ? error.message : "Failed to hydrate from local cache.";
+              setHydrationErrors((current) => ({ ...current, [key]: message }));
             },
           }),
           loadLogsFromStorage(),
@@ -4531,6 +4593,7 @@ export default function SolarRecDashboard() {
         // No priority ordering — previously-loaded keys are skipped
         // inside onBatch via `if (next[key]) continue`.
         onBatch: (batch) => {
+          const landedKeys = Object.keys(batch) as DatasetKey[];
           setDatasets((current) => {
             const next = { ...current };
             let changed = false;
@@ -4543,6 +4606,17 @@ export default function SolarRecDashboard() {
             }
             return changed ? next : current;
           });
+          setHydrationErrors((current) => {
+            if (landedKeys.every((key) => !current[key])) return current;
+            const next = { ...current };
+            for (const key of landedKeys) delete next[key];
+            return next;
+          });
+        },
+        onError: (key, error) => {
+          const message =
+            error instanceof Error ? error.message : "Failed to hydrate from local cache.";
+          setHydrationErrors((current) => ({ ...current, [key]: message }));
         },
         onProgress: (loaded, total) => {
           setLoadAllProgress({ loaded, total });
@@ -4663,9 +4737,18 @@ export default function SolarRecDashboard() {
         // 9s of pure RTT.
         const loadSingleDataset = async (rawKey: DatasetKey) => {
           if (cancelled) return;
+          const debug = isSolarRecDebugEnabled();
+          const t0 = debug ? performance.now() : 0;
           try {
             const loadedPayload = await loadPayloadByKey(rawKey);
-            if (!loadedPayload?.payload) return;
+            if (!loadedPayload?.payload) {
+              if (debug) {
+                const ms = Math.round(performance.now() - t0);
+                // eslint-disable-next-line no-console
+                console.log(`[hydrate:cloud] ${rawKey} ${ms}ms (no payload)`);
+              }
+              return;
+            }
             const datasetPayload = loadedPayload.payload;
             loadedChunkKeys[rawKey] = loadedPayload.chunkKeys;
 
@@ -4770,8 +4853,29 @@ export default function SolarRecDashboard() {
             if (!deserializedDataset) return;
             loadedDatasets[rawKey] = deserializedDataset;
             loadedSignatures[rawKey] = `${deserializedDataset.fileName}|${deserializedDataset.uploadedAt.toISOString()}|${deserializedDataset.rows.length}|${deserializedDataset.sources?.length ?? 0}`;
-          } catch {
-            // Keep going; partial data is better than none.
+            if (debug) {
+              const ms = Math.round(performance.now() - t0);
+              // eslint-disable-next-line no-console
+              console.log(
+                `[hydrate:cloud] ${rawKey} ${ms}ms (${deserializedDataset.rows.length} rows)`,
+              );
+            }
+          } catch (error) {
+            // Keep going; partial data is better than none. Record the
+            // error so the per-card UI can distinguish "failed to
+            // hydrate" from "never uploaded."
+            if (debug) {
+              const ms = Math.round(performance.now() - t0);
+              // eslint-disable-next-line no-console
+              console.warn(`[hydrate:cloud] ${rawKey} FAILED after ${ms}ms`, error);
+            }
+            if (!cancelled) {
+              setHydrationErrors((current) => ({
+                ...current,
+                [rawKey]:
+                  error instanceof Error ? error.message : "Failed to hydrate from cloud.",
+              }));
+            }
           }
         };
 
@@ -6901,6 +7005,7 @@ const aiDataContext = useMemo(() => {
                 const dataset = datasets[key];
                 const manifestEntry = mergedRemoteDatasetManifest[key];
                 const error = uploadErrors[key];
+                const hydrationError = hydrationErrors[key];
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
                 const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
                 const serverCloudStatus = serverDatasetCloudStatusByKey[key];
@@ -7045,6 +7150,11 @@ const aiDataContext = useMemo(() => {
                     )}
 
                     {error ? <p className="text-xs text-rose-700">{error}</p> : null}
+                    {hydrationError ? (
+                      <p className="text-xs text-rose-700">
+                        Hydration failed: {hydrationError}
+                      </p>
+                    ) : null}
 
                     {isScannerManaged ? (
                       <div className="space-y-2">
