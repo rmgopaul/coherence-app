@@ -79,15 +79,31 @@ class HealthConnectReader internal constructor(
   val warnings: MutableList<String> = mutableListOf()
 
   /**
+   * Set to `true` once any [read] call in this reader instance has
+   * hit a rate-limit error. All subsequent [read] calls short-circuit
+   * without issuing HTTP to Health Connect.
+   *
+   * Why this matters: a single sync iterates ~22 typed reads. Without
+   * this flag, the first rate-limit hit engages cooldown but the
+   * remaining 21 types each issue fresh HC calls that all hit the
+   * limiter. Every failed call still debits the rolling 24h quota
+   * window, which is exactly the mechanism that kept the app's
+   * cooldown stuck for hours in 0.5.x: each "retry burst" extended
+   * the quota exhaustion slightly, preventing recovery.
+   */
+  private var quotaExhaustedThisSync: Boolean = false
+
+  /**
    * Read all records of [recordType] within [range]. If the permission
    * has not been granted, skip the read and record a warning (unless
    * [warnIfMissing] is false).
    *
-   * On a rate-limit error the call retries up to [MAX_ATTEMPTS] times
-   * with the delays in [RATE_LIMIT_BACKOFFS_MS]. If retries are
-   * exhausted, surfaces the final message as a warning and returns an
-   * empty list so the mapper can carry on with the rest of the
-   * record types.
+   * Rate-limit errors are NOT retried. Health Connect's quota is a
+   * rolling 24h window — retrying 3× with 1–4 s backoff can't beat
+   * a 24h window, but it DOES burn 3 more of the exhausted budget
+   * per type. The first rate-limit hit engages the global cooldown
+   * and sets [quotaExhaustedThisSync] so the remaining types in the
+   * same sync short-circuit without calling HC.
    *
    * [suppressForegroundRequirementWarning] exists because some record
    * types (notably [androidx.health.connect.client.records.BodyFatRecord])
@@ -109,98 +125,80 @@ class HealthConnectReader internal constructor(
       return emptyList()
     }
 
-    attempted += label
-
-    for (attempt in 0 until MAX_ATTEMPTS) {
-      try {
-        val all = mutableListOf<T>()
-        var pageToken: String? = null
-        do {
-          val response = source.readRecords(
-            ReadRecordsRequest(
-              recordType = recordType,
-              timeRangeFilter = range,
-              pageToken = pageToken,
-            ),
-          )
-          all += response.records
-          pageToken = response.pageToken
-        } while (pageToken != null)
-
-        succeeded += label
-        // Any successful read is conclusive evidence the quota has
-        // recovered enough to make progress, so clear any prior
-        // cooldown marker.
-        cooldown?.clear()
-        // Strip records from excluded data sources (e.g. WHOOP) so
-        // they never reach the mapper. Done after the HC call so the
-        // quota debit is identical — there's no way to pre-filter at
-        // the HC API level.
-        val filtered = if (excludedPackageNames.isEmpty()) {
-          all
-        } else {
-          val kept = all.filterNot { record ->
-            record.metadata.dataOrigin.packageName in excludedPackageNames
-          }
-          val dropped = all.size - kept.size
-          if (dropped > 0) {
-            Log.d(TAG, "$label dropped $dropped records from excluded sources")
-          }
-          kept
-        }
-        // Post-success spacing: when many read() calls run back-to-back
-        // (e.g. a 22-type range fetch during a historical backfill),
-        // Health Connect's per-app rate limiter treats bursts more
-        // harshly than spread-out calls. 50 ms * 22 types ≈ 1.1 s of
-        // extra latency per sync, which is invisible to the user but
-        // keeps us comfortably inside the quota.
-        delay(POST_READ_SPACING_MS)
-        return filtered
-      } catch (error: Throwable) {
-        val combined = buildErrorMessage(error)
-        if (
-          suppressForegroundRequirementWarning &&
-          combined.contains("must be in foreground", ignoreCase = true)
-        ) {
-          return emptyList()
-        }
-
-        val rateLimited = isRateLimitError(combined)
-
-        if (rateLimited && attempt < MAX_ATTEMPTS - 1) {
-          // Transient rate-limit: wait and retry.
-          delay(RATE_LIMIT_BACKOFFS_MS[attempt])
-          continue
-        }
-
-        // Non-retryable, or last rate-limited attempt — surface the
-        // warning and stop. Previous versions tried to mark the
-        // cooldown *after* the for-loop, but the loop always returns
-        // from inside, so that code was unreachable. Promote cooldown
-        // here, inside the catch, whenever we've exhausted retries
-        // against a rate limit.
-        if (rateLimited && attempt == MAX_ATTEMPTS - 1) {
-          cooldown?.markRateLimited(combined)
-          Log.w(
-            TAG,
-            "$label exhausted $MAX_ATTEMPTS rate-limit retries; cooldown engaged",
-          )
-          warnings += "$label read failed after $MAX_ATTEMPTS attempts (rate limited): " +
-            (error.message ?: "unknown")
-        } else {
-          warnings += "$label read failed: ${error.message ?: error.javaClass.simpleName}"
-        }
-        return emptyList()
-      }
+    if (quotaExhaustedThisSync) {
+      warnings += "$label skipped: rate-limit cooldown engaged earlier this sync"
+      return emptyList()
     }
 
-    // Unreachable: the for-loop always either returns on success or
-    // returns from the catch block. Kept as a belt-and-braces fallback
-    // so the function compiles cleanly and any future refactor that
-    // introduces a path out of the loop still lands in a defined
-    // state.
-    warnings += "$label read failed: retry loop exited without result"
-    return emptyList()
+    attempted += label
+
+    try {
+      val all = mutableListOf<T>()
+      var pageToken: String? = null
+      do {
+        val response = source.readRecords(
+          ReadRecordsRequest(
+            recordType = recordType,
+            timeRangeFilter = range,
+            pageToken = pageToken,
+          ),
+        )
+        all += response.records
+        pageToken = response.pageToken
+      } while (pageToken != null)
+
+      succeeded += label
+      // Any successful read is conclusive evidence the quota has
+      // recovered enough to make progress, so clear any prior
+      // cooldown marker.
+      cooldown?.clear()
+      // Strip records from excluded data sources (e.g. WHOOP) so
+      // they never reach the mapper. Done after the HC call so the
+      // quota debit is identical — there's no way to pre-filter at
+      // the HC API level.
+      val filtered = if (excludedPackageNames.isEmpty()) {
+        all
+      } else {
+        val kept = all.filterNot { record ->
+          record.metadata.dataOrigin.packageName in excludedPackageNames
+        }
+        val dropped = all.size - kept.size
+        if (dropped > 0) {
+          Log.d(TAG, "$label dropped $dropped records from excluded sources")
+        }
+        kept
+      }
+      // Post-success spacing: when many read() calls run back-to-back
+      // (e.g. a 22-type range fetch during a historical backfill),
+      // Health Connect's per-app rate limiter treats bursts more
+      // harshly than spread-out calls. 50 ms * 22 types ≈ 1.1 s of
+      // extra latency per sync, which is invisible to the user but
+      // keeps us comfortably inside the quota.
+      delay(POST_READ_SPACING_MS)
+      return filtered
+    } catch (error: Throwable) {
+      val combined = buildErrorMessage(error)
+
+      if (
+        suppressForegroundRequirementWarning &&
+        combined.contains("must be in foreground", ignoreCase = true)
+      ) {
+        return emptyList()
+      }
+
+      if (isRateLimitError(combined)) {
+        quotaExhaustedThisSync = true
+        cooldown?.markRateLimited(combined)
+        Log.w(
+          TAG,
+          "$label rate-limited; cooldown engaged, remaining record types will be skipped",
+        )
+        warnings += "$label read failed (rate limited): ${error.message ?: "unknown"}"
+      } else {
+        warnings += "$label read failed: ${error.message ?: error.javaClass.simpleName}"
+      }
+      return emptyList()
+    }
   }
 
   private fun buildErrorMessage(error: Throwable): String {
@@ -226,7 +224,6 @@ class HealthConnectReader internal constructor(
 
   companion object {
     private const val TAG = "HealthConnectReader"
-    private const val MAX_ATTEMPTS = 3
     private const val POST_READ_SPACING_MS = 50L
 
     /**
@@ -239,12 +236,5 @@ class HealthConnectReader internal constructor(
     val DEFAULT_EXCLUDED_PACKAGES: Set<String> = setOf(
       "com.whoop.android",
     )
-
-    /**
-     * Exponential backoff applied between retry attempts on rate-limit
-     * errors. 1s → 2s → 4s gives 7 s of total backoff budget per type
-     * before we give up and move on.
-     */
-    private val RATE_LIMIT_BACKOFFS_MS = longArrayOf(1000L, 2000L, 4000L)
   }
 }

@@ -115,7 +115,16 @@ class HealthConnectCooldown(
     private const val PREFS_NAME = "coherence_samsung_sync_prefs"
     private const val KEY_COOLDOWN_UNTIL_MS = "rate_limit_cooldown_until_ms"
     private const val KEY_LAST_MESSAGE = "rate_limit_last_message"
-    private const val DEFAULT_COOLDOWN_HOURS = 4L
+    /**
+     * Health Connect enforces a rolling 24h per-app quota. A
+     * cooldown shorter than that window expires while the quota
+     * is still exhausted, which means the next worker run will
+     * hit the rate limit again and re-arm the cooldown — the
+     * "4-hour forever loop" that shipped in 0.5.x. A 24h cooldown
+     * lets the rolling window actually roll past our exhausting
+     * reads before we try again.
+     */
+    private const val DEFAULT_COOLDOWN_HOURS = 24L
     private const val SECONDS_PER_HOUR = 3600L
     private const val MESSAGE_TRUNCATION_CHARS = 500
   }

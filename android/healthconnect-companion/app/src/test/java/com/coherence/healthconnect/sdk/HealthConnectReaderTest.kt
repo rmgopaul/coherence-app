@@ -30,18 +30,20 @@ import java.time.ZoneOffset
  *  - Permission-denied short-circuit (warn vs. silent)
  *  - Happy path (records returned, succeeded log populated, cooldown
  *    cleared on success)
- *  - Retryable rate-limit error that succeeds on a later attempt
- *  - Rate-limit error that exhausts retries (cooldown is marked —
- *    the bug the postmortem documented)
+ *  - Rate-limit error on the first call engages cooldown immediately
+ *    (no retries — retrying a 24h quota window with a 7-second
+ *    backoff ship in 0.5.x was the "4-hour forever loop" bug)
+ *  - Subsequent reads in the same reader instance short-circuit once
+ *    the quota is marked exhausted, saving ~60 wasted HC calls
  *  - Non-retryable error (reported as warning, cooldown NOT marked)
  *  - Foreground-requirement error on a type that suppresses it
  *    (silent skip, no warning)
  *  - WHOOP `dataOrigin.packageName` filter drops records client-side
  *  - Pagination: multi-page response concatenates correctly
  *
- * Uses `kotlinx-coroutines-test` so the reader's `delay(...)` calls
- * for backoff + post-success spacing don't actually block — virtual
- * time advances instantly.
+ * Uses `kotlinx-coroutines-test` so the reader's `delay(...)` call
+ * for post-success spacing doesn't actually block — virtual time
+ * advances instantly.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class HealthConnectReaderTest {
@@ -271,37 +273,14 @@ class HealthConnectReaderTest {
   }
 
   @Test
-  fun `retryable rate-limit error recovers on a later attempt`() = runTest {
+  fun `rate-limit error engages cooldown on the first hit with no retry`() = runTest {
+    // Regression guard: 0.5.x retried rate-limit errors 3× with
+    // 1s/2s/4s backoff. HC's quota is a rolling 24h window — those
+    // backoffs can't help, but the extra 2 calls per type DO
+    // extend the quota exhaustion and kept the cooldown stuck for
+    // hours. New behavior: first rate-limit error engages cooldown
+    // and returns empty. Exactly ONE HC call per rate-limited type.
     val source = ScriptedSource().apply {
-      enqueueThrow(RuntimeException("Rate limited: quota exceeded"))
-      enqueueSuccess(listOf(stepsRecord(500)))
-    }
-    val cooldown = FakeCooldown()
-    val reader = makeReader(source = source, cooldown = cooldown)
-
-    val result = reader.read(StepsRecord::class, range, "steps")
-
-    assertEquals(1, result.size)
-    assertEquals(500L, result[0].count)
-    assertEquals(2, source.callCount)
-    assertEquals(listOf("steps"), reader.succeeded)
-    // The earlier rate-limit error should NOT have marked the
-    // cooldown — only exhausted retries do that.
-    assertEquals(0, cooldown.markRateLimitedCalls)
-    // The successful read DOES clear the cooldown.
-    assertEquals(1, cooldown.clearCalls)
-    assertTrue(reader.warnings.isEmpty())
-  }
-
-  @Test
-  fun `exhausted rate-limit retries mark the cooldown`() = runTest {
-    // Regression guard: this exact scenario shipped as the
-    // "cooldown unreachable-code" bug. Pre-fix, the cooldown
-    // would never be marked. This test fails on the pre-fix code
-    // because cooldown.markRateLimitedCalls stays 0.
-    val source = ScriptedSource().apply {
-      enqueueThrow(RuntimeException("Rate limit exceeded"))
-      enqueueThrow(RuntimeException("Rate limit exceeded"))
       enqueueThrow(RuntimeException("Rate limit exceeded"))
     }
     val cooldown = FakeCooldown()
@@ -310,19 +289,47 @@ class HealthConnectReaderTest {
     val result = reader.read(StepsRecord::class, range, "steps")
 
     assertTrue(result.isEmpty())
-    assertEquals(3, source.callCount)
+    assertEquals(1, source.callCount)
     assertTrue(reader.succeeded.isEmpty())
     assertEquals(1, cooldown.markRateLimitedCalls)
     assertNotNull(cooldown.lastMarkedMessage)
     assertTrue(cooldown.lastMarkedMessage!!.lowercase().contains("rate limit"))
-    // Warning text should indicate retries were exhausted.
     assertEquals(1, reader.warnings.size)
-    assertTrue(
-      reader.warnings[0].contains("after 3 attempts", ignoreCase = true) ||
-        reader.warnings[0].contains("rate limited", ignoreCase = true),
-    )
+    assertTrue(reader.warnings[0].contains("rate limited", ignoreCase = true))
     // Cooldown is NOT cleared on failure.
     assertEquals(0, cooldown.clearCalls)
+  }
+
+  @Test
+  fun `subsequent reads in same sync short-circuit after a rate-limit hit`() = runTest {
+    // Regression guard: without this, a sync that iterates ~22
+    // typed reads would issue 22 HC calls even after the first
+    // one tripped cooldown. Each failed call debits the rolling
+    // 24h quota window and prevents recovery. New behavior: the
+    // reader flips an in-memory flag on the first rate-limit
+    // error, and all following read() calls return empty without
+    // touching HC — saving ~21 wasted calls per sync.
+    val source = ScriptedSource().apply {
+      enqueueThrow(RuntimeException("Rate limit exceeded"))
+      // If the short-circuit fails, this second response would be
+      // served and the assertion on callCount below would trip.
+      enqueueSuccess(listOf(stepsRecord(999)))
+    }
+    val cooldown = FakeCooldown()
+    val reader = makeReader(source = source, cooldown = cooldown)
+
+    val first = reader.read(StepsRecord::class, range, "steps-a")
+    val second = reader.read(StepsRecord::class, range, "steps-b")
+
+    assertTrue(first.isEmpty())
+    assertTrue(second.isEmpty())
+    assertEquals(1, source.callCount) // NOT 2
+    assertEquals(1, cooldown.markRateLimitedCalls) // NOT 2
+    // Second read surfaces a distinct warning about the short-circuit.
+    assertEquals(2, reader.warnings.size)
+    assertTrue(
+      reader.warnings[1].contains("cooldown engaged earlier", ignoreCase = true),
+    )
   }
 
   @Test
@@ -428,15 +435,13 @@ class HealthConnectReaderTest {
     // allows it). Ensure nothing NPEs.
     val source = ScriptedSource().apply {
       enqueueThrow(RuntimeException("Rate limit exceeded"))
-      enqueueThrow(RuntimeException("Rate limit exceeded"))
-      enqueueThrow(RuntimeException("Rate limit exceeded"))
     }
     val reader = makeReader(source = source, cooldown = null)
 
     val result = reader.read(StepsRecord::class, range, "steps")
 
     assertTrue(result.isEmpty())
-    assertEquals(3, source.callCount)
+    assertEquals(1, source.callCount)
     assertEquals(1, reader.warnings.size)
   }
 }

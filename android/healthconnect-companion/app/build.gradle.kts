@@ -25,8 +25,8 @@ android {
     applicationId = "com.coherence.healthconnect"
     minSdk = 29
     targetSdk = 36
-    versionCode = 12
-    versionName = "0.5.6"
+    versionCode = 13
+    versionName = "0.5.7"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
