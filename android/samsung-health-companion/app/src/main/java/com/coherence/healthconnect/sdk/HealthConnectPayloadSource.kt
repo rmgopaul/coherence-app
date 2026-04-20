@@ -12,7 +12,7 @@ import java.time.LocalDate
  * Health Connect, which aggregates Samsung Health, Google Fit, Fitbit,
  * Garmin, and many other sources.
  */
-interface SamsungHealthRepository {
+interface HealthConnectPayloadSource {
 
   /**
    * Collect a snapshot for *today* using the device's current time zone.

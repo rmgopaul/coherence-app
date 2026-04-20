@@ -14,8 +14,8 @@ import java.util.concurrent.TimeUnit
 
 /**
  * WorkManager scheduling helpers for the three sync lifecycles:
- *  - Periodic daily sync ([SamsungHealthSyncWorker.PERIODIC_SYNC_NAME])
- *  - One-shot "sync now" ([SamsungHealthSyncWorker.ONE_TIME_SYNC_NAME])
+ *  - Periodic daily sync ([HealthConnectPeriodicSyncWorker.PERIODIC_SYNC_NAME])
+ *  - One-shot "sync now" ([HealthConnectPeriodicSyncWorker.ONE_TIME_SYNC_NAME])
  *  - One-shot historical backfill ([HistoricalSyncWorker.WORK_NAME])
  */
 object AutoSyncScheduler {
@@ -50,8 +50,8 @@ object AutoSyncScheduler {
   fun disable(context: Context) {
     setEnabled(context, false)
     val workManager = WorkManager.getInstance(context)
-    workManager.cancelUniqueWork(SamsungHealthSyncWorker.PERIODIC_SYNC_NAME)
-    workManager.cancelUniqueWork(SamsungHealthSyncWorker.ONE_TIME_SYNC_NAME)
+    workManager.cancelUniqueWork(HealthConnectPeriodicSyncWorker.PERIODIC_SYNC_NAME)
+    workManager.cancelUniqueWork(HealthConnectPeriodicSyncWorker.ONE_TIME_SYNC_NAME)
     workManager.cancelUniqueWork(HistoricalSyncWorker.WORK_NAME)
   }
 
@@ -128,7 +128,7 @@ object AutoSyncScheduler {
       .setRequiredNetworkType(NetworkType.CONNECTED)
       .build()
 
-    val periodicWork = PeriodicWorkRequestBuilder<SamsungHealthSyncWorker>(
+    val periodicWork = PeriodicWorkRequestBuilder<HealthConnectPeriodicSyncWorker>(
       PERIODIC_INTERVAL_MINUTES,
       TimeUnit.MINUTES,
       PERIODIC_FLEX_MINUTES,
@@ -139,7 +139,7 @@ object AutoSyncScheduler {
       .build()
 
     WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-      SamsungHealthSyncWorker.PERIODIC_SYNC_NAME,
+      HealthConnectPeriodicSyncWorker.PERIODIC_SYNC_NAME,
       ExistingPeriodicWorkPolicy.UPDATE,
       periodicWork,
     )
@@ -150,13 +150,13 @@ object AutoSyncScheduler {
       .setRequiredNetworkType(NetworkType.CONNECTED)
       .build()
 
-    val nowWork = OneTimeWorkRequestBuilder<SamsungHealthSyncWorker>()
+    val nowWork = OneTimeWorkRequestBuilder<HealthConnectPeriodicSyncWorker>()
       .setConstraints(constraints)
       .setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.MINUTES)
       .build()
 
     WorkManager.getInstance(context).enqueueUniqueWork(
-      SamsungHealthSyncWorker.ONE_TIME_SYNC_NAME,
+      HealthConnectPeriodicSyncWorker.ONE_TIME_SYNC_NAME,
       ExistingWorkPolicy.REPLACE,
       nowWork,
     )

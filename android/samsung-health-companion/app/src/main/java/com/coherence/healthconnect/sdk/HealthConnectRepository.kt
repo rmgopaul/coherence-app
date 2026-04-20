@@ -23,7 +23,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 
 /**
- * Thin orchestrator that implements [SamsungHealthRepository] by
+ * Thin orchestrator that implements [HealthConnectPayloadSource] by
  * composing [HealthConnectPermissionManager] → [HealthConnectReader]
  * → [HealthConnectPayloadMapper].
  *
@@ -32,12 +32,12 @@ import java.time.ZoneId
  * [HealthConnectPayloadMapper] and extracts permission/read/mapper
  * concerns into their own files.
  */
-class SamsungHealthDataSdkRepository(
+class HealthConnectRepository(
   private val context: Context,
   private val permissionManager: HealthConnectPermissionManager =
     HealthConnectPermissionManager(context),
   private val cooldown: HealthConnectCooldown = HealthConnectCooldown(context),
-) : SamsungHealthRepository {
+) : HealthConnectPayloadSource {
 
   override suspend fun collectDailyPayload(): SamsungHealthPayload {
     val zone = ZoneId.systemDefault()
@@ -318,6 +318,6 @@ class SamsungHealthDataSdkRepository(
 
   companion object {
     // Keep in sync with HealthConnectPayloadMapper.APP_VERSION.
-    private const val APP_VERSION = "0.5.2"
+    private const val APP_VERSION = "0.5.3"
   }
 }

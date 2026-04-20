@@ -938,7 +938,16 @@ class HealthConnectPayloadMapper {
     // foreground-error suppression, WHOOP filter, and pagination.
     // Extracted RateLimitCooldownSink + HealthConnectRecordSource
     // interfaces so the reader depends on what it uses.
-    private const val APP_VERSION = "0.5.2"
+    // 0.5.3 — class renames within the healthconnect package so the
+    // names match what the code actually does:
+    //   SamsungHealthDataSdkRepository  -> HealthConnectRepository
+    //   SamsungHealthRepository (iface) -> HealthConnectPayloadSource
+    //   SamsungHealthSyncWorker         -> HealthConnectPeriodicSyncWorker
+    // DB columns, tRPC provider slug "samsung-health", WorkManager
+    // unique-work name strings, and the SamsungHealthPayload wire
+    // contract are unchanged — renaming those would require
+    // coordinated DB + server + installed-device migrations.
+    private const val APP_VERSION = "0.5.3"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

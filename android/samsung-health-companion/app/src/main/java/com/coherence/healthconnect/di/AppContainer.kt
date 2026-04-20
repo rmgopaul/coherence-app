@@ -20,8 +20,8 @@ import com.coherence.healthconnect.data.repository.WhoopRepository
 import com.coherence.healthconnect.network.TrpcClient
 import com.coherence.healthconnect.sdk.HealthConnectCooldown
 import com.coherence.healthconnect.sdk.HealthConnectPermissionManager
-import com.coherence.healthconnect.sdk.SamsungHealthDataSdkRepository
-import com.coherence.healthconnect.sdk.SamsungHealthRepository
+import com.coherence.healthconnect.sdk.HealthConnectRepository
+import com.coherence.healthconnect.sdk.HealthConnectPayloadSource
 import kotlinx.serialization.json.Json
 
 /**
@@ -61,8 +61,8 @@ class AppContainer(context: Context) {
   // instance.
   val healthConnectPermissionManager = HealthConnectPermissionManager(context)
   val healthConnectCooldown = HealthConnectCooldown(context)
-  val samsungHealthRepository: SamsungHealthRepository =
-    SamsungHealthDataSdkRepository(
+  val healthConnectRepository: HealthConnectPayloadSource =
+    HealthConnectRepository(
       context = context,
       permissionManager = healthConnectPermissionManager,
       cooldown = healthConnectCooldown,

@@ -12,7 +12,7 @@ import androidx.work.ForegroundInfo
 import androidx.work.workDataOf
 import androidx.work.WorkerParameters
 import com.coherence.healthconnect.CoherenceApplication
-import com.coherence.healthconnect.sdk.SamsungHealthRepository
+import com.coherence.healthconnect.sdk.HealthConnectPayloadSource
 import java.time.LocalDate
 import java.time.ZoneId
 
@@ -55,8 +55,8 @@ class HistoricalSyncWorker(
     private const val TAG = "HealthBackfill"
   }
 
-  private val repository: SamsungHealthRepository
-    get() = (applicationContext as CoherenceApplication).container.samsungHealthRepository
+  private val repository: HealthConnectPayloadSource
+    get() = (applicationContext as CoherenceApplication).container.healthConnectRepository
   private val cooldown
     get() = (applicationContext as CoherenceApplication).container.healthConnectCooldown
   private val webhookClient = WebhookClient()
