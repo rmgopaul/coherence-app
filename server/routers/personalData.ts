@@ -36,8 +36,17 @@ import {
   deleteSupplementLog,
   getConversationSummaries,
   getDailyMetricsHistory,
+  createHabitCategory,
+  deleteHabitCategory,
   getHabitCompletionsByDate,
+  getHabitCompletionsForDefinitionRange,
   getHabitCompletionsRange,
+  getSleepNoteByDate,
+  listHabitCategories,
+  listSleepNotesRange,
+  updateHabitCategory,
+  updateHabitDefinition,
+  upsertSleepNote,
   getIntegrationByProvider,
   getLatestSamsungSyncPayload,
   getNoteById,
@@ -1115,22 +1124,25 @@ export const habitsRouter = router({
       z.object({
         name: z.string().min(1).max(120),
         color: z.string().min(1).max(32).optional(),
+        categoryId: z.string().max(64).nullable().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const existing = await listHabitDefinitions(ctx.user.id);
       const nextSortOrder =
         existing.length > 0 ? Math.max(...existing.map((habit) => habit.sortOrder ?? 0)) + 1 : 0;
+      const id = nanoid();
 
       await createHabitDefinition({
-        id: nanoid(),
+        id,
         userId: ctx.user.id,
         name: input.name.trim(),
         color: (input.color ?? "slate").trim().toLowerCase(),
         sortOrder: nextSortOrder,
         isActive: true,
+        categoryId: input.categoryId ?? null,
       });
-      return { success: true };
+      return { id, success: true };
     }),
   deleteDefinition: protectedProcedure
     .input(z.object({ habitId: z.string() }))
@@ -1243,6 +1255,333 @@ export const habitsRouter = router({
       };
     });
   }),
+
+  // ─── Categories ──────────────────────────────────────────────────
+  listCategories: protectedProcedure.query(async ({ ctx }) => {
+    return listHabitCategories(ctx.user.id);
+  }),
+  createCategory: protectedProcedure
+    .input(
+      z.object({
+        name: z.string().min(1).max(120),
+        color: z.string().max(32).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const existing = await listHabitCategories(ctx.user.id);
+      const nextSortOrder =
+        existing.length > 0
+          ? Math.max(...existing.map((c) => c.sortOrder ?? 0)) + 1
+          : 0;
+      const id = nanoid();
+      await createHabitCategory({
+        id,
+        userId: ctx.user.id,
+        name: input.name.trim(),
+        color: input.color?.trim() || "slate",
+        sortOrder: nextSortOrder,
+        isActive: true,
+      });
+      return { id, success: true };
+    }),
+  updateCategory: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        name: z.string().min(1).max(120).optional(),
+        color: z.string().max(32).optional(),
+        sortOrder: z.number().int().optional(),
+        isActive: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await updateHabitCategory(ctx.user.id, input.id, {
+        name: input.name?.trim(),
+        color: input.color?.trim(),
+        sortOrder: input.sortOrder,
+        isActive: input.isActive,
+      });
+      return { success: true };
+    }),
+  deleteCategory: protectedProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      await deleteHabitCategory(ctx.user.id, input.id);
+      return { success: true };
+    }),
+
+  // ─── Definition updates (rename, recolor, recategorize, reorder) ─
+  updateDefinition: protectedProcedure
+    .input(
+      z.object({
+        habitId: z.string().min(1),
+        name: z.string().min(1).max(120).optional(),
+        color: z.string().max(32).optional(),
+        sortOrder: z.number().int().optional(),
+        isActive: z.boolean().optional(),
+        categoryId: z.string().max(64).nullable().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await updateHabitDefinition(ctx.user.id, input.habitId, {
+        name: input.name?.trim(),
+        color: input.color?.trim(),
+        sortOrder: input.sortOrder,
+        isActive: input.isActive,
+        categoryId: input.categoryId,
+      });
+      return { success: true };
+    }),
+
+  // ─── Completions range (heatmap) ─────────────────────────────────
+  getCompletionsRange: protectedProcedure
+    .input(
+      z.object({
+        habitId: z.string().min(1),
+        startDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const rows = await getHabitCompletionsForDefinitionRange(
+        ctx.user.id,
+        input.habitId,
+        input.startDateKey,
+        input.endDateKey
+      );
+      return rows.map((r) => ({
+        dateKey: r.dateKey,
+        completed: r.completed,
+      }));
+    }),
+
+  // ─── Correlation (habit × health metric) ─────────────────────────
+  getCorrelation: protectedProcedure
+    .input(
+      z.object({
+        habitId: z.string().min(1),
+        metric: z.enum([
+          "whoopRecoveryScore",
+          "whoopDayStrain",
+          "whoopSleepHours",
+          "whoopHrvMs",
+          "whoopRestingHr",
+          "samsungSteps",
+          "samsungSleepHours",
+          "samsungSpo2AvgPercent",
+          "samsungSleepScore",
+          "samsungEnergyScore",
+          "todoistCompletedCount",
+        ]),
+        windowDays: z.number().int().min(14).max(365).default(90),
+        lagDays: z.number().int().min(0).max(3).default(0),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - (input.windowDays - 1));
+      const toKey = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      const startKey = toKey(start);
+      const endKey = toKey(end);
+
+      const [rawMetrics, completions] = await Promise.all([
+        getDailyMetricsHistory(ctx.user.id, input.windowDays),
+        getHabitCompletionsForDefinitionRange(
+          ctx.user.id,
+          input.habitId,
+          startKey,
+          endKey
+        ),
+      ]);
+
+      const metricField = input.metric;
+      const metrics = rawMetrics
+        .filter((row) => row.dateKey >= startKey && row.dateKey <= endKey)
+        .map((row) => {
+          const raw = (row as Record<string, unknown>)[metricField];
+          const num =
+            raw === null || raw === undefined
+              ? null
+              : typeof raw === "number"
+                ? raw
+                : Number(raw);
+          return {
+            dateKey: row.dateKey,
+            value: num === null || !Number.isFinite(num) ? null : (num as number),
+          };
+        });
+
+      // Habit "event" = day completed. Filter to true completions only.
+      const eventDates = new Set<string>();
+      for (const row of completions) {
+        if (row.completed) eventDates.add(row.dateKey);
+      }
+
+      const result = analyzeCorrelation({
+        suppLogDates: eventDates,
+        metrics,
+        lagDays: input.lagDays,
+      });
+
+      return {
+        ...result,
+        metric: input.metric,
+        windowDays: input.windowDays,
+        lagDays: input.lagDays,
+        startKey,
+        endKey,
+      };
+    }),
+
+  // ─── Sleep report (habit × sleep metrics, one-shot matrix) ───────
+  getSleepReport: protectedProcedure
+    .input(
+      z.object({
+        windowDays: z.number().int().min(30).max(365).default(90),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - (input.windowDays - 1));
+      const toKey = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      const startKey = toKey(start);
+      const endKey = toKey(end);
+
+      const sleepMetrics = [
+        "whoopSleepHours",
+        "whoopHrvMs",
+        "samsungSleepScore",
+        "samsungSleepHours",
+      ] as const;
+
+      const [definitions, rawMetrics, allCompletions] = await Promise.all([
+        listHabitDefinitions(ctx.user.id),
+        getDailyMetricsHistory(ctx.user.id, input.windowDays),
+        getHabitCompletionsRange(ctx.user.id, startKey),
+      ]);
+
+      const filteredMetrics = rawMetrics.filter(
+        (row) => row.dateKey >= startKey && row.dateKey <= endKey
+      );
+
+      // Build per-metric arrays once — re-used across every habit.
+      const metricsByField: Record<
+        (typeof sleepMetrics)[number],
+        { dateKey: string; value: number | null }[]
+      > = {
+        whoopSleepHours: [],
+        whoopHrvMs: [],
+        samsungSleepScore: [],
+        samsungSleepHours: [],
+      };
+      for (const metric of sleepMetrics) {
+        metricsByField[metric] = filteredMetrics.map((row) => {
+          const raw = (row as Record<string, unknown>)[metric];
+          const num =
+            raw === null || raw === undefined
+              ? null
+              : typeof raw === "number"
+                ? raw
+                : Number(raw);
+          return {
+            dateKey: row.dateKey,
+            value: num === null || !Number.isFinite(num) ? null : (num as number),
+          };
+        });
+      }
+
+      // Bucket completions by habitId once.
+      const completionsByHabit = new Map<string, Set<string>>();
+      for (const c of allCompletions) {
+        if (!c.completed) continue;
+        if (c.dateKey < startKey || c.dateKey > endKey) continue;
+        const set = completionsByHabit.get(c.habitId) ?? new Set<string>();
+        set.add(c.dateKey);
+        completionsByHabit.set(c.habitId, set);
+      }
+
+      return definitions
+        .filter((d) => d.isActive)
+        .map((def) => {
+          const eventDates = completionsByHabit.get(def.id) ?? new Set();
+          const correlations = sleepMetrics.map((metric) => {
+            const analysis = analyzeCorrelation({
+              suppLogDates: eventDates,
+              metrics: metricsByField[metric],
+              lagDays: 0,
+            });
+            return {
+              metric,
+              cohensD: analysis.cohensD,
+              pearsonR: analysis.pearsonR,
+              onN: analysis.onN,
+              offN: analysis.offN,
+              onMean: analysis.onMean,
+              offMean: analysis.offMean,
+              insufficientData: analysis.insufficientData,
+            };
+          });
+          return {
+            habitId: def.id,
+            name: def.name,
+            color: def.color,
+            correlations,
+          };
+        });
+    }),
+});
+
+export const sleepRouter = router({
+  getNote: protectedProcedure
+    .input(
+      z.object({ dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) })
+    )
+    .query(async ({ ctx, input }) => {
+      return getSleepNoteByDate(ctx.user.id, input.dateKey);
+    }),
+  upsertNote: protectedProcedure
+    .input(
+      z.object({
+        dateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        tags: z.string().max(500).nullable().optional(),
+        notes: z.string().max(5000).nullable().optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await upsertSleepNote({
+        userId: ctx.user.id,
+        dateKey: input.dateKey,
+        tags: input.tags ?? undefined,
+        notes: input.notes ?? undefined,
+      });
+      return { success: true };
+    }),
+  listNotesRange: protectedProcedure
+    .input(
+      z.object({
+        startDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      return listSleepNotesRange(
+        ctx.user.id,
+        input.startDateKey,
+        input.endDateKey
+      );
+    }),
 });
 
 export const notesRouter = router({

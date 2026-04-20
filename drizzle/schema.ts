@@ -291,9 +291,10 @@ export const supplementRestockEvents = mysqlTable(
 export type SupplementRestockEvent = typeof supplementRestockEvents.$inferSelect;
 export type InsertSupplementRestockEvent = typeof supplementRestockEvents.$inferInsert;
 
-// User-defined habits for tile-based daily tracking.
-export const habitDefinitions = mysqlTable(
-  "habitDefinitions",
+// Optional grouping for habits ("morning routine", "fitness"). Deleting a
+// category nulls out habitDefinitions.categoryId instead of cascading.
+export const habitCategories = mysqlTable(
+  "habitCategories",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: int("userId").notNull(),
@@ -305,8 +306,40 @@ export const habitDefinitions = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
   },
   (table) => ({
+    userIdx: index("habit_categories_user_idx").on(table.userId),
+    userNameIdx: uniqueIndex("habit_categories_user_name_idx").on(
+      table.userId,
+      table.name
+    ),
+  })
+);
+
+export type HabitCategory = typeof habitCategories.$inferSelect;
+export type InsertHabitCategory = typeof habitCategories.$inferInsert;
+
+// User-defined habits for tile-based daily tracking.
+export const habitDefinitions = mysqlTable(
+  "habitDefinitions",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    color: varchar("color", { length: 32 }).default("slate").notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    // Nullable FK to habitCategories.id. Not a hard FK constraint so
+    // deletes don't cascade.
+    categoryId: varchar("categoryId", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
     userIdx: index("habit_definitions_user_idx").on(table.userId),
     userNameIdx: uniqueIndex("habit_definitions_user_name_idx").on(table.userId, table.name),
+    userCategoryIdx: index("habit_definitions_user_category_idx").on(
+      table.userId,
+      table.categoryId
+    ),
   })
 );
 
@@ -337,6 +370,33 @@ export const habitCompletions = mysqlTable(
 
 export type HabitCompletion = typeof habitCompletions.$inferSelect;
 export type InsertHabitCompletion = typeof habitCompletions.$inferInsert;
+
+// Freeform journal per night. `dateKey` = wake date, matching the
+// convention used by whoopSleepHours (sleep attributed to the morning
+// you wake up, not the night you went to bed).
+// One row per (userId, dateKey) — upsert semantics.
+export const sleepNotes = mysqlTable(
+  "sleepNotes",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(),
+    tags: varchar("tags", { length: 500 }),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userDateIdx: uniqueIndex("sleep_notes_user_date_idx").on(
+      table.userId,
+      table.dateKey
+    ),
+    userIdx: index("sleep_notes_user_idx").on(table.userId),
+  })
+);
+
+export type SleepNote = typeof sleepNotes.$inferSelect;
+export type InsertSleepNote = typeof sleepNotes.$inferInsert;
 
 // User-authored notes stored natively in Coherence.
 export const notes = mysqlTable(

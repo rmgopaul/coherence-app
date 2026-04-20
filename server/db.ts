@@ -20,6 +20,7 @@ export * from "./db/notes";
 export * from "./db/metrics";
 export * from "./db/supplements";
 export * from "./db/habits";
+export * from "./db/sleep";
 export * from "./db/engagement";
 export * from "./db/feedback";
 export * from "./db/totp";

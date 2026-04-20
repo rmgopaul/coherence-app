@@ -6,6 +6,7 @@ import {
   StickyNote,
   MessageSquare,
   HeartPulse,
+  ListChecks,
   Pill,
   Clock,
   Mail,
@@ -67,8 +68,9 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Calendar", href: "/widget/google-calendar", icon: Calendar, badgeKey: "events" },
       { label: "Notes", href: "/notes", icon: StickyNote },
       { label: "Supplements", href: "/supplements", icon: Pill },
+      { label: "Habits", href: "/habits", icon: ListChecks },
+      { label: "Health", href: "/health", icon: HeartPulse },
       { label: "Chat", href: "/widget/chatgpt", icon: MessageSquare },
-      { label: "Health", href: "/dashboard#section-health", icon: HeartPulse },
     ],
   },
   {

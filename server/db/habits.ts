@@ -11,9 +11,11 @@ import {
 import {
   habitDefinitions,
   habitCompletions,
+  habitCategories,
   dailySnapshots,
   samsungSyncPayloads,
   InsertHabitDefinition,
+  InsertHabitCategory,
   InsertDailySnapshot,
   InsertSamsungSyncPayload,
 } from "../../drizzle/schema";
@@ -273,4 +275,164 @@ export async function getLatestSamsungSyncPayload(userId: number, dateKey?: stri
   });
 
   return result.length > 0 ? result[0] : null;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Habit categories (new in Habits+Health feature)
+// ────────────────────────────────────────────────────────────────────
+
+export async function listHabitCategories(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("list habit categories", async () =>
+    db
+      .select()
+      .from(habitCategories)
+      .where(
+        and(
+          eq(habitCategories.userId, userId),
+          eq(habitCategories.isActive, true)
+        )
+      )
+      .orderBy(asc(habitCategories.sortOrder), asc(habitCategories.name))
+  );
+}
+
+export async function createHabitCategory(row: InsertHabitCategory) {
+  const db = await getDb();
+  if (!db) return;
+
+  const now = new Date();
+  await withDbRetry("insert habit category", async () => {
+    await db.insert(habitCategories).values({
+      ...row,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function updateHabitCategory(
+  userId: number,
+  id: string,
+  updates: Partial<{
+    name: string;
+    color: string;
+    sortOrder: number;
+    isActive: boolean;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+
+  const payload: Record<string, unknown> = { updatedAt: new Date() };
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.color !== undefined) payload.color = updates.color;
+  if (updates.sortOrder !== undefined) payload.sortOrder = updates.sortOrder;
+  if (updates.isActive !== undefined) payload.isActive = updates.isActive;
+
+  await withDbRetry("update habit category", async () => {
+    await db
+      .update(habitCategories)
+      .set(payload)
+      .where(
+        and(eq(habitCategories.userId, userId), eq(habitCategories.id, id))
+      );
+  });
+}
+
+/**
+ * Deletes the category AND clears categoryId on any habits that reference
+ * it. Not a hard FK, so we do this in two queries.
+ */
+export async function deleteHabitCategory(userId: number, id: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("clear habitDefinitions.categoryId", async () => {
+    await db
+      .update(habitDefinitions)
+      .set({ categoryId: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(habitDefinitions.userId, userId),
+          eq(habitDefinitions.categoryId, id)
+        )
+      );
+  });
+
+  await withDbRetry("delete habit category", async () => {
+    await db
+      .delete(habitCategories)
+      .where(
+        and(eq(habitCategories.userId, userId), eq(habitCategories.id, id))
+      );
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Habit definition updates (rename, recolor, recategorize, reorder)
+// ────────────────────────────────────────────────────────────────────
+
+export async function updateHabitDefinition(
+  userId: number,
+  habitId: string,
+  updates: Partial<{
+    name: string;
+    color: string;
+    sortOrder: number;
+    isActive: boolean;
+    categoryId: string | null;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+
+  const payload: Record<string, unknown> = { updatedAt: new Date() };
+  if (updates.name !== undefined) payload.name = updates.name;
+  if (updates.color !== undefined) payload.color = updates.color;
+  if (updates.sortOrder !== undefined) payload.sortOrder = updates.sortOrder;
+  if (updates.isActive !== undefined) payload.isActive = updates.isActive;
+  if (updates.categoryId !== undefined) payload.categoryId = updates.categoryId;
+
+  await withDbRetry("update habit definition", async () => {
+    await db
+      .update(habitDefinitions)
+      .set(payload)
+      .where(
+        and(
+          eq(habitDefinitions.userId, userId),
+          eq(habitDefinitions.id, habitId)
+        )
+      );
+  });
+}
+
+/**
+ * All completions for a single definition across a date range. Used by
+ * the history heatmap and the habit-vs-health correlation procedure.
+ */
+export async function getHabitCompletionsForDefinitionRange(
+  userId: number,
+  habitId: string,
+  startDateKey: string,
+  endDateKey: string
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("list habit completions for definition range", async () =>
+    db
+      .select()
+      .from(habitCompletions)
+      .where(
+        and(
+          eq(habitCompletions.userId, userId),
+          eq(habitCompletions.habitId, habitId),
+          gte(habitCompletions.dateKey, startDateKey)
+        )
+      )
+      .orderBy(asc(habitCompletions.dateKey))
+  ).then((rows) => rows.filter((r) => r.dateKey <= endDateKey));
 }

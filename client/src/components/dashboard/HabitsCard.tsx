@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Target, RefreshCw } from "lucide-react";
+import { ArrowRight, Target, RefreshCw } from "lucide-react";
 import { SectionRating } from "@/components/SectionRating";
 import { useLocation } from "wouter";
 import type { HabitEntry } from "@/features/dashboard/types";
@@ -159,6 +159,15 @@ export function HabitsCard({
             })}
           </div>
         )}
+        <div className="flex items-center justify-end border-t pt-2">
+          <a
+            href="/habits"
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:text-emerald-900"
+          >
+            Open habits
+            <ArrowRight className="h-3 w-3" />
+          </a>
+        </div>
       </CardContent>
     </Card>
   );
