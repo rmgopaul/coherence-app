@@ -34,6 +34,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import type { SupplementDefinition } from "@/features/dashboard/types";
+import {
+  LabelledSelect,
+  MetricBlock,
+  formatMean,
+} from "@/features/_shared/insights/InsightsLayout";
 
 export const METRIC_OPTIONS = [
   { group: "Whoop", value: "whoopRecoveryScore", label: "Recovery score" },
@@ -258,58 +263,6 @@ export function SupplementsInsightsPanel({
       </p>
     </div>
   );
-}
-
-function LabelledSelect({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      {children}
-    </div>
-  );
-}
-
-function MetricBlock({
-  label,
-  value,
-  sample,
-  tone,
-}: {
-  label: string;
-  value: string;
-  sample: string;
-  tone: "on" | "off" | "neutral";
-}) {
-  const toneClass =
-    tone === "on"
-      ? "border-emerald-200 bg-emerald-50"
-      : tone === "off"
-        ? "border-slate-200 bg-slate-50"
-        : "border-amber-200 bg-amber-50";
-  return (
-    <div className={`rounded-md border p-3 ${toneClass}`}>
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      <p className="text-xl font-semibold">{value}</p>
-      <p className="text-xs text-muted-foreground">{sample}</p>
-    </div>
-  );
-}
-
-function formatMean(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "—";
-  if (Math.abs(value) >= 100) return value.toFixed(0);
-  if (Math.abs(value) >= 10) return value.toFixed(1);
-  return value.toFixed(2);
 }
 
 function cohensDLabel(d: number | null): string {

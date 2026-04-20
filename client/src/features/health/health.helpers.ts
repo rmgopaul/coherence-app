@@ -124,10 +124,10 @@ export function meanAndStd(values: readonly number[]): {
  * Contrast metric B's mean on days where metric A is in its top quartile
  * vs overall. Mirrors the "on vs off" split used in the Supplements and
  * Habits insights modules, but adapted for continuous × continuous data.
- * Returns null values when the top-quartile slice has < MIN_CONTRAST_N
- * points.
+ * Returns null values when the top-quartile slice has fewer than
+ * `MIN_CONTRAST_N` points.
  */
-export const MIN_CONTRAST_N = 5;
+const MIN_CONTRAST_N = 5;
 
 export function topQuartileContrast(
   points: readonly { x: number; y: number }[]

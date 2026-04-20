@@ -5,8 +5,10 @@
  */
 
 import { useMemo, useState } from "react";
+import { AlertCircle } from "lucide-react";
 import {
   CartesianGrid,
+  ResponsiveContainer,
   Scatter,
   ScatterChart,
   Tooltip,
@@ -15,6 +17,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -24,13 +27,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { toErrorMessage } from "@/lib/helpers";
 import { trpc } from "@/lib/trpc";
+import {
+  LabelledSelect,
+  MetricBlock,
+  formatMean,
+} from "@/features/_shared/insights/InsightsLayout";
 import {
   HEALTH_METRICS,
   METRIC_GROUPS,
   type HealthMetricKey,
 } from "./health.constants";
 import {
+  formatMetricValue,
   meanAndStd,
   pairForCorrelation,
   pearsonR,
@@ -45,7 +55,12 @@ export function HealthInsightsPanel() {
   const [metricB, setMetricB] = useState<HealthMetricKey>("whoopSleepHours");
   const [windowDays, setWindowDays] = useState<number>(90);
 
-  const { data: history = [], isLoading } = trpc.metrics.getHistory.useQuery(
+  const {
+    data: history = [],
+    isLoading,
+    error: historyError,
+    refetch: refetchHistory,
+  } = trpc.metrics.getHistory.useQuery(
     { limit: windowDays },
     { retry: false }
   );
@@ -116,7 +131,23 @@ export function HealthInsightsPanel() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {isLoading ? (
+          {historyError ? (
+            <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="flex-1">
+                <p className="font-medium">Couldn't load metrics history.</p>
+                <p className="text-red-700">{toErrorMessage(historyError)}</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                onClick={() => refetchHistory()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : isLoading ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : points.length < 3 ? (
             <div className="space-y-1 text-sm">
@@ -183,7 +214,7 @@ export function HealthInsightsPanel() {
                 <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs">
                   <p className="font-medium">
                     On top-quartile {labelA} days (N = {contrast.topN}, ≥{" "}
-                    {formatMean(contrast.threshold)}),
+                    {formatMetricValue(metricA, contrast.threshold)}),
                   </p>
                   <p className="text-muted-foreground">
                     {labelB} averaged{" "}
@@ -211,33 +242,37 @@ export function HealthInsightsPanel() {
               </div>
 
               <div style={{ width: "100%", height: 280 }}>
-                <ScatterChart
-                  width={600}
-                  height={280}
-                  margin={{ top: 10, right: 16, left: 10, bottom: 10 }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis
-                    type="number"
-                    dataKey="x"
-                    name={labelA}
-                    tick={{ fontSize: 11 }}
-                  />
-                  <YAxis
-                    type="number"
-                    dataKey="y"
-                    name={labelB}
-                    tick={{ fontSize: 11 }}
-                  />
-                  <Tooltip
-                    cursor={{ strokeDasharray: "3 3" }}
-                    formatter={(value: number, name: string) => [
-                      value.toFixed(2),
-                      name,
-                    ]}
-                  />
-                  <Scatter name={`${labelA} vs ${labelB}`} data={points} fill="#059669" />
-                </ScatterChart>
+                <ResponsiveContainer width="100%" height="100%">
+                  <ScatterChart
+                    margin={{ top: 10, right: 16, left: 10, bottom: 10 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis
+                      type="number"
+                      dataKey="x"
+                      name={labelA}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <YAxis
+                      type="number"
+                      dataKey="y"
+                      name={labelB}
+                      tick={{ fontSize: 11 }}
+                    />
+                    <Tooltip
+                      cursor={{ strokeDasharray: "3 3" }}
+                      formatter={(value: number, name: string) => [
+                        value.toFixed(2),
+                        name,
+                      ]}
+                    />
+                    <Scatter
+                      name={`${labelA} vs ${labelB}`}
+                      data={points}
+                      fill="#059669"
+                    />
+                  </ScatterChart>
+                </ResponsiveContainer>
               </div>
             </>
           )}
@@ -250,58 +285,6 @@ export function HealthInsightsPanel() {
       </p>
     </div>
   );
-}
-
-function LabelledSelect({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      {children}
-    </div>
-  );
-}
-
-function MetricBlock({
-  label,
-  value,
-  sample,
-  tone,
-}: {
-  label: string;
-  value: string;
-  sample: string;
-  tone: "on" | "off" | "neutral";
-}) {
-  const toneClass =
-    tone === "on"
-      ? "border-emerald-200 bg-emerald-50"
-      : tone === "off"
-        ? "border-slate-200 bg-slate-50"
-        : "border-amber-200 bg-amber-50";
-  return (
-    <div className={`rounded-md border p-3 ${toneClass}`}>
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      <p className="text-xl font-semibold">{value}</p>
-      {sample ? <p className="text-xs text-muted-foreground">{sample}</p> : null}
-    </div>
-  );
-}
-
-function formatMean(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "—";
-  if (Math.abs(value) >= 100) return value.toFixed(0);
-  if (Math.abs(value) >= 10) return value.toFixed(1);
-  return value.toFixed(2);
 }
 
 function formatDelta(value: number): string {
