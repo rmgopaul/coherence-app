@@ -28,45 +28,52 @@ export class MarketRateLimitError extends Error {
 }
 
 /**
- * Module-level Yahoo 429 cooldown.
+ * Exponential-backoff cooldown for rate-limited HTTP providers.
  *
- * Yahoo's quote/chart/quote-page endpoints have all been sharing a
- * rate-limit bucket. Under the old behavior every 30s cron tick
- * fired the same request, got 429, threw MarketRateLimitError, and
- * logged the same line — production logs were full of
- *   [MarketData] Batch quote API failed, falling back to chart
- *     endpoint: MarketRateLimitError: Yahoo quote API returned HTTP 429.
- * lines with no behavior change (fallback path is also 429'd).
- *
- * Now: when any Yahoo endpoint returns 429 we set a module-wide
- * cooldown. Subsequent calls throw MarketRateLimitError immediately
- * without hitting the wire until the cooldown expires. Caller
- * behavior is unchanged (they already catch MarketRateLimitError),
- * but Yahoo's rate limiter gets a break and our logs stop flooding.
+ * Once `trip()` is called, `isActive()` returns true for baseMs,
+ * then 2×baseMs, etc., capped at maxMs. `clear()` resets both the
+ * cooldown timer and the consecutive-hit counter. Instantiate one
+ * per provider so shared limiters (Yahoo's three endpoints, for
+ * example) all observe the same backoff.
  */
-const YAHOO_COOLDOWN_BASE_MS = 5 * 60 * 1000; // 5 min after a 429
-const YAHOO_COOLDOWN_MAX_MS = 30 * 60 * 1000; // 30 min ceiling
-let yahooCooldownUntil = 0;
-let yahooConsecutive429s = 0;
+export class RateLimitCooldown {
+  private cooldownUntil = 0;
+  private consecutiveHits = 0;
+  private readonly baseMs: number;
+  private readonly maxMs: number;
+  private readonly maxHits: number;
 
-function tripYahooCooldown(): void {
-  yahooConsecutive429s = Math.min(yahooConsecutive429s + 1, 8);
-  // Exponential backoff: 5m, 10m, 20m, then capped at 30m.
-  const backoffMs = Math.min(
-    YAHOO_COOLDOWN_BASE_MS * 2 ** (yahooConsecutive429s - 1),
-    YAHOO_COOLDOWN_MAX_MS,
-  );
-  yahooCooldownUntil = Date.now() + backoffMs;
+  constructor(options?: {
+    baseMs?: number;
+    maxMs?: number;
+    maxHits?: number;
+  }) {
+    this.baseMs = options?.baseMs ?? 5 * 60 * 1000; // 5 min
+    this.maxMs = options?.maxMs ?? 30 * 60 * 1000; // 30 min
+    this.maxHits = options?.maxHits ?? 8;
+  }
+
+  trip(): void {
+    this.consecutiveHits = Math.min(this.consecutiveHits + 1, this.maxHits);
+    // Exponential backoff: base, 2×base, 4×base, capped at maxMs.
+    const backoffMs = Math.min(
+      this.baseMs * 2 ** (this.consecutiveHits - 1),
+      this.maxMs,
+    );
+    this.cooldownUntil = Date.now() + backoffMs;
+  }
+
+  clear(): void {
+    this.cooldownUntil = 0;
+    this.consecutiveHits = 0;
+  }
+
+  isActive(): boolean {
+    return Date.now() < this.cooldownUntil;
+  }
 }
 
-function clearYahooCooldown(): void {
-  yahooCooldownUntil = 0;
-  yahooConsecutive429s = 0;
-}
-
-function isYahooCoolingDown(): boolean {
-  return Date.now() < yahooCooldownUntil;
-}
+const yahooCooldown = new RateLimitCooldown();
 
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -261,12 +268,9 @@ async function fetchQuotesBatch(symbols: string[]): Promise<MarketQuote[]> {
     `https://query1.finance.yahoo.com/v6/finance/quote?symbols=${encodedSymbols}`,
   ];
 
-  // Short-circuit if we're already in a Yahoo 429 cooldown window.
-  // Caller already handles MarketRateLimitError (it falls back to
-  // CoinGecko/Kraken for crypto or gives up for equities), so this
-  // is behaviorally identical to Yahoo returning 429 right now —
-  // but costs zero wire time and zero log lines.
-  if (isYahooCoolingDown()) {
+  // Short-circuit under cooldown — caller already handles
+  // MarketRateLimitError and falls back to CoinGecko/Kraken.
+  if (yahooCooldown.isActive()) {
     throw new MarketRateLimitError("Yahoo cooldown active; skipping quote API call.");
   }
 
@@ -283,7 +287,7 @@ async function fetchQuotesBatch(symbols: string[]): Promise<MarketQuote[]> {
       });
 
       if (response.status === 429) {
-        tripYahooCooldown();
+        yahooCooldown.trip();
         throw new MarketRateLimitError("Yahoo quote API returned HTTP 429.");
       }
       if (!response.ok) {
@@ -294,9 +298,7 @@ async function fetchQuotesBatch(symbols: string[]): Promise<MarketQuote[]> {
       const results = json?.quoteResponse?.result;
       if (!Array.isArray(results) || results.length === 0) continue;
 
-      // A successful call clears any prior backoff so crypto & equity
-      // data resumes immediately when Yahoo stops throttling.
-      clearYahooCooldown();
+      yahooCooldown.clear();
       return results.map((q: YahooQuoteRaw) => normalizeQuoteFromApi(q));
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
@@ -311,7 +313,7 @@ async function fetchQuotesBatch(symbols: string[]): Promise<MarketQuote[]> {
  * Fallback: Yahoo chart endpoint for a single symbol.
  */
 async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> {
-  if (isYahooCoolingDown()) {
+  if (yahooCooldown.isActive()) {
     throw new MarketRateLimitError(
       `Yahoo cooldown active; skipping chart endpoint for ${symbol}.`,
     );
@@ -334,7 +336,7 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
 
       if (response.status === 429) {
         sawRateLimit = true;
-        tripYahooCooldown();
+        yahooCooldown.trip();
         continue;
       }
       if (!response.ok) continue;
@@ -362,8 +364,7 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
       const change = price - previousClose;
       const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
 
-      // Successful chart fetch clears any prior backoff.
-      clearYahooCooldown();
+      yahooCooldown.clear();
       return {
         symbol,
         shortName: meta.shortName ?? meta.longName ?? meta.symbol ?? symbol,
@@ -392,7 +393,7 @@ async function fetchQuoteFromChart(symbol: string): Promise<MarketQuote | null> 
  * Useful when query1/query2 subdomains are blocked but finance.yahoo.com works.
  */
 async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
-  if (isYahooCoolingDown()) {
+  if (yahooCooldown.isActive()) {
     throw new MarketRateLimitError(
       `Yahoo cooldown active; skipping quote page for ${symbol}.`,
     );
@@ -408,7 +409,7 @@ async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
     });
 
     if (response.status === 429) {
-      tripYahooCooldown();
+      yahooCooldown.trip();
       throw new MarketRateLimitError(`Yahoo quote page returned HTTP 429 for ${symbol}.`);
     }
     if (!response.ok) return null;
@@ -433,8 +434,7 @@ async function fetchQuoteFromPage(symbol: string): Promise<MarketQuote | null> {
     const change = price - previousClose;
     const changePercent = previousClose > 0 ? (change / previousClose) * 100 : 0;
 
-    // Successful page scrape clears any prior backoff.
-    clearYahooCooldown();
+    yahooCooldown.clear();
     return {
       symbol,
       shortName: nameMatch?.[1] ?? symbol,

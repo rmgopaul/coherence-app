@@ -4460,33 +4460,18 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        // Every manifest entry hydrates — no allowedKeys filter —
-        // because CsvDataset.rows is lazy: datasets sit in memory as
-        // columnar arrays, and rows only materialize when a mounted
-        // tab actually reads them. Priority keys below determine
-        // hydration ORDER, not membership.
-        //
-        // Phase 16: progressive hydration. Datasets arrive one at a
-        // time via the onDataset callback — each call into setDatasets
-        // only updates ONE key, producing a small re-render rather
-        // than one giant initial landing. The priority key set makes
-        // the active tab's datasets load first so the user's landing
-        // tab becomes interactive within a few hundred ms, even if
-        // total hydration takes several seconds.
+        // Progressive hydration: every manifest entry is fetched
+        // (lazy rows keep it cheap), priority keys determine ORDER
+        // so the active tab lands first. Datasets flush in two
+        // batches — priority, then background — so downstream memos
+        // re-fire at most twice during hydrate.
         const priorityKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB,
         );
 
         const [, loadedLogs] = await Promise.all([
           loadDatasetsFromStorage({
-            // allowedKeys intentionally omitted — see comment above.
             priorityKeys,
-            // Phase 17c: commits arrive as two batches (priority +
-            // background) rather than per-dataset, so the `systems`
-            // memo (and its downstream chain) re-fires at most
-            // twice during hydrate instead of once per incoming
-            // dataset. We still don't clobber anything the user
-            // uploaded between the mount and the first batch.
             onBatch: (batch, _phase) => {
               if (cancelled) return;
               setDatasets((current) => {
@@ -4530,21 +4515,12 @@ export default function SolarRecDashboard() {
   }, [activeTab, search]);
 
   /**
-   * User-invoked "load every remaining dataset into React state" path.
-   *
-   * Mount-time hydration is filtered to the active tab's priority set
-   * so the landing page is interactive fast and memory stays bounded.
-   * But cross-tab work (exports, global filters, reports that span
-   * multiple datasets) needs the full set in state. This callback
-   * re-runs loadDatasetsFromStorage with NO allowedKeys filter so
-   * every manifest entry lands. Previously-loaded datasets are
-   * preserved via the `if (next[key]) continue` check below.
-   *
-   * Memory note: reconstructing all datasets can push the tab past
-   * ~1.5 GB. Chrome's per-tab ceiling is ~4 GB, so this is safe on
-   * modern machines but not free. The UI gates the button on the
-   * remaining dataset count so it's only offered when there's actually
-   * work to do.
+   * User-invoked hydration with explicit progress, no priority
+   * ordering. Mount hydration already pulls every manifest entry
+   * (lazy rows keep it cheap), but it interleaves priority and
+   * background batches; this path runs a single-flush hydrate with
+   * a visible N/total counter so the user can wait for all rows to
+   * materialize before starting cross-tab work.
    */
   const loadAllDatasets = useCallback(async () => {
     if (loadingAllDatasets) return;
@@ -4552,8 +4528,8 @@ export default function SolarRecDashboard() {
     setLoadAllProgress({ loaded: 0, total: 0 });
     try {
       await loadDatasetsFromStorage({
-        // No allowedKeys / priorityKeys filter — every manifest entry
-        // hydrates. Already-loaded keys are skipped by onBatch.
+        // No priority ordering — previously-loaded keys are skipped
+        // inside onBatch via `if (next[key]) continue`.
         onBatch: (batch) => {
           setDatasets((current) => {
             const next = { ...current };

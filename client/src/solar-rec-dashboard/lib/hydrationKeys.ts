@@ -24,18 +24,17 @@
 import type { DatasetKey } from "../state/types";
 
 export function resolveHydrationKeys(params: {
-  manifestKeys: Iterable<string>;
-  priorityKeys: Iterable<DatasetKey>;
+  manifestKeys: readonly string[];
+  priorityKeys: ReadonlySet<DatasetKey> | readonly DatasetKey[];
   isDatasetKey: (value: string) => value is DatasetKey;
 }): Set<DatasetKey> {
   const { manifestKeys, priorityKeys, isDatasetKey } = params;
   const keys = new Set<DatasetKey>();
-  for (const rawKey of manifestKeys) {
-    if (!isDatasetKey(rawKey)) continue;
-    keys.add(rawKey);
-  }
-  for (const key of priorityKeys) {
+  manifestKeys.forEach((rawKey) => {
+    if (isDatasetKey(rawKey)) keys.add(rawKey);
+  });
+  priorityKeys.forEach((key) => {
     keys.add(key);
-  }
+  });
   return keys;
 }

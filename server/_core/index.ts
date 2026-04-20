@@ -144,18 +144,9 @@ async function startServer() {
 
   const app = express();
 
-  // Trust the first proxy hop so express-rate-limit (and any other
-  // middleware that reads req.ip) sees the real client IP rather
-  // than Render's load-balancer. Without this, Render logs were
-  // filling with:
-  //   ValidationError: The 'X-Forwarded-For' header is set but the
-  //   Express 'trust proxy' setting is false (default). This could
-  //   indicate a misconfiguration which would prevent
-  //   express-rate-limit from accurately identifying users.
-  // Setting to 1 trusts exactly the Render LB and nothing further,
-  // which is the correct value for a single-hop reverse proxy.
-  // Guarded on process.env.RENDER so local dev keeps the safe
-  // default (no proxies).
+  // Trust the first proxy hop so req.ip (and express-rate-limit) see
+  // the real client IP rather than Render's load balancer. Set to 1
+  // for a single-hop reverse proxy; local dev keeps the default.
   if (process.env.RENDER) {
     app.set("trust proxy", 1);
   }
