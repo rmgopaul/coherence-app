@@ -746,3 +746,20 @@ export const solarRecScopeContractScanVersion = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   }
 );
+
+// ────────────────────────────────────────────────────────────────────
+// Type exports for the Solar REC scope / import / compute tables.
+// (The tables themselves were split out earlier without their $infer*
+// types; parity-gap fixed here.)
+// ────────────────────────────────────────────────────────────────────
+export type SolarRecScope = typeof solarRecScopes.$inferSelect;
+export type InsertSolarRecScope = typeof solarRecScopes.$inferInsert;
+export type SolarRecImportBatch = typeof solarRecImportBatches.$inferSelect;
+export type InsertSolarRecImportBatch = typeof solarRecImportBatches.$inferInsert;
+export type SolarRecImportFile = typeof solarRecImportFiles.$inferSelect;
+export type InsertSolarRecImportFile = typeof solarRecImportFiles.$inferInsert;
+export type SolarRecImportError = typeof solarRecImportErrors.$inferSelect;
+export type InsertSolarRecImportError = typeof solarRecImportErrors.$inferInsert;
+export type SolarRecActiveDatasetVersion = typeof solarRecActiveDatasetVersions.$inferSelect;
+export type SolarRecComputeRun = typeof solarRecComputeRuns.$inferSelect;
+export type InsertSolarRecComputeRun = typeof solarRecComputeRuns.$inferInsert;
