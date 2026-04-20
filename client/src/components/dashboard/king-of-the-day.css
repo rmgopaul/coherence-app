@@ -141,9 +141,21 @@
   outline: none;
 }
 
-/* Tighten display headline at small widths */
+/* Tighten display headline + stat tiles at small widths so the hero
+   fits in a 375px viewport without horizontal overflow. */
 @media (max-width: 640px) {
   .kotd-hero .kotd-headline {
     font-size: clamp(2.75rem, 13vw, 5rem) !important;
+  }
+  .kotd-stat-value {
+    font-size: clamp(2.25rem, 11vw, 3.25rem);
+    letter-spacing: -0.03em;
+  }
+  .kotd-stat-label {
+    font-size: 0.62rem;
+    letter-spacing: 0.18em;
+  }
+  .kotd-stat-delta {
+    font-size: 1.1rem;
   }
 }

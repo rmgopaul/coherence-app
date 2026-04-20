@@ -576,6 +576,122 @@ html[data-focus="1"] .fp-root {
   color: var(--fp-ink-3);
 }
 
+/* --- Mobile (<768px) — the spec marked mobile web "out of scope"
+   but the web surface still needs to render cleanly when people
+   pull it up on a phone. These overrides shrink the type scale,
+   stack the masthead, and drop the brutalist offset shadow that
+   reads as broken when card gaps also shrink. --- */
+
+@media (max-width: 767px) {
+  .fp-root {
+    /* 48px side padding drops usable width to ~279px on a 375px
+       viewport — the highlighter overflows into the scroll gutter
+       without the smaller value. */
+    padding: 16px 12px 64px;
+  }
+
+  :root {
+    /* Hero type scale has to come way down. The original 96px
+       minimum was the only clamp floor; this override wins via
+       specificity + media-query order. */
+    --fp-fs-hero: clamp(44px, 11vw, 72px);
+    --fp-fs-subhead: clamp(22px, 5vw, 32px);
+    --fp-fs-stat-huge: clamp(56px, 14vw, 88px);
+    --fp-fs-stat-big: clamp(40px, 10vw, 56px);
+    --fp-fs-section: 28px;
+  }
+
+  /* Masthead — date on top, middle row, toggle row. The 3-col
+     grid clobbers at narrow widths because "LAST UPDATED 5:12 PM
+     · FOCUS [ ]" alone is wider than 180px. */
+  .fp-masthead {
+    height: auto;
+    min-height: 56px;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "left"
+      "mid"
+      "right";
+    gap: 6px;
+    padding: 8px;
+  }
+  .fp-masthead__left {
+    grid-area: left;
+    justify-self: start;
+  }
+  .fp-masthead__mid {
+    grid-area: mid;
+    justify-self: start;
+    text-align: left;
+  }
+  .fp-masthead__right {
+    grid-area: right;
+    justify-self: start;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+  }
+
+  /* Newsprint columns — tighter gap, smaller section titles. */
+  .fp-newsprint {
+    margin-top: 24px;
+    gap: 24px;
+    padding-top: 16px;
+  }
+  .fp-col__title {
+    font-size: 22px;
+  }
+  .fp-row {
+    grid-template-columns: 56px 1fr;
+  }
+
+  /* Wire grid — 1 col, tighter gap, less padding in cards. Drop
+     the 4dp offset shadow; with the shrunk gap it clips into the
+     next card and reads as a layout bug. */
+  .fp-wire-grid {
+    margin-top: 24px;
+    gap: 12px;
+  }
+  .wire-card {
+    padding: 14px 16px;
+    min-height: 160px;
+    box-shadow: none;
+  }
+  .wire-stat-row {
+    gap: 12px;
+  }
+  .wire-ticker__row {
+    grid-template-columns: 48px 1fr auto;
+  }
+
+  /* Focus rail — stack cleanly on narrow widths instead of the
+     grid layout that assumes horizontal space. */
+  .fp-focus-rail {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "meta"
+      "title"
+      "count"
+      "loc";
+    gap: 4px;
+  }
+  .fp-focus-rail__count {
+    justify-self: start;
+  }
+
+  /* News feed — the 32-unit src column becomes cramped next to
+     the 2-line title. Stack src above title instead. */
+  .wire-newsfeed__row {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "src"
+      "title"
+      "meta";
+  }
+  .wire-newsfeed__ts {
+    justify-self: start;
+  }
+}
+
 /* Reduced motion — flatten all decorative motion. */
 @media (prefers-reduced-motion: reduce) {
   .fp-focus-toggle {
