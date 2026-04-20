@@ -20,6 +20,7 @@ import {
   costPerDose,
   monthlyProtocolCost,
 } from "@shared/supplements.math";
+import { analyzeCorrelation } from "../services/supplements/correlation";
 import {
   addNoteLink,
   addSupplementLog,
@@ -811,6 +812,90 @@ export const supplementsRouter = router({
         input.startDateKey,
         input.endDateKey
       );
+    }),
+  getCorrelation: protectedProcedure
+    .input(
+      z.object({
+        definitionId: z.string().min(1),
+        metric: z.enum([
+          "whoopRecoveryScore",
+          "whoopDayStrain",
+          "whoopSleepHours",
+          "whoopHrvMs",
+          "whoopRestingHr",
+          "samsungSteps",
+          "samsungSleepHours",
+          "samsungSpo2AvgPercent",
+          "samsungSleepScore",
+          "samsungEnergyScore",
+          "todoistCompletedCount",
+        ]),
+        windowDays: z.number().int().min(14).max(365).default(90),
+        lagDays: z.number().int().min(0).max(3).default(0),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      // Build window bounds (inclusive, ending today).
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - (input.windowDays - 1));
+      const toKey = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      const startKey = toKey(start);
+      const endKey = toKey(end);
+
+      // Fetch both series in parallel. Metrics are capped to the window by
+      // pulling the most-recent `windowDays` rows from getDailyMetricsHistory
+      // and filtering to the window — cheap, and matches existing access
+      // patterns without a new range helper.
+      const [rawMetrics, logs] = await Promise.all([
+        getDailyMetricsHistory(ctx.user.id, input.windowDays),
+        listSupplementLogsRange(ctx.user.id, startKey, endKey),
+      ]);
+
+      const metricField = input.metric;
+      const metrics = rawMetrics
+        .filter((row) => row.dateKey >= startKey && row.dateKey <= endKey)
+        .map((row) => {
+          const raw = (row as Record<string, unknown>)[metricField];
+          const num =
+            raw === null || raw === undefined
+              ? null
+              : typeof raw === "number"
+                ? raw
+                : Number(raw);
+          return {
+            dateKey: row.dateKey,
+            value:
+              num === null || !Number.isFinite(num) ? null : (num as number),
+          };
+        });
+
+      const suppLogDates = new Set<string>();
+      for (const log of logs) {
+        if (log.definitionId === input.definitionId) {
+          suppLogDates.add(log.dateKey);
+        }
+      }
+
+      const result = analyzeCorrelation({
+        suppLogDates,
+        metrics,
+        lagDays: input.lagDays,
+      });
+
+      return {
+        ...result,
+        metric: input.metric,
+        windowDays: input.windowDays,
+        lagDays: input.lagDays,
+        startKey,
+        endKey,
+      };
     }),
   getCostSummary: protectedProcedure.query(async ({ ctx }) => {
     const defs = await listSupplementDefinitions(ctx.user.id);

@@ -47,6 +47,7 @@ import { SupplementsProtocolTable } from "./SupplementsProtocolTable";
 import { SupplementsTodayPanel } from "./SupplementsTodayPanel";
 import { SupplementDetailSheet } from "./SupplementDetailSheet";
 import { SupplementsAdherenceHeatmap } from "./SupplementsAdherenceHeatmap";
+import { SupplementsInsightsPanel } from "./SupplementsInsightsPanel";
 
 type HistoryWindow = 30 | 90 | 365;
 const HISTORY_WINDOW_OPTIONS: HistoryWindow[] = [30, 90, 365];
@@ -167,10 +168,7 @@ export default function Supplements() {
         </TabsContent>
 
         <TabsContent value="insights" className="pt-4">
-          <div className="rounded-md border bg-muted/40 p-6 text-sm text-muted-foreground">
-            Insights — correlate supplements with Whoop, Samsung, and Todoist
-            data — arriving in a later phase.
-          </div>
+          <SupplementsInsightsPanel definitions={activeDefinitions} />
         </TabsContent>
       </Tabs>
 
