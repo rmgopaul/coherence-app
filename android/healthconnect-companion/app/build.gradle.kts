@@ -46,6 +46,29 @@ android {
     buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
     buildConfigField("String", "GOOGLE_CLIENT_ID", "\"$googleClientId\"")
     buildConfigField("String", "OAUTH_REDIRECT_SCHEME", "\"coherence\"")
+
+    // Build-time secret visibility. Every prior "why is my sync
+    // broken" session ended at a BuildConfig field that was silently
+    // empty — the webhook 401-ing because SYNC_KEY was the
+    // REPLACE_ME sentinel, or Google OAuth 404-ing because
+    // GOOGLE_CLIENT_ID was the empty string. `./gradlew
+    // assembleDebug` never surfaced these because the build
+    // "succeeded" with or without them.
+    //
+    // Print one redacted line per secret at configuration time so
+    // the failure is visible BEFORE the APK ships to the device.
+    // Shows presence + length, never the value itself.
+    val secretStatus = listOf(
+      "GOOGLE_CLIENT_ID" to googleClientId,
+      "SYNC_KEY" to samsungSyncKey.takeIf { it != "REPLACE_ME_SYNC_KEY" }.orEmpty(),
+      "WEBHOOK_URL" to samsungWebhookUrl,
+      "BASE_URL" to baseUrl,
+    )
+    secretStatus.forEach { (key, value) ->
+      val mark = if (value.isNotBlank()) "✓" else "✗ MISSING"
+      val hint = if (value.isNotBlank()) "(${value.length} chars)" else "— add to local.properties"
+      println("[coherence:buildconfig] $key $mark $hint")
+    }
   }
 
   buildTypes {
