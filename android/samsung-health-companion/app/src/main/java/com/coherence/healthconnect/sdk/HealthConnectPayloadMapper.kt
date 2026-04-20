@@ -933,7 +933,12 @@ class HealthConnectPayloadMapper {
     // signature to 8 via RawHealthConnectRecords + SyncLog structs.
     // Mapper is now stateless (no reader field); dropped mockk test
     // dependency.
-    private const val APP_VERSION = "0.5.1"
+    // 0.5.2 — test: HealthConnectReader now has 11 JVM unit tests
+    // covering permission gating, retry/backoff, cooldown marking,
+    // foreground-error suppression, WHOOP filter, and pagination.
+    // Extracted RateLimitCooldownSink + HealthConnectRecordSource
+    // interfaces so the reader depends on what it uses.
+    private const val APP_VERSION = "0.5.2"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

@@ -1,6 +1,5 @@
 package com.coherence.healthconnect.sdk
 
-import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.request.ReadRecordsRequest
@@ -27,10 +26,10 @@ import kotlin.reflect.KClass
  * Record selection and mapping live in [HealthConnectPayloadMapper];
  * this class is deliberately data-type agnostic.
  */
-class HealthConnectReader(
-  private val client: HealthConnectClient,
+class HealthConnectReader internal constructor(
+  private val source: HealthConnectRecordSource,
   private val grantedPermissions: Set<String>,
-  private val cooldown: HealthConnectCooldown? = null,
+  private val cooldown: RateLimitCooldownSink? = null,
   /**
    * Records whose `metadata.dataOrigin.packageName` is in this set
    * are dropped client-side after the read returns, never reaching
@@ -49,6 +48,26 @@ class HealthConnectReader(
    */
   private val excludedPackageNames: Set<String> = DEFAULT_EXCLUDED_PACKAGES,
 ) {
+
+  /**
+   * Production constructor. Adapts a real
+   * [androidx.health.connect.client.HealthConnectClient] into the
+   * narrower [HealthConnectRecordSource] the reader actually uses,
+   * and takes the concrete [HealthConnectCooldown] class rather
+   * than the internal [RateLimitCooldownSink] interface so this
+   * overload can stay public.
+   */
+  constructor(
+    client: androidx.health.connect.client.HealthConnectClient,
+    grantedPermissions: Set<String>,
+    cooldown: HealthConnectCooldown? = null,
+    excludedPackageNames: Set<String> = DEFAULT_EXCLUDED_PACKAGES,
+  ) : this(
+    source = HealthConnectRecordSource.from(client),
+    grantedPermissions = grantedPermissions,
+    cooldown = cooldown as RateLimitCooldownSink?,
+    excludedPackageNames = excludedPackageNames,
+  )
 
   /** Mutable log of record-type labels that were read attempted. */
   val attempted: MutableList<String> = mutableListOf()
@@ -97,7 +116,7 @@ class HealthConnectReader(
         val all = mutableListOf<T>()
         var pageToken: String? = null
         do {
-          val response = client.readRecords(
+          val response = source.readRecords(
             ReadRecordsRequest(
               recordType = recordType,
               timeRangeFilter = range,

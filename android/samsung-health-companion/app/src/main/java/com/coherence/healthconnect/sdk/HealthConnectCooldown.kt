@@ -4,6 +4,20 @@ import android.content.Context
 import java.time.Instant
 
 /**
+ * Narrow interface over the two cooldown operations a
+ * [HealthConnectReader] actually needs: "record that we hit a
+ * rate limit" and "clear the cooldown on a successful read."
+ *
+ * The reader depends on this rather than the full
+ * [HealthConnectCooldown] class so JVM unit tests can swap in an
+ * in-memory fake without wiring up a SharedPreferences context.
+ */
+internal interface RateLimitCooldownSink {
+  fun markRateLimited(message: String)
+  fun clear()
+}
+
+/**
  * Persistent rate-limit cooldown for Health Connect reads.
  *
  * When [HealthConnectReader] exhausts its retry budget on a rate-limit
@@ -27,7 +41,7 @@ import java.time.Instant
 class HealthConnectCooldown(
   private val context: Context,
   private val clock: () -> Instant = Instant::now,
-) {
+) : RateLimitCooldownSink {
 
   data class State(
     val active: Boolean,
@@ -61,7 +75,16 @@ class HealthConnectCooldown(
    * "we're still being throttled" is fresh evidence the quota
    * hasn't recovered yet.
    */
-  fun markRateLimited(message: String, hours: Long = DEFAULT_COOLDOWN_HOURS) {
+  override fun markRateLimited(message: String) {
+    markRateLimited(message, DEFAULT_COOLDOWN_HOURS)
+  }
+
+  /**
+   * Same as [markRateLimited] but allows tests to inject a shorter
+   * cooldown window than [DEFAULT_COOLDOWN_HOURS]. The interface
+   * signature stays minimal; this overload is opt-in.
+   */
+  fun markRateLimited(message: String, hours: Long) {
     val until = clock().plusSeconds(hours * SECONDS_PER_HOUR).toEpochMilli()
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
       .edit()
@@ -75,7 +98,7 @@ class HealthConnectCooldown(
    * since a successful read is conclusive evidence that the quota has
    * replenished enough to make progress.
    */
-  fun clear() {
+  override fun clear() {
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
       .edit()
       .remove(KEY_COOLDOWN_UNTIL_MS)

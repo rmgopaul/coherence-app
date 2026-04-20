@@ -13,8 +13,8 @@ android {
     applicationId = "com.coherence.healthconnect"
     minSdk = 29
     targetSdk = 36
-    versionCode = 7
-    versionName = "0.5.1"
+    versionCode = 8
+    versionName = "0.5.2"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -55,6 +55,15 @@ android {
 
   kotlinOptions {
     jvmTarget = "17"
+  }
+
+  // Return stubbed default values from android.* framework classes
+  // (notably `android.util.Log`) in JVM unit tests. Without this,
+  // any test that exercises a code path calling into Log.w / Log.d
+  // throws RuntimeException("Method X not mocked"). We don't need
+  // to assert on log output; just don't crash.
+  testOptions {
+    unitTests.isReturnDefaultValues = true
   }
 
   buildFeatures {
