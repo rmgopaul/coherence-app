@@ -1,29 +1,55 @@
+<!--
+  Launcher icon foreground — Phase E.2
+  Hand-drawn three-spike Basquiat crown rendered in Basquiat Yellow
+  (#F6C83A). The path mirrors client/src/components/dashboard/
+  KingOfTheDayHero.tsx so the app icon visually echoes the web hero
+  crown.
+
+  Sized ~80dp wide within the 108dp adaptive-icon canvas so it stays
+  inside the 72dp safe zone across circular / squircle launcher
+  masks.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
   android:width="108dp"
   android:height="108dp"
   android:viewportWidth="108"
   android:viewportHeight="108">
 
+  <!-- Outer scribble pass — the primary stroke -->
   <path
     android:fillColor="#00000000"
-    android:strokeColor="#C7D2DB"
+    android:strokeColor="#F6C83A"
     android:strokeWidth="5"
-    android:pathData="M54,54m-34,0a34,34 0,1,1 68,0a34,34 0,1,1 -68,0" />
-
-  <!-- Coherence C mark -->
-  <path
-    android:fillColor="#00000000"
-    android:strokeColor="#FFFFFF"
-    android:strokeWidth="10"
     android:strokeLineCap="round"
     android:strokeLineJoin="round"
-    android:pathData="M72,36
-      C67,31 60,28 52,28
-      C37,28 26,40 26,54
-      C26,68 37,80 52,80
-      C60,80 67,77 72,72" />
+    android:pathData="M18.7,71.2 L29.3,38.5 L42.6,62.5 L54,34.5 L65.3,62.5 L79.3,38.5 L89.3,71.2" />
 
+  <!-- Second wobble pass — hand-drawn feel -->
   <path
-    android:fillColor="#11B36B"
-    android:pathData="M76,74m-7,0a7,7 0,1,1 14,0a7,7 0,1,1 -14,0" />
+    android:fillColor="#00000000"
+    android:strokeColor="#F6C83A"
+    android:strokeWidth="3.5"
+    android:strokeAlpha="0.75"
+    android:strokeLineCap="round"
+    android:strokeLineJoin="round"
+    android:pathData="M20,69 L30,40 L43,61 L54.6,38 L65,61 L78,40 L88,69" />
+
+  <!-- Baseline rule beneath the spikes -->
+  <path
+    android:fillColor="#00000000"
+    android:strokeColor="#F6C83A"
+    android:strokeWidth="4"
+    android:strokeLineCap="round"
+    android:pathData="M17.3,73.5 L90.7,73.5" />
+
+  <!-- Three jewel dots at the spike tips -->
+  <path
+    android:fillColor="#F6C83A"
+    android:pathData="M29.3,38.5 m-2.5,0 a2.5,2.5 0,1,0 5,0 a2.5,2.5 0,1,0 -5,0z" />
+  <path
+    android:fillColor="#F6C83A"
+    android:pathData="M54,34.5 m-3,0 a3,3 0,1,0 6,0 a3,3 0,1,0 -6,0z" />
+  <path
+    android:fillColor="#F6C83A"
+    android:pathData="M79.3,38.5 m-2.5,0 a2.5,2.5 0,1,0 5,0 a2.5,2.5 0,1,0 -5,0z" />
 </vector>
