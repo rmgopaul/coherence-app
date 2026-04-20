@@ -24,6 +24,11 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { keys: ["G", "N"], description: "Go to Notes" },
       { keys: ["G", "A"], description: "Go to Chat" },
       { keys: ["G", "S"], description: "Go to Settings" },
+      { keys: ["1"], description: "Front Page (on /dashboard*)" },
+      { keys: ["2"], description: "One Thing" },
+      { keys: ["3"], description: "River" },
+      { keys: ["4"], description: "Canvas" },
+      { keys: ["5"], description: "Command Deck" },
     ],
   },
   {
@@ -44,6 +49,16 @@ const NAV_MAP: Record<string, { route: string; label: string }> = {
   n: { route: "/notes", label: "Notes" },
   a: { route: "/widget/chatgpt", label: "Chat" },
   s: { route: "/settings", label: "Settings" },
+};
+
+// Phase F9 — when on /dashboard*, digits 1–5 cycle the dashboard views.
+// Front Page / One Thing / River / Canvas / Command Deck.
+const DASHBOARD_VIEW_MAP: Record<string, { route: string; label: string }> = {
+  "1": { route: "/dashboard", label: "Front Page" },
+  "2": { route: "/dashboard/one-thing", label: "One Thing" },
+  "3": { route: "/dashboard/river", label: "River" },
+  "4": { route: "/dashboard/canvas", label: "Canvas" },
+  "5": { route: "/dashboard/command", label: "Command Deck" },
 };
 
 export function KeyboardShortcuts() {
@@ -91,6 +106,26 @@ export function KeyboardShortcuts() {
           e.preventDefault();
           setLocation(nav.route);
           toast(`Navigating to ${nav.label}`, { duration: 1500 });
+        }
+        return;
+      }
+
+      // Phase F9 — 1..5 swap dashboard views when we're on one.
+      // Restricted to /dashboard* so digits don't hijack typing
+      // anywhere else.
+      if (
+        DASHBOARD_VIEW_MAP[e.key] &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        typeof window !== "undefined" &&
+        window.location.pathname.startsWith("/dashboard")
+      ) {
+        const view = DASHBOARD_VIEW_MAP[e.key];
+        if (window.location.pathname !== view.route) {
+          e.preventDefault();
+          setLocation(view.route);
+          toast(`View ${e.key} · ${view.label}`, { duration: 1200 });
         }
         return;
       }

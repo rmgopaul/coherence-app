@@ -20,6 +20,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/dashboard/one-thing": "One Thing",
   "/dashboard/river": "River",
   "/dashboard/canvas": "Canvas",
+  "/dashboard/command": "Command Deck",
   "/widget/todoist": "Tasks",
   "/widget/google-calendar": "Calendar",
   "/notes": "Notes",
