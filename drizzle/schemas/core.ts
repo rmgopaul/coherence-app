@@ -26,8 +26,7 @@ export const userPreferences = mysqlTable("userPreferences", {
 export type UserPreference = typeof userPreferences.$inferSelect;
 export type InsertUserPreference = typeof userPreferences.$inferInsert;
 
-// OAuth credentials table for storing client IDs and secrets
-
+// Daily metric log for trend tracking over time.
 export const dailyHealthMetrics = mysqlTable(
   "dailyHealthMetrics",
   {
@@ -484,5 +483,3 @@ export const userFeedback = mysqlTable(
 
 export type UserFeedback = typeof userFeedback.$inferSelect;
 export type InsertUserFeedback = typeof userFeedback.$inferInsert;
-
-// TOTP two-factor authentication secrets (one per user).

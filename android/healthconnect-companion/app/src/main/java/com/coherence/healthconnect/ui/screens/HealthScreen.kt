@@ -48,21 +48,15 @@ fun HealthScreen(viewModel: DashboardViewModel) {
         )
       }
       item {
-        // Enable auto-sync whenever permissions are granted and the
-        // scheduler isn't already running. This covers both paths:
-        //   (a) First run: user taps "Grant permissions" → status
-        //       callback fires with permissions granted → enable.
-        //   (b) Reinstall or login after data wipe: permissions from
-        //       a prior session were preserved, scheduler pref was
-        //       reset to default (false), LaunchedEffect fires the
-        //       callback on first composition → enable.
-        // `AutoSyncScheduler.enable` already schedules both the
-        // periodic worker and an immediate one-shot sync, so the user
-        // never waits for the next periodic tick to see fresh data.
+        // Enable auto-sync the moment HC permissions are granted.
+        // `enableIfNeeded` is idempotent — no-ops when already on —
+        // so this safely covers both first-grant and
+        // reinstall/data-wipe paths where permissions were
+        // preserved by the OS but the scheduler pref was reset.
         HealthConnectPermissionHost(
           onStatusChanged = { next ->
-            if (next.permissionsGranted && !AutoSyncScheduler.isEnabled(context)) {
-              AutoSyncScheduler.enable(context)
+            if (next.permissionsGranted) {
+              AutoSyncScheduler.enableIfNeeded(context)
             }
           },
         )

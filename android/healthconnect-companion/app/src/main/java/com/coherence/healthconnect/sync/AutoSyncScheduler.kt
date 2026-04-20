@@ -47,6 +47,17 @@ object AutoSyncScheduler {
     scheduleImmediate(context)
   }
 
+  /**
+   * Idempotent wrapper around [enable]. No-op if auto-sync is
+   * already on. Lets callers that observe "preconditions ready now"
+   * (e.g. HealthScreen seeing permissions already granted from a
+   * prior install) call this every composition without duplicate
+   * work or spurious immediate-sync requests.
+   */
+  fun enableIfNeeded(context: Context) {
+    if (!isEnabled(context)) enable(context)
+  }
+
   fun disable(context: Context) {
     setEnabled(context, false)
     val workManager = WorkManager.getInstance(context)

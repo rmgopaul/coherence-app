@@ -8,8 +8,6 @@ import {
   int,
   uniqueIndex,
   index,
-  double,
-  boolean,
 } from "drizzle-orm/mysql-core";
 
 export const integrations = mysqlTable("integrations", {
@@ -71,8 +69,7 @@ export const messages = mysqlTable("messages", {
 export type Message = typeof messages.$inferSelect;
 export type InsertMessage = typeof messages.$inferInsert;
 
-// Daily metric log for trend tracking over time.
-
+// Shared API credentials used by the whole Solar REC team.
 export const solarRecTeamCredentials = mysqlTable(
   "solarRecTeamCredentials",
   {
@@ -95,5 +92,3 @@ export const solarRecTeamCredentials = mysqlTable(
 
 export type SolarRecTeamCredential = typeof solarRecTeamCredentials.$inferSelect;
 export type InsertSolarRecTeamCredential = typeof solarRecTeamCredentials.$inferInsert;
-
-// Per-site, per-date API call results for the Monitoring Dashboard.

@@ -2,13 +2,11 @@ import {
   mysqlEnum,
   mysqlTable,
   text,
-  mediumtext,
   timestamp,
   varchar,
   int,
   uniqueIndex,
   index,
-  double,
   boolean,
 } from "drizzle-orm/mysql-core";
 
@@ -32,8 +30,7 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
-// Integration connections table to store OAuth tokens
-
+// TOTP two-factor authentication secrets (one per user).
 export const userTotpSecrets = mysqlTable(
   "userTotpSecrets",
   {
@@ -71,8 +68,7 @@ export const userRecoveryCodes = mysqlTable(
 export type UserRecoveryCode = typeof userRecoveryCodes.$inferSelect;
 export type InsertUserRecoveryCode = typeof userRecoveryCodes.$inferInsert;
 
-// SunPower PVS production readings submitted from the mobile app.
-
+// Per-team coworker accounts for the Solar REC dashboard.
 export const solarRecUsers = mysqlTable(
   "solarRecUsers",
   {
