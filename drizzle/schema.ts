@@ -229,6 +229,68 @@ export const supplementPriceLogs = mysqlTable(
 export type SupplementPriceLog = typeof supplementPriceLogs.$inferSelect;
 export type InsertSupplementPriceLog = typeof supplementPriceLogs.$inferInsert;
 
+// Intentional A/B-style trials for supplements — user records a hypothesis
+// and a window, then the analysis re-uses Phase 3 correlation math.
+export const supplementExperiments = mysqlTable(
+  "supplementExperiments",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    definitionId: varchar("definitionId", { length: 64 }).notNull(),
+    hypothesis: text("hypothesis").notNull(),
+    startDateKey: varchar("startDateKey", { length: 10 }).notNull(),
+    endDateKey: varchar("endDateKey", { length: 10 }),
+    status: mysqlEnum("status", ["active", "ended", "abandoned"]).default("active").notNull(),
+    primaryMetric: varchar("primaryMetric", { length: 64 }),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userIdx: index("supplement_experiments_user_idx").on(table.userId),
+    userStatusIdx: index("supplement_experiments_user_status_idx").on(
+      table.userId,
+      table.status
+    ),
+  })
+);
+
+export type SupplementExperiment = typeof supplementExperiments.$inferSelect;
+export type InsertSupplementExperiment = typeof supplementExperiments.$inferInsert;
+
+// Physical inventory events for supplement bottles. Running balance =
+// sum(quantityDelta); purchased is +doses, opened/finished are -doses.
+export const supplementRestockEvents = mysqlTable(
+  "supplementRestockEvents",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    definitionId: varchar("definitionId", { length: 64 }).notNull(),
+    eventType: mysqlEnum("eventType", ["purchased", "opened", "finished"]).notNull(),
+    occurredAt: timestamp("occurredAt").defaultNow().notNull(),
+    quantityDelta: double("quantityDelta").notNull(),
+    unitPrice: double("unitPrice"),
+    sourceUrl: text("sourceUrl"),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userIdx: index("supplement_restock_events_user_idx").on(table.userId),
+    userDefinitionIdx: index("supplement_restock_events_user_definition_idx").on(
+      table.userId,
+      table.definitionId
+    ),
+    userOccurredIdx: index("supplement_restock_events_user_occurred_idx").on(
+      table.userId,
+      table.occurredAt
+    ),
+  })
+);
+
+export type SupplementRestockEvent = typeof supplementRestockEvents.$inferSelect;
+export type InsertSupplementRestockEvent = typeof supplementRestockEvents.$inferInsert;
+
 // User-defined habits for tile-based daily tracking.
 export const habitDefinitions = mysqlTable(
   "habitDefinitions",

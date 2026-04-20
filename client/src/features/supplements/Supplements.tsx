@@ -48,6 +48,8 @@ import { SupplementsTodayPanel } from "./SupplementsTodayPanel";
 import { SupplementDetailSheet } from "./SupplementDetailSheet";
 import { SupplementsAdherenceHeatmap } from "./SupplementsAdherenceHeatmap";
 import { SupplementsInsightsPanel } from "./SupplementsInsightsPanel";
+import { SupplementsRestockCard } from "./SupplementsRestockCard";
+import { SupplementsExperiments } from "./SupplementsExperiments";
 
 type HistoryWindow = 30 | 90 | 365;
 const HISTORY_WINDOW_OPTIONS: HistoryWindow[] = [30, 90, 365];
@@ -149,12 +151,13 @@ export default function Supplements() {
           />
         </TabsContent>
 
-        <TabsContent value="protocol" className="pt-4">
+        <TabsContent value="protocol" className="pt-4 space-y-4">
           <SupplementsProtocolTable
             rows={rows}
             adherenceWindowDays={DEFAULT_PAGE_ADHERENCE_WINDOW_DAYS}
             onRowSelect={setSelectedDefinitionId}
           />
+          <SupplementsRestockCard definitions={activeDefinitions} />
         </TabsContent>
 
         <TabsContent value="history" className="pt-4">
@@ -167,7 +170,8 @@ export default function Supplements() {
           />
         </TabsContent>
 
-        <TabsContent value="insights" className="pt-4">
+        <TabsContent value="insights" className="pt-4 space-y-4">
+          <SupplementsExperiments definitions={activeDefinitions} />
           <SupplementsInsightsPanel definitions={activeDefinitions} />
         </TabsContent>
       </Tabs>

@@ -3,9 +3,13 @@ import {
   supplementLogs,
   supplementDefinitions,
   supplementPriceLogs,
+  supplementExperiments,
+  supplementRestockEvents,
   InsertSupplementLog,
   InsertSupplementDefinition,
   InsertSupplementPriceLog,
+  InsertSupplementExperiment,
+  InsertSupplementRestockEvent,
 } from "../../drizzle/schema";
 
 /**
@@ -375,4 +379,174 @@ export async function deleteSupplementDefinition(userId: number, definitionId: s
       .delete(supplementDefinitions)
       .where(and(eq(supplementDefinitions.userId, userId), eq(supplementDefinitions.id, definitionId)));
   });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Phase 4 — Experiments
+// ────────────────────────────────────────────────────────────────────
+
+export async function listSupplementExperiments(
+  userId: number,
+  opts?: { status?: "active" | "ended" | "abandoned" }
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const conditions = [eq(supplementExperiments.userId, userId)];
+  if (opts?.status) {
+    conditions.push(eq(supplementExperiments.status, opts.status));
+  }
+
+  return withDbRetry("list supplement experiments", async () =>
+    db
+      .select()
+      .from(supplementExperiments)
+      .where(and(...conditions))
+      .orderBy(desc(supplementExperiments.createdAt))
+  );
+}
+
+export async function getSupplementExperimentById(userId: number, id: string) {
+  const db = await getDb();
+  if (!db) return null;
+
+  const rows = await withDbRetry("load supplement experiment", async () =>
+    db
+      .select()
+      .from(supplementExperiments)
+      .where(
+        and(
+          eq(supplementExperiments.userId, userId),
+          eq(supplementExperiments.id, id)
+        )
+      )
+      .limit(1)
+  );
+  return rows.length > 0 ? rows[0] : null;
+}
+
+export async function createSupplementExperiment(row: InsertSupplementExperiment) {
+  const db = await getDb();
+  if (!db) return;
+
+  const now = new Date();
+  await withDbRetry("insert supplement experiment", async () => {
+    await db.insert(supplementExperiments).values({
+      ...row,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function updateSupplementExperiment(
+  userId: number,
+  id: string,
+  updates: Partial<{
+    status: "active" | "ended" | "abandoned";
+    endDateKey: string | null;
+    primaryMetric: string | null;
+    notes: string | null;
+    hypothesis: string;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+
+  const payload: Record<string, unknown> = { updatedAt: new Date() };
+  if (updates.status !== undefined) payload.status = updates.status;
+  if (updates.endDateKey !== undefined) payload.endDateKey = updates.endDateKey;
+  if (updates.primaryMetric !== undefined) payload.primaryMetric = updates.primaryMetric;
+  if (updates.notes !== undefined) payload.notes = updates.notes;
+  if (updates.hypothesis !== undefined) payload.hypothesis = updates.hypothesis;
+
+  await withDbRetry("update supplement experiment", async () => {
+    await db
+      .update(supplementExperiments)
+      .set(payload)
+      .where(
+        and(
+          eq(supplementExperiments.userId, userId),
+          eq(supplementExperiments.id, id)
+        )
+      );
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Phase 4 — Restock events
+// ────────────────────────────────────────────────────────────────────
+
+export async function listSupplementRestockEvents(
+  userId: number,
+  opts?: { definitionId?: string; limit?: number }
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const conditions = [eq(supplementRestockEvents.userId, userId)];
+  if (opts?.definitionId) {
+    conditions.push(eq(supplementRestockEvents.definitionId, opts.definitionId));
+  }
+
+  const limit = Math.max(1, Math.min(opts?.limit ?? 500, 1000));
+
+  return withDbRetry("list supplement restock events", async () =>
+    db
+      .select()
+      .from(supplementRestockEvents)
+      .where(and(...conditions))
+      .orderBy(desc(supplementRestockEvents.occurredAt))
+      .limit(limit)
+  );
+}
+
+export async function addSupplementRestockEvent(
+  row: InsertSupplementRestockEvent
+) {
+  const db = await getDb();
+  if (!db) return;
+
+  const now = new Date();
+  await withDbRetry("insert supplement restock event", async () => {
+    await db.insert(supplementRestockEvents).values({
+      ...row,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
+export async function deleteSupplementRestockEvent(userId: number, id: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("delete supplement restock event", async () => {
+    await db
+      .delete(supplementRestockEvents)
+      .where(
+        and(
+          eq(supplementRestockEvents.userId, userId),
+          eq(supplementRestockEvents.id, id)
+        )
+      );
+  });
+}
+
+// Running dose balance per definition = sum(quantityDelta).
+// purchased = +doses, opened/finished = -doses → straight SUM works.
+export async function getSupplementDoseBalances(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("sum supplement dose balances", async () =>
+    db
+      .select({
+        definitionId: supplementRestockEvents.definitionId,
+        balance: sql<number>`COALESCE(SUM(${supplementRestockEvents.quantityDelta}), 0)`,
+      })
+      .from(supplementRestockEvents)
+      .where(eq(supplementRestockEvents.userId, userId))
+      .groupBy(supplementRestockEvents.definitionId)
+  );
 }

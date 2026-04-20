@@ -44,10 +44,18 @@ import {
   getProductionReadingSummary,
   getSectionEngagementSummary,
   getSectionRatings,
+  addSupplementRestockEvent,
+  createSupplementExperiment,
+  deleteSupplementRestockEvent,
   getSupplementAdherence,
   getSupplementDefinitionById,
+  getSupplementDoseBalances,
+  getSupplementExperimentById,
   getSupplementLogByDefinitionAndDate,
+  listSupplementExperiments,
   listSupplementLogsRange,
+  listSupplementRestockEvents,
+  updateSupplementExperiment,
   getUserByEmail,
   insertProductionReading,
   insertSectionEngagementBatch,
@@ -928,6 +936,173 @@ export const supplementsRouter = router({
         return sum / values.length;
       })(),
     };
+  }),
+
+  // ─── Phase 4: Experiments ─────────────────────────────────────────
+  listExperiments: protectedProcedure
+    .input(
+      z
+        .object({
+          status: z.enum(["active", "ended", "abandoned"]).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      return listSupplementExperiments(ctx.user.id, { status: input?.status });
+    }),
+  createExperiment: protectedProcedure
+    .input(
+      z.object({
+        definitionId: z.string().min(1),
+        hypothesis: z.string().min(1).max(1000),
+        startDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        primaryMetric: z
+          .enum([
+            "whoopRecoveryScore",
+            "whoopDayStrain",
+            "whoopSleepHours",
+            "whoopHrvMs",
+            "whoopRestingHr",
+            "samsungSteps",
+            "samsungSleepHours",
+            "samsungSpo2AvgPercent",
+            "samsungSleepScore",
+            "samsungEnergyScore",
+            "todoistCompletedCount",
+          ])
+          .optional(),
+        notes: z.string().max(2000).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const id = nanoid();
+      await createSupplementExperiment({
+        id,
+        userId: ctx.user.id,
+        definitionId: input.definitionId,
+        hypothesis: input.hypothesis.trim(),
+        startDateKey: input.startDateKey,
+        endDateKey: null,
+        status: "active",
+        primaryMetric: input.primaryMetric ?? null,
+        notes: input.notes?.trim() || null,
+      });
+      return { id, success: true };
+    }),
+  endExperiment: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        endDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        status: z.enum(["ended", "abandoned"]).default("ended"),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const existing = await getSupplementExperimentById(ctx.user.id, input.id);
+      if (!existing) throw new Error("Experiment not found.");
+      await updateSupplementExperiment(ctx.user.id, input.id, {
+        status: input.status,
+        endDateKey: input.endDateKey,
+      });
+      return { success: true };
+    }),
+
+  // ─── Phase 4: Restock events ─────────────────────────────────────
+  listRestockEvents: protectedProcedure
+    .input(
+      z
+        .object({
+          definitionId: z.string().optional(),
+          limit: z.number().int().min(1).max(1000).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      return listSupplementRestockEvents(ctx.user.id, {
+        definitionId: input?.definitionId,
+        limit: input?.limit,
+      });
+    }),
+  addRestockEvent: protectedProcedure
+    .input(
+      z.object({
+        definitionId: z.string().min(1),
+        eventType: z.enum(["purchased", "opened", "finished"]),
+        occurredAt: z.string().optional(),
+        quantityDelta: z.number(),
+        unitPrice: z.number().nonnegative().optional(),
+        sourceUrl: z.string().max(2048).optional(),
+        notes: z.string().max(500).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      await addSupplementRestockEvent({
+        id: nanoid(),
+        userId: ctx.user.id,
+        definitionId: input.definitionId,
+        eventType: input.eventType,
+        occurredAt: input.occurredAt ? new Date(input.occurredAt) : new Date(),
+        quantityDelta: input.quantityDelta,
+        unitPrice: input.unitPrice ?? null,
+        sourceUrl: input.sourceUrl?.trim() || null,
+        notes: input.notes?.trim() || null,
+      });
+      return { success: true };
+    }),
+  deleteRestockEvent: protectedProcedure
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      await deleteSupplementRestockEvent(ctx.user.id, input.id);
+      return { success: true };
+    }),
+  getRestockForecast: protectedProcedure.query(async ({ ctx }) => {
+    const [defs, balances] = await Promise.all([
+      listSupplementDefinitions(ctx.user.id),
+      getSupplementDoseBalances(ctx.user.id),
+    ]);
+    const balanceByDefId = new Map<string, number>();
+    for (const row of balances) {
+      if (!row.definitionId) continue;
+      const raw = row.balance as unknown;
+      const num = typeof raw === "number" ? raw : Number(raw);
+      balanceByDefId.set(row.definitionId, Number.isFinite(num) ? num : 0);
+    }
+    const today = new Date();
+    return defs
+      .filter((d) => d.isLocked && d.isActive)
+      .map((d) => {
+        const balance = balanceByDefId.get(d.id) ?? 0;
+        const dailyRate = 1; // one locked dose/day; schedule-aware rates later
+        const daysRemaining =
+          dailyRate > 0 ? Math.floor(balance / dailyRate) : null;
+        const runsOutOn =
+          daysRemaining !== null && daysRemaining >= 0
+            ? (() => {
+                const d2 = new Date(today);
+                d2.setDate(d2.getDate() + daysRemaining);
+                const y = d2.getFullYear();
+                const m = String(d2.getMonth() + 1).padStart(2, "0");
+                const dd = String(d2.getDate()).padStart(2, "0");
+                return `${y}-${m}-${dd}`;
+              })()
+            : null;
+        return {
+          definitionId: d.id,
+          name: d.name,
+          balance,
+          dailyRate,
+          daysRemaining,
+          runsOutOn,
+        };
+      });
+  }),
+
+  // ─── Phase 4: Price watcher (manual trigger) ─────────────────────
+  runPriceWatchNow: protectedProcedure.mutation(async ({ ctx }) => {
+    const { runPriceWatchForUser } = await import(
+      "../services/supplements/priceWatcher"
+    );
+    return runPriceWatchForUser(ctx.user.id);
   }),
 });
 
