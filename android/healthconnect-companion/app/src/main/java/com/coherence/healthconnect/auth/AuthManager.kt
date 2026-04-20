@@ -109,7 +109,12 @@ class AuthManager(private val context: Context) {
       .appendQueryParameter("scope", "openid email profile")
       .appendQueryParameter("state", state)
       .appendQueryParameter("access_type", "offline")
-      .appendQueryParameter("prompt", "consent")
+      // `select_account` forces Google to show the account picker
+      // even when Chrome has a single signed-in account, so users
+      // with multiple Google accounts on the device can choose.
+      // `consent` keeps re-prompting for scope grants so we always
+      // receive a refresh token alongside access_type=offline.
+      .appendQueryParameter("prompt", "select_account consent")
       .build()
       .toString()
   }
