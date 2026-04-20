@@ -329,7 +329,7 @@ export function KingOfTheDayHero({
           )}
         </div>
         <h1
-          className="kotd-display kotd-headline mt-3 text-[clamp(3rem,11vw,9rem)]"
+          className="kotd-display kotd-headline mt-3 text-[clamp(2.5rem,7.5vw,6.25rem)]"
           title={
             onRequestPin
               ? `${headline} — right-click or press K to pin a different headline`

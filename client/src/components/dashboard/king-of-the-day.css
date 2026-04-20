@@ -19,19 +19,20 @@
   letter-spacing: 0.01em;
 }
 
-/* Yellow Basquiat highlighter — clipped to text baseline */
+/* Yellow Basquiat highlighter — covers the full glyph so black text
+   stays on yellow across the whole letter. The old 35-92% gradient
+   band left the top and bottom of each glyph on the dark card
+   background, producing black-on-black strips that were especially
+   unreadable on mobile where headlines wrap more aggressively. */
 .kotd-highlight {
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    transparent 35%,
-    oklch(0.92 0.18 95) 35%,
-    oklch(0.92 0.18 95) 92%,
-    transparent 92%
-  );
-  padding: 0 0.12em;
+  background: oklch(0.92 0.18 95);
+  color: #0a0a0a;
+  padding: 0 0.14em;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+  /* Small offset baseline shadow keeps the newsprint feel without
+     depending on a transparent gap in the fill itself. */
+  box-shadow: 0 0.04em 0 oklch(0.76 0.22 85);
 }
 
 /* Red hand-drawn strike — two slightly offset lines for a scrawled feel */
@@ -87,10 +88,13 @@
   border-color: #2a2a2a;
 }
 
-/* Giant stat tile */
+/* Giant stat tile — scaled down from the original 5.5rem max so
+   all four tiles fit on one visual row without crowding the
+   headline above them. The original sizes were chosen before the
+   secondary-outcome row + action rail filled the space below. */
 .kotd-stat-value {
   font-family: "Archivo Black", "Helvetica Neue", sans-serif;
-  font-size: clamp(3rem, 6vw, 5.5rem);
+  font-size: clamp(2.25rem, 4.5vw, 4rem);
   line-height: 0.9;
   letter-spacing: -0.04em;
 }
@@ -103,8 +107,14 @@
 }
 .kotd-stat-delta {
   font-family: "Caveat", cursive;
-  font-size: 1.4rem;
+  font-size: 1.2rem;
   line-height: 1;
+}
+
+/* Tighten the top-of-card padding / spacing so the hero reads as
+   one editorial block rather than a loose column of sections. */
+.kotd-hero .kotd-headline {
+  line-height: 0.88;
 }
 
 /* PINNED badge — shown when kingOfDay.source === 'manual' */

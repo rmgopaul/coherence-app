@@ -50,6 +50,12 @@ export function HabitsFeedCell({ updatedLabel }: Props) {
 
   const pctComplete = Math.round((done / total) * 100);
 
+  // Top 3 habits still pending today — gives the card texture beyond
+  // the ratio + streak numbers.
+  const pending = (habits ?? [])
+    .filter((h) => !h.completed)
+    .slice(0, 3);
+
   return (
     <article className="wire-card">
       <header className="wire-card__head">
@@ -85,6 +91,20 @@ export function HabitsFeedCell({ updatedLabel }: Props) {
             style={{ width: `${pctComplete}%` }}
           />
         </div>
+        {pending.length > 0 ? (
+          <ul className="wire-list">
+            {pending.map((habit) => (
+              <li key={habit.id} className="wire-list__row">
+                <span className="mono-label">
+                  {String(habit.name ?? "").slice(0, 24).toUpperCase()}
+                </span>
+                <span className="wire-list__val mono-label">PENDING</span>
+              </li>
+            ))}
+          </ul>
+        ) : done === total && total > 0 ? (
+          <p className="fp-empty">all done today.</p>
+        ) : null}
       </div>
     </article>
   );

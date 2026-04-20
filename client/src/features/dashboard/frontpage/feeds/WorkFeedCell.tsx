@@ -120,6 +120,13 @@ export function WorkFeedCell({ updatedLabel }: Props) {
   const runningLabel =
     current?.description?.trim() || current?.projectName || "UNTITLED";
 
+  // Top 3 today's entries (newest first) for a dense recent-activity
+  // sub-list. The existing stat already counts total hours; this adds
+  // the texture of WHAT was worked on.
+  const todaysEntries = (recent ?? [])
+    .filter((entry) => isToday(entry.start))
+    .slice(0, 3);
+
   return (
     <article className="wire-card">
       <header className="wire-card__head">
@@ -146,8 +153,28 @@ export function WorkFeedCell({ updatedLabel }: Props) {
           <p className="mono-label wire-card__hint">
             TOP · {topProject.slice(0, 28).toUpperCase()}
           </p>
-        ) : (
+        ) : todaysEntries.length === 0 ? (
           <p className="fp-empty">no time tracked yet.</p>
+        ) : null}
+        {todaysEntries.length > 0 && (
+          <ul className="wire-list">
+            {todaysEntries.map((entry) => {
+              const desc =
+                entry.description?.trim() ||
+                entry.projectName ||
+                "untitled";
+              return (
+                <li key={entry.id} className="wire-list__row">
+                  <span className="mono-label">
+                    {desc.slice(0, 22).toUpperCase()}
+                  </span>
+                  <span className="wire-list__val mono-label">
+                    {formatHours(entry.durationSeconds ?? 0)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </article>
