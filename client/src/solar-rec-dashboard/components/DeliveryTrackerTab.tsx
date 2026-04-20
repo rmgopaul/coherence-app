@@ -177,11 +177,54 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                         scraped Schedule B{deliveryTrackerData.schedulesWithYearsOutsideBounds.length === 1 ? "" : "s"}
                       </strong>{" "}
                       have year boundaries outside the plausible 2019–2042 window
-                      and are likely bad parses — they'll dominate the{" "}
-                      <code>year_mismatch</code> bucket. Re-scrape those PDFs.
+                      and are likely bad parses. Because their earliest year sits
+                      outside that window, their transfers get classified under{" "}
+                      <code>pre_delivery_schedule</code> rather than{" "}
+                      <code>year_mismatch</code> (which is why the
+                      year_mismatch bucket looks empty). Re-scrape these PDFs.
                     </>
                   ) : null}
                 </CardDescription>
+                {deliveryTrackerData.schedulesWithYearsOutsideBounds.length > 0 ? (
+                  <div className="mt-2 rounded border border-amber-300 bg-white p-2">
+                    <p className="text-xs font-medium text-amber-900 mb-1">
+                      Flagged Schedule Bs (out-of-bounds year ranges)
+                    </p>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-xs">Tracking ID</TableHead>
+                          <TableHead className="text-xs">System</TableHead>
+                          <TableHead className="text-xs">
+                            Offending year ranges (scraped)
+                          </TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {deliveryTrackerData.schedulesWithYearsOutsideBounds.map(
+                          ({ trackingId, systemName, outOfBoundsYears }) => (
+                            <TableRow key={trackingId}>
+                              <TableCell className="font-mono text-xs">
+                                {trackingId}
+                              </TableCell>
+                              <TableCell className="text-xs">
+                                {systemName}
+                              </TableCell>
+                              <TableCell className="font-mono text-xs">
+                                {outOfBoundsYears
+                                  .map(
+                                    ({ yearLabel, startYear, endYear }) =>
+                                      `${yearLabel} (start=${startYear ?? "?"}, end=${endYear ?? "?"})`,
+                                  )
+                                  .join("; ")}
+                              </TableCell>
+                            </TableRow>
+                          ),
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : null}
               </div>
               <Button
                 variant="outline"

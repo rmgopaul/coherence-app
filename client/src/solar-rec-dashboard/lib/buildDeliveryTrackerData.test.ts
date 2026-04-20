@@ -184,13 +184,21 @@ describe("buildDeliveryTrackerData", () => {
         scheduleRow({ tracking_system_ref_id: "NON_OK" }),
         scheduleRow({
           tracking_system_ref_id: "NON_BAD",
+          system_name: "Bad Parse System",
           year1_start_date: "2012-06-01",
           year1_end_date: "2013-05-31",
         }),
       ],
       transferRows: [],
     });
-    expect(data.schedulesWithYearsOutsideBounds).toEqual(["NON_BAD"]);
+    expect(data.schedulesWithYearsOutsideBounds).toHaveLength(1);
+    expect(data.schedulesWithYearsOutsideBounds[0].trackingId).toBe("NON_BAD");
+    expect(data.schedulesWithYearsOutsideBounds[0].systemName).toBe(
+      "Bad Parse System",
+    );
+    expect(data.schedulesWithYearsOutsideBounds[0].outOfBoundsYears).toEqual([
+      { yearLabel: "2012-2013", startYear: 2012, endYear: 2013 },
+    ]);
   });
 
   it("returns empty when transfers arrive before schedules (hydration guard)", () => {

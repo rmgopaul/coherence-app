@@ -97,11 +97,20 @@ export type DeliveryTrackerData = {
     transferCount: number;
   }>;
   /**
-   * Tracking IDs whose scraped Schedule B has at least one year boundary
-   * outside the plausible [2019, 2042] range. Surfaced so bad scrapes
-   * can be found and re-run.
+   * Scraped Schedule Bs with at least one year boundary outside the
+   * plausible [2019, 2042] range. Each entry carries the system name
+   * plus the list of offending year rows so the user can see exactly
+   * what the parser produced and re-scrape the right PDF.
    */
-  schedulesWithYearsOutsideBounds: string[];
+  schedulesWithYearsOutsideBounds: Array<{
+    trackingId: string;
+    systemName: string;
+    outOfBoundsYears: Array<{
+      yearLabel: string;
+      startYear: number | null;
+      endYear: number | null;
+    }>;
+  }>;
 };
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
@@ -201,25 +210,54 @@ export function buildDeliveryTrackerData(input: {
 
   // Diagnostic: find scraped Schedule Bs with year boundaries outside
   // the plausible [2019, 2042] window. These are strong candidates for
-  // bad PDF parses driving large year_mismatch counts.
-  const schedulesWithYearsOutsideBoundsSet = new Set<string>();
+  // bad PDF parses driving large year_mismatch / pre_delivery counts.
+  // We collect the offending year rows per system so the UI can show
+  // exactly what the parser produced.
+  const schedulesWithYearsOutsideBoundsList: Array<{
+    trackingId: string;
+    systemName: string;
+    outOfBoundsYears: Array<{
+      yearLabel: string;
+      startYear: number | null;
+      endYear: number | null;
+    }>;
+  }> = [];
   systemSchedules.forEach((schedule) => {
+    const offending: Array<{
+      yearLabel: string;
+      startYear: number | null;
+      endYear: number | null;
+    }> = [];
     for (const year of schedule.years) {
-      const startYear = year.yearStart?.getFullYear();
-      const endYear = year.yearEnd?.getFullYear();
-      if (
-        (typeof startYear === "number" &&
-          (startYear < SCHEDULE_YEAR_BOUNDS.min ||
-            startYear > SCHEDULE_YEAR_BOUNDS.max)) ||
-        (typeof endYear === "number" &&
-          (endYear < SCHEDULE_YEAR_BOUNDS.min ||
-            endYear > SCHEDULE_YEAR_BOUNDS.max))
-      ) {
-        schedulesWithYearsOutsideBoundsSet.add(schedule.unitId);
-        break;
+      const startYear = year.yearStart?.getFullYear() ?? null;
+      const endYear = year.yearEnd?.getFullYear() ?? null;
+      const startOut =
+        typeof startYear === "number" &&
+        (startYear < SCHEDULE_YEAR_BOUNDS.min ||
+          startYear > SCHEDULE_YEAR_BOUNDS.max);
+      const endOut =
+        typeof endYear === "number" &&
+        (endYear < SCHEDULE_YEAR_BOUNDS.min ||
+          endYear > SCHEDULE_YEAR_BOUNDS.max);
+      if (startOut || endOut) {
+        offending.push({
+          yearLabel: year.yearLabel,
+          startYear,
+          endYear,
+        });
       }
     }
+    if (offending.length > 0) {
+      schedulesWithYearsOutsideBoundsList.push({
+        trackingId: schedule.unitId,
+        systemName: schedule.systemName,
+        outOfBoundsYears: offending,
+      });
+    }
   });
+  schedulesWithYearsOutsideBoundsList.sort((a, b) =>
+    a.trackingId.localeCompare(b.trackingId),
+  );
 
   // Process transfers: allocate to energy years
   let totalTransfers = 0;
@@ -412,8 +450,6 @@ export function buildDeliveryTrackerData(input: {
     )
       .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
       .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
-    schedulesWithYearsOutsideBounds: Array.from(
-      schedulesWithYearsOutsideBoundsSet,
-    ).sort(),
+    schedulesWithYearsOutsideBounds: schedulesWithYearsOutsideBoundsList,
   };
 }
