@@ -38,7 +38,7 @@ import com.coherence.samsunghealth.ui.state.errorOrNull
 import com.coherence.samsunghealth.ui.state.isLoading
 import com.coherence.samsunghealth.ui.state.updatedAtOrNull
 import com.coherence.samsunghealth.ui.widgets.CalendarWidget
-import com.coherence.samsunghealth.ui.widgets.DashboardHero
+import com.coherence.samsunghealth.ui.widgets.BasquiatDashboardHero
 import com.coherence.samsunghealth.ui.widgets.FocusTimerWidget
 import com.coherence.samsunghealth.ui.widgets.GmailWidget
 import com.coherence.samsunghealth.ui.widgets.HabitsWidget
@@ -131,7 +131,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
     ) {
       // Hero greeting card
       item {
-        DashboardHero(stats = heroStats)
+        BasquiatDashboardHero(stats = heroStats)
       }
 
       // Global search command bar
