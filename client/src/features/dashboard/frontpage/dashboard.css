@@ -270,33 +270,45 @@ html[data-focus="1"] .fp-root {
   font-weight: 700;
 }
 
-/* --- Wire feeds grid --- */
+/* --- Wire feeds grid ---
+   Cards are visually connected via shared internal rules rather
+   than floating islands with individual shadows. The outer frame
+   gets a single 2px ink border; cell gaps are 1px (collapsed
+   border-style) so adjacent cards read as the sections of one
+   broadsheet page instead of separate cards. */
 
 .fp-wire-grid {
   display: grid;
   grid-template-columns: 1fr;
-  gap: 16px;
+  gap: 0;
   margin-top: 48px;
+  border: 2px solid var(--fp-ink);
+  background: var(--fp-ink); /* shows through as the 1px grid lines */
 }
 
 @media (min-width: 768px) {
   .fp-wire-grid {
     grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
   }
 }
 
 @media (min-width: 1280px) {
   .fp-wire-grid {
     grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
   }
 }
 
 .wire-card {
   background: var(--fp-paper-2);
-  border: 2px solid var(--fp-ink);
-  box-shadow: 4px 4px 0 var(--fp-ink);
-  padding: 20px 24px;
-  min-height: 200px;
+  /* Outer grid frame carries the 2px ink border; individual cards
+     don't draw their own. The 1px gap above is the ink background
+     bleeding through. */
+  border: 0;
+  box-shadow: none;
+  padding: 18px 22px;
+  min-height: 220px;
   display: flex;
   flex-direction: column;
   gap: 12px;
