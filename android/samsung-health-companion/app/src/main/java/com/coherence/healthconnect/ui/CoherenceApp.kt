@@ -1,0 +1,93 @@
+package com.coherence.healthconnect.ui
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.coherence.healthconnect.CoherenceApplication
+import com.coherence.healthconnect.data.model.AppPreferences
+import com.coherence.healthconnect.ui.navigation.AppNavGraph
+import com.coherence.healthconnect.ui.screens.LoginScreen
+import com.coherence.healthconnect.ui.screens.PinScreen
+import com.coherence.healthconnect.ui.theme.CoherenceTheme
+
+val LocalApp = compositionLocalOf<CoherenceApplication> {
+  error("No CoherenceApplication provided")
+}
+
+@Composable
+fun CoherenceAppUi(app: CoherenceApplication) {
+  val preferences by app.container.appPreferencesRepository.preferences.collectAsState(initial = AppPreferences())
+
+  CoherenceTheme(
+    themeMode = preferences.themeMode,
+    dynamicColor = preferences.dynamicColorEnabled,
+    trueBlack = preferences.trueBlackEnabled,
+  ) {
+    CompositionLocalProvider(LocalApp provides app) {
+      val isAuthenticated by app.authManager.isAuthenticated.collectAsState()
+      val isPinUnlocked by app.authManager.isPinUnlocked.collectAsState()
+      var startupCheckDone by remember { mutableStateOf(false) }
+
+      LaunchedEffect(Unit) {
+        app.authManager.checkPinStatus()
+      }
+
+      LaunchedEffect(isPinUnlocked) {
+        if (isPinUnlocked == true && !isAuthenticated) {
+          app.authManager.tryDirectApiAccess()
+        }
+        if (isPinUnlocked != null) {
+          startupCheckDone = true
+        }
+      }
+
+      when {
+        !startupCheckDone -> {
+          LoadingScreen("Connecting...")
+        }
+        isPinUnlocked == false -> {
+          PinScreen(
+            onUnlocked = { pinCookieValue ->
+              app.authManager.savePinCookie(pinCookieValue)
+            },
+          )
+        }
+        isAuthenticated -> {
+          AppNavGraph()
+        }
+        else -> {
+          LoginScreen(authManager = app.authManager)
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun LoadingScreen(message: String) {
+  Column(
+    modifier = Modifier.fillMaxSize(),
+    verticalArrangement = Arrangement.Center,
+    horizontalAlignment = Alignment.CenterHorizontally,
+  ) {
+    CircularProgressIndicator()
+    Spacer(Modifier.height(12.dp))
+    Text(message)
+  }
+}

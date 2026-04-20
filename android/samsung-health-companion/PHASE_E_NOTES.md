@@ -20,8 +20,8 @@ in the running app until you opt in.
 In `ui/screens/DashboardScreen.kt`, swap the single hero line:
 
 ```diff
--import com.coherence.samsunghealth.ui.widgets.DashboardHero
-+import com.coherence.samsunghealth.ui.widgets.BasquiatDashboardHero
+-import com.coherence.healthconnect.ui.widgets.DashboardHero
++import com.coherence.healthconnect.ui.widgets.BasquiatDashboardHero
 ...
 -      DashboardHero(stats = heroStats)
 +      BasquiatDashboardHero(stats = heroStats)

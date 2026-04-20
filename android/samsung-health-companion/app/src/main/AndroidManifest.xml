@@ -105,7 +105,7 @@
         <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
       </intent-filter>
       <intent-filter>
-        <action android:name="com.coherence.samsunghealth.widget.ACTION_REFRESH" />
+        <action android:name="com.coherence.healthconnect.widget.ACTION_REFRESH" />
       </intent-filter>
       <meta-data
         android:name="android.appwidget.provider"
