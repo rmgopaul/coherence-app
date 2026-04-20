@@ -180,313 +180,211 @@ can't be locally end-to-end tested:
 
 ---
 
-## 2026-04-19 — Samsung Health rewrite: the Gradle `versionName` that never moved
+## 2026-04-19 — Shipped-without-verification: two flavours of the same bug
 
-### What the user experienced
+Two separate incidents in the Samsung Health rewrite session shared
+a root cause: Claude declared something shipped based on a signal
+that didn't actually prove it was shipped. Both burned hours.
+Consolidating them into one entry because the fix is the same rule.
 
-1. User asked for a code review of the broken Health Connect
-   integration. Claude shipped a complete rewrite over a series of
-   commits: `0af3c54` → `dbc89bf` → `a4c2e73` → `2b7ded1` → `185aedb`
-   → `2d9de20`. All verified locally via `./gradlew
-   :app:compileDebugKotlin --rerun-tasks`, `tsc --noEmit`, and
-   `vitest run`.
-2. Over ~8 commits Claude repeatedly told the user "rebuild the APK
-   and reinstall" to verify each fix. User reported the same
-   symptoms every time — no data, same rate-limit error, same
-   "Backfill queued" stuck state.
-3. Eventually the user lost patience and asked Claude to control the
-   debugging directly via adb. First real diagnostic:
-   ```
-   $ adb shell dumpsys package com.coherence.samsunghealth | grep versionName
-   versionName=0.2.0
-   ```
-4. Claude had changed the internal `APP_VERSION` constant in
-   `HealthConnectPayloadMapper.kt` three times (0.3.0 → 0.3.1 → 0.3.2)
-   without ever touching `versionCode` or `versionName` in
-   `app/build.gradle.kts`. Those stayed at `versionCode = 2,
-   versionName = "0.2.0"` the entire time. Gradle's `installDebug`
-   silently no-ops when a same-versionCode APK is already installed
-   — no warning, no error, exit 0.
-5. The user's phone had been running the **original reflection-era
-   v0.2.0 APK** through every "install the new APK" instruction.
-   All of Claude's rewrites were on the host filesystem and on
-   `main`, but zero of them had ever actually run on the device.
+### Incident A — the Gradle `versionName` that never moved
 
-### Actual root cause
+Claude bumped the internal `APP_VERSION` constant in Kotlin three
+times (0.3.0 → 0.3.1 → 0.3.2) and told the user "install the new
+APK" after each. The user reported the same symptoms every time —
+no data, same rate-limit error. Eventually the first adb run
+revealed the truth:
 
-`APP_VERSION` in Kotlin is a metadata string that only shows up in
-webhook payloads (`payload.source.appVersion`). It has **zero**
-effect on the Android-level version the OS uses to decide whether
-an APK upgrade is needed. Those are two different fields:
+```
+$ adb shell dumpsys package <pkg> | grep versionName
+versionName=0.2.0
+```
 
-| Field | File | What it affects |
-|---|---|---|
-| `APP_VERSION` (Kotlin const) | `HealthConnectPayloadMapper.kt` | Debug endpoint payload shape, human-readable |
-| `versionName` | `app/build.gradle.kts` | "About" screen, `dumpsys package`, Play Store display |
-| `versionCode` | `app/build.gradle.kts` | Whether `installDebug` replaces an existing APK |
+`versionCode` and `versionName` in `app/build.gradle.kts` were
+never bumped. Gradle's `installDebug` silently no-ops when a
+same-versionCode APK is already on the device (exit 0, "Installed
+on 1 device" in the log). Every "new APK" install had actually
+been a no-op. The phone ran the original v0.2.0 reflection-era
+code the entire time.
 
-Bumping only `APP_VERSION` while leaving `versionCode = 2` meant
-every `installDebug` call produced a correctly-compiled APK that
-Gradle then refused to replace the existing device install with.
-The logs read "Installed on 1 device" because Gradle treats
-"already up to date" as success.
+**Root cause**: confusing the *internal marker* (`APP_VERSION`
+string baked into payloads) with the *OS-visible version*
+(`versionName` / `versionCode`). The internal marker only surfaces
+after a sync succeeds. If the APK never installs, no sync runs,
+the marker is meaningless.
 
-### What Claude got wrong
+### Incident B — the cooldown-never-engaged bug
 
-1. **Confused internal version markers with the OS-visible version.**
-   Similar to the `_runnerVersion` pattern from the Schedule B
-   postmortem, but with a fatal twist: the marker Claude was bumping
-   only surfaces AFTER a successful sync. If the APK never installs,
-   no sync happens, and the marker check is meaningless. The
-   analogous Android-specific marker is `versionName` in
-   `build.gradle.kts`, which shows up in `dumpsys package` regardless
-   of whether the app has run.
-
-2. **Told the user "install the new APK" without a way to verify
-   the install actually took.** For server code, "check the
-   `_runnerVersion` field in the debug endpoint response" verifies
-   the deploy. For Android, the equivalent is:
-   ```
-   adb shell dumpsys package <package> | grep versionName
-   ```
-   Claude never asked the user to run this until the session had
-   already burned multiple hours.
-
-3. **`installDebug`'s exit code is a trap.** It's 0 when:
-   - The APK was replaced ✓
-   - The APK was already at the same versionCode (no-op) ✗ (this bit us)
-   - The device isn't connected but the build artifact was produced ✗
-   Never assume `BUILD SUCCESSFUL` means "the new code is running."
-
-### Prevention added
-
-1. **`versionName`/`versionCode` must be bumped in the same commit
-   that bumps `APP_VERSION`.** Add a pre-push hook or CI check that
-   fails when the `APP_VERSION` string in
-   `HealthConnectPayloadMapper.kt` doesn't match `versionName` in
-   `app/build.gradle.kts`. (Deferred — see 2026-04-19 pre-push
-   hook entry below for the web-side analog.)
-
-2. **Android debug-verify recipe.** Every "install the new APK"
-   instruction should be paired with the adb verification command:
-   ```bash
-   adb shell dumpsys package com.coherence.healthconnect \
-     | grep -E 'versionName|versionCode'
-   ```
-   If `versionName` isn't the expected value, the install didn't
-   take — probably versionCode conflict, probably need to bump.
-
-3. **Observable-on-device state beats in-payload markers for
-   Android debugging.** Before trusting "the new code is running",
-   verify against the most OS-integrated signal available:
-   - `dumpsys package` for version
-   - `run-as $pkg cat shared_prefs/foo.xml` for state
-   - `logcat --pid=$(pidof $pkg)` for runtime behavior
-   These can't be faked by a caching server or a stale client build.
-
----
-
-## 2026-04-19 — Parallel Claude sessions racing on `.git/index`
-
-### What the user experienced
-
-Mid-way through the Samsung Health rewrite the user had multiple
-Claude Code sessions open against the same working tree (different
-conversations, different tasks). Staging operations that Claude
-thought it controlled were being mutated by the other sessions
-between `git add` and `git commit`.
-
-Concrete incident: Claude ran `git add server/_core/pinGate.ts
-server/oauth-routes.ts` (expecting 2 files staged), then
-`git commit -m "..."`. The resulting commit contained **6 files**:
-the 2 Claude staged plus 4 solar-rec files staged by a parallel
-session in between. The commit's stat claimed "feat(samsung-health):
-..." but it actually contained a solar-rec component extraction.
-
-### Actual root cause
-
-`.git/index` is a single shared file. Any `git add` / `git rm --cached`
-/ `git reset` operation from any process mutates it. When two
-Claude sessions run concurrently against the same working tree,
-their staging operations interleave without any locking. The
-committing session sees whatever is in `.git/index` at the instant
-its `git commit` reads it — not what it just staged.
-
-`git commit -- path1 path2` would have scoped the commit to those
-two paths, but Claude (old habit) ran the bare `git commit` which
-takes everything from the index.
-
-### What Claude got wrong
-
-1. **Ran `git add` and `git commit` as separate commands with a
-   time gap between them.** Any gap is enough for another process
-   to mutate the index. Fine for solo human use, fatal with
-   concurrent automation.
-
-2. **Didn't notice multiple Claude processes were running until
-   forensics later.** `ps aux | grep claude` would have shown the
-   other sessions from the start. Claude could have asked the user
-   to pause them before committing.
-
-3. **`git reset --mixed HEAD~1` as a recovery didn't get us back
-   to a known state.** Because the other session was STILL active,
-   the reset exposed whatever files they had since staged — the
-   working tree looked different after reset than before the bad
-   commit.
-
-### Prevention added
-
-1. **Atomic stage-verify-commit chain.** The pattern that
-   eventually worked — and that every subsequent commit in this
-   session used:
-   ```bash
-   git add -- "${FILES[@]}" \
-     && STAGED=$(git diff --cached --name-only) \
-     && COUNT=$(echo "$STAGED" | wc -l | tr -d ' ') \
-     && [ "$COUNT" = "EXPECTED" ] \
-     && UNEXPECTED=$(echo "$STAGED" | grep -vE "ALLOWED_PATHS" || true) \
-     && [ -z "$UNEXPECTED" ] \
-     && git commit -m "..." \
-     && git push origin main
-   ```
-   If another session mutates the index between the `git add` and
-   the `git commit`, the count check or the pattern check fires
-   before the commit goes out, and the bash chain aborts instead
-   of producing a wrong-scope commit.
-
-2. **Check `ps aux | grep claude` before committing.** If more
-   than one Claude process is running, ask the user to pause
-   others or switch to a dedicated branch before committing.
-
-3. **Pre-push fetch + ancestor check.** Before `git push origin
-   main`, fetch and verify `HEAD~1 == origin/main` — if origin
-   moved, bail and rebase rather than force-push. Every push in
-   this session used this pattern after the initial incident.
-
-4. **Don't amend across suspected races.** `git commit --amend`
-   re-reads the index, which reintroduces any interleaved changes.
-   When the working tree is shared, prefer a fresh commit that
-   cleanly reverts + re-stages to an `--amend`.
-
-### Personal checklist Claude should follow next time
-
-- [ ] **Is more than one Claude session running against this
-      working tree?** `ps aux | grep -c claude` — if > 1 and you
-      plan to commit, pause the others or use a branch.
-- [ ] **Every `git add` must be immediately followed by a
-      `git diff --cached --name-only` verification** before any
-      subsequent mutation. Count AND pattern must match.
-- [ ] **Every `git push` must be preceded by `git fetch` + an
-      ancestor check.** Don't assume `origin/main` is where you
-      left it between your last fetch and your push.
-- [ ] **If a commit goes out with unexpected files, don't
-      `--amend`.** Push the wrong commit, then immediately push
-      a reverting commit that explicitly names what you meant to
-      change. Cleaner history, no re-reading of a racing index.
-
----
-
-## 2026-04-19 — `HealthConnectReader` cooldown: unreachable-code bug
-
-### What the user experienced
-
-After shipping the "rate-limit cooldown" fix (commit `185aedb`),
-the user installed the new APK and reported: "I still keep hitting
-the rate limit. The cooldown banner never appears. `adb shell run-as
-... cat shared_prefs/coherence_samsung_sync_prefs.xml` shows only
-`auto_sync_enabled=true` — the cooldown keys are missing."
-
-The fix code was present in source, the build included it, the
-install was confirmed (`versionName=0.3.2`), but `markRateLimited()`
-was never executing.
-
-### Actual root cause
+After shipping the rate-limit cooldown feature, the user reported:
+"cooldown banner never appears, SharedPrefs shows no cooldown
+keys." The code was in source, the build included it, the install
+was confirmed via `dumpsys` — but `markRateLimited()` was never
+running.
 
 ```kotlin
 for (attempt in 0 until MAX_ATTEMPTS) {
   try { ... return result }
   catch (error) {
-    val isRetryable = isRateLimitError(error) && attempt < MAX_ATTEMPTS - 1
     if (isRetryable) { delay(...); continue }
     warnings += "..."
-    return emptyList()            // ← returns on EVERY non-retryable path
+    return emptyList()            // returns on EVERY non-retryable path
   }
 }
-// ↓↓↓ UNREACHABLE — loop always returns from inside ↓↓↓
+// UNREACHABLE — loop always returns from inside
 cooldown?.markRateLimited(lastErrorMessage)
 ```
 
-On the final attempt (attempt == 2, MAX_ATTEMPTS == 3), the
-condition `attempt < MAX_ATTEMPTS - 1` evaluates false → `isRetryable`
-is false → the `if (isRetryable)` branch doesn't fire → the `return
-emptyList()` below fires instead. Every path out of the loop is a
-`return` from inside the catch. The `markRateLimited()` call after
-the `for` block was never reached.
+On the final retry attempt, `isRetryable` evaluates false, the
+`return emptyList()` inside the catch fires, and the `markRateLimited`
+call below the for-loop never runs. Pure control-flow bug. The
+compiler didn't warn.
 
-This was a pure control-flow bug the compiler can't catch without
-a dead-code warning, and Kotlin's compiler didn't warn in this
-configuration.
+**Root cause**: no unit test for the retry loop. "BUILD SUCCESSFUL"
+covered "compiles" but not "actually runs the code path I wrote."
+
+### The shared rule
+
+A deploy is not "shipped" until an observable on-device or on-server
+signal confirms the new behaviour. "Code committed" and "build
+succeeded" are necessary but not sufficient. Before declaring
+victory:
+
+**For server deploys**: curl a `_runnerVersion` or `_checkpoint`
+marker that the new code sets. If the string doesn't match what
+you expect, the code isn't running — don't debug symptoms, debug
+the deploy.
+
+**For Android installs**: `adb shell dumpsys package <pkg> | grep
+versionName` must match the new `versionName` in build.gradle.kts.
+`installDebug`'s exit code is not enough — it returns 0 for "same
+versionCode, skipping."
+
+**For Kotlin control-flow changes**: write a unit test. A test that
+fails on the pre-fix code and passes on the post-fix code is the
+only thing that proves the runtime path you care about executed.
+See `HealthConnectReaderTest.exhausted rate-limit retries mark the
+cooldown` for the pattern.
+
+Prevention for each flavour:
+
+- **versionName drift**: every commit that bumps `APP_VERSION`
+  must also bump `versionCode` and `versionName`. Consider a
+  pre-commit check that reads both and fails if they diverge.
+- **Unreachable branches**: every `state-mutating` call (cooldown
+  mark, DB write, SharedPrefs put) gets paired with a `Log.w` /
+  `println` / `console.log` that proves execution. If the log line
+  isn't in the output, the code didn't run.
+- **First-debug-step discipline**: when the user says "it doesn't
+  work," the first diagnostic is `adb run-as $pkg cat
+  shared_prefs/*.xml` + `adb shell dumpsys package $pkg` + the
+  server debug endpoint. Ten seconds, answers "is my new code even
+  running." Every other theory comes after.
+
+---
+
+## 2026-04-19 — Parallel Claude sessions racing on `.git/index`
+
+Multiple Claude Code sessions running against the same working
+tree mutate `.git/index` concurrently with no locking. A `git add`
+that staged 2 files followed by `git commit` produced a commit
+with 6 files — the 2 Claude staged plus 4 from a parallel
+session's `git add` that landed between the two commands. The
+commit's message described Claude's work; its payload was someone
+else's.
+
+`.git/index` is a single file. Any `git add` / `git rm --cached` /
+`git reset` from any process mutates it. The committing session
+sees whatever is in the index at the instant `git commit` reads
+it — not what it just staged.
 
 ### What Claude got wrong
 
-1. **Never ran the code on a real device before declaring it
-   shipped.** The logic looked correct on a quick read. A unit test
-   or even a single `adb` verification after the first install
-   would have caught it immediately.
+1. **Ran `git add` and `git commit` as separate commands** with a
+   time gap between them. Fine for solo human use, fatal with
+   concurrent automation.
+2. **Didn't notice** other Claude processes were running until
+   forensics. `ps aux | grep claude` would have shown them from
+   the start.
+3. **Used `git reset` as recovery** while the other session was
+   still active — which exposed whatever new files it had since
+   staged, making the working tree look different after reset
+   than before the bad commit.
 
-2. **Trusted the build-success signal as a behavior signal.**
-   `BUILD SUCCESSFUL` means "compiles" and "tests pass (if any)".
-   It doesn't mean "the code actually works when exercised." There
-   were no tests for the cooldown path, so the build was green
-   despite the dead-code bug.
+### Prevention
 
-3. **Didn't read the logs until forced to.** Once the user ran
-   `adb logcat` under Claude's direction, the problem was obvious:
-   22 "read failed" warnings in a row with zero "cooldown engaged"
-   log lines. That signal was always available; Claude just wasn't
-   looking at it.
+**Atomic stage-verify-commit chain.** The only pattern that
+survives concurrent sessions:
 
-### Prevention added
+```bash
+git add -- "${FILES[@]}" \
+  && STAGED=$(git diff --cached --name-only) \
+  && COUNT=$(echo "$STAGED" | wc -l | tr -d ' ') \
+  && [ "$COUNT" = "EXPECTED" ] \
+  && UNEXPECTED=$(echo "$STAGED" | grep -vE "ALLOWED_PATHS" || true) \
+  && [ -z "$UNEXPECTED" ] \
+  && git commit -m "..." \
+  && git push origin HEAD:refs/heads/main
+```
 
-1. **Cooldown logic moved INSIDE the catch block.**
-   ```kotlin
-   if (rateLimited && attempt == MAX_ATTEMPTS - 1) {
-     cooldown?.markRateLimited(combined)
-     Log.w(TAG, "... cooldown engaged")
-     warnings += "..."
-   }
-   return emptyList()
-   ```
-   The `Log.w` was added at the same time — if the cooldown is
-   engaged, there's now a logcat line that proves it. Silent
-   behavior is banned.
-
-2. **JVM unit tests for `HealthConnectPayloadMapper` and
-   `HealthConnectReader`.** See the 2026-04-19 mapper-tests entry.
-   The reader's retry loop is exactly the kind of control-flow
-   logic that unit tests catch in seconds but manual QA misses
-   for days.
-
-3. **Debug-endpoint-equivalent for Android state.**
-   SharedPreferences contents, WorkManager job state, and
-   permission grant state are all queryable via `adb run-as` and
-   `adb shell dumpsys`. The equivalent of "curl the debug
-   endpoint" for Android is a short shell snippet that dumps all
-   three. Building that into the diagnostic checklist surfaces
-   whether state is actually being mutated.
+If another session mutates the index between `git add` and
+`git commit`, the count check or pattern check fires and the
+chain aborts before the commit goes out.
 
 ### Personal checklist Claude should follow next time
 
-- [ ] **Unit test every non-trivial control-flow path.** If a
-      method has retries, backoffs, or multi-step state mutations,
-      it gets a test. "Obvious" bugs in retry logic are the
-      single most common class of bug in this codebase.
-- [ ] **Every `cooldown.markRateLimited()` / state-mutating call
-      gets paired with a `Log.w(TAG, "...")` so its execution is
-      observable without a debugger.** If the logcat line isn't
-      there, the code didn't run — no matter what the payload
-      says.
-- [ ] **On-device SharedPrefs inspection is the first debug
-      step, not the last.** `adb run-as $pkg cat shared_prefs/*.xml`
-      takes 10 seconds and shows more about what the app actually
-      did than 100 lines of server-side log parsing.
+- [ ] **Is more than one Claude session running against this
+      working tree?** `ps aux | grep -c claude` — if > 1 and you
+      plan to commit, pause the others or switch to a dedicated
+      branch.
+- [ ] **Every `git add` must be immediately followed by a
+      `git diff --cached --name-only` verification** before any
+      subsequent mutation. Count AND pattern must match.
+- [ ] **Every `git push` must be preceded by `git fetch` + an
+      ancestor check.** `HEAD~1 == origin/main` before pushing;
+      if origin moved, bail and rebase.
+- [ ] **Recovery operations are staging operations.** A
+      `git stash pop` or `git reset` that runs while a parallel
+      session is active can re-expose its staged files. Treat
+      recovery with the same atomic-chain ceremony, not as "back
+      to normal state."
+- [ ] **Don't `git commit --amend` across a suspected race.** The
+      amend re-reads the index, which reintroduces any interleaved
+      changes. Push the wrong commit, then push a reverting commit.
+      Cleaner than a reset loop.
+
+---
+
+## 2026-04-19 — BSD sed silently no-ops on `\b` word boundaries
+
+When renaming `com.coherence.samsunghealth` → `com.coherence.healthconnect`
+across 95 Android files, a sed command using `\b` word boundaries
+failed silently on macOS:
+
+```bash
+find app/src -name '*.kt' -exec sed -i '' -e 's/\bSamsungHealthRepository\b/HealthConnectPayloadSource/g' {} \;
+```
+
+Zero files modified, exit code 0, no warning. `\b` is a GNU sed
+extension; BSD sed (the one shipped on macOS) doesn't support it
+and treats `\b` as a literal backspace escape. The pattern
+matches nothing and sed happily reports success.
+
+Caught only because the next step was a `grep -rc` verification.
+If the script had chained directly to `git add` + commit, 95
+files would have been renamed by the prior `git mv` step with
+zero of their contents updated, and the build would have failed
+mysteriously.
+
+### Prevention
+
+- **Don't trust sed's exit code as a behaviour signal.** Always
+  follow a bulk sed with an independent `grep -rl '<old-pattern>'`
+  to confirm the pattern is actually gone. Count before, count
+  after.
+- **Prefer explicit delimiters over `\b` for portable regex.**
+  When a word is substring-adjacent-safe, use unanchored
+  replacement. When it isn't, choose an ordering that disambiguates
+  (longest match first: replace `FooBarQux` before `FooBar`).
+- **On macOS, assume BSD sed.** No `\b`, no `\s`, no `-r`
+  extended regex without `-E`, no `-i` without an empty backup
+  string `-i ''`. Write portable or write `perl -pi -e`.
