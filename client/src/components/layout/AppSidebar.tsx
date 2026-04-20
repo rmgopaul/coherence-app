@@ -66,11 +66,11 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { label: "Tasks", href: "/widget/todoist", icon: CheckSquare, badgeKey: "tasks" },
       { label: "Calendar", href: "/widget/google-calendar", icon: Calendar, badgeKey: "events" },
-      { label: "Notes", href: "/notes", icon: StickyNote },
-      { label: "Supplements", href: "/supplements", icon: Pill },
-      { label: "Habits", href: "/habits", icon: ListChecks },
-      { label: "Health", href: "/health", icon: HeartPulse },
-      { label: "Chat", href: "/widget/chatgpt", icon: MessageSquare },
+      { label: "Notes", href: "/notes", icon: StickyNote, badgeKey: "notes" },
+      { label: "Supplements", href: "/supplements", icon: Pill, badgeKey: "supplements" },
+      { label: "Habits", href: "/habits", icon: ListChecks, badgeKey: "habits" },
+      { label: "Health", href: "/health", icon: HeartPulse, badgeKey: "health" },
+      { label: "Chat", href: "/widget/chatgpt", icon: MessageSquare, badgeKey: "chat" },
     ],
   },
   {
@@ -129,13 +129,36 @@ function storeSections(sections: Record<string, boolean>) {
 export function AppSidebar() {
   const [location] = useLocation();
 
-  // Badge counts
+  // Badge counts. All queries pin staleTime + disable refetch-on-focus
+  // so a sidebar mount doesn't cost a roundtrip when the user tabs back.
+  // The Personal-section queries also live in `useDashboardData`, so React
+  // Query dedupes — adding them here is free when the dashboard is open.
   const { data: todoistTasks } = trpc.todoist.getTasks.useQuery(undefined, {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
   const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(undefined, {
     staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: notes } = trpc.notes.list.useQuery(
+    { limit: 1000 },
+    { staleTime: 5 * 60_000, refetchOnWindowFocus: false }
+  );
+  const { data: supplementLogs } = trpc.supplements.getLogs.useQuery(
+    undefined,
+    { staleTime: 60_000, refetchOnWindowFocus: false }
+  );
+  const { data: habitsForDate } = trpc.habits.getForDate.useQuery(
+    undefined,
+    { staleTime: 60_000, refetchOnWindowFocus: false }
+  );
+  const { data: whoopSummary } = trpc.whoop.getSummary.useQuery(undefined, {
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const { data: conversations } = trpc.conversations.list.useQuery(undefined, {
+    staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
 
@@ -151,12 +174,37 @@ export function AppSidebar() {
     ).length;
     const eventsToday = (calendarEvents ?? []).length;
     const readingCount = readingSummary?.totalReadings ?? 0;
+    const noteCount = (notes ?? []).length;
+    const supplementCount = (supplementLogs ?? []).length;
+    const habitsTotal = (habitsForDate ?? []).length;
+    const habitsDone = (habitsForDate ?? []).filter((h) => h.completed).length;
+    const recovery =
+      typeof whoopSummary?.recoveryScore === "number"
+        ? Math.round(whoopSummary.recoveryScore)
+        : null;
+    const chatCount = (conversations ?? []).length;
     return {
       tasks: tasksDueToday > 0 ? tasksDueToday : null,
       events: eventsToday > 0 ? eventsToday : null,
+      notes: noteCount > 0 ? noteCount : null,
+      supplements: supplementCount > 0 ? supplementCount : null,
+      // Habits render as "done/total" — `0/13` reads as a progress bar
+      // even when nothing's checked yet, matching the wireframe.
+      habits: habitsTotal > 0 ? `${habitsDone}/${habitsTotal}` : null,
+      health: recovery,
+      chat: chatCount > 0 ? chatCount : null,
       sunpowerReadings: readingCount > 0 ? readingCount : null,
-    } as Record<string, number | null>;
-  }, [todoistTasks, calendarEvents, readingSummary]);
+    } as Record<string, number | string | null>;
+  }, [
+    todoistTasks,
+    calendarEvents,
+    readingSummary,
+    notes,
+    supplementLogs,
+    habitsForDate,
+    whoopSummary,
+    conversations,
+  ]);
 
   const [openSections, setOpenSections] = useState<Record<string, boolean>>(
     () => {
