@@ -327,6 +327,33 @@ export async function getSupplementAdherence(
   }));
 }
 
+/**
+ * List supplement logs for a user within `[startDateKey, endDateKey]`
+ * (inclusive on both ends). Used by history views and analytics joins.
+ */
+export async function listSupplementLogsRange(
+  userId: number,
+  startDateKey: string,
+  endDateKey: string
+) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return withDbRetry("list supplement logs in range", async () =>
+    db
+      .select()
+      .from(supplementLogs)
+      .where(
+        and(
+          eq(supplementLogs.userId, userId),
+          gte(supplementLogs.dateKey, startDateKey),
+          sql`${supplementLogs.dateKey} <= ${endDateKey}`
+        )
+      )
+      .orderBy(desc(supplementLogs.takenAt))
+  );
+}
+
 export async function deleteSupplementDefinition(userId: number, definitionId: string) {
   const db = await getDb();
   if (!db) return;

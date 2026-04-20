@@ -46,6 +46,7 @@ import {
   getSupplementAdherence,
   getSupplementDefinitionById,
   getSupplementLogByDefinitionAndDate,
+  listSupplementLogsRange,
   getUserByEmail,
   insertProductionReading,
   insertSectionEngagementBatch,
@@ -742,6 +743,74 @@ export const supplementsRouter = router({
       return getSupplementAdherence(ctx.user.id, {
         windowDays: input?.windowDays ?? 30,
       });
+    }),
+  getAdherenceRange: protectedProcedure
+    .input(
+      z.object({
+        windowDays: z.number().int().min(7).max(365).default(90),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      // Inclusive window ending today.
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - (input.windowDays - 1));
+      const toKey = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      const startKey = toKey(start);
+      const endKey = toKey(end);
+
+      const [definitions, logs] = await Promise.all([
+        listSupplementDefinitions(ctx.user.id),
+        listSupplementLogsRange(ctx.user.id, startKey, endKey),
+      ]);
+
+      // Expected-per-day = count of locked+active defs at current time.
+      const expectedPerDay = definitions.filter(
+        (d) => d.isLocked && d.isActive
+      ).length;
+
+      // Distinct logged defs per dateKey.
+      const takenByDate = new Map<string, Set<string>>();
+      for (const log of logs) {
+        if (!log.definitionId) continue;
+        const set = takenByDate.get(log.dateKey) ?? new Set<string>();
+        set.add(log.definitionId);
+        takenByDate.set(log.dateKey, set);
+      }
+
+      // Emit one entry per day in the window, oldest → newest.
+      const days: { dateKey: string; taken: number; expected: number }[] = [];
+      const cursor = new Date(start);
+      while (cursor <= end) {
+        const key = toKey(cursor);
+        days.push({
+          dateKey: key,
+          taken: takenByDate.get(key)?.size ?? 0,
+          expected: expectedPerDay,
+        });
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      return { days, expectedPerDay, startKey, endKey };
+    }),
+  getLogsRange: protectedProcedure
+    .input(
+      z.object({
+        startDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDateKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      return listSupplementLogsRange(
+        ctx.user.id,
+        input.startDateKey,
+        input.endDateKey
+      );
     }),
   getCostSummary: protectedProcedure.query(async ({ ctx }) => {
     const defs = await listSupplementDefinitions(ctx.user.id);

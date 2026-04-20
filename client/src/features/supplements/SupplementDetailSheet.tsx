@@ -35,6 +35,7 @@ import { SUPPLEMENT_UNITS, type SupplementUnit } from "@shared/const";
 import { formatCurrency, toErrorMessage } from "@/lib/helpers";
 import type { SupplementDefinition, SupplementLog } from "@/features/dashboard/types";
 import { formatCostPerDose } from "./supplements.helpers";
+import { SupplementsCostTrendChart } from "./SupplementsCostTrendChart";
 
 export interface SupplementDetailSheetProps {
   /** The definition being shown, or null when the sheet is closed. */
@@ -315,20 +316,23 @@ export function SupplementDetailSheet({
             <section className="space-y-2">
               <h3 className="text-sm font-semibold">Price history</h3>
               {priceLogs && priceLogs.length > 0 ? (
-                <ul className="space-y-1">
-                  {priceLogs.map((log) => (
-                    <li
-                      key={log.id}
-                      className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1.5 text-xs"
-                    >
-                      <span className="font-medium">{formatCurrency(log.pricePerBottle)}</span>
-                      <span className="text-muted-foreground">
-                        {log.sourceDomain ?? log.sourceName ?? "manual"} ·{" "}
-                        {new Date(log.capturedAt).toLocaleDateString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                <>
+                  <SupplementsCostTrendChart points={priceLogs} />
+                  <ul className="space-y-1">
+                    {priceLogs.slice(0, 6).map((log) => (
+                      <li
+                        key={log.id}
+                        className="flex items-center justify-between rounded-md border bg-muted/40 px-2 py-1.5 text-xs"
+                      >
+                        <span className="font-medium">{formatCurrency(log.pricePerBottle)}</span>
+                        <span className="text-muted-foreground">
+                          {log.sourceDomain ?? log.sourceName ?? "manual"} ·{" "}
+                          {new Date(log.capturedAt).toLocaleDateString()}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </>
               ) : (
                 <p className="text-xs text-muted-foreground">No price snapshots yet.</p>
               )}
