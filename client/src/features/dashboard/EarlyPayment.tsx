@@ -497,7 +497,8 @@ export default function EarlyPayment() {
   const [, setLocation] = useLocation();
   const { user, loading: authLoading } = useAuth();
 
-  const getDatasetMutation = trpc.solarRecDashboard.getDataset.useMutation();
+  const { mutateAsync: getDatasetAsync } =
+    trpc.solarRecDashboard.getDataset.useMutation();
   const saveDatasetMutation = trpc.solarRecDashboard.saveDataset.useMutation();
   const startScanJobMutation = trpc.abpSettlement.startContractScanJob.useMutation();
   const [activeScanJobId, setActiveScanJobId] = useState<string | null>(() =>
@@ -562,7 +563,7 @@ export default function EarlyPayment() {
 
   const loadDatasetPayload = useCallback(
     async (key: string): Promise<string | null> => {
-      const result = await getDatasetMutation.mutateAsync({ key });
+      const result = await getDatasetAsync({ key });
       if (!result?.payload) return null;
 
       const chunkKeys = parseChunkPointerPayload(result.payload);
@@ -570,8 +571,7 @@ export default function EarlyPayment() {
 
       const chunkPayloads = await Promise.all(
         chunkKeys.map((chunkKey) =>
-          getDatasetMutation
-            .mutateAsync({ key: chunkKey })
+          getDatasetAsync({ key: chunkKey })
             .then((chunkResult) => chunkResult?.payload ?? null)
             .catch(() => null)
         )
@@ -579,7 +579,7 @@ export default function EarlyPayment() {
       if (chunkPayloads.some((chunk) => chunk === null)) return null;
       return chunkPayloads.join("");
     },
-    [getDatasetMutation]
+    [getDatasetAsync]
   );
 
   const loadLinkedDataset = useCallback(
