@@ -9,9 +9,9 @@
 #     pnpm install
 #
 # Bypass with `git push --no-verify` in an emergency, but don't make
-# a habit of it — the hook exists because today's broken Render build
-# (supplements.helpers ENOENT) would have been caught here on the
-# developer's machine instead of after it reached main.
+# a habit of it — the hook exists because one broken Render build
+# (supplements.helpers ENOENT on 2026-04-19) would have been caught
+# here on the developer's machine instead of after it reached main.
 #
 # What this checks:
 #   `vite build` — the exact command Render runs. Catches missing
@@ -25,6 +25,14 @@
 #   - vitest: slow, not the failure mode that bit us.
 #   - gradle: Android-only, server/web changes don't touch it.
 #   - lint: formatter-only, doesn't block a valid build.
+#
+# Fast path: if the set of changed files between the local and
+# remote ref is entirely under android/, sunpower-reader/, or is
+# markdown / git-hooks / local.properties, skip vite build — those
+# don't affect the bundle and vite build is a 5-second tax on the
+# developer's push for no benefit. The fast path is gated by
+# conservative pattern matching; anything ambiguous falls through
+# to the full build.
 #
 # The hook expects to run from the productivity-hub repo root.
 
@@ -40,6 +48,56 @@ echo ""
 echo -e "${BOLD}pre-push: verifying build before push…${NC}"
 echo ""
 
+# Git passes a list of refs being pushed on stdin:
+#   <local-ref> <local-sha> <remote-ref> <remote-sha>
+# one line per ref. An all-zero remote-sha means "new branch" —
+# in that case we diff against the push's merge base with HEAD, but
+# for the fast-path decision we just fall through to the full build.
+#
+# We read every line so the fast-path only applies if EVERY ref
+# being pushed is safe to skip.
+SKIP_BUILD=1
+CHANGED_FILES=""
+ZERO_SHA="0000000000000000000000000000000000000000"
+
+while read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
+  if [ -z "$LOCAL_REF" ]; then continue; fi
+  if [ "$LOCAL_SHA" = "$ZERO_SHA" ]; then
+    # Branch deletion push. Nothing to build.
+    continue
+  fi
+  if [ "$REMOTE_SHA" = "$ZERO_SHA" ]; then
+    # New branch being pushed — no remote ancestor to diff against.
+    # Skip the fast path, always do full build.
+    SKIP_BUILD=0
+    break
+  fi
+  # Normal case: diff local..remote and collect filenames.
+  DIFF_FILES=$(git diff --name-only "$REMOTE_SHA" "$LOCAL_SHA" 2>/dev/null || true)
+  if [ -z "$DIFF_FILES" ]; then continue; fi
+  CHANGED_FILES="${CHANGED_FILES}${DIFF_FILES}
+"
+  # Any file that's NOT obviously skippable flips SKIP_BUILD to 0.
+  # Skippable patterns:
+  #   android/…         (Android app; vite doesn't compile it)
+  #   sunpower-reader/…  (Expo RN app; separate build)
+  #   docs/…             (markdown only)
+  #   git-hooks/…        (the hook itself)
+  #   *.md              (any markdown file anywhere)
+  #   local.properties*  (dev-env config)
+  NON_SKIPPABLE=$(echo "$DIFF_FILES" | grep -vE '^(android/|sunpower-reader/|docs/|git-hooks/|[^/]+\.md$|.*/[^/]+\.md$|.*local\.properties([^/]*)$)' || true)
+  if [ -n "$NON_SKIPPABLE" ]; then
+    SKIP_BUILD=0
+  fi
+done
+
+if [ "$SKIP_BUILD" = "1" ] && [ -n "$CHANGED_FILES" ]; then
+  FILE_COUNT=$(echo "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
+  echo -e "${GREEN}✓ pre-push: skipping vite build (only ${FILE_COUNT} skippable file(s) changed).${NC}"
+  echo ""
+  exit 0
+fi
+
 # Fast-fail on missing dev dependencies rather than producing a
 # cryptic "vite: command not found" inside the hook.
 if [ ! -x ./node_modules/.bin/vite ]; then
@@ -50,14 +108,20 @@ fi
 
 START=$(date +%s)
 
+# Use mktemp so multiple pushes (different branches, different
+# developers on a shared box, CI agents) don't stomp each other's
+# log file. The tmp file is printed on failure so the user can read
+# it; it is NOT auto-cleaned so a second look after the fact works.
+LOG_FILE=$(mktemp -t prepush-vite.XXXXXX.log)
+
 echo "→ vite build"
 # Build output goes to ./dist — gitignored, safe.
-if ! ./node_modules/.bin/vite build >/tmp/prepush-vite.log 2>&1; then
+if ! ./node_modules/.bin/vite build >"$LOG_FILE" 2>&1; then
   echo ""
   echo -e "${RED}${BOLD}✗ pre-push: vite build failed. Push blocked.${NC}"
-  echo -e "${RED}  Full log: /tmp/prepush-vite.log${NC}"
+  echo -e "${RED}  Full log: $LOG_FILE${NC}"
   echo ""
-  tail -20 /tmp/prepush-vite.log
+  tail -20 "$LOG_FILE" 2>/dev/null || echo "(could not read log)"
   exit 1
 fi
 echo "  ok"
