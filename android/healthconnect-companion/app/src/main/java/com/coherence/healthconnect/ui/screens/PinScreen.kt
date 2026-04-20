@@ -16,6 +16,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -72,70 +73,80 @@ fun PinScreen(onUnlocked: (pinCookieValue: String) -> Unit) {
     }
   }
 
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .padding(32.dp),
-    verticalArrangement = Arrangement.Center,
-    horizontalAlignment = Alignment.CenterHorizontally,
+  // Wrap in Surface so Material 3 propagates onBackground/onSurface
+  // through LocalContentColor — without this, bare Text() falls back
+  // to literal Color.Black, which renders as dark-on-dark in Ink mode.
+  Surface(
+    modifier = Modifier.fillMaxSize(),
+    color = MaterialTheme.colorScheme.background,
+    contentColor = MaterialTheme.colorScheme.onBackground,
   ) {
-    Icon(
-      Icons.Default.Lock,
-      contentDescription = null,
-      modifier = Modifier.size(64.dp),
-      tint = MaterialTheme.colorScheme.primary,
-    )
-
-    Spacer(modifier = Modifier.height(24.dp))
-
-    Text(
-      text = "PIN Protected",
-      style = MaterialTheme.typography.headlineMedium,
-    )
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    Text(
-      text = "Enter your PIN to unlock the app",
-      style = MaterialTheme.typography.bodyLarge,
-      textAlign = TextAlign.Center,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    Spacer(modifier = Modifier.height(32.dp))
-
-    OutlinedTextField(
-      value = pin,
-      onValueChange = { pin = it; error = null },
-      label = { Text("PIN") },
-      visualTransformation = PasswordVisualTransformation(),
-      keyboardOptions = KeyboardOptions(
-        keyboardType = KeyboardType.NumberPassword,
-        imeAction = ImeAction.Go,
-      ),
-      keyboardActions = KeyboardActions(onGo = { submit() }),
-      singleLine = true,
-      isError = error != null,
-      modifier = Modifier.fillMaxWidth(),
-    )
-
-    if (error != null) {
-      Spacer(modifier = Modifier.height(8.dp))
-      Text(
-        text = error!!,
-        color = MaterialTheme.colorScheme.error,
-        style = MaterialTheme.typography.bodySmall,
-      )
-    }
-
-    Spacer(modifier = Modifier.height(16.dp))
-
-    Button(
-      onClick = { submit() },
-      enabled = pin.isNotBlank() && !isLoading,
-      modifier = Modifier.fillMaxWidth(),
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(32.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      Text(if (isLoading) "Verifying..." else "Unlock")
+      Icon(
+        Icons.Default.Lock,
+        contentDescription = null,
+        modifier = Modifier.size(64.dp),
+        tint = MaterialTheme.colorScheme.primary,
+      )
+
+      Spacer(modifier = Modifier.height(24.dp))
+
+      Text(
+        text = "PIN Protected",
+        style = MaterialTheme.typography.headlineMedium,
+        color = MaterialTheme.colorScheme.onBackground,
+      )
+
+      Spacer(modifier = Modifier.height(8.dp))
+
+      Text(
+        text = "Enter your PIN to unlock the app",
+        style = MaterialTheme.typography.bodyLarge,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+
+      Spacer(modifier = Modifier.height(32.dp))
+
+      OutlinedTextField(
+        value = pin,
+        onValueChange = { pin = it; error = null },
+        label = { Text("PIN") },
+        visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(
+          keyboardType = KeyboardType.NumberPassword,
+          imeAction = ImeAction.Go,
+        ),
+        keyboardActions = KeyboardActions(onGo = { submit() }),
+        singleLine = true,
+        isError = error != null,
+        modifier = Modifier.fillMaxWidth(),
+      )
+
+      if (error != null) {
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+          text = error!!,
+          color = MaterialTheme.colorScheme.error,
+          style = MaterialTheme.typography.bodySmall,
+        )
+      }
+
+      Spacer(modifier = Modifier.height(16.dp))
+
+      Button(
+        onClick = { submit() },
+        enabled = pin.isNotBlank() && !isLoading,
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Text(if (isLoading) "Verifying..." else "Unlock")
+      }
     }
   }
 }

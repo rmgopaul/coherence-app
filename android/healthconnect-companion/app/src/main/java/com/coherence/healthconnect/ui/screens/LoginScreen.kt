@@ -15,6 +15,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -29,54 +30,63 @@ fun LoginScreen(authManager: AuthManager) {
   val context = LocalContext.current
   val activity = context as? Activity
 
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .padding(32.dp),
-    verticalArrangement = Arrangement.Center,
-    horizontalAlignment = Alignment.CenterHorizontally,
+  // Wrap in Surface so Material 3 propagates onBackground through
+  // LocalContentColor — same dark-on-dark fix as PinScreen.
+  Surface(
+    modifier = Modifier.fillMaxSize(),
+    color = MaterialTheme.colorScheme.background,
+    contentColor = MaterialTheme.colorScheme.onBackground,
   ) {
-    Icon(
-      Icons.Default.Lock,
-      contentDescription = null,
-      modifier = Modifier.size(64.dp),
-      tint = MaterialTheme.colorScheme.primary,
-    )
-
-    Spacer(modifier = Modifier.height(24.dp))
-
-    Text(
-      text = "Coherence",
-      style = MaterialTheme.typography.headlineMedium,
-    )
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    Text(
-      text = "Sign in to access your productivity dashboard",
-      style = MaterialTheme.typography.bodyLarge,
-      textAlign = TextAlign.Center,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-
-    Spacer(modifier = Modifier.height(32.dp))
-
-    Button(
-      onClick = { activity?.let { authManager.launchLogin(it) } },
-      enabled = activity != null,
-      modifier = Modifier.fillMaxWidth(),
+    Column(
+      modifier = Modifier
+        .fillMaxSize()
+        .padding(32.dp),
+      verticalArrangement = Arrangement.Center,
+      horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-      Text("Sign in with Google")
-    }
+      Icon(
+        Icons.Default.Lock,
+        contentDescription = null,
+        modifier = Modifier.size(64.dp),
+        tint = MaterialTheme.colorScheme.primary,
+      )
 
-    Spacer(modifier = Modifier.height(12.dp))
+      Spacer(modifier = Modifier.height(24.dp))
 
-    OutlinedButton(
-      onClick = { activity?.let { authManager.launchLogin(it) } },
-      enabled = activity != null,
-      modifier = Modifier.fillMaxWidth(),
-    ) {
-      Text("Retry Sign In")
+      Text(
+        text = "Coherence",
+        style = MaterialTheme.typography.headlineMedium,
+        color = MaterialTheme.colorScheme.onBackground,
+      )
+
+      Spacer(modifier = Modifier.height(8.dp))
+
+      Text(
+        text = "Sign in to access your productivity dashboard",
+        style = MaterialTheme.typography.bodyLarge,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+
+      Spacer(modifier = Modifier.height(32.dp))
+
+      Button(
+        onClick = { activity?.let { authManager.launchLogin(it) } },
+        enabled = activity != null,
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Text("Sign in with Google")
+      }
+
+      Spacer(modifier = Modifier.height(12.dp))
+
+      OutlinedButton(
+        onClick = { activity?.let { authManager.launchLogin(it) } },
+        enabled = activity != null,
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Text("Retry Sign In")
+      }
     }
   }
 }
