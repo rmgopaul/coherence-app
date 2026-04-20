@@ -919,40 +919,14 @@ class HealthConnectPayloadMapper {
   }
 
   companion object {
-    // 0.4.0 — feature bump:
-    //   - 60-min cadence + onResume debounce (was 15-min, quota
-    //     saturation)
-    //   - HeightRecord, SkinTemperatureRecord, PowerRecord,
-    //     SpeedRecord support
-    //   - BMI derivation from weight + height
-    //   - Workouts now carry joined calories + HR per session
-    //   - WHOOP dataOrigin filter (records from com.whoop.android
-    //     are dropped so HC stays WHOOP-free; WHOOP keeps its own
-    //     server-side OAuth pipeline)
-    //   - SYNC_KEY moved from build.gradle.kts to local.properties
-    // 0.5.1 — refactor: collapsed buildPayloadForDay's 28-param
-    // signature to 8 via RawHealthConnectRecords + SyncLog structs.
-    // Mapper is now stateless (no reader field); dropped mockk test
-    // dependency.
-    // 0.5.2 — test: HealthConnectReader now has 11 JVM unit tests
-    // covering permission gating, retry/backoff, cooldown marking,
-    // foreground-error suppression, WHOOP filter, and pagination.
-    // Extracted RateLimitCooldownSink + HealthConnectRecordSource
-    // interfaces so the reader depends on what it uses.
-    // 0.5.3 — class renames within the healthconnect package so the
-    // names match what the code actually does:
-    //   SamsungHealthDataSdkRepository  -> HealthConnectRepository
-    //   SamsungHealthRepository (iface) -> HealthConnectPayloadSource
-    //   SamsungHealthSyncWorker         -> HealthConnectPeriodicSyncWorker
-    // DB columns, tRPC provider slug "samsung-health", WorkManager
-    // unique-work name strings, and the SamsungHealthPayload wire
-    // contract are unchanged — renaming those would require
-    // coordinated DB + server + installed-device migrations.
-    // 0.5.6 — collapsed the hand-maintained APP_VERSION consts
-    // (duplicated in HealthConnectPayloadMapper AND
-    // HealthConnectRepository, drifted between 0.5.3 / 0.5.5) down
-    // to a single reference to BuildConfig.VERSION_NAME. `versionName`
-    // in build.gradle.kts is now the only place to update on release.
+    // Naming stability note: the "samsung-health" strings that touch
+    // wire contracts are DELIBERATELY unchanged — the tRPC provider
+    // slug, WorkManager unique-work names, and the SamsungHealthPayload
+    // model keep the old name because renaming them would require
+    // coordinated DB + server + installed-device migrations. Internal
+    // Kotlin class names use "HealthConnect"; external identifiers
+    // retain "SamsungHealth" until we do a proper cross-surface
+    // migration. Per-release history lives in `git log`.
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }
