@@ -1,10 +1,12 @@
 package com.coherence.samsunghealth.ui.theme
 
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
+import com.coherence.samsunghealth.R
 
 /**
  * Typography for the Basquiat hero overhaul — Phase E.
@@ -34,12 +36,37 @@ import androidx.compose.ui.unit.sp
  * All fonts are SIL OFL. Download links in the spec doc.
  */
 object BasquiatTypography {
-  // Swap these references once res/font/*.ttf files are added.
-  val ArchivoBlack: FontFamily = FontFamily.Default
-  val InstrumentSerif: FontFamily = FontFamily.Serif
-  val JetBrainsMono: FontFamily = FontFamily.Monospace
-  val Caveat: FontFamily = FontFamily.Default
-  val Inter: FontFamily = FontFamily.SansSerif
+  // TTFs live in app/src/main/res/font/, downloaded from the Google
+  // google/fonts repo (all SIL OFL). JetBrains Mono, Caveat, and Inter
+  // are bundled as variable-weight fonts — the Font(..., weight = X)
+  // indirection lets Compose interpolate to the requested weight.
+  val ArchivoBlack: FontFamily = FontFamily(
+    Font(R.font.archivo_black, FontWeight.Black),
+  )
+  val InstrumentSerif: FontFamily = FontFamily(
+    Font(R.font.instrument_serif_regular, FontWeight.Normal),
+    Font(
+      R.font.instrument_serif_italic,
+      FontWeight.Normal,
+      FontStyle.Italic,
+    ),
+  )
+  val JetBrainsMono: FontFamily = FontFamily(
+    Font(R.font.jetbrains_mono, FontWeight.Normal),
+    Font(R.font.jetbrains_mono, FontWeight.SemiBold),
+    Font(R.font.jetbrains_mono, FontWeight.Bold),
+  )
+  val Caveat: FontFamily = FontFamily(
+    Font(R.font.caveat, FontWeight.Normal),
+    Font(R.font.caveat, FontWeight.SemiBold),
+    Font(R.font.caveat, FontWeight.Bold),
+  )
+  val Inter: FontFamily = FontFamily(
+    Font(R.font.inter, FontWeight.Normal),
+    Font(R.font.inter, FontWeight.Medium),
+    Font(R.font.inter, FontWeight.SemiBold),
+    Font(R.font.inter, FontWeight.Bold),
+  )
 
   // Type scale (sp) — mirrors CoherenceType from design-tokens.md.
   val Hero = TextStyle(
