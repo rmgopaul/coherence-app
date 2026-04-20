@@ -12,6 +12,7 @@
  */
 import { useMemo } from "react";
 import { useDashboardData } from "./useDashboardData";
+import { DashboardViewsNav } from "./DashboardViewsNav";
 import { buildRiver } from "./river/buildRiver";
 import { RiverItem } from "./river/RiverItem";
 import "./frontpage/dashboard.css";
@@ -52,6 +53,7 @@ export default function River() {
 
   return (
     <div className="fp-root fp-river-root">
+      <DashboardViewsNav />
       <div className="fp-river">
         <header className="fp-river__head">
           <h1>

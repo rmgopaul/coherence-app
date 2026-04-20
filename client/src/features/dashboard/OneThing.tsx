@@ -16,6 +16,7 @@
  */
 import { useMemo } from "react";
 import { useDashboardData } from "./useDashboardData";
+import { DashboardViewsNav } from "./DashboardViewsNav";
 import { isTaskOverdue, taskPriorityOrder } from "./frontpage/newsprint.helpers";
 import "./frontpage/dashboard.css";
 
@@ -99,6 +100,7 @@ export default function OneThing() {
 
   return (
     <div className="fp-root fp-onething-root">
+      <DashboardViewsNav />
       <div className="fp-onething">
         <article className="fp-onething__main">
           <div className="fp-onething__eyebrow mono-label">

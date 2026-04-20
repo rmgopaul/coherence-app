@@ -15,15 +15,9 @@
  */
 import { useEffect, useState } from "react";
 import { useDashboardData } from "./useDashboardData";
+import { DashboardViewsNav } from "./DashboardViewsNav";
 import "./command-deck.css";
-
-const VIEWS = [
-  { key: "1", path: "/dashboard", label: "Front Page" },
-  { key: "2", path: "/dashboard/one-thing", label: "One Thing" },
-  { key: "3", path: "/dashboard/river", label: "River" },
-  { key: "4", path: "/dashboard/canvas", label: "Canvas" },
-  { key: "5", path: "/dashboard/command", label: "Command Deck" },
-] as const;
+import "./frontpage/dashboard.css";
 
 function clockLabel(now: Date): string {
   return now
@@ -71,6 +65,7 @@ export default function CommandDeck() {
 
   return (
     <div className="fp-cmd-root">
+      <DashboardViewsNav />
       <div className="fp-cmd">
         <div className="fp-cmd__top">
           <div className="fp-cmd__top-l">
@@ -198,22 +193,6 @@ export default function CommandDeck() {
           </section>
         </div>
 
-        <footer className="fp-cmd__foot">
-          <span>SWITCH VIEW</span>
-          {VIEWS.map((v) => (
-            <a
-              key={v.key}
-              href={v.path}
-              className={
-                location.pathname === v.path
-                  ? "fp-cmd__view fp-cmd__view--on"
-                  : "fp-cmd__view"
-              }
-            >
-              <kbd>{v.key}</kbd> {v.label}
-            </a>
-          ))}
-        </footer>
       </div>
     </div>
   );

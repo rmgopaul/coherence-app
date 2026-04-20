@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { Masthead } from "./frontpage/Masthead";
+import { DashboardViewsNav } from "./DashboardViewsNav";
 import { DropDock } from "./frontpage/DropDock";
 import { NewsprintColumns } from "./frontpage/NewsprintColumns";
 import { InboxPanel } from "./frontpage/InboxPanel";
@@ -71,6 +72,8 @@ export default function FrontPageDashboard() {
         weather={data.weather}
         accountCreatedAt={data.accountCreatedAt}
       />
+
+      <DashboardViewsNav />
 
       {!focusMode && <DropDock />}
 

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { trpc } from "@/lib/trpc";
+import { DashboardViewsNav } from "./DashboardViewsNav";
 import { StickyNote, type StickyColor, type StickyData } from "./canvas/StickyNote";
 import "./frontpage/dashboard.css";
 
@@ -158,6 +159,7 @@ export default function Canvas() {
 
   return (
     <div className="fp-root fp-canvas-root">
+      <DashboardViewsNav />
       <div className="fp-canvas">
         <header className="fp-canvas__head">
           <h1>

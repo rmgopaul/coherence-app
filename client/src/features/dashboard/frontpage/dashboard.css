@@ -2212,3 +2212,117 @@ a.wire-card--link:focus-visible {
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
+
+/* --- Dashboard Views nav (D1-D5 tab strip) ---
+
+   Sticky strip rendered on every /dashboard* route. Mirrors the
+   wireframe's "pick a vibe ↴" header. Active tab is inverted
+   (ink bg + paper text). Each tab carries its kbd shortcut chip. */
+
+.fp-views-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  margin: 0 -8px 16px;
+  background: var(--fp-paper);
+  border-top: 2px solid var(--fp-rule);
+  border-bottom: 2px solid var(--fp-rule);
+  position: sticky;
+  top: 0;
+  z-index: 30;
+}
+
+.fp-views-nav__lbl {
+  font-family: "Caveat", "Inter", cursive;
+  font-size: 18px;
+  color: var(--fp-ink);
+  transform: rotate(-2deg);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+
+.fp-views-nav__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 2px solid var(--fp-rule);
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-decoration: none;
+  box-shadow: 3px 3px 0 var(--fp-rule);
+  cursor: pointer;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.fp-views-nav__tab:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--fp-rule);
+}
+.fp-views-nav__tab:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--fp-rule);
+}
+.fp-views-nav__tab--on {
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+.fp-views-nav__tab--on .fp-views-nav__kbd {
+  background: var(--fp-yellow);
+  color: var(--fp-ink);
+  border-color: var(--fp-yellow);
+}
+
+.fp-views-nav__kbd {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-yellow);
+  color: var(--fp-ink);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 16px;
+  letter-spacing: 0;
+}
+
+.fp-views-nav__label {
+  white-space: nowrap;
+}
+
+.fp-views-nav__hint {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+/* On the Command Deck (force-dark surface), invert the nav so the strip
+   doesn't read as a paper-cream stripe across an otherwise black page. */
+.fp-cmd .fp-views-nav,
+.fp-cmd-root .fp-views-nav {
+  background: #0a0a0a;
+  border-color: rgba(255, 255, 255, 0.13);
+}
+.fp-cmd .fp-views-nav__tab,
+.fp-cmd-root .fp-views-nav__tab {
+  background: transparent;
+  color: #f5f2e6;
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 3px 3px 0 rgba(255, 255, 255, 0.13);
+}
+.fp-cmd .fp-views-nav__tab--on,
+.fp-cmd-root .fp-views-nav__tab--on {
+  background: #f6c83a;
+  color: #0a0a0a;
+  border-color: #f6c83a;
+}
+.fp-cmd .fp-views-nav__lbl,
+.fp-cmd-root .fp-views-nav__lbl {
+  color: #f5f2e6;
+}
