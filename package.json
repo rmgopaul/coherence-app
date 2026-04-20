@@ -11,7 +11,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
-    "scheduleb:reconcile": "tsx server/scripts/reconcileScheduleBImportState.ts"
+    "scheduleb:reconcile": "tsx server/scripts/reconcileScheduleBImportState.ts",
+    "prepare": "if [ -d .git ]; then git config core.hooksPath git-hooks; fi"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.693.0",

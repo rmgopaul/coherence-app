@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#
+# pre-push hook: catch build breakage before it ships to the remote.
+#
+# Activated by the `prepare` script in package.json (sets
+# `core.hooksPath=git-hooks` during `pnpm install`). If you cloned
+# fresh and this isn't running, run:
+#
+#     pnpm install
+#
+# Bypass with `git push --no-verify` in an emergency, but don't make
+# a habit of it — the hook exists because today's broken Render build
+# (supplements.helpers ENOENT) would have been caught here on the
+# developer's machine instead of after it reached main.
+#
+# What this checks:
+#   `vite build` — the exact command Render runs. Catches missing
+#   imports (the bug this hook was built for), asset resolution
+#   problems, and dynamic import failures.
+#
+# Intentionally NOT checking:
+#   - tsc: would be stricter than Render, producing false positives
+#     on type errors in code paths vite doesn't bundle. Run
+#     `pnpm check` manually if you want a full type check.
+#   - vitest: slow, not the failure mode that bit us.
+#   - gradle: Android-only, server/web changes don't touch it.
+#   - lint: formatter-only, doesn't block a valid build.
+#
+# The hook expects to run from the productivity-hub repo root.
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+NC='\033[0m' # No Color
+
+echo ""
+echo -e "${BOLD}pre-push: verifying build before push…${NC}"
+echo ""
+
+# Fast-fail on missing dev dependencies rather than producing a
+# cryptic "vite: command not found" inside the hook.
+if [ ! -x ./node_modules/.bin/vite ]; then
+  echo -e "${YELLOW}pre-push: node_modules not installed. Run 'pnpm install' first.${NC}"
+  echo -e "${YELLOW}pre-push: skipping this check — don't let a broken build reach main.${NC}"
+  exit 0
+fi
+
+START=$(date +%s)
+
+echo "→ vite build"
+# Build output goes to ./dist — gitignored, safe.
+if ! ./node_modules/.bin/vite build >/tmp/prepush-vite.log 2>&1; then
+  echo ""
+  echo -e "${RED}${BOLD}✗ pre-push: vite build failed. Push blocked.${NC}"
+  echo -e "${RED}  Full log: /tmp/prepush-vite.log${NC}"
+  echo ""
+  tail -20 /tmp/prepush-vite.log
+  exit 1
+fi
+echo "  ok"
+
+ELAPSED=$(($(date +%s) - START))
+echo ""
+echo -e "${GREEN}✓ pre-push: build clean (${ELAPSED}s). Pushing…${NC}"
+echo ""
+exit 0
