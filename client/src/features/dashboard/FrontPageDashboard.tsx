@@ -8,11 +8,13 @@
  *
  * Spec: handoff/web-spec.md
  */
+import { useEffect, useState } from "react";
 import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { Masthead } from "./frontpage/Masthead";
 import { NewsprintColumns } from "./frontpage/NewsprintColumns";
 import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
 import { FocusModeRail } from "./frontpage/FocusModeRail";
+import { PinDialog } from "./frontpage/PinDialog";
 import { useDashboardData } from "./useDashboardData";
 import { useFocusMode } from "@/contexts/FocusModeContext";
 import { trpc } from "@/lib/trpc";
@@ -27,6 +29,32 @@ export default function FrontPageDashboard() {
       utils.kingOfDay.get.invalidate();
     },
   });
+
+  // Phase C.2 — pin dialog. Opens via the `k` keyboard shortcut, a
+  // right-click on the hero headline, or the long-press context menu
+  // on touch devices.
+  const [pinDialogOpen, setPinDialogOpen] = useState(false);
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const tag = target.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target.isContentEditable
+      ) {
+        return;
+      }
+      if (e.key === "k" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setPinDialogOpen(true);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="fp-root" data-focus={focusMode ? "1" : "0"}>
@@ -43,6 +71,15 @@ export default function FrontPageDashboard() {
         unreadGmailCount={data.unreadGmailCount}
         kingOfDay={data.kingOfDay}
         onUnpin={() => unpinKing.mutate({ dateKey: data.todayKey })}
+        onRequestPin={() => setPinDialogOpen(true)}
+      />
+
+      <PinDialog
+        open={pinDialogOpen}
+        onOpenChange={setPinDialogOpen}
+        todayKey={data.todayKey}
+        tasks={data.tasks.dueToday}
+        calendar={data.calendar}
       />
 
       {focusMode ? (

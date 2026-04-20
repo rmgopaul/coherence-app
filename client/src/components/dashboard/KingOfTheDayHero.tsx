@@ -54,6 +54,11 @@ export interface KingOfTheDayHeroProps {
    * `trpc.kingOfDay.unpin` at the call site.
    */
   onUnpin?: () => void;
+  /**
+   * Fires when the user right-clicks the headline or hits `k`.
+   * Call site opens the pin dialog.
+   */
+  onRequestPin?: () => void;
   className?: string;
 }
 
@@ -215,6 +220,7 @@ export function KingOfTheDayHero({
   unreadGmailCount,
   kingOfDay,
   onUnpin,
+  onRequestPin,
   className,
 }: KingOfTheDayHeroProps) {
   const now = useNow(60_000);
@@ -324,7 +330,19 @@ export function KingOfTheDayHero({
         </div>
         <h1
           className="kotd-display kotd-headline mt-3 text-[clamp(3rem,11vw,9rem)]"
-          title={headline}
+          title={
+            onRequestPin
+              ? `${headline} — right-click or press K to pin a different headline`
+              : headline
+          }
+          onContextMenu={
+            onRequestPin
+              ? (e) => {
+                  e.preventDefault();
+                  onRequestPin();
+                }
+              : undefined
+          }
         >
           <span className="kotd-highlight text-black">{headline}</span>
         </h1>
