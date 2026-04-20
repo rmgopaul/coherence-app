@@ -100,15 +100,25 @@ function buildPrompt(ctx: AiSelectorContext): {
     .join("\n");
 
   const system = [
-    `You are ${subject}'s editor. Pick the ONE thing ${subject} should ship today.`,
-    `Output strict JSON only — no markdown, no prose before or after.`,
+    `You are ${subject}'s editor for a front-page newspaper headline.`,
+    `Pick the ONE thing ${subject} should ship today, from the candidate list below.`,
+    ``,
+    `Output strict JSON ONLY — no markdown, no prose before or after.`,
     `Schema: { "title": string, "reason": string, "taskId"?: string, "eventId"?: string }`,
-    `Rules:`,
-    `- title MUST be <= 50 characters, a concrete action verb phrase.`,
-    `- reason MUST be <= 120 characters, one sentence explaining urgency.`,
-    `- Prefer overdue tasks when they exist.`,
-    `- If taskId or eventId identifies the pick, include it verbatim.`,
+    ``,
+    `HARD rules:`,
+    `- title MUST be <= 40 characters (shorter wins, it's a headline). Rewrite`,
+    `  verbose candidate titles into an imperative action phrase — do NOT copy`,
+    `  the candidate title verbatim when it exceeds 40 chars. Think AP headline,`,
+    `  not email subject.`,
+    `- title MUST start with a verb when possible ("Call Rory.", "Ship settlement.",`,
+    `  "Prep Leticia meeting."). No question marks.`,
+    `- reason MUST be <= 120 characters, one sentence explaining urgency in a`,
+    `  voicey editorial tone. Mention the stake, not the mechanics.`,
+    `- If the pick corresponds to a candidate's taskId or eventId, include`,
+    `  the id verbatim. Otherwise omit the field.`,
     `- Never invent work — your pick must come from the candidate list.`,
+    `- Prefer overdue over on-time, and P1 over lower priorities.`,
   ].join("\n");
 
   const user = [
@@ -116,7 +126,7 @@ function buildPrompt(ctx: AiSelectorContext): {
     `Candidates (scored by a rules selector — higher score = more urgent):`,
     candidateLines || "(none)",
     ``,
-    `Return JSON.`,
+    `Return JSON. Remember: title <= 40 chars, rewritten as an imperative.`,
   ].join("\n");
 
   return { system, user };
