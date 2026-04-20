@@ -2,7 +2,6 @@ package com.coherence.healthconnect.ui.widgets
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,7 +31,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.size
-import com.coherence.healthconnect.ui.theme.BasquiatColors
+import com.coherence.healthconnect.ui.theme.BasquiatPalette
 import com.coherence.healthconnect.ui.theme.BasquiatTypography
 import androidx.compose.material3.Text
 import java.time.LocalDate
@@ -78,8 +77,23 @@ fun BasquiatDashboardHero(
   stats: HeroStats,
   modifier: Modifier = Modifier,
 ) {
-  val darkTheme = isSystemInDarkTheme()
-  val colors = remember(darkTheme) { BasquiatColors.forMode(darkTheme) }
+  // The hero is intentionally always dark — Paper bg + Ink text in
+  // dark mode hit dark-on-dark and become unreadable. Mirroring the
+  // web's --kotd-* tokens, which stay dark even in paper mode, the
+  // Android hero locks to literal Ink (#0B0B0B) bg with cream text.
+  // Both contrast safely against the rest of the dashboard regardless
+  // of the system theme below it.
+  val heroBg = BasquiatPalette.Ink
+  val heroText = BasquiatPalette.Paper
+  val heroSecondary = BasquiatPalette.Paper.copy(alpha = 0.65f)
+  val heroTertiary = BasquiatPalette.Paper.copy(alpha = 0.45f)
+  val highlightYellow = BasquiatPalette.Yellow
+  val accentYellow = BasquiatPalette.Yellow
+  val accentRed = BasquiatPalette.Red
+  val rule = BasquiatPalette.Ink
+  // Headline highlighter span is yellow with literal ink text on top —
+  // that's the only piece that actually wants ink color.
+  val highlighterText = BasquiatPalette.Ink
 
   val hour = remember { LocalTime.now().hour }
   val greeting = remember(hour) {
@@ -108,7 +122,7 @@ fun BasquiatDashboardHero(
       modifier = Modifier
         .fillMaxWidth()
         .padding(start = 6.dp, top = 6.dp)
-        .background(colors.ink),
+        .background(rule),
     ) {
       Spacer(Modifier.height(0.dp))
     }
@@ -117,8 +131,8 @@ fun BasquiatDashboardHero(
       modifier = Modifier
         .fillMaxWidth()
         .clip(RectangleShape)
-        .background(if (darkTheme) colors.paper2 else colors.ink)
-        .border(2.dp, colors.ink)
+        .background(heroBg)
+        .border(2.dp, rule)
         .padding(20.dp),
     ) {
       // Top row: date + crown
@@ -131,17 +145,17 @@ fun BasquiatDashboardHero(
           Text(
             text = dateText,
             style = BasquiatTypography.Label,
-            color = if (darkTheme) colors.ink3 else colors.paper,
+            color = heroSecondary,
           )
           Spacer(Modifier.height(4.dp))
           Text(
             text = "$greeting —",
             style = BasquiatTypography.Subhead,
-            color = colors.yellow,
+            color = accentYellow,
           )
         }
         Crown(
-          tint = colors.yellow,
+          tint = accentYellow,
           modifier = Modifier.size(width = 96.dp, height = 56.dp),
         )
       }
@@ -149,26 +163,28 @@ fun BasquiatDashboardHero(
       Spacer(Modifier.height(16.dp))
 
       // Headline — the one thing, with yellow highlighter behind it.
+      // The highlighter span gets ink text on yellow; outside that span
+      // (no overflow, but defensively colored) we paint cream-on-ink.
       Text(
         text = buildAnnotatedString {
           withStyle(
             SpanStyle(
-              background = colors.highlightYellow,
-              color = colors.ink,
+              background = highlightYellow,
+              color = highlighterText,
             )
           ) {
             append(headline)
           }
         },
         style = BasquiatTypography.Hero,
-        color = if (darkTheme) colors.ink else colors.paper,
+        color = heroText,
       )
 
       Spacer(Modifier.height(4.dp))
       Text(
         text = annotation,
         style = BasquiatTypography.Kicker,
-        color = colors.red,
+        color = accentRed,
       )
 
       Spacer(Modifier.height(20.dp))
@@ -181,26 +197,26 @@ fun BasquiatDashboardHero(
         BasquiatStat(
           label = "DUE",
           value = stats.tasksDueToday.toString(),
-          colors = colors,
-          onDark = !darkTheme,
+          labelColor = heroTertiary,
+          valueColor = heroText,
         )
         BasquiatStat(
           label = "EVENTS",
           value = stats.eventsToday.toString(),
-          colors = colors,
-          onDark = !darkTheme,
+          labelColor = heroTertiary,
+          valueColor = heroText,
         )
         BasquiatStat(
           label = "RECOVERY",
           value = stats.recoveryPercent?.let { "$it" } ?: "—",
-          colors = colors,
-          onDark = !darkTheme,
+          labelColor = heroTertiary,
+          valueColor = heroText,
         )
         BasquiatStat(
           label = "STREAK",
           value = stats.habitStreak?.toString() ?: "—",
-          colors = colors,
-          onDark = !darkTheme,
+          labelColor = heroTertiary,
+          valueColor = heroText,
         )
       }
     }
@@ -211,20 +227,20 @@ fun BasquiatDashboardHero(
 private fun BasquiatStat(
   label: String,
   value: String,
-  colors: BasquiatColors,
-  onDark: Boolean,
+  labelColor: Color,
+  valueColor: Color,
 ) {
   Column(horizontalAlignment = Alignment.Start) {
     Text(
       text = label,
       style = BasquiatTypography.Label,
-      color = if (onDark) colors.ink3 else colors.paper.copy(alpha = 0.6f),
+      color = labelColor,
     )
     Spacer(Modifier.height(6.dp))
     Text(
       text = value,
       style = BasquiatTypography.StatBig,
-      color = if (onDark) colors.ink else colors.paper,
+      color = valueColor,
     )
   }
 }
