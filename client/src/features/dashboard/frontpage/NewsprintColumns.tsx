@@ -16,9 +16,8 @@ import {
   eventLocationLabel,
   extractName,
   formatEventTime,
-  isTaskOverdue,
-  taskPriorityOrder,
 } from "./newsprint.helpers";
+import { TasksTriage } from "./TasksTriage";
 
 interface NewsprintColumnsProps {
   calendar: CalendarEvent[];
@@ -82,56 +81,9 @@ function TodayColumn({ events }: { events: CalendarEvent[] }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Up Next — due tasks                                                */
+/*  Up Next — replaced in F4 by TasksTriage (priority-banded view).    */
+/*  See ./TasksTriage.tsx                                              */
 /* ------------------------------------------------------------------ */
-
-function UpNextColumn({
-  tasks,
-}: {
-  tasks: NewsprintColumnsProps["tasks"];
-}) {
-  const sorted = [...tasks.dueToday]
-    .sort((a, b) => {
-      const overdueA = isTaskOverdue(a) ? 0 : 1;
-      const overdueB = isTaskOverdue(b) ? 0 : 1;
-      if (overdueA !== overdueB) return overdueA - overdueB;
-      return taskPriorityOrder(a) - taskPriorityOrder(b);
-    })
-    .slice(0, 8);
-
-  return (
-    <section className="fp-col">
-      <header className="fp-col__head">
-        <h2 className="fp-col__title">UP NEXT</h2>
-        <span className="mono-label">
-          {tasks.completedCount} DONE · {tasks.dueToday.length} DUE
-        </span>
-      </header>
-      {sorted.length === 0 ? (
-        <p className="fp-empty">inbox zero for today.</p>
-      ) : (
-        <ol className="fp-col__list">
-          {sorted.map((task) => {
-            const overdue = isTaskOverdue(task);
-            return (
-              <li key={task.id} className="fp-row">
-                <span className="fp-row__time mono-label">
-                  P{5 - (task.priority ?? 1)}
-                </span>
-                <span className="fp-row__rule" aria-hidden="true" />
-                <span
-                  className={`fp-row__title${overdue ? " strike" : ""}`}
-                >
-                  {task.content}
-                </span>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-    </section>
-  );
-}
 
 /* ------------------------------------------------------------------ */
 /*  Waiting On — sent-no-reply                                         */
@@ -189,7 +141,7 @@ export function NewsprintColumns({
       className="fp-newsprint"
     >
       <TodayColumn events={calendar} />
-      <UpNextColumn tasks={tasks} />
+      <TasksTriage tasks={tasks} />
       <WaitingOnColumn items={waitingOn} />
     </section>
   );

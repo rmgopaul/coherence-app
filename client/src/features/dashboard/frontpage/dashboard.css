@@ -493,6 +493,187 @@ html[data-focus="1"] .fp-root {
   margin: 0;
 }
 
+/* --- Tasks Triage (Phase F4) ---
+
+   Replaces the old single-list UP NEXT column with priority bands and
+   a hover-reveal complete action. Bands are 100% wide horizontal
+   strips so they read like newspaper section headers. */
+
+.fp-triage {
+  /* Same column shell as fp-col; just an anchor for triage-specific
+     overrides. */
+}
+
+.fp-triage-overdue-count {
+  color: var(--fp-red);
+  font-weight: 700;
+}
+
+.fp-triage-bands {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fp-triage-band-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fp-triage-band {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 8px;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+.fp-triage-band--overdue {
+  background: var(--fp-red);
+  color: var(--fp-paper);
+}
+.fp-triage-band--today {
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+
+.fp-triage-band__right {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  font-weight: 400;
+}
+
+.fp-triage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fp-triage-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 7px 2px;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.18);
+  position: relative;
+  transition: background 100ms ease;
+}
+.fp-triage-row:hover {
+  background: var(--fp-paper-2);
+}
+.fp-triage-row:last-child {
+  border-bottom: 0;
+}
+.fp-triage-row--busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* Priority dot (also the click target for "done"). */
+.fp-triage-row__bx {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border: 2px solid var(--fp-rule);
+  background: var(--fp-paper);
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+  position: relative;
+}
+.fp-triage-row__bx:hover::after {
+  content: "✓";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 10px;
+  color: var(--fp-paper);
+  background: var(--fp-ink);
+}
+.fp-triage-row__bx--p1 {
+  background: var(--fp-red);
+  border-color: var(--fp-red);
+}
+.fp-triage-row__bx--p2 {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--fp-rule) 0 2px,
+    var(--fp-paper) 2px 4px
+  );
+  border-color: var(--fp-rule);
+}
+.fp-triage-row__bx--p3 {
+  background: var(--fp-paper);
+}
+
+.fp-triage-row__body {
+  min-width: 0;
+}
+
+.fp-triage-row__title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--fp-ink);
+  word-break: break-word;
+}
+
+.fp-triage-row__meta {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fp-ink-3);
+  margin-top: 3px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.fp-triage-row__meta-proj {
+  color: var(--fp-blue);
+  font-weight: 700;
+}
+.fp-triage-row__meta-due {
+  color: var(--fp-ink);
+  font-weight: 700;
+}
+.fp-triage-row__meta-od {
+  color: var(--fp-red);
+  font-weight: 700;
+}
+
+.fp-triage-row__pri {
+  align-self: start;
+  padding: 2px 5px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.fp-triage-row__pri--p1 {
+  background: var(--fp-red);
+  color: var(--fp-paper);
+  border-color: var(--fp-red);
+}
+.fp-triage-row__pri--p2 {
+  background: var(--fp-yellow);
+  color: var(--fp-ink);
+}
+
 /* --- Newsprint columns --- */
 
 .fp-newsprint {
