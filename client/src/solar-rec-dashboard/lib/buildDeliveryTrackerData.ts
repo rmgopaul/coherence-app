@@ -2,17 +2,27 @@
  * Pure function that builds the Delivery Tracker's derived state from
  * Schedule B obligation rows and GATS transfer history rows.
  *
- * Phase 1a update: the caller now passes ONLY `deliveryScheduleBase.rows`
- * as `scheduleRows`. There is no longer a merge with `recDeliverySchedules`
- * — that dataset has been removed from the entire dashboard. Schedule B
- * is the single source of truth for obligations; transfer history is the
- * single source of truth for deliveries.
+ * Phase 1a: the caller passes ONLY `deliveryScheduleBase.rows` as
+ * `scheduleRows`. There is no merge with `recDeliverySchedules` —
+ * Schedule B is the single source of truth for obligations; transfer
+ * history is the single source of truth for deliveries.
  *
- * The function also surfaces a diagnostic `unmatchedTransferUnitIds` list:
- * tracking IDs that appear in transfer history but do NOT have a Schedule
- * B obligation. After Phase 1a these are visible in the UI so the user
- * can tell exactly which Schedule B PDFs still need to be scraped to
- * restore full coverage.
+ * Every transfer is classified into one of four outcomes:
+ *   - matched: credited to a specific year_slot.delivered
+ *   - `transfersMissingObligation`: system has no Schedule B at all
+ *   - `transfersPreDeliverySchedule`: system has a Schedule B, transfer
+ *      predates its earliest year (NOT counted in `unmatchedTransfers`)
+ *   - `transfersUnmatchedByYear`: system has a Schedule B but the transfer
+ *      date falls outside every year window and the energy-year fallback
+ *      also missed — usually a bad PDF parse or a post-contract transfer
+ *
+ * `unmatchedTransfers` (the summary-card counter) = `transfersMissingObligation`
+ * count + `transfersUnmatchedByYear` count. Pre-delivery is intentionally
+ * excluded so the counter reflects only truly anomalous matches.
+ *
+ * The function also emits `schedulesWithYearsOutsideBounds` as a parse-
+ * quality diagnostic: scraped Schedule Bs with at least one year outside
+ * [2019, 2042].
  */
 
 import {
@@ -46,71 +56,98 @@ export type DeliveryTrackerContractSummary = {
   deliveryPercent: number | null;
 };
 
+/**
+ * One row per tracking ID in a transfer-classification bucket. Three
+ * DeliveryTrackerData fields share this shape —
+ * `transfersMissingObligation`, `transfersUnmatchedByYear`,
+ * `transfersPreDeliverySchedule`.
+ */
+export type TransferBucketEntry = {
+  trackingId: string;
+  transferCount: number;
+};
+
+/** A single scraped year whose start or end fell outside [2019, 2042]. */
+export type OutOfBoundsYear = {
+  yearLabel: string;
+  startYear: number | null;
+  endYear: number | null;
+};
+
+/**
+ * A scraped Schedule B flagged because at least one of its year
+ * boundaries falls outside the plausible range. Almost always a bad
+ * PDF parse; re-scrape the source.
+ */
+export type FlaggedSchedule = {
+  trackingId: string;
+  systemName: string;
+  outOfBoundsYears: OutOfBoundsYear[];
+};
+
+/**
+ * String-union of every transfer-classification bucket the export
+ * (and UI) can emit. Use the `BUCKET` constant below rather than the
+ * bare string literal so typos are caught by the compiler.
+ */
+export type TransferBucket =
+  | "missing_schedule_b"
+  | "pre_delivery_schedule"
+  | "year_mismatch";
+
+/**
+ * Canonical names for each transfer-classification bucket. Referenced
+ * by the CSV export, the card description, and any consumer that has
+ * to emit / compare the bucket name.
+ */
+export const BUCKET = {
+  missingScheduleB: "missing_schedule_b",
+  preDeliverySchedule: "pre_delivery_schedule",
+  yearMismatch: "year_mismatch",
+} as const satisfies Record<string, TransferBucket>;
+
 export type DeliveryTrackerData = {
   rows: DeliveryTrackerRow[];
   contracts: DeliveryTrackerContractSummary[];
   totalTransfers: number;
+  /**
+   * Transfers that couldn't be credited to a year slot AND are not
+   * classified as pre-delivery. Equals `transfersMissingObligation`
+   * transfer count + `transfersUnmatchedByYear` transfer count.
+   */
   unmatchedTransfers: number;
   scheduleIdSample: string[];
   transferIdSample: string[];
   scheduleCount: number;
   /**
-   * Distinct tracking IDs that have at least one transfer in the provided
-   * transfer history rows but NO matching Schedule B obligation. These are
-   * systems the user still needs to scrape Schedule B PDFs for in order
-   * to see obligations in the tracker. `transferCount` is the number of
-   * utility transfer rows (after the direction/qty filter) that rolled up
-   * to each tracking ID. Populated only when transfer history exists.
+   * Distinct tracking IDs that have at least one transfer in GATS
+   * Transfer History but NO matching Schedule B obligation. These are
+   * systems the user still needs to scrape Schedule B PDFs for.
+   * Populated only when transfer history exists.
    */
-  transfersMissingObligation: Array<{
-    trackingId: string;
-    transferCount: number;
-  }>;
+  transfersMissingObligation: TransferBucketEntry[];
   /**
    * Distinct tracking IDs where a Schedule B exists but the transfer's
-   * completion date did NOT fall into any of the scraped 15 year slots
-   * (nor into the fallback energy-year match). Usually means the
-   * Schedule B year window is malformed/short, or the transfer predates
-   * the contract. These transfers are counted in `unmatchedTransfers`
-   * but are NOT in `transfersMissingObligation` because the system DOES
-   * have a scraped Schedule B. Separate so the UI can keep the
-   * "Missing Schedule B" card to bucket A, while exports can expose
-   * both.
+   * completion date fell outside every scraped year slot (including the
+   * energy-year fallback) AND was not before the earliest year start.
+   * Residual anomaly bucket — usually a malformed PDF parse or a
+   * post-contract transfer.
    */
-  transfersUnmatchedByYear: Array<{
-    trackingId: string;
-    transferCount: number;
-  }>;
+  transfersUnmatchedByYear: TransferBucketEntry[];
   /**
-   * Distinct tracking IDs where a Schedule B exists AND the transfer's
+   * Distinct tracking IDs where a Schedule B exists and the transfer
    * completion date is BEFORE the earliest scraped year_start for that
-   * system. The transfer still went through (it's in the GATS transfer
-   * history) but happened before the Schedule B delivery-schedule
-   * window began — usually means the system was generating/transferring
-   * RECs before its contract window, or the contract was re-issued.
-   * Split out from `transfersUnmatchedByYear` so the residual there
-   * reflects truly anomalous matches (bad year parse, outside 15y
-   * contract term, etc.).
+   * system. These are real transfers that predate the delivery-schedule
+   * window (system generating RECs before the contract started) and are
+   * NOT counted toward `unmatchedTransfers`.
    */
-  transfersPreDeliverySchedule: Array<{
-    trackingId: string;
-    transferCount: number;
-  }>;
+  transfersPreDeliverySchedule: TransferBucketEntry[];
   /**
    * Scraped Schedule Bs with at least one year boundary outside the
-   * plausible [2019, 2042] range. Each entry carries the system name
-   * plus the list of offending year rows so the user can see exactly
-   * what the parser produced and re-scrape the right PDF.
+   * plausible [2019, 2042] range. Surfaced so bad parses can be found
+   * and re-scraped.
    */
-  schedulesWithYearsOutsideBounds: Array<{
-    trackingId: string;
-    systemName: string;
-    outOfBoundsYears: Array<{
-      yearLabel: string;
-      startYear: number | null;
-      endYear: number | null;
-    }>;
-  }>;
+  schedulesWithYearsOutsideBounds: FlaggedSchedule[];
 };
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
@@ -213,21 +250,9 @@ export function buildDeliveryTrackerData(input: {
   // bad PDF parses driving large year_mismatch / pre_delivery counts.
   // We collect the offending year rows per system so the UI can show
   // exactly what the parser produced.
-  const schedulesWithYearsOutsideBoundsList: Array<{
-    trackingId: string;
-    systemName: string;
-    outOfBoundsYears: Array<{
-      yearLabel: string;
-      startYear: number | null;
-      endYear: number | null;
-    }>;
-  }> = [];
+  const schedulesWithYearsOutsideBoundsList: FlaggedSchedule[] = [];
   systemSchedules.forEach((schedule) => {
-    const offending: Array<{
-      yearLabel: string;
-      startYear: number | null;
-      endYear: number | null;
-    }> = [];
+    const offending: OutOfBoundsYear[] = [];
     for (const year of schedule.years) {
       const startYear = year.yearStart?.getFullYear() ?? null;
       const endYear = year.yearEnd?.getFullYear() ?? null;
@@ -435,21 +460,25 @@ export function buildDeliveryTrackerData(input: {
     scheduleIdSample,
     transferIdSample,
     scheduleCount: systemSchedules.size,
-    transfersMissingObligation: Array.from(
-      transfersMissingObligationCounts.entries(),
-    )
-      .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
-      .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
-    transfersUnmatchedByYear: Array.from(
-      transfersUnmatchedByYearCounts.entries(),
-    )
-      .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
-      .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
-    transfersPreDeliverySchedule: Array.from(
-      transfersPreDeliveryScheduleCounts.entries(),
-    )
-      .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
-      .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
+    transfersMissingObligation: toSortedBucket(
+      transfersMissingObligationCounts,
+    ),
+    transfersUnmatchedByYear: toSortedBucket(transfersUnmatchedByYearCounts),
+    transfersPreDeliverySchedule: toSortedBucket(
+      transfersPreDeliveryScheduleCounts,
+    ),
     schedulesWithYearsOutsideBounds: schedulesWithYearsOutsideBoundsList,
   };
+}
+
+/**
+ * Convert a tracking-ID → count Map into a sorted `TransferBucketEntry[]`.
+ * Extracted because the builder returns three fields with identical
+ * shape and sort rules.
+ */
+function toSortedBucket(counts: Map<string, number>): TransferBucketEntry[] {
+  return Array.from(counts, ([trackingId, transferCount]) => ({
+    trackingId,
+    transferCount,
+  })).sort((a, b) => a.trackingId.localeCompare(b.trackingId));
 }

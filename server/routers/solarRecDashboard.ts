@@ -201,6 +201,7 @@ import {
   buildCsvText,
   parseRemoteCsvDataset,
   cleanScheduleBCell,
+  loadDeliveryScheduleBaseDataset,
   parseContractIdMappingText,
   buildTransferDeliveryLookup,
   findFirstTransferEnergyYear,
@@ -1030,39 +1031,14 @@ export const solarRecDashboardRouter = router({
         return merged;
       };
 
-      const existingPayload = await loadDatasetPayloadByKey("deliveryScheduleBase");
-      let existingDataset: ParsedRemoteCsvDataset = {
-        fileName: "Schedule B Import",
-        uploadedAt: new Date().toISOString(),
-        headers: [],
-        rows: [],
-      };
-
-      if (existingPayload) {
-        const sourceManifest = parseScheduleBRemoteSourceManifest(existingPayload);
-        if (sourceManifest && sourceManifest.length > 0) {
-          const latestSource = sourceManifest[sourceManifest.length - 1];
-          const sourcePayload = await loadDatasetPayloadByKey(latestSource.storageKey);
-          if (sourcePayload) {
-            const decoded =
-              latestSource.encoding === "base64"
-                ? Buffer.from(sourcePayload, "base64").toString("utf8")
-                : sourcePayload;
-            const parsedCsv = parseCsvText(decoded);
-            existingDataset = {
-              fileName: "Schedule B Import",
-              uploadedAt: new Date().toISOString(),
-              headers: parsedCsv.headers,
-              rows: parsedCsv.rows,
-            };
-          }
-        } else {
-          const parsed = parseRemoteCsvDataset(existingPayload);
-          if (parsed) {
-            existingDataset = parsed;
-          }
-        }
-      }
+      // deliveryScheduleBase is loaded via the shared helper — every
+      // other dataset (transferHistory, etc.) still uses the local
+      // loadDatasetPayloadByKey below because those have
+      // procedure-specific handling around them.
+      const existingDataset = await loadDeliveryScheduleBaseDataset(
+        (key) =>
+          getSolarRecDashboardPayload(ctx.user.id, `dataset:${key}`)
+      );
 
       const contractIdByTrackingId = new Map<string, string>();
       for (const row of existingDataset.rows) {
@@ -1352,75 +1328,10 @@ export const solarRecDashboardRouter = router({
         );
       }
 
-      // Load existing deliveryScheduleBase dataset — same loader as
-      // applyScheduleBToDeliveryObligations. Supports the three payload
-      // shapes: chunk-pointer, source-manifest, and flat remote CSV.
-      const loadDatasetPayloadByKey = async (
-        key: string
-      ): Promise<string | null> => {
-        const basePayload = await getSolarRecDashboardPayload(
-          ctx.user.id,
-          `dataset:${key}`
-        );
-        if (!basePayload) return null;
-
-        const chunkKeys = parseChunkPointerPayload(basePayload);
-        if (!chunkKeys || chunkKeys.length === 0) {
-          return basePayload;
-        }
-
-        let merged = "";
-        for (const chunkKey of chunkKeys) {
-          const chunk = await getSolarRecDashboardPayload(
-            ctx.user.id,
-            `dataset:${chunkKey}`
-          );
-          if (typeof chunk !== "string") {
-            return null;
-          }
-          merged += chunk;
-        }
-        return merged;
-      };
-
-      const existingPayload = await loadDatasetPayloadByKey(
-        "deliveryScheduleBase"
+      const existingDataset = await loadDeliveryScheduleBaseDataset(
+        (key) =>
+          getSolarRecDashboardPayload(ctx.user.id, `dataset:${key}`)
       );
-      let existingDataset: ParsedRemoteCsvDataset = {
-        fileName: "Schedule B Import",
-        uploadedAt: new Date().toISOString(),
-        headers: [],
-        rows: [],
-      };
-
-      if (existingPayload) {
-        const sourceManifest =
-          parseScheduleBRemoteSourceManifest(existingPayload);
-        if (sourceManifest && sourceManifest.length > 0) {
-          const latestSource = sourceManifest[sourceManifest.length - 1];
-          const sourcePayload = await loadDatasetPayloadByKey(
-            latestSource.storageKey
-          );
-          if (sourcePayload) {
-            const decoded =
-              latestSource.encoding === "base64"
-                ? Buffer.from(sourcePayload, "base64").toString("utf8")
-                : sourcePayload;
-            const parsedCsv = parseCsvText(decoded);
-            existingDataset = {
-              fileName: "Schedule B Import",
-              uploadedAt: new Date().toISOString(),
-              headers: parsedCsv.headers,
-              rows: parsedCsv.rows,
-            };
-          }
-        } else {
-          const parsedExisting = parseRemoteCsvDataset(existingPayload);
-          if (parsedExisting) {
-            existingDataset = parsedExisting;
-          }
-        }
-      }
 
       // Build a Set of keys already in the dataset — keys match
       // makeDeliveryRowKey semantics (uppercased tracking_system_ref_id).
@@ -1482,7 +1393,14 @@ export const solarRecDashboardRouter = router({
           "dataset:deliveryScheduleBase",
           finalPayload
         );
-      } catch {
+      } catch (dbError) {
+        // Non-fatal: fall back to S3. Log so a DB outage is visible in
+        // server logs instead of a silent success that lies about
+        // persistence state.
+        console.warn(
+          `[uploadDeliveryScheduleCsv] DB persist failed for user ${ctx.user.id}:`,
+          dbError
+        );
         persistedToDatabase = false;
       }
 
@@ -1495,6 +1413,10 @@ export const solarRecDashboardRouter = router({
         if (!persistedToDatabase) {
           throw storageError;
         }
+        console.warn(
+          `[uploadDeliveryScheduleCsv] S3 sync failed for user ${ctx.user.id} (DB persist OK):`,
+          storageError
+        );
       }
 
       return {

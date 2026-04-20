@@ -271,6 +271,75 @@ export function cleanScheduleBCell(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+/**
+ * Load and decode the `deliveryScheduleBase` dataset into a canonical
+ * `ParsedRemoteCsvDataset`. Consolidates the three payload shapes
+ * callers have to handle:
+ *   1. Chunk-pointer (payload is a list of chunk keys to concatenate)
+ *   2. Source-manifest (payload lists uploaded source files; we decode
+ *      the latest one, honoring base64 encoding)
+ *   3. Flat remote CSV (payload is the dataset directly)
+ *
+ * Takes `loadPayload` as a dependency so this helper stays free of
+ * `server/db` coupling — callers pass in
+ * `(key) => getSolarRecDashboardPayload(userId, \`dataset:${key}\`)`.
+ *
+ * Returns an empty-but-shaped dataset when the key is missing so
+ * callers can iterate `.rows` unconditionally.
+ */
+export async function loadDeliveryScheduleBaseDataset(
+  loadPayload: (key: string) => Promise<string | null>,
+): Promise<ParsedRemoteCsvDataset> {
+  const empty: ParsedRemoteCsvDataset = {
+    fileName: "Schedule B Import",
+    uploadedAt: new Date().toISOString(),
+    headers: [],
+    rows: [],
+  };
+
+  const resolveKey = async (key: string): Promise<string | null> => {
+    const basePayload = await loadPayload(key);
+    if (!basePayload) return null;
+
+    const chunkKeys = parseChunkPointerPayload(basePayload);
+    if (!chunkKeys || chunkKeys.length === 0) {
+      return basePayload;
+    }
+
+    let merged = "";
+    for (const chunkKey of chunkKeys) {
+      const chunk = await loadPayload(chunkKey);
+      if (typeof chunk !== "string") return null;
+      merged += chunk;
+    }
+    return merged;
+  };
+
+  const existingPayload = await resolveKey("deliveryScheduleBase");
+  if (!existingPayload) return empty;
+
+  const sourceManifest = parseScheduleBRemoteSourceManifest(existingPayload);
+  if (sourceManifest && sourceManifest.length > 0) {
+    const latestSource = sourceManifest[sourceManifest.length - 1];
+    const sourcePayload = await resolveKey(latestSource.storageKey);
+    if (!sourcePayload) return empty;
+    const decoded =
+      latestSource.encoding === "base64"
+        ? Buffer.from(sourcePayload, "base64").toString("utf8")
+        : sourcePayload;
+    const parsedCsv = parseCsvText(decoded);
+    return {
+      fileName: "Schedule B Import",
+      uploadedAt: new Date().toISOString(),
+      headers: parsedCsv.headers,
+      rows: parsedCsv.rows,
+    };
+  }
+
+  const parsed = parseRemoteCsvDataset(existingPayload);
+  return parsed ?? empty;
+}
+
 /** Parse a NON-ID -> Contract-ID mapping text (one pair per line, comma/tab separated). */
 export function parseContractIdMappingText(text: string): Map<string, string> {
   const mapping = new Map<string, string>();

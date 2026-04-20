@@ -55,7 +55,10 @@ import {
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
-import type { DeliveryTrackerData } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
+import {
+  BUCKET,
+  type DeliveryTrackerData,
+} from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 
 export interface DeliveryTrackerTabProps {
   /**
@@ -241,21 +244,21 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                     ...deliveryTrackerData.transfersMissingObligation.map(
                       ({ trackingId, transferCount }) => ({
                         tracking_system_ref_id: trackingId,
-                        bucket: "missing_schedule_b",
+                        bucket: BUCKET.missingScheduleB,
                         transfer_count: String(transferCount),
                       }),
                     ),
                     ...deliveryTrackerData.transfersPreDeliverySchedule.map(
                       ({ trackingId, transferCount }) => ({
                         tracking_system_ref_id: trackingId,
-                        bucket: "pre_delivery_schedule",
+                        bucket: BUCKET.preDeliverySchedule,
                         transfer_count: String(transferCount),
                       }),
                     ),
                     ...deliveryTrackerData.transfersUnmatchedByYear.map(
                       ({ trackingId, transferCount }) => ({
                         tracking_system_ref_id: trackingId,
-                        bucket: "year_mismatch",
+                        bucket: BUCKET.yearMismatch,
                         transfer_count: String(transferCount),
                       }),
                     ),
