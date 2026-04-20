@@ -5726,18 +5726,55 @@ export default function SolarRecDashboard() {
     const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
     const totalRowsLoaded = loadedDatasetKeys.reduce((sum, key) => sum + (datasets[key]?.rows.length ?? 0), 0);
     const staleDatasets = loadedDatasetKeys.filter((key) => isStaleUpload(datasets[key]?.uploadedAt));
-    const syncStatus =
-      activeUploadTaskLabel
-        ? queuedUploadTaskCount > 0
-          ? `Processing ${activeUploadTaskLabel} (${formatNumber(queuedUploadTaskCount)} queued)`
-          : `Processing ${activeUploadTaskLabel}`
-        : remoteDashboardStateQuery.status === "pending"
+
+    // Header sync status derived from the server-side per-dataset
+    // status map (Ship 1's getDatasetCloudStatuses), rolled up across
+    // every dataset we expect to care about. Previously this was an
+    // optimistic "Cloud sync healthy" that showed green whenever the
+    // remote state query succeeded — even when individual datasets
+    // were missing on the server, or stuck pending, or outright
+    // failed. That lied to the user.
+    //
+    // Rule:
+    //   active upload in flight        → "Processing ..."
+    //   remote state query still loading → "Checking cloud sync..."
+    //   remote state query errored     → "Cloud sync currently unavailable"
+    //   any saveState/saveDataset writing → "Syncing to cloud..."
+    //   dataset loaded locally but server has no matching recoverable
+    //     entry                        → "Cloud sync incomplete (N)"
+    //   all loaded datasets recoverable on server → "Cloud sync healthy"
+    //   otherwise (no loaded datasets yet) → "Cloud sync healthy"
+    //     (vacuous; matches prior default)
+    //
+    // Scanner-managed datasets (deliveryScheduleBase) are skipped for
+    // the header rollup because they're populated by a different
+    // workflow; their own card handles the truth badge.
+    let incompleteCount = 0;
+    if (loadedDatasetKeys.length > 0) {
+      for (const key of loadedDatasetKeys) {
+        if (SCANNER_MANAGED_DATASET_KEYS.has(key)) continue;
+        const serverStatus = serverDatasetCloudStatusByKey[key];
+        // No status yet == still fetching; don't count as incomplete.
+        if (serverStatus === undefined) continue;
+        if (!serverStatus.recoverable) {
+          incompleteCount += 1;
+        }
+      }
+    }
+
+    const syncStatus = activeUploadTaskLabel
+      ? queuedUploadTaskCount > 0
+        ? `Processing ${activeUploadTaskLabel} (${formatNumber(queuedUploadTaskCount)} queued)`
+        : `Processing ${activeUploadTaskLabel}`
+      : remoteDashboardStateQuery.status === "pending"
         ? "Checking cloud sync..."
         : saveRemoteDashboardState.isPending || saveRemoteDataset.isPending
           ? "Syncing to cloud..."
           : remoteDashboardStateQuery.status === "error"
             ? "Cloud sync currently unavailable"
-            : "Cloud sync healthy";
+            : incompleteCount > 0
+              ? `Cloud sync incomplete (${formatNumber(incompleteCount)} dataset${incompleteCount === 1 ? "" : "s"})`
+              : "Cloud sync healthy";
 
     return {
       loadedDatasetCount: loadedDatasetKeys.length,
@@ -5747,6 +5784,7 @@ export default function SolarRecDashboard() {
       staleDatasetLabels: staleDatasets.map((key) => DATASET_DEFINITIONS[key].label),
       missingRequiredCount: missingCoreDatasets.length,
       syncStatus,
+      cloudSyncIncompleteCount: incompleteCount,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- individual slots
   }, [
@@ -5764,6 +5802,7 @@ export default function SolarRecDashboard() {
     remoteDashboardStateQuery.status,
     saveRemoteDashboardState.isPending,
     saveRemoteDataset.isPending,
+    serverDatasetCloudStatusByKey,
   ]);
 
   const part2FilterAudit = useMemo(() => {
