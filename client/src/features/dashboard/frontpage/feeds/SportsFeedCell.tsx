@@ -34,24 +34,52 @@ export function SportsFeedCell({ updatedLabel }: Props) {
 
   const games = data?.games ?? [];
 
-  const spotlight = useMemo(() => {
-    if (!Array.isArray(games) || games.length === 0) return null;
-    const live = games.find(
-      (g) => g.status === "in" || g.status === "halftime"
+  // Split the feed into three useful buckets:
+  //   1. A live game if one is in progress, else next upcoming
+  //   2. Supporting list: other games today (up to 2 more rows)
+  const { spotlight, supporting } = useMemo(() => {
+    const empty = { spotlight: null, supporting: [] as typeof games };
+    if (!Array.isArray(games) || games.length === 0) return empty;
+
+    const withTime = games.map((g) => ({
+      g,
+      t: g.gameTime ? new Date(g.gameTime).getTime() : NaN,
+    }));
+
+    const live = withTime.find(
+      ({ g }) => g.status === "in" || g.status === "halftime"
     );
-    if (live) return live;
     const now = Date.now();
-    const upcoming = games
-      .filter((g) => {
-        const t = g.gameTime ? new Date(g.gameTime).getTime() : NaN;
-        return !Number.isNaN(t) && t >= now;
-      })
-      .sort((a, b) => {
-        const ta = new Date(a.gameTime).getTime();
-        const tb = new Date(b.gameTime).getTime();
-        return ta - tb;
-      });
-    return upcoming[0] ?? games[0] ?? null;
+    const upcoming = withTime
+      .filter(
+        ({ g, t }) =>
+          !Number.isNaN(t) &&
+          t >= now &&
+          g.status !== "in" &&
+          g.status !== "halftime"
+      )
+      .sort((a, b) => a.t - b.t);
+    const finals = withTime
+      .filter(({ g }) => g.status === "post")
+      .sort((a, b) => b.t - a.t);
+
+    const primary = live?.g ?? upcoming[0]?.g ?? finals[0]?.g ?? games[0];
+    if (!primary) return empty;
+
+    // Supporting list: other games today, not the primary.
+    const others: typeof games = [];
+    const push = (g: typeof primary | undefined) => {
+      if (g && g.id !== primary.id && others.every((x) => x.id !== g.id)) {
+        others.push(g);
+      }
+    };
+    // Live first in supporting (if primary was upcoming and something went live),
+    // then next upcoming, then most recent final.
+    if (live && live.g.id !== primary.id) push(live.g);
+    upcoming.forEach((u) => push(u.g));
+    finals.forEach((f) => push(f.g));
+
+    return { spotlight: primary, supporting: others.slice(0, 2) };
   }, [games]);
 
   if (!spotlight) {
@@ -113,6 +141,41 @@ export function SportsFeedCell({ updatedLabel }: Props) {
           <p className="fp-stat-big wire-stat__score">
             {awayScore}–{homeScore}
           </p>
+        )}
+        {supporting.length > 0 && (
+          <ul className="wire-list">
+            {supporting.map((game) => {
+              const gLive = game.status === "in" || game.status === "halftime";
+              const gFinal = game.status === "post";
+              const gHomeAbbr = game.isHome
+                ? game.teamAbbreviation
+                : game.opponentAbbreviation;
+              const gAwayAbbr = game.isHome
+                ? game.opponentAbbreviation
+                : game.teamAbbreviation;
+              const gScoreReady =
+                game.teamScore != null && game.opponentScore != null;
+              const gHomeScore = game.isHome
+                ? game.teamScore
+                : game.opponentScore;
+              const gAwayScore = game.isHome
+                ? game.opponentScore
+                : game.teamScore;
+              const right = gLive
+                ? "LIVE"
+                : gFinal && gScoreReady
+                  ? `${gAwayScore}–${gHomeScore}`
+                  : formatKickoffLabel(game.gameTime);
+              return (
+                <li key={game.id} className="wire-list__row">
+                  <span className="mono-label">
+                    {gAwayAbbr} @ {gHomeAbbr}
+                  </span>
+                  <span className="wire-list__val mono-label">{right}</span>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </article>

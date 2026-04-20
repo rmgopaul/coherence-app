@@ -55,19 +55,28 @@ export function SupplementsFeedCell({ updatedLabel }: Props) {
 
   if (scheduled === 0) {
     return (
-      <article className="wire-card" data-tone="offline">
+      <a
+        href="/supplements"
+        className="wire-card wire-card--link"
+        data-tone="offline"
+        aria-label="Set up supplements"
+      >
         <header className="wire-card__head">
           <span className="mono-label">SUPPLEMENTS</span>
         </header>
         <div className="wire-card__body">
           <p className="fp-empty">nothing scheduled.</p>
         </div>
-      </article>
+      </a>
     );
   }
 
   return (
-    <article className="wire-card">
+    <a
+      href="/supplements"
+      className="wire-card wire-card--link"
+      aria-label="Open supplements"
+    >
       <header className="wire-card__head">
         <span className="mono-label">SUPPLEMENTS</span>
         <span className="mono-label wire-card__ts">
@@ -101,6 +110,6 @@ export function SupplementsFeedCell({ updatedLabel }: Props) {
           <p className="fp-empty">none logged yet today.</p>
         )}
       </div>
-    </article>
+    </a>
   );
 }

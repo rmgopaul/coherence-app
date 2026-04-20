@@ -320,6 +320,37 @@ html[data-focus="1"] .fp-root {
   background: var(--fp-paper-3);
 }
 
+/* Linked wire cards — rendered as <a>. Subtle hover / focus styles
+   so the affordance is discoverable without breaking the broadsheet
+   feel. Focus ring is drawn *inside* the cell (outline-offset: -3px)
+   so the ink grid lines stay intact. */
+a.wire-card--link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+a.wire-card--link:hover {
+  background: color-mix(in oklch, var(--fp-paper-2) 85%, var(--fp-yellow) 15%);
+}
+
+a.wire-card--link[data-tone="offline"]:hover,
+a.wire-card--link[data-tone="placeholder"]:hover {
+  background: color-mix(in oklch, var(--fp-paper-3) 85%, var(--fp-yellow) 15%);
+}
+
+a.wire-card--link:focus-visible {
+  outline: 3px solid var(--fp-ink);
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  a.wire-card--link {
+    transition: none;
+  }
+}
+
 .wire-card__head {
   display: flex;
   align-items: baseline;

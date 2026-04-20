@@ -102,7 +102,12 @@ export function WorkFeedCell({ updatedLabel }: Props) {
 
   if (!connected) {
     return (
-      <article className="wire-card" data-tone="offline">
+      <a
+        href="/settings"
+        className="wire-card wire-card--link"
+        data-tone="offline"
+        aria-label="Connect Clockify in Settings"
+      >
         <header className="wire-card__head">
           <span className="mono-label">WORK · CLOCKIFY</span>
         </header>
@@ -112,7 +117,7 @@ export function WorkFeedCell({ updatedLabel }: Props) {
             ADD API KEY IN SETTINGS
           </p>
         </div>
-      </article>
+      </a>
     );
   }
 
@@ -128,7 +133,11 @@ export function WorkFeedCell({ updatedLabel }: Props) {
     .slice(0, 3);
 
   return (
-    <article className="wire-card">
+    <a
+      href="/widget/clockify"
+      className="wire-card wire-card--link"
+      aria-label="Open Clockify widget"
+    >
       <header className="wire-card__head">
         <span className="mono-label">
           WORK · CLOCKIFY
@@ -177,6 +186,6 @@ export function WorkFeedCell({ updatedLabel }: Props) {
           </ul>
         )}
       </div>
-    </article>
+    </a>
   );
 }
