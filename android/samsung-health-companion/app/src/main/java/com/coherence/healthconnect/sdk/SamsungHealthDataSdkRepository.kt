@@ -85,8 +85,9 @@ class SamsungHealthDataSdkRepository(
       reader.warnings += "Missing permissions: ${status.missingPermissions.size}"
     }
 
-    val mapper = HealthConnectPayloadMapper(reader)
+    val mapper = HealthConnectPayloadMapper()
     return mapper.collectForDate(
+      reader = reader,
       date = date,
       zone = zone,
       permissionsGranted = status.permissionsGranted,
@@ -158,9 +159,10 @@ class SamsungHealthDataSdkRepository(
     // Single set of range-scoped reads — 22 API calls total,
     // regardless of how many days the range spans. This is the
     // rate-limit fix for the historical backfill path.
-    val mapper = HealthConnectPayloadMapper(reader)
+    val mapper = HealthConnectPayloadMapper()
     return try {
       mapper.collectForDateRange(
+        reader = reader,
         startDate = startDate,
         endDate = endDate,
         zone = zone,
@@ -316,6 +318,6 @@ class SamsungHealthDataSdkRepository(
 
   companion object {
     // Keep in sync with HealthConnectPayloadMapper.APP_VERSION.
-    private const val APP_VERSION = "0.5.0"
+    private const val APP_VERSION = "0.5.1"
   }
 }

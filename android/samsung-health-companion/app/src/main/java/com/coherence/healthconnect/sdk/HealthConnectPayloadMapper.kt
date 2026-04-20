@@ -73,21 +73,136 @@ import kotlin.math.roundToInt
  *
  * All property access is compile-time typed — no reflection.
  */
-class HealthConnectPayloadMapper(
-  private val reader: HealthConnectReader,
-) {
+/**
+ * The mapper is stateless — callers either pass a [HealthConnectReader]
+ * into [collectForDateRange] (production path) or call
+ * [buildPayloadForDay] directly with pre-built [RawHealthConnectRecords]
+ * (unit-test path). No shared mutable state between calls, no reader
+ * field, no mocking required for the pure-mapping tests.
+ */
+class HealthConnectPayloadMapper {
 
   private data class TimeInterval(val start: Instant, val end: Instant)
+
+  /**
+   * All raw Health Connect records a single sync pulls back, grouped
+   * by record type. Produced once per run by [collectForDateRange]
+   * (from the reader) or directly by tests.
+   *
+   * [partitionForDay] returns a new instance whose every list has
+   * been filtered to the `[dayStart, dayEnd)` window — the mapper's
+   * per-day build step walks only those pre-filtered lists, keeping
+   * [buildPayloadForDay] itself pure.
+   */
+  internal data class RawHealthConnectRecords(
+    val steps: List<StepsRecord> = emptyList(),
+    val distance: List<DistanceRecord> = emptyList(),
+    val floors: List<FloorsClimbedRecord> = emptyList(),
+    val activeCalories: List<ActiveCaloriesBurnedRecord> = emptyList(),
+    val totalCalories: List<TotalCaloriesBurnedRecord> = emptyList(),
+    val exerciseSessions: List<ExerciseSessionRecord> = emptyList(),
+    val sleepSessions: List<SleepSessionRecord> = emptyList(),
+    val heartRate: List<HeartRateRecord> = emptyList(),
+    val restingHeartRate: List<RestingHeartRateRecord> = emptyList(),
+    val hrv: List<HeartRateVariabilityRmssdRecord> = emptyList(),
+    val respiratoryRate: List<RespiratoryRateRecord> = emptyList(),
+    val oxygenSaturation: List<OxygenSaturationRecord> = emptyList(),
+    val bloodPressure: List<BloodPressureRecord> = emptyList(),
+    val bloodGlucose: List<BloodGlucoseRecord> = emptyList(),
+    val weight: List<WeightRecord> = emptyList(),
+    val bodyFat: List<BodyFatRecord> = emptyList(),
+    val bodyWaterMass: List<BodyWaterMassRecord> = emptyList(),
+    val bmr: List<BasalMetabolicRateRecord> = emptyList(),
+    val hydration: List<HydrationRecord> = emptyList(),
+    val nutrition: List<NutritionRecord> = emptyList(),
+    val vo2Max: List<Vo2MaxRecord> = emptyList(),
+    val bodyTemperature: List<BodyTemperatureRecord> = emptyList(),
+    val height: List<HeightRecord> = emptyList(),
+    val skinTemperature: List<SkinTemperatureRecord> = emptyList(),
+    val power: List<PowerRecord> = emptyList(),
+    val speed: List<SpeedRecord> = emptyList(),
+  ) {
+    /**
+     * Return a copy of these records restricted to a single day's
+     * window. Sleep uses a widened start to capture pre-midnight
+     * bedtimes — [computeSleepMetrics] re-clips stage intervals back
+     * into the day.
+     *
+     * Interval-typed records (steps, exercise, etc.) pass through if
+     * `[record.startTime, record.endTime)` overlaps `[dayStart, dayEnd)`.
+     * A record spanning midnight therefore appears in both neighbour
+     * days — acceptable today because Health Connect sources do not
+     * emit large cross-midnight intervals.
+     *
+     * Instantaneous records (weight, body fat, HRV, etc.) pass through
+     * if `record.time` falls in `[dayStart, dayEnd)`.
+     */
+    fun partitionForDay(
+      dayStart: Instant,
+      dayEnd: Instant,
+      dayWithSleepStart: Instant,
+    ): RawHealthConnectRecords {
+      fun <T> intervalOverlap(list: List<T>, start: (T) -> Instant, end: (T) -> Instant) =
+        list.filter { end(it).isAfter(dayStart) && start(it).isBefore(dayEnd) }
+      fun <T> instantaneousIn(list: List<T>, time: (T) -> Instant) =
+        list.filter { !time(it).isBefore(dayStart) && time(it).isBefore(dayEnd) }
+
+      return RawHealthConnectRecords(
+        steps = intervalOverlap(steps, { it.startTime }, { it.endTime }),
+        distance = intervalOverlap(distance, { it.startTime }, { it.endTime }),
+        floors = intervalOverlap(floors, { it.startTime }, { it.endTime }),
+        activeCalories = intervalOverlap(activeCalories, { it.startTime }, { it.endTime }),
+        totalCalories = intervalOverlap(totalCalories, { it.startTime }, { it.endTime }),
+        exerciseSessions = intervalOverlap(exerciseSessions, { it.startTime }, { it.endTime }),
+        // Sleep uses the widened window so pre-midnight bedtimes land
+        // on the wake-up day. computeSleepMetrics re-clips below.
+        sleepSessions = sleepSessions.filter {
+          it.endTime.isAfter(dayWithSleepStart) && it.startTime.isBefore(dayEnd)
+        },
+        heartRate = intervalOverlap(heartRate, { it.startTime }, { it.endTime }),
+        restingHeartRate = instantaneousIn(restingHeartRate) { it.time },
+        hrv = instantaneousIn(hrv) { it.time },
+        respiratoryRate = instantaneousIn(respiratoryRate) { it.time },
+        oxygenSaturation = instantaneousIn(oxygenSaturation) { it.time },
+        bloodPressure = instantaneousIn(bloodPressure) { it.time },
+        bloodGlucose = instantaneousIn(bloodGlucose) { it.time },
+        weight = instantaneousIn(weight) { it.time },
+        bodyFat = instantaneousIn(bodyFat) { it.time },
+        bodyWaterMass = instantaneousIn(bodyWaterMass) { it.time },
+        bmr = instantaneousIn(bmr) { it.time },
+        hydration = intervalOverlap(hydration, { it.startTime }, { it.endTime }),
+        nutrition = intervalOverlap(nutrition, { it.startTime }, { it.endTime }),
+        vo2Max = instantaneousIn(vo2Max) { it.time },
+        bodyTemperature = instantaneousIn(bodyTemperature) { it.time },
+        height = instantaneousIn(height) { it.time },
+        skinTemperature = intervalOverlap(skinTemperature, { it.startTime }, { it.endTime }),
+        power = intervalOverlap(power, { it.startTime }, { it.endTime }),
+        speed = intervalOverlap(speed, { it.startTime }, { it.endTime }),
+      )
+    }
+  }
+
+  /**
+   * Sync-run bookkeeping — what the reader attempted, what succeeded,
+   * and any warnings to surface on the payload. Forwarded as-is to
+   * [SyncMetadata].
+   */
+  internal data class SyncLog(
+    val attempted: List<String> = emptyList(),
+    val succeeded: List<String> = emptyList(),
+    val warnings: List<String> = emptyList(),
+  )
 
   /**
    * Convenience wrapper for the single-day daily-sync path.
    */
   suspend fun collectForDate(
+    reader: HealthConnectReader,
     date: LocalDate,
     zone: ZoneId,
     permissionsGranted: Boolean,
   ): SamsungHealthPayload {
-    return collectForDateRange(date, date, zone, permissionsGranted).first()
+    return collectForDateRange(reader, date, date, zone, permissionsGranted).first()
   }
 
   /**
@@ -100,6 +215,7 @@ class HealthConnectPayloadMapper(
    * backfill work without blowing Health Connect's per-app quota.
    */
   suspend fun collectForDateRange(
+    reader: HealthConnectReader,
     startDate: LocalDate,
     endDate: LocalDate,
     zone: ZoneId,
@@ -122,47 +238,55 @@ class HealthConnectPayloadMapper(
     val sleepRangeFilter = TimeRangeFilter.between(sleepRangeStart, rangeEnd)
 
     // ── 22 reads, ONE per record type, across the full range ──────────
-    val stepsAll = reader.read(StepsRecord::class, rangeFilter, "steps")
-    val distanceAll = reader.read(DistanceRecord::class, rangeFilter, "distance")
-    val floorsAll = reader.read(
-      FloorsClimbedRecord::class,
-      rangeFilter,
-      "floors",
-      warnIfMissing = false,
+    val allRecords = RawHealthConnectRecords(
+      steps = reader.read(StepsRecord::class, rangeFilter, "steps"),
+      distance = reader.read(DistanceRecord::class, rangeFilter, "distance"),
+      floors = reader.read(
+        FloorsClimbedRecord::class,
+        rangeFilter,
+        "floors",
+        warnIfMissing = false,
+      ),
+      activeCalories = reader.read(ActiveCaloriesBurnedRecord::class, rangeFilter, "active_calories"),
+      totalCalories = reader.read(TotalCaloriesBurnedRecord::class, rangeFilter, "total_calories"),
+      exerciseSessions = reader.read(ExerciseSessionRecord::class, rangeFilter, "exercise_sessions"),
+      sleepSessions = reader.read(SleepSessionRecord::class, sleepRangeFilter, "sleep_sessions"),
+      heartRate = reader.read(HeartRateRecord::class, rangeFilter, "heart_rate"),
+      restingHeartRate = reader.read(RestingHeartRateRecord::class, rangeFilter, "resting_heart_rate"),
+      hrv = reader.read(HeartRateVariabilityRmssdRecord::class, rangeFilter, "hrv"),
+      respiratoryRate = reader.read(RespiratoryRateRecord::class, rangeFilter, "respiratory_rate"),
+      oxygenSaturation = reader.read(OxygenSaturationRecord::class, rangeFilter, "oxygen_saturation"),
+      bloodPressure = reader.read(BloodPressureRecord::class, rangeFilter, "blood_pressure"),
+      bloodGlucose = reader.read(BloodGlucoseRecord::class, rangeFilter, "blood_glucose"),
+      weight = reader.read(WeightRecord::class, rangeFilter, "weight"),
+      bodyFat = reader.read(
+        BodyFatRecord::class,
+        rangeFilter,
+        "body_fat",
+        suppressForegroundRequirementWarning = true,
+      ),
+      bodyWaterMass = reader.read(BodyWaterMassRecord::class, rangeFilter, "body_water_mass"),
+      bmr = reader.read(BasalMetabolicRateRecord::class, rangeFilter, "bmr"),
+      hydration = reader.read(HydrationRecord::class, rangeFilter, "hydration"),
+      nutrition = reader.read(NutritionRecord::class, rangeFilter, "nutrition"),
+      vo2Max = reader.read(Vo2MaxRecord::class, rangeFilter, "vo2", warnIfMissing = false),
+      bodyTemperature = reader.read(BodyTemperatureRecord::class, rangeFilter, "body_temperature"),
+      height = reader.read(HeightRecord::class, rangeFilter, "height", warnIfMissing = false),
+      skinTemperature = reader.read(
+        SkinTemperatureRecord::class,
+        rangeFilter,
+        "skin_temperature",
+        warnIfMissing = false,
+      ),
+      power = reader.read(PowerRecord::class, rangeFilter, "power", warnIfMissing = false),
+      speed = reader.read(SpeedRecord::class, rangeFilter, "speed", warnIfMissing = false),
     )
-    val activeCalAll = reader.read(ActiveCaloriesBurnedRecord::class, rangeFilter, "active_calories")
-    val totalCalAll = reader.read(TotalCaloriesBurnedRecord::class, rangeFilter, "total_calories")
-    val exerciseAll = reader.read(ExerciseSessionRecord::class, rangeFilter, "exercise_sessions")
-    val sleepAll = reader.read(SleepSessionRecord::class, sleepRangeFilter, "sleep_sessions")
-    val heartRateAll = reader.read(HeartRateRecord::class, rangeFilter, "heart_rate")
-    val restingHrAll = reader.read(RestingHeartRateRecord::class, rangeFilter, "resting_heart_rate")
-    val hrvAll = reader.read(HeartRateVariabilityRmssdRecord::class, rangeFilter, "hrv")
-    val respiratoryAll = reader.read(RespiratoryRateRecord::class, rangeFilter, "respiratory_rate")
-    val spo2All = reader.read(OxygenSaturationRecord::class, rangeFilter, "oxygen_saturation")
-    val bloodPressureAll = reader.read(BloodPressureRecord::class, rangeFilter, "blood_pressure")
-    val glucoseAll = reader.read(BloodGlucoseRecord::class, rangeFilter, "blood_glucose")
-    val weightAll = reader.read(WeightRecord::class, rangeFilter, "weight")
-    val bodyFatAll = reader.read(
-      BodyFatRecord::class,
-      rangeFilter,
-      "body_fat",
-      suppressForegroundRequirementWarning = true,
+
+    val syncLog = SyncLog(
+      attempted = reader.attempted.toList(),
+      succeeded = reader.succeeded.toList(),
+      warnings = reader.warnings.toList(),
     )
-    val bodyWaterAll = reader.read(BodyWaterMassRecord::class, rangeFilter, "body_water_mass")
-    val bmrAll = reader.read(BasalMetabolicRateRecord::class, rangeFilter, "bmr")
-    val hydrationAll = reader.read(HydrationRecord::class, rangeFilter, "hydration")
-    val nutritionAll = reader.read(NutritionRecord::class, rangeFilter, "nutrition")
-    val vo2All = reader.read(Vo2MaxRecord::class, rangeFilter, "vo2", warnIfMissing = false)
-    val bodyTempAll = reader.read(BodyTemperatureRecord::class, rangeFilter, "body_temperature")
-    val heightAll = reader.read(HeightRecord::class, rangeFilter, "height", warnIfMissing = false)
-    val skinTempAll = reader.read(
-      SkinTemperatureRecord::class,
-      rangeFilter,
-      "skin_temperature",
-      warnIfMissing = false,
-    )
-    val powerAll = reader.read(PowerRecord::class, rangeFilter, "power", warnIfMissing = false)
-    val speedAll = reader.read(SpeedRecord::class, rangeFilter, "speed", warnIfMissing = false)
 
     // ── Partition records per day and build payloads ─────────────────
     val payloads = mutableListOf<SamsungHealthPayload>()
@@ -182,44 +306,8 @@ class HealthConnectPayloadMapper(
         permissionsGranted = permissionsGranted,
         dayStart = dayStart,
         dayEnd = dayEnd,
-        recordTypesAttempted = reader.attempted.toList(),
-        recordTypesSucceeded = reader.succeeded.toList(),
-        syncWarnings = reader.warnings.toList(),
-        // Interval-typed records: any record whose [startTime, endTime]
-        // overlaps [dayStart, dayEnd) is included for this day. Sum
-        // functions (steps, calories, distance) may double-count an
-        // interval that spans midnight — acceptable today given Health
-        // Connect sources don't emit large cross-midnight intervals,
-        // and can be refined later via per-record time slicing.
-        stepsRecords = stepsAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        distanceRecords = distanceAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        floorsRecords = floorsAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        activeCalRecords = activeCalAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        totalCalRecords = totalCalAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        exerciseRecords = exerciseAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        // Sleep uses the widened window so pre-midnight bedtimes land
-        // on the wake-up day. computeSleepMetrics re-clips below.
-        sleepRecords = sleepAll.filter { it.endTime.isAfter(dayWithSleepStart) && it.startTime.isBefore(dayEnd) },
-        heartRateRecords = heartRateAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        // Instantaneous records (have a single `time` property).
-        restingHrRecords = restingHrAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        hrvRecords = hrvAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        respiratoryRecords = respiratoryAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        spo2Records = spo2All.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        bloodPressureRecords = bloodPressureAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        glucoseRecords = glucoseAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        weightRecords = weightAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        bodyFatRecords = bodyFatAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        bodyWaterMassRecords = bodyWaterAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        bmrRecords = bmrAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        hydrationRecords = hydrationAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        nutritionRecords = nutritionAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        vo2Records = vo2All.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        bodyTempRecords = bodyTempAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        heightRecords = heightAll.filter { !it.time.isBefore(dayStart) && it.time.isBefore(dayEnd) },
-        skinTempRecords = skinTempAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        powerRecords = powerAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
-        speedRecords = speedAll.filter { it.endTime.isAfter(dayStart) && it.startTime.isBefore(dayEnd) },
+        records = allRecords.partitionForDay(dayStart, dayEnd, dayWithSleepStart),
+        syncLog = syncLog,
       )
       cursor = cursor.plusDays(1)
     }
@@ -236,8 +324,12 @@ class HealthConnectPayloadMapper(
    * Visibility: `internal` so the JVM unit test in the same Gradle
    * module (`app/src/test`) can call this directly, without needing
    * to stand up a Health Connect client or a reader mock.
+   *
+   * [records] must already be restricted to the `[dayStart, dayEnd)`
+   * window (for interval-typed records; sleep uses a widened window).
+   * [RawHealthConnectRecords.partitionForDay] is the canonical way
+   * to produce that from a range-scoped read.
    */
-  @Suppress("LongParameterList")
   internal fun buildPayloadForDay(
     date: LocalDate,
     zone: ZoneId,
@@ -245,37 +337,39 @@ class HealthConnectPayloadMapper(
     permissionsGranted: Boolean,
     dayStart: Instant,
     dayEnd: Instant,
-    /** Labels from the reader's run, forwarded as-is into sync metadata. */
-    recordTypesAttempted: List<String>,
-    recordTypesSucceeded: List<String>,
-    syncWarnings: List<String>,
-    stepsRecords: List<StepsRecord>,
-    distanceRecords: List<DistanceRecord>,
-    floorsRecords: List<FloorsClimbedRecord>,
-    activeCalRecords: List<ActiveCaloriesBurnedRecord>,
-    totalCalRecords: List<TotalCaloriesBurnedRecord>,
-    exerciseRecords: List<ExerciseSessionRecord>,
-    sleepRecords: List<SleepSessionRecord>,
-    heartRateRecords: List<HeartRateRecord>,
-    restingHrRecords: List<RestingHeartRateRecord>,
-    hrvRecords: List<HeartRateVariabilityRmssdRecord>,
-    respiratoryRecords: List<RespiratoryRateRecord>,
-    spo2Records: List<OxygenSaturationRecord>,
-    bloodPressureRecords: List<BloodPressureRecord>,
-    glucoseRecords: List<BloodGlucoseRecord>,
-    weightRecords: List<WeightRecord>,
-    bodyFatRecords: List<BodyFatRecord>,
-    bodyWaterMassRecords: List<BodyWaterMassRecord>,
-    bmrRecords: List<BasalMetabolicRateRecord>,
-    hydrationRecords: List<HydrationRecord>,
-    nutritionRecords: List<NutritionRecord>,
-    vo2Records: List<Vo2MaxRecord>,
-    bodyTempRecords: List<BodyTemperatureRecord>,
-    heightRecords: List<HeightRecord>,
-    skinTempRecords: List<SkinTemperatureRecord>,
-    powerRecords: List<PowerRecord>,
-    speedRecords: List<SpeedRecord>,
+    records: RawHealthConnectRecords,
+    syncLog: SyncLog,
   ): SamsungHealthPayload {
+    // Destructure the records struct once so the body below reads
+    // the same as it did pre-refactor — no logic change, only the
+    // boundary.
+    val stepsRecords = records.steps
+    val distanceRecords = records.distance
+    val floorsRecords = records.floors
+    val activeCalRecords = records.activeCalories
+    val totalCalRecords = records.totalCalories
+    val exerciseRecords = records.exerciseSessions
+    val sleepRecords = records.sleepSessions
+    val heartRateRecords = records.heartRate
+    val restingHrRecords = records.restingHeartRate
+    val hrvRecords = records.hrv
+    val respiratoryRecords = records.respiratoryRate
+    val spo2Records = records.oxygenSaturation
+    val bloodPressureRecords = records.bloodPressure
+    val glucoseRecords = records.bloodGlucose
+    val weightRecords = records.weight
+    val bodyFatRecords = records.bodyFat
+    val bodyWaterMassRecords = records.bodyWaterMass
+    val bmrRecords = records.bmr
+    val hydrationRecords = records.hydration
+    val nutritionRecords = records.nutrition
+    val vo2Records = records.vo2Max
+    val bodyTempRecords = records.bodyTemperature
+    val heightRecords = records.height
+    val skinTempRecords = records.skinTemperature
+    val powerRecords = records.power
+    val speedRecords = records.speed
+
     // ── Activity ──────────────────────────────────────────────────────
     val steps = stepsRecords.sumOf { it.count }.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     val distanceMeters = distanceRecords.sumOf { it.distance.inMeters }
@@ -593,9 +687,9 @@ class HealthConnectPayloadMapper(
       sync = SyncMetadata(
         sdkLinked = true,
         permissionsGranted = permissionsGranted,
-        recordTypesAttempted = recordTypesAttempted.distinct(),
-        recordTypesSucceeded = recordTypesSucceeded.distinct(),
-        warnings = syncWarnings,
+        recordTypesAttempted = syncLog.attempted.distinct(),
+        recordTypesSucceeded = syncLog.succeeded.distinct(),
+        warnings = syncLog.warnings,
       ),
     )
   }
@@ -835,7 +929,11 @@ class HealthConnectPayloadMapper(
     //     are dropped so HC stays WHOOP-free; WHOOP keeps its own
     //     server-side OAuth pipeline)
     //   - SYNC_KEY moved from build.gradle.kts to local.properties
-    private const val APP_VERSION = "0.5.0"
+    // 0.5.1 — refactor: collapsed buildPayloadForDay's 28-param
+    // signature to 8 via RawHealthConnectRecords + SyncLog structs.
+    // Mapper is now stateless (no reader field); dropped mockk test
+    // dependency.
+    private const val APP_VERSION = "0.5.1"
     private const val HR_SAMPLE_LIMIT = 240
     private const val CHECKIN_SAMPLE_LIMIT = 120
   }

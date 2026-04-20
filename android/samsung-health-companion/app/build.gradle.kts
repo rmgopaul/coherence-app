@@ -13,8 +13,8 @@ android {
     applicationId = "com.coherence.healthconnect"
     minSdk = 29
     targetSdk = 36
-    versionCode = 6
-    versionName = "0.5.0"
+    versionCode = 7
+    versionName = "0.5.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -118,15 +118,10 @@ dependencies {
   implementation("com.squareup.okhttp3:okhttp:4.12.0")
   implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
 
-  // JVM unit tests (running on the host JVM, no Android runtime)
+  // JVM unit tests (running on the host JVM, no Android runtime).
+  // The mapper is stateless so no mocking is required — tests build
+  // record fixtures directly via their public HC 1.1.0 constructors,
+  // pulled in transitively via the `implementation` coord above.
   testImplementation("junit:junit:4.13.2")
   testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.1")
-  // mockk: stand up an unused HealthConnectClient so we can construct
-  // a HealthConnectReader just to satisfy the HealthConnectPayloadMapper
-  // constructor. The reader is never invoked during
-  // `buildPayloadForDay` — tests only exercise the pure mapping path.
-  testImplementation("io.mockk:mockk:1.13.10")
-  // Health Connect records + units are constructible directly via
-  // their public constructors (verified on the 1.1.0 source) —
-  // pulled in transitively via the `implementation` coord above.
 }

@@ -1,6 +1,5 @@
 package com.coherence.healthconnect.sdk
 
-import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.ExerciseSessionRecord
@@ -12,7 +11,8 @@ import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Energy
 import androidx.health.connect.client.units.Length
 import androidx.health.connect.client.units.Mass
-import io.mockk.mockk
+import com.coherence.healthconnect.sdk.HealthConnectPayloadMapper.RawHealthConnectRecords
+import com.coherence.healthconnect.sdk.HealthConnectPayloadMapper.SyncLog
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -30,8 +30,12 @@ import java.time.ZoneOffset
  * computational layer of the mapper — taking already-filtered record
  * lists and producing a [com.coherence.healthconnect.model.SamsungHealthPayload].
  *
+ * The mapper is stateless (no reader field, no mutable state), which
+ * means these tests instantiate `HealthConnectPayloadMapper()` directly
+ * with no test doubles needed. No `mockk`, no fake `HealthConnectClient`.
+ *
  * What's NOT tested here:
- *  - The `HealthConnectReader` retry / rate-limit cooldown loop.
+ *  - The [HealthConnectReader] retry / rate-limit cooldown loop.
  *    Uses a live `HealthConnectClient` — verified on-device instead
  *    (see 2026-04-19 session postmortem entry about
  *    `HealthConnectReader.read` cooldown unreachable-code bug).
@@ -40,10 +44,11 @@ import java.time.ZoneOffset
  *    client library only exposes through an internal constructor.
  *    Reachable via reflection, but we verify it on-device via adb
  *    logcat looking for "dropped N records from excluded sources".
- *  - The `collectForDateRange` range-read partitioning step. That
- *    is the per-day filter expression embedded in the public
- *    collectForDateRange; those expressions are small and
- *    exhaustively exercised by the buildPayloadForDay tests below.
+ *  - The `collectForDateRange` range-read step (which calls into the
+ *    reader). The per-day partitioning logic in
+ *    [RawHealthConnectRecords.partitionForDay] is exercised
+ *    indirectly by the `buildPayloadForDay` tests below whose input
+ *    records have already been scoped to a day.
  */
 class HealthConnectPayloadMapperTest {
 
@@ -57,18 +62,7 @@ class HealthConnectPayloadMapperTest {
 
   private val metadata: Metadata = Metadata.manualEntry()
 
-  /** Build a no-op mapper instance. Reader is never invoked from
-   *  `buildPayloadForDay` (it takes attempted/succeeded/warnings as
-   *  explicit parameters), so the reader is a mock that would throw
-   *  if any method were called. */
-  private fun makeMapper(): HealthConnectPayloadMapper {
-    val mockClient = mockk<HealthConnectClient>(relaxed = true)
-    val reader = HealthConnectReader(
-      client = mockClient,
-      grantedPermissions = emptySet(),
-    )
-    return HealthConnectPayloadMapper(reader)
-  }
+  private val mapper = HealthConnectPayloadMapper()
 
   // ──────────────────────────────────────────────────────────────────
   // Record-building helpers
@@ -151,53 +145,35 @@ class HealthConnectPayloadMapperTest {
       metadata = metadata,
     )
 
-  /** Invoke buildPayloadForDay with the minimal-default empty list
-   *  overrides where the test doesn't care about that record type. */
-  @Suppress("LongParameterList")
+  /**
+   * Invoke [HealthConnectPayloadMapper.buildPayloadForDay] with the
+   * given record lists. All other record types default to empty.
+   */
   private fun build(
-    stepsRecords: List<StepsRecord> = emptyList(),
-    distanceRecords: List<DistanceRecord> = emptyList(),
-    activeCalRecords: List<ActiveCaloriesBurnedRecord> = emptyList(),
-    exerciseRecords: List<ExerciseSessionRecord> = emptyList(),
-    heartRateRecords: List<HeartRateRecord> = emptyList(),
-    weightRecords: List<WeightRecord> = emptyList(),
-    heightRecords: List<HeightRecord> = emptyList(),
-  ) = makeMapper().buildPayloadForDay(
+    steps: List<StepsRecord> = emptyList(),
+    distance: List<DistanceRecord> = emptyList(),
+    activeCalories: List<ActiveCaloriesBurnedRecord> = emptyList(),
+    exerciseSessions: List<ExerciseSessionRecord> = emptyList(),
+    heartRate: List<HeartRateRecord> = emptyList(),
+    weight: List<WeightRecord> = emptyList(),
+    height: List<HeightRecord> = emptyList(),
+  ) = mapper.buildPayloadForDay(
     date = date,
     zone = zone,
     capturedAt = capturedAt,
     permissionsGranted = true,
     dayStart = dayStart,
     dayEnd = dayEnd,
-    recordTypesAttempted = emptyList(),
-    recordTypesSucceeded = emptyList(),
-    syncWarnings = emptyList(),
-    stepsRecords = stepsRecords,
-    distanceRecords = distanceRecords,
-    floorsRecords = emptyList(),
-    activeCalRecords = activeCalRecords,
-    totalCalRecords = emptyList(),
-    exerciseRecords = exerciseRecords,
-    sleepRecords = emptyList(),
-    heartRateRecords = heartRateRecords,
-    restingHrRecords = emptyList(),
-    hrvRecords = emptyList(),
-    respiratoryRecords = emptyList(),
-    spo2Records = emptyList(),
-    bloodPressureRecords = emptyList(),
-    glucoseRecords = emptyList(),
-    weightRecords = weightRecords,
-    bodyFatRecords = emptyList(),
-    bodyWaterMassRecords = emptyList(),
-    bmrRecords = emptyList(),
-    hydrationRecords = emptyList(),
-    nutritionRecords = emptyList(),
-    vo2Records = emptyList(),
-    bodyTempRecords = emptyList(),
-    heightRecords = heightRecords,
-    skinTempRecords = emptyList(),
-    powerRecords = emptyList(),
-    speedRecords = emptyList(),
+    records = RawHealthConnectRecords(
+      steps = steps,
+      distance = distance,
+      activeCalories = activeCalories,
+      exerciseSessions = exerciseSessions,
+      heartRate = heartRate,
+      weight = weight,
+      height = height,
+    ),
+    syncLog = SyncLog(),
   )
 
   // ──────────────────────────────────────────────────────────────────
@@ -217,13 +193,13 @@ class HealthConnectPayloadMapperTest {
 
   @Test
   fun `steps sum across multiple records`() {
-    val p = build(stepsRecords = listOf(steps(8, 9, 1500), steps(14, 15, 2500)))
+    val p = build(steps = listOf(steps(8, 9, 1500), steps(14, 15, 2500)))
     assertEquals(4000, p.activity.steps)
   }
 
   @Test
   fun `distance sums in meters`() {
-    val p = build(distanceRecords = listOf(distance(7, 8, 1200.0), distance(17, 18, 800.0)))
+    val p = build(distance = listOf(distance(7, 8, 1200.0), distance(17, 18, 800.0)))
     assertEquals(2000.0, p.activity.distanceMeters, 0.1)
   }
 
@@ -233,8 +209,8 @@ class HealthConnectPayloadMapperTest {
   fun `BMI derives from height plus weight`() {
     // 1.75 m, 70 kg → 22.86 → rounded to 1 dp = 22.9
     val p = build(
-      weightRecords = listOf(weight(70.0)),
-      heightRecords = listOf(height(1.75)),
+      weight = listOf(weight(70.0)),
+      height = listOf(height(1.75)),
     )
     assertEquals(22.9, p.bodyComposition.bmi, 0.01)
     assertEquals(70.0, p.bodyComposition.weightKg, 0.01)
@@ -245,7 +221,7 @@ class HealthConnectPayloadMapperTest {
   fun `BMI stays at zero when height is missing`() {
     // Preserves the pre-HeightRecord fallback behaviour so consumers
     // that look for `bmi == 0` to mean "unknown" keep working.
-    val p = build(weightRecords = listOf(weight(70.0)))
+    val p = build(weight = listOf(weight(70.0)))
     assertEquals(0.0, p.bodyComposition.bmi, 0.0)
     assertEquals(70.0, p.bodyComposition.weightKg, 0.01)
     assertEquals(0.0, p.bodyComposition.heightMeters, 0.0)
@@ -254,8 +230,8 @@ class HealthConnectPayloadMapperTest {
   @Test
   fun `BMI uses the latest weight and height inside the day`() {
     val p = build(
-      weightRecords = listOf(weight(80.0, atHour = 6), weight(70.0, atHour = 20)),
-      heightRecords = listOf(height(1.80, atHour = 6), height(1.75, atHour = 20)),
+      weight = listOf(weight(80.0, atHour = 6), weight(70.0, atHour = 20)),
+      height = listOf(height(1.80, atHour = 6), height(1.75, atHour = 20)),
     )
     // Should use the later readings: 70 / 1.75² = 22.86 → 22.9
     assertEquals(22.9, p.bodyComposition.bmi, 0.01)
@@ -273,7 +249,7 @@ class HealthConnectPayloadMapperTest {
                                     //  startTime.isBefore(sessionEnd) is FALSE
                                     //  because 8:00 is NOT before 8:00)
     )
-    val p = build(exerciseRecords = listOf(session), activeCalRecords = cals)
+    val p = build(exerciseSessions = listOf(session), activeCalories = cals)
     val workout = p.samples.workouts.single()
     assertEquals(200.0, workout.caloriesKcal, 0.1)
   }
@@ -284,7 +260,7 @@ class HealthConnectPayloadMapperTest {
     val distances = listOf(
       distance(7, 8, 5000.0), // fully inside
     )
-    val p = build(exerciseRecords = listOf(session), distanceRecords = distances)
+    val p = build(exerciseSessions = listOf(session), distance = distances)
     val workout = p.samples.workouts.single()
     assertEquals(5000.0, workout.distanceMeters, 0.1)
   }
@@ -305,8 +281,8 @@ class HealthConnectPayloadMapperTest {
       ),
     )
     val p = build(
-      exerciseRecords = listOf(session),
-      heartRateRecords = listOf(hr),
+      exerciseSessions = listOf(session),
+      heartRate = listOf(hr),
     )
     val workout = p.samples.workouts.single()
     // avg = (140 + 160 + 150) / 3 = 150.0
@@ -331,8 +307,8 @@ class HealthConnectPayloadMapperTest {
       ),
     )
     val p = build(
-      exerciseRecords = listOf(session),
-      heartRateRecords = listOf(hr),
+      exerciseSessions = listOf(session),
+      heartRate = listOf(hr),
     )
     val workout = p.samples.workouts.single()
     assertEquals(160.0, workout.avgHeartRateBpm, 0.5)
@@ -351,7 +327,7 @@ class HealthConnectPayloadMapperTest {
       hourStart = 17, hourEnd = 18,
       type = ExerciseSessionRecord.EXERCISE_TYPE_RUNNING,
     )
-    val p = build(exerciseRecords = listOf(walk, run))
+    val p = build(exerciseSessions = listOf(walk, run))
     assertEquals(60, p.activity.walkingDurationMinutes)
     assertEquals(60, p.activity.runningDurationMinutes)
     assertEquals(0, p.activity.cyclingDurationMinutes)
@@ -366,7 +342,7 @@ class HealthConnectPayloadMapperTest {
   fun `cardio averages aggregate across records`() {
     val hr1 = heartRate(hourStart = 6, hourEnd = 7, bpms = listOf((6 * 60 + 30) to 60L))
     val hr2 = heartRate(hourStart = 18, hourEnd = 19, bpms = listOf((18 * 60 + 30) to 80L))
-    val p = build(heartRateRecords = listOf(hr1, hr2))
+    val p = build(heartRate = listOf(hr1, hr2))
     assertEquals(70.0, p.cardio.averageHeartRateBpm, 0.1)
     assertEquals(60.0, p.cardio.minHeartRateBpm, 0.1)
     assertEquals(80.0, p.cardio.maxHeartRateBpm, 0.1)
