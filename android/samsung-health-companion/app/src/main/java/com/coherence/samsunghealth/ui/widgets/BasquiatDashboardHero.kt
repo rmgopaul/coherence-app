@@ -41,6 +41,18 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
+ * Stats surfaced in the Basquiat hero. Previously lived alongside the
+ * gradient DashboardHero; moved here when that file was deleted in
+ * Phase E.3.
+ */
+data class HeroStats(
+  val tasksDueToday: Int = 0,
+  val recoveryPercent: Int? = null,
+  val habitStreak: Int? = null,
+  val eventsToday: Int = 0,
+)
+
+/**
  * Basquiat Dashboard Hero — Phase E.
  *
  * Editorial broadsheet layout, replacing the gradient-card

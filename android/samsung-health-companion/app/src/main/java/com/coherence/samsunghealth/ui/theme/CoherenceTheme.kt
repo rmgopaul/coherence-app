@@ -87,43 +87,56 @@ private val DarkTokens = CoherenceTokens(categoryColors = DarkCategoryColors)
 
 val LocalCoherenceTokens = staticCompositionLocalOf { LightTokens }
 
-// ── Color schemes ───────────────────────────────────────────────────────────────
-
-private val CoherenceBlue = Color(0xFF1A73E8)
-private val CoherenceBlueDark = Color(0xFF8AB4F8)
+// ── Color schemes — Basquiat Paper / Ink (Phase E.3) ────────────────────────────
+// Maps handoff/design-tokens.md §Color onto Material 3 ColorScheme
+// slots. Dynamic color is deliberately disabled (see `CoherenceTheme`
+// default below) so the branded aesthetic isn't overridden by the
+// user's system wallpaper on Android 12+.
 
 private val LightColorScheme = lightColorScheme(
-  primary = CoherenceBlue,
-  onPrimary = Color.White,
-  primaryContainer = Color(0xFFD3E3FD),
-  onPrimaryContainer = Color(0xFF001D36),
-  secondary = Color(0xFF5F6368),
-  onSecondary = Color.White,
-  surface = Color(0xFFFAFAFA),
-  onSurface = Color(0xFF1F1F1F),
-  surfaceVariant = Color(0xFFF1F3F4),
-  onSurfaceVariant = Color(0xFF5F6368),
-  background = Color.White,
-  onBackground = Color(0xFF1F1F1F),
-  error = Color(0xFFD93025),
-  onError = Color.White,
+  primary = Color(0xFF0B0B0B),             // ink — buttons, emphasis
+  onPrimary = Color(0xFFF6F2E7),           // paper — text on primary
+  primaryContainer = Color(0xFFF6C83A),    // yellow — highlighter
+  onPrimaryContainer = Color(0xFF0B0B0B),  // ink on yellow
+  secondary = Color(0xFFE23B2B),           // red — alerts, strikes
+  onSecondary = Color(0xFFF6F2E7),
+  secondaryContainer = Color(0xFFECEAD9),  // paper-2
+  onSecondaryContainer = Color(0xFF0B0B0B),
+  tertiary = Color(0xFF1D4ED8),            // blue — calendar/links
+  onTertiary = Color(0xFFF6F2E7),
+  surface = Color(0xFFF6F2E7),             // paper
+  onSurface = Color(0xFF0B0B0B),           // ink
+  surfaceVariant = Color(0xFFECEAD9),      // paper-2
+  onSurfaceVariant = Color(0xFF3A3A3A),    // ink-2
+  background = Color(0xFFE8E4D4),          // paper-3 (viewport)
+  onBackground = Color(0xFF0B0B0B),
+  error = Color(0xFFE23B2B),
+  onError = Color(0xFFF6F2E7),
+  outline = Color(0xFF0B0B0B),             // hard ink rules
+  outlineVariant = Color(0xFF666666),      // ink-3
 )
 
 private val DarkColorScheme = darkColorScheme(
-  primary = CoherenceBlueDark,
-  onPrimary = Color(0xFF003258),
-  primaryContainer = Color(0xFF00497D),
-  onPrimaryContainer = Color(0xFFD3E3FD),
-  secondary = Color(0xFFBDC1C6),
-  onSecondary = Color(0xFF282A2D),
-  surface = Color(0xFF1A1A1A),
-  onSurface = Color(0xFFECEFF1),
-  surfaceVariant = Color(0xFF28292C),
-  onSurfaceVariant = Color(0xFFAEB3B7),
-  background = Color(0xFF0E0E0E),
-  onBackground = Color(0xFFECEFF1),
-  error = Color(0xFFF28B82),
-  onError = Color(0xFF601410),
+  primary = Color(0xFFF2EEDF),             // ink-mode ink (cream)
+  onPrimary = Color(0xFF0E0D0A),           // ink-mode paper
+  primaryContainer = Color(0xFFFFD84A),    // ink-mode yellow
+  onPrimaryContainer = Color(0xFF0E0D0A),
+  secondary = Color(0xFFFF5A47),           // ink-mode red
+  onSecondary = Color(0xFF0E0D0A),
+  secondaryContainer = Color(0xFF1A1914),  // ink-mode paper-2
+  onSecondaryContainer = Color(0xFFF2EEDF),
+  tertiary = Color(0xFF6A8AFF),            // ink-mode blue
+  onTertiary = Color(0xFF0E0D0A),
+  surface = Color(0xFF0E0D0A),             // ink-mode paper
+  onSurface = Color(0xFFF2EEDF),
+  surfaceVariant = Color(0xFF1A1914),
+  onSurfaceVariant = Color(0xFFC9C5B4),    // ink-mode ink-2
+  background = Color(0xFF070605),          // ink-mode paper-3
+  onBackground = Color(0xFFF2EEDF),
+  error = Color(0xFFFF5A47),
+  onError = Color(0xFF0E0D0A),
+  outline = Color(0xFFF2EEDF),
+  outlineVariant = Color(0xFF8F8B78),      // ink-mode ink-3
 )
 
 // ── Theme composable ────────────────────────────────────────────────────────────
@@ -131,7 +144,11 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun CoherenceTheme(
   themeMode: ThemeMode = ThemeMode.SYSTEM,
-  dynamicColor: Boolean = true,
+  // Phase E.3: Basquiat palette is branded. Dynamic color is OFF by
+  // default so the system wallpaper can't override the aesthetic.
+  // A Settings toggle can still flip this to true per user if we
+  // ever want a Material You escape hatch.
+  dynamicColor: Boolean = false,
   trueBlack: Boolean = false,
   content: @Composable () -> Unit,
 ) {
