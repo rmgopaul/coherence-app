@@ -177,24 +177,54 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
 
 function WeatherCell({ weather }: { weather: DashboardData["weather"] }) {
   if (!weather || weather.offline || typeof weather.tempF !== "number") {
-    const reason = (weather && "reason" in weather ? (weather as { reason?: string | null }).reason : null) ?? null;
-    const hint =
-      reason === "no-api-key"
-        ? "SET OPENWEATHER_API_KEY IN PROD ENV"
-        : reason === "upstream-401"
-          ? "KEY REJECTED · 401 UNAUTHORIZED"
-          : reason === "upstream-429"
-            ? "RATE LIMITED · 429 · RETRY SOON"
-            : reason?.startsWith("upstream-")
-              ? `OPENWEATHERMAP ${reason.slice(9)}`
-              : reason === "upstream-timeout"
-                ? "OPENWEATHERMAP · TIMEOUT"
-                : reason === "fetch-failed"
-                  ? "NETWORK · FETCH FAILED"
-                  : "ADD OPENWEATHER_API_KEY · PHASE D";
+    const reason =
+      (weather && "reason" in weather
+        ? (weather as { reason?: string | null }).reason
+        : null) ?? null;
+
+    // Switch mirrors the NewsCell pattern — explicit case per reason
+    // code, distinct empty-state copy, ordered so no case is
+    // shadowed by a catch-all. The prior ternary chain had a dead
+    // branch because `.startsWith("upstream-")` caught
+    // `upstream-timeout` before the explicit timeout case could
+    // match, producing "OPENWEATHERMAP timeout" (lowercase).
+    const { headline, hint } = (() => {
+      switch (reason) {
+        case "no-api-key":
+          return {
+            headline: "no feed configured.",
+            hint: "SET OPENWEATHER_API_KEY IN PROD ENV",
+          };
+        case "upstream-401":
+          return {
+            headline: "key rejected.",
+            hint: "401 UNAUTHORIZED · ROTATE KEY",
+          };
+        case "upstream-429":
+          return {
+            headline: "rate limited.",
+            hint: "429 · RETRY IN A MINUTE",
+          };
+        case "upstream-timeout":
+          return {
+            headline: "feed timed out.",
+            hint: "OPENWEATHERMAP · TIMEOUT · RETRY 15m",
+          };
+        case "fetch-failed":
+          return {
+            headline: "feed went dark.",
+            hint: "NETWORK · FETCH FAILED",
+          };
+        default:
+          return {
+            headline: "no feed configured.",
+            hint: "ADD OPENWEATHER_API_KEY · PHASE D",
+          };
+      }
+    })();
     return (
       <WireCard label="WEATHER" tone="offline">
-        <p className="fp-empty">no feed configured.</p>
+        <p className="fp-empty">{headline}</p>
         <p className="mono-label wire-card__hint">{hint}</p>
       </WireCard>
     );
