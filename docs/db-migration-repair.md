@@ -22,7 +22,7 @@
 >   (provider, connectionId, siteId, dateKey)
 >
 > The one-shot endpoint + `Run migration repair` button can be
-> removed in a follow-up cleanup commit. The SESSIONS_POSTMORTEM.md
+> removed in a follow-up cleanup commit. The [SESSIONS_POSTMORTEM.md](./SESSIONS_POSTMORTEM.md)
 > entry for 2026-04-10 records the full context.
 >
 > **Remaining follow-up**: the 0016 ledger row is a synthetic hash

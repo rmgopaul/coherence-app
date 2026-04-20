@@ -4,7 +4,7 @@
 two tRPC routers in this repo with overlapping procedure names. If
 you edit the wrong one, your changes are invisible to the client and
 you will waste hours debugging symptoms. See
-`SESSIONS_POSTMORTEM.md` at the project root for the story of how
+[`SESSIONS_POSTMORTEM.md`](./SESSIONS_POSTMORTEM.md) for the story of how
 this cost an 8-hour session.
 
 ## The two tRPC apps

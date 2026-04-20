@@ -52,7 +52,7 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 // request to /solar-rec/api/trpc/solarRecDashboard.* now routes to
 // server/routers.ts (the live copy), matching the modern solar-rec
 // client which goes through /solar-rec/api/main-trpc. See the
-// 2026-04-10 entry in SESSIONS_POSTMORTEM.md and
+// 2026-04-10 entry in productivity-hub/docs/SESSIONS_POSTMORTEM.md and
 // productivity-hub/docs/server-routing.md for the full story.
 // 2026-04-15: "auth" and "enphaseV2" removed alongside their dead
 // sub-routers in _core/solarRecRouter.ts. The solar-rec standalone
