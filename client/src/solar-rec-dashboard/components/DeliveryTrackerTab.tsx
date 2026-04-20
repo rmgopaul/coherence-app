@@ -160,25 +160,49 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                   but no matching Schedule B PDF has been scraped yet. Their obligations
                   are therefore unknown and they are not counted in the contract summary
                   below. Upload and scrape the corresponding Schedule B PDFs to restore
-                  coverage. The export also includes a{" "}
-                  <code>year_mismatch</code> bucket — tracking IDs whose Schedule B
-                  exists but whose transfer dates landed outside every scraped year
-                  window (usually a malformed PDF parse or transfers outside the
-                  contract term).
+                  coverage. The export groups every unmatched transfer into three buckets:
+                  <code>missing_schedule_b</code> (this card),
+                  <code>pre_delivery_schedule</code> (transfer ran before the
+                  system's earliest scraped year), and
+                  <code>year_mismatch</code> (Schedule B exists but the transfer
+                  date fell outside every year window — usually a malformed PDF
+                  parse or transfers after the contract term).
+                  {deliveryTrackerData.schedulesWithYearsOutsideBounds.length > 0 ? (
+                    <>
+                      {" "}
+                      <strong>
+                        {formatNumber(
+                          deliveryTrackerData.schedulesWithYearsOutsideBounds.length,
+                        )}{" "}
+                        scraped Schedule B{deliveryTrackerData.schedulesWithYearsOutsideBounds.length === 1 ? "" : "s"}
+                      </strong>{" "}
+                      have year boundaries outside the plausible 2019–2042 window
+                      and are likely bad parses — they'll dominate the{" "}
+                      <code>year_mismatch</code> bucket. Re-scrape those PDFs.
+                    </>
+                  ) : null}
                 </CardDescription>
               </div>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  // Combined export: bucket A (missing_schedule_b) +
-                  // bucket B (year_mismatch). Sum of transfer_count
-                  // across both buckets equals unmatchedTransfers.
+                  // Combined export of every unmatched transfer by
+                  // tracking ID, partitioned into three buckets. Sum of
+                  // transfer_count across all three equals
+                  // unmatchedTransfers on the summary card.
                   const rows = [
                     ...deliveryTrackerData.transfersMissingObligation.map(
                       ({ trackingId, transferCount }) => ({
                         tracking_system_ref_id: trackingId,
                         bucket: "missing_schedule_b",
+                        transfer_count: String(transferCount),
+                      }),
+                    ),
+                    ...deliveryTrackerData.transfersPreDeliverySchedule.map(
+                      ({ trackingId, transferCount }) => ({
+                        tracking_system_ref_id: trackingId,
+                        bucket: "pre_delivery_schedule",
                         transfer_count: String(transferCount),
                       }),
                     ),

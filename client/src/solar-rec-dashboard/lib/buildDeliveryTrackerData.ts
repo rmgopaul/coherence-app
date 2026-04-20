@@ -81,6 +81,27 @@ export type DeliveryTrackerData = {
     trackingId: string;
     transferCount: number;
   }>;
+  /**
+   * Distinct tracking IDs where a Schedule B exists AND the transfer's
+   * completion date is BEFORE the earliest scraped year_start for that
+   * system. The transfer still went through (it's in the GATS transfer
+   * history) but happened before the Schedule B delivery-schedule
+   * window began — usually means the system was generating/transferring
+   * RECs before its contract window, or the contract was re-issued.
+   * Split out from `transfersUnmatchedByYear` so the residual there
+   * reflects truly anomalous matches (bad year parse, outside 15y
+   * contract term, etc.).
+   */
+  transfersPreDeliverySchedule: Array<{
+    trackingId: string;
+    transferCount: number;
+  }>;
+  /**
+   * Tracking IDs whose scraped Schedule B has at least one year boundary
+   * outside the plausible [2019, 2042] range. Surfaced so bad scrapes
+   * can be found and re-run.
+   */
+  schedulesWithYearsOutsideBounds: string[];
 };
 
 export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
@@ -93,7 +114,15 @@ export const EMPTY_DELIVERY_TRACKER_DATA: DeliveryTrackerData = Object.freeze({
   scheduleCount: 0,
   transfersMissingObligation: [],
   transfersUnmatchedByYear: [],
+  transfersPreDeliverySchedule: [],
+  schedulesWithYearsOutsideBounds: [],
 }) as DeliveryTrackerData;
+
+// Plausible Schedule B delivery-year range. Anything outside this is
+// almost certainly a bad PDF scrape (wrong year parsed, column offset,
+// etc.). 2019 is a conservative lower bound for the IL Solar RPS book;
+// 2042 = 2027 Schedule B's 15th year.
+const SCHEDULE_YEAR_BOUNDS = { min: 2019, max: 2042 };
 
 type YearSlot = {
   yearLabel: string;
@@ -170,6 +199,28 @@ export function buildDeliveryTrackerData(input: {
     }
   }
 
+  // Diagnostic: find scraped Schedule Bs with year boundaries outside
+  // the plausible [2019, 2042] window. These are strong candidates for
+  // bad PDF parses driving large year_mismatch counts.
+  const schedulesWithYearsOutsideBoundsSet = new Set<string>();
+  systemSchedules.forEach((schedule) => {
+    for (const year of schedule.years) {
+      const startYear = year.yearStart?.getFullYear();
+      const endYear = year.yearEnd?.getFullYear();
+      if (
+        (typeof startYear === "number" &&
+          (startYear < SCHEDULE_YEAR_BOUNDS.min ||
+            startYear > SCHEDULE_YEAR_BOUNDS.max)) ||
+        (typeof endYear === "number" &&
+          (endYear < SCHEDULE_YEAR_BOUNDS.min ||
+            endYear > SCHEDULE_YEAR_BOUNDS.max))
+      ) {
+        schedulesWithYearsOutsideBoundsSet.add(schedule.unitId);
+        break;
+      }
+    }
+  });
+
   // Process transfers: allocate to energy years
   let totalTransfers = 0;
   let unmatchedTransfers = 0;
@@ -181,6 +232,9 @@ export function buildDeliveryTrackerData(input: {
   // Tracking IDs whose Schedule B exists but no year slot matched the
   // transfer completion date. See `transfersUnmatchedByYear` docstring.
   const transfersUnmatchedByYearCounts = new Map<string, number>();
+  // Tracking IDs whose Schedule B exists and transfer ran BEFORE the
+  // earliest scraped year_start. See `transfersPreDeliverySchedule`.
+  const transfersPreDeliveryScheduleCounts = new Map<string, number>();
 
   for (const row of transferRows) {
     const unitId = clean(row["Unit ID"]);
@@ -252,10 +306,29 @@ export function buildDeliveryTrackerData(input: {
       }
       if (!matched) {
         unmatchedTransfers++;
-        transfersUnmatchedByYearCounts.set(
-          unitId,
-          (transfersUnmatchedByYearCounts.get(unitId) ?? 0) + 1,
-        );
+        // Classify the unmatched transfer. If its completion date is
+        // BEFORE the system's earliest scraped year_start, it's a
+        // pre-delivery-schedule transfer — real transfer, just before
+        // the contract window. Otherwise lump it into the residual
+        // year_mismatch bucket (bad parse / after-contract / etc.).
+        let earliestStart: Date | null = null;
+        for (const year of schedule.years) {
+          if (!year.yearStart) continue;
+          if (!earliestStart || year.yearStart < earliestStart) {
+            earliestStart = year.yearStart;
+          }
+        }
+        if (earliestStart && completionDate < earliestStart) {
+          transfersPreDeliveryScheduleCounts.set(
+            unitId,
+            (transfersPreDeliveryScheduleCounts.get(unitId) ?? 0) + 1,
+          );
+        } else {
+          transfersUnmatchedByYearCounts.set(
+            unitId,
+            (transfersUnmatchedByYearCounts.get(unitId) ?? 0) + 1,
+          );
+        }
       }
     }
   }
@@ -331,5 +404,13 @@ export function buildDeliveryTrackerData(input: {
     )
       .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
       .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
+    transfersPreDeliverySchedule: Array.from(
+      transfersPreDeliveryScheduleCounts.entries(),
+    )
+      .map(([trackingId, transferCount]) => ({ trackingId, transferCount }))
+      .sort((a, b) => a.trackingId.localeCompare(b.trackingId)),
+    schedulesWithYearsOutsideBounds: Array.from(
+      schedulesWithYearsOutsideBoundsSet,
+    ).sort(),
   };
 }

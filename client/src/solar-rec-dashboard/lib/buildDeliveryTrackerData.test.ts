@@ -149,28 +149,46 @@ describe("buildDeliveryTrackerData", () => {
 
   it("surfaces year-mismatched transfers separately from missing Schedule B", () => {
     // Schedule B exists but its year window is 2024-06-01..2025-05-31.
-    // A transfer in 2030 (way outside) cannot land in any year slot and
-    // also fails the energy-year fallback (no schedule year starts in
-    // 2030). That transfer should surface under transfersUnmatchedByYear
-    // with trackingId "NON100", not under transfersMissingObligation.
+    // Two transfers are unmatched:
+    //   - 2022 transfer → BEFORE earliest year_start → pre_delivery_schedule
+    //   - 2030 transfer → AFTER year_end, no energy-year match →
+    //     year_mismatch residual
     const data = buildDeliveryTrackerData({
       scheduleRows: [scheduleRow({ tracking_system_ref_id: "NON100" })],
       transferRows: [
         transferRow({
           "Unit ID": "NON100",
-          "Transfer Completion Date": "2030-08-15",
+          "Transfer Completion Date": "2022-08-15",
         }),
         transferRow({
           "Unit ID": "NON100",
-          "Transfer Completion Date": "2031-08-15",
+          "Transfer Completion Date": "2030-08-15",
         }),
       ],
     });
     expect(data.unmatchedTransfers).toBe(2);
     expect(data.transfersMissingObligation).toEqual([]);
-    expect(data.transfersUnmatchedByYear).toEqual([
-      { trackingId: "NON100", transferCount: 2 },
+    expect(data.transfersPreDeliverySchedule).toEqual([
+      { trackingId: "NON100", transferCount: 1 },
     ]);
+    expect(data.transfersUnmatchedByYear).toEqual([
+      { trackingId: "NON100", transferCount: 1 },
+    ]);
+  });
+
+  it("flags Schedule Bs with year boundaries outside 2019-2042", () => {
+    const data = buildDeliveryTrackerData({
+      scheduleRows: [
+        scheduleRow({ tracking_system_ref_id: "NON_OK" }),
+        scheduleRow({
+          tracking_system_ref_id: "NON_BAD",
+          year1_start_date: "2012-06-01",
+          year1_end_date: "2013-05-31",
+        }),
+      ],
+      transferRows: [],
+    });
+    expect(data.schedulesWithYearsOutsideBounds).toEqual(["NON_BAD"]);
   });
 
   it("returns empty when transfers arrive before schedules (hydration guard)", () => {
