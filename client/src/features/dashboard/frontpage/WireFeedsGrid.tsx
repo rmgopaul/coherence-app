@@ -157,25 +157,85 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
   );
 }
 
-function WeatherCell() {
-  // Phase D lights this up — router not yet on appRouter.
+function WeatherCell({ weather }: { weather: DashboardData["weather"] }) {
+  if (!weather || weather.offline || typeof weather.tempF !== "number") {
+    return (
+      <WireCard label="WEATHER" tone="offline">
+        <p className="fp-empty">no feed configured.</p>
+        <p className="mono-label wire-card__hint">
+          ADD OPENWEATHERMAP_API_KEY · PHASE D
+        </p>
+      </WireCard>
+    );
+  }
+  const label = weather.label ?? "Home";
+  const desc = weather.description ?? "";
+  const hiLo =
+    typeof weather.hiF === "number" && typeof weather.loF === "number"
+      ? `${weather.hiF}° / ${weather.loF}°`
+      : null;
   return (
-    <WireCard label="WEATHER" tone="offline">
-      <p className="fp-empty">no feed configured.</p>
+    <WireCard label={`WEATHER · ${label.toUpperCase()}`} updated={nowShort()}>
+      <div className="wire-stat">
+        <span className="mono-label">NOW</span>
+        <span className="fp-stat-big">{weather.tempF}°</span>
+      </div>
       <p className="mono-label wire-card__hint">
-        ADD OPENWEATHERMAP KEY · PHASE D
+        {desc ? desc.toUpperCase() : "—"}
+        {hiLo ? ` · ${hiLo}` : ""}
       </p>
     </WireCard>
   );
 }
 
-function NewsCell() {
+function relativeTimeLabel(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const mins = Math.round(diff / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
+function NewsCell({ news }: { news: DashboardData["news"] }) {
+  if (!Array.isArray(news) || news.length === 0) {
+    return (
+      <WireCard label="NEWS · AP" tone="offline">
+        <p className="fp-empty">no feed configured.</p>
+        <p className="mono-label wire-card__hint">
+          NEWS_FEED_MODE=ap-rss · PHASE D
+        </p>
+      </WireCard>
+    );
+  }
+  const top = news.slice(0, 4);
   return (
-    <WireCard label="NEWS · AP" tone="offline">
-      <p className="fp-empty">no feed configured.</p>
-      <p className="mono-label wire-card__hint">
-        AP RSS · PHASE D
-      </p>
+    <WireCard label="NEWS · AP" updated={nowShort()}>
+      <ol className="wire-newsfeed">
+        {top.map((item) => (
+          <li key={item.url} className="wire-newsfeed__row">
+            <span className="mono-label wire-newsfeed__src">
+              {(item.src ?? "AP").toUpperCase()}
+            </span>
+            <a
+              href={item.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="wire-newsfeed__title"
+            >
+              {item.title}
+            </a>
+            <span className="mono-label wire-newsfeed__ts">
+              {relativeTimeLabel(item.publishedAt)}
+            </span>
+          </li>
+        ))}
+      </ol>
     </WireCard>
   );
 }
@@ -197,8 +257,8 @@ export function WireFeedsGrid({ data }: WireFeedsGridProps) {
     >
       <HealthCell whoop={data.health.whoop} />
       <MarketsCell market={data.market} />
-      <NewsCell />
-      <WeatherCell />
+      <NewsCell news={data.news} />
+      <WeatherCell weather={data.weather} />
       <WorkFeedCell updatedLabel={updatedLabel} />
       <SupplementsFeedCell updatedLabel={updatedLabel} />
       <HabitsFeedCell updatedLabel={updatedLabel} />
