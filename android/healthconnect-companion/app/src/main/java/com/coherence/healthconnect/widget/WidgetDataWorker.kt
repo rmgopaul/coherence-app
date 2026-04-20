@@ -13,6 +13,11 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.coherence.healthconnect.CoherenceApplication
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -91,6 +96,7 @@ class WidgetDataWorker(
     val tasks = runCatching { fetchTasks(app, todayKey) }.getOrDefault(emptyList())
     val nextEvent = runCatching { fetchNextEvent(app) }.getOrNull()
     val weather = runCatching { extractWeather(headlines) }.getOrNull()
+    val king = runCatching { fetchKingOfDay(app, todayKey) }.getOrNull()
 
     return WidgetData(
       headlines = headlines.take(4),
@@ -100,8 +106,37 @@ class WidgetDataWorker(
       emails = emails.take(3),
       tasks = tasks.take(3),
       nextEvent = nextEvent,
+      kingOfDayTitle = king?.title,
+      kingOfDayReason = king?.reason,
+      kingOfDaySource = king?.source,
       updatedAtMillis = now,
     )
+  }
+
+  /**
+   * Phase G — pull the King of the Day from `trpc.kingOfDay.get` so the
+   * Glance widget can show it as the headline. Defensively typed (the
+   * route is shipped but we treat absence as "no king").
+   */
+  private data class KingOfDay(
+    val title: String,
+    val reason: String?,
+    val source: String?,
+  )
+
+  private suspend fun fetchKingOfDay(
+    app: CoherenceApplication,
+    todayKey: String,
+  ): KingOfDay? {
+    val input = buildJsonObject {
+      put("dateKey", JsonPrimitive(todayKey))
+    }
+    val response = app.container.trpcClient.query("kingOfDay.get", input)
+    val obj = response as? JsonObject ?: return null
+    val title = (obj["title"] as? JsonPrimitive)?.contentOrNull ?: return null
+    val reason = (obj["reason"] as? JsonPrimitive)?.contentOrNull
+    val source = (obj["source"] as? JsonPrimitive)?.contentOrNull
+    return KingOfDay(title = title, reason = reason, source = source)
   }
 
   private suspend fun fetchHeadlines(app: CoherenceApplication): List<WidgetHeadline> {

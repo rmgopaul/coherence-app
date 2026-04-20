@@ -39,6 +39,7 @@ import com.coherence.healthconnect.ui.state.isLoading
 import com.coherence.healthconnect.ui.state.updatedAtOrNull
 import com.coherence.healthconnect.ui.widgets.CalendarWidget
 import com.coherence.healthconnect.ui.widgets.BasquiatDashboardHero
+import com.coherence.healthconnect.ui.widgets.FocusRail
 import com.coherence.healthconnect.ui.widgets.FocusTimerWidget
 import com.coherence.healthconnect.ui.widgets.GmailWidget
 import com.coherence.healthconnect.ui.widgets.HabitsWidget
@@ -72,6 +73,7 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
   val sportsData = state.sportsState.dataOrNull()
   val health = state.healthState.dataOrNull()
   val hiddenWidgets = preferences.hiddenWidgets
+  val focusMode = preferences.focusMode
   var searchQuery by rememberSaveable { mutableStateOf("") }
   val searchResults = remember { mutableStateListOf<SearchResultItem>() }
   var searchLoading by remember { mutableStateOf(false) }
@@ -132,6 +134,21 @@ fun DashboardScreen(viewModel: DashboardViewModel) {
       // Hero greeting card
       item {
         BasquiatDashboardHero(stats = heroStats)
+      }
+
+      // Phase G — focus mode collapses everything below the hero to
+      // just the FocusRail (next event + countdown). Returning early
+      // from the LazyListScope skips composition of all the other
+      // widgets so their refresh-tied state goes quiet too.
+      if (focusMode) {
+        val nextEvent = events.firstOrNull { event ->
+          val startIso = event.start?.dateTime ?: event.start?.date
+          startIso != null
+        }
+        item {
+          FocusRail(nextEvent = nextEvent)
+        }
+        return@LazyColumn
       }
 
       // Global search command bar

@@ -29,6 +29,14 @@ data class WidgetData(
   // Next calendar event
   val nextEvent: WidgetCalendarEvent? = null,
 
+  // Phase G — King of the Day, surfaced as the widget headline so the
+  // user sees their one thing without opening the app. `kingOfDaySource`
+  // is "auto" / "manual" / "ai" — exposed so the UI can show a tiny
+  // PINNED chip when the user manually pinned the day's headline.
+  val kingOfDayTitle: String? = null,
+  val kingOfDayReason: String? = null,
+  val kingOfDaySource: String? = null,
+
   // Metadata
   val updatedAtMillis: Long = 0L,
   val error: String? = null,

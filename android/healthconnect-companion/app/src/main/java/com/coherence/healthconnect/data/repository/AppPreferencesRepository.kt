@@ -26,6 +26,7 @@ class AppPreferencesRepository(private val context: Context) {
     val focusDurationMinutes = intPreferencesKey("focus_duration_minutes")
     val lockTimeoutMinutes = intPreferencesKey("lock_timeout_minutes")
     val hiddenWidgets = stringPreferencesKey("hidden_widgets")
+    val focusMode = booleanPreferencesKey("focus_mode")
   }
 
   val preferences: Flow<AppPreferences> = context.appPreferencesDataStore.data.map { prefs ->
@@ -37,7 +38,14 @@ class AppPreferencesRepository(private val context: Context) {
       focusDurationMinutes = prefs[Keys.focusDurationMinutes] ?: 25,
       lockTimeoutMinutes = prefs[Keys.lockTimeoutMinutes] ?: 5,
       hiddenWidgets = parseHiddenWidgets(prefs[Keys.hiddenWidgets]),
+      focusMode = prefs[Keys.focusMode] ?: false,
     )
+  }
+
+  suspend fun setFocusMode(enabled: Boolean) {
+    context.appPreferencesDataStore.edit { prefs ->
+      prefs[Keys.focusMode] = enabled
+    }
   }
 
   suspend fun setThemeMode(mode: ThemeMode) {

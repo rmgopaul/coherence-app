@@ -100,6 +100,17 @@ private fun WidgetContent(data: WidgetData) {
       // Header
       WidgetHeader(data.updatedAtMillis)
 
+      // Phase G — King of the Day takes the top slot when present.
+      // It's the editorial "one thing" — it should beat the next event
+      // for the user's eye.
+      if (!data.kingOfDayTitle.isNullOrBlank()) {
+        KingOfDaySection(
+          title = data.kingOfDayTitle,
+          reason = data.kingOfDayReason,
+          source = data.kingOfDaySource,
+        )
+      }
+
       // Next Calendar Event
       if (data.nextEvent != null) {
         NextEventSection(data.nextEvent)
@@ -177,6 +188,60 @@ private fun WidgetHeader(updatedAtMillis: Long) {
         ),
       )
     }
+  }
+}
+
+// ── King of the Day (Phase G) ──────────────────────────────────────────────────
+
+@Composable
+private fun KingOfDaySection(
+  title: String,
+  reason: String?,
+  source: String?,
+) {
+  Column(modifier = GlanceModifier.fillMaxWidth().padding(vertical = 4.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Text(text = "♛ KING OF THE DAY", style = SectionTitleStyle)
+      if (source == "manual") {
+        Spacer(modifier = GlanceModifier.width(6.dp))
+        Text(
+          text = "PINNED",
+          style = TextStyle(
+            color = AccentYellow,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+          ),
+        )
+      } else if (source == "ai") {
+        Spacer(modifier = GlanceModifier.width(6.dp))
+        Text(
+          text = "AI",
+          style = TextStyle(
+            color = AccentYellow,
+            fontSize = 8.sp,
+            fontWeight = FontWeight.Bold,
+          ),
+        )
+      }
+    }
+    Spacer(modifier = GlanceModifier.height(2.dp))
+    Text(
+      text = title,
+      style = TextStyle(
+        color = TextPrimary,
+        fontSize = 16.sp,
+        fontWeight = FontWeight.Bold,
+      ),
+      maxLines = 3,
+    )
+    if (!reason.isNullOrBlank()) {
+      Text(
+        text = reason,
+        style = SecondaryStyle,
+        maxLines = 2,
+      )
+    }
+    Spacer(modifier = GlanceModifier.height(6.dp))
   }
 }
 
