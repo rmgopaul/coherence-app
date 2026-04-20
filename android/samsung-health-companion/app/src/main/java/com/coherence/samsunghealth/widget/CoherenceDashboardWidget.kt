@@ -46,23 +46,29 @@ class CoherenceDashboardWidget : GlanceAppWidget() {
   }
 }
 
-// ── Color palette ──────────────────────────────────────────────────────────────
+// ── Basquiat palette ───────────────────────────────────────────────────────────
+// Ink-mode tokens from productivity-hub/handoff/design-tokens.md
+// §Color. Widget always renders in Ink (dark) because it sits on the
+// home screen where launcher wallpaper might be anything.
 
-private val BgDark = ColorProvider(Color(0xFF121212))
-private val TextPrimary = ColorProvider(Color(0xFFECEFF1))
-private val TextSecondary = ColorProvider(Color(0xFF9E9E9E))
-private val AccentBlue = ColorProvider(Color(0xFF8AB4F8))
-private val AccentGreen = ColorProvider(Color(0xFF81C784))
-private val AccentRed = ColorProvider(Color(0xFFEF9A9A))
-private val AccentOrange = ColorProvider(Color(0xFFFFB74D))
-private val AccentPurple = ColorProvider(Color(0xFFCE93D8))
+private val Ink = ColorProvider(Color(0xFF0E0D0A))            // paper
+private val InkBorder = ColorProvider(Color(0xFFF2EEDF))      // rule/border
+private val TextPrimary = ColorProvider(Color(0xFFF2EEDF))    // ink
+private val TextSecondary = ColorProvider(Color(0xFFC9C5B4))  // ink-2
+private val TextTertiary = ColorProvider(Color(0xFF8F8B78))   // ink-3
+private val AccentYellow = ColorProvider(Color(0xFFFFD84A))   // crown + highlight
+private val AccentRed = ColorProvider(Color(0xFFFF5A47))      // alert
+private val AccentBlue = ColorProvider(Color(0xFF6A8AFF))     // calendar
+private val AccentGreen = ColorProvider(Color(0xFF66C266))    // up/positive
+private val AccentOrange = ColorProvider(Color(0xFFFFB74D))   // upcoming game
 
 // ── Styles ─────────────────────────────────────────────────────────────────────
 
 private val SectionTitleStyle = TextStyle(
-  color = AccentBlue,
-  fontSize = 11.sp,
+  color = TextTertiary,
+  fontSize = 9.sp,
   fontWeight = FontWeight.Bold,
+  // Glance has no letter-spacing API — compensate with all-caps labels.
 )
 
 private val BodyStyle = TextStyle(
@@ -82,9 +88,9 @@ private fun WidgetContent(data: WidgetData) {
   Box(
     modifier = GlanceModifier
       .fillMaxSize()
-      .background(BgDark)
-      .clickable(actionStartActivity<MainActivity>())
-      .cornerRadius(16.dp),
+      .background(Ink)
+      .clickable(actionStartActivity<MainActivity>()),
+    // No cornerRadius — the Basquiat shell is intentionally flat.
   ) {
     Column(
       modifier = GlanceModifier
@@ -146,14 +152,16 @@ private fun WidgetContent(data: WidgetData) {
 @Composable
 private fun WidgetHeader(updatedAtMillis: Long) {
   Row(
-    modifier = GlanceModifier.fillMaxWidth().padding(bottom = 6.dp),
+    modifier = GlanceModifier
+      .fillMaxWidth()
+      .padding(bottom = 8.dp),
     verticalAlignment = Alignment.CenterVertically,
   ) {
     Text(
-      text = "Coherence",
+      text = "COHERENCE",
       style = TextStyle(
-        color = AccentBlue,
-        fontSize = 14.sp,
+        color = AccentYellow,
+        fontSize = 13.sp,
         fontWeight = FontWeight.Bold,
       ),
     )
@@ -161,8 +169,12 @@ private fun WidgetHeader(updatedAtMillis: Long) {
     if (updatedAtMillis > 0) {
       val fmt = SimpleDateFormat("h:mm a", Locale.getDefault())
       Text(
-        text = fmt.format(Date(updatedAtMillis)),
-        style = SecondaryStyle,
+        text = "UPDATED ${fmt.format(Date(updatedAtMillis)).uppercase(Locale.getDefault())}",
+        style = TextStyle(
+          color = TextTertiary,
+          fontSize = 9.sp,
+          fontWeight = FontWeight.Bold,
+        ),
       )
     }
   }
@@ -173,20 +185,35 @@ private fun WidgetHeader(updatedAtMillis: Long) {
 @Composable
 private fun NextEventSection(event: WidgetCalendarEvent) {
   Column(modifier = GlanceModifier.fillMaxWidth().padding(vertical = 4.dp)) {
-    Text(text = "NEXT EVENT", style = SectionTitleStyle)
+    Text(text = "NEXT UP", style = SectionTitleStyle)
     Spacer(modifier = GlanceModifier.height(2.dp))
     Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+      // 3dp yellow rail — the Basquiat rule next to the headline.
       Box(
         modifier = GlanceModifier
-          .size(4.dp, 28.dp)
-          .background(AccentPurple)
-          .cornerRadius(2.dp),
+          .size(3.dp, 30.dp)
+          .background(AccentYellow),
       ) {}
       Spacer(modifier = GlanceModifier.width(8.dp))
       Column {
-        Text(text = event.title, style = BodyStyle, maxLines = 1)
+        Text(
+          text = event.title,
+          style = TextStyle(
+            color = TextPrimary,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Bold,
+          ),
+          maxLines = 1,
+        )
         Row {
-          Text(text = event.time, style = TextStyle(color = AccentOrange, fontSize = 11.sp, fontWeight = FontWeight.Medium))
+          Text(
+            text = event.time.uppercase(Locale.getDefault()),
+            style = TextStyle(
+              color = AccentYellow,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold,
+            ),
+          )
           if (event.location.isNotBlank()) {
             Text(text = "  ${event.location}", style = SecondaryStyle, maxLines = 1)
           }
@@ -201,7 +228,7 @@ private fun NextEventSection(event: WidgetCalendarEvent) {
 @Composable
 private fun TasksSection(tasks: List<WidgetTask>) {
   Column(modifier = GlanceModifier.fillMaxWidth().padding(vertical = 4.dp)) {
-    Text(text = "TODAY'S TASKS", style = SectionTitleStyle)
+    Text(text = "UP NEXT", style = SectionTitleStyle)
     Spacer(modifier = GlanceModifier.height(2.dp))
     tasks.forEach { task ->
       Row(
@@ -210,13 +237,12 @@ private fun TasksSection(tasks: List<WidgetTask>) {
       ) {
         val priorityColor = when (task.priority) {
           4 -> AccentRed
-          3 -> AccentOrange
-          2 -> AccentBlue
-          else -> TextSecondary
+          3 -> AccentYellow
+          else -> TextTertiary
         }
-        Box(
-          modifier = GlanceModifier.size(6.dp).background(priorityColor).cornerRadius(3.dp),
-        ) {}
+        // Square (not rounded) priority marker matches the
+        // brutalist feel of the hero's stat tiles.
+        Box(modifier = GlanceModifier.size(6.dp).background(priorityColor)) {}
         Spacer(modifier = GlanceModifier.width(6.dp))
         Text(text = task.title, style = BodyStyle, maxLines = 1)
       }
@@ -237,7 +263,8 @@ private fun EmailsSection(emails: List<WidgetEmail>) {
         verticalAlignment = Alignment.CenterVertically,
       ) {
         if (email.isUnread) {
-          Box(modifier = GlanceModifier.size(5.dp).background(AccentBlue).cornerRadius(3.dp)) {}
+          // Square yellow marker — echoes the task priority marker above.
+          Box(modifier = GlanceModifier.size(5.dp).background(AccentYellow)) {}
           Spacer(modifier = GlanceModifier.width(4.dp))
         }
         Column(modifier = GlanceModifier.defaultWeight()) {
