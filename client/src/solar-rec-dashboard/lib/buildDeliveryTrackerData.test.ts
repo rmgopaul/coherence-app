@@ -166,7 +166,9 @@ describe("buildDeliveryTrackerData", () => {
         }),
       ],
     });
-    expect(data.unmatchedTransfers).toBe(2);
+    // unmatchedTransfers excludes pre_delivery_schedule transfers.
+    // Only the year_mismatch (2030) transfer counts toward it.
+    expect(data.unmatchedTransfers).toBe(1);
     expect(data.transfersMissingObligation).toEqual([]);
     expect(data.transfersPreDeliverySchedule).toEqual([
       { trackingId: "NON100", transferCount: 1 },

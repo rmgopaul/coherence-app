@@ -187,10 +187,13 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  // Combined export of every unmatched transfer by
-                  // tracking ID, partitioned into three buckets. Sum of
-                  // transfer_count across all three equals
-                  // unmatchedTransfers on the summary card.
+                  // Combined export of every transfer that did NOT land
+                  // in a Schedule B year slot, partitioned into three
+                  // buckets. The summary-card Unmatched Transfers total
+                  // excludes pre_delivery_schedule, so it equals the
+                  // sum of the missing_schedule_b + year_mismatch rows
+                  // only. The pre_delivery_schedule rows are surfaced
+                  // here for completeness.
                   const rows = [
                     ...deliveryTrackerData.transfersMissingObligation.map(
                       ({ trackingId, transferCount }) => ({

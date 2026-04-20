@@ -305,12 +305,14 @@ export function buildDeliveryTrackerData(input: {
         }
       }
       if (!matched) {
-        unmatchedTransfers++;
         // Classify the unmatched transfer. If its completion date is
         // BEFORE the system's earliest scraped year_start, it's a
         // pre-delivery-schedule transfer — real transfer, just before
-        // the contract window. Otherwise lump it into the residual
-        // year_mismatch bucket (bad parse / after-contract / etc.).
+        // the contract window. Pre-delivery transfers are NOT counted
+        // toward `unmatchedTransfers` (the summary-card counter); they
+        // are tracked separately so the Unmatched Transfers total
+        // reflects only truly anomalous matches (bad parse /
+        // after-contract / etc.).
         let earliestStart: Date | null = null;
         for (const year of schedule.years) {
           if (!year.yearStart) continue;
@@ -324,6 +326,7 @@ export function buildDeliveryTrackerData(input: {
             (transfersPreDeliveryScheduleCounts.get(unitId) ?? 0) + 1,
           );
         } else {
+          unmatchedTransfers++;
           transfersUnmatchedByYearCounts.set(
             unitId,
             (transfersUnmatchedByYearCounts.get(unitId) ?? 0) + 1,
