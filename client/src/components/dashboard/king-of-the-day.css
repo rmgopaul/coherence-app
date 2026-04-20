@@ -142,13 +142,21 @@
 }
 
 /* Tighten display headline + stat tiles at small widths so the hero
-   fits in a 375px viewport without horizontal overflow. */
-@media (max-width: 640px) {
+   fits without horizontal overflow. Breakpoint matches the main
+   dashboard.css mobile @media (max-width: 767px) so the hero and
+   the surrounding chrome transition together. */
+@media (max-width: 767px) {
   .kotd-hero .kotd-headline {
-    font-size: clamp(2.75rem, 13vw, 5rem) !important;
+    /* 2.5rem min + 11vw caps keeps 'OPPORTUNITIES' inside a 375px
+       viewport (the old 13vw at 375 = 48.75px was fine, but the
+       old 2.75rem=44px floor was 1-2px too wide at small scales). */
+    font-size: clamp(2.25rem, 11vw, 4.5rem) !important;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
   }
   .kotd-stat-value {
-    font-size: clamp(2.25rem, 11vw, 3.25rem);
+    font-size: clamp(2rem, 10vw, 3rem);
     letter-spacing: -0.03em;
   }
   .kotd-stat-label {
@@ -156,6 +164,6 @@
     letter-spacing: 0.18em;
   }
   .kotd-stat-delta {
-    font-size: 1.1rem;
+    font-size: 1.05rem;
   }
 }
