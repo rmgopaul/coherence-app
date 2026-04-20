@@ -1,4 +1,4 @@
-import { Pill, Trash2 } from "lucide-react";
+import { ArrowRight, Pill, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,15 @@ import {
 import { SectionRating } from "@/components/SectionRating";
 import { SUPPLEMENT_UNITS } from "@shared/const";
 import type { SupplementDefinition, SupplementLog } from "@/features/dashboard/types";
+import {
+  formatAdherenceChip,
+  formatCostPerDose,
+} from "@/features/supplements/supplements.helpers";
+import {
+  DEFAULT_DASHBOARD_ADHERENCE_WINDOW_DAYS,
+  SECTION_ID,
+} from "@/features/supplements/supplements.constants";
+import { formatCurrency } from "@/lib/helpers";
 
 type SupplementUnit = (typeof SUPPLEMENT_UNITS)[number];
 
@@ -24,6 +33,15 @@ export interface SupplementsCardProps {
   supplementDefinitions: SupplementDefinition[] | undefined;
   supplementLogs: SupplementLog[] | undefined;
   sectionRating: number | undefined;
+
+  /** Locked definitions logged today / total locked definitions. */
+  todayProgress: { taken: number; locked: number };
+  /** Expected monthly cost of the currently locked protocol. */
+  monthlyProtocolCost: number;
+  /** Adherence fraction [0, 1] per definitionId over the dashboard window. */
+  adherenceByDefinitionId: Record<string, number>;
+  /** Window size the adherence map reflects — shown in the chip label. */
+  adherenceWindowDays?: number;
 
   // Handlers
   setSupplementName: (name: string) => void;
@@ -49,6 +67,10 @@ export function SupplementsCard({
   supplementDefinitions,
   supplementLogs,
   sectionRating,
+  todayProgress,
+  monthlyProtocolCost,
+  adherenceByDefinitionId,
+  adherenceWindowDays = DEFAULT_DASHBOARD_ADHERENCE_WINDOW_DAYS,
   setSupplementName,
   setSupplementDose,
   setSupplementDoseUnit,
@@ -62,14 +84,14 @@ export function SupplementsCard({
   addLogPending,
 }: SupplementsCardProps) {
   return (
-    <Card className="min-w-0 flex flex-col">
+    <Card id={SECTION_ID} className="min-w-0 flex flex-col">
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <div className="flex items-center gap-2">
           <Pill className="h-4 w-4 text-emerald-600" />
           <CardTitle className="text-base">Supplements</CardTitle>
         </div>
         <SectionRating
-          sectionId="section-supplements"
+          sectionId={SECTION_ID}
           currentRating={sectionRating as never}
         />
       </CardHeader>
@@ -150,37 +172,50 @@ export function SupplementsCard({
               No curated supplements yet.
             </p>
           ) : (
-            (supplementDefinitions || []).map((definition) => (
-              <div
-                key={definition.id}
-                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border bg-muted px-2 py-1.5"
-              >
-                <p className="min-w-0 break-words pr-1 text-xs leading-tight text-slate-800">
-                  {definition.name} • {definition.dose} {definition.doseUnit} •{" "}
-                  {definition.timing}
-                </p>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button
-                    variant={definition.isLocked ? "default" : "outline"}
-                    size="sm"
-                    className="h-6 px-2 text-xs"
-                    onClick={() =>
-                      onToggleLock(definition.id, !definition.isLocked)
-                    }
-                  >
-                    {definition.isLocked ? "Locked" : "Lock"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-6 w-6 p-0"
-                    onClick={() => onDeleteDefinition(definition.id)}
-                  >
-                    <Trash2 className="h-3 w-3 text-muted-foreground" />
-                  </Button>
+            (supplementDefinitions || []).map((definition) => {
+              const adherence = adherenceByDefinitionId[definition.id];
+              // Locked defs over the short window expect one dose per day.
+              const taken = Math.round((adherence ?? 0) * adherenceWindowDays);
+              const expected = definition.isLocked ? adherenceWindowDays : 0;
+              return (
+                <div
+                  key={definition.id}
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md border border-border bg-muted px-2 py-1.5"
+                >
+                  <div className="min-w-0 pr-1">
+                    <p className="break-words text-xs leading-tight text-slate-800">
+                      {definition.name} • {definition.dose} {definition.doseUnit} •{" "}
+                      {definition.timing} • {formatCostPerDose(definition)}
+                    </p>
+                    {definition.isLocked ? (
+                      <p className="text-[10px] leading-tight text-muted-foreground">
+                        {formatAdherenceChip(adherenceWindowDays, taken, expected)}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant={definition.isLocked ? "default" : "outline"}
+                      size="sm"
+                      className="h-6 px-2 text-xs"
+                      onClick={() =>
+                        onToggleLock(definition.id, !definition.isLocked)
+                      }
+                    >
+                      {definition.isLocked ? "Locked" : "Lock"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0"
+                      onClick={() => onDeleteDefinition(definition.id)}
+                    >
+                      <Trash2 className="h-3 w-3 text-muted-foreground" />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
         <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
@@ -217,6 +252,26 @@ export function SupplementsCard({
               </div>
             ))
           )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t pt-2 text-[11px] text-muted-foreground">
+          <span className="min-w-0 truncate">
+            {todayProgress.locked > 0 ? (
+              <>
+                today {todayProgress.taken}/{todayProgress.locked} ·{" "}
+                {todayProgress.locked} locked · ~{formatCurrency(monthlyProtocolCost)}/mo
+              </>
+            ) : (
+              <>no locked protocol — lock items to track adherence</>
+            )}
+          </span>
+          <a
+            href="/supplements"
+            className="inline-flex shrink-0 items-center gap-1 font-medium text-emerald-700 hover:text-emerald-900"
+          >
+            Open supplements
+            <ArrowRight className="h-3 w-3" />
+          </a>
         </div>
       </CardContent>
     </Card>

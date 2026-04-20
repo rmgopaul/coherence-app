@@ -1,4 +1,4 @@
-import { eq, and, asc, desc, getDb, withDbRetry } from "./_core";
+import { eq, and, asc, desc, gte, sql, getDb, withDbRetry } from "./_core";
 import {
   supplementLogs,
   supplementDefinitions,
@@ -7,6 +7,20 @@ import {
   InsertSupplementDefinition,
   InsertSupplementPriceLog,
 } from "../../drizzle/schema";
+
+/**
+ * Compute a `YYYY-MM-DD` string `days` days before `reference`, using
+ * local-time components (not UTC). Inclusive window: to cover N days
+ * ending today, subtract N-1.
+ */
+function localDateKeyDaysAgo(days: number, reference: Date = new Date()): string {
+  const d = new Date(reference);
+  d.setDate(d.getDate() - days);
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 type SupplementDefinitionUpdateInput = {
   name?: string;
@@ -248,6 +262,69 @@ export async function setSupplementDefinitionLock(
       })
       .where(and(eq(supplementDefinitions.userId, userId), eq(supplementDefinitions.id, definitionId)));
   });
+}
+
+/**
+ * Per-definition adherence over the trailing `windowDays`-day window.
+ *
+ * Returns one row per active definition owned by the user:
+ * - `takenDays`: distinct dateKeys in the window with at least one log
+ * - `expectedDays`: `windowDays` when the definition is currently locked +
+ *   active; 0 otherwise. (We do not yet track lock history, so "expected" is
+ *   computed from current state. Revisit when protocol snapshots exist.)
+ *
+ * Uses a single grouped query for the counts, then merges with the
+ * definition list to include zeroes for locked defs with no logs.
+ */
+export async function getSupplementAdherence(
+  userId: number,
+  opts: { windowDays: number }
+): Promise<
+  {
+    definitionId: string;
+    takenDays: number;
+    expectedDays: number;
+  }[]
+> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const windowDays = Math.max(1, Math.min(365, Math.floor(opts.windowDays)));
+  // Inclusive window: today counts, plus the prior (windowDays - 1) days.
+  const startDateKey = localDateKeyDaysAgo(windowDays - 1);
+
+  const definitions = await listSupplementDefinitions(userId);
+
+  const counts = await withDbRetry("count supplement logs by definition", async () =>
+    db
+      .select({
+        definitionId: supplementLogs.definitionId,
+        takenDays: sql<number>`COUNT(DISTINCT ${supplementLogs.dateKey})`,
+      })
+      .from(supplementLogs)
+      .where(
+        and(
+          eq(supplementLogs.userId, userId),
+          gte(supplementLogs.dateKey, startDateKey)
+        )
+      )
+      .groupBy(supplementLogs.definitionId)
+  );
+
+  const takenByDefinitionId = new Map<string, number>();
+  for (const row of counts) {
+    if (!row.definitionId) continue;
+    // mysql2 can return COUNT(*) as string depending on config — normalise.
+    const raw = row.takenDays as unknown;
+    const num = typeof raw === "number" ? raw : Number(raw);
+    takenByDefinitionId.set(row.definitionId, Number.isFinite(num) ? num : 0);
+  }
+
+  return definitions.map((def) => ({
+    definitionId: def.id,
+    takenDays: takenByDefinitionId.get(def.id) ?? 0,
+    expectedDays: def.isLocked && def.isActive ? windowDays : 0,
+  }));
 }
 
 export async function deleteSupplementDefinition(userId: number, definitionId: string) {

@@ -93,7 +93,7 @@ export function QuickActionsFab({
         if (onLogSupplement) {
           onLogSupplement();
         } else {
-          document.getElementById("section-tracking")?.scrollIntoView({ behavior: "smooth" });
+          window.location.href = "/supplements";
         }
         setOpen(false);
       },

@@ -16,6 +16,8 @@ export default defineConfig({
       "server/**/*.spec.ts",
       "client/src/solar-rec-dashboard/**/*.test.ts",
       "client/src/features/dashboard/frontpage/**/*.test.ts",
+      "client/src/features/supplements/**/*.test.ts",
+      "shared/**/*.test.ts",
     ],
     env: {
       TZ: "America/Chicago",

@@ -35,6 +35,7 @@ const AddressChecker = lazy(() => import("@/features/dashboard/AddressChecker"))
 const SunpowerReadings = lazy(() => import("@/features/solar-readings/SunpowerReadings"));
 const Notebook = lazy(() => import("@/features/notebook/Notebook"));
 const Settings = lazy(() => import("@/features/settings/Settings"));
+const Supplements = lazy(() => import("@/features/supplements/Supplements"));
 const TodoistWidget = lazy(() => import("@/features/dashboard/TodoistWidget"));
 const ClockifyWidget = lazy(() => import("@/features/dashboard/ClockifyWidget"));
 const ChatGPTWidget = lazy(() => import("@/features/dashboard/ChatGPTWidget"));
@@ -102,6 +103,7 @@ function AppRoutes() {
       <Route path={"/solarlog-meter-reads"} component={withRouteSuspense(SolarLogMeterReads)} />
       <Route path={"/zendesk-ticket-metrics"} component={withRouteSuspense(ZendeskTicketMetrics)} />
       <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
+      <Route path={"/supplements"} component={withRouteSuspense(Supplements)} />
       <Route path={"/settings"} component={withRouteSuspense(Settings)} />
       <Route path={"/widget/todoist"} component={withRouteSuspense(TodoistWidget)} />
       <Route path={"/widget/clockify"} component={withRouteSuspense(ClockifyWidget)} />

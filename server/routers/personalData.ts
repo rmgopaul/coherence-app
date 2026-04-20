@@ -16,6 +16,11 @@ import {
 } from "./helpers";
 import { toNonEmptyString } from "../services/core/addressCleaning";
 import {
+  costExtremes,
+  costPerDose,
+  monthlyProtocolCost,
+} from "@shared/supplements.math";
+import {
   addNoteLink,
   addSupplementLog,
   addSupplementPriceLog,
@@ -38,6 +43,7 @@ import {
   getProductionReadingSummary,
   getSectionEngagementSummary,
   getSectionRatings,
+  getSupplementAdherence,
   getSupplementDefinitionById,
   getSupplementLogByDefinitionAndDate,
   getUserByEmail,
@@ -719,6 +725,56 @@ export const supplementsRouter = router({
       await deleteSupplementLog(ctx.user.id, input.id);
       return { success: true };
     }),
+  getDefinitionById: protectedProcedure
+    .input(z.object({ definitionId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      return getSupplementDefinitionById(ctx.user.id, input.definitionId);
+    }),
+  getAdherenceStats: protectedProcedure
+    .input(
+      z
+        .object({
+          windowDays: z.number().int().min(1).max(365).default(30),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      return getSupplementAdherence(ctx.user.id, {
+        windowDays: input?.windowDays ?? 30,
+      });
+    }),
+  getCostSummary: protectedProcedure.query(async ({ ctx }) => {
+    const defs = await listSupplementDefinitions(ctx.user.id);
+    const extremes = costExtremes(defs);
+    return {
+      monthlyProtocolCost: monthlyProtocolCost(defs),
+      lockedCount: defs.filter((d) => d.isLocked && d.isActive).length,
+      activeCount: defs.filter((d) => d.isActive).length,
+      cheapest: extremes.cheapest
+        ? {
+            definitionId: extremes.cheapest.def.id,
+            name: extremes.cheapest.def.name,
+            costPerDose: extremes.cheapest.costPerDose,
+          }
+        : null,
+      mostExpensive: extremes.mostExpensive
+        ? {
+            definitionId: extremes.mostExpensive.def.id,
+            name: extremes.mostExpensive.def.name,
+            costPerDose: extremes.mostExpensive.costPerDose,
+          }
+        : null,
+      averageCostPerDose: (() => {
+        const values = defs
+          .filter((d) => d.isLocked && d.isActive)
+          .map((d) => costPerDose(d))
+          .filter((v): v is number => v !== null);
+        if (values.length === 0) return null;
+        const sum = values.reduce((acc, v) => acc + v, 0);
+        return sum / values.length;
+      })(),
+    };
+  }),
 });
 
 export const habitsRouter = router({
