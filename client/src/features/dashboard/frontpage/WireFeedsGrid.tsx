@@ -19,7 +19,7 @@
  */
 import type { ReactNode } from "react";
 import type { DashboardData } from "../useDashboardData";
-import { WorkFeedCell } from "./feeds/WorkFeedCell";
+import { ApprovalFeedCell } from "./feeds/ApprovalFeedCell";
 import { SupplementsFeedCell } from "./feeds/SupplementsFeedCell";
 import { HabitsFeedCell } from "./feeds/HabitsFeedCell";
 import { SportsFeedCell } from "./feeds/SportsFeedCell";
@@ -75,10 +75,9 @@ function HealthCell({ whoop }: { whoop: DashboardData["health"]["whoop"] }) {
   const recovery = whoop.recoveryScore ?? null;
   const sleep = whoop.sleepHours ?? null;
   const strain = whoop.dayStrain ?? null;
+  const hrv = whoop.hrvRmssdMilli ?? null;
+  const rhr = whoop.restingHeartRate ?? null;
 
-  // Condensed layout: one headline stat (RECOVERY) + a compact mono
-  // row for sleep + strain. Lets the cell breathe at 4-col desktop
-  // widths without clipping.
   const recoveryBucket =
     recovery == null
       ? null
@@ -88,21 +87,54 @@ function HealthCell({ whoop }: { whoop: DashboardData["health"]["whoop"] }) {
           ? "YELLOW"
           : "RED";
 
+  // Two-column layout: recovery headline on the left, four supporting
+  // metrics (sleep, strain, HRV, RHR) in a 2×2 grid on the right.
+  // Sleep + strain get large display numerals so they read as
+  // primary signals alongside recovery; HRV + RHR sit one tier
+  // smaller because their bpm/ms units eat horizontal space.
   return (
     <WireCard label="HEALTH · WHOOP" updated={nowShort()}>
-      <div className="wire-stat">
-        <span className="mono-label">
-          RECOVERY{recoveryBucket ? ` · ${recoveryBucket}` : ""}
-        </span>
-        <span className="fp-stat-big">
-          {recovery !== null ? recovery : "—"}
-        </span>
+      <div className="wire-health">
+        <div className="wire-health__headline">
+          <span className="mono-label">
+            RECOVERY{recoveryBucket ? ` · ${recoveryBucket}` : ""}
+          </span>
+          <span className="fp-stat-big">
+            {recovery !== null ? recovery : "—"}
+          </span>
+        </div>
+        <div className="wire-health__grid">
+          <div className="wire-health__cell">
+            <span className="mono-label">SLEEP</span>
+            <span className="wire-health__num">
+              {sleep !== null ? sleep.toFixed(1) : "—"}
+              {sleep !== null && <span className="wire-health__unit">h</span>}
+            </span>
+          </div>
+          <div className="wire-health__cell">
+            <span className="mono-label">STRAIN</span>
+            <span className="wire-health__num">
+              {strain !== null ? strain.toFixed(1) : "—"}
+            </span>
+          </div>
+          <div className="wire-health__cell">
+            <span className="mono-label">HRV</span>
+            <span className="wire-health__num wire-health__num--sm">
+              {hrv !== null ? Math.round(hrv) : "—"}
+              {hrv !== null && <span className="wire-health__unit">ms</span>}
+            </span>
+          </div>
+          <div className="wire-health__cell">
+            <span className="mono-label">RHR</span>
+            <span className="wire-health__num wire-health__num--sm">
+              {rhr !== null ? Math.round(rhr) : "—"}
+              {rhr !== null && (
+                <span className="wire-health__unit">bpm</span>
+              )}
+            </span>
+          </div>
+        </div>
       </div>
-      <p className="mono-label wire-card__hint">
-        {sleep !== null ? `${sleep.toFixed(1)}H SLEEP` : "NO SLEEP"}
-        {" · "}
-        {strain !== null ? `${strain.toFixed(1)} STRAIN` : "NO STRAIN"}
-      </p>
     </WireCard>
   );
 }
@@ -144,17 +176,18 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
     .slice()
     .sort((a, b) => a.changePercent - b.changePercent);
 
-  // Show every configured ticker (stocks + crypto) — the server already
-  // combines both into `quotes`. Prior cap of 4 was hiding configured
-  // symbols.
+  // Two-column layout (gainers left, losers right). Rows only show
+  // symbol + % so each column fits without truncation. Clicking the
+  // cell header still jumps to the markets page (unchanged).
   const renderRow = (q: (typeof quotes)[number]) => {
     const changeClass =
       q.changePercent >= 0 ? "wire-ticker__up" : "wire-ticker__down";
+    const displaySymbol = q.symbol.replace("-USD", "");
     return (
-      <li key={q.symbol} className="wire-ticker__row">
-        <span className="wire-ticker__sym mono-label">{q.symbol}</span>
-        <span className="wire-ticker__px">{formatMarketPrice(q.price)}</span>
-        <span className={`wire-ticker__pct mono-label ${changeClass}`}>
+      <li key={q.symbol} className="wire-ticker2__row">
+        <span className="wire-ticker2__sym mono-label">{displaySymbol}</span>
+        <span className="wire-ticker2__px">{formatMarketPrice(q.price)}</span>
+        <span className={`mono-label wire-ticker2__pct ${changeClass}`}>
           {q.changePercent >= 0 ? "▲" : "▼"}{" "}
           {Math.abs(q.changePercent).toFixed(2)}%
         </span>
@@ -164,13 +197,28 @@ function MarketsCell({ market }: { market: DashboardData["market"] }) {
 
   return (
     <WireCard label="MARKETS" updated={nowShort()}>
-      <ol className="wire-ticker">
-        {gainers.map(renderRow)}
-        {gainers.length > 0 && losers.length > 0 && (
-          <li className="wire-ticker__divider" aria-hidden="true" />
-        )}
-        {losers.map(renderRow)}
-      </ol>
+      <div className="wire-ticker2">
+        <div className="wire-ticker2__col">
+          <div className="mono-label wire-ticker2__colhead wire-ticker__up">
+            GAINERS
+          </div>
+          {gainers.length > 0 ? (
+            <ol className="wire-ticker2__list">{gainers.map(renderRow)}</ol>
+          ) : (
+            <p className="mono-label wire-ticker2__empty">—</p>
+          )}
+        </div>
+        <div className="wire-ticker2__col">
+          <div className="mono-label wire-ticker2__colhead wire-ticker__down">
+            LOSERS
+          </div>
+          {losers.length > 0 ? (
+            <ol className="wire-ticker2__list">{losers.map(renderRow)}</ol>
+          ) : (
+            <p className="mono-label wire-ticker2__empty">—</p>
+          )}
+        </div>
+      </div>
     </WireCard>
   );
 }
@@ -376,7 +424,7 @@ export function WireFeedsGrid({ data }: WireFeedsGridProps) {
       <MarketsCell market={data.market} />
       <NewsCell news={data.news} />
       <WeatherCell weather={data.weather} />
-      <WorkFeedCell updatedLabel={updatedLabel} />
+      <ApprovalFeedCell updatedLabel={updatedLabel} />
       <SupplementsFeedCell updatedLabel={updatedLabel} />
       <HabitsFeedCell updatedLabel={updatedLabel} />
       <SportsFeedCell updatedLabel={updatedLabel} />

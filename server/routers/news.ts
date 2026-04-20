@@ -1,8 +1,11 @@
 /**
  * News router — Phase D.
  *
- * Default source: AP's public RSS feed (free, unmetered). Optional
- * NewsAPI provider behind `NEWS_FEED_MODE=newsapi` + `NEWSAPI_KEY`.
+ * Default source: merged feed from AP + Google News Top Stories (both
+ * free, unmetered RSS). Optional NewsAPI provider behind
+ * `NEWS_FEED_MODE=newsapi` + `NEWSAPI_KEY`. Single-source modes
+ * (`ap-rss` / `google`) still available for debugging or operator
+ * preference.
  *
  * In-process 10-minute cache. Always returns a `NewsPayload` with
  * `items` + a `reason` discriminator — the client branches on the
@@ -10,7 +13,8 @@
  * vs "wire went dark" vs "SET NEWSAPI_KEY").
  *
  * Env vars:
- *   NEWS_FEED_MODE = 'ap-rss' | 'newsapi' | 'off'   (default: 'ap-rss')
+ *   NEWS_FEED_MODE = 'merged' | 'ap-rss' | 'google' | 'newsapi' | 'off'
+ *                    (default: 'merged')
  *   NEWSAPI_KEY    = API key for newsapi.org (required when mode = 'newsapi')
  *
  * Spec: productivity-hub/handoff/new-integrations.md §"News"
@@ -19,6 +23,8 @@ import { z } from "zod";
 import { protectedProcedure, router } from "../_core/trpc";
 
 const AP_RSS_URL = "https://apnews.com/hub/ap-top-news.rss";
+const GOOGLE_NEWS_RSS_URL =
+  "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en";
 const NEWS_API_URL = "https://newsapi.org/v2/top-headlines";
 const CACHE_MS = 10 * 60_000;
 
@@ -60,11 +66,16 @@ export interface NewsPayload {
 
 let cachedPayload: { at: number; payload: NewsPayload } | null = null;
 
-function resolveMode(): "ap-rss" | "newsapi" | "off" {
+type NewsMode = "merged" | "ap-rss" | "google" | "newsapi" | "off";
+
+function resolveMode(): NewsMode {
   const raw = (process.env.NEWS_FEED_MODE ?? "").trim().toLowerCase();
   if (raw === "newsapi") return "newsapi";
   if (raw === "off") return "off";
-  return "ap-rss";
+  if (raw === "ap-rss" || raw === "ap") return "ap-rss";
+  if (raw === "google" || raw === "google-news") return "google";
+  // Default to merged so AP + Google News flow without extra config.
+  return "merged";
 }
 
 /* ------------------------------------------------------------------ */
@@ -89,7 +100,26 @@ function pickTag(block: string, tag: string): string {
   return match ? decodeEntities(match[1]) : "";
 }
 
-export function parseApRss(xml: string): NewsItem[] {
+/**
+ * Google News wraps the source attribution inside a <source> tag
+ * inside each <item>. Extract it so the UI can show "REUTERS" /
+ * "CNN" etc instead of a generic "GOOGLE" chip.
+ *
+ *   <source url="…">Reuters</source>
+ */
+function pickGoogleSource(block: string): string | null {
+  const re = /<source[^>]*>([\s\S]*?)<\/source>/i;
+  const m = re.exec(block);
+  if (!m) return null;
+  const name = decodeEntities(m[1]);
+  return name || null;
+}
+
+export function parseRssItems(
+  xml: string,
+  defaultSrc: string,
+  opts: { extractGoogleSource?: boolean } = {}
+): NewsItem[] {
   const items: NewsItem[] = [];
   const itemRe = /<item[\s>]([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
@@ -98,14 +128,23 @@ export function parseApRss(xml: string): NewsItem[] {
     const title = pickTag(block, "title");
     const url = pickTag(block, "link");
     if (!title || !url) continue;
+    const src = opts.extractGoogleSource
+      ? pickGoogleSource(block) ?? defaultSrc
+      : defaultSrc;
     items.push({
-      src: "AP",
+      src,
       title,
       url,
       publishedAt: pickTag(block, "pubDate"),
     });
   }
   return items;
+}
+
+// Retained for backward-compat with any caller that imported the
+// AP-specific helper name.
+export function parseApRss(xml: string): NewsItem[] {
+  return parseRssItems(xml, "AP");
 }
 
 /* ------------------------------------------------------------------ */
@@ -118,9 +157,14 @@ function isTimeoutError(err: unknown): boolean {
   return false;
 }
 
-async function fetchApRss(): Promise<NewsPayload> {
+async function fetchRssPayload(
+  url: string,
+  defaultSrc: string,
+  label: string,
+  opts: { extractGoogleSource?: boolean } = {}
+): Promise<NewsPayload> {
   try {
-    const response = await fetch(AP_RSS_URL, {
+    const response = await fetch(url, {
       signal: AbortSignal.timeout(6_000),
       headers: {
         "user-agent": "coherence-news/1.0 (+productivity-hub)",
@@ -128,23 +172,91 @@ async function fetchApRss(): Promise<NewsPayload> {
     });
     if (!response.ok) {
       console.warn(
-        `[news] AP RSS responded ${response.status} ${response.statusText}`
+        `[news] ${label} responded ${response.status} ${response.statusText}`
       );
       return { items: [], reason: "fetch-failed" };
     }
     const xml = await response.text();
-    const items = parseApRss(xml).slice(0, 20);
+    const items = parseRssItems(xml, defaultSrc, opts).slice(0, 20);
     return {
       items,
       reason: items.length === 0 ? "no-items" : "ok",
     };
   } catch (err) {
-    console.warn("[news] AP RSS fetch failed:", err);
+    console.warn(`[news] ${label} fetch failed:`, err);
     if (isTimeoutError(err)) {
       return { items: [], reason: "upstream-timeout" };
     }
     return { items: [], reason: "fetch-failed" };
   }
+}
+
+async function fetchApRss(): Promise<NewsPayload> {
+  return fetchRssPayload(AP_RSS_URL, "AP", "AP RSS");
+}
+
+async function fetchGoogleNews(): Promise<NewsPayload> {
+  return fetchRssPayload(GOOGLE_NEWS_RSS_URL, "Google News", "Google News", {
+    extractGoogleSource: true,
+  });
+}
+
+/**
+ * Normalize a title for dedupe: lowercase, collapse whitespace, strip
+ * common trailing " - Source Name" attributions Google News adds.
+ */
+function normalizeTitleForDedupe(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/\s+-\s+[^-]+$/, "") // drop "... - Source" suffix
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Merge two payloads preserving order (primary first, then any item
+ * from secondary whose normalized title isn't already present).
+ * Reason precedence: if primary has items → "ok"; else defer to
+ * secondary; else return the strongest single-source reason.
+ */
+function mergePayloads(
+  primary: NewsPayload,
+  secondary: NewsPayload
+): NewsPayload {
+  const seen = new Set<string>();
+  const merged: NewsItem[] = [];
+  for (const item of primary.items) {
+    const key = normalizeTitleForDedupe(item.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  for (const item of secondary.items) {
+    const key = normalizeTitleForDedupe(item.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  if (merged.length > 0) {
+    return { items: merged, reason: "ok" };
+  }
+  // Both empty — surface the most actionable reason (401/429/timeout
+  // beats a generic fetch-failed).
+  const rank: Record<NewsFetchReason, number> = {
+    "upstream-401": 5,
+    "upstream-429": 4,
+    "upstream-timeout": 3,
+    "fetch-failed": 2,
+    "no-items": 1,
+    "no-api-key": 1,
+    off: 0,
+    ok: 0,
+  };
+  const pick =
+    rank[primary.reason] >= rank[secondary.reason]
+      ? primary.reason
+      : secondary.reason;
+  return { items: [], reason: pick };
 }
 
 async function fetchNewsApi(): Promise<NewsPayload> {
@@ -221,8 +333,35 @@ export const newsRouter = router({
         };
       }
 
-      const payload =
-        mode === "newsapi" ? await fetchNewsApi() : await fetchApRss();
+      const payload = await (async (): Promise<NewsPayload> => {
+        switch (mode) {
+          case "newsapi":
+            return fetchNewsApi();
+          case "ap-rss":
+            return fetchApRss();
+          case "google":
+            return fetchGoogleNews();
+          case "merged":
+          default: {
+            // Fetch both in parallel — a single slow source shouldn't
+            // block the whole feed. Promise.allSettled means one
+            // rejecting doesn't take out the other.
+            const [ap, google] = await Promise.allSettled([
+              fetchApRss(),
+              fetchGoogleNews(),
+            ]);
+            const apPayload: NewsPayload =
+              ap.status === "fulfilled"
+                ? ap.value
+                : { items: [], reason: "fetch-failed" };
+            const googlePayload: NewsPayload =
+              google.status === "fulfilled"
+                ? google.value
+                : { items: [], reason: "fetch-failed" };
+            return mergePayloads(apPayload, googlePayload);
+          }
+        }
+      })();
 
       cachedPayload = { at: Date.now(), payload };
       return {
@@ -232,4 +371,10 @@ export const newsRouter = router({
     }),
 });
 
-export const __test__ = { parseApRss, resolveMode };
+export const __test__ = {
+  parseApRss,
+  parseRssItems,
+  resolveMode,
+  mergePayloads,
+  normalizeTitleForDedupe,
+};
