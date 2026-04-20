@@ -16,6 +16,7 @@ export default defineConfig({
       "server/**/*.spec.ts",
       "client/src/solar-rec-dashboard/**/*.test.ts",
       "client/src/features/dashboard/frontpage/**/*.test.ts",
+      "client/src/features/dashboard/river/**/*.test.ts",
       "client/src/features/supplements/**/*.test.ts",
       "client/src/features/habits/**/*.test.ts",
       "client/src/features/health/**/*.test.ts",

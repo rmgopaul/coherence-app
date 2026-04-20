@@ -1822,3 +1822,167 @@ a.wire-card--link:focus-visible {
   color: var(--fp-ink-3);
   margin-top: 2px;
 }
+
+/* --- River (D3 view, Phase F7) ---
+
+   /dashboard/river — chronological feed with size-by-importance
+   headlines. cal=blue, task=red, mail=ink, file=green tags. */
+
+.fp-river-root {
+  background: var(--fp-paper);
+}
+
+.fp-river {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 8px 48px;
+}
+@media (min-width: 1024px) {
+  .fp-river {
+    padding: 40px 24px 96px;
+  }
+}
+
+.fp-river__head {
+  margin-bottom: 22px;
+}
+.fp-river__head h1 {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: clamp(40px, 5vw, 56px);
+  letter-spacing: -0.02em;
+  line-height: 0.9;
+  margin: 0 0 6px;
+  word-break: break-word;
+}
+.fp-river__head-em {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--fp-red);
+}
+.fp-river__dateline {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--fp-ink-3);
+}
+
+.fp-river__stream {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 2px solid var(--fp-rule);
+}
+
+.fp-river__row {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+  position: relative;
+}
+
+.fp-river-item {
+  display: grid;
+  grid-template-columns: 90px 120px 1fr auto;
+  gap: 16px;
+  align-items: baseline;
+  padding: 14px 0;
+  text-decoration: none;
+  color: inherit;
+  position: relative;
+}
+.fp-river-item:hover { background: var(--fp-paper-2); }
+@media (max-width: 640px) {
+  .fp-river-item {
+    grid-template-columns: 70px 1fr;
+    grid-template-areas:
+      "time kind"
+      "title title"
+      "meta meta";
+    row-gap: 4px;
+  }
+  .fp-river-item__time { grid-area: time; }
+  .fp-river-item__kind { grid-area: kind; justify-self: end; }
+  .fp-river-item__title { grid-area: title; }
+  .fp-river-item__meta { grid-area: meta; }
+}
+
+.fp-river-item__time {
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  color: var(--fp-ink-2);
+}
+
+.fp-river-item__kind {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border: 2px solid var(--fp-rule);
+  justify-self: start;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+}
+.fp-river-item__kind--cal { background: var(--fp-blue); color: var(--fp-paper); border-color: var(--fp-blue); }
+.fp-river-item__kind--task { background: var(--fp-red); color: var(--fp-paper); border-color: var(--fp-red); }
+.fp-river-item__kind--mail { background: var(--fp-ink); color: var(--fp-paper); }
+.fp-river-item__kind--file { background: var(--fp-green); color: var(--fp-paper); border-color: var(--fp-green); }
+
+.fp-river-item__title {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-weight: 400;
+  font-size: 22px;
+  line-height: 1.2;
+  margin: 0;
+  word-break: break-word;
+}
+.fp-river-item--huge .fp-river-item__title {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: clamp(36px, 4.5vw, 52px);
+  line-height: 0.92;
+  letter-spacing: -0.02em;
+}
+.fp-river-item--big .fp-river-item__title {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 32px;
+  line-height: 1;
+  letter-spacing: -0.015em;
+}
+.fp-river-item--med .fp-river-item__title {
+  font-size: 22px;
+}
+.fp-river-item--sm .fp-river-item__title {
+  font-family: "Inter", sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--fp-ink-2);
+}
+
+.fp-river-item__meta {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--fp-ink-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.fp-river-item--sm .fp-river-item__meta { color: var(--fp-ink-3); }
+
+/* P1 task gets the red left rail. */
+.fp-river-item--huge.fp-river-item--task::before {
+  content: "";
+  position: absolute;
+  left: 110px;
+  top: 8px;
+  bottom: 8px;
+  width: 4px;
+  background: var(--fp-red);
+}
+
+.fp-river__foot {
+  margin-top: 32px;
+  padding-top: 12px;
+  border-top: 2px solid var(--fp-rule);
+  font-size: 10.5px;
+  letter-spacing: 0.05em;
+  color: var(--fp-ink-3);
+  text-align: center;
+}

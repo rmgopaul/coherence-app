@@ -18,6 +18,7 @@ interface AppShellProps {
 const ROUTE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/dashboard/one-thing": "One Thing",
+  "/dashboard/river": "River",
   "/widget/todoist": "Tasks",
   "/widget/google-calendar": "Calendar",
   "/notes": "Notes",
