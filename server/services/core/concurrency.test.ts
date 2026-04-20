@@ -162,4 +162,34 @@ describe("Semaphore", () => {
     await t2;
     expect(sem.stats()).toEqual({ active: 0, waiting: 0, limit: 2 });
   });
+
+  it("never exceeds limit under synchronous contention (race regression)", async () => {
+    // Regression: an earlier version of the semaphore had a window
+    // between the queued waiter resolving and `active += 1` executing
+    // where a new caller could enter, observe `active < limit`, and
+    // take the slot — pushing `active` past `limit`. This test
+    // exercises that path by flooding with synchronous callers whose
+    // work is zero-await microtasks. Under the old implementation the
+    // observed maxConcurrent would exceed limit on most runs.
+    const limit = 3;
+    const sem = new Semaphore(limit);
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const tasks: Array<Promise<unknown>> = [];
+    for (let i = 0; i < 200; i += 1) {
+      tasks.push(
+        sem.run(async () => {
+          concurrent += 1;
+          if (concurrent > maxConcurrent) maxConcurrent = concurrent;
+          // Force a microtask boundary so other callers in the queue
+          // have a chance to resolve and race.
+          await Promise.resolve();
+          concurrent -= 1;
+        }),
+      );
+    }
+    await Promise.all(tasks);
+    expect(maxConcurrent).toBeLessThanOrEqual(limit);
+    expect(sem.stats()).toEqual({ active: 0, waiting: 0, limit });
+  });
 });

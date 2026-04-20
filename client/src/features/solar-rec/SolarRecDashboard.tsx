@@ -126,6 +126,12 @@ import {
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
 import { base64ToBytes, bytesToBase64 } from "@/solar-rec-dashboard/lib/binaryEncoding";
+import {
+  buildColumnarFromRows,
+  buildLazyCsvDataset,
+  getDatasetColumnarSource,
+} from "@/solar-rec-dashboard/lib/lazyDataset";
+import { resolveHydrationKeys } from "@/solar-rec-dashboard/lib/hydrationKeys";
 import { ScheduleBImport } from "@/solar-rec-dashboard/components/ScheduleBImport";
 import ParityReportPanel from "@/solar-rec-dashboard/components/ParityReportPanel";
 import {
@@ -1020,131 +1026,10 @@ async function computeSha256Hex(value: string): Promise<string | null> {
   }
 }
 
-/**
- * Phase 15: rehydrate a columnar serialized record back into the
- * row-oriented in-memory shape that tabs expect. Walks the column
- * arrays once and builds a `Record<string, string>` per row. This
- * is essentially the reverse of `buildColumnarFromRows` below.
- *
- * Keeping the in-memory shape unchanged means zero blast radius
- * across the 18 extracted tab components — they all continue to
- * iterate `dataset.rows` and access `row[header]`.
- */
-function rowsFromColumnar(headers: string[], columnData: string[][], rowCount: number): CsvRow[] {
-  const rows: CsvRow[] = new Array(rowCount);
-  const safeHeaders = Array.isArray(headers) ? headers : [];
-  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
-    const row: CsvRow = {};
-    for (let columnIndex = 0; columnIndex < safeHeaders.length; columnIndex += 1) {
-      const header = safeHeaders[columnIndex]!;
-      const column = columnData[columnIndex];
-      row[header] = column?.[rowIndex] ?? "";
-    }
-    rows[rowIndex] = row;
-  }
-  return rows;
-}
-
-/**
- * Internal marker attached to datasets whose rows were hydrated from a
- * columnar record. Lets `serializeDatasetRecord` reuse the original
- * columnar arrays instead of walking the (possibly huge) materialized
- * rows back into columns — a round-trip that defeats the memory win
- * of lazy materialization and takes seconds for big datasets.
- */
-const DATASET_COLUMNAR_SOURCE = Symbol.for("solarRec.datasetColumnarSource");
-
-type ColumnarSource = {
-  headers: string[];
-  columnData: string[][];
-  rowCount: number;
-};
-
-function getDatasetColumnarSource(dataset: CsvDataset | null | undefined): ColumnarSource | null {
-  if (!dataset) return null;
-  const raw = (dataset as unknown as Record<symbol, unknown>)[DATASET_COLUMNAR_SOURCE];
-  if (!raw || typeof raw !== "object") return null;
-  const candidate = raw as Partial<ColumnarSource>;
-  if (!Array.isArray(candidate.headers)) return null;
-  if (!Array.isArray(candidate.columnData)) return null;
-  if (typeof candidate.rowCount !== "number") return null;
-  return candidate as ColumnarSource;
-}
-
-/**
- * Build a CsvDataset whose `rows` array materializes on first access
- * and caches thereafter. For tabs that never read the rows (because
- * their component didn't mount this session), the expensive
- * row-object construction never happens at all. This is what makes
- * it safe to hydrate every dataset into state on mount — previously
- * the forced materialization of all 14 datasets at once drove
- * Chrome's renderer into code-5 OOM crashes.
- *
- * A tab that DOES read rows pays exactly the same cost as before —
- * one materialization, cached for subsequent reads. No per-access
- * Proxy overhead on the hot path.
- *
- * The columnar arrays stay reachable via DATASET_COLUMNAR_SOURCE so
- * serializeDatasetRecord can write them back to IDB without walking
- * the rows.
- */
-function buildLazyCsvDataset(input: {
-  fileName: string;
-  uploadedAt: Date;
-  headers: string[];
-  columnData: string[][];
-  rowCount: number;
-  sources: CsvDataset["sources"];
-}): CsvDataset {
-  const { fileName, uploadedAt, headers, columnData, rowCount, sources } = input;
-  const dataset: CsvDataset = {
-    fileName,
-    uploadedAt,
-    headers,
-    rows: [] as CsvRow[], // overwritten by the getter below
-    sources,
-  };
-  let cachedRows: CsvRow[] | null = null;
-  Object.defineProperty(dataset, "rows", {
-    configurable: true,
-    enumerable: true,
-    get() {
-      if (cachedRows === null) {
-        cachedRows = rowsFromColumnar(headers, columnData, rowCount);
-      }
-      return cachedRows;
-    },
-    set(value: CsvRow[]) {
-      cachedRows = Array.isArray(value) ? value : [];
-    },
-  });
-  Object.defineProperty(dataset, DATASET_COLUMNAR_SOURCE, {
-    configurable: true,
-    enumerable: false,
-    writable: false,
-    value: { headers, columnData, rowCount },
-  });
-  return dataset;
-}
-
-/**
- * Phase 15: flip a row-oriented in-memory dataset into the
- * columnar on-disk shape. One inner array per header, aligned by
- * row index. Missing cells default to empty strings so the array
- * lengths stay uniform.
- */
-function buildColumnarFromRows(headers: string[], rows: CsvRow[]): string[][] {
-  const columnData: string[][] = new Array(headers.length);
-  for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
-    const header = headers[columnIndex]!;
-    const column = new Array<string>(rows.length);
-    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-      column[rowIndex] = rows[rowIndex]?.[header] ?? "";
-    }
-    columnData[columnIndex] = column;
-  }
-  return columnData;
-}
+// Lazy-dataset infrastructure (row-materialization on demand, columnar
+// serialization round-trip, non-enumerable source symbol) lives in
+// @/solar-rec-dashboard/lib/lazyDataset so it's testable + reusable.
+// See that module's docstring for the design rationale.
 
 function deserializeDatasetRecord(dataset: SerializedCsvDataset | undefined): CsvDataset | null {
   if (!dataset) return null;
@@ -1232,12 +1117,16 @@ function serializeDatasetRecord(dataset: CsvDataset): SerializedCsvDataset {
   // defeats the lazy-rows memory win.
   const columnarSource = getDatasetColumnarSource(dataset);
   if (columnarSource) {
+    // Cast away readonly at the serialization boundary — IDB's
+    // structured-clone makes its own deep copy of both arrays, so the
+    // frozen input is never actually mutated. Typing the wire shape
+    // as readonly wasn't worth threading through SerializedCsvDataset.
     return {
       _v: 2,
       fileName: dataset.fileName,
       uploadedAt: dataset.uploadedAt.toISOString(),
-      headers: columnarSource.headers,
-      columnData: columnarSource.columnData,
+      headers: columnarSource.headers as string[],
+      columnData: columnarSource.columnData as string[][],
       rowCount: columnarSource.rowCount,
       sources,
     };
@@ -1399,14 +1288,13 @@ function idbRequestToPromise<T>(request: IDBRequest<T>): Promise<T> {
  * Legacy record fallbacks still flush once through `onBatch`.
  */
 interface ProgressiveHydrationOptions {
-  allowedKeys?: Set<DatasetKey>;
   priorityKeys?: Set<DatasetKey>;
   onBatch: (batch: Partial<Record<DatasetKey, CsvDataset>>, phase: "priority" | "background") => void;
   onProgress?: (loaded: number, total: number) => void;
 }
 
 async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Promise<void> {
-  const { allowedKeys, priorityKeys, onBatch, onProgress } = options;
+  const { priorityKeys, onBatch, onProgress } = options;
   if (typeof window === "undefined") return;
 
   // Phase 17c: buffers that accumulate datasets between flushes.
@@ -1444,9 +1332,7 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
 
   if (!("indexedDB" in window)) {
     const legacyDatasets = loadLegacyDatasetsFromLocalStorage();
-    const keys = (Object.keys(legacyDatasets) as DatasetKey[]).filter(
-      (key) => !allowedKeys || allowedKeys.has(key)
-    );
+    const keys = Object.keys(legacyDatasets) as DatasetKey[];
     onProgress?.(0, keys.length);
     keys.forEach((key, index) => {
       const dataset = legacyDatasets[key];
@@ -1506,9 +1392,14 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     const effectiveManifestKeys: string[] = [...manifestKeyArray, ...orphanDatasetKeys];
 
     if (effectiveManifestKeys.length > 0) {
-      const manifestKeys = effectiveManifestKeys.filter(
-        (key): key is DatasetKey =>
-          isDatasetKey(key) && (!allowedKeys || allowedKeys.has(key))
+      // Mirror the cloud-path key resolution so both hydration paths
+      // stay aligned: manifest ∪ orphans ∪ priority.
+      const manifestKeys = Array.from(
+        resolveHydrationKeys({
+          manifestKeys: effectiveManifestKeys,
+          priorityKeys: priorityKeys ?? [],
+          isDatasetKey,
+        }),
       );
       if (manifestKeys.length > 0) {
         // Phase 16: reorder so the active tab's datasets load first.
@@ -1609,17 +1500,12 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     // uniform. These are rare and small (one-time migration).
     if (stored.legacy) {
       const legacyDatasets = deserializeDatasets(stored.legacy);
-      const keys = (Object.keys(legacyDatasets) as DatasetKey[]).filter(
-        (key) => !allowedKeys || allowedKeys.has(key)
-      );
+      const keys = Object.keys(legacyDatasets) as DatasetKey[];
       if (keys.length > 0) {
-        const filteredLegacyDatasets = Object.fromEntries(
-          keys.map((key) => [key, legacyDatasets[key]])
-        ) as Partial<Record<DatasetKey, CsvDataset>>;
-        await saveDatasetsToStorage(filteredLegacyDatasets);
+        await saveDatasetsToStorage(legacyDatasets);
         onProgress?.(0, keys.length);
         keys.forEach((key, index) => {
-          const dataset = filteredLegacyDatasets[key];
+          const dataset = legacyDatasets[key];
           if (dataset) recordLoad(backgroundBatch, key, dataset);
           onProgress?.(index + 1, keys.length);
         });
@@ -1629,18 +1515,13 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     }
 
     const localLegacy = loadLegacyDatasetsFromLocalStorage();
-    const localLegacyKeys = (Object.keys(localLegacy) as DatasetKey[]).filter(
-      (key) => !allowedKeys || allowedKeys.has(key)
-    );
+    const localLegacyKeys = Object.keys(localLegacy) as DatasetKey[];
     if (localLegacyKeys.length > 0) {
-      const filteredLocalLegacy = Object.fromEntries(
-        localLegacyKeys.map((key) => [key, localLegacy[key]])
-      ) as Partial<Record<DatasetKey, CsvDataset>>;
-      await saveDatasetsToStorage(filteredLocalLegacy);
+      await saveDatasetsToStorage(localLegacy);
       globalThis.localStorage.removeItem(LEGACY_DATASETS_STORAGE_KEY);
       onProgress?.(0, localLegacyKeys.length);
       localLegacyKeys.forEach((key, index) => {
-        const dataset = filteredLocalLegacy[key];
+        const dataset = localLegacy[key];
         if (dataset) recordLoad(backgroundBatch, key, dataset);
         onProgress?.(index + 1, localLegacyKeys.length);
       });
@@ -1654,9 +1535,7 @@ async function loadDatasetsFromStorage(options: ProgressiveHydrationOptions): Pr
     // Last-resort synchronous fallback — same shape as the IDB-less
     // branch above.
     const legacy = loadLegacyDatasetsFromLocalStorage();
-    const keys = (Object.keys(legacy) as DatasetKey[]).filter(
-      (key) => !allowedKeys || allowedKeys.has(key)
-    );
+    const keys = Object.keys(legacy) as DatasetKey[];
     onProgress?.(0, keys.length);
     keys.forEach((key, index) => {
       const dataset = legacy[key];
@@ -1718,18 +1597,13 @@ async function saveDatasetsToStorage(datasets: Partial<Record<DatasetKey, CsvDat
       const transaction = db.transaction(DASHBOARD_DATASETS_STORE, "readwrite");
       const store = transaction.objectStore(DASHBOARD_DATASETS_STORE);
 
-      // Read the existing manifest first so we can MERGE rather than
-      // overwrite. Previously this function set manifest.keys = activeKeys
-      // unconditionally, which truncated the manifest any time a save
-      // happened while state was only partially hydrated (e.g. a fresh
-      // mount that had only loaded 1 of N datasets before the user
-      // triggered a state-touching action). Subsequent reads then
-      // returned a shrunken manifest, making previously-uploaded
-      // datasets appear gone.
-      //
-      // New semantics: manifest keys = existingKeys ∪ activeKeys − removedKeys.
-      // Additions always land; explicit user-initiated removals still
-      // win; partial-hydration saves can no longer silently drop keys.
+      // Merge the manifest rather than overwrite. A save happening
+      // while state is only partially hydrated (e.g. fresh mount
+      // before all datasets have loaded) must not shrink the
+      // manifest to the currently-loaded subset.
+      //   new manifest keys = existingKeys ∪ activeKeys − removedKeys
+      // Additions always land; explicit user deletes still win via
+      // removedKeys; partial-hydration saves are inert on manifest.
       const existingManifestRequest = store.get(DASHBOARD_DATASETS_MANIFEST_KEY);
       existingManifestRequest.onsuccess = () => {
         const existing = existingManifestRequest.result as
@@ -2069,11 +1943,9 @@ export default function SolarRecDashboard() {
     loaded: 0,
     total: 0,
   });
-  // "Load all" toggle state. The default mount hydration is filtered
-  // to the active tab's priority keys (memory-bounded landing). Users
-  // who want the full set in state (for cross-tab work or exports)
-  // can click Load All, which calls loadDatasetsFromStorage with no
-  // allowedKeys filter so every manifest entry lands.
+  // "Load all" toggle state. Default mount hydration prioritizes the
+  // active tab's datasets; Load All forces every manifest entry into
+  // state for cross-tab work / exports.
   const [loadingAllDatasets, setLoadingAllDatasets] = useState(false);
   const [loadAllProgress, setLoadAllProgress] = useState<{ loaded: number; total: number } | null>(
     null
@@ -4538,19 +4410,11 @@ export default function SolarRecDashboard() {
   }, [datasetCloudStatusesQuery.data?.statuses]);
 
   useEffect(() => {
-    // Clear any lingering overrideCloudStatus once the server confirms
-    // the dataset is recoverable. Previously this effect gated the
-    // clear on a local/server hash match, but those hashes are not
-    // directly comparable (see the badge derivation comment). When
-    // localDatasetPayloadHashes is populated via the
-    // serializeDatasetForRemote fallback it permanently disagrees with
-    // the server's manifest hash, leaving "pending" glued on.
-    //
-    // Upload flows still clear their own override on success (by
-    // setting the status to undefined), or mark "failed" on failure.
-    // This effect is the safety net for stale "pending" overrides
-    // left behind when an upload's success path didn't run — e.g.
-    // tab closed mid-sync.
+    // Safety net: clear lingering overrideCloudStatus once the server
+    // confirms recoverable. Upload flows clear their own override on
+    // success; this catches overrides left behind when the success
+    // path didn't run (e.g. tab closed mid-sync). "failed" is
+    // preserved so users still see the error state.
     setDatasetCloudSyncStatus((current) => {
       let changed = false;
       const next = { ...current };
@@ -4596,15 +4460,12 @@ export default function SolarRecDashboard() {
     let cancelled = false;
     void (async () => {
       try {
-        // No allowedKeys filter: every manifest entry hydrates. Safe
-        // now that CsvDataset.rows is lazy — hydrated datasets hold
-        // only columnar arrays in memory, and the expensive
-        // row-object materialization only runs for datasets whose
-        // tabs are actually mounted. That fixes the tab-level
-        // "please upload X" empty-state bug without the Chrome
-        // renderer OOM (code 5) crash that the earlier
-        // unconditional-rehydrate (a4a54c8, reverted in da4bed0)
-        // caused.
+        // Every manifest entry hydrates — no allowedKeys filter —
+        // because CsvDataset.rows is lazy: datasets sit in memory as
+        // columnar arrays, and rows only materialize when a mounted
+        // tab actually reads them. Priority keys below determine
+        // hydration ORDER, not membership.
+        //
         // Phase 16: progressive hydration. Datasets arrive one at a
         // time via the onDataset callback — each call into setDatasets
         // only updates ONE key, producing a small re-render rather
@@ -4968,27 +4829,17 @@ export default function SolarRecDashboard() {
           }));
         }
 
-        // Previously filtered to buildHydrationPriorityKeys(activeTab),
-        // which silently dropped datasets that weren't in the current
-        // tab's priority list. The Data Quality tab's Financials memo
-        // saw empty `abpIccReport3Rows.rows` because ICC Report 3
-        // isn't in any tab's priority set, so it was never fetched
-        // from cloud on mount — even though the server had it and the
-        // UI card (rendering from the manifest, not the rows) advertised
-        // "99,947 rows loaded". Lazy rows (bf58b52) makes it safe to
-        // hydrate every manifest entry up front: tabs that don't touch
-        // a dataset pay zero row-materialization cost.
+        // Load every dataset in the manifest plus any priority keys
+        // not yet in the manifest. Single source of truth for this
+        // decision lives in resolveHydrationKeys so the IDB-path and
+        // cloud-path can't drift again.
         const priorityKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
         );
-        const keysToLoad = new Set<DatasetKey>();
-        Object.keys(manifest).forEach((rawKey) => {
-          if (!isDatasetKey(rawKey)) return;
-          keysToLoad.add(rawKey);
-        });
-
-        priorityKeys.forEach((key) => {
-          keysToLoad.add(key);
+        const keysToLoad = resolveHydrationKeys({
+          manifestKeys: Object.keys(manifest),
+          priorityKeys,
+          isDatasetKey,
         });
 
         if (keysToLoad.size === 0) {
@@ -5727,28 +5578,15 @@ export default function SolarRecDashboard() {
     const totalRowsLoaded = loadedDatasetKeys.reduce((sum, key) => sum + (datasets[key]?.rows.length ?? 0), 0);
     const staleDatasets = loadedDatasetKeys.filter((key) => isStaleUpload(datasets[key]?.uploadedAt));
 
-    // Header sync status derived from the server-side per-dataset
-    // status map (Ship 1's getDatasetCloudStatuses), rolled up across
-    // every dataset we expect to care about. Previously this was an
-    // optimistic "Cloud sync healthy" that showed green whenever the
-    // remote state query succeeded — even when individual datasets
-    // were missing on the server, or stuck pending, or outright
-    // failed. That lied to the user.
+    // Header sync status rolls up serverDatasetCloudStatusByKey across
+    // every loaded dataset. "Cloud sync incomplete (N)" whenever any
+    // loaded dataset reports recoverable=false; "Cloud sync healthy"
+    // otherwise. In-flight upload / save / loading states take
+    // precedence over the rollup.
     //
-    // Rule:
-    //   active upload in flight        → "Processing ..."
-    //   remote state query still loading → "Checking cloud sync..."
-    //   remote state query errored     → "Cloud sync currently unavailable"
-    //   any saveState/saveDataset writing → "Syncing to cloud..."
-    //   dataset loaded locally but server has no matching recoverable
-    //     entry                        → "Cloud sync incomplete (N)"
-    //   all loaded datasets recoverable on server → "Cloud sync healthy"
-    //   otherwise (no loaded datasets yet) → "Cloud sync healthy"
-    //     (vacuous; matches prior default)
-    //
-    // Scanner-managed datasets (deliveryScheduleBase) are skipped for
-    // the header rollup because they're populated by a different
-    // workflow; their own card handles the truth badge.
+    // Scanner-managed datasets (deliveryScheduleBase) are excluded
+    // because they're populated by a separate workflow and their own
+    // card handles the badge.
     let incompleteCount = 0;
     if (loadedDatasetKeys.length > 0) {
       for (const key of loadedDatasetKeys) {
@@ -7090,7 +6928,6 @@ const aiDataContext = useMemo(() => {
                 const isMultiAppend = MULTI_APPEND_DATASET_KEYS.has(key);
                 const isScannerManaged = SCANNER_MANAGED_DATASET_KEYS.has(key);
                 const serverCloudStatus = serverDatasetCloudStatusByKey[key];
-                const localPayloadHash = localDatasetPayloadHashes[key];
                 const hasCloudBackfillMarker = Boolean(
                   dataset &&
                     (dataset.fileName.toLowerCase().includes("cloud-backfill") ||
@@ -7100,33 +6937,11 @@ const aiDataContext = useMemo(() => {
                 let cloudStatusForDataset: DatasetCloudSyncStatus | undefined = overrideCloudStatus;
                 if (!cloudStatusForDataset && !localOnlyDatasets[key]) {
                   if (serverCloudStatus?.recoverable) {
-                    // Trust the server's recoverable flag as the source of
-                    // truth for "synced" vs "pending". The earlier
-                    // derivation compared localPayloadHash against
-                    // serverCloudStatus.payloadSha256, but those hashes
-                    // aren't comparable: the server stores a hash of the
-                    // exact POST body for the top-level key (a
-                    // _rawSourcesV1 source manifest), while the client's
-                    // fallback hash is computed from
-                    // serializeDatasetForRemote(dataset) — a different
-                    // serialization. That meant every dataset hydrated
-                    // from IDB without a matching remoteSourceManifest
-                    // permanently mismatched and showed "Cloud sync
-                    // pending" forever, even when the server's data was
-                    // fully recoverable.
-                    //
-                    // Active upload flows still set overrideCloudStatus =
-                    // "pending" via setDatasetCloudSyncBadge, so genuine
-                    // in-flight syncs keep their amber badge. Once the
-                    // upload lands and the server reports recoverable, we
-                    // clear the override (see the useEffect that reacts
-                    // to serverDatasetCloudStatusByKey changes).
-                    //
-                    // localPayloadHash / serverCloudStatus.payloadSha256
-                    // are intentionally unused here — kept available on
-                    // the render scope for future per-chunk divergence
-                    // detection when we align the hashes.
-                    void localPayloadHash;
+                    // Server's recoverable flag is the source of truth.
+                    // Upload flows set overrideCloudStatus = "pending"
+                    // via setDatasetCloudSyncBadge so in-flight syncs
+                    // still show amber; see the effect that clears the
+                    // override when the server catches up.
                     cloudStatusForDataset = "synced";
                   } else if (dataset || manifestEntry || hasCloudBackfillMarker) {
                     cloudStatusForDataset = "not-synced";

@@ -57,18 +57,43 @@ export class Semaphore {
   }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.active >= this.limit) {
-      await new Promise<void>((resolve) => {
-        this.queue.push(resolve);
-      });
-    }
-    this.active += 1;
+    await this.acquire();
     try {
       return await fn();
     } finally {
-      this.active -= 1;
-      const next = this.queue.shift();
-      if (next) next();
+      this.release();
+    }
+  }
+
+  /**
+   * Claim a slot. Awaited callers own `active += 1` by the time the
+   * promise resolves — no "gap" between resolution and increment where
+   * another caller could race in and observe the limit as not-yet-hit.
+   *
+   * Fast path: no queue, slot free, increment synchronously.
+   * Slow path: push a resolver; release() will both set `active += 1`
+   * AND call the resolver, atomically handing the slot over.
+   */
+  private acquire(): Promise<void> {
+    if (this.queue.length === 0 && this.active < this.limit) {
+      this.active += 1;
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  private release(): void {
+    this.active -= 1;
+    const next = this.queue.shift();
+    if (next) {
+      // The resolver hands ownership to the next waiter. We increment
+      // `active` HERE (before the resolver fires) so there's no window
+      // in which a new caller can enter acquire() and observe
+      // `active < limit` while a waiter is mid-transition.
+      this.active += 1;
+      next();
     }
   }
 

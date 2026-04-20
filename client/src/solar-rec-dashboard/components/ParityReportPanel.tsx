@@ -2,13 +2,10 @@
  * Parity Report — dev-only UI for verifying that the server-computed
  * system snapshot matches the client-computed snapshot field-for-field.
  *
- * Visibility: shown only when BOTH conditions hold:
- *   1. Server-side storage is enabled (localStorage flag set)
- *   2. IndexedDB still has the original datasets (migration copied,
- *      not moved — so we can recompute locally for comparison)
- *
- * Once the user (or maintainer) confirms parity is clean on their
- * real datasets, Step 8 can proceed to delete the IndexedDB path.
+ * Visibility: shown only when IndexedDB still has the original
+ * datasets (the server-side migration copied, not moved — so we can
+ * recompute locally for comparison). Server-side storage is the only
+ * supported runtime, so no feature-flag gate is needed.
  */
 
 import { memo, useCallback, useState } from "react";
@@ -18,7 +15,6 @@ import { trpc } from "@/lib/trpc";
 import { readIndexedDbDatasets } from "../lib/readIndexedDb";
 import { isPart2VerifiedAbpRow } from "../lib/helpers/abp";
 import { diffSystems, type ParityReport } from "../lib/parityDiff";
-import { isServerSideStorageEnabled } from "../hooks/useServerSideStorage";
 import type { CsvRow, DatasetKey, SystemRecord } from "../state/types";
 import { useEffect } from "react";
 
@@ -39,19 +35,10 @@ type RunState =
   | { status: "error"; message: string };
 
 export default memo(function ParityReportPanel() {
-  const [enabled, setEnabled] = useState(() => isServerSideStorageEnabled());
   const [hasLocal, setHasLocal] = useState<boolean | null>(null);
   const [state, setState] = useState<RunState>({ status: "idle" });
   const [expanded, setExpanded] = useState(false);
   const trpcUtils = trpc.useUtils();
-
-  // Re-check flag on mount + when localStorage changes in another tab.
-  useEffect(() => {
-    const check = () => setEnabled(isServerSideStorageEnabled());
-    check();
-    window.addEventListener("storage", check);
-    return () => window.removeEventListener("storage", check);
-  }, []);
 
   // Probe IndexedDB once to decide whether the panel should render.
   useEffect(() => {
@@ -141,8 +128,7 @@ export default memo(function ParityReportPanel() {
     }
   }, [trpcUtils]);
 
-  // Only show if server-side is active AND we still have local data to compare
-  if (!enabled) return null;
+  // Only show if we still have local data to compare against.
   if (hasLocal === null) return null; // still probing
   if (!hasLocal) return null;
 

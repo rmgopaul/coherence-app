@@ -307,6 +307,7 @@ export async function activateDatasetVersion(
         .update(solarRecImportBatches)
         .set({
           status: "active",
+          error: null,
           ...(options.rowCount !== undefined
             ? { rowCount: options.rowCount }
             : {}),

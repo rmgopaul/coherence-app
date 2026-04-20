@@ -13,7 +13,6 @@
 
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
-import { isServerSideStorageEnabled } from "./useServerSideStorage";
 import type { TransferDeliveryLookup } from "../lib/transferHistoryDeliveries";
 
 export type TransferDeliveryLookupState = {
@@ -52,10 +51,7 @@ function revive(
  * Fetch the transfer-based delivery lookup from the server.
  */
 export function useTransferDeliveryLookup(): TransferDeliveryLookupState {
-  const enabled = isServerSideStorageEnabled();
-
   const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
-    enabled,
     staleTime: Infinity,
     retry: 1,
   });
@@ -64,18 +60,17 @@ export function useTransferDeliveryLookup(): TransferDeliveryLookupState {
   const lookupQuery = trpc.solarRecDashboard.getTransferDeliveryLookup.useQuery(
     { scopeId: scopeId ?? "" },
     {
-      enabled: enabled && !!scopeId,
+      enabled: !!scopeId,
       staleTime: 60_000,
       retry: 1,
     }
   );
 
   const lookup = useMemo<TransferDeliveryLookup | null>(() => {
-    if (!enabled) return null;
     const data = lookupQuery.data;
     if (!data) return null;
     return revive(data.byTrackingId);
-  }, [enabled, lookupQuery.data]);
+  }, [lookupQuery.data]);
 
   return {
     lookup,

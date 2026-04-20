@@ -12,9 +12,8 @@
  * them as SystemRecord's declared `Date | null` type.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { trpc } from "@/lib/trpc";
-import { isServerSideStorageEnabled } from "./useServerSideStorage";
 import type { SystemRecord } from "../state/types";
 
 type SnapshotRow = Omit<
@@ -67,11 +66,8 @@ export type SystemSnapshotState = {
  * dashboard.
  */
 export function useSystemSnapshot(): SystemSnapshotState {
-  const enabled = isServerSideStorageEnabled();
-
   // Resolve scopeId first so we can key the snapshot query.
   const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
-    enabled,
     staleTime: Infinity,
     retry: 1,
   });
@@ -80,7 +76,7 @@ export function useSystemSnapshot(): SystemSnapshotState {
   const snapshotQuery = trpc.solarRecDashboard.getSystemSnapshot.useQuery(
     { scopeId: scopeId ?? "" },
     {
-      enabled: enabled && !!scopeId,
+      enabled: !!scopeId,
       // While the server reports building=true, poll every 3s so we
       // flip to the real result as soon as it's cached server-side.
       refetchInterval: (query) => {
@@ -93,14 +89,30 @@ export function useSystemSnapshot(): SystemSnapshotState {
     }
   );
 
-  const systems = useMemo<SystemRecord[] | null>(() => {
-    if (!enabled) return null;
+  const readySystems = useMemo<SystemRecord[] | null>(() => {
     const data = snapshotQuery.data;
     if (!data) return null;
     if (data.building) return null;
     if (!Array.isArray(data.systems)) return null;
     return (data.systems as SnapshotRow[]).map(reviveSystem);
-  }, [enabled, snapshotQuery.data]);
+  }, [snapshotQuery.data]);
+
+  const lastReadySystemsRef = useRef<SystemRecord[] | null>(null);
+  useEffect(() => {
+    if (readySystems !== null) {
+      lastReadySystemsRef.current = readySystems;
+    }
+  }, [readySystems]);
+
+  const systems = useMemo<SystemRecord[] | null>(() => {
+    if (readySystems !== null) {
+      return readySystems;
+    }
+    if (snapshotQuery.data?.building === true) {
+      return lastReadySystemsRef.current;
+    }
+    return null;
+  }, [readySystems, snapshotQuery.data?.building]);
 
   return {
     systems,

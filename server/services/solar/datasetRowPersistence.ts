@@ -88,6 +88,8 @@ type BatchRowCloner = (
   toBatchId: string
 ) => Promise<number>;
 
+type BatchRowDeleter = (batchId: string) => Promise<number>;
+
 /** Execute inserts in chunks. Returns the number of rows persisted. */
 async function chunkedInsert<TRow>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table type
@@ -494,6 +496,31 @@ const BATCH_CLONERS: Record<string, BatchRowCloner> = {
   transferHistory: cloneTransferHistoryBatch,
 };
 
+function makeBatchDeleter(tableName: string): BatchRowDeleter {
+  return async (batchId) => {
+    const db = await getDb();
+    if (!db) throw new Error("Database not available");
+
+    const result = await withDbRetry(`delete ${tableName} batch rows`, () =>
+      db.execute(
+        sql`DELETE FROM ${sql.raw(tableName)} WHERE batchId = ${batchId}`
+      )
+    );
+
+    return getDbExecuteAffectedRows(result);
+  };
+}
+
+const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
+  solarApplications: makeBatchDeleter("srDsSolarApplications"),
+  abpReport: makeBatchDeleter("srDsAbpReport"),
+  generationEntry: makeBatchDeleter("srDsGenerationEntry"),
+  accountSolarGeneration: makeBatchDeleter("srDsAccountSolarGeneration"),
+  contractedDate: makeBatchDeleter("srDsContractedDate"),
+  deliveryScheduleBase: makeBatchDeleter("srDsDeliverySchedule"),
+  transferHistory: makeBatchDeleter("srDsTransferHistory"),
+};
+
 export async function appendRowExists(
   scopeId: string,
   batchId: string,
@@ -514,6 +541,15 @@ export async function cloneDatasetBatchRows(
   const cloner = BATCH_CLONERS[datasetKey];
   if (!cloner) return 0;
   return cloner(scopeId, fromBatchId, toBatchId);
+}
+
+export async function deleteDatasetBatchRows(
+  datasetKey: string,
+  batchId: string
+): Promise<number> {
+  const deleter = BATCH_DELETERS[datasetKey];
+  if (!deleter) return 0;
+  return deleter(batchId);
 }
 
 /**
