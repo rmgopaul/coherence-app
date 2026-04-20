@@ -1639,3 +1639,186 @@ a.wire-card--link:focus-visible {
     transform: none;
   }
 }
+
+/* --- OneThing (D2 view, Phase F6) ---
+
+   /dashboard/one-thing — single 120pt headline, deck, "after that"
+   3-up, and a small right rail of section counts. Strips back to the
+   absolute minimum signal. */
+
+.fp-onething-root {
+  background: var(--fp-paper);
+}
+
+.fp-onething {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 32px;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 32px 8px 48px;
+}
+
+@media (min-width: 1024px) {
+  .fp-onething {
+    grid-template-columns: 1fr 320px;
+    gap: 48px;
+    padding: 40px 24px 96px;
+  }
+}
+
+.fp-onething__main {
+  min-width: 0;
+}
+
+.fp-onething__eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  margin-bottom: 16px;
+  color: var(--fp-ink-3);
+}
+.fp-onething__source {
+  color: var(--fp-red);
+  font-weight: 700;
+}
+
+.fp-onething__head {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: clamp(56px, 9vw, 120px);
+  line-height: 0.86;
+  letter-spacing: -0.03em;
+  margin: 0 0 16px;
+  max-width: 14ch;
+  word-break: break-word;
+}
+.fp-onething__head em {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-style: italic;
+  font-weight: 400;
+  color: var(--fp-red);
+}
+
+.fp-onething__deck {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: clamp(20px, 2vw, 28px);
+  line-height: 1.25;
+  max-width: 38ch;
+  color: var(--fp-ink-2);
+  margin: 0 0 24px;
+}
+
+.fp-onething__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 36px;
+}
+
+.fp-onething__when {
+  display: inline-block;
+  padding: 8px 14px;
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.fp-onething__link {
+  display: inline-block;
+  padding: 8px 14px;
+  border: 2px solid var(--fp-rule);
+  background: var(--fp-yellow);
+  color: var(--fp-ink);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+.fp-onething__link:hover {
+  background: var(--fp-ink);
+  color: var(--fp-yellow);
+}
+
+.fp-onething__after {
+  margin-top: 36px;
+  padding-top: 20px;
+  border-top: 2px solid var(--fp-rule);
+}
+.fp-onething__after-head {
+  margin: 0 0 12px;
+}
+.fp-onething__after-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+@media (min-width: 768px) {
+  .fp-onething__after-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+  }
+}
+.fp-onething__after-slot h4 {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 18px;
+  line-height: 1.1;
+  margin: 4px 0;
+  word-break: break-word;
+}
+.fp-onething__after-slot p {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 14px;
+  color: var(--fp-ink-2);
+  margin: 0;
+}
+
+/* Right rail */
+.fp-onething__rail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-self: start;
+}
+.fp-onething__rail-head {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--fp-ink-3);
+  margin: 0 0 8px;
+  border-bottom: 2px solid var(--fp-rule);
+  padding-bottom: 6px;
+}
+.fp-onething__rail-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 10px 0;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.18);
+}
+.fp-onething__rail-n {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 36px;
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+.fp-onething__rail-n--red { color: var(--fp-red); }
+.fp-onething__rail-n--blue { color: var(--fp-blue); }
+.fp-onething__rail-n--green { color: var(--fp-green); }
+.fp-onething__rail-meta { min-width: 0; }
+.fp-onething__rail-lbl {
+  font-family: "Inter", sans-serif;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10.5px;
+  color: var(--fp-ink-2);
+}
+.fp-onething__rail-sub {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 13px;
+  color: var(--fp-ink-3);
+  margin-top: 2px;
+}
