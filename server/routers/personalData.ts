@@ -99,6 +99,14 @@ import {
 } from "../services/integrations/supplements";
 import { captureDailySnapshotForUser } from "../services/notifications/dailySnapshot";
 import { verifySupplementIngestSignedRequest } from "../_core/supplementIngest";
+import {
+  clearDockItemsForUser,
+  deleteDockItem,
+  findDockItemByCanonicalUrl,
+  insertDockItem,
+  listDockItems,
+} from "../db/dock";
+import { canonicalizeUrl } from "@shared/dropdock.helpers";
 
 export const metricsRouter = router({
   getHistory: protectedProcedure
@@ -2332,7 +2340,108 @@ export const dockRouter = router({
         return { title: input.source === "gmail" ? "Email" : input.source === "gcal" ? "Calendar Event" : input.source === "gsheet" ? "Spreadsheet" : input.source === "todoist" ? "Task" : input.url };
       }
     }),
+
+  // ---- Phase F3 — server-persisted DropDock chips ----------------------
+  // The shape mirrors the Drizzle row but only exposes what the UI needs.
+  // `meta` is JSON-encoded server-side; clients see a parsed object.
+
+  list: protectedProcedure.query(async ({ ctx }) => {
+    const rows = await listDockItems(ctx.user.id);
+    return rows.map((row) => ({
+      id: row.id,
+      source: row.source,
+      url: row.url,
+      title: row.title,
+      meta: parseDockMeta(row.meta),
+      pinnedAt: row.pinnedAt ? row.pinnedAt.toISOString() : null,
+      createdAt: row.createdAt ? row.createdAt.toISOString() : null,
+    }));
+  }),
+
+  add: protectedProcedure
+    .input(
+      z.object({
+        source: z.enum(["gmail", "gcal", "gsheet", "todoist", "url"]),
+        url: z.string().min(1).max(2048),
+        title: z.string().max(500).optional(),
+        meta: z.record(z.string(), z.string()).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const urlCanonical = canonicalizeUrl(input.url).slice(0, 512);
+      if (!urlCanonical) {
+        throw new Error("Invalid URL");
+      }
+
+      // Idempotent: pasting the same link twice surfaces the existing
+      // chip rather than throwing on the unique constraint.
+      const existing = await findDockItemByCanonicalUrl(
+        ctx.user.id,
+        urlCanonical
+      );
+      if (existing) {
+        return {
+          id: existing.id,
+          source: existing.source,
+          url: existing.url,
+          title: existing.title,
+          meta: parseDockMeta(existing.meta),
+          pinnedAt: existing.pinnedAt ? existing.pinnedAt.toISOString() : null,
+          createdAt: existing.createdAt ? existing.createdAt.toISOString() : null,
+          deduplicated: true as const,
+        };
+      }
+
+      const id = nanoid();
+      await insertDockItem({
+        id,
+        userId: ctx.user.id,
+        source: input.source,
+        url: input.url,
+        urlCanonical,
+        title: input.title?.trim() || null,
+        meta: input.meta ? JSON.stringify(input.meta) : null,
+      });
+      return {
+        id,
+        source: input.source,
+        url: input.url,
+        title: input.title ?? null,
+        meta: input.meta ?? {},
+        pinnedAt: null,
+        createdAt: new Date().toISOString(),
+        deduplicated: false as const,
+      };
+    }),
+
+  remove: protectedProcedure
+    .input(z.object({ id: z.string().min(1).max(64) }))
+    .mutation(async ({ ctx, input }) => {
+      await deleteDockItem(ctx.user.id, input.id);
+      return { ok: true as const };
+    }),
+
+  clear: protectedProcedure.mutation(async ({ ctx }) => {
+    await clearDockItemsForUser(ctx.user.id);
+    return { ok: true as const };
+  }),
 });
+
+function parseDockMeta(raw: string | null | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      // Coerce values to strings — schema-input-time guarantee.
+      return Object.fromEntries(
+        Object.entries(parsed).map(([k, v]) => [k, String(v ?? "")])
+      );
+    }
+  } catch {
+    // fall through to {}
+  }
+  return {};
+}
 
 export const engagementRouter = router({
   recordBatch: protectedProcedure

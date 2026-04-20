@@ -203,6 +203,226 @@ html[data-focus="1"] .fp-root {
   }
 }
 
+/* --- DropDock (Phase F3) ---
+
+   Sits between the masthead and the hero. A diagonal newsprint pattern
+   evokes the "drop zone" of the wireframe; chips have an offset ink
+   shadow so they look pinned to the page. */
+
+.fp-dock {
+  margin: 16px 0 24px;
+  background: var(--fp-paper-2);
+  border: 2px solid var(--fp-rule);
+  position: relative;
+}
+
+.fp-dock--drag {
+  outline: 3px dashed var(--fp-yellow);
+  outline-offset: -6px;
+}
+
+.fp-dock__head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 2px solid var(--fp-rule);
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+
+.fp-dock__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.fp-dock__title small {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--fp-yellow);
+  margin-left: 8px;
+}
+
+.fp-dock__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fp-yellow);
+  display: inline-block;
+}
+
+.fp-dock__paste {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  border: 2px dashed var(--fp-paper);
+  padding: 4px 10px;
+}
+
+.fp-dock__kbd {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1.5px solid var(--fp-ink);
+  background: var(--fp-paper-2);
+  color: var(--fp-ink);
+  white-space: nowrap;
+}
+
+.fp-dock__paste input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-family: "Inter", sans-serif;
+  font-size: 13px;
+  color: var(--fp-ink);
+  min-width: 0;
+}
+
+.fp-dock__paste input::placeholder {
+  font-family: "Caveat", "Inter", cursive;
+  font-size: 16px;
+  color: var(--fp-ink-3);
+}
+
+.fp-dock__add {
+  padding: 6px 12px;
+  background: var(--fp-yellow);
+  color: var(--fp-ink);
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border: 2px solid var(--fp-paper-2);
+  cursor: pointer;
+}
+.fp-dock__add:hover { filter: brightness(1.05); }
+.fp-dock__add:disabled { opacity: 0.5; cursor: progress; }
+
+.fp-dock__add--ghost {
+  background: transparent;
+  color: var(--fp-paper);
+  border: 2px solid rgba(255, 255, 255, 0.33);
+  font-size: 14px;
+  padding: 4px 10px;
+}
+
+.fp-dock__zone {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 18px;
+  min-height: 84px;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 14px,
+    rgba(0, 0, 0, 0.025) 14px 15px
+  );
+}
+
+.fp-dock__empty {
+  font-family: "Caveat", "Inter", cursive;
+  font-size: 18px;
+  color: var(--fp-ink-3);
+  margin: auto;
+  transform: rotate(-1deg);
+}
+
+.fp-dock__hint {
+  padding: 6px 16px;
+  border-top: 1px dashed var(--fp-rule);
+  color: var(--fp-red);
+}
+
+/* --- DropDock chip --- */
+
+.fp-dock-chip {
+  display: inline-grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  background: var(--fp-paper);
+  color: var(--fp-ink);
+  border: 2px solid var(--fp-rule);
+  box-shadow: 3px 3px 0 var(--fp-rule);
+  padding: 8px 10px;
+  font-family: "Inter", sans-serif;
+  font-size: 12.5px;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: grab;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.fp-dock-chip:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--fp-rule);
+}
+.fp-dock-chip--tilt-a { transform: rotate(-1.4deg); }
+.fp-dock-chip--tilt-b { transform: rotate(1.1deg); }
+.fp-dock-chip--tilt-c { transform: rotate(-0.6deg); }
+.fp-dock-chip--tilt-a:hover { transform: rotate(-1.4deg) translate(-1px, -1px); }
+.fp-dock-chip--tilt-b:hover { transform: rotate(1.1deg) translate(-1px, -1px); }
+.fp-dock-chip--tilt-c:hover { transform: rotate(-0.6deg) translate(-1px, -1px); }
+
+.fp-dock-chip__src {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 6px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+.fp-dock-chip__src--gmail { background: var(--fp-red); border-color: var(--fp-red); }
+.fp-dock-chip__src--gcal { background: var(--fp-blue); border-color: var(--fp-blue); color: #fff; }
+.fp-dock-chip__src--gsheet { background: var(--fp-green); border-color: var(--fp-green); color: #fff; }
+.fp-dock-chip__src--todoist { background: #ea580c; border-color: #ea580c; color: #fff; }
+.fp-dock-chip__src--url { background: var(--fp-paper); color: var(--fp-ink); }
+
+.fp-dock-chip__title {
+  font-weight: 600;
+  color: var(--fp-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.fp-dock-chip__x {
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  color: var(--fp-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1;
+}
+.fp-dock-chip__x:hover {
+  background: var(--fp-red);
+  color: var(--fp-paper);
+  border-color: var(--fp-red);
+}
+
 /* --- Shared primitives --- */
 
 .mono-label {

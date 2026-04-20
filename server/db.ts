@@ -31,3 +31,4 @@ export * from "./db/contractScans";
 export * from "./db/scheduleB";
 export * from "./db/solarRecDatasets";
 export * from "./db/kingOfDay";
+export * from "./db/dock";

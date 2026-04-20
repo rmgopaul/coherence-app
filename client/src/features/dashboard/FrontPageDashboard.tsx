@@ -11,6 +11,7 @@
 import { useEffect, useState } from "react";
 import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { Masthead } from "./frontpage/Masthead";
+import { DropDock } from "./frontpage/DropDock";
 import { NewsprintColumns } from "./frontpage/NewsprintColumns";
 import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
 import { FocusModeRail } from "./frontpage/FocusModeRail";
@@ -69,6 +70,8 @@ export default function FrontPageDashboard() {
         weather={data.weather}
         accountCreatedAt={data.accountCreatedAt}
       />
+
+      {!focusMode && <DropDock />}
 
       <main id="fp-main" tabIndex={-1}>
       <KingOfTheDayHero
