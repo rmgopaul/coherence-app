@@ -674,6 +674,200 @@ html[data-focus="1"] .fp-root {
   color: var(--fp-ink);
 }
 
+/* --- Inbox panel (Phase F5) ---
+
+   Sits between the newsprint columns and the wire-feeds grid. Two
+   bands stacked vertically: ★ IMPORTANT (yellow) above ● UNREAD (ink).
+   Each row is a `<a>` to the Gmail thread + an inline × that marks the
+   message as read. */
+
+.fp-inbox {
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 3px double var(--fp-rule);
+}
+
+.fp-inbox__head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--fp-rule);
+  margin-bottom: 8px;
+}
+
+.fp-inbox__important-count {
+  font-style: normal;
+  background: var(--fp-ink);
+  color: var(--fp-yellow);
+  padding: 1px 5px;
+  margin-left: 4px;
+}
+
+.fp-inbox-band {
+  margin: 10px 0 6px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 3px 6px;
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.fp-inbox-band--important {
+  background: var(--fp-yellow);
+  color: var(--fp-ink);
+  border: 1.5px solid var(--fp-rule);
+}
+.fp-inbox-band--unread {
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+.fp-inbox-band__right {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+  font-weight: 400;
+}
+
+.fp-inbox__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fp-inbox-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.18);
+  transition: background 100ms ease;
+}
+.fp-inbox-row:hover { background: var(--fp-paper-2); }
+.fp-inbox-row:last-child { border-bottom: 0; }
+.fp-inbox-row--busy { opacity: 0.55; pointer-events: none; }
+
+.fp-inbox-row__link {
+  display: grid;
+  grid-template-columns: 14px 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 8px 6px 8px 2px;
+  text-decoration: none;
+  color: inherit;
+  min-width: 0;
+}
+.fp-inbox-row__link:hover { text-decoration: none; }
+
+.fp-inbox-row__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--fp-ink);
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+.fp-inbox-row--u .fp-inbox-row__dot {
+  background: var(--fp-yellow);
+  border: 1.5px solid var(--fp-rule);
+}
+.fp-inbox-row--i .fp-inbox-row__dot {
+  background: var(--fp-red);
+}
+
+.fp-inbox-row__body { min-width: 0; }
+
+.fp-inbox-row__from {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-family: "Inter", sans-serif;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--fp-ink);
+}
+
+.fp-inbox-row__name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+.fp-inbox-row__tag {
+  font-family: "Archivo Black", "Inter", sans-serif;
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  background: var(--fp-ink);
+  color: var(--fp-paper);
+}
+
+.fp-inbox-row__subj {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 14px;
+  line-height: 1.25;
+  color: var(--fp-ink);
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.fp-inbox-row--u .fp-inbox-row__subj { font-weight: 500; }
+
+.fp-inbox-row__snippet {
+  font-size: 11px;
+  color: var(--fp-ink-3);
+  margin-top: 2px;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fp-inbox-row__when {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--fp-ink-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: right;
+  white-space: nowrap;
+  align-self: start;
+  padding-top: 4px;
+}
+.fp-inbox-row--u .fp-inbox-row__when {
+  color: var(--fp-red);
+  font-weight: 700;
+}
+
+.fp-inbox-row__archive {
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid var(--fp-rule);
+  background: var(--fp-paper-2);
+  color: var(--fp-ink);
+  cursor: pointer;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  margin-right: 6px;
+  align-self: center;
+}
+.fp-inbox-row__archive:hover {
+  background: var(--fp-red);
+  color: var(--fp-paper);
+  border-color: var(--fp-red);
+}
+
 /* --- Newsprint columns --- */
 
 .fp-newsprint {

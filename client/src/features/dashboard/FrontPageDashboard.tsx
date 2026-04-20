@@ -13,6 +13,7 @@ import { KingOfTheDayHero } from "@/components/dashboard/KingOfTheDayHero";
 import { Masthead } from "./frontpage/Masthead";
 import { DropDock } from "./frontpage/DropDock";
 import { NewsprintColumns } from "./frontpage/NewsprintColumns";
+import { InboxPanel } from "./frontpage/InboxPanel";
 import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
 import { FocusModeRail } from "./frontpage/FocusModeRail";
 import { PinDialog } from "./frontpage/PinDialog";
@@ -110,6 +111,7 @@ export default function FrontPageDashboard() {
             tasks={data.tasks}
             waitingOn={data.waitingOn}
           />
+          <InboxPanel messages={data.inbox} />
           <WireFeedsGrid data={data} />
         </>
       )}
