@@ -29,6 +29,12 @@ import {
   type TodoistTask,
 } from "../services/integrations/todoist";
 import { getGoogleCalendarEvents } from "../services/integrations/google";
+import {
+  aiSelectKingOfDay,
+  extractAnthropicAuth,
+  isAiSelectorEnabled,
+  type AiCandidate,
+} from "../services/integrations/anthropicSelector";
 
 const DATE_KEY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -37,6 +43,7 @@ interface PickedKing {
   reason: string | null;
   taskId: string | null;
   eventId: string | null;
+  source: "auto" | "ai";
 }
 
 /* ------------------------------------------------------------------ */
@@ -175,16 +182,53 @@ async function selectKingOfDay(
       reason: "pick one thing and ship it.",
       taskId: null,
       eventId: null,
+      source: "auto",
     };
   }
 
   candidates.sort((a, b) => b.score - a.score);
+
+  // --- Optional AI layer ---
+  // Gated by env flag AND a valid Anthropic integration. Always
+  // falls through to the rules pick on any failure.
+  if (isAiSelectorEnabled()) {
+    try {
+      const anthropic = await getIntegrationByProvider(userId, "anthropic");
+      if (anthropic?.accessToken) {
+        const auth = extractAnthropicAuth({
+          accessToken: anthropic.accessToken,
+          metadata: anthropic.metadata ?? null,
+        });
+        if (auth.accessToken) {
+          const aiPick = await aiSelectKingOfDay({
+            dateKey,
+            anthropicApiKey: auth.accessToken,
+            anthropicModel: auth.model ?? undefined,
+            candidates: candidates.slice(0, 8) satisfies AiCandidate[],
+          });
+          if (aiPick) {
+            return {
+              title: aiPick.title,
+              reason: aiPick.reason,
+              taskId: aiPick.taskId,
+              eventId: aiPick.eventId,
+              source: "ai",
+            };
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[kingOfDay] AI selector step failed:", err);
+    }
+  }
+
   const picked = candidates[0];
   return {
     title: picked.title,
     reason: picked.reason,
     taskId: picked.taskId,
     eventId: picked.eventId,
+    source: "auto",
   };
 }
 
@@ -208,7 +252,7 @@ async function ensureKing(
     const persisted = await upsertKingOfDay({
       userId,
       dateKey,
-      source: "auto",
+      source: picked.source,
       title: picked.title,
       reason: picked.reason,
       taskId: picked.taskId,
@@ -225,7 +269,7 @@ async function ensureKing(
     id: `ephemeral-${userId}-${dateKey}`,
     userId,
     dateKey,
-    source: "auto",
+    source: picked.source,
     title: picked.title,
     reason: picked.reason,
     taskId: picked.taskId,

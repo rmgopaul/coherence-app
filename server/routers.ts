@@ -61,6 +61,8 @@ import {
   solarLogRouter,
 } from "./routers/solarCloud";
 import { kingOfDayRouter } from "./routers/kingOfDay";
+import { weatherRouter } from "./routers/weather";
+import { newsRouter } from "./routers/news";
 
 // ---------------------------------------------------------------------------
 // App Router — thin composition of all sub-routers
@@ -133,6 +135,8 @@ export const appRouter = router({
 
   // Front-page
   kingOfDay: kingOfDayRouter,
+  weather: weatherRouter,
+  news: newsRouter,
 });
 
 export type AppRouter = typeof appRouter;

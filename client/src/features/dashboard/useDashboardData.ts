@@ -98,8 +98,21 @@ export function useDashboardData() {
   );
   const kingOfDay = kingOfDayServer ?? null;
 
-  const weather = null;
-  const news: unknown[] = [];
+  // Phase D — weather + news. Both routers degrade gracefully when
+  // the relevant env var isn't set, returning an offline payload /
+  // empty array so the WireFeedsGrid renders its "NO FEED CONFIGURED"
+  // state without errors.
+  const { data: weatherData } = trpc.weather.getCurrent.useQuery(
+    undefined,
+    { refetchInterval: 15 * ONE_MIN, staleTime: 10 * ONE_MIN }
+  );
+  const weather = weatherData ?? null;
+
+  const { data: newsData } = trpc.news.getHeadlines.useQuery(
+    { count: 6 },
+    { refetchInterval: 10 * ONE_MIN, staleTime: 5 * ONE_MIN }
+  );
+  const news = newsData ?? [];
 
   return {
     user,
