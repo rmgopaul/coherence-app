@@ -10,7 +10,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { Play, RefreshCw } from "lucide-react";
+import { AlertCircle, Play, RefreshCw } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -32,21 +32,14 @@ import {
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { formatCurrency, toErrorMessage } from "@/lib/helpers";
-import type { SupplementDefinition } from "@/features/dashboard/types";
+import type {
+  SupplementDefinition,
+  SupplementPriceWatchResult,
+} from "@/features/dashboard/types";
+import { formatConfidencePct, formatSourceLabel } from "./supplements.helpers";
 
 export interface SupplementsPricesPanelProps {
   definitions: readonly SupplementDefinition[];
-}
-
-interface LastRunSummary {
-  attempted: number;
-  updated: number;
-  skipped: number;
-  errors: number;
-  startedAt: string;
-  completedAt: string;
-  alreadyRunning?: boolean;
-  missingCredentials?: boolean;
 }
 
 const PAGE_LIMITS = [50, 100, 250] as const;
@@ -57,9 +50,14 @@ export function SupplementsPricesPanel({
   const utils = trpc.useUtils();
   const [filterDefId, setFilterDefId] = useState<string>("");
   const [limit, setLimit] = useState<number>(100);
-  const [lastRun, setLastRun] = useState<LastRunSummary | null>(null);
+  const [lastRun, setLastRun] = useState<SupplementPriceWatchResult | null>(null);
 
-  const { data: priceLogs = [], isFetching } = trpc.supplements.listPriceLogs.useQuery(
+  const {
+    data: priceLogs = [],
+    isFetching,
+    error: priceLogsError,
+    refetch: refetchPriceLogs,
+  } = trpc.supplements.listPriceLogs.useQuery(
     {
       definitionId: filterDefId || undefined,
       limit,
@@ -195,7 +193,23 @@ export function SupplementsPricesPanel({
             )}
           </div>
 
-          {priceLogs.length === 0 ? (
+          {priceLogsError ? (
+            <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="flex-1">
+                <p className="font-medium">Couldn't load the price log.</p>
+                <p className="text-red-700">{toErrorMessage(priceLogsError)}</p>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 px-2 text-xs"
+                onClick={() => refetchPriceLogs()}
+              >
+                Retry
+              </Button>
+            </div>
+          ) : priceLogs.length === 0 ? (
             <div className="rounded-md border bg-muted/40 p-6 text-center text-xs text-muted-foreground">
               No price snapshots yet. Click "Run now" above to capture the
               current prices.
@@ -241,16 +255,14 @@ export function SupplementsPricesPanel({
                             rel="noreferrer"
                             className="text-emerald-700 hover:underline"
                           >
-                            {log.sourceDomain ?? log.sourceName ?? "link"}
+                            {formatSourceLabel(log, "link")}
                           </a>
                         ) : (
-                          (log.sourceDomain ?? log.sourceName ?? "—")
+                          formatSourceLabel(log)
                         )}
                       </TableCell>
                       <TableCell className="text-right text-xs text-muted-foreground">
-                        {log.confidence !== null && log.confidence !== undefined
-                          ? `${Math.round(log.confidence * 100)}%`
-                          : "—"}
+                        {formatConfidencePct(log.confidence)}
                       </TableCell>
                     </TableRow>
                   ))}

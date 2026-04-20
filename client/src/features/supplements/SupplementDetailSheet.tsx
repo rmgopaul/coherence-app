@@ -34,7 +34,7 @@ import { trpc } from "@/lib/trpc";
 import { SUPPLEMENT_UNITS, type SupplementUnit } from "@shared/const";
 import { formatCurrency, toErrorMessage } from "@/lib/helpers";
 import type { SupplementDefinition, SupplementLog } from "@/features/dashboard/types";
-import { formatCostPerDose } from "./supplements.helpers";
+import { formatCostPerDose, formatSourceLabel } from "./supplements.helpers";
 import { SupplementsCostTrendChart } from "./SupplementsCostTrendChart";
 
 export interface SupplementDetailSheetProps {
@@ -326,7 +326,7 @@ export function SupplementDetailSheet({
                       >
                         <span className="font-medium">{formatCurrency(log.pricePerBottle)}</span>
                         <span className="text-muted-foreground">
-                          {log.sourceDomain ?? log.sourceName ?? "manual"} ·{" "}
+                          {formatSourceLabel(log, "manual")} ·{" "}
                           {new Date(log.capturedAt).toLocaleDateString()}
                         </span>
                       </li>

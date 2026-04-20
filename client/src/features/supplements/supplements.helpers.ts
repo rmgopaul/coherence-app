@@ -31,6 +31,27 @@ export interface AdherenceRow {
   expectedDays: number;
 }
 
+/**
+ * Display label for a price-log source. Single source of truth for the
+ * `sourceDomain → sourceName → fallback` chain used in multiple places.
+ * Accepts a minimal shape so callers don't need to import the full
+ * `SupplementPriceLog` type.
+ */
+export function formatSourceLabel(
+  log: { sourceDomain?: string | null; sourceName?: string | null },
+  fallback: string = "—",
+): string {
+  return log.sourceDomain ?? log.sourceName ?? fallback;
+}
+
+/** `86%` for a 0..1 confidence value, `—` for null/undefined/non-finite. */
+export function formatConfidencePct(
+  value: number | null | undefined,
+): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
 /** `$0.28/dose` or `—` when cost inputs are missing. */
 export function formatCostPerDose(
   def: Pick<SupplementDefinition, "pricePerBottle" | "quantityPerBottle">,
