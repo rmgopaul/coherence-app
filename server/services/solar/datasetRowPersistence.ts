@@ -295,11 +295,18 @@ const persistTransferHistory: DatasetInserter = async (
 // Dispatch
 // ---------------------------------------------------------------------------
 
-// Single source of truth: the seven typed srDs* tables, keyed by the
-// dataset key callers use throughout the solar-rec codebase. Adding a
-// new dataset starts here and the compiler + test suite surface the
-// remaining wiring (persister, cloner, etc.).
-const SRDS_TABLES = {
+// The seven typed srDs* tables, keyed by the dataset key callers use
+// throughout the solar-rec codebase. This drives `SrDsDatasetKey`
+// (the union used by every dispatch table below) and the typed-table
+// lookup in `deleteDatasetBatchRows`. Adding a new dataset here makes
+// `PERSISTERS` (required keys) a compile error until the persister
+// is registered; the optional dispatches (APPEND_ROW_CHECKERS /
+// BATCH_CLONERS) fail open by design — not every dataset supports
+// append-dedupe or version cloning.
+//
+// Exported for tests so the mapping-coverage test can iterate every
+// key without re-declaring the list.
+export const SRDS_TABLES = {
   solarApplications: srDsSolarApplications,
   abpReport: srDsAbpReport,
   generationEntry: srDsGenerationEntry,
@@ -309,7 +316,12 @@ const SRDS_TABLES = {
   transferHistory: srDsTransferHistory,
 } as const;
 
-type SrDsDatasetKey = keyof typeof SRDS_TABLES;
+export type SrDsDatasetKey = keyof typeof SRDS_TABLES;
+
+/** Narrow an arbitrary string to a known typed-dataset key. */
+export function isSrDsDatasetKey(key: string): key is SrDsDatasetKey {
+  return key in SRDS_TABLES;
+}
 
 const PERSISTERS: Record<SrDsDatasetKey, DatasetInserter> = {
   solarApplications: persistSolarApplications,
@@ -334,17 +346,18 @@ export async function persistDatasetRows(
   datasetKey: string,
   rows: CsvRow[]
 ): Promise<number> {
-  const persister = PERSISTERS[datasetKey as SrDsDatasetKey];
-  if (!persister) return 0;
-  return persister(scopeId, batchId, rows);
+  if (!isSrDsDatasetKey(datasetKey)) return 0;
+  return PERSISTERS[datasetKey](scopeId, batchId, rows);
 }
 
 /**
  * Whether this dataset key has a typed persistence mapping.
+ *
+ * Alias for `isSrDsDatasetKey` preserved for callers that already
+ * use this name; new code should prefer the type guard since it
+ * narrows the argument.
  */
-export function hasPersistence(datasetKey: string): boolean {
-  return datasetKey in PERSISTERS;
-}
+export const hasPersistence = isSrDsDatasetKey;
 
 const accountSolarGenerationRowExists: AppendRowChecker = async (
   scopeId,
@@ -501,12 +514,16 @@ const cloneTransferHistoryBatch: BatchRowCloner = async (
   return getDbExecuteAffectedRows(result);
 };
 
-const APPEND_ROW_CHECKERS: Record<string, AppendRowChecker> = {
+// Partial<Record<SrDsDatasetKey, ...>> for the optional behaviors:
+// only some datasets support append-dedupe / version cloning. Keys
+// are still restricted to the union so typos can't silently map to
+// nothing; absent entries are allowed by design.
+const APPEND_ROW_CHECKERS: Partial<Record<SrDsDatasetKey, AppendRowChecker>> = {
   accountSolarGeneration: accountSolarGenerationRowExists,
   transferHistory: transferHistoryRowExists,
 };
 
-const BATCH_CLONERS: Record<string, BatchRowCloner> = {
+const BATCH_CLONERS: Partial<Record<SrDsDatasetKey, BatchRowCloner>> = {
   accountSolarGeneration: cloneAccountSolarGenerationBatch,
   transferHistory: cloneTransferHistoryBatch,
 };
@@ -517,6 +534,7 @@ export async function appendRowExists(
   datasetKey: string,
   row: CsvRow
 ): Promise<boolean> {
+  if (!isSrDsDatasetKey(datasetKey)) return false;
   const checker = APPEND_ROW_CHECKERS[datasetKey];
   if (!checker) return false;
   return checker(scopeId, batchId, row);
@@ -528,6 +546,7 @@ export async function cloneDatasetBatchRows(
   toBatchId: string,
   datasetKey: string
 ): Promise<number> {
+  if (!isSrDsDatasetKey(datasetKey)) return 0;
   const cloner = BATCH_CLONERS[datasetKey];
   if (!cloner) return 0;
   return cloner(scopeId, fromBatchId, toBatchId);
@@ -545,8 +564,8 @@ export async function deleteDatasetBatchRows(
   datasetKey: string,
   batchId: string
 ): Promise<number> {
-  const table = SRDS_TABLES[datasetKey as SrDsDatasetKey];
-  if (!table) return 0;
+  if (!isSrDsDatasetKey(datasetKey)) return 0;
+  const table = SRDS_TABLES[datasetKey];
 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
