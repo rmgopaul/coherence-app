@@ -73,7 +73,8 @@ function pick(row: CsvRow, ...keys: string[]): string | null {
 type DatasetInserter = (
   scopeId: string,
   batchId: string,
-  rows: CsvRow[]
+  rows: CsvRow[],
+  options?: PersistDatasetRowsOptions
 ) => Promise<number>;
 
 type AppendRowChecker = (
@@ -90,24 +91,31 @@ type BatchRowCloner = (
 
 type BatchRowDeleter = (batchId: string) => Promise<number>;
 
+export type PersistDatasetRowsOptions = {
+  onProgress?: (inserted: number, total: number) => void;
+};
+
 /** Execute inserts in chunks. Returns the number of rows persisted. */
 async function chunkedInsert<TRow>(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table type
   table: any,
   rows: TRow[],
-  label: string
+  label: string,
+  options?: PersistDatasetRowsOptions
 ): Promise<number> {
   if (rows.length === 0) return 0;
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
   let inserted = 0;
+  options?.onProgress?.(0, rows.length);
   for (let i = 0; i < rows.length; i += INSERT_CHUNK_SIZE) {
     const chunk = rows.slice(i, i + INSERT_CHUNK_SIZE);
     await withDbRetry(`insert ${label} chunk`, () =>
       db.insert(table).values(chunk as never)
     );
     inserted += chunk.length;
+    options?.onProgress?.(inserted, rows.length);
   }
   return inserted;
 }
@@ -119,7 +127,8 @@ async function chunkedInsert<TRow>(
 const persistSolarApplications: DatasetInserter = async (
   scopeId,
   batchId,
-  rows
+  rows,
+  options
 ) => {
   const values = rows.map((row) => ({
     id: nanoid(),
@@ -148,10 +157,20 @@ const persistSolarApplications: DatasetInserter = async (
     zipCode: clip(pick(row, "zip_code"), 16),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(srDsSolarApplications, values, "solarApplications");
+  return chunkedInsert(
+    srDsSolarApplications,
+    values,
+    "solarApplications",
+    options
+  );
 };
 
-const persistAbpReport: DatasetInserter = async (scopeId, batchId, rows) => {
+const persistAbpReport: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
   const values = rows.map((row) => ({
     id: nanoid(),
     scopeId,
@@ -172,13 +191,14 @@ const persistAbpReport: DatasetInserter = async (scopeId, batchId, rows) => {
     ),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(srDsAbpReport, values, "abpReport");
+  return chunkedInsert(srDsAbpReport, values, "abpReport", options);
 };
 
 const persistGenerationEntry: DatasetInserter = async (
   scopeId,
   batchId,
-  rows
+  rows,
+  options
 ) => {
   const values = rows.map((row) => ({
     id: nanoid(),
@@ -200,13 +220,19 @@ const persistGenerationEntry: DatasetInserter = async (
     ),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(srDsGenerationEntry, values, "generationEntry");
+  return chunkedInsert(
+    srDsGenerationEntry,
+    values,
+    "generationEntry",
+    options
+  );
 };
 
 const persistAccountSolarGeneration: DatasetInserter = async (
   scopeId,
   batchId,
-  rows
+  rows,
+  options
 ) => {
   const values = rows.map((row) => ({
     id: nanoid(),
@@ -222,14 +248,16 @@ const persistAccountSolarGeneration: DatasetInserter = async (
   return chunkedInsert(
     srDsAccountSolarGeneration,
     values,
-    "accountSolarGeneration"
+    "accountSolarGeneration",
+    options
   );
 };
 
 const persistContractedDate: DatasetInserter = async (
   scopeId,
   batchId,
-  rows
+  rows,
+  options
 ) => {
   const values = rows.map((row) => ({
     id: nanoid(),
@@ -238,13 +266,19 @@ const persistContractedDate: DatasetInserter = async (
     systemId: clip(pick(row, "id", "system_id"), 64),
     contractedDate: clip(pick(row, "contracted"), 32),
   }));
-  return chunkedInsert(srDsContractedDate, values, "contractedDate");
+  return chunkedInsert(
+    srDsContractedDate,
+    values,
+    "contractedDate",
+    options
+  );
 };
 
 const persistDeliverySchedule: DatasetInserter = async (
   scopeId,
   batchId,
-  rows
+  rows,
+  options
 ) => {
   const values = rows.map((row) => ({
     id: nanoid(),
@@ -266,13 +300,19 @@ const persistDeliverySchedule: DatasetInserter = async (
     ),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(srDsDeliverySchedule, values, "deliveryScheduleBase");
+  return chunkedInsert(
+    srDsDeliverySchedule,
+    values,
+    "deliveryScheduleBase",
+    options
+  );
 };
 
 const persistTransferHistory: DatasetInserter = async (
   scopeId,
   batchId,
-  rows
+  rows,
+  options
 ) => {
   const values = rows.map((row) => ({
     id: nanoid(),
@@ -289,7 +329,12 @@ const persistTransferHistory: DatasetInserter = async (
     transferee: clip(pick(row, "Transferee", "transferee"), 255),
     rawRow: JSON.stringify(row),
   }));
-  return chunkedInsert(srDsTransferHistory, values, "transferHistory");
+  return chunkedInsert(
+    srDsTransferHistory,
+    values,
+    "transferHistory",
+    options
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -317,11 +362,12 @@ export async function persistDatasetRows(
   scopeId: string,
   batchId: string,
   datasetKey: string,
-  rows: CsvRow[]
+  rows: CsvRow[],
+  options?: PersistDatasetRowsOptions
 ): Promise<number> {
   const persister = PERSISTERS[datasetKey];
   if (!persister) return 0;
-  return persister(scopeId, batchId, rows);
+  return persister(scopeId, batchId, rows, options);
 }
 
 /**

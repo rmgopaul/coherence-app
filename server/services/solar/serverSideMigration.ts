@@ -26,6 +26,10 @@ import {
   parseChunkPointerPayload,
   parseScheduleBRemoteSourceManifest,
 } from "../../routers/helpers";
+import {
+  buildSyncProgress,
+  type CoreDatasetSyncProgress,
+} from "./coreDatasetSyncProgress";
 
 // ---------------------------------------------------------------------------
 // Dataset list
@@ -46,6 +50,8 @@ export type CoreDatasetKey = (typeof CORE_DATASETS)[number];
 export function isCoreDatasetKey(key: string): key is CoreDatasetKey {
   return (CORE_DATASETS as readonly string[]).includes(key);
 }
+
+type DatasetSyncProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 /**
  * Core datasets that accumulate across uploads rather than being
@@ -194,7 +200,8 @@ function mergeCsvTexts(csvs: string[]): string {
 
 async function loadDatasetPayload(
   userId: number,
-  datasetKey: string
+  datasetKey: string,
+  reportProgress?: DatasetSyncProgressReporter
 ): Promise<string | null> {
   const basePayload = await getSolarRecDashboardPayload(
     userId,
@@ -206,7 +213,19 @@ async function loadDatasetPayload(
   const sourceManifest = parseScheduleBRemoteSourceManifest(basePayload);
   if (sourceManifest && sourceManifest.length > 0) {
     const sourceCsvs: string[] = [];
-    for (const source of sourceManifest) {
+    reportProgress?.(
+      buildSyncProgress({
+        phase: "loading_payload",
+        startPercent: 0,
+        endPercent: 15,
+        current: 0,
+        total: sourceManifest.length,
+        unitLabel: "files",
+        message: "Loading uploaded source files",
+      })
+    );
+    for (let index = 0; index < sourceManifest.length; index += 1) {
+      const source = sourceManifest[index]!;
       const raw = await loadRawSource(userId, source.storageKey);
       if (!raw) continue;
       const decoded =
@@ -214,6 +233,17 @@ async function loadDatasetPayload(
           ? Buffer.from(raw, "base64").toString("utf8")
           : raw;
       if (decoded.length > 0) sourceCsvs.push(decoded);
+      reportProgress?.(
+        buildSyncProgress({
+          phase: "loading_payload",
+          startPercent: 0,
+          endPercent: 15,
+          current: index + 1,
+          total: sourceManifest.length,
+          unitLabel: "files",
+          message: "Loading uploaded source files",
+        })
+      );
     }
     if (sourceCsvs.length === 0) return null;
     return mergeCsvTexts(sourceCsvs);
@@ -223,7 +253,19 @@ async function loadDatasetPayload(
   const chunkKeys = parseChunkPointerPayload(basePayload);
   if (chunkKeys && chunkKeys.length > 0) {
     let merged = "";
-    for (const chunkKey of chunkKeys) {
+    reportProgress?.(
+      buildSyncProgress({
+        phase: "loading_payload",
+        startPercent: 0,
+        endPercent: 15,
+        current: 0,
+        total: chunkKeys.length,
+        unitLabel: "chunks",
+        message: "Loading uploaded source chunks",
+      })
+    );
+    for (let index = 0; index < chunkKeys.length; index += 1) {
+      const chunkKey = chunkKeys[index]!;
       const chunk = await getSolarRecDashboardPayload(
         userId,
         `dataset:${chunkKey}`
@@ -234,6 +276,17 @@ async function loadDatasetPayload(
         );
       }
       merged += chunk;
+      reportProgress?.(
+        buildSyncProgress({
+          phase: "loading_payload",
+          startPercent: 0,
+          endPercent: 15,
+          current: index + 1,
+          total: chunkKeys.length,
+          unitLabel: "chunks",
+          message: "Loading uploaded source chunks",
+        })
+      );
     }
     return merged;
   }
@@ -249,7 +302,8 @@ async function loadDatasetPayload(
 async function migrateOneDataset(
   scopeId: string,
   datasetKey: CoreDatasetKey,
-  ownerUserId: number
+  ownerUserId: number,
+  reportProgress?: DatasetSyncProgressReporter
 ): Promise<DatasetMigrationStatus> {
   const start = Date.now();
 
@@ -258,7 +312,7 @@ async function migrateOneDataset(
   // internally.
   let csvText: string | null = null;
   try {
-    csvText = await loadDatasetPayload(ownerUserId, datasetKey);
+    csvText = await loadDatasetPayload(ownerUserId, datasetKey, reportProgress);
   } catch (err) {
     return {
       datasetKey,
@@ -306,7 +360,8 @@ async function migrateOneDataset(
       csvText,
       fileName,
       mode,
-      ownerUserId
+      ownerUserId,
+      reportProgress
     );
 
     if (result.status === "failed") {
@@ -349,7 +404,8 @@ async function migrateOneDataset(
 export async function syncOneCoreDatasetFromStorage(
   scopeId: string,
   datasetKey: string,
-  ownerUserId: number
+  ownerUserId: number,
+  reportProgress?: DatasetSyncProgressReporter
 ): Promise<DatasetMigrationStatus> {
   if (!isCoreDatasetKey(datasetKey)) {
     return {
@@ -358,7 +414,7 @@ export async function syncOneCoreDatasetFromStorage(
       reason: "Not a core dataset — no srDs* table for this key",
     };
   }
-  return migrateOneDataset(scopeId, datasetKey, ownerUserId);
+  return migrateOneDataset(scopeId, datasetKey, ownerUserId, reportProgress);
 }
 
 // ---------------------------------------------------------------------------

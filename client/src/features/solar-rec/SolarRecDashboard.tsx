@@ -9,6 +9,7 @@ import autoTable, { type CellHookData } from "jspdf-autotable";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 // Table primitives + Sheet — removed in Phases 11–12; the only
 // remaining parent-level table consumers were the SystemDetailSheet
@@ -945,6 +946,40 @@ type RemoteDatasetManifestEntry = {
 };
 
 type DatasetCloudSyncStatus = "pending" | "synced" | "failed" | "not-synced";
+
+type DatasetSyncProgressState = {
+  stage: "uploading" | "database-sync" | "refreshing-snapshot";
+  percent: number;
+  message: string;
+  current?: number;
+  total?: number;
+  unitLabel?: string;
+  jobId?: string;
+  updatedAt: number;
+};
+
+function clampSyncPercent(value: number | null | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, value));
+}
+
+function formatSyncProgressUnits(progress: DatasetSyncProgressState): string | null {
+  if (
+    typeof progress.current !== "number" ||
+    typeof progress.total !== "number" ||
+    progress.total <= 0
+  ) {
+    return null;
+  }
+
+  if (progress.unitLabel === "bytes") {
+    const toMb = (value: number) => `${formatNumber(value / 1024 / 1024, 1)} MB`;
+    return `${toMb(progress.current)} / ${toMb(progress.total)}`;
+  }
+
+  const unitLabel = progress.unitLabel ?? "items";
+  return `${formatNumber(progress.current)} / ${formatNumber(progress.total)} ${unitLabel}`;
+}
 
 type SerializedDashboardLogEntry = Omit<DashboardLogEntry, "createdAt" | "datasets" | "cooStatuses"> & {
   createdAt: string;
@@ -2018,6 +2053,9 @@ export default function SolarRecDashboard() {
   const [datasetCloudSyncStatus, setDatasetCloudSyncStatus] = useState<
     Partial<Record<DatasetKey, DatasetCloudSyncStatus>>
   >({});
+  const [datasetSyncProgress, setDatasetSyncProgress] = useState<
+    Partial<Record<DatasetKey, DatasetSyncProgressState>>
+  >({});
   const [forceSyncingDatasets, setForceSyncingDatasets] = useState<Partial<Record<DatasetKey, boolean>>>({});
   const [migratingLocalOnlyDatasets, setMigratingLocalOnlyDatasets] = useState(false);
   const [remoteSourceManifests, setRemoteSourceManifests] = useState<
@@ -2072,6 +2110,35 @@ export default function SolarRecDashboard() {
   const syncCoreDatasetToSrDsRef = useRef(syncCoreDatasetToSrDs);
   syncCoreDatasetToSrDsRef.current = syncCoreDatasetToSrDs;
   const activeCoreDatasetSyncJobRef = useRef<Partial<Record<DatasetKey, string>>>({});
+  const setDatasetSyncProgressState = useCallback(
+    (key: DatasetKey, progress: DatasetSyncProgressState | undefined) => {
+      setDatasetSyncProgress((previous) => {
+        if (!progress) {
+          if (!previous[key]) return previous;
+          const next = { ...previous };
+          delete next[key];
+          return next;
+        }
+
+        const existing = previous[key];
+        if (
+          existing &&
+          existing.stage === progress.stage &&
+          existing.percent === progress.percent &&
+          existing.message === progress.message &&
+          existing.current === progress.current &&
+          existing.total === progress.total &&
+          existing.unitLabel === progress.unitLabel &&
+          existing.jobId === progress.jobId
+        ) {
+          return previous;
+        }
+
+        return { ...previous, [key]: progress };
+      });
+    },
+    []
+  );
 
   /**
    * Core-dataset keys whose uploads should re-sync into the typed
@@ -2091,6 +2158,36 @@ export default function SolarRecDashboard() {
         "transferHistory",
       ]),
     []
+  );
+
+  const setDatabaseSyncProgressFromStatus = useCallback(
+    (
+      key: DatasetKey,
+      jobId: string,
+      status: {
+        progress?: {
+          percent: number;
+          message: string;
+          current: number;
+          total: number;
+          unitLabel: string;
+        } | null;
+      } | null
+    ) => {
+      const progress = status?.progress;
+      if (!progress) return;
+      setDatasetSyncProgressState(key, {
+        stage: "database-sync",
+        percent: clampSyncPercent(progress.percent),
+        message: progress.message,
+        current: progress.current,
+        total: progress.total,
+        unitLabel: progress.unitLabel,
+        jobId,
+        updatedAt: Date.now(),
+      });
+    },
+    [setDatasetSyncProgressState]
   );
 
   /**
@@ -2136,6 +2233,16 @@ export default function SolarRecDashboard() {
         }
 
         activeCoreDatasetSyncJobRef.current[key as DatasetKey] = jobId;
+        setDatasetSyncProgressState(key as DatasetKey, {
+          stage: "database-sync",
+          percent: 0,
+          message: "Queued for database sync",
+          current: 0,
+          total: 1,
+          unitLabel: "steps",
+          jobId,
+          updatedAt: Date.now(),
+        });
 
         const deadlineMs = Date.now() + 10 * 60 * 1000; // 10-min cap
         const POLL_INTERVAL_MS = 2000;
@@ -2151,6 +2258,12 @@ export default function SolarRecDashboard() {
             .fetch({ jobId })
             .catch(() => null);
 
+          setDatabaseSyncProgressFromStatus(
+            key as DatasetKey,
+            jobId,
+            status
+          );
+
           if (!status || status.state === "pending" || status.state === "running") {
             await new Promise<void>((resolve) =>
               window.setTimeout(resolve, POLL_INTERVAL_MS)
@@ -2163,6 +2276,7 @@ export default function SolarRecDashboard() {
           }
 
           if (status.state === "failed") {
+            setDatasetSyncProgressState(key as DatasetKey, undefined);
             // eslint-disable-next-line no-console
             console.warn(
               `[solar-rec] srDs sync for ${key} failed:`,
@@ -2178,25 +2292,44 @@ export default function SolarRecDashboard() {
           // before the restart.
           const sid = scopeIdRef.current;
           if (!sid) return;
+          setDatasetSyncProgressState(key as DatasetKey, {
+            stage: "refreshing-snapshot",
+            percent: 100,
+            message: "Refreshing server snapshot",
+            current: 1,
+            total: 1,
+            unitLabel: "steps",
+            jobId,
+            updatedAt: Date.now(),
+          });
           await Promise.all([
             trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
             trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
             trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
             trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
           ]);
+          window.setTimeout(() => {
+            setDatasetSyncProgressState(key as DatasetKey, undefined);
+          }, 1500);
           return;
         }
 
         if (activeCoreDatasetSyncJobRef.current[key as DatasetKey] === jobId) {
           delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
         }
+        setDatasetSyncProgressState(key as DatasetKey, undefined);
         // eslint-disable-next-line no-console
         console.warn(
           `[solar-rec] srDs sync for ${key} polling timed out after 10min`
         );
       })();
     },
-    [CORE_DATASET_KEYS_FOR_SNAPSHOT, trpcUtils]
+    [
+      CORE_DATASET_KEYS_FOR_SNAPSHOT,
+      setDatabaseSyncProgressFromStatus,
+      setDatasetSyncProgressState,
+      trpcUtils,
+    ]
   );
   const saveRemoteDashboardStateRef = useRef(saveRemoteDashboardState);
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
@@ -2536,6 +2669,8 @@ export default function SolarRecDashboard() {
             jobId,
           }).catch(() => null);
 
+        setDatabaseSyncProgressFromStatus(key, jobId, status);
+
         if (!status || status.state === "running" || status.state === "pending") {
           await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
           continue;
@@ -2546,6 +2681,7 @@ export default function SolarRecDashboard() {
         }
 
         if (status.state === "failed") {
+          setDatasetSyncProgressState(key, undefined);
           // eslint-disable-next-line no-console
           console.warn(`[solar-rec] srDs sync for ${key} failed:`, status.error);
           return;
@@ -2557,17 +2693,36 @@ export default function SolarRecDashboard() {
         // still invalidate because a batch may have activated
         // before the restart and the client would otherwise keep
         // serving its stale cache forever.
+        setDatasetSyncProgressState(key, {
+          stage: "refreshing-snapshot",
+          percent: 100,
+          message: "Refreshing server snapshot",
+          current: 1,
+          total: 1,
+          unitLabel: "steps",
+          jobId,
+          updatedAt: Date.now(),
+        });
         await invalidateServerDerivedSolarData();
+        window.setTimeout(() => {
+          setDatasetSyncProgressState(key, undefined);
+        }, 1500);
         return;
       }
 
       if (activeCoreDatasetSyncJobRef.current[key] === jobId) {
         delete activeCoreDatasetSyncJobRef.current[key];
       }
+      setDatasetSyncProgressState(key, undefined);
       // eslint-disable-next-line no-console
       console.warn(`[solar-rec] srDs sync for ${key} did not finish before client polling timed out.`);
     },
-    [invalidateServerDerivedSolarData, trpcUtils]
+    [
+      invalidateServerDerivedSolarData,
+      setDatabaseSyncProgressFromStatus,
+      setDatasetSyncProgressState,
+      trpcUtils,
+    ]
   );
 
   // Resume polling for any background sync job that was already
@@ -2590,6 +2745,18 @@ export default function SolarRecDashboard() {
           continue;
         }
         activeCoreDatasetSyncJobRef.current[job.datasetKey] = job.jobId;
+        setDatabaseSyncProgressFromStatus(job.datasetKey, job.jobId, {
+          progress:
+            (job as {
+              progress?: {
+                percent: number;
+                message: string;
+                current: number;
+                total: number;
+                unitLabel: string;
+              } | null;
+            }).progress ?? null,
+        });
         void pollCoreDatasetSyncJob(job.datasetKey, job.jobId);
       }
     })();
@@ -2627,11 +2794,16 @@ export default function SolarRecDashboard() {
   }, [uploadRemoteChunkPayload]);
 
   const saveRemoteTextFileWithChunks = useCallback(
-    async (key: string, file: File): Promise<string[]> => {
+    async (
+      key: string,
+      file: File,
+      onProgress?: (processedBytes: number, totalBytes: number) => void
+    ): Promise<string[]> => {
       const chunkKeys: string[] = [];
       const decoder = new TextDecoder();
       let chunkIndex = 0;
       let bufferedText = "";
+      onProgress?.(0, file.size);
 
       const flushBufferedText = async (force = false) => {
         while (
@@ -2652,26 +2824,34 @@ export default function SolarRecDashboard() {
         const isLastSlice = offset + REMOTE_FILE_STREAM_SLICE_BYTES >= file.size;
         bufferedText += decoder.decode(bytes, { stream: !isLastSlice });
         await flushBufferedText(false);
+        onProgress?.(Math.min(offset + bytes.length, file.size), file.size);
       }
 
       await flushBufferedText(true);
       if (chunkKeys.length === 0) {
         await uploadRemoteChunkPayload(key, "");
+        onProgress?.(file.size, file.size);
         return [];
       }
 
       await uploadRemoteChunkPayload(key, buildChunkPointerPayload(chunkKeys));
+      onProgress?.(file.size, file.size);
       return chunkKeys;
     },
     [uploadRemoteChunkPayload]
   );
 
   const saveRemoteBinaryFileWithChunks = useCallback(
-    async (key: string, file: File): Promise<string[]> => {
+    async (
+      key: string,
+      file: File,
+      onProgress?: (processedBytes: number, totalBytes: number) => void
+    ): Promise<string[]> => {
       const chunkKeys: string[] = [];
       let chunkIndex = 0;
       let bufferedBase64 = "";
       let carryBytes = new Uint8Array(0);
+      onProgress?.(0, file.size);
 
       const flushBufferedBase64 = async (force = false) => {
         while (
@@ -2698,6 +2878,7 @@ export default function SolarRecDashboard() {
         }
 
         carryBytes = combined.slice(fullGroupLength);
+        onProgress?.(Math.min(offset + bytes.length, file.size), file.size);
       }
 
       if (carryBytes.length > 0) {
@@ -2707,10 +2888,12 @@ export default function SolarRecDashboard() {
       await flushBufferedBase64(true);
       if (chunkKeys.length === 0) {
         await uploadRemoteChunkPayload(key, "");
+        onProgress?.(file.size, file.size);
         return [];
       }
 
       await uploadRemoteChunkPayload(key, buildChunkPointerPayload(chunkKeys));
+      onProgress?.(file.size, file.size);
       return chunkKeys;
     },
     [uploadRemoteChunkPayload]
@@ -2792,10 +2975,26 @@ export default function SolarRecDashboard() {
         // so the server-side system snapshot rebuilds with the new
         // rows. Doesn't block the user — if the sync fails the old
         // srDs batch stays active as the reader's source of truth.
-        triggerCoreDatasetSrDsSync(key);
+        if (CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) {
+          triggerCoreDatasetSrDsSync(key);
+        } else {
+          setDatasetSyncProgressState(key, {
+            stage: "uploading",
+            percent: 100,
+            message: "Cloud upload complete",
+            current: latestSource?.sizeBytes ?? rowCount,
+            total: latestSource?.sizeBytes ?? rowCount,
+            unitLabel: latestSource?.sizeBytes ? "bytes" : "rows",
+            updatedAt: Date.now(),
+          });
+          window.setTimeout(() => {
+            setDatasetSyncProgressState(key, undefined);
+          }, 1500);
+        }
 
         return true;
       } catch (error) {
+        setDatasetSyncProgressState(key, undefined);
         setDatasetCloudSyncBadge(key, "failed");
         const message =
           error instanceof Error ? error.message : "Unknown error while syncing source manifest to cloud.";
@@ -2807,7 +3006,9 @@ export default function SolarRecDashboard() {
       invalidateDatasetCloudStatuses,
       saveRemotePayloadWithChunks,
       setDatasetCloudSyncBadge,
+      setDatasetSyncProgressState,
       triggerCoreDatasetSrDsSync,
+      CORE_DATASET_KEYS_FOR_SNAPSHOT,
     ]
   );
 
@@ -2818,7 +3019,8 @@ export default function SolarRecDashboard() {
         file: File;
         uploadedAt: Date;
         rowCount: number;
-      }
+      },
+      onProgress?: (processedBytes: number, totalBytes: number) => void
     ): Promise<RemoteDatasetSourceRef> => {
       const sourceId = createRemoteSourceId();
       const storageKey = buildRemoteSourceStorageKey(key, sourceId);
@@ -2833,8 +3035,8 @@ export default function SolarRecDashboard() {
       // the entire payload in browser memory before chunking,
       // which could OOM the tab on large CSVs (200MB+).
       const chunkKeys = csvLike
-        ? await saveRemoteTextFileWithChunks(storageKey, source.file)
-        : await saveRemoteBinaryFileWithChunks(storageKey, source.file);
+        ? await saveRemoteTextFileWithChunks(storageKey, source.file, onProgress)
+        : await saveRemoteBinaryFileWithChunks(storageKey, source.file, onProgress);
 
       return {
         id: sourceId,
@@ -2867,10 +3069,61 @@ export default function SolarRecDashboard() {
         const previousManifest = remoteSourceManifestsRef.current[key];
         const previousSources = previousManifest?.sources ?? [];
         const uploadedSources: RemoteDatasetSourceRef[] = [];
+        const totalBytes = uploads.reduce(
+          (sum, source) => sum + Math.max(source.file.size, 0),
+          0
+        );
+        let completedBytes = 0;
 
-        for (const source of uploads) {
-          const uploadedSource = await uploadRemoteSourceFile(key, source);
+        setDatasetSyncProgressState(key, {
+          stage: "uploading",
+          percent: 0,
+          message:
+            uploads.length > 1
+              ? "Uploading source files to cloud"
+              : "Uploading source file to cloud",
+          current: 0,
+          total: totalBytes,
+          unitLabel: "bytes",
+          updatedAt: Date.now(),
+        });
+
+        for (let index = 0; index < uploads.length; index += 1) {
+          const source = uploads[index]!;
+          const uploadedSource = await uploadRemoteSourceFile(
+            key,
+            source,
+            (processedBytes, sourceTotalBytes) => {
+              const currentBytes = completedBytes + processedBytes;
+              setDatasetSyncProgressState(key, {
+                stage: "uploading",
+                percent: clampSyncPercent(
+                  totalBytes > 0 ? (currentBytes / totalBytes) * 100 : 100
+                ),
+                message:
+                  uploads.length > 1
+                    ? `Uploading source files (${index + 1}/${uploads.length})`
+                    : "Uploading source file to cloud",
+                current: currentBytes,
+                total: totalBytes,
+                unitLabel: "bytes",
+                updatedAt: Date.now(),
+              });
+              if (sourceTotalBytes === 0 && totalBytes === 0) {
+                setDatasetSyncProgressState(key, {
+                  stage: "uploading",
+                  percent: 100,
+                  message: "Uploading source file to cloud",
+                  current: 0,
+                  total: 0,
+                  unitLabel: "bytes",
+                  updatedAt: Date.now(),
+                });
+              }
+            }
+          );
           uploadedSources.push(uploadedSource);
+          completedBytes += Math.max(source.file.size, 0);
         }
 
         const mergedSources =
@@ -2902,13 +3155,20 @@ export default function SolarRecDashboard() {
         }
         return synced;
       } catch (error) {
+        setDatasetSyncProgressState(key, undefined);
         const message = error instanceof Error ? error.message : "Unknown error while syncing source files to cloud.";
         setDatasetCloudSyncBadge(key, "failed");
         setStorageNotice(`Could not sync ${DATASET_DEFINITIONS[key].label} source file(s) to cloud: ${message}`);
         return false;
       }
     },
-    [clearRemotePayloadWithChunks, setDatasetCloudSyncBadge, syncDatasetSourceManifestToCloud, uploadRemoteSourceFile]
+    [
+      clearRemotePayloadWithChunks,
+      setDatasetCloudSyncBadge,
+      setDatasetSyncProgressState,
+      syncDatasetSourceManifestToCloud,
+      uploadRemoteSourceFile,
+    ]
   );
 
   // Phase 14: unmount cleanup now terminates every worker in the
@@ -3230,9 +3490,11 @@ export default function SolarRecDashboard() {
     setUploadErrors((previous) => ({ ...previous, [key]: undefined }));
     setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
     setDatasetCloudSyncBadge(key, undefined);
+    setDatasetSyncProgressState(key, undefined);
     setForceSyncingDatasets((previous) => ({ ...previous, [key]: false }));
     setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
     forcedRemoteDatasetSyncKeysRef.current.delete(key);
+    delete activeCoreDatasetSyncJobRef.current[key];
   };
 
   const clearAll = () => {
@@ -3240,9 +3502,11 @@ export default function SolarRecDashboard() {
     setUploadErrors({});
     setLocalOnlyDatasets({});
     setDatasetCloudSyncStatus({});
+    setDatasetSyncProgress({});
     setForceSyncingDatasets({});
     setRemoteSourceManifests({});
     forcedRemoteDatasetSyncKeysRef.current.clear();
+    activeCoreDatasetSyncJobRef.current = {};
     // meterReads state is now owned by MeterReadsTab; it resets on unmount.
   };
 
@@ -5671,6 +5935,16 @@ export default function SolarRecDashboard() {
     ? CORE_REQUIRED_DATASET_KEYS.filter((key) => !datasets[key])
     : [];
 
+  const activeDatasetSyncProgress = useMemo(() => {
+    const entries = Object.entries(datasetSyncProgress) as Array<
+      [DatasetKey, DatasetSyncProgressState]
+    >;
+    if (entries.length === 0) return null;
+    entries.sort((left, right) => right[1].updatedAt - left[1].updatedAt);
+    const [datasetKey, progress] = entries[0]!;
+    return { datasetKey, progress };
+  }, [datasetSyncProgress]);
+
   const dataHealthSummary = useMemo(() => {
     const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
     const totalRowsLoaded = loadedDatasetKeys.reduce((sum, key) => sum + (datasets[key]?.rows.length ?? 0), 0);
@@ -6403,6 +6677,26 @@ const aiDataContext = useMemo(() => {
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 xl:col-span-2">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Cloud Sync</p>
                 <p className="text-sm font-semibold text-slate-900">{dataHealthSummary.syncStatus}</p>
+                {activeDatasetSyncProgress ? (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="flex items-center justify-between gap-3 text-xs text-slate-700">
+                      <span className="truncate font-medium">
+                        {DATASET_DEFINITIONS[activeDatasetSyncProgress.datasetKey].label}:{" "}
+                        {activeDatasetSyncProgress.progress.message}
+                      </span>
+                      <span>{formatNumber(activeDatasetSyncProgress.progress.percent, 0)}%</span>
+                    </div>
+                    <Progress
+                      value={activeDatasetSyncProgress.progress.percent}
+                      className="h-2 bg-sky-100"
+                    />
+                    {formatSyncProgressUnits(activeDatasetSyncProgress.progress) ? (
+                      <p className="text-[11px] text-slate-600">
+                        {formatSyncProgressUnits(activeDatasetSyncProgress.progress)}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 {dataHealthSummary.staleDatasetLabels.length > 0 ? (
                   <p className="mt-1 text-xs text-amber-800">
                     Stale: {dataHealthSummary.staleDatasetLabels.join(", ")}
@@ -7032,6 +7326,7 @@ const aiDataContext = useMemo(() => {
                     (dataset.fileName.toLowerCase().includes("cloud-backfill") ||
                       dataset.sources?.some((source) => source.fileName.toLowerCase().includes("cloud-backfill")))
                 );
+                const syncProgress = datasetSyncProgress[key];
                 const overrideCloudStatus = datasetCloudSyncStatus[key];
                 let cloudStatusForDataset: DatasetCloudSyncStatus | undefined = overrideCloudStatus;
                 if (!cloudStatusForDataset && !localOnlyDatasets[key]) {
@@ -7166,6 +7461,21 @@ const aiDataContext = useMemo(() => {
                         Not uploaded
                       </Badge>
                     )}
+
+                    {syncProgress ? (
+                      <div className="space-y-1.5 rounded-md border border-sky-200 bg-sky-50/70 px-3 py-2">
+                        <div className="flex items-center justify-between gap-3 text-xs text-sky-900">
+                          <span className="font-medium">{syncProgress.message}</span>
+                          <span>{formatNumber(syncProgress.percent, 0)}%</span>
+                        </div>
+                        <Progress value={syncProgress.percent} className="h-2 bg-sky-100" />
+                        {formatSyncProgressUnits(syncProgress) ? (
+                          <p className="text-[11px] text-sky-900/80">
+                            {formatSyncProgressUnits(syncProgress)}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
 
                     {error ? <p className="text-xs text-rose-700">{error}</p> : null}
                     {hydrationError ? (

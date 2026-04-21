@@ -319,8 +319,13 @@ export const solarRecDashboardRouter = router({
       const scopeId = await resolveSolarRecScopeId();
       const ownerUserId = await resolveSolarRecOwnerUserId();
       await getOrCreateScope(scopeId, ownerUserId);
-      const jobId = startSyncJob(scopeId, input.datasetKey, () =>
-        syncOneCoreDatasetFromStorage(scopeId, input.datasetKey, ownerUserId)
+      const jobId = startSyncJob(scopeId, input.datasetKey, (reportProgress) =>
+        syncOneCoreDatasetFromStorage(
+          scopeId,
+          input.datasetKey,
+          ownerUserId,
+          reportProgress
+        )
       );
       return { jobId, state: "pending" as const };
     }),
@@ -342,6 +347,7 @@ export const solarRecDashboardRouter = router({
         return {
           state: "unknown" as const,
           error: null,
+          progress: null,
         };
       }
       return {

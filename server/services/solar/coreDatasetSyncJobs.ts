@@ -32,6 +32,10 @@
 
 import { nanoid } from "nanoid";
 import type { DatasetMigrationStatus } from "./serverSideMigration";
+import {
+  buildSyncProgress,
+  type CoreDatasetSyncProgress,
+} from "./coreDatasetSyncProgress";
 
 export type CoreDatasetSyncJobState =
   | {
@@ -41,6 +45,7 @@ export type CoreDatasetSyncJobState =
       state: "pending";
       startedAt: string;
       updatedAt: string;
+      progress: CoreDatasetSyncProgress;
       error: null;
     }
   | {
@@ -50,6 +55,7 @@ export type CoreDatasetSyncJobState =
       state: "running";
       startedAt: string;
       updatedAt: string;
+      progress: CoreDatasetSyncProgress;
       error: null;
     }
   | {
@@ -60,6 +66,7 @@ export type CoreDatasetSyncJobState =
       startedAt: string;
       updatedAt: string;
       completedAt: string;
+      progress: CoreDatasetSyncProgress;
       result: DatasetMigrationStatus;
       error: null;
     }
@@ -71,6 +78,7 @@ export type CoreDatasetSyncJobState =
       startedAt: string;
       updatedAt: string;
       completedAt: string;
+      progress: CoreDatasetSyncProgress;
       result: DatasetMigrationStatus | null;
       error: string;
     };
@@ -155,7 +163,9 @@ export function listActiveJobsForScope(
 export function startSyncJob(
   scopeId: string,
   datasetKey: string,
-  runIngest: () => Promise<DatasetMigrationStatus>
+  runIngest: (
+    reportProgress: (progress: CoreDatasetSyncProgress) => void
+  ) => Promise<DatasetMigrationStatus>
 ): string {
   const key = flightKey(scopeId, datasetKey);
   const existingId = activeJobByFlightKey.get(key);
@@ -178,6 +188,15 @@ export function startSyncJob(
     state: "pending",
     startedAt: now,
     updatedAt: now,
+    progress: buildSyncProgress({
+      phase: "pending",
+      startPercent: 0,
+      endPercent: 0,
+      current: 0,
+      total: 1,
+      unitLabel: "steps",
+      message: "Queued for database sync",
+    }),
     error: null,
   };
   jobs.set(jobId, initial);
@@ -195,7 +214,9 @@ export function startSyncJob(
 async function runJobInBackground(
   jobId: string,
   key: string,
-  runIngest: () => Promise<DatasetMigrationStatus>
+  runIngest: (
+    reportProgress: (progress: CoreDatasetSyncProgress) => void
+  ) => Promise<DatasetMigrationStatus>
 ): Promise<void> {
   const initial = jobs.get(jobId);
   if (!initial) return;
@@ -213,11 +234,20 @@ async function runJobInBackground(
     ...baseIdentity,
     state: "running",
     updatedAt: new Date().toISOString(),
+    progress: initial.progress,
     error: null,
   });
 
   try {
-    const result = await runIngest();
+    const result = await runIngest((progress) => {
+      jobs.set(jobId, {
+        ...baseIdentity,
+        state: "running",
+        updatedAt: new Date().toISOString(),
+        progress,
+        error: null,
+      });
+    });
     const completedAt = new Date().toISOString();
     if (result.state === "failed") {
       jobs.set(jobId, {
@@ -225,6 +255,17 @@ async function runJobInBackground(
         state: "failed",
         updatedAt: completedAt,
         completedAt,
+        progress:
+          jobs.get(jobId)?.progress ??
+          buildSyncProgress({
+            phase: "pending",
+            startPercent: 0,
+            endPercent: 0,
+            current: 0,
+            total: 1,
+            unitLabel: "steps",
+            message: "Sync failed",
+          }),
         result,
         error:
           result.error ??
@@ -236,6 +277,15 @@ async function runJobInBackground(
         state: "done",
         updatedAt: completedAt,
         completedAt,
+        progress: buildSyncProgress({
+          phase: "completed",
+          startPercent: 100,
+          endPercent: 100,
+          current: 1,
+          total: 1,
+          unitLabel: "steps",
+          message: "Database sync complete",
+        }),
         result,
         error: null,
       });
@@ -253,6 +303,17 @@ async function runJobInBackground(
       state: "failed",
       updatedAt: completedAt,
       completedAt,
+      progress:
+        jobs.get(jobId)?.progress ??
+        buildSyncProgress({
+          phase: "pending",
+          startPercent: 0,
+          endPercent: 0,
+          current: 0,
+          total: 1,
+          unitLabel: "steps",
+          message: "Sync failed",
+        }),
       result: null,
       error: message,
     });

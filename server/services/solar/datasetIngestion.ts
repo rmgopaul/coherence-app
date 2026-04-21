@@ -5,7 +5,6 @@
  * and batch creation for the server-side dataset architecture.
  */
 
-import { nanoid } from "nanoid";
 import { parseCsvText } from "../../routers/helpers";
 import {
   createImportBatch,
@@ -21,6 +20,10 @@ import {
   hasPersistence,
   cloneDatasetBatchRows,
 } from "./datasetRowPersistence";
+import {
+  buildSyncProgress,
+  type CoreDatasetSyncProgress,
+} from "./coreDatasetSyncProgress";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,6 +45,8 @@ export type DatasetDefinition = {
   multiFileAppend: boolean;
   rowKeyFields?: string[]; // fields that form the dedup key for append datasets
 };
+
+type IngestProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 // ---------------------------------------------------------------------------
 // Dataset definitions (server-side mirror of client DATASET_DEFINITIONS)
@@ -198,7 +203,8 @@ export async function ingestDataset(
   csvText: string,
   fileName: string,
   mode: "replace" | "append",
-  importedBy: number
+  importedBy: number,
+  reportProgress?: IngestProgressReporter
 ): Promise<IngestResult> {
   const definition = CORE_DATASET_DEFINITIONS[datasetKey];
   if (!definition) {
@@ -242,7 +248,29 @@ export async function ingestDataset(
     });
 
     // Parse CSV
+    reportProgress?.(
+      buildSyncProgress({
+        phase: "parsing_csv",
+        startPercent: 15,
+        endPercent: 25,
+        current: 0,
+        total: 1,
+        unitLabel: "steps",
+        message: "Parsing CSV",
+      })
+    );
     const parsed = parseCsvText(csvText);
+    reportProgress?.(
+      buildSyncProgress({
+        phase: "parsing_csv",
+        startPercent: 15,
+        endPercent: 25,
+        current: 1,
+        total: 1,
+        unitLabel: "steps",
+        message: "Parsing CSV",
+      })
+    );
     if (parsed.headers.length === 0) {
       await updateImportBatchStatus(batchId, "failed", {
         error: "CSV file has no headers.",
@@ -279,6 +307,17 @@ export async function ingestDataset(
       definition.multiFileAppend &&
       definition.rowKeyFields
     ) {
+      reportProgress?.(
+        buildSyncProgress({
+          phase: "filtering_duplicates",
+          startPercent: 25,
+          endPercent: 40,
+          current: 0,
+          total: 1,
+          unitLabel: "steps",
+          message: "Filtering duplicate rows",
+        })
+      );
       const activeBatch = await getActiveBatchForDataset(scopeId, datasetKey);
       if (activeBatch) {
         const clonedRowCount = await cloneDatasetBatchRows(
@@ -309,6 +348,17 @@ export async function ingestDataset(
         dedupedCount = filtered.dedupedCount;
         totalRowCount = rowsToPersist.length;
       }
+      reportProgress?.(
+        buildSyncProgress({
+          phase: "filtering_duplicates",
+          startPercent: 25,
+          endPercent: 40,
+          current: 1,
+          total: 1,
+          unitLabel: "steps",
+          message: "Filtering duplicate rows",
+        })
+      );
     }
 
     // Collect validation errors
@@ -332,11 +382,37 @@ export async function ingestDataset(
     // active batch remains the authoritative source for reads.
     if (hasPersistence(datasetKey) && rowsToPersist.length > 0) {
       try {
+        reportProgress?.(
+          buildSyncProgress({
+            phase: "persisting_rows",
+            startPercent: 40,
+            endPercent: 92,
+            current: 0,
+            total: rowsToPersist.length,
+            unitLabel: "rows",
+            message: "Persisting rows to database",
+          })
+        );
         const inserted = await persistDatasetRows(
           scopeId,
           batchId,
           datasetKey,
-          rowsToPersist
+          rowsToPersist,
+          {
+            onProgress: (insertedCount, totalCount) => {
+              reportProgress?.(
+                buildSyncProgress({
+                  phase: "persisting_rows",
+                  startPercent: 40,
+                  endPercent: 92,
+                  current: insertedCount,
+                  total: totalCount,
+                  unitLabel: "rows",
+                  message: "Persisting rows to database",
+                })
+              );
+            },
+          }
         );
         if (inserted !== rowsToPersist.length) {
           console.warn(
@@ -361,10 +437,32 @@ export async function ingestDataset(
 
     // Atomically promote the new batch so the active pointer, row count,
     // and batch statuses never diverge across a mid-request crash.
+    reportProgress?.(
+      buildSyncProgress({
+        phase: "activating_batch",
+        startPercent: 92,
+        endPercent: 99,
+        current: 0,
+        total: 1,
+        unitLabel: "steps",
+        message: "Activating new dataset batch",
+      })
+    );
     await activateDatasetVersion(scopeId, datasetKey, batchId, {
       rowCount: totalRowCount,
       completedAt: new Date(),
     });
+    reportProgress?.(
+      buildSyncProgress({
+        phase: "activating_batch",
+        startPercent: 92,
+        endPercent: 99,
+        current: 1,
+        total: 1,
+        unitLabel: "steps",
+        message: "Activating new dataset batch",
+      })
+    );
 
     return {
       batchId,
