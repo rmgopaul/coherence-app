@@ -16,6 +16,7 @@
  */
 
 import { nanoid } from "nanoid";
+import { eq } from "drizzle-orm";
 import {
   srDsSolarApplications,
   srDsAbpReport,
@@ -294,7 +295,23 @@ const persistTransferHistory: DatasetInserter = async (
 // Dispatch
 // ---------------------------------------------------------------------------
 
-const PERSISTERS: Record<string, DatasetInserter> = {
+// Single source of truth: the seven typed srDs* tables, keyed by the
+// dataset key callers use throughout the solar-rec codebase. Adding a
+// new dataset starts here and the compiler + test suite surface the
+// remaining wiring (persister, cloner, etc.).
+const SRDS_TABLES = {
+  solarApplications: srDsSolarApplications,
+  abpReport: srDsAbpReport,
+  generationEntry: srDsGenerationEntry,
+  accountSolarGeneration: srDsAccountSolarGeneration,
+  contractedDate: srDsContractedDate,
+  deliveryScheduleBase: srDsDeliverySchedule,
+  transferHistory: srDsTransferHistory,
+} as const;
+
+type SrDsDatasetKey = keyof typeof SRDS_TABLES;
+
+const PERSISTERS: Record<SrDsDatasetKey, DatasetInserter> = {
   solarApplications: persistSolarApplications,
   abpReport: persistAbpReport,
   generationEntry: persistGenerationEntry,
@@ -317,7 +334,7 @@ export async function persistDatasetRows(
   datasetKey: string,
   rows: CsvRow[]
 ): Promise<number> {
-  const persister = PERSISTERS[datasetKey];
+  const persister = PERSISTERS[datasetKey as SrDsDatasetKey];
   if (!persister) return 0;
   return persister(scopeId, batchId, rows);
 }
@@ -521,36 +538,21 @@ export async function cloneDatasetBatchRows(
  * row count. Unknown datasetKey returns 0 without throwing — same
  * contract as persistDatasetRows / cloneDatasetBatchRows.
  *
- * Used by the orphaned-batch cleanup paths in server/db/solarRecDatasets.ts
- * (archiveSupersededImportBatchesOnStartup + the manual aggressive purge)
- * to reclaim storage once a batch row has been marked "archived".
+ * No scopeId filter: batchId is a nanoid and is unique across scopes,
+ * so (table, batchId) already identifies a single batch's rows.
  */
-const SRDS_TABLE_BY_DATASET_KEY: Record<string, string> = {
-  solarApplications: "srDsSolarApplications",
-  abpReport: "srDsAbpReport",
-  generationEntry: "srDsGenerationEntry",
-  accountSolarGeneration: "srDsAccountSolarGeneration",
-  contractedDate: "srDsContractedDate",
-  deliveryScheduleBase: "srDsDeliverySchedule",
-  transferHistory: "srDsTransferHistory",
-};
-
 export async function deleteDatasetBatchRows(
   datasetKey: string,
   batchId: string
 ): Promise<number> {
-  const tableName = SRDS_TABLE_BY_DATASET_KEY[datasetKey];
-  if (!tableName) return 0;
+  const table = SRDS_TABLES[datasetKey as SrDsDatasetKey];
+  if (!table) return 0;
 
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  // Table name comes from a hard-coded allowlist above — sql.raw is
-  // safe here. batchId is parameterized.
   const result = await withDbRetry(`delete ${datasetKey} batch rows`, () =>
-    db.execute(
-      sql`DELETE FROM ${sql.raw(tableName)} WHERE batchId = ${batchId}`
-    )
+    db.delete(table).where(eq(table.batchId, batchId))
   );
 
   return getDbExecuteAffectedRows(result);
