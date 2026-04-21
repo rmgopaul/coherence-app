@@ -699,6 +699,18 @@ function buildRemoteSourceStorageKey(datasetKey: DatasetKey, sourceId: string): 
   return `src_${normalizedDataset}_${normalizedSource}`.slice(0, 52);
 }
 
+/**
+ * Mirror of the server's `isServerManagedConvertedReadsSourceId`
+ * (server/solar/convertedReadsBridge.ts). Sources with these ID prefixes
+ * in the `convertedReads` manifest are written by the server (monitoring
+ * batch bridge + `pushConvertedReadsSource` tRPC mutation) and must be
+ * preserved across client auto-syncs — the dashboard's in-memory manifest
+ * can be stale relative to them.
+ */
+function isServerManagedConvertedReadsSourceId(sourceId: string): boolean {
+  return sourceId.startsWith("mon_batch_") || sourceId.startsWith("individual_");
+}
+
 function isCsvLikeFile(fileName: string, contentType?: string): boolean {
   const lowerName = clean(fileName).toLowerCase();
   const lowerType = clean(contentType).toLowerCase();
@@ -2105,6 +2117,13 @@ export default function SolarRecDashboard() {
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  // Atomic read-merge-write for the convertedReads manifest. Used in place
+  // of saveRemoteDataset when key === "convertedReads" so server-managed
+  // sources (mon_batch_*, individual_*) survive dashboard auto-sync even
+  // when the client's in-memory state was hydrated before the server-side
+  // bridge added them.
+  const syncConvertedReadsUserSources =
+    trpc.solarRecDashboard.syncConvertedReadsUserSources.useMutation();
   const syncCoreDatasetToSrDs =
     trpc.solarRecDashboard.syncCoreDatasetFromStorage.useMutation();
   const syncCoreDatasetToSrDsRef = useRef(syncCoreDatasetToSrDs);
@@ -2384,6 +2403,8 @@ export default function SolarRecDashboard() {
   getRemoteDatasetRef.current = getRemoteDataset;
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
+  const syncConvertedReadsUserSourcesRef = useRef(syncConvertedReadsUserSources);
+  syncConvertedReadsUserSourcesRef.current = syncConvertedReadsUserSources;
   const invalidateDatasetCloudStatuses = useCallback(() => {
     void trpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate({
       keys: allDatasetKeys,
@@ -2972,6 +2993,56 @@ export default function SolarRecDashboard() {
       }
 
       try {
+        // convertedReads manifest is server-owned (monitoring batch bridge
+        // + individual meter-reads pushes write directly to it). Route
+        // client-driven edits through the merge mutation so server-managed
+        // sources survive the write.
+        if (key === "convertedReads") {
+          const userSources = manifest.sources.filter(
+            (source) => !isServerManagedConvertedReadsSourceId(source.id)
+          );
+          await withRetry(() =>
+            syncConvertedReadsUserSourcesRef.current.mutateAsync({
+              userSources: userSources.map((source) => ({
+                id: source.id,
+                fileName: source.fileName,
+                uploadedAt: source.uploadedAt,
+                rowCount: source.rowCount,
+                sizeBytes: source.sizeBytes,
+                storageKey: source.storageKey,
+                chunkKeys: source.chunkKeys,
+                encoding: source.encoding,
+                contentType: source.contentType,
+              })),
+            })
+          );
+          const latestSource = manifest.sources[manifest.sources.length - 1];
+          const rowCount = datasetsRef.current[key]?.rows.length ?? latestSource?.rowCount ?? 0;
+          remoteDatasetSignatureRef.current[key] =
+            `raw:${manifest.sources.length}|${latestSource?.id ?? ""}|${latestSource?.uploadedAt ?? ""}|${rowCount}`;
+          remoteDatasetChunkKeysRef.current[key] = [];
+          setLocalOnlyDatasets((previous) => ({ ...previous, [key]: false }));
+          setDatasetCloudSyncBadge(key, "pending");
+          invalidateDatasetCloudStatuses();
+          if (CORE_DATASET_KEYS_FOR_SNAPSHOT.has(key)) {
+            triggerCoreDatasetSrDsSync(key);
+          } else {
+            setDatasetSyncProgressState(key, {
+              stage: "uploading",
+              percent: 100,
+              message: "Cloud upload complete",
+              current: latestSource?.sizeBytes ?? rowCount,
+              total: latestSource?.sizeBytes ?? rowCount,
+              unitLabel: latestSource?.sizeBytes ? "bytes" : "rows",
+              updatedAt: Date.now(),
+            });
+            window.setTimeout(() => {
+              setDatasetSyncProgressState(key, undefined);
+            }, 1500);
+          }
+          return true;
+        }
+
         const previousChunkKeys = remoteDatasetChunkKeysRef.current[key] ?? [];
         const chunkKeys = await saveRemotePayloadWithChunks(key, manifestPayload);
         const staleChunkKeys = previousChunkKeys.filter((chunkKey) => !chunkKeys.includes(chunkKey));
@@ -5558,6 +5629,46 @@ export default function SolarRecDashboard() {
           if (!dataset) {
             forcedRemoteDatasetSyncKeysRef.current.delete(key);
             setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
+
+            // Special-case convertedReads: the manifest may contain
+            // server-managed sources (mon_batch_*, individual_*) the
+            // dashboard doesn't own. A client clear must only remove the
+            // user-uploaded sources' chunks, and must rewrite the
+            // manifest through the server's merge mutation so the
+            // server-managed entries survive.
+            if (key === "convertedReads") {
+              if (sourceManifest?.sources && sourceManifest.sources.length > 0) {
+                const userSources = sourceManifest.sources.filter(
+                  (source) => !isServerManagedConvertedReadsSourceId(source.id)
+                );
+                await mapWithBoundedConcurrency(
+                  userSources,
+                  REMOTE_WRITE_CONCURRENCY,
+                  (source) =>
+                    clearRemotePayloadWithChunks(source.storageKey, source.chunkKeys).catch(() => {
+                      // Best effort per-source cleanup.
+                    })
+                );
+                setRemoteSourceManifests((previous) => ({ ...previous, [key]: undefined }));
+              }
+              try {
+                await withRetry(() =>
+                  syncConvertedReadsUserSourcesRef.current.mutateAsync({ userSources: [] })
+                );
+                delete remoteDatasetSignatureRef.current[key];
+                delete remoteDatasetChunkKeysRef.current[key];
+                setDatasetCloudSyncBadge(key, undefined);
+                invalidateDatasetCloudStatuses();
+              } catch {
+                setDatasetCloudSyncBadge(key, "failed");
+                setStorageNotice(
+                  `Could not clear ${DATASET_DEFINITIONS[key].label} dataset from cloud storage.`
+                );
+                return;
+              }
+              continue;
+            }
+
             if (sourceManifest?.sources && sourceManifest.sources.length > 0) {
               // Phase 13a: source cleanups are best-effort and fully
               // independent — fan them out.
@@ -5606,6 +5717,62 @@ export default function SolarRecDashboard() {
                 forcedRemoteDatasetSyncKeysRef.current.delete(key);
                 setForceSyncingDatasets((previous) => (previous[key] ? { ...previous, [key]: false } : previous));
                 setStorageNotice(`${DATASET_DEFINITIONS[key].label} is already synced to cloud.`);
+              }
+              continue;
+            }
+
+            // Special-case convertedReads: server owns the manifest (it
+            // holds monitoring-batch + individual meter-reads entries the
+            // dashboard may not know about). Route through the merge
+            // mutation so server-managed sources survive the auto-sync.
+            if (key === "convertedReads") {
+              const userSources = sourceManifest.sources.filter(
+                (source) => !isServerManagedConvertedReadsSourceId(source.id)
+              );
+              try {
+                await withRetry(() =>
+                  syncConvertedReadsUserSourcesRef.current.mutateAsync({
+                    userSources: userSources.map((source) => ({
+                      id: source.id,
+                      fileName: source.fileName,
+                      uploadedAt: source.uploadedAt,
+                      rowCount: source.rowCount,
+                      sizeBytes: source.sizeBytes,
+                      storageKey: source.storageKey,
+                      chunkKeys: source.chunkKeys,
+                      encoding: source.encoding,
+                      contentType: source.contentType,
+                    })),
+                  })
+                );
+                remoteDatasetSignatureRef.current[key] = syncSignature;
+                // Server owns the manifest blob at key "convertedReads",
+                // so we don't track chunk keys for it locally anymore.
+                remoteDatasetChunkKeysRef.current[key] = [];
+                if (forceSyncRequested) {
+                  forcedRemoteDatasetSyncKeysRef.current.delete(key);
+                  setForceSyncingDatasets((previous) =>
+                    previous[key] ? { ...previous, [key]: false } : previous
+                  );
+                  setStorageNotice(
+                    `Force cloud sync completed for ${DATASET_DEFINITIONS[key].label}.`
+                  );
+                }
+                setDatasetCloudSyncBadge(key, "pending");
+                invalidateDatasetCloudStatuses();
+                triggerCoreDatasetSrDsSync(key);
+              } catch {
+                if (forceSyncRequested) {
+                  forcedRemoteDatasetSyncKeysRef.current.delete(key);
+                  setForceSyncingDatasets((previous) =>
+                    previous[key] ? { ...previous, [key]: false } : previous
+                  );
+                }
+                setDatasetCloudSyncBadge(key, "failed");
+                setStorageNotice(
+                  `Could not sync ${DATASET_DEFINITIONS[key].label} source manifest to cloud storage.`
+                );
+                return;
               }
               continue;
             }

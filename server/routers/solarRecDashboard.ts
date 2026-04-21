@@ -683,6 +683,61 @@ export const solarRecDashboardRouter = router({
         sourceId: result?.sourceId ?? null,
       };
     }),
+  /**
+   * Atomic read-merge-write of the convertedReads `_rawSourcesV1` manifest
+   * for client-driven source edits (dashboard CSV uploads, "Remove"
+   * button, etc.). The server preserves every server-managed source
+   * (mon_batch_*, individual_*) regardless of what the client had in
+   * memory, so a dashboard session that hydrated before a monitoring
+   * batch wrote new data can no longer clobber that data during
+   * auto-sync.
+   *
+   * The client is still responsible for writing (or clearing) the chunk
+   * blobs for its user-uploaded sources. This mutation only rewrites
+   * the manifest blob at `dataset:convertedReads`.
+   */
+  syncConvertedReadsUserSources: protectedProcedure
+    .input(
+      z.object({
+        userSources: z
+          .array(
+            z.object({
+              id: z
+                .string()
+                .min(1)
+                .max(128)
+                .regex(/^[a-zA-Z0-9_-]+$/),
+              fileName: z.string().max(512),
+              uploadedAt: z.string().min(1).max(64),
+              rowCount: z.number().int().nonnegative(),
+              sizeBytes: z.number().int().nonnegative(),
+              storageKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+              chunkKeys: z
+                .array(z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/))
+                .max(500)
+                .optional(),
+              encoding: z.enum(["utf8", "base64"]),
+              contentType: z.string().min(1).max(256),
+            })
+          )
+          .max(200),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { syncUserSourcesToConvertedReadsManifest } = await import(
+        "../solar/convertedReadsBridge"
+      );
+      const ownerUserId = await resolveSolarRecOwnerUserId();
+      const result = await syncUserSourcesToConvertedReadsManifest(
+        ownerUserId,
+        input.userSources
+      );
+      return {
+        manifest: result.manifest,
+        serverManagedSourceCount: result.serverManagedSourceCount,
+        userSourceCount: result.userSourceCount,
+      };
+    }),
   ensureScheduleBImportJob: protectedProcedure
     .mutation(async ({ ctx }) => {
       const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);

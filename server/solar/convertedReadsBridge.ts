@@ -474,6 +474,79 @@ export async function pushIndividualRunsToConvertedReads(
   };
 }
 
-// Re-export the shared row type so callers (e.g. the tRPC mutation) can
-// type-narrow Zod output to it without redefining the shape.
-export type { ConvertedReadRow };
+// Re-export shared types so callers (e.g. the tRPC mutations) can
+// type-narrow Zod output to them without redefining the shape.
+export type { ConvertedReadRow, RemoteDatasetSourceRef, RemoteDatasetSourceManifestPayload };
+
+/**
+ * Source IDs owned by the server: monitoring batch pushes and individual
+ * meter-reads page pushes. The `_rawSourcesV1` manifest holds these
+ * alongside user-uploaded CSV sources (which use random slug IDs). Only
+ * the server is allowed to add/update/remove server-managed source
+ * entries — the dashboard's sync path uses
+ * `syncUserSourcesToConvertedReadsManifest` below to leave them untouched.
+ */
+export function isServerManagedConvertedReadsSourceId(sourceId: string): boolean {
+  return (
+    sourceId.startsWith("mon_batch_") || sourceId.startsWith("individual_")
+  );
+}
+
+/**
+ * Atomic read-merge-write for the convertedReads manifest, driven by the
+ * client. The client passes in its view of the *user-uploaded* sources.
+ * The server reads whatever manifest is currently in the DB, keeps every
+ * server-managed source (mon_batch_*, individual_*) regardless of whether
+ * the client knew about it, and replaces the rest with the client's
+ * `userSources` list.
+ *
+ * This is what prevents the auto-sync clobber: without it, the dashboard's
+ * in-memory state (hydrated once on mount) would overwrite any
+ * server-managed sources added by the monitoring bridge after hydration.
+ *
+ * Callers are responsible for writing the user sources' chunk data — this
+ * function only touches the manifest blob at `dataset:convertedReads`.
+ */
+export async function syncUserSourcesToConvertedReadsManifest(
+  userId: number,
+  userSources: RemoteDatasetSourceRef[]
+): Promise<{
+  manifest: RemoteDatasetSourceManifestPayload;
+  serverManagedSourceCount: number;
+  userSourceCount: number;
+}> {
+  const existingSources = await readExistingManifest(userId);
+
+  const serverManagedSources = existingSources.filter((s) =>
+    isServerManagedConvertedReadsSourceId(s.id)
+  );
+
+  // Defensive: drop any client-supplied source whose ID looks server-managed.
+  // The client should never send those, but we don't let a buggy client
+  // hijack the server-managed namespace.
+  const safeUserSources = userSources.filter(
+    (s) => !isServerManagedConvertedReadsSourceId(s.id)
+  );
+
+  const nextSources: RemoteDatasetSourceRef[] = [
+    ...serverManagedSources,
+    ...safeUserSources,
+  ];
+
+  const manifest: RemoteDatasetSourceManifestPayload = {
+    _rawSourcesV1: true,
+    version: 1,
+    sources: nextSources,
+  };
+  await saveSolarRecDashboardPayload(
+    userId,
+    DB_STORAGE_KEY,
+    JSON.stringify(manifest)
+  );
+
+  return {
+    manifest,
+    serverManagedSourceCount: serverManagedSources.length,
+    userSourceCount: safeUserSources.length,
+  };
+}
