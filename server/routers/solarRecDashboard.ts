@@ -356,6 +356,7 @@ export const solarRecDashboardRouter = router({
       return {
         state: job.state,
         error: job.error,
+        progress: job.progress,
       };
     }),
 
@@ -409,6 +410,7 @@ export const solarRecDashboardRouter = router({
       datasetKey: job.datasetKey,
       state: job.state,
       startedAt: job.startedAt,
+      progress: job.progress,
     }));
   }),
 

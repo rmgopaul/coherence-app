@@ -2190,6 +2190,68 @@ export default function SolarRecDashboard() {
     [setDatasetSyncProgressState]
   );
 
+  const CORE_DATASET_SYNC_POLL_TIMEOUT_MS = 10 * 60 * 1000;
+  const CORE_DATASET_SYNC_POLL_INTERVAL_MS = 2000;
+
+  const finishCoreDatasetSync = useCallback(
+    async (
+      key: DatasetKey,
+      jobId: string,
+      state: "done" | "unknown"
+    ) => {
+      if (activeCoreDatasetSyncJobRef.current[key] === jobId) {
+        delete activeCoreDatasetSyncJobRef.current[key];
+      }
+
+      const sid = scopeIdRef.current;
+
+      if (state === "done") {
+        if (!sid) {
+          setDatasetSyncProgressState(key, undefined);
+          return;
+        }
+        setDatasetSyncProgressState(key, {
+          stage: "refreshing-snapshot",
+          percent: 100,
+          message: "Refreshing server snapshot",
+          current: 1,
+          total: 1,
+          unitLabel: "steps",
+          jobId,
+          updatedAt: Date.now(),
+        });
+        await Promise.all([
+          trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
+          trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
+          trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
+          trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
+        ]);
+        window.setTimeout(() => {
+          setDatasetSyncProgressState(key, undefined);
+        }, 1500);
+        return;
+      }
+
+      setDatasetSyncProgressState(key, undefined);
+
+      // Best effort: the in-memory job registry may have been lost after
+      // a restart even though the underlying batch already activated.
+      if (sid) {
+        await Promise.all([
+          trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
+          trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
+          trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
+          trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
+        ]);
+      }
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[solar-rec] srDs sync for ${key} became unknown before completion; progress UI cleared without marking success.`
+      );
+    },
+    [setDatasetSyncProgressState, trpcUtils]
+  );
+
   /**
    * Fire-and-forget trigger for a core-dataset srDs sync. Starts
    * a background job on the server (returning a jobId immediately)
@@ -2244,8 +2306,7 @@ export default function SolarRecDashboard() {
           updatedAt: Date.now(),
         });
 
-        const deadlineMs = Date.now() + 10 * 60 * 1000; // 10-min cap
-        const POLL_INTERVAL_MS = 2000;
+        const deadlineMs = Date.now() + CORE_DATASET_SYNC_POLL_TIMEOUT_MS;
 
         while (Date.now() < deadlineMs) {
           // Skip if a newer job for this key has since started —
@@ -2266,16 +2327,15 @@ export default function SolarRecDashboard() {
 
           if (!status || status.state === "pending" || status.state === "running") {
             await new Promise<void>((resolve) =>
-              window.setTimeout(resolve, POLL_INTERVAL_MS)
+              window.setTimeout(resolve, CORE_DATASET_SYNC_POLL_INTERVAL_MS)
             );
             continue;
           }
 
-          if (activeCoreDatasetSyncJobRef.current[key as DatasetKey] === jobId) {
-            delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
-          }
-
           if (status.state === "failed") {
+            if (activeCoreDatasetSyncJobRef.current[key as DatasetKey] === jobId) {
+              delete activeCoreDatasetSyncJobRef.current[key as DatasetKey];
+            }
             setDatasetSyncProgressState(key as DatasetKey, undefined);
             // eslint-disable-next-line no-console
             console.warn(
@@ -2286,31 +2346,15 @@ export default function SolarRecDashboard() {
           }
 
           // state === "done" | "unknown" — invalidate downstream
-          // queries. "unknown" means the job state was pruned
-          // (e.g. after a server restart); we still invalidate
-          // because the underlying batch may have activated
-          // before the restart.
-          const sid = scopeIdRef.current;
-          if (!sid) return;
-          setDatasetSyncProgressState(key as DatasetKey, {
-            stage: "refreshing-snapshot",
-            percent: 100,
-            message: "Refreshing server snapshot",
-            current: 1,
-            total: 1,
-            unitLabel: "steps",
+          // queries. "unknown" means the in-memory job state was
+          // lost (for example after a restart), so do a best-effort
+          // invalidate but do not present that as a successful 100%
+          // completion to the user.
+          await finishCoreDatasetSync(
+            key as DatasetKey,
             jobId,
-            updatedAt: Date.now(),
-          });
-          await Promise.all([
-            trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
-            trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
-            trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
-            trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
-          ]);
-          window.setTimeout(() => {
-            setDatasetSyncProgressState(key as DatasetKey, undefined);
-          }, 1500);
+            status.state === "done" ? "done" : "unknown"
+          );
           return;
         }
 
@@ -2325,7 +2369,10 @@ export default function SolarRecDashboard() {
       })();
     },
     [
+      CORE_DATASET_SYNC_POLL_INTERVAL_MS,
+      CORE_DATASET_SYNC_POLL_TIMEOUT_MS,
       CORE_DATASET_KEYS_FOR_SNAPSHOT,
+      finishCoreDatasetSync,
       setDatabaseSyncProgressFromStatus,
       setDatasetSyncProgressState,
       trpcUtils,
@@ -2659,7 +2706,7 @@ export default function SolarRecDashboard() {
 
   const pollCoreDatasetSyncJob = useCallback(
     async (key: DatasetKey, jobId: string) => {
-      const deadlineMs = Date.now() + 5 * 60 * 1000;
+      const deadlineMs = Date.now() + CORE_DATASET_SYNC_POLL_TIMEOUT_MS;
 
       while (Date.now() < deadlineMs) {
         if (activeCoreDatasetSyncJobRef.current[key] !== jobId) return;
@@ -2672,41 +2719,27 @@ export default function SolarRecDashboard() {
         setDatabaseSyncProgressFromStatus(key, jobId, status);
 
         if (!status || status.state === "running" || status.state === "pending") {
-          await new Promise<void>((resolve) => window.setTimeout(resolve, 2000));
+          await new Promise<void>((resolve) =>
+            window.setTimeout(resolve, CORE_DATASET_SYNC_POLL_INTERVAL_MS)
+          );
           continue;
         }
 
-        if (activeCoreDatasetSyncJobRef.current[key] === jobId) {
-          delete activeCoreDatasetSyncJobRef.current[key];
-        }
-
         if (status.state === "failed") {
+          if (activeCoreDatasetSyncJobRef.current[key] === jobId) {
+            delete activeCoreDatasetSyncJobRef.current[key];
+          }
           setDatasetSyncProgressState(key, undefined);
           // eslint-disable-next-line no-console
           console.warn(`[solar-rec] srDs sync for ${key} failed:`, status.error);
           return;
         }
 
-        // "done" | "unknown" — both trigger a refresh of
-        // downstream queries. "unknown" means the job's in-memory
-        // state was pruned (e.g. after a server restart); we
-        // still invalidate because a batch may have activated
-        // before the restart and the client would otherwise keep
-        // serving its stale cache forever.
-        setDatasetSyncProgressState(key, {
-          stage: "refreshing-snapshot",
-          percent: 100,
-          message: "Refreshing server snapshot",
-          current: 1,
-          total: 1,
-          unitLabel: "steps",
+        await finishCoreDatasetSync(
+          key,
           jobId,
-          updatedAt: Date.now(),
-        });
-        await invalidateServerDerivedSolarData();
-        window.setTimeout(() => {
-          setDatasetSyncProgressState(key, undefined);
-        }, 1500);
+          status.state === "done" ? "done" : "unknown"
+        );
         return;
       }
 
@@ -2718,7 +2751,9 @@ export default function SolarRecDashboard() {
       console.warn(`[solar-rec] srDs sync for ${key} did not finish before client polling timed out.`);
     },
     [
-      invalidateServerDerivedSolarData,
+      CORE_DATASET_SYNC_POLL_INTERVAL_MS,
+      CORE_DATASET_SYNC_POLL_TIMEOUT_MS,
+      finishCoreDatasetSync,
       setDatabaseSyncProgressFromStatus,
       setDatasetSyncProgressState,
       trpcUtils,
