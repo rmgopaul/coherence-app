@@ -182,6 +182,22 @@ function buildChunkKey(storageKey: string, chunkIndex: number): string {
   return `${storageKey}_chunk_${String(chunkIndex).padStart(4, "0")}`;
 }
 
+/**
+ * Chunk-pointer JSON payload that the SolarRecDashboard's
+ * `parseChunkPointerPayload` (client/src/features/solar-rec/SolarRecDashboard.tsx)
+ * recognizes. The dashboard's source hydrator calls
+ * `loadPayloadByKey(source.storageKey)`, which fetches the blob stored at
+ * `storageKey` and — if it's one of these pointers — follows the listed
+ * chunk keys to reassemble the data. Without this pointer at `storageKey`,
+ * the reader returns null and silently skips the source.
+ */
+function buildChunkPointerPayload(chunkKeys: string[]): string {
+  return JSON.stringify({
+    _chunkedDataset: true,
+    chunkKeys,
+  });
+}
+
 /** Slice text into chunks of at most `limit` characters. */
 function splitTextIntoChunks(text: string, limit: number): string[] {
   if (text.length === 0) return [];
@@ -274,6 +290,19 @@ export async function pushMonitoringRunsToConvertedReads(
       chunks[i]
     );
   }
+
+  // 4b. Write a chunk-pointer payload at the source's top-level storageKey.
+  //     The dashboard's source hydrator fetches `dataset:${storageKey}`
+  //     first (via loadPayloadByKey) and only follows chunks when that
+  //     blob is a valid chunk pointer. Without this write, the top-level
+  //     key is empty and the source is silently skipped during hydration
+  //     — which is why the Converted Reads upload slot appears empty
+  //     after a monitoring batch.
+  await saveSolarRecDashboardPayload(
+    userId,
+    `dataset:${storageKey}`,
+    buildChunkPointerPayload(newChunkKeys)
+  );
 
   // 5. Read existing manifest
   const existingSources = await readExistingManifest(userId);
