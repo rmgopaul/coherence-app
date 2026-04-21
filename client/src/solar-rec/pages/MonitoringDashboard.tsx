@@ -577,6 +577,13 @@ type HealthSummary = {
   lastSuccess: string | null;
 };
 
+type GridRow = {
+  provider: string;
+  siteId: string;
+  siteName: string;
+  runs: Map<string, ApiRun>;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -624,6 +631,43 @@ function getDatesInRange(start: string, end: string): string[] {
 function formatDate(dateKey: string): string {
   const d = new Date(dateKey + "T00:00:00");
   return d.toLocaleDateString("en-US", { month: "numeric", day: "numeric" });
+}
+
+function buildGridRows(data: ApiRun[], search: string): GridRow[] {
+  const rowMap = new Map<string, GridRow>();
+
+  for (const run of data) {
+    const key = `${run.provider}::${run.siteId}`;
+    if (!rowMap.has(key)) {
+      rowMap.set(key, {
+        provider: run.provider,
+        siteId: run.siteId,
+        siteName: run.siteName ?? run.siteId,
+        runs: new Map(),
+      });
+    }
+    rowMap.get(key)!.runs.set(run.dateKey, run);
+  }
+
+  let rows = Array.from(rowMap.values());
+
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter(
+      (row) =>
+        row.provider.toLowerCase().includes(q) ||
+        row.siteId.toLowerCase().includes(q) ||
+        row.siteName.toLowerCase().includes(q)
+    );
+  }
+
+  rows.sort((a, b) =>
+    a.provider === b.provider
+      ? a.siteName.localeCompare(b.siteName)
+      : a.provider.localeCompare(b.provider)
+  );
+
+  return rows;
 }
 
 // ---------------------------------------------------------------------------
@@ -787,6 +831,8 @@ type ConfiguredCredential = {
   label: string;
 };
 
+const GRID_PAGE_SIZE = 50;
+
 export default function MonitoringDashboard() {
   const [daysBack] = useState(30);
   const { startDate, endDate } = useMemo(() => getDateRange(daysBack), [daysBack]);
@@ -801,6 +847,8 @@ export default function MonitoringDashboard() {
   const { isOperator } = useSolarRecAuth();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
+  const [showSystemPerformance, setShowSystemPerformance] = useState(false);
+  const [visibleGridRowCount, setVisibleGridRowCount] = useState(GRID_PAGE_SIZE);
 
   const gridQuery = trpc.monitoring.getGrid.useQuery({ startDate, endDate });
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
@@ -871,49 +919,19 @@ export default function MonitoringDashboard() {
     setSelectedCredentialIds((prev) => prev.filter((credentialId) => visibleCredentialIds.has(credentialId)));
   }, [credentialsInSelectedProviders]);
 
-  // Build grid: group runs by provider+siteId
   const gridRows = useMemo(() => {
-    const data = gridQuery.data ?? [];
-    const rowMap = new Map<
-      string,
-      { provider: string; siteId: string; siteName: string; runs: Map<string, ApiRun> }
-    >();
+    if (!showSystemPerformance) return [];
+    return buildGridRows(gridQuery.data ?? [], search);
+  }, [gridQuery.data, search, showSystemPerformance]);
 
-    for (const run of data) {
-      const key = `${run.provider}::${run.siteId}`;
-      if (!rowMap.has(key)) {
-        rowMap.set(key, {
-          provider: run.provider,
-          siteId: run.siteId,
-          siteName: run.siteName ?? run.siteId,
-          runs: new Map(),
-        });
-      }
-      rowMap.get(key)!.runs.set(run.dateKey, run);
-    }
+  const visibleGridRows = useMemo(
+    () => gridRows.slice(0, visibleGridRowCount),
+    [gridRows, visibleGridRowCount]
+  );
 
-    let rows = Array.from(rowMap.values());
-
-    // Filter by search
-    if (search) {
-      const q = search.toLowerCase();
-      rows = rows.filter(
-        (r) =>
-          r.provider.toLowerCase().includes(q) ||
-          r.siteId.toLowerCase().includes(q) ||
-          r.siteName.toLowerCase().includes(q)
-      );
-    }
-
-    // Sort by provider, then site
-    rows.sort((a, b) =>
-      a.provider === b.provider
-        ? a.siteName.localeCompare(b.siteName)
-        : a.provider.localeCompare(b.provider)
-    );
-
-    return rows;
-  }, [gridQuery.data, search]);
+  useEffect(() => {
+    setVisibleGridRowCount(GRID_PAGE_SIZE);
+  }, [search, showSystemPerformance]);
 
   const handleRunAll = () => {
     runAllMutation.mutate({ providers: [] });
@@ -948,8 +966,9 @@ export default function MonitoringDashboard() {
   };
 
   const handleExportCsv = () => {
+    const exportRows = buildGridRows(gridQuery.data ?? [], "");
     const headers = ["Provider", "Site ID", "Site Name", ...dates.map(formatDate)];
-    const csvRows = gridRows.map((row) => [
+    const csvRows = exportRows.map((row) => [
       row.provider,
       row.siteId,
       row.siteName,
@@ -990,10 +1009,10 @@ export default function MonitoringDashboard() {
             variant="outline"
             size="sm"
             onClick={handleExportCsv}
-            disabled={gridRows.length === 0}
+            disabled={(gridQuery.data?.length ?? 0) === 0}
           >
             <Download className="h-3.5 w-3.5 mr-1" />
-            CSV
+            Export CSG CSV
           </Button>
           {isOperator && (
             <Button
@@ -1278,21 +1297,51 @@ export default function MonitoringDashboard() {
         today={today}
       />
 
-      {/* Search */}
-      <div className="relative max-w-xs">
-        <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
-        <Input
-          placeholder="Filter by provider or site..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-8 h-9 text-sm"
-        />
-      </div>
-
-      {/* Grid */}
+      {/* System-level performance */}
       <Card>
-        <CardContent className="p-0 overflow-x-auto">
-          {gridQuery.isLoading ? (
+        <CardHeader className="space-y-3">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <CardTitle className="text-base">System-Level Performance</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Hidden by default to keep this page fast. Load 50 rows at a time,
+                or export the full CSG dataset if you need everything.
+              </p>
+            </div>
+            <Button
+              variant={showSystemPerformance ? "outline" : "default"}
+              size="sm"
+              onClick={() => setShowSystemPerformance((prev) => !prev)}
+              disabled={gridQuery.isLoading && !showSystemPerformance}
+            >
+              {showSystemPerformance ? "Hide System-Level Performance" : "Show System-Level Performance"}
+            </Button>
+          </div>
+          {showSystemPerformance && (
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div className="relative w-full max-w-xs">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  placeholder="Filter by provider or site..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="pl-8 h-9 text-sm"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Showing {Math.min(visibleGridRows.length, gridRows.length)} of {gridRows.length} sites
+              </p>
+            </div>
+          )}
+        </CardHeader>
+        <CardContent className={showSystemPerformance ? "p-0 overflow-x-auto" : "pt-0"}>
+          {!showSystemPerformance ? (
+            <div className="px-6 pb-6">
+              <div className="rounded-lg border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">
+                Click <span className="font-medium text-foreground">Show System-Level Performance</span> to load the detailed site table. The export button above downloads the full CSG monitoring dataset without rendering every site in the page.
+              </div>
+            </div>
+          ) : gridQuery.isLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
@@ -1303,57 +1352,77 @@ export default function MonitoringDashboard() {
               </p>
             </div>
           ) : (
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b bg-muted/30">
-                  <th className="text-left px-3 py-2 font-medium sticky left-0 bg-muted/30 z-10 min-w-[100px]">
-                    Provider
-                  </th>
-                  <th className="text-left px-2 py-2 font-medium min-w-[80px]">
-                    Site ID
-                  </th>
-                  <th className="text-left px-2 py-2 font-medium min-w-[120px]">
-                    Site Name
-                  </th>
-                  {dates.slice(0, 30).map((d) => (
-                    <th
-                      key={d}
-                      className="px-1 py-2 font-medium text-center min-w-[36px]"
-                    >
-                      {formatDate(d)}
+            <div className="space-y-0">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b bg-muted/30">
+                    <th className="text-left px-3 py-2 font-medium sticky left-0 bg-muted/30 z-10 min-w-[100px]">
+                      Provider
                     </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {gridRows.map((row) => (
-                  <tr
-                    key={`${row.provider}::${row.siteId}`}
-                    className="border-b hover:bg-muted/20"
-                  >
-                    <td className="px-3 py-1 sticky left-0 bg-background z-10">
-                      <span className="font-medium">{row.provider}</span>
-                    </td>
-                    <td className="px-2 py-1 text-muted-foreground truncate max-w-[100px]">
-                      {row.siteId}
-                    </td>
-                    <td className="px-2 py-1 truncate max-w-[150px]">
-                      {row.siteName}
-                    </td>
+                    <th className="text-left px-2 py-2 font-medium min-w-[80px]">
+                      Site ID
+                    </th>
+                    <th className="text-left px-2 py-2 font-medium min-w-[120px]">
+                      Site Name
+                    </th>
                     {dates.slice(0, 30).map((d) => (
-                      <StatusCell
+                      <th
                         key={d}
-                        run={row.runs.get(d)}
-                        onClick={() => {
-                          const run = row.runs.get(d);
-                          if (run) setSelectedRun(run);
-                        }}
-                      />
+                        className="px-1 py-2 font-medium text-center min-w-[36px]"
+                      >
+                        {formatDate(d)}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visibleGridRows.map((row) => (
+                    <tr
+                      key={`${row.provider}::${row.siteId}`}
+                      className="border-b hover:bg-muted/20"
+                    >
+                      <td className="px-3 py-1 sticky left-0 bg-background z-10">
+                        <span className="font-medium">{row.provider}</span>
+                      </td>
+                      <td className="px-2 py-1 text-muted-foreground truncate max-w-[100px]">
+                        {row.siteId}
+                      </td>
+                      <td className="px-2 py-1 truncate max-w-[150px]">
+                        {row.siteName}
+                      </td>
+                      {dates.slice(0, 30).map((d) => (
+                        <StatusCell
+                          key={d}
+                          run={row.runs.get(d)}
+                          onClick={() => {
+                            const run = row.runs.get(d);
+                            if (run) setSelectedRun(run);
+                          }}
+                        />
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {visibleGridRowCount < gridRows.length && (
+                <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    Load more if you want to inspect additional systems here. For the full set, use Export CSG CSV.
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      setVisibleGridRowCount((prev) =>
+                        Math.min(prev + GRID_PAGE_SIZE, gridRows.length)
+                      )
+                    }
+                  >
+                    Load 50 More
+                  </Button>
+                </div>
+              )}
+            </div>
           )}
         </CardContent>
       </Card>
