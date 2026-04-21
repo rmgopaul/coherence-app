@@ -18,4 +18,10 @@ data class AppPreferences(
   // and non-essential refresh jobs are paused. Per-device (DataStore),
   // not synced server-side.
   val focusMode: Boolean = false,
+  // Persisted Today's Plan — bridges process death so the AI plan
+  // doesn't disappear when the user backgrounds the app. The date key
+  // gates restoration: a stale plan (different day) is silently
+  // ignored on read so the user gets prompted to regenerate.
+  val lastPlanDateKey: String? = null,
+  val lastPlanOverview: String? = null,
 )

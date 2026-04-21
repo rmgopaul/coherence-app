@@ -27,6 +27,11 @@ class AppPreferencesRepository(private val context: Context) {
     val lockTimeoutMinutes = intPreferencesKey("lock_timeout_minutes")
     val hiddenWidgets = stringPreferencesKey("hidden_widgets")
     val focusMode = booleanPreferencesKey("focus_mode")
+    // Today's Plan persistence — survives nav, low-memory kill, and
+    // process death. Cleared automatically the next day (the date key
+    // is stored alongside so the VM can drop a stale cache on init).
+    val lastPlanDateKey = stringPreferencesKey("last_plan_date_key")
+    val lastPlanOverview = stringPreferencesKey("last_plan_overview")
   }
 
   val preferences: Flow<AppPreferences> = context.appPreferencesDataStore.data.map { prefs ->
@@ -39,12 +44,33 @@ class AppPreferencesRepository(private val context: Context) {
       lockTimeoutMinutes = prefs[Keys.lockTimeoutMinutes] ?: 5,
       hiddenWidgets = parseHiddenWidgets(prefs[Keys.hiddenWidgets]),
       focusMode = prefs[Keys.focusMode] ?: false,
+      lastPlanDateKey = prefs[Keys.lastPlanDateKey],
+      lastPlanOverview = prefs[Keys.lastPlanOverview],
     )
   }
 
   suspend fun setFocusMode(enabled: Boolean) {
     context.appPreferencesDataStore.edit { prefs ->
       prefs[Keys.focusMode] = enabled
+    }
+  }
+
+  /**
+   * Persist a freshly generated daily plan together with the date it
+   * was generated for. Pass empty/blank to clear (e.g. on user-driven
+   * regenerate before the new plan finishes streaming).
+   */
+  suspend fun saveTodaysPlan(dateKey: String, overview: String) {
+    context.appPreferencesDataStore.edit { prefs ->
+      prefs[Keys.lastPlanDateKey] = dateKey
+      prefs[Keys.lastPlanOverview] = overview
+    }
+  }
+
+  suspend fun clearTodaysPlan() {
+    context.appPreferencesDataStore.edit { prefs ->
+      prefs.remove(Keys.lastPlanDateKey)
+      prefs.remove(Keys.lastPlanOverview)
     }
   }
 

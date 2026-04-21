@@ -14,6 +14,7 @@ import com.coherence.healthconnect.data.model.SuggestionItem
 import com.coherence.healthconnect.data.model.TodoistProject
 import com.coherence.healthconnect.data.model.TodoistTask
 import com.coherence.healthconnect.data.model.WhoopSummary
+import com.coherence.healthconnect.data.repository.AppPreferencesRepository
 import com.coherence.healthconnect.data.repository.GoogleRepository
 import com.coherence.healthconnect.data.repository.MarketRepository
 import com.coherence.healthconnect.data.repository.MetricsRepository
@@ -21,6 +22,7 @@ import com.coherence.healthconnect.data.repository.PlanRepository
 import com.coherence.healthconnect.data.repository.SportsRepository
 import com.coherence.healthconnect.data.repository.TodoistRepository
 import com.coherence.healthconnect.data.repository.WhoopRepository
+import kotlinx.coroutines.flow.first
 import com.coherence.healthconnect.ui.state.LoadState
 import com.coherence.healthconnect.ui.state.dataOrNull
 import com.coherence.healthconnect.ui.state.updatedAtOrNull
@@ -57,6 +59,7 @@ class DashboardViewModel(
   private val planRepo: PlanRepository? = null,
   private val marketRepo: MarketRepository? = null,
   private val sportsRepo: SportsRepository? = null,
+  private val appPreferencesRepo: AppPreferencesRepository? = null,
 ) : ViewModel() {
 
   private val _state = MutableStateFlow(DashboardState())
@@ -65,6 +68,33 @@ class DashboardViewModel(
 
   init {
     loadAll()
+    restorePersistedPlan()
+  }
+
+  /**
+   * Hydrate state.planOverview from DataStore on VM init so the AI plan
+   * survives backgrounding / process death. The cached entry carries
+   * the date it was generated for; anything older than today is silently
+   * dropped so users get prompted to regenerate at a new day.
+   */
+  private fun restorePersistedPlan() {
+    val repo = appPreferencesRepo ?: return
+    viewModelScope.launch {
+      try {
+        val prefs = repo.preferences.first()
+        val today = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE)
+        if (prefs.lastPlanDateKey == today && !prefs.lastPlanOverview.isNullOrBlank()) {
+          _state.value = _state.value.copy(planOverview = prefs.lastPlanOverview)
+          recomputeSuggestedActions()
+        } else if (prefs.lastPlanDateKey != null && prefs.lastPlanDateKey != today) {
+          // Different day → drop the stale row so the next save is
+          // small and the prefs file doesn't grow forever.
+          repo.clearTodaysPlan()
+        }
+      } catch (e: Exception) {
+        Log.w("DashboardVM", "Failed to restore persisted plan", e)
+      }
+    }
   }
 
   fun loadAll() {
@@ -223,6 +253,10 @@ class DashboardViewModel(
         )
         if (result != null) {
           _state.value = _state.value.copy(planOverview = result, planGenerating = false)
+          // Persist so the plan survives navigation, low-memory kill,
+          // and process death. Keyed by today's date so a stale plan
+          // gets dropped at midnight (see restorePersistedPlan).
+          appPreferencesRepo?.saveTodaysPlan(today, result)
         } else {
           _state.value = _state.value.copy(planGenerating = false, planError = "Failed to generate plan. Try again.")
         }
@@ -526,6 +560,7 @@ class DashboardViewModel(
         planRepo = container.planRepository,
         marketRepo = container.marketRepository,
         sportsRepo = container.sportsRepository,
+        appPreferencesRepo = container.appPreferencesRepository,
       ) as T
     }
   }
