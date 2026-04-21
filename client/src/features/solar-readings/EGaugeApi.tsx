@@ -79,8 +79,7 @@ export default function EGaugeApi() {
   const getPortfolioSystemsMutation = trpc.egauge.getPortfolioSystems.useMutation();
   const bulkSnapshotsMutation = trpc.egauge.getProductionSnapshots.useMutation();
   const getAllPortfolioSnapshotsMutation = trpc.egauge.getAllPortfolioSnapshots.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   type BulkSnapshotRow = {
     meterId: string;
@@ -415,8 +414,7 @@ export default function EGaugeApi() {
           );
         } else {
           const pushResult = await pushConvertedReadsToRecDashboard(
-            (input) => getRemoteDataset.mutateAsync(input),
-            (input) => saveRemoteDataset.mutateAsync(input),
+            (input) => pushConvertedReadsSource.mutateAsync(input),
             readRows,
             MONITORING_CANONICAL_NAMES.egauge
           );
@@ -460,8 +458,7 @@ export default function EGaugeApi() {
           );
         } else {
           const pushResult = await pushConvertedReadsToRecDashboard(
-            (input) => getRemoteDataset.mutateAsync(input),
-            (input) => saveRemoteDataset.mutateAsync(input),
+            (input) => pushConvertedReadsSource.mutateAsync(input),
             readRows,
             MONITORING_CANONICAL_NAMES.egauge
           );
@@ -551,8 +548,7 @@ export default function EGaugeApi() {
         );
       } else {
         const pushResult = await pushConvertedReadsToRecDashboard(
-          (input) => getRemoteDataset.mutateAsync(input),
-          (input) => saveRemoteDataset.mutateAsync(input),
+          (input) => pushConvertedReadsSource.mutateAsync(input),
           readRows,
           MONITORING_CANONICAL_NAMES.egauge
         );

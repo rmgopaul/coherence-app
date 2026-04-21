@@ -247,8 +247,7 @@ export default function SolarEdgeMeterReads() {
   const bulkSnapshotsMutation = trpc.solarEdge.getProductionSnapshots.useMutation();
   const bulkMeterSnapshotsMutation = trpc.solarEdge.getMeterSnapshots.useMutation();
   const bulkInverterSnapshotsMutation = trpc.solarEdge.getInverterSnapshots.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -549,8 +548,7 @@ export default function SolarEdgeMeterReads() {
               );
             } else {
               const result = await pushConvertedReadsToRecDashboard(
-                (input) => getRemoteDataset.mutateAsync(input),
-                (input) => saveRemoteDataset.mutateAsync(input),
+                (input) => pushConvertedReadsSource.mutateAsync(input),
                 readRows,
                 MONITORING_CANONICAL_NAMES.solarEdge
               );

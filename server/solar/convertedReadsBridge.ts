@@ -10,16 +10,25 @@
  *   - The dashboard's load path fetches every source's chunks, parses each
  *     as CSV, and merges them into a single deduplicated dataset.
  *
- * Each provider gets ONE stable source entry `mon_batch_<providerSlug>`
- * that gets replaced on every bridge run — so the manifest stays bounded
- * at N user CSV uploads + M active providers. User uploads coexist as
- * separate source entries because we only touch our own source.
+ * Two stable source-ID families coexist in the manifest:
+ *   - `mon_batch_<providerSlug>` — written by the monitoring batch runner.
+ *     Replace semantics: each batch run overwrites the prior batch's rows
+ *     for that provider.
+ *   - `individual_<providerSlug>` — written by the per-vendor meter-reads
+ *     pages via the `pushConvertedReadsSource` tRPC mutation. Merge/dedup
+ *     semantics: each run reads the prior source's rows and merges in any
+ *     new (non-duplicate) rows, preserving multi-day history.
+ *
+ * Both families live in the same manifest and read from the same storage
+ * user (the Solar REC owner). That's what prevents the two ingest paths
+ * from clobbering each other.
  */
 import {
   getSolarRecDashboardPayload,
   saveSolarRecDashboardPayload,
 } from "../db";
 import { MONITORING_CANONICAL_NAMES } from "@shared/const";
+import { parseCsvText } from "../routers/helpers/scheduleB";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -233,56 +242,73 @@ async function readExistingManifest(userId: number): Promise<RemoteDatasetSource
 }
 
 // ---------------------------------------------------------------------------
-// Core push function
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Push a provider's successful monitoring runs into the Converted Reads
- * dataset as a source-manifest source entry.
- *
- * Behavior:
- *   - Builds a CSV from the runs
- *   - Splits into chunks, writes each chunk to its own storage key
- *   - Reads the existing manifest, removes any prior source for this
- *     provider (`mon_batch_<providerKey>`), appends the new source, writes back
- *   - Orphaned chunks from the prior source (if the new run needs fewer
- *     chunks than before) get cleared to empty strings
- *
- * Returns null if no rows qualified (no source created).
+ * Dedup key for a Converted Reads row. Mirrors the client's
+ * `convertedReadsRowKey` (client/src/features/solar-rec/SolarRecDashboard.tsx)
+ * so the two implementations don't drift.
  */
-export async function pushMonitoringRunsToConvertedReads(
+function convertedReadsRowKey(row: ConvertedReadRow): string {
+  return [
+    row.monitoring ?? "",
+    row.monitoring_system_id ?? "",
+    row.monitoring_system_name ?? "",
+    row.lifetime_meter_read_wh ?? "",
+    row.read_date ?? "",
+  ].join("|");
+}
+
+/**
+ * Reassemble a source's CSV text by fetching all of its chunks in order.
+ * Returns `[]` if the source has no chunks or every chunk read failed.
+ */
+async function loadSourceRows(
   userId: number,
-  providerKey: string,
-  providerLabel: string,
-  runs: MonitoringRunRow[]
-): Promise<{ pushed: number; skipped: number; sourceId: string } | null> {
-  // 1. Filter to successful runs with lifetime kWh data
-  const validRuns = runs.filter(
-    (r) => r.status === "success" && r.lifetimeKwh != null && r.lifetimeKwh > 0
-  );
-  if (validRuns.length === 0) {
-    return null;
+  source: RemoteDatasetSourceRef
+): Promise<ConvertedReadRow[]> {
+  const chunkKeys = source.chunkKeys ?? [];
+  if (chunkKeys.length === 0) return [];
+  const parts: string[] = [];
+  for (const chunkKey of chunkKeys) {
+    const payload = await getSolarRecDashboardPayload(userId, `dataset:${chunkKey}`);
+    if (payload) parts.push(payload);
   }
+  if (parts.length === 0) return [];
+  const { rows } = parseCsvText(parts.join(""));
+  return rows;
+}
 
-  // 2. Build CSV rows + text
-  const csvRows = validRuns.map((r) =>
-    buildConvertedReadRow(
-      providerLabel,
-      r.siteId,
-      r.siteName ?? r.siteId,
-      r.lifetimeKwh!,
-      r.dateKey
-    )
-  );
-  const csvText = buildCsvText(CONVERTED_READS_HEADERS, csvRows);
-
-  // 3. Generate stable source ID + storage + chunk keys
-  const sourceId = providerSourceId(providerKey);
+/**
+ * Core write path: materialize `rows` as CSV, chunk it, and update the
+ * `_rawSourcesV1` manifest so the dashboard's hydrator finds the new (or
+ * replaced) source entry under `sourceId`.
+ *
+ * - Writes each chunk at `dataset:${storageKey}_chunk_NNNN`.
+ * - Writes a chunk-pointer JSON at `dataset:${storageKey}` so the
+ *   dashboard's `loadPayloadByKey(source.storageKey)` path can follow
+ *   the chunks (the dashboard fetches the top-level blob first; without
+ *   this pointer the source is silently skipped).
+ * - Clears any orphan chunks left over from a prior write for the same
+ *   source ID (best-effort — logged, not thrown).
+ * - Rewrites the manifest with the new source appended at the end
+ *   (prior entry for the same `sourceId` is removed first).
+ *
+ * Callers are responsible for REPLACE vs MERGE semantics — pass the full
+ * row set that should end up stored for this source.
+ */
+async function writeSourceToManifest(
+  userId: number,
+  sourceId: string,
+  sourceFileName: string,
+  rows: ConvertedReadRow[]
+): Promise<{ sourceId: string; storageKey: string; rowCount: number }> {
+  const csvText = buildCsvText(CONVERTED_READS_HEADERS, rows);
   const storageKey = buildSourceStorageKey(DATASET_KEY, sourceId);
   const chunks = splitTextIntoChunks(csvText, CHUNK_CHAR_LIMIT);
   const newChunkKeys = chunks.map((_, i) => buildChunkKey(storageKey, i));
 
-  // 4. Write each chunk
   for (let i = 0; i < chunks.length; i += 1) {
     await saveSolarRecDashboardPayload(
       userId,
@@ -291,24 +317,14 @@ export async function pushMonitoringRunsToConvertedReads(
     );
   }
 
-  // 4b. Write a chunk-pointer payload at the source's top-level storageKey.
-  //     The dashboard's source hydrator fetches `dataset:${storageKey}`
-  //     first (via loadPayloadByKey) and only follows chunks when that
-  //     blob is a valid chunk pointer. Without this write, the top-level
-  //     key is empty and the source is silently skipped during hydration
-  //     — which is why the Converted Reads upload slot appears empty
-  //     after a monitoring batch.
   await saveSolarRecDashboardPayload(
     userId,
     `dataset:${storageKey}`,
     buildChunkPointerPayload(newChunkKeys)
   );
 
-  // 5. Read existing manifest
   const existingSources = await readExistingManifest(userId);
 
-  // 6. Locate any prior source with the same ID — capture its chunk keys so
-  //    we can empty any orphans that aren't in our new chunk list.
   const priorSource = existingSources.find((s) => s.id === sourceId);
   if (priorSource?.chunkKeys && priorSource.chunkKeys.length > 0) {
     const newChunkKeySet = new Set(newChunkKeys);
@@ -325,13 +341,11 @@ export async function pushMonitoringRunsToConvertedReads(
     }
   }
 
-  // 7. Build the new source entry
-  const now = new Date().toISOString();
   const newSource: RemoteDatasetSourceRef = {
     id: sourceId,
-    fileName: `Monitoring batch: ${providerLabel} (${csvRows.length})`,
-    uploadedAt: now,
-    rowCount: csvRows.length,
+    fileName: sourceFileName,
+    uploadedAt: new Date().toISOString(),
+    rowCount: rows.length,
     sizeBytes: csvText.length,
     storageKey,
     chunkKeys: newChunkKeys,
@@ -339,13 +353,10 @@ export async function pushMonitoringRunsToConvertedReads(
     contentType: "text/csv",
   };
 
-  // 8. Replace or append: keep everything except the prior entry for this ID,
-  //    then append the new one at the end.
   const nextSources = existingSources
     .filter((s) => s.id !== sourceId)
     .concat(newSource);
 
-  // 9. Write the updated manifest back to the main key
   const manifest: RemoteDatasetSourceManifestPayload = {
     _rawSourcesV1: true,
     version: 1,
@@ -357,9 +368,112 @@ export async function pushMonitoringRunsToConvertedReads(
     JSON.stringify(manifest)
   );
 
+  return { sourceId, storageKey, rowCount: rows.length };
+}
+
+// ---------------------------------------------------------------------------
+// Public push functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Push a provider's successful monitoring runs into the Converted Reads
+ * dataset as a source-manifest source entry with REPLACE semantics — each
+ * batch run overwrites the prior batch for the same provider.
+ *
+ * Returns null if no rows qualified (no source created).
+ */
+export async function pushMonitoringRunsToConvertedReads(
+  userId: number,
+  providerKey: string,
+  providerLabel: string,
+  runs: MonitoringRunRow[]
+): Promise<{ pushed: number; skipped: number; sourceId: string } | null> {
+  const validRuns = runs.filter(
+    (r) => r.status === "success" && r.lifetimeKwh != null && r.lifetimeKwh > 0
+  );
+  if (validRuns.length === 0) {
+    return null;
+  }
+
+  const csvRows = validRuns.map((r) =>
+    buildConvertedReadRow(
+      providerLabel,
+      r.siteId,
+      r.siteName ?? r.siteId,
+      r.lifetimeKwh!,
+      r.dateKey
+    )
+  );
+
+  const sourceId = providerSourceId(providerKey);
+  const fileName = `Monitoring batch: ${providerLabel} (${csvRows.length})`;
+  const result = await writeSourceToManifest(userId, sourceId, fileName, csvRows);
+
   return {
-    pushed: csvRows.length,
-    skipped: runs.length - csvRows.length,
+    pushed: result.rowCount,
+    skipped: runs.length - result.rowCount,
+    sourceId: result.sourceId,
+  };
+}
+
+/**
+ * Stable source ID for an individual meter-reads page push (SolarEdge,
+ * Enphase, eGauge, etc.). One entry per provider — subsequent runs for
+ * the same provider MERGE into the existing entry rather than replacing
+ * it, so multi-day history accumulates over time.
+ */
+function individualSourceId(providerKey: string): string {
+  return `individual_${providerKey.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`;
+}
+
+/**
+ * Push Converted Reads rows from an individual meter-reads page run.
+ * Uses MERGE/DEDUP semantics: reads the prior `individual_<providerKey>`
+ * source (if any), keeps existing unique rows, and appends any new rows
+ * that don't already exist (by `convertedReadsRowKey`).
+ *
+ * This preserves the historical behavior of the client-side
+ * `pushConvertedReadsToRecDashboard` — running the same vendor page on
+ * multiple days accumulates one row per site per day — while writing in
+ * the same `_rawSourcesV1` manifest format the monitoring batch uses,
+ * so the two paths coexist without clobbering each other.
+ *
+ * Returns null if no rows were supplied.
+ */
+export async function pushIndividualRunsToConvertedReads(
+  userId: number,
+  providerKey: string,
+  providerLabel: string,
+  newRows: ConvertedReadRow[]
+): Promise<{ pushed: number; skipped: number; sourceId: string } | null> {
+  if (newRows.length === 0) return null;
+
+  const sourceId = individualSourceId(providerKey);
+
+  const existingSources = await readExistingManifest(userId);
+  const priorSource = existingSources.find((s) => s.id === sourceId);
+  const priorRows = priorSource ? await loadSourceRows(userId, priorSource) : [];
+
+  const existingKeys = new Set(priorRows.map(convertedReadsRowKey));
+  const uniqueNewRows = newRows.filter(
+    (r) => !existingKeys.has(convertedReadsRowKey(r))
+  );
+
+  if (uniqueNewRows.length === 0) {
+    return { pushed: 0, skipped: newRows.length, sourceId };
+  }
+
+  const mergedRows = [...priorRows, ...uniqueNewRows];
+  const fileName = `${providerLabel} API (${mergedRows.length} rows)`;
+  await writeSourceToManifest(userId, sourceId, fileName, mergedRows);
+
+  return {
+    pushed: uniqueNewRows.length,
+    skipped: newRows.length - uniqueNewRows.length,
     sourceId,
   };
 }
+
+// Re-export the shared row type so callers (e.g. the tRPC mutation) can
+// type-narrow Zod output to it without redefining the shape.
+export type { ConvertedReadRow };

@@ -3,6 +3,16 @@
  * to the Solar REC Dashboard from any monitoring platform's bulk API run.
  *
  * The Converted Reads dataset feeds the Performance Ratio tab.
+ *
+ * Historically this file implemented the push itself — read the legacy
+ * dataset blob, dedup, and save it back as a `SerializedCsvDataset`.
+ * That approach clobbered the monitoring batch bridge's `_rawSourcesV1`
+ * manifest writes (and vice versa). Now the actual write happens
+ * server-side via the `solarRecDashboard.pushConvertedReadsSource` tRPC
+ * mutation, which shares the bridge's source-manifest write path. Each
+ * provider's individual meter-reads page gets a stable `individual_<slug>`
+ * source entry in the same manifest the monitoring batch populates, and
+ * the two ingest paths coexist cleanly.
  */
 
 /* ------------------------------------------------------------------ */
@@ -25,21 +35,15 @@ export const CONVERTED_READS_HEADERS = [
 
 export type ConvertedReadRow = Record<string, string>;
 
-type SerializedCsvDataset = {
-  fileName: string;
-  uploadedAt: string;
-  headers: string[];
-  csvText: string;
+/**
+ * Call signature of `trpc.solarRecDashboard.pushConvertedReadsSource.mutateAsync`.
+ * Callers inject this so this module stays framework-free and testable.
+ */
+export type PushConvertedReadsSourceFn = (input: {
+  providerKey: string;
+  providerLabel: string;
   rows: ConvertedReadRow[];
-  sources?: Array<{
-    fileName: string;
-    uploadedAt: string;
-    rowCount: number;
-  }>;
-};
-
-type GetDatasetFn = (input: { key: string }) => Promise<{ key: string; payload: string } | null>;
-type SaveDatasetFn = (input: { key: string; payload: string }) => Promise<unknown>;
+}) => Promise<{ pushed: number; skipped: number; sourceId: string | null }>;
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                             */
@@ -52,44 +56,6 @@ export function formatReadDate(isoDate: string): string {
   const month = Number(parts[1]);
   const day = Number(parts[2]);
   return `${month}/${day}/${parts[0]}`;
-}
-
-/** Build dedup key matching SolarRecDashboard convertedReadsRowKey(). */
-function convertedReadsRowKey(row: ConvertedReadRow): string {
-  return [
-    row.monitoring ?? "",
-    row.monitoring_system_id ?? "",
-    row.monitoring_system_name ?? "",
-    row.lifetime_meter_read_wh ?? "",
-    row.read_date ?? "",
-  ].join("|");
-}
-
-function csvEscape(value: string | number | null | undefined): string {
-  const normalized = value === null || value === undefined ? "" : String(value);
-  if (/["\n,]/.test(normalized)) {
-    return `"${normalized.replaceAll('"', '""')}"`;
-  }
-  return normalized;
-}
-
-function buildCsvText(headers: readonly string[], rows: ConvertedReadRow[]): string {
-  const headerLine = headers.map((h) => csvEscape(h)).join(",");
-  const bodyLines = rows.map((row) => headers.map((h) => csvEscape(row[h])).join(","));
-  return [headerLine, ...bodyLines].join("\n");
-}
-
-function parseCsvRows(csvText: string, headers: string[]): ConvertedReadRow[] {
-  if (!csvText.trim()) return [];
-  const lines = csvText.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length <= 1) return [];
-  const csvHeaders = lines[0].split(",").map((h) => h.replace(/^"|"$/g, "").trim());
-  return lines.slice(1).map((line) => {
-    const values = line.split(",").map((v) => v.replace(/^"|"$/g, "").trim());
-    const row: ConvertedReadRow = {};
-    csvHeaders.forEach((h, i) => { row[h] = values[i] ?? ""; });
-    return row;
-  });
 }
 
 /** Build a single Converted Read CSV row from monitoring data. */
@@ -111,17 +77,36 @@ export function buildConvertedReadRow(
   };
 }
 
+/**
+ * Derive the stable provider slug (`individual_<slug>` source-ID suffix)
+ * that the server-side bridge expects. Lowercase, alphanumeric plus
+ * `_` / `-`. Matches the Zod regex on the tRPC input.
+ */
+function deriveProviderKey(platformLabel: string): string {
+  return (
+    platformLabel
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "_")
+      .replace(/^_+|_+$/g, "") || "unknown"
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Core push function                                                  */
 /* ------------------------------------------------------------------ */
 
 /**
- * Push Converted Reads rows to the Solar REC Dashboard's remote dataset
- * storage, merging with any existing rows and deduplicating.
+ * Push Converted Reads rows to the Solar REC Dashboard.
+ *
+ * Delegates the actual manifest/chunk write to the
+ * `solarRecDashboard.pushConvertedReadsSource` tRPC mutation. The server
+ * merges `newRows` against any prior rows in this provider's
+ * `individual_<slug>` source (deduplicated by monitoring + system id +
+ * system name + lifetime reading + read date) and appends only the new,
+ * unique rows.
  */
 export async function pushConvertedReadsToRecDashboard(
-  getDataset: GetDatasetFn,
-  saveDataset: SaveDatasetFn,
+  pushSource: PushConvertedReadsSourceFn,
   newRows: ConvertedReadRow[],
   platformLabel: string
 ): Promise<{ pushed: number; skipped: number }> {
@@ -129,76 +114,12 @@ export async function pushConvertedReadsToRecDashboard(
     return { pushed: 0, skipped: 0 };
   }
 
-  const now = new Date().toISOString();
-
-  // Fetch existing dataset (may be null if never uploaded).
-  let existingDataset: SerializedCsvDataset | null = null;
-  try {
-    const result = await getDataset({ key: "convertedReads" });
-    if (result?.payload) {
-      existingDataset = JSON.parse(result.payload) as SerializedCsvDataset;
-    }
-  } catch {
-    // No existing dataset — start fresh.
-  }
-
-  // Build dedup set from existing rows.
-  // Prefer rows parsed from csvText (the format the dashboard actually reads),
-  // fall back to the legacy rows array for backward compatibility.
-  const existingRows: ConvertedReadRow[] =
-    (existingDataset?.csvText
-      ? parseCsvRows(existingDataset.csvText, existingDataset.headers ?? [...CONVERTED_READS_HEADERS])
-      : null) ??
-    existingDataset?.rows ??
-    [];
-  const existingKeys = new Set(existingRows.map(convertedReadsRowKey));
-
-  // Filter new rows to only unique ones.
-  const uniqueNewRows = newRows.filter((row) => {
-    const key = convertedReadsRowKey(row);
-    if (existingKeys.has(key)) return false;
-    existingKeys.add(key);
-    return true;
+  const providerKey = deriveProviderKey(platformLabel);
+  const result = await pushSource({
+    providerKey,
+    providerLabel: platformLabel,
+    rows: newRows,
   });
 
-  if (uniqueNewRows.length === 0) {
-    return { pushed: 0, skipped: newRows.length };
-  }
-
-  // Merge headers.
-  const existingHeaders = existingDataset?.headers ?? [];
-  const mergedHeaders = Array.from(
-    new Set([...existingHeaders, ...CONVERTED_READS_HEADERS])
-  );
-
-  // Build sources array.
-  const existingSources = existingDataset?.sources ?? (existingDataset ? [{
-    fileName: existingDataset.fileName,
-    uploadedAt: existingDataset.uploadedAt,
-    rowCount: existingRows.length,
-  }] : []);
-  const sources = [
-    ...existingSources,
-    {
-      fileName: `${platformLabel} API (${uniqueNewRows.length} rows)`,
-      uploadedAt: now,
-      rowCount: uniqueNewRows.length,
-    },
-  ];
-
-  // Build merged dataset with csvText (the format the dashboard deserializer expects).
-  const allRows = [...existingRows, ...uniqueNewRows];
-  const merged: SerializedCsvDataset = {
-    fileName: `${sources.length} files loaded`,
-    uploadedAt: now,
-    headers: mergedHeaders,
-    csvText: buildCsvText(mergedHeaders, allRows),
-    rows: allRows,
-    sources,
-  };
-
-  // Save to remote storage.
-  await saveDataset({ key: "convertedReads", payload: JSON.stringify(merged) });
-
-  return { pushed: uniqueNewRows.length, skipped: newRows.length - uniqueNewRows.length };
+  return { pushed: result.pushed, skipped: result.skipped };
 }

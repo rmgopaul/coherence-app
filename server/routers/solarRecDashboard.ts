@@ -54,6 +54,9 @@ import { Semaphore } from "../services/core/concurrency";
  *   - "convertedReads" — the main manifest key
  *   - "src_convertedReads_mon_batch_*" — the monitoring bridge's source
  *     chunks (stable IDs like mon_batch_solaredge, mon_batch_hoymiles)
+ *   - "src_convertedReads_individual_*" — the per-vendor meter-reads
+ *     page source chunks (stable IDs like individual_solaredge), written
+ *     by the `pushConvertedReadsSource` mutation below
  *
  * Does NOT match user-uploaded source chunks like
  * "src_convertedReads_mo0rczoydl24xs0j_chunk_0000" — those are stored
@@ -62,8 +65,8 @@ import { Semaphore } from "../services/core/concurrency";
  */
 function isTeamWideDatasetKey(inputKey: string): boolean {
   if (inputKey === "convertedReads") return true;
-  // Bridge source chunk keys start with "src_convertedReads_mon_batch_"
   if (inputKey.startsWith("src_convertedReads_mon_batch_")) return true;
+  if (inputKey.startsWith("src_convertedReads_individual_")) return true;
   return false;
 }
 
@@ -638,6 +641,45 @@ export const solarRecDashboardRouter = router({
         }
         throw storageError;
       }
+    }),
+  /**
+   * Push Converted Reads rows from an individual meter-reads page run into
+   * the dashboard's `_rawSourcesV1` manifest. Shares the monitoring batch
+   * bridge's write path so the two ingest sources coexist in one manifest
+   * instead of clobbering each other's main-key writes.
+   *
+   * Resolves to the Solar REC team owner's user ID so every teammate
+   * sees the same rows — matching how `isTeamWideDatasetKey` routes the
+   * manifest + chunk reads.
+   */
+  pushConvertedReadsSource: protectedProcedure
+    .input(
+      z.object({
+        providerKey: z
+          .string()
+          .min(1)
+          .max(50)
+          .regex(/^[a-z0-9_-]+$/, "providerKey must be lowercase alphanumeric plus _ or -"),
+        providerLabel: z.string().min(1).max(100),
+        rows: z.array(z.record(z.string(), z.string())).max(10_000),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { pushIndividualRunsToConvertedReads } = await import(
+        "../solar/convertedReadsBridge"
+      );
+      const ownerUserId = await resolveSolarRecOwnerUserId();
+      const result = await pushIndividualRunsToConvertedReads(
+        ownerUserId,
+        input.providerKey,
+        input.providerLabel,
+        input.rows
+      );
+      return {
+        pushed: result?.pushed ?? 0,
+        skipped: result?.skipped ?? input.rows.length,
+        sourceId: result?.sourceId ?? null,
+      };
     }),
   ensureScheduleBImportJob: protectedProcedure
     .mutation(async ({ ctx }) => {

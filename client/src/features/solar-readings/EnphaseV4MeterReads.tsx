@@ -64,8 +64,7 @@ export default function EnphaseV4MeterReads() {
   const rgmStatsMutation = trpc.enphaseV4.getRgmStats.useMutation();
   const productionReadsMutation = trpc.enphaseV4.getProductionMeterReadings.useMutation();
   const bulkSnapshotsMutation = trpc.enphaseV4.getProductionSnapshots.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   const [bulkSystemIdsCsv, setBulkSystemIdsCsv] = useState("");
   const [bulkIsRunning, setBulkIsRunning] = useState(false);
@@ -600,8 +599,7 @@ export default function EnphaseV4MeterReads() {
                       );
                     } else {
                       const pushResult = await pushConvertedReadsToRecDashboard(
-                        (input) => getRemoteDataset.mutateAsync(input),
-                        (input) => saveRemoteDataset.mutateAsync(input),
+                        (input) => pushConvertedReadsSource.mutateAsync(input),
                         readRows,
                         MONITORING_CANONICAL_NAMES.enphase
                       );

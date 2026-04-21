@@ -159,10 +159,8 @@ export default function MeterReadsPage({
   const disconnectMutation = config.useDisconnectMutation();
   const productionSnapshotMutation =
     config.useProductionSnapshotMutation();
-  const getRemoteDataset =
-    trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset =
-    trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource =
+    trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   /* --- effects --- */
 
@@ -759,9 +757,7 @@ export default function MeterReadsPage({
             const result =
               await pushConvertedReadsToRecDashboard(
                 (input) =>
-                  getRemoteDataset.mutateAsync(input),
-                (input) =>
-                  saveRemoteDataset.mutateAsync(input),
+                  pushConvertedReadsSource.mutateAsync(input),
                 readRows,
                 config.convertedReadsMonitoring
               );

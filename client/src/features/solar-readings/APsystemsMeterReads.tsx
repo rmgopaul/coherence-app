@@ -167,8 +167,7 @@ export default function APsystemsMeterReads() {
   const disconnectMutation = trpc.apsystems.disconnect.useMutation();
   const productionSnapshotMutation = trpc.apsystems.getProductionSnapshot.useMutation();
   const listAllSidsMutation = trpc.apsystems.listAllSids.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -532,8 +531,7 @@ export default function APsystemsMeterReads() {
             );
           } else {
             const result = await pushConvertedReadsToRecDashboard(
-              (input) => getRemoteDataset.mutateAsync(input),
-              (input) => saveRemoteDataset.mutateAsync(input),
+              (input) => pushConvertedReadsSource.mutateAsync(input),
               readRows,
               MONITORING_CANONICAL_NAMES.apsystems
             );

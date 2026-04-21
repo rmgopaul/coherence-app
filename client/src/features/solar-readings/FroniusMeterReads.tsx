@@ -248,8 +248,7 @@ export default function FroniusMeterReads() {
   const productionSnapshotMutation = trpc.fronius.getProductionSnapshot.useMutation();
   const bulkProductionSnapshotsMutation = trpc.fronius.getProductionSnapshots.useMutation();
   const bulkDeviceSnapshotsMutation = trpc.fronius.getDeviceSnapshots.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -660,8 +659,7 @@ export default function FroniusMeterReads() {
               );
             } else {
               const result = await pushConvertedReadsToRecDashboard(
-                (input) => getRemoteDataset.mutateAsync(input),
-                (input) => saveRemoteDataset.mutateAsync(input),
+                (input) => pushConvertedReadsSource.mutateAsync(input),
                 readRows,
                 MONITORING_CANONICAL_NAMES.fronius
               );

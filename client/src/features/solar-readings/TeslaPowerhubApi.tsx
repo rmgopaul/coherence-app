@@ -109,8 +109,7 @@ export default function TeslaPowerhubApi() {
   const disconnectMutation = trpc.teslaPowerhub.disconnect.useMutation();
   const refreshEgressMutation = trpc.teslaPowerhub.refreshServerEgressIpv4.useMutation();
   const startProductionJobMutation = trpc.teslaPowerhub.startGroupProductionMetricsJob.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
   const productionJobQuery = trpc.teslaPowerhub.getGroupProductionMetricsJob.useQuery(
     { jobId: activeJobId ?? "__none__" },
     {
@@ -147,10 +146,8 @@ export default function TeslaPowerhubApi() {
     return () => window.clearInterval(intervalId);
   }, [activeJobId, jobPollIntervalMs, jobStartedAtMs]);
 
-  const getRemoteDatasetRef = useRef(getRemoteDataset);
-  getRemoteDatasetRef.current = getRemoteDataset;
-  const saveRemoteDatasetRef = useRef(saveRemoteDataset);
-  saveRemoteDatasetRef.current = saveRemoteDataset;
+  const pushConvertedReadsSourceRef = useRef(pushConvertedReadsSource);
+  pushConvertedReadsSourceRef.current = pushConvertedReadsSource;
 
   useEffect(() => {
     const snapshot = productionJobQuery.data as ProductionJobSnapshot | undefined;
@@ -185,8 +182,7 @@ export default function TeslaPowerhubApi() {
             );
           } else {
             pushConvertedReadsToRecDashboard(
-              (input) => getRemoteDatasetRef.current.mutateAsync(input),
-              (input) => saveRemoteDatasetRef.current.mutateAsync(input),
+              (input) => pushConvertedReadsSourceRef.current.mutateAsync(input),
               readRows,
               MONITORING_CANONICAL_NAMES.teslaPowerhub
             ).then((result) => {

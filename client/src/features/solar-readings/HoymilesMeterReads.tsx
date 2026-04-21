@@ -154,8 +154,7 @@ export default function HoymilesMeterReads() {
   const productionSnapshotMutation = trpc.hoymiles.getProductionSnapshot.useMutation();
   const listAllStationsMutation = trpc.hoymiles.listAllStations.useMutation();
   const productionSnapshotAllProfilesMutation = trpc.hoymiles.getProductionSnapshotAllProfiles.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -569,8 +568,7 @@ export default function HoymilesMeterReads() {
             );
           } else {
             const result = await pushConvertedReadsToRecDashboard(
-              (input) => getRemoteDataset.mutateAsync(input),
-              (input) => saveRemoteDataset.mutateAsync(input),
+              (input) => pushConvertedReadsSource.mutateAsync(input),
               readRows,
               MONITORING_CANONICAL_NAMES.hoymiles
             );
