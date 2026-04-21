@@ -11,17 +11,21 @@
  * Spec: handoff/Productivity Hub Reimagined (2).html §D4
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
+import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { DashboardViewsNav } from "./DashboardViewsNav";
 import { StickyNote, type StickyData } from "./canvas/StickyNote";
 import {
   applyDragDelta,
+  computeDropPlacement,
   computeInitialPlacement,
   nextStickyColor,
   partitionDockItems,
 } from "./canvas/canvas.helpers";
 import "./frontpage/dashboard.css";
+
+const DOCK_DRAG_MIME = "application/x-coherence-dock-id";
 
 interface DragState {
   id: string;
@@ -43,6 +47,9 @@ export default function Canvas() {
   });
 
   const [drag, setDrag] = useState<DragState | null>(null);
+  // True while the user is dragging a chip from the dock shelf into the
+  // board area — drives the dashed yellow drop-zone outline.
+  const [dragOver, setDragOver] = useState(false);
   const boardRef = useRef<HTMLDivElement | null>(null);
 
   const { stickies, dockOnly } = useMemo(
@@ -107,6 +114,66 @@ export default function Canvas() {
     );
   }
 
+  // ---- HTML5 drag-from-dock handlers ---------------------------------
+  // Native DnD: chips on the shelf become draggable; the board acts as
+  // the drop target. We keep the click-to-pin path as a fallback for
+  // touch / accessibility.
+
+  const onShelfDragStart = useCallback(
+    (itemId: string) =>
+      (e: ReactDragEvent<HTMLButtonElement>) => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData(DOCK_DRAG_MIME, itemId);
+        // Plain-text fallback so other surfaces don't choke on the
+        // unknown MIME — the board still keys off DOCK_DRAG_MIME.
+        e.dataTransfer.setData("text/plain", itemId);
+      },
+    []
+  );
+
+  const onBoardDragOver = useCallback((e: ReactDragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.types.includes(DOCK_DRAG_MIME)) return;
+    e.preventDefault(); // required to allow a drop
+    e.dataTransfer.dropEffect = "move";
+    setDragOver(true);
+  }, []);
+
+  const onBoardDragLeave = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>) => {
+      // Only flip false when leaving the board itself, not children.
+      if (e.currentTarget === e.target) setDragOver(false);
+    },
+    []
+  );
+
+  const onBoardDrop = useCallback(
+    (e: ReactDragEvent<HTMLDivElement>) => {
+      const itemId = e.dataTransfer.getData(DOCK_DRAG_MIME);
+      if (!itemId) return;
+      e.preventDefault();
+      setDragOver(false);
+      const board = boardRef.current?.getBoundingClientRect();
+      if (!board) return;
+      const placement = computeDropPlacement({
+        pointer: { x: e.clientX, y: e.clientY },
+        board: {
+          left: board.left,
+          top: board.top,
+          width: board.width,
+          height: board.height,
+        },
+        // Mild deterministic tilt so dropped notes don't all sit at
+        // 0deg — looks pinned, not generated.
+        tilt: itemId.charCodeAt(0) % 5 - 2,
+      });
+      moveMut.mutate(
+        { id: itemId, ...placement },
+        { onSuccess: () => void utils.dock.list.invalidate() }
+      );
+    },
+    [moveMut, utils.dock.list]
+  );
+
   function removeFromBoard(itemId: string) {
     moveMut.mutate(
       { id: itemId, x: null, y: null, tilt: null },
@@ -137,7 +204,17 @@ export default function Canvas() {
           </p>
         </header>
 
-        <div ref={boardRef} className="fp-canvas__board" aria-label="Sticky note board">
+        <div
+          ref={boardRef}
+          className={cn(
+            "fp-canvas__board",
+            dragOver && "fp-canvas__board--drag-over"
+          )}
+          aria-label="Sticky note board"
+          onDragOver={onBoardDragOver}
+          onDragLeave={onBoardDragLeave}
+          onDrop={onBoardDrop}
+        >
           {isLoading && (
             <p className="fp-empty fp-canvas__empty">loading the board…</p>
           )}
@@ -178,14 +255,16 @@ export default function Canvas() {
                   key={it.id}
                   type="button"
                   className="fp-canvas__shelf-chip"
+                  draggable
+                  onDragStart={onShelfDragStart(it.id)}
                   onClick={() => placeOnBoard(it.id)}
-                  title="Click to pin onto the board"
+                  title="Drag onto the board, or click to drop in the center"
                 >
                   <span className="fp-canvas__shelf-src">{it.source.toUpperCase()}</span>
                   <span className="fp-canvas__shelf-title">
                     {it.title?.trim() || it.url}
                   </span>
-                  <span className="fp-canvas__shelf-add">＋ pin</span>
+                  <span className="fp-canvas__shelf-add">＋ drag · click</span>
                 </button>
               ))}
             </div>

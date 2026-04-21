@@ -2029,6 +2029,12 @@ a.wire-card--link:focus-visible {
     linear-gradient(90deg, rgba(0, 0, 0, 0.05) 1px, transparent 1px) 0 0/24px 24px,
     var(--fp-paper);
   overflow: hidden;
+  transition: outline-color 100ms ease;
+}
+/* Active drop-zone hint while a chip is dragged over the board. */
+.fp-canvas__board--drag-over {
+  outline: 4px dashed var(--fp-yellow);
+  outline-offset: -8px;
 }
 .fp-canvas__empty {
   position: absolute;
@@ -2180,8 +2186,13 @@ a.wire-card--link:focus-visible {
   padding: 8px 10px;
   font-family: "Inter", sans-serif;
   font-size: 12.5px;
-  cursor: pointer;
+  /* draggable=true → cursor: grab signals the affordance to the user
+     before they pick it up. */
+  cursor: grab;
   transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.fp-canvas__shelf-chip:active {
+  cursor: grabbing;
 }
 .fp-canvas__shelf-chip:hover {
   transform: translate(-1px, -1px);

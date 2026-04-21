@@ -122,3 +122,38 @@ export function applyDragDelta(
     },
   };
 }
+
+export interface DropPlacementInput {
+  /** Pointer position from the drop event (page coordinates). */
+  pointer: { x: number; y: number };
+  /** getBoundingClientRect of the drop target board. */
+  board: { left: number; top: number; width: number; height: number };
+  /** Sticky size used to center the note under the cursor. */
+  stickySize?: { width: number; height: number };
+  /** Tilt to apply (defaults to a small random nudge). */
+  tilt?: number;
+}
+
+/**
+ * Compute the absolute (board-relative) x/y to place a chip when it's
+ * dropped from the dock shelf. Centers the sticky roughly under the
+ * cursor and clamps so it stays inside the board.
+ */
+export function computeDropPlacement({
+  pointer,
+  board,
+  stickySize = { width: 260, height: 120 },
+  tilt = 0,
+}: DropPlacementInput): { x: number; y: number; tilt: number } {
+  const rawX = pointer.x - board.left - stickySize.width / 2;
+  const rawY = pointer.y - board.top - stickySize.height / 2;
+  return {
+    x: Math.round(
+      clamp(rawX, 0, Math.max(0, board.width - stickySize.width))
+    ),
+    y: Math.round(
+      clamp(rawY, 0, Math.max(0, board.height - stickySize.height))
+    ),
+    tilt,
+  };
+}

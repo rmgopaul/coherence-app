@@ -3,6 +3,7 @@ import {
   applyDragDelta,
   clamp,
   COLOR_CYCLE,
+  computeDropPlacement,
   computeInitialPlacement,
   nextStickyColor,
   partitionDockItems,
@@ -152,5 +153,66 @@ describe("applyDragDelta", () => {
     const out = applyDragDelta(baseDrag, { x: 110, y: 110 });
     expect(out.pointerStart).toEqual(baseDrag.pointerStart);
     expect(out.noteStart).toEqual(baseDrag.noteStart);
+  });
+});
+
+describe("computeDropPlacement", () => {
+  // The board is positioned at left=100, top=200 in the viewport, with
+  // a 1000x800 drop area. Sticky size defaults to 260x120, so the
+  // halve-and-clamp math gives:
+  //   - cursor (600,600) → x=600-100-130=370, y=600-200-60=340
+  const board = { left: 100, top: 200, width: 1000, height: 800 };
+
+  it("centers the sticky under the cursor (board-relative)", () => {
+    const out = computeDropPlacement({
+      pointer: { x: 600, y: 600 },
+      board,
+    });
+    expect(out).toEqual({ x: 370, y: 340, tilt: 0 });
+  });
+
+  it("clamps to the upper-left corner if cursor is off the board", () => {
+    const out = computeDropPlacement({
+      pointer: { x: 50, y: 100 }, // up + left of the board
+      board,
+    });
+    expect(out).toEqual({ x: 0, y: 0, tilt: 0 });
+  });
+
+  it("clamps to the bottom-right corner if cursor is past the edge", () => {
+    const out = computeDropPlacement({
+      pointer: { x: 5000, y: 5000 },
+      board,
+    });
+    // max-x = width - sticky.width = 1000 - 260 = 740
+    // max-y = height - sticky.height = 800 - 120 = 680
+    expect(out).toEqual({ x: 740, y: 680, tilt: 0 });
+  });
+
+  it("respects a custom sticky size", () => {
+    const out = computeDropPlacement({
+      pointer: { x: 600, y: 600 },
+      board,
+      stickySize: { width: 100, height: 100 },
+    });
+    expect(out).toEqual({ x: 450, y: 350, tilt: 0 });
+  });
+
+  it("forwards the tilt argument verbatim", () => {
+    const out = computeDropPlacement({
+      pointer: { x: 600, y: 600 },
+      board,
+      tilt: -3,
+    });
+    expect(out.tilt).toBe(-3);
+  });
+
+  it("never returns a negative max bound when board is smaller than sticky", () => {
+    const out = computeDropPlacement({
+      pointer: { x: 5000, y: 5000 },
+      board: { left: 0, top: 0, width: 50, height: 50 },
+    });
+    expect(out.x).toBe(0);
+    expect(out.y).toBe(0);
   });
 });
