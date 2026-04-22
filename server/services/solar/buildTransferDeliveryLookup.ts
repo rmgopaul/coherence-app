@@ -112,6 +112,7 @@ async function getActiveTransferHistoryBatchId(
  */
 async function loadTransferRows(batchId: string): Promise<
   Array<{
+    transactionId: string | null;
     unitId: string | null;
     transferor: string | null;
     transferee: string | null;
@@ -125,6 +126,7 @@ async function loadTransferRows(batchId: string): Promise<
   return withDbRetry("load transferHistory rows", () =>
     db
       .select({
+        transactionId: srDsTransferHistory.transactionId,
         unitId: srDsTransferHistory.unitId,
         transferor: srDsTransferHistory.transferor,
         transferee: srDsTransferHistory.transferee,
@@ -136,7 +138,13 @@ async function loadTransferRows(batchId: string): Promise<
   );
 }
 
-const TRANSFER_DELIVERY_ARTIFACT_TYPE = "transfer_delivery_lookup";
+// v2: adds compute-time txId dedup — prior version double-counted
+// rows whose (txId, unitId, date-string, qty) ingest dedup key
+// mismatched due to date-format drift across GATS re-exports
+// (e.g., "03/22/2026 03:46 AM" vs "3/22/26 3:46"). Bumping the
+// artifact type forces a cache miss on every scope so the fixed
+// algorithm runs once per active batch.
+const TRANSFER_DELIVERY_ARTIFACT_TYPE = "transfer_delivery_lookup_v2";
 
 /**
  * Build the delivery lookup from the active transferHistory batch
@@ -161,6 +169,7 @@ const inFlightBuilds = new Map<
 
 /** Typed-row shape loadTransferRows returns (exported for tests). */
 export type TypedTransferRow = {
+  transactionId: string | null;
   unitId: string | null;
   transferor: string | null;
   transferee: string | null;
@@ -174,18 +183,38 @@ export type TypedTransferRow = {
  * buildTransferDeliveryLookupForScope path also exercises cache
  * + single-flight machinery, which we don't want every test to
  * mock out.
+ *
+ * Dedupe by Transaction ID (first-write-wins). GATS Transaction IDs
+ * are globally unique per confirmed transfer, so any row sharing a
+ * txId we've already summed represents the same underlying transfer
+ * and must be skipped. This is the last line of defense against
+ * ingest-time dedup misses caused by date-string format drift
+ * across GATS re-exports (e.g., "03/22/2026 03:46 AM" vs
+ * "3/22/26 3:46" hashing to different composite keys).
+ *
+ * Rows with missing / empty Transaction IDs fall through to the
+ * sum without a dedup guard — rare in practice, but preserves the
+ * original behavior for incomplete data rather than collapsing
+ * every such row to a single bucket.
  */
 export function computeTransferDeliveryLookupFromRows(
   rows: readonly TypedTransferRow[],
   batchId: string
 ): TransferDeliveryLookupPayload {
   const byTrackingId: Record<string, Record<string, number>> = {};
+  const seenTransactionIds = new Set<string>();
 
   for (const row of rows) {
     const unitId = clean(row.unitId);
     if (!unitId) continue;
     const qty = row.quantity ?? parseQuantity(row.quantity);
     if (qty === 0) continue;
+
+    const txId = clean(row.transactionId);
+    if (txId) {
+      if (seenTransactionIds.has(txId)) continue;
+      seenTransactionIds.add(txId);
+    }
 
     const transferor = clean(row.transferor).toLowerCase();
     const transferee = clean(row.transferee).toLowerCase();

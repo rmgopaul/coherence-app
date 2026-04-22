@@ -428,6 +428,31 @@ const transferHistoryRowExists: AppendRowChecker = async (
   );
   const quantity = parseNum(row.Quantity ?? row.quantity);
 
+  // When the row has a Transaction ID, treat it as the canonical
+  // identity. GATS txIds are globally unique per confirmed transfer,
+  // so matching on txId alone catches re-exports where the date
+  // string format changed (e.g., "03/22/2026 03:46 AM" vs
+  // "3/22/26 3:46") — the old composite check let those slip
+  // through. Only fall back to the composite check when txId is
+  // missing, so legit transfers without a txId don't collapse to a
+  // single bucket.
+  if (transactionId) {
+    const rows = await withDbRetry(
+      "check transfer history append row by txId",
+      () =>
+        db
+          .select({ id: srDsTransferHistory.id })
+          .from(srDsTransferHistory)
+          .where(sql`
+            ${srDsTransferHistory.scopeId} = ${scopeId}
+            AND ${srDsTransferHistory.batchId} = ${batchId}
+            AND ${srDsTransferHistory.transactionId} = ${transactionId}
+          `)
+          .limit(1)
+    );
+    return rows.length > 0;
+  }
+
   const rows = await withDbRetry("check transfer history append row", () =>
     db
       .select({ id: srDsTransferHistory.id })
@@ -620,8 +645,16 @@ function rowKey(datasetKey: string, row: CsvRow): string {
       .join("|");
   }
   if (datasetKey === "transferHistory") {
+    // Prefer the Transaction ID alone when present — it's GATS's
+    // globally unique transfer identifier and survives date-string
+    // format drift across re-exports. The "tx:" prefix prevents a
+    // txId string from ever colliding with a composite-key string
+    // from a row without a txId.
+    const txId = pick(row, "Transaction ID", "transaction_id");
+    if (txId) {
+      return `tx:${txId.trim().toLowerCase()}`;
+    }
     return [
-      pick(row, "Transaction ID", "transaction_id"),
       pick(row, "Unit ID", "unit_id"),
       pick(
         row,
@@ -659,6 +692,13 @@ function typedRowKey(
     ].join("|");
   }
   if (datasetKey === "transferHistory") {
+    // Mirror rowKey above: prefer the Transaction ID alone when
+    // present. The "tx:" prefix keeps it in a disjoint namespace
+    // from the composite-key fallback used for rows without a txId.
+    const txId = s(row.transactionId);
+    if (txId) {
+      return `tx:${txId}`;
+    }
     const quantity = row.quantity;
     const qtyKey =
       quantity === null || quantity === undefined
@@ -667,7 +707,6 @@ function typedRowKey(
           ? String(quantity)
           : String(quantity).trim().toLowerCase();
     return [
-      s(row.transactionId),
       s(row.unitId),
       s(row.transferCompletionDate),
       qtyKey,

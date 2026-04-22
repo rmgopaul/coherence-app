@@ -4570,11 +4570,24 @@ export default function SolarRecDashboard() {
     const transferRows = datasets.transferHistory?.rows ?? [];
     if (transferRows.length === 0) return lookup;
 
+    // Dedupe by GATS Transaction ID (mirrors the server + library
+    // lookup builders). See buildTransferDeliveryLookup for the
+    // rationale — date-string format drift across GATS re-exports
+    // defeats the ingest-time composite-key dedup, so the final
+    // sum must guard against it.
+    const seenTransactionIds = new Set<string>();
+
     for (const row of transferRows) {
       const unitId = clean(row["Unit ID"]);
       if (!unitId) continue;
       const qty = parseNumber(row.Quantity) ?? 0;
       if (qty === 0) continue;
+
+      const txId = clean(row["Transaction ID"]);
+      if (txId) {
+        if (seenTransactionIds.has(txId)) continue;
+        seenTransactionIds.add(txId);
+      }
 
       const transferor = (clean(row.Transferor) ?? "").toLowerCase();
       const transferee = (clean(row.Transferee) ?? "").toLowerCase();

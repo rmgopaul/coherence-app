@@ -38,11 +38,22 @@ export function buildTransferDeliveryLookup(
   const lookup: TransferDeliveryLookup = new Map();
   if (transferRows.length === 0) return lookup;
 
+  // Dedupe by GATS Transaction ID (first-write-wins). Same rationale
+  // as the server's computeTransferDeliveryLookupFromRows — guards
+  // against ingest-dedup misses from date-string format drift.
+  const seenTransactionIds = new Set<string>();
+
   for (const row of transferRows) {
     const unitId = clean(row["Unit ID"]);
     if (!unitId) continue;
     const qty = parseNumber(row.Quantity) ?? 0;
     if (qty === 0) continue;
+
+    const txId = clean(row["Transaction ID"]);
+    if (txId) {
+      if (seenTransactionIds.has(txId)) continue;
+      seenTransactionIds.add(txId);
+    }
 
     const transferor = clean(row.Transferor).toLowerCase();
     const transferee = clean(row.Transferee).toLowerCase();

@@ -23,6 +23,7 @@ const BATCH_ID = "batch-for-tests";
 
 function row(overrides: Partial<TypedTransferRow> = {}): TypedTransferRow {
   return {
+    transactionId: null,
     unitId: "NON100",
     transferor: "Carbon Solutions",
     transferee: "ComEd",
@@ -172,6 +173,66 @@ describe("computeTransferDeliveryLookupFromRows", () => {
     );
     expect(result.inputVersionHash).toBe("some-other-batch-id");
     expect(result.transferHistoryBatchId).toBe("some-other-batch-id");
+  });
+
+  it("dedupes rows sharing a Transaction ID — guards against GATS date-format drift", () => {
+    // This is the exact scenario that inflated NON258210's DY3 by
+    // 51 RECs in production: the same 5 GATS transactions were
+    // ingested twice because one export wrote completion dates as
+    // "03/22/2026 03:46 AM" and another as "3/22/26 3:46". The
+    // ingest-time composite-key dedup hashed the raw strings and
+    // saw them as distinct rows; this test pins down the
+    // compute-time safety net that now catches the miss.
+    const result = computeTransferDeliveryLookupFromRows(
+      [
+        row({
+          transactionId: "68860388",
+          quantity: 9,
+          transferCompletionDate: "03/22/2026 03:46 AM",
+          transferor: "Carbon Solutions SREC LLC",
+          transferee: "Ameren Illinois Company - ABP",
+        }),
+        row({
+          transactionId: "68860388",
+          quantity: 9,
+          transferCompletionDate: "3/22/26 3:46",
+          transferor: "Carbon Solutions SREC LLC",
+          transferee: "Ameren Illinois Company - ABP",
+        }),
+      ],
+      BATCH_ID
+    );
+    // 03/22/2026 → month 2 → eyStartYear = 2025
+    expect(get(result.byTrackingId, "NON100", 2025)).toBe(9);
+  });
+
+  it("does NOT dedupe when Transaction ID is empty — rare but preserves legacy data", () => {
+    // Rows without a Transaction ID fall through to the old sum
+    // behavior so we don't collapse genuinely distinct transfers
+    // into a single bucket just because they lack an identifier.
+    const result = computeTransferDeliveryLookupFromRows(
+      [
+        row({ transactionId: null, quantity: 5 }),
+        row({ transactionId: "", quantity: 7 }),
+      ],
+      BATCH_ID
+    );
+    expect(get(result.byTrackingId, "NON100", 2024)).toBe(12);
+  });
+
+  it("dedupes across distinct units when Transaction IDs collide — first-write-wins", () => {
+    // GATS txIds are globally unique, so a repeated txId on a
+    // different unit is also a duplicate entry, not a legit
+    // transfer — keep the first one we see.
+    const result = computeTransferDeliveryLookupFromRows(
+      [
+        row({ transactionId: "TX1", unitId: "NON100", quantity: 5 }),
+        row({ transactionId: "TX1", unitId: "NON200", quantity: 5 }),
+      ],
+      BATCH_ID
+    );
+    expect(get(result.byTrackingId, "NON100", 2024)).toBe(5);
+    expect(get(result.byTrackingId, "NON200", 2024)).toBe(0);
   });
 
   it("handles parseQuantity fallback when quantity is null", () => {

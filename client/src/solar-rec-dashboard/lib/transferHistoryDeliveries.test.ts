@@ -115,4 +115,37 @@ describe("buildTransferDeliveryLookup", () => {
     const lookup = buildTransferDeliveryLookup([transfer()]);
     expect(getDeliveredForYear(lookup, "NOT_A_REAL_ID", 2024)).toBe(0);
   });
+
+  it("dedupes rows sharing a Transaction ID — guards against GATS date-format drift", () => {
+    // The NON258210 bug: same txId, date-string format drift (long
+    // vs short) let both rows slip past ingest dedup and double-
+    // count in the lookup. This pins down the compute-time safety
+    // net that now catches the miss on the client side too.
+    const lookup = buildTransferDeliveryLookup([
+      transfer({
+        "Transaction ID": "68860388",
+        Quantity: "9",
+        "Transfer Completion Date": "03/22/2026 03:46 AM",
+        Transferor: "Carbon Solutions SREC LLC",
+        Transferee: "Ameren Illinois Company - ABP",
+      }),
+      transfer({
+        "Transaction ID": "68860388",
+        Quantity: "9",
+        "Transfer Completion Date": "3/22/26 3:46",
+        Transferor: "Carbon Solutions SREC LLC",
+        Transferee: "Ameren Illinois Company - ABP",
+      }),
+    ]);
+    // 03/22/2026 → month 2 → eyStartYear = 2025
+    expect(getDeliveredForYear(lookup, "NON100", 2025)).toBe(9);
+  });
+
+  it("does NOT dedupe when Transaction ID is empty — preserves legacy rows without an ID", () => {
+    const lookup = buildTransferDeliveryLookup([
+      transfer({ "Transaction ID": "", Quantity: "5" }),
+      transfer({ Quantity: "7" }), // no Transaction ID key at all
+    ]);
+    expect(getDeliveredForYear(lookup, "NON100", 2024)).toBe(12);
+  });
 });
