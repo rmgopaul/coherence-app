@@ -1,0 +1,311 @@
+import { nanoid } from "nanoid";
+import {
+  eq,
+  and,
+  asc,
+  desc,
+  sql,
+  getDb,
+  withDbRetry,
+} from "./_core";
+import {
+  dinScrapeJobs,
+  dinScrapeJobCsgIds,
+  dinScrapeResults,
+  dinScrapeDins,
+  InsertDinScrapeResult,
+  InsertDinScrapeDin,
+} from "../../drizzle/schema";
+
+// ── Jobs ──────────────────────────────────────────────────────────
+
+export async function createDinScrapeJob(data: {
+  userId: number;
+  totalSites: number;
+}) {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const id = nanoid();
+  const now = new Date();
+  await withDbRetry("create din scrape job", async () => {
+    await db.insert(dinScrapeJobs).values({
+      id,
+      userId: data.userId,
+      status: "queued",
+      totalSites: data.totalSites,
+      successCount: 0,
+      failureCount: 0,
+      currentCsgId: null,
+      error: null,
+      startedAt: null,
+      stoppedAt: null,
+      completedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+  return id;
+}
+
+export async function getDinScrapeJob(id: string) {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get din scrape job", async () => {
+    const [row] = await db
+      .select()
+      .from(dinScrapeJobs)
+      .where(eq(dinScrapeJobs.id, id))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+export async function listDinScrapeJobs(userId: number, limit = 20) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list din scrape jobs", async () =>
+    db
+      .select()
+      .from(dinScrapeJobs)
+      .where(eq(dinScrapeJobs.userId, userId))
+      .orderBy(desc(dinScrapeJobs.createdAt))
+      .limit(limit)
+  );
+}
+
+export async function updateDinScrapeJob(
+  id: string,
+  data: Partial<{
+    status:
+      | "queued"
+      | "running"
+      | "stopping"
+      | "stopped"
+      | "completed"
+      | "failed";
+    currentCsgId: string | null;
+    error: string | null;
+    startedAt: Date;
+    stoppedAt: Date;
+    completedAt: Date;
+  }>
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("update din scrape job", async () => {
+    await db.update(dinScrapeJobs).set(data).where(eq(dinScrapeJobs.id, id));
+  });
+}
+
+export async function incrementDinScrapeJobCounter(
+  id: string,
+  field: "successCount" | "failureCount"
+) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("increment din scrape job counter", async () => {
+    await db
+      .update(dinScrapeJobs)
+      .set({
+        [field]: sql`${dinScrapeJobs[field]} + 1`,
+      })
+      .where(eq(dinScrapeJobs.id, id));
+  });
+}
+
+// ── CSG ID input list ────────────────────────────────────────────
+
+export async function bulkInsertDinScrapeJobCsgIds(
+  jobId: string,
+  csgIds: string[]
+) {
+  const db = await getDb();
+  if (!db) return;
+  const batchSize = 500;
+  for (let i = 0; i < csgIds.length; i += batchSize) {
+    const batch = csgIds.slice(i, i + batchSize);
+    await withDbRetry(
+      `bulk insert din scrape csg ids batch ${i}`,
+      async () => {
+        await db.insert(dinScrapeJobCsgIds).values(
+          batch.map((csgId) => ({
+            id: nanoid(),
+            jobId,
+            csgId,
+          }))
+        );
+      }
+    );
+  }
+}
+
+// ── Per-site results ─────────────────────────────────────────────
+
+export async function insertDinScrapeResult(data: InsertDinScrapeResult) {
+  const db = await getDb();
+  if (!db) return;
+  // Truncate milliseconds for TiDB timestamp compatibility.
+  const scannedAt = data.scannedAt
+    ? new Date(Math.floor(data.scannedAt.getTime() / 1000) * 1000)
+    : new Date();
+  const row = {
+    id: data.id ?? nanoid(),
+    jobId: data.jobId,
+    csgId: data.csgId,
+    systemPageUrl: data.systemPageUrl ?? null,
+    inverterPhotoCount: data.inverterPhotoCount ?? 0,
+    meterPhotoCount: data.meterPhotoCount ?? 0,
+    dinCount: data.dinCount ?? 0,
+    error: data.error ?? null,
+    scannedAt,
+  };
+  await withDbRetry("upsert din scrape result", async () => {
+    const existing = await db
+      .select({ id: dinScrapeResults.id })
+      .from(dinScrapeResults)
+      .where(
+        and(
+          eq(dinScrapeResults.jobId, data.jobId),
+          eq(dinScrapeResults.csgId, data.csgId)
+        )
+      )
+      .limit(1);
+    if (existing.length > 0) {
+      const { id: _id, jobId: _jobId, csgId: _csgId, ...updateFields } = row;
+      await db
+        .update(dinScrapeResults)
+        .set(updateFields)
+        .where(eq(dinScrapeResults.id, existing[0].id));
+      // When we re-scan, the old dinScrapeDins rows are stale.
+      await db
+        .delete(dinScrapeDins)
+        .where(
+          and(
+            eq(dinScrapeDins.jobId, data.jobId),
+            eq(dinScrapeDins.csgId, data.csgId)
+          )
+        );
+    } else {
+      await db.insert(dinScrapeResults).values(row);
+    }
+  });
+}
+
+export async function insertDinScrapeDins(rows: InsertDinScrapeDin[]) {
+  const db = await getDb();
+  if (!db || rows.length === 0) return;
+  await withDbRetry("insert din scrape dins", async () => {
+    await db.insert(dinScrapeDins).values(
+      rows.map((r) => ({
+        id: r.id ?? nanoid(),
+        jobId: r.jobId,
+        csgId: r.csgId,
+        dinValue: r.dinValue,
+        sourceType: r.sourceType ?? "unknown",
+        sourceUrl: r.sourceUrl ?? null,
+        sourceFileName: r.sourceFileName ?? null,
+        extractedBy: r.extractedBy ?? "claude",
+        rawMatch: r.rawMatch ?? null,
+        foundAt: r.foundAt ?? new Date(),
+      }))
+    );
+  });
+}
+
+export async function getCompletedCsgIdsForDinJob(
+  jobId: string
+): Promise<Set<string>> {
+  const db = await getDb();
+  if (!db) return new Set();
+  return withDbRetry("get completed din csg ids", async () => {
+    const rows = await db
+      .select({ csgId: dinScrapeResults.csgId })
+      .from(dinScrapeResults)
+      .where(
+        and(
+          eq(dinScrapeResults.jobId, jobId),
+          sql`${dinScrapeResults.error} IS NULL`
+        )
+      );
+    return new Set(rows.map((r) => r.csgId));
+  });
+}
+
+export async function listDinScrapeResults(
+  jobId: string,
+  opts: { limit?: number; offset?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return { rows: [], total: 0 };
+  const limit = opts.limit ?? 100;
+  const offset = opts.offset ?? 0;
+
+  return withDbRetry("list din scrape results", async () => {
+    const [rows, countResult] = await Promise.all([
+      db
+        .select()
+        .from(dinScrapeResults)
+        .where(eq(dinScrapeResults.jobId, jobId))
+        .orderBy(desc(dinScrapeResults.scannedAt))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(dinScrapeResults)
+        .where(eq(dinScrapeResults.jobId, jobId)),
+    ]);
+    return { rows, total: countResult[0]?.count ?? 0 };
+  });
+}
+
+export async function listDinScrapeDinsForJob(
+  jobId: string,
+  opts: { limit?: number; offset?: number } = {}
+) {
+  const db = await getDb();
+  if (!db) return { rows: [], total: 0 };
+  const limit = opts.limit ?? 500;
+  const offset = opts.offset ?? 0;
+
+  return withDbRetry("list din scrape dins", async () => {
+    const [rows, countResult] = await Promise.all([
+      db
+        .select()
+        .from(dinScrapeDins)
+        .where(eq(dinScrapeDins.jobId, jobId))
+        .orderBy(asc(dinScrapeDins.csgId), asc(dinScrapeDins.dinValue))
+        .limit(limit)
+        .offset(offset),
+      db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(dinScrapeDins)
+        .where(eq(dinScrapeDins.jobId, jobId)),
+    ]);
+    return { rows, total: countResult[0]?.count ?? 0 };
+  });
+}
+
+export async function getAllDinScrapeDinsForJob(jobId: string) {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("get all din scrape dins for job", async () =>
+    db
+      .select()
+      .from(dinScrapeDins)
+      .where(eq(dinScrapeDins.jobId, jobId))
+      .orderBy(asc(dinScrapeDins.csgId), asc(dinScrapeDins.dinValue))
+  );
+}
+
+export async function deleteDinScrapeJobData(jobId: string) {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("delete din scrape job data", async () => {
+    await db.delete(dinScrapeDins).where(eq(dinScrapeDins.jobId, jobId));
+    await db.delete(dinScrapeResults).where(eq(dinScrapeResults.jobId, jobId));
+    await db
+      .delete(dinScrapeJobCsgIds)
+      .where(eq(dinScrapeJobCsgIds.jobId, jobId));
+    await db.delete(dinScrapeJobs).where(eq(dinScrapeJobs.id, jobId));
+  });
+}

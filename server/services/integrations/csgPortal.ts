@@ -15,6 +15,21 @@ export type CsgPortalFetchResult = {
   error: string | null;
 };
 
+export type CsgPortalPhoto = {
+  url: string;
+  fileName: string;
+  sourceType: "inverter" | "meter" | "unknown";
+  mimeType: string;
+  data: Uint8Array;
+};
+
+export type CsgPortalPhotosResult = {
+  csgId: string;
+  systemPageUrl: string;
+  photos: CsgPortalPhoto[];
+  error: string | null;
+};
+
 type RequestResult = {
   status: number;
   url: string;
@@ -229,6 +244,112 @@ function extractRecContractPdfUrl(baseUrl: string, html: string): string | null 
   if (fromFull) return fromFull;
 
   return null;
+}
+
+const PHOTO_EXT_REGEX = /\.(jpe?g|png|heic|heif|tiff?|bmp|webp|pdf)(?:$|[?#])/i;
+
+function guessMimeTypeFromUrl(url: string): string {
+  const match = url.toLowerCase().match(PHOTO_EXT_REGEX);
+  if (!match) return "application/octet-stream";
+  const ext = match[1].replace("jpg", "jpeg").replace("tif", "tiff");
+  if (ext === "pdf") return "application/pdf";
+  if (ext === "jpeg") return "image/jpeg";
+  return `image/${ext}`;
+}
+
+function deriveDisplayFileName(input: {
+  responseUrl: string;
+  contentDisposition: string | null;
+  fallback: string;
+}): string {
+  const fromHeader = extractFileNameFromContentDisposition(input.contentDisposition);
+  if (fromHeader) return fromHeader;
+  try {
+    const pathname = new URL(input.responseUrl).pathname;
+    const base = pathname.split("/").filter(Boolean).pop();
+    if (base) return decodeURIComponent(base);
+  } catch {
+    // fall through
+  }
+  return input.fallback;
+}
+
+/**
+ * Find photo URLs on the CSG system page (step=2.4) grouped by the
+ * nearest "Photographs of Inverters" / "Photographs of the Meter"
+ * label above them in the HTML.
+ *
+ * Returns absolute URLs plus the label they were nearest to.
+ * Label matching is heuristic — the CSG portal uses these exact
+ * phrases as section headers.
+ */
+function extractPhotoUrls(
+  baseUrl: string,
+  html: string
+): Array<{ url: string; sourceType: "inverter" | "meter" | "unknown" }> {
+  const lower = html.toLowerCase();
+  const labelRegex = /photographs\s+of\s+(?:the\s+)?(inverter|meter)/gi;
+  const labelAnchors: Array<{
+    index: number;
+    sourceType: "inverter" | "meter";
+  }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = labelRegex.exec(lower)) !== null) {
+    const kind = match[1].startsWith("inverter") ? "inverter" : "meter";
+    labelAnchors.push({ index: match.index, sourceType: kind });
+  }
+
+  const urlCandidates: Array<{
+    index: number;
+    url: string;
+  }> = [];
+  const attrRegex = /(href|src|data-href|data-url)=["']([^"']+)["']/gi;
+  let attrMatch: RegExpExecArray | null;
+  while ((attrMatch = attrRegex.exec(html)) !== null) {
+    const raw = clean(attrMatch[2]);
+    if (!raw) continue;
+    if (!PHOTO_EXT_REGEX.test(raw) && !/download|file|upload|photo|image/i.test(raw)) {
+      continue;
+    }
+    urlCandidates.push({ index: attrMatch.index, url: raw });
+  }
+
+  if (urlCandidates.length === 0) return [];
+
+  const classifyByNearestLabel = (
+    urlIndex: number
+  ): "inverter" | "meter" | "unknown" => {
+    // Find the latest label whose index <= urlIndex within 12k chars.
+    let best: { index: number; sourceType: "inverter" | "meter" } | null = null;
+    for (const anchor of labelAnchors) {
+      if (anchor.index > urlIndex) break;
+      if (urlIndex - anchor.index > 12_000) continue;
+      best = anchor;
+    }
+    return best?.sourceType ?? "unknown";
+  };
+
+  const seen = new Set<string>();
+  const out: Array<{ url: string; sourceType: "inverter" | "meter" | "unknown" }> = [];
+  for (const candidate of urlCandidates) {
+    const resolved = resolveUrl(baseUrl, candidate.url);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    // Skip obvious non-photo endpoints (admin actions, logout).
+    if (/\/admin\/(login|logout|edit|create)\b/i.test(resolved)) continue;
+    const sourceType = classifyByNearestLabel(candidate.index);
+    // Only keep URLs that either matched a photo extension or were
+    // classified by a label (the label plus a download link is a
+    // good enough signal even for extension-less URLs).
+    if (!PHOTO_EXT_REGEX.test(resolved) && sourceType === "unknown") continue;
+    out.push({ url: resolved, sourceType });
+  }
+  return out;
+}
+
+function looksLikePhotoMimeType(contentType: string): boolean {
+  const lower = contentType.toLowerCase();
+  return lower.startsWith("image/") || lower.includes("pdf");
 }
 
 function looksLikeLoginPage(url: string, html: string): boolean {
@@ -923,6 +1044,131 @@ export class CsgPortalClient {
         pdfData: null,
         error: message,
       };
+    }
+  }
+
+  /**
+   * Fetch all "Photographs of Inverters" and "Photographs of the Meter"
+   * files for a CSG system. Returns binary data + inferred source
+   * label per photo. Supports JPEG, PNG, HEIC, TIFF, BMP, and PDF.
+   */
+  async fetchSystemPhotos(csgId: string): Promise<CsgPortalPhotosResult> {
+    const systemPageUrl = resolveUrl(
+      this.baseUrl,
+      `/admin/solar_panel_system/${encodeURIComponent(csgId)}?step=2.4`
+    );
+
+    try {
+      let page = await this.request(systemPageUrl, {
+        headers: { Referer: `${this.baseUrl}/admin` },
+      });
+
+      if (looksLikeLoginPage(page.url, page.text)) {
+        await this.login();
+        page = await this.request(systemPageUrl, {
+          headers: { Referer: `${this.baseUrl}/admin` },
+        });
+        if (looksLikeLoginPage(page.url, page.text)) {
+          return {
+            csgId,
+            systemPageUrl,
+            photos: [],
+            error: "Session is not authenticated while fetching system page.",
+          };
+        }
+      }
+
+      if (page.status >= 400) {
+        return {
+          csgId,
+          systemPageUrl,
+          photos: [],
+          error: `System page request failed (${page.status}).`,
+        };
+      }
+
+      const photoUrls = extractPhotoUrls(this.baseUrl, page.text);
+      if (photoUrls.length === 0) {
+        return {
+          csgId,
+          systemPageUrl,
+          photos: [],
+          error: "No inverter or meter photos found on the system page.",
+        };
+      }
+
+      const photos: CsgPortalPhoto[] = [];
+      for (const candidate of photoUrls) {
+        try {
+          const download = await this.requestBinary(candidate.url, {
+            headers: { Referer: systemPageUrl },
+          });
+          if (download.status >= 400) continue;
+
+          const contentType = clean(download.headers.get("content-type")).toLowerCase();
+          const asText = !looksLikePhotoMimeType(contentType)
+            ? decodeBinaryAsText(download.data)
+            : "";
+          if (asText && looksLikeLoginPage(download.url, asText)) {
+            // Session expired mid-download — re-auth and retry once.
+            await this.login();
+            const retry = await this.requestBinary(candidate.url, {
+              headers: { Referer: systemPageUrl },
+            });
+            if (retry.status >= 400) continue;
+            const retryType = clean(retry.headers.get("content-type")).toLowerCase();
+            if (!looksLikePhotoMimeType(retryType) && !looksLikePdfBinary(retry.data)) continue;
+            photos.push({
+              url: candidate.url,
+              fileName: deriveDisplayFileName({
+                responseUrl: retry.url,
+                contentDisposition: retry.headers.get("content-disposition"),
+                fallback: `csg-${csgId}-${photos.length + 1}`,
+              }),
+              sourceType: candidate.sourceType,
+              mimeType: retryType || guessMimeTypeFromUrl(candidate.url),
+              data: retry.data,
+            });
+            continue;
+          }
+
+          if (!looksLikePhotoMimeType(contentType) && !looksLikePdfBinary(download.data)) {
+            continue;
+          }
+
+          photos.push({
+            url: candidate.url,
+            fileName: deriveDisplayFileName({
+              responseUrl: download.url,
+              contentDisposition: download.headers.get("content-disposition"),
+              fallback: `csg-${csgId}-${photos.length + 1}`,
+            }),
+            sourceType: candidate.sourceType,
+            mimeType: contentType || guessMimeTypeFromUrl(candidate.url),
+            data: download.data,
+          });
+        } catch (err) {
+          // Skip individual failures — still attempt the rest.
+          console.warn(
+            `[csgPortal] Photo download failed for ${csgId} ${candidate.url}:`,
+            err instanceof Error ? err.message : err
+          );
+        }
+      }
+
+      if (photos.length === 0) {
+        return {
+          csgId,
+          systemPageUrl,
+          photos: [],
+          error: "Located photo links but none were downloadable images or PDFs.",
+        };
+      }
+
+      return { csgId, systemPageUrl, photos, error: null };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown portal error.";
+      return { csgId, systemPageUrl, photos: [], error: message };
     }
   }
 }

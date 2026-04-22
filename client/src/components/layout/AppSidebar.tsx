@@ -89,6 +89,7 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
       { label: "Contract Scanner", href: "/contract-scanner", icon: FileSearch },
       { label: "Contract Scraper", href: "/contract-scrape-manager", icon: FileSearch },
+      { label: "DIN Scraper", href: "/din-scrape-manager", icon: FileSearch },
       { label: "ABP Settlement", href: "/abp-invoice-settlement", icon: FileSpreadsheet },
       { label: "Early Payment", href: "/early-payment", icon: FileSpreadsheet },
       { label: "Address Checker", href: "/address-checker", icon: MapPin },

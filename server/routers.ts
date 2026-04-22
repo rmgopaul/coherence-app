@@ -27,6 +27,7 @@ import {
   teslaPowerhubRouter,
   csgPortalRouter,
   abpSettlementRouter,
+  dinScrapeRouter,
 } from "./routers/jobRunners";
 import {
   clockifyRouter,
@@ -101,6 +102,7 @@ export const appRouter = router({
   teslaPowerhub: teslaPowerhubRouter,
   csgPortal: csgPortalRouter,
   abpSettlement: abpSettlementRouter,
+  dinScrape: dinScrapeRouter,
 
   // Productivity integrations
   clockify: clockifyRouter,

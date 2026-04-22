@@ -49,6 +49,7 @@ const NAV_COMMANDS: CommandRoute[] = [
   { label: "Deep Update Synthesizer", href: "/deep-update-synthesizer", icon: FileText, keywords: ["deep", "update"] },
   { label: "Contract Scanner", href: "/contract-scanner", icon: FileText, keywords: ["contract"] },
   { label: "Contract Scraper", href: "/contract-scrape-manager", icon: FileText, keywords: ["contract", "scrape", "csg", "portal"] },
+  { label: "DIN Scraper", href: "/din-scrape-manager", icon: FileText, keywords: ["din", "inverter", "meter", "photo", "csg", "portal"] },
   { label: "ABP Invoice Settlement", href: "/abp-invoice-settlement", icon: FileText, keywords: ["abp", "settlement", "invoice"] },
   { label: "Early Payment", href: "/early-payment", icon: FileText, keywords: ["early", "payment", "abp", "icc"] },
   { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: FileText, keywords: ["enphase", "meter"] },

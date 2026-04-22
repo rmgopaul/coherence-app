@@ -763,3 +763,121 @@ export type InsertSolarRecImportError = typeof solarRecImportErrors.$inferInsert
 export type SolarRecActiveDatasetVersion = typeof solarRecActiveDatasetVersions.$inferSelect;
 export type SolarRecComputeRun = typeof solarRecComputeRuns.$inferSelect;
 export type InsertSolarRecComputeRun = typeof solarRecComputeRuns.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// DIN scrape job tables — CSG portal photo → DIN extraction
+// ---------------------------------------------------------------------------
+
+export const dinScrapeJobs = mysqlTable(
+  "dinScrapeJobs",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    status: mysqlEnum("status", [
+      "queued",
+      "running",
+      "stopping",
+      "stopped",
+      "completed",
+      "failed",
+    ])
+      .default("queued")
+      .notNull(),
+    totalSites: int("totalSites").default(0).notNull(),
+    successCount: int("successCount").default(0).notNull(),
+    failureCount: int("failureCount").default(0).notNull(),
+    currentCsgId: varchar("currentCsgId", { length: 64 }),
+    error: text("error"),
+    startedAt: timestamp("startedAt"),
+    stoppedAt: timestamp("stoppedAt"),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow(),
+  },
+  (table) => ({
+    userIdx: index("din_scrape_jobs_user_idx").on(table.userId),
+    statusIdx: index("din_scrape_jobs_status_idx").on(table.status),
+  })
+);
+
+export type DinScrapeJob = typeof dinScrapeJobs.$inferSelect;
+export type InsertDinScrapeJob = typeof dinScrapeJobs.$inferInsert;
+
+export const dinScrapeJobCsgIds = mysqlTable(
+  "dinScrapeJobCsgIds",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }).notNull(),
+  },
+  (table) => ({
+    jobCsgIdx: uniqueIndex("din_scrape_job_csg_ids_job_csg_idx").on(
+      table.jobId,
+      table.csgId
+    ),
+    jobIdx: index("din_scrape_job_csg_ids_job_idx").on(table.jobId),
+  })
+);
+
+export type DinScrapeJobCsgId = typeof dinScrapeJobCsgIds.$inferSelect;
+export type InsertDinScrapeJobCsgId = typeof dinScrapeJobCsgIds.$inferInsert;
+
+// One row per CSG site processed. Summary + error.
+export const dinScrapeResults = mysqlTable(
+  "dinScrapeResults",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }).notNull(),
+    systemPageUrl: varchar("systemPageUrl", { length: 512 }),
+    inverterPhotoCount: int("inverterPhotoCount").default(0).notNull(),
+    meterPhotoCount: int("meterPhotoCount").default(0).notNull(),
+    dinCount: int("dinCount").default(0).notNull(),
+    error: text("error"),
+    scannedAt: timestamp("scannedAt").defaultNow(),
+  },
+  (table) => ({
+    jobIdx: index("din_scrape_results_job_idx").on(table.jobId),
+    jobCsgIdx: uniqueIndex("din_scrape_results_job_csg_idx").on(
+      table.jobId,
+      table.csgId
+    ),
+    csgIdx: index("din_scrape_results_csg_idx").on(table.csgId),
+  })
+);
+
+export type DinScrapeResult = typeof dinScrapeResults.$inferSelect;
+export type InsertDinScrapeResult = typeof dinScrapeResults.$inferInsert;
+
+// One row per DIN found — many per site.
+export const dinScrapeDins = mysqlTable(
+  "dinScrapeDins",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    jobId: varchar("jobId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }).notNull(),
+    dinValue: varchar("dinValue", { length: 128 }).notNull(),
+    sourceType: mysqlEnum("sourceType", ["inverter", "meter", "unknown"])
+      .default("unknown")
+      .notNull(),
+    sourceUrl: varchar("sourceUrl", { length: 512 }),
+    sourceFileName: varchar("sourceFileName", { length: 255 }),
+    extractedBy: mysqlEnum("extractedBy", ["claude", "tesseract", "pdfjs"])
+      .default("claude")
+      .notNull(),
+    rawMatch: mediumtext("rawMatch"),
+    foundAt: timestamp("foundAt").defaultNow(),
+  },
+  (table) => ({
+    jobIdx: index("din_scrape_dins_job_idx").on(table.jobId),
+    csgIdx: index("din_scrape_dins_csg_idx").on(table.csgId),
+    jobDinIdx: uniqueIndex("din_scrape_dins_job_csg_din_idx").on(
+      table.jobId,
+      table.csgId,
+      table.dinValue
+    ),
+  })
+);
+
+export type DinScrapeDin = typeof dinScrapeDins.$inferSelect;
+export type InsertDinScrapeDin = typeof dinScrapeDins.$inferInsert;

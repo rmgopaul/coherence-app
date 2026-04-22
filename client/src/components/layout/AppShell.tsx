@@ -33,6 +33,7 @@ const ROUTE_TITLES: Record<string, string> = {
   "/deep-update-synthesizer": "Deep Update",
   "/contract-scanner": "Contract Scanner",
   "/contract-scrape-manager": "Contract Scraper",
+  "/din-scrape-manager": "DIN Scraper",
   "/enphase-v4-meter-reads": "Enphase v4",
   "/solaredge-meter-reads": "SolarEdge",
   "/fronius-meter-reads": "Fronius",
