@@ -1140,6 +1140,7 @@ import {
   getAllDinScrapeDinsForJob,
   getCompletedCsgIdsForDinJob,
   deleteDinScrapeJobData,
+  getDinScrapeDebugSnapshot,
 } from "../db";
 import {
   runDinScrapeJob,
@@ -1305,6 +1306,20 @@ export const dinScrapeRouter = router({
         limit: input.limit ?? 500,
         offset: input.offset ?? 0,
       });
+    }),
+
+  debugRaw: protectedProcedure
+    .input(z.object({ jobId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const job = await getDinScrapeJob(input.jobId.trim());
+      if (!job || job.userId !== ctx.user.id) {
+        throw new Error("DIN scrape job not found.");
+      }
+      const snapshot = await getDinScrapeDebugSnapshot(job.id);
+      return {
+        _runnerVersion: DIN_SCRAPE_RUNNER_VERSION,
+        ...snapshot,
+      };
     }),
 
   exportDinsCsv: protectedProcedure

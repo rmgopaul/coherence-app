@@ -18,7 +18,26 @@
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
-const DEFAULT_VISION_MODEL = "claude-sonnet-4-5-20250929";
+// Sonnet 4.6 balances quality (scuffed field photos) and cost; users can
+// override via the integration row's metadata.model.
+const DEFAULT_VISION_MODEL = "claude-sonnet-4-6";
+
+// Anthropic vision only accepts these raster types; TIFF/BMP/HEIC-raw
+// return HTTP 400. HEIC is converted to JPEG upstream, so it's not in
+// this set — anything not here goes straight to tesseract.
+const CLAUDE_SUPPORTED_IMAGE_MIMES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+function isClaudeCompatible(mimeType: string): boolean {
+  const lower = mimeType.toLowerCase();
+  if (lower.includes("pdf")) return true;
+  if (lower.includes("heic") || lower.includes("heif")) return true; // converted upstream
+  return CLAUDE_SUPPORTED_IMAGE_MIMES.has(lower);
+}
 
 // 1538000-45-A---GF2230670002NB  (allow space or dash as separators)
 const DIN_REGEX =
@@ -117,6 +136,7 @@ async function extractWithClaude(
   credentials: DinExtractorCredentials
 ): Promise<DinMatch[]> {
   if (!credentials.anthropicApiKey) return [];
+  if (!isClaudeCompatible(mimeType)) return [];
 
   const prepared = await prepareImageForClaude(data, mimeType);
   const model = credentials.anthropicModel ?? DEFAULT_VISION_MODEL;

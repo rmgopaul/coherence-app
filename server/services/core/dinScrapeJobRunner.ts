@@ -1,10 +1,12 @@
 import { nanoid } from "nanoid";
 import { mapWithConcurrency } from "./concurrency";
+import { parseJsonMetadata } from "../../routers/helpers/utils";
+import { CSG_PORTAL_PROVIDER } from "../../routers/helpers/constants";
 
 const DIN_SCRAPE_SESSION_REFRESH_INTERVAL = 80;
 const DIN_SCRAPE_CONCURRENCY = 2;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@1";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@2";
 
 const activeRunners = new Set<string>();
 
@@ -13,11 +15,11 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
   if (!id || activeRunners.has(id)) return;
 
   const {
+    getDb,
     getDinScrapeJob,
     updateDinScrapeJob,
     incrementDinScrapeJobCounter,
-    insertDinScrapeResult,
-    insertDinScrapeDins,
+    persistDinScrapeSiteResult,
     getCompletedCsgIdsForDinJob,
     getIntegrationByProvider,
   } = await import("../../db");
@@ -30,7 +32,6 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
 
   try {
     const { toNonEmptyString } = await import("./addressCleaning");
-    const CSG_PORTAL_PROVIDER = "csg-portal";
 
     const integration = await getIntegrationByProvider(
       job.userId,
@@ -79,7 +80,6 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
     await client.login();
 
     const completedIds = await getCompletedCsgIdsForDinJob(id);
-    const { getDb } = await import("../../db");
     const { dinScrapeJobCsgIds } = await import("../../../drizzle/schema");
     const { eq, asc } = await import("drizzle-orm");
     const db = await getDb();
@@ -164,7 +164,7 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
           fetched = await client.fetchSystemPhotos(csgId);
         }
 
-        let rowError = fetched.error;
+        const siteError = fetched.error;
         let inverterCount = 0;
         let meterCount = 0;
         const allDins: Array<{
@@ -176,7 +176,7 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
           sourceFileName: string;
         }> = [];
 
-        if (!rowError && fetched.photos.length > 0) {
+        if (!siteError && fetched.photos.length > 0) {
           for (const photo of fetched.photos) {
             if (photo.sourceType === "inverter") inverterCount += 1;
             else if (photo.sourceType === "meter") meterCount += 1;
@@ -184,10 +184,7 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
               const matches = await extractDinsFromPhoto(
                 photo.data,
                 photo.mimeType,
-                {
-                  anthropicApiKey,
-                  anthropicModel,
-                }
+                { anthropicApiKey, anthropicModel }
               );
               for (const match of matches) {
                 allDins.push({
@@ -218,47 +215,49 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
         });
 
         try {
-          await insertDinScrapeResult({
-            id: nanoid(),
-            jobId: id,
-            csgId,
-            systemPageUrl: fetched.systemPageUrl,
-            inverterPhotoCount: inverterCount,
-            meterPhotoCount: meterCount,
-            dinCount: deduped.length,
-            error: rowError ?? null,
-            scannedAt: new Date(),
+          // Single atomic write: upsert result row AND replace din rows
+          // inside one withDbRetry. Prevents the stale-result-row bug
+          // where the summary claims N dins but no dins were persisted.
+          await persistDinScrapeSiteResult({
+            result: {
+              id: nanoid(),
+              jobId: id,
+              csgId,
+              systemPageUrl: fetched.systemPageUrl,
+              inverterPhotoCount: inverterCount,
+              meterPhotoCount: meterCount,
+              dinCount: deduped.length,
+              error: siteError ?? null,
+              scannedAt: new Date(),
+            },
+            dins: deduped.map((d) => ({
+              id: nanoid(),
+              jobId: id,
+              csgId,
+              dinValue: d.dinValue,
+              sourceType: d.sourceType,
+              sourceUrl: d.sourceUrl,
+              sourceFileName: d.sourceFileName,
+              extractedBy: d.extractedBy,
+              rawMatch: d.rawMatch,
+              foundAt: new Date(),
+            })),
           });
-          if (deduped.length > 0) {
-            await insertDinScrapeDins(
-              deduped.map((d) => ({
-                id: nanoid(),
-                jobId: id,
-                csgId,
-                dinValue: d.dinValue,
-                sourceType: d.sourceType,
-                sourceUrl: d.sourceUrl,
-                sourceFileName: d.sourceFileName,
-                extractedBy: d.extractedBy,
-                rawMatch: d.rawMatch,
-                foundAt: new Date(),
-              }))
-            );
-          }
         } catch (dbErr) {
           console.warn(
-            `[dinScrapeJob] DB insert failed for ${csgId}, skipping:`,
+            `[dinScrapeJob] DB write failed for ${csgId}, skipping:`,
             dbErr instanceof Error ? dbErr.message : dbErr
           );
         }
 
-        if (!rowError && deduped.length > 0) {
-          await incrementDinScrapeJobCounter(id, "successCount");
-        } else if (!rowError && deduped.length === 0) {
-          // Not a hard failure — photos existed but no DIN readable.
-          await incrementDinScrapeJobCounter(id, "successCount");
-        } else {
+        // Accounting: a site is either processed (no portal error) or
+        // failed. "Zero DINs found" is still a successful scan — the
+        // dinCount column already tells that story; conflating it with
+        // failure misleads the UI. The dinCount per site is the truth.
+        if (siteError) {
           await incrementDinScrapeJobCounter(id, "failureCount");
+        } else {
+          await incrementDinScrapeJobCounter(id, "successCount");
         }
 
         completedSinceLastRefresh += 1;
@@ -317,16 +316,4 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
 
 export function isDinScrapeRunnerActive(jobId: string): boolean {
   return activeRunners.has(jobId);
-}
-
-function parseJsonMetadata(
-  raw: string | null | undefined
-): Record<string, unknown> {
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === "object" && parsed !== null ? parsed : {};
-  } catch {
-    return {};
-  }
 }

@@ -21,6 +21,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   ArrowLeft,
+  Bug,
   Download,
   Loader2,
   Pause,
@@ -145,6 +146,11 @@ export default function DinScrapeManager() {
     { enabled: false }
   );
 
+  const debugQuery = trpc.dinScrape.debugRaw.useQuery(
+    { jobId: activeJobId! },
+    { enabled: false }
+  );
+
   const job = jobStatusQuery.data ?? null;
   const isActive =
     job?.status === "queued" ||
@@ -191,6 +197,23 @@ export default function DinScrapeManager() {
     }
     startMutation.mutate({ csgIds: ids });
   }, [csgIdInput, startMutation]);
+
+  const handleDebugRaw = useCallback(async () => {
+    if (!activeJobId) return;
+    const result = await debugQuery.refetch();
+    if (result.data) {
+      const blob = new Blob([JSON.stringify(result.data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `din-scrape-debug-${activeJobId}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Raw snapshot downloaded");
+    }
+  }, [activeJobId, debugQuery]);
 
   const handleExportCsv = useCallback(async () => {
     const result = await csvQuery.refetch();
@@ -369,6 +392,20 @@ export default function DinScrapeManager() {
                       View DINs
                     </Button>
                   )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleDebugRaw}
+                    disabled={debugQuery.isFetching}
+                    title="Download raw DB state for this job"
+                  >
+                    {debugQuery.isFetching ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : (
+                      <Bug className="h-3 w-3 mr-1" />
+                    )}
+                    Raw
+                  </Button>
                 </div>
               </div>
             )}
