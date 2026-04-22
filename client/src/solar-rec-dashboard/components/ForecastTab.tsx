@@ -519,7 +519,14 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
                   <div className="rounded border border-amber-300 bg-amber-100/50 p-2 dark:border-amber-800 dark:bg-amber-900/30">
                     <div className="font-medium">
                       Top near-duplicates (same unit/date/qty, different
-                      transactionIds — most likely cause of inflation):
+                      transactionIds):
+                    </div>
+                    <div className="text-muted-foreground">
+                      If <code>Transferors</code> and <code>Transferees</code> are
+                      both <code>1</code>, the rows are a single transfer
+                      recorded N times — summing qty over-counts by N×. If
+                      they&apos;re &gt;1, the rows are distinct sub-transfers
+                      and summing is correct.
                     </div>
                     <div className="mt-1 overflow-x-auto">
                       <table className="min-w-full">
@@ -528,26 +535,60 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
                             <th className="pr-3 text-left">Unit</th>
                             <th className="pr-3 text-left">Completion Date</th>
                             <th className="pr-3 text-right">Qty</th>
-                            <th className="pr-3 text-right">Distinct TxIDs</th>
-                            <th className="text-right">Rows</th>
+                            <th className="pr-3 text-right">Rows</th>
+                            <th className="pr-3 text-right">TxIDs</th>
+                            <th className="pr-3 text-right">Transferors</th>
+                            <th className="pr-3 text-right">Transferees</th>
+                            <th className="pr-3 text-left">Sample Transferor</th>
+                            <th className="text-left">Sample Transferee</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {auditQuery.data.topNearDupes.map((d, i) => (
-                            <tr key={i}>
-                              <td className="pr-3">{d.unitId ?? ""}</td>
-                              <td className="pr-3">
-                                {d.transferCompletionDate ?? ""}
-                              </td>
-                              <td className="pr-3 text-right">
-                                {d.quantity?.toLocaleString() ?? ""}
-                              </td>
-                              <td className="pr-3 text-right">
-                                {d.distinctTransactionIds}
-                              </td>
-                              <td className="text-right">{d.count}</td>
-                            </tr>
-                          ))}
+                          {auditQuery.data.topNearDupes.map((d, i) => {
+                            const singleCounterparty =
+                              d.distinctTransferors === 1 &&
+                              d.distinctTransferees === 1;
+                            return (
+                              <tr
+                                key={i}
+                                className={
+                                  singleCounterparty
+                                    ? "text-rose-800 dark:text-rose-300"
+                                    : ""
+                                }
+                              >
+                                <td className="pr-3">{d.unitId ?? ""}</td>
+                                <td className="pr-3">
+                                  {d.transferCompletionDate ?? ""}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {d.quantity?.toLocaleString() ?? ""}
+                                </td>
+                                <td className="pr-3 text-right">{d.count}</td>
+                                <td className="pr-3 text-right">
+                                  {d.distinctTransactionIds}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {d.distinctTransferors}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {d.distinctTransferees}
+                                </td>
+                                <td
+                                  className="pr-3 max-w-[16ch] truncate"
+                                  title={d.sampleTransferor ?? ""}
+                                >
+                                  {d.sampleTransferor ?? ""}
+                                </td>
+                                <td
+                                  className="max-w-[16ch] truncate"
+                                  title={d.sampleTransferee ?? ""}
+                                >
+                                  {d.sampleTransferee ?? ""}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

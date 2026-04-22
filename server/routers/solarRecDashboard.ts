@@ -2452,6 +2452,10 @@ export const solarRecDashboardRouter = router({
       const topNearDupesResult = (await db.execute(sql`
         SELECT unitId, transferCompletionDate, quantity,
                COUNT(DISTINCT transactionId) AS distinctTxIds,
+               COUNT(DISTINCT transferor) AS distinctTransferors,
+               COUNT(DISTINCT transferee) AS distinctTransferees,
+               MIN(transferor) AS sampleTransferor,
+               MIN(transferee) AS sampleTransferee,
                COUNT(*) AS n
         FROM srDsTransferHistory
         WHERE batchId = ${activeBatchId}
@@ -2468,6 +2472,10 @@ export const solarRecDashboardRouter = router({
           transferCompletionDate: string | null;
           quantity: number | null;
           distinctTxIds: number | string;
+          distinctTransferors: number | string;
+          distinctTransferees: number | string;
+          sampleTransferor: string | null;
+          sampleTransferee: string | null;
           n: number | string;
         }>,
         unknown,
@@ -2478,6 +2486,10 @@ export const solarRecDashboardRouter = router({
         transferCompletionDate: r.transferCompletionDate,
         quantity: r.quantity,
         distinctTransactionIds: Number(r.distinctTxIds),
+        distinctTransferors: Number(r.distinctTransferors),
+        distinctTransferees: Number(r.distinctTransferees),
+        sampleTransferor: r.sampleTransferor,
+        sampleTransferee: r.sampleTransferee,
         count: Number(r.n),
       }));
 
