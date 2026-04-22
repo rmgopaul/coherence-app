@@ -88,7 +88,9 @@ export default function DinScrapeManager() {
   const [csgIdInput, setCsgIdInput] = useState("");
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [viewingJobId, setViewingJobId] = useState<string | null>(null);
+  const [viewingTab, setViewingTab] = useState<"dins" | "sites">("dins");
   const [dinsPage, setDinsPage] = useState(0);
+  const [sitesPage, setSitesPage] = useState(0);
   const startTimeRef = useRef<number | null>(null);
 
   const startMutation = trpc.dinScrape.startJob.useMutation({
@@ -138,7 +140,12 @@ export default function DinScrapeManager() {
 
   const dinsQuery = trpc.dinScrape.getDins.useQuery(
     { jobId: viewingJobId!, limit: 100, offset: dinsPage * 100 },
-    { enabled: !!viewingJobId }
+    { enabled: !!viewingJobId && viewingTab === "dins" }
+  );
+
+  const resultsQuery = trpc.dinScrape.getResults.useQuery(
+    { jobId: viewingJobId!, limit: 100, offset: sitesPage * 100 },
+    { enabled: !!viewingJobId && viewingTab === "sites" }
   );
 
   const csvQuery = trpc.dinScrape.exportDinsCsv.useQuery(
@@ -386,10 +393,12 @@ export default function DinScrapeManager() {
                       size="sm"
                       onClick={() => {
                         setViewingJobId(job.id);
+                        setViewingTab("dins");
                         setDinsPage(0);
+                        setSitesPage(0);
                       }}
                     >
-                      View DINs
+                      View Results
                     </Button>
                   )}
                   <Button
@@ -474,10 +483,12 @@ export default function DinScrapeManager() {
                             size="sm"
                             onClick={() => {
                               setViewingJobId(j.id);
+                              setViewingTab("dins");
                               setDinsPage(0);
+                              setSitesPage(0);
                             }}
                           >
-                            DINs
+                            Results
                           </Button>
                         )}
                       </div>
@@ -494,117 +505,275 @@ export default function DinScrapeManager() {
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <div>
-              <CardTitle className="text-lg">Extracted DINs</CardTitle>
+              <CardTitle className="text-lg">Results</CardTitle>
               <CardDescription>
-                {dinsQuery.data?.total ?? 0} DINs found across all sites in
-                this job
+                {viewingTab === "dins"
+                  ? `${dinsQuery.data?.total ?? 0} DINs extracted across all sites`
+                  : `${resultsQuery.data?.total ?? 0} sites scanned`}
               </CardDescription>
             </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleExportCsv}
-              disabled={csvQuery.isFetching}
-            >
-              {csvQuery.isFetching ? (
-                <Loader2 className="h-3 w-3 animate-spin mr-1" />
-              ) : (
-                <Download className="h-3 w-3 mr-1" />
-              )}
-              Export CSV
-            </Button>
+            <div className="flex gap-2 items-center">
+              <div className="flex rounded-md border">
+                <Button
+                  variant={viewingTab === "dins" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="rounded-r-none"
+                  onClick={() => setViewingTab("dins")}
+                >
+                  DINs
+                </Button>
+                <Button
+                  variant={viewingTab === "sites" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="rounded-l-none"
+                  onClick={() => setViewingTab("sites")}
+                >
+                  Sites
+                </Button>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportCsv}
+                disabled={csvQuery.isFetching}
+              >
+                {csvQuery.isFetching ? (
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                ) : (
+                  <Download className="h-3 w-3 mr-1" />
+                )}
+                Export DINs CSV
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
-            {dinsQuery.isLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="h-6 w-6 animate-spin" />
-              </div>
+            {viewingTab === "dins" ? (
+              <DinsTable
+                data={dinsQuery.data}
+                isLoading={dinsQuery.isLoading}
+                page={dinsPage}
+                onPageChange={setDinsPage}
+              />
             ) : (
-              <>
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>CSG ID</TableHead>
-                        <TableHead>DIN</TableHead>
-                        <TableHead>Source</TableHead>
-                        <TableHead>Extractor</TableHead>
-                        <TableHead>File</TableHead>
-                        <TableHead>Photo</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(dinsQuery.data?.rows ?? []).map((r) => (
-                        <TableRow key={r.id}>
-                          <TableCell className="font-mono text-xs">
-                            {r.csgId}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs font-semibold">
-                            {r.dinValue}
-                          </TableCell>
-                          <TableCell>{sourceBadge(r.sourceType)}</TableCell>
-                          <TableCell className="text-xs capitalize">
-                            {r.extractedBy}
-                          </TableCell>
-                          <TableCell className="text-xs max-w-[160px] truncate">
-                            {r.sourceFileName ?? "—"}
-                          </TableCell>
-                          <TableCell>
-                            {r.sourceUrl ? (
-                              <a
-                                href={r.sourceUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-xs text-blue-600 underline"
-                              >
-                                open
-                              </a>
-                            ) : (
-                              "—"
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-
-                {(dinsQuery.data?.total ?? 0) > 100 && (
-                  <div className="flex items-center justify-between mt-4">
-                    <span className="text-xs text-muted-foreground">
-                      Page {dinsPage + 1} of{" "}
-                      {Math.ceil((dinsQuery.data?.total ?? 0) / 100)}
-                    </span>
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={dinsPage === 0}
-                        onClick={() =>
-                          setDinsPage((p) => Math.max(0, p - 1))
-                        }
-                      >
-                        Previous
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={
-                          (dinsPage + 1) * 100 >=
-                          (dinsQuery.data?.total ?? 0)
-                        }
-                        onClick={() => setDinsPage((p) => p + 1)}
-                      >
-                        Next
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </>
+              <SitesTable
+                data={resultsQuery.data}
+                isLoading={resultsQuery.isLoading}
+                page={sitesPage}
+                onPageChange={setSitesPage}
+              />
             )}
           </CardContent>
         </Card>
       )}
+    </div>
+  );
+}
+
+type PaginatedRows<T> = { rows: T[]; total: number } | undefined;
+
+type DinRow = {
+  id: string;
+  csgId: string;
+  dinValue: string;
+  sourceType: string;
+  extractedBy: string;
+  sourceFileName: string | null;
+  sourceUrl: string | null;
+};
+
+function DinsTable({
+  data,
+  isLoading,
+  page,
+  onPageChange,
+}: {
+  data: PaginatedRows<DinRow>;
+  isLoading: boolean;
+  page: number;
+  onPageChange: (updater: (p: number) => number) => void;
+}) {
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin" />
+      </div>
+    );
+  }
+  const rows = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>CSG ID</TableHead>
+              <TableHead>DIN</TableHead>
+              <TableHead>Source</TableHead>
+              <TableHead>Extractor</TableHead>
+              <TableHead>File</TableHead>
+              <TableHead>Photo</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell className="font-mono text-xs">{r.csgId}</TableCell>
+                <TableCell className="font-mono text-xs font-semibold">
+                  {r.dinValue}
+                </TableCell>
+                <TableCell>{sourceBadge(r.sourceType)}</TableCell>
+                <TableCell className="text-xs capitalize">
+                  {r.extractedBy}
+                </TableCell>
+                <TableCell className="text-xs max-w-[160px] truncate">
+                  {r.sourceFileName ?? "—"}
+                </TableCell>
+                <TableCell>
+                  {r.sourceUrl ? (
+                    <a
+                      href={r.sourceUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 underline"
+                    >
+                      open
+                    </a>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <Pagination page={page} total={total} pageSize={100} onPageChange={onPageChange} />
+    </>
+  );
+}
+
+type SiteRow = {
+  id: string;
+  csgId: string;
+  inverterPhotoCount: number;
+  meterPhotoCount: number;
+  dinCount: number;
+  error: string | null;
+  systemPageUrl: string | null;
+};
+
+function SitesTable({
+  data,
+  isLoading,
+  page,
+  onPageChange,
+}: {
+  data: PaginatedRows<SiteRow>;
+  isLoading: boolean;
+  page: number;
+  onPageChange: (updater: (p: number) => number) => void;
+}) {
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Loader2 className="h-6 w-6 animate-spin" />
+      </div>
+    );
+  }
+  const rows = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  return (
+    <>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>CSG ID</TableHead>
+              <TableHead>Inverter photos</TableHead>
+              <TableHead>Meter photos</TableHead>
+              <TableHead>DINs found</TableHead>
+              <TableHead>Error</TableHead>
+              <TableHead>Page</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => (
+              <TableRow
+                key={r.id}
+                className={r.error ? "bg-red-50/50" : undefined}
+              >
+                <TableCell className="font-mono text-xs">{r.csgId}</TableCell>
+                <TableCell>{r.inverterPhotoCount}</TableCell>
+                <TableCell>{r.meterPhotoCount}</TableCell>
+                <TableCell
+                  className={r.dinCount === 0 ? "text-muted-foreground" : "font-semibold"}
+                >
+                  {r.dinCount}
+                </TableCell>
+                <TableCell className="text-xs text-red-600 max-w-[260px] truncate">
+                  {r.error ?? ""}
+                </TableCell>
+                <TableCell>
+                  {r.systemPageUrl ? (
+                    <a
+                      href={r.systemPageUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 underline"
+                    >
+                      open
+                    </a>
+                  ) : (
+                    "—"
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      <Pagination page={page} total={total} pageSize={100} onPageChange={onPageChange} />
+    </>
+  );
+}
+
+function Pagination({
+  page,
+  total,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  total: number;
+  pageSize: number;
+  onPageChange: (updater: (p: number) => number) => void;
+}) {
+  if (total <= pageSize) return null;
+  const lastPage = Math.ceil(total / pageSize);
+  return (
+    <div className="flex items-center justify-between mt-4">
+      <span className="text-xs text-muted-foreground">
+        Page {page + 1} of {lastPage}
+      </span>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page === 0}
+          onClick={() => onPageChange((p) => Math.max(0, p - 1))}
+        >
+          Previous
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={(page + 1) * pageSize >= total}
+          onClick={() => onPageChange((p) => p + 1)}
+        >
+          Next
+        </Button>
+      </div>
     </div>
   );
 }

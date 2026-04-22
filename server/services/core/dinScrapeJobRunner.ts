@@ -5,8 +5,15 @@ import { CSG_PORTAL_PROVIDER } from "../../routers/helpers/constants";
 
 const DIN_SCRAPE_SESSION_REFRESH_INTERVAL = 80;
 const DIN_SCRAPE_CONCURRENCY = 2;
+/**
+ * After this many Claude/Anthropic failures in a single job, stop
+ * attempting Claude for the remainder of the job and rely on
+ * tesseract fallback. Prevents a prolonged Anthropic outage from
+ * freezing a long job in the retry-timeout loop (60s × 3 × N photos).
+ */
+const CLAUDE_FAILURE_THRESHOLD = 5;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@2";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@3";
 
 const activeRunners = new Set<string>();
 
@@ -127,6 +134,16 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
       await sessionRefreshInFlight;
     };
 
+    // Circuit-breaker state for Claude/Anthropic. Shared across the
+    // concurrent workers — once the failure count crosses the
+    // threshold, every subsequent photo in this job skips Claude and
+    // goes straight to tesseract. Concurrency-unsafe in the strict
+    // sense (two workers could both observe "under threshold" and
+    // increment past it), but the breaker is eventual — a few extra
+    // calls past the threshold don't matter.
+    let claudeFailureCount = 0;
+    let claudeDisabled = false;
+
     let cancelled = false;
     let cancelCheckCounter = 0;
     const checkCancelled = async (): Promise<boolean> => {
@@ -181,12 +198,24 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
             if (photo.sourceType === "inverter") inverterCount += 1;
             else if (photo.sourceType === "meter") meterCount += 1;
             try {
-              const matches = await extractDinsFromPhoto(
+              // Pass null apiKey once the breaker has tripped so the
+              // extractor skips Claude entirely (no timeout burn).
+              const effectiveApiKey = claudeDisabled ? null : anthropicApiKey;
+              const result = await extractDinsFromPhoto(
                 photo.data,
                 photo.mimeType,
-                { anthropicApiKey, anthropicModel }
+                { anthropicApiKey: effectiveApiKey, anthropicModel }
               );
-              for (const match of matches) {
+              if (result.claudeFailed) {
+                claudeFailureCount += 1;
+                if (!claudeDisabled && claudeFailureCount >= CLAUDE_FAILURE_THRESHOLD) {
+                  claudeDisabled = true;
+                  console.warn(
+                    `[dinScrapeJob] Disabling Claude for job ${id} after ${claudeFailureCount} failures; rest of job will use tesseract only.`
+                  );
+                }
+              }
+              for (const match of result.dins) {
                 allDins.push({
                   dinValue: match.dinValue,
                   rawMatch: match.rawMatch,

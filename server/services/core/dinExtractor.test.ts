@@ -116,4 +116,13 @@ describe("DIN_REGEX", () => {
     expect(re.exec("1538000-45-A-SHORT")).toBeNull();
     expect(re.exec("1538000-45-A-ABCDEF")).not.toBeNull();
   });
+
+  it("matches case-insensitively — OCR output is often lower-case", () => {
+    // The `i` flag is load-bearing. If a future change drops it, this
+    // guards the lower-case happy-path that real-world OCR produces.
+    const re = new RegExp(DIN_REGEX.source, DIN_REGEX.flags);
+    const match = re.exec("din:1538000-45-a-gf2230670002nb");
+    expect(match).not.toBeNull();
+    expect(match?.[1]).toBe("1538000-45-a-gf2230670002nb");
+  });
 });

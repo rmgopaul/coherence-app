@@ -57,6 +57,20 @@ export type DinExtractorCredentials = {
   anthropicModel: string | null;
 };
 
+/**
+ * Return shape from `extractDinsFromPhoto`. `claudeFailed` is the
+ * signal the job runner uses to drive its circuit breaker: if too
+ * many photos in a row fail Claude, the runner disables Claude for
+ * the rest of that job to stop burning timeouts on a dead upstream.
+ * "Claude wasn't attempted" (no key, incompatible mime) is NOT a
+ * failure — only real HTTP errors are.
+ */
+export type DinExtractionResult = {
+  dins: DinMatch[];
+  claudeAttempted: boolean;
+  claudeFailed: boolean;
+};
+
 function normalizeDin(raw: string): string {
   // Collapse any run of whitespace or dashes between the mandatory
   // segments into a single dash. Keeps the canonical printed form
@@ -107,13 +121,14 @@ async function heicToJpeg(data: Uint8Array): Promise<Uint8Array> {
 }
 
 /**
- * Normalize a photo for Claude Vision:
- * - HEIC/HEIF → JPEG
- * - Anything else → pass through
+ * Normalize raw photo bytes into something both downstream extractors
+ * can consume. HEIC/HEIF → JPEG; anything else passes through. The
+ * mime type returned is always what the bytes actually are.
  *
- * Returns the bytes plus the effective mime type Anthropic will see.
+ * Shared by the Claude and tesseract paths — both need the same
+ * transcoding step, so factor it out.
  */
-async function prepareImageForClaude(
+async function normalizeImageBytes(
   data: Uint8Array,
   mimeType: string
 ): Promise<{ data: Uint8Array; mimeType: string }> {
@@ -133,6 +148,15 @@ async function prepareImageForClaude(
  * non-supported types (TIFF, BMP) the caller should fall back to
  * tesseract.
  */
+/**
+ * Run Claude Vision against a single photo/PDF. Returns matches on
+ * success (may be empty if the label has no DIN). THROWS on HTTP
+ * failures so the caller can distinguish "no DIN" from "Claude is
+ * down" and drive the circuit breaker appropriately.
+ *
+ * Returns [] (no throw) in two cases where attempting Claude makes
+ * no sense: no API key configured, or mime type Claude can't accept.
+ */
 async function extractWithClaude(
   data: Uint8Array,
   mimeType: string,
@@ -141,7 +165,7 @@ async function extractWithClaude(
   if (!credentials.anthropicApiKey) return [];
   if (!isClaudeCompatible(mimeType)) return [];
 
-  const prepared = await prepareImageForClaude(data, mimeType);
+  const prepared = await normalizeImageBytes(data, mimeType);
   const model = credentials.anthropicModel ?? DEFAULT_VISION_MODEL;
   const isPdf = prepared.mimeType.toLowerCase().includes("pdf");
 
@@ -174,41 +198,33 @@ async function extractWithClaude(
   ].join(" ");
 
   // fetchJson handles 429 retry-with-Retry-After, 5xx exponential backoff,
-  // and timeout wrapping. We surface structured errors in warnings and
-  // return [] so the caller falls through to tesseract.
-  let body: { content?: Array<{ type: string; text?: string }> };
-  try {
-    const result = await fetchJson<typeof body>(ANTHROPIC_MESSAGES_URL, {
-      service: "Anthropic (DIN vision)",
-      method: "POST",
-      timeoutMs: ANTHROPIC_VISION_TIMEOUT_MS,
-      maxRetries: 2,
-      headers: {
-        "x-api-key": credentials.anthropicApiKey,
-        "anthropic-version": ANTHROPIC_API_VERSION,
-      },
-      body: {
-        model,
-        max_tokens: 512,
-        messages: [
-          {
-            role: "user",
-            content: [contentBlock, { type: "text", text: instructions }],
-          },
-        ],
-      },
-    });
-    body = result.data;
-  } catch (err) {
-    const detail =
-      err instanceof HttpClientError
-        ? `${err.message} (status=${err.statusCode ?? "n/a"})`
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    console.warn("[dinExtractor.claude] Anthropic call failed:", detail);
-    return [];
-  }
+  // and timeout wrapping. HTTP-layer failures escape as HttpClientError
+  // (or plain Error for unexpected cases) — we intentionally do NOT
+  // catch them here: the caller needs to see the failure to decide
+  // whether to trip the circuit breaker.
+  const result = await fetchJson<{
+    content?: Array<{ type: string; text?: string }>;
+  }>(ANTHROPIC_MESSAGES_URL, {
+    service: "Anthropic (DIN vision)",
+    method: "POST",
+    timeoutMs: ANTHROPIC_VISION_TIMEOUT_MS,
+    maxRetries: 2,
+    headers: {
+      "x-api-key": credentials.anthropicApiKey,
+      "anthropic-version": ANTHROPIC_API_VERSION,
+    },
+    body: {
+      model,
+      max_tokens: 512,
+      messages: [
+        {
+          role: "user",
+          content: [contentBlock, { type: "text", text: instructions }],
+        },
+      ],
+    },
+  });
+  const body = result.data;
 
   const text = body.content?.find((b) => b.type === "text")?.text ?? "";
   if (!text) return [];
@@ -260,10 +276,7 @@ async function extractWithTesseract(
   data: Uint8Array,
   mimeType: string
 ): Promise<DinMatch[]> {
-  const prepared =
-    mimeType.toLowerCase().includes("heic") || mimeType.toLowerCase().includes("heif")
-      ? await heicToJpeg(data)
-      : data;
+  const prepared = await normalizeImageBytes(data, mimeType);
 
   const mod = await import("tesseract.js");
   const recognize = (mod as unknown as {
@@ -274,7 +287,7 @@ async function extractWithTesseract(
     ) => Promise<{ data: { text: string } }>;
   }).recognize;
 
-  const result = await recognize(Buffer.from(prepared), "eng");
+  const result = await recognize(Buffer.from(prepared.data), "eng");
   return collectDinsFromText(result.data.text, "tesseract");
 }
 
@@ -309,25 +322,31 @@ async function extractWithPdfjs(data: Uint8Array): Promise<DinMatch[]> {
 
 /**
  * Main entry point. Given raw photo/PDF bytes, try every reasonable
- * extractor and return the unique set of DINs found. Order of
- * preference: pdfjs (PDFs) → Claude → tesseract.
+ * extractor and return the unique set of DINs found plus whether
+ * Claude failed (signal for the job runner's circuit breaker).
  *
- * `credentials.anthropicApiKey` may be null — in that case we skip
- * Claude and go straight to tesseract for images.
+ * Extractor priority: pdfjs embedded text (PDFs only) → Claude →
+ * tesseract. `credentials.anthropicApiKey == null` skips Claude
+ * entirely and is NOT counted as a failure; that's how the runner
+ * disables Claude after the breaker trips.
  */
 export async function extractDinsFromPhoto(
   data: Uint8Array,
   mimeType: string,
   credentials: DinExtractorCredentials
-): Promise<DinMatch[]> {
+): Promise<DinExtractionResult> {
   const lower = mimeType.toLowerCase();
   const isPdf = lower.includes("pdf");
+  let claudeAttempted = false;
+  let claudeFailed = false;
 
   if (isPdf) {
     // Try embedded text first — much cheaper than vision.
     try {
       const fromText = await extractWithPdfjs(data);
-      if (fromText.length > 0) return fromText;
+      if (fromText.length > 0) {
+        return { dins: fromText, claudeAttempted, claudeFailed };
+      }
     } catch (err) {
       console.warn(
         "[dinExtractor] pdfjs text extraction failed:",
@@ -340,14 +359,21 @@ export async function extractDinsFromPhoto(
   // Prefer Claude for images — field photos with glare / angle /
   // reflections are where vision models outperform raw OCR.
   if (credentials.anthropicApiKey) {
+    claudeAttempted = true;
     try {
       const fromClaude = await extractWithClaude(data, mimeType, credentials);
-      if (fromClaude.length > 0) return fromClaude;
+      if (fromClaude.length > 0) {
+        return { dins: fromClaude, claudeAttempted, claudeFailed };
+      }
     } catch (err) {
-      console.warn(
-        "[dinExtractor] Claude extraction failed:",
-        err instanceof Error ? err.message : err
-      );
+      claudeFailed = true;
+      const detail =
+        err instanceof HttpClientError
+          ? `${err.message} (status=${err.statusCode ?? "n/a"})`
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      console.warn("[dinExtractor] Claude extraction failed:", detail);
     }
   }
 
@@ -355,7 +381,8 @@ export async function extractDinsFromPhoto(
   // tesseract.js can't parse PDFs directly.
   if (!isPdf) {
     try {
-      return await extractWithTesseract(data, mimeType);
+      const fromTesseract = await extractWithTesseract(data, mimeType);
+      return { dins: fromTesseract, claudeAttempted, claudeFailed };
     } catch (err) {
       console.warn(
         "[dinExtractor] Tesseract extraction failed:",
@@ -364,7 +391,7 @@ export async function extractDinsFromPhoto(
     }
   }
 
-  return [];
+  return { dins: [], claudeAttempted, claudeFailed };
 }
 
 export const __test__ = {

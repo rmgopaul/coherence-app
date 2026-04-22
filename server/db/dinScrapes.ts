@@ -14,9 +14,12 @@ import {
   dinScrapeJobCsgIds,
   dinScrapeResults,
   dinScrapeDins,
+  DinScrapeJob,
   InsertDinScrapeResult,
   InsertDinScrapeDin,
 } from "../../drizzle/schema";
+
+export type DinScrapeJobWithCounts = DinScrapeJob & { totalDins: number };
 
 // ── Jobs ──────────────────────────────────────────────────────────
 
@@ -61,7 +64,10 @@ export async function getDinScrapeJob(id: string) {
   });
 }
 
-export async function listDinScrapeJobs(userId: number, limit = 20) {
+export async function listDinScrapeJobs(
+  userId: number,
+  limit = 20
+): Promise<DinScrapeJobWithCounts[]> {
   const db = await getDb();
   if (!db) return [];
   return withDbRetry("list din scrape jobs", async () => {
