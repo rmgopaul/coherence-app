@@ -16,8 +16,11 @@
  * land on the right regex.
  */
 
+import { fetchJson, HttpClientError } from "./httpClient";
+
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
+const ANTHROPIC_VISION_TIMEOUT_MS = 60_000;
 // Sonnet 4.6 balances quality (scuffed field photos) and cost; users can
 // override via the integration row's metadata.model.
 const DEFAULT_VISION_MODEL = "claude-sonnet-4-6";
@@ -170,50 +173,40 @@ async function extractWithClaude(
     "If no DIN is visible, return { \"dins\": [] }.",
   ].join(" ");
 
-  let response: Response;
+  // fetchJson handles 429 retry-with-Retry-After, 5xx exponential backoff,
+  // and timeout wrapping. We surface structured errors in warnings and
+  // return [] so the caller falls through to tesseract.
+  let body: { content?: Array<{ type: string; text?: string }> };
   try {
-    response = await fetch(ANTHROPIC_MESSAGES_URL, {
+    const result = await fetchJson<typeof body>(ANTHROPIC_MESSAGES_URL, {
+      service: "Anthropic (DIN vision)",
       method: "POST",
+      timeoutMs: ANTHROPIC_VISION_TIMEOUT_MS,
+      maxRetries: 2,
       headers: {
-        "content-type": "application/json",
         "x-api-key": credentials.anthropicApiKey,
         "anthropic-version": ANTHROPIC_API_VERSION,
       },
-      body: JSON.stringify({
+      body: {
         model,
         max_tokens: 512,
         messages: [
           {
             role: "user",
-            content: [
-              contentBlock,
-              { type: "text", text: instructions },
-            ],
+            content: [contentBlock, { type: "text", text: instructions }],
           },
         ],
-      }),
-      signal: AbortSignal.timeout(60_000),
+      },
     });
+    body = result.data;
   } catch (err) {
-    console.warn(
-      "[dinExtractor.claude] fetch failed:",
-      err instanceof Error ? err.message : err
-    );
-    return [];
-  }
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    console.warn(
-      `[dinExtractor.claude] Anthropic API ${response.status} ${response.statusText}: ${body.slice(0, 400)}`
-    );
-    return [];
-  }
-
-  let body: { content?: Array<{ type: string; text?: string }> };
-  try {
-    body = (await response.json()) as typeof body;
-  } catch {
+    const detail =
+      err instanceof HttpClientError
+        ? `${err.message} (status=${err.statusCode ?? "n/a"})`
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    console.warn("[dinExtractor.claude] Anthropic call failed:", detail);
     return [];
   }
 

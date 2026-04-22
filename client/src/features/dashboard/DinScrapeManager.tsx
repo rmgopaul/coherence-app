@@ -428,6 +428,7 @@ export default function DinScrapeManager() {
                   <TableHead>Total</TableHead>
                   <TableHead>Success</TableHead>
                   <TableHead>Failed</TableHead>
+                  <TableHead>DINs</TableHead>
                   <TableHead>Started</TableHead>
                   <TableHead>Completed</TableHead>
                   <TableHead />
@@ -443,6 +444,9 @@ export default function DinScrapeManager() {
                     </TableCell>
                     <TableCell className="text-red-600">
                       {j.failureCount}
+                    </TableCell>
+                    <TableCell className="font-semibold">
+                      {j.totalDins.toLocaleString()}
                     </TableCell>
                     <TableCell className="text-xs">
                       {formatTimestamp(j.startedAt)}

@@ -5,6 +5,7 @@ import {
   asc,
   desc,
   sql,
+  inArray,
   getDb,
   withDbRetry,
 } from "./_core";
@@ -63,14 +64,34 @@ export async function getDinScrapeJob(id: string) {
 export async function listDinScrapeJobs(userId: number, limit = 20) {
   const db = await getDb();
   if (!db) return [];
-  return withDbRetry("list din scrape jobs", async () =>
-    db
+  return withDbRetry("list din scrape jobs", async () => {
+    const jobs = await db
       .select()
       .from(dinScrapeJobs)
       .where(eq(dinScrapeJobs.userId, userId))
       .orderBy(desc(dinScrapeJobs.createdAt))
-      .limit(limit)
-  );
+      .limit(limit);
+    if (jobs.length === 0) return [];
+
+    // One aggregate query to attach totalDins per job — so the job
+    // history table can show "47 DINs extracted" alongside the
+    // per-site success/failure counts. Using COUNT(*) on the dins
+    // table is the source of truth (the dinCount column on results
+    // is kept in sync but we count rows directly for safety).
+    const jobIds = jobs.map((j) => j.id);
+    const counts = await db
+      .select({
+        jobId: dinScrapeDins.jobId,
+        total: sql<number>`COUNT(*)`,
+      })
+      .from(dinScrapeDins)
+      .where(inArray(dinScrapeDins.jobId, jobIds))
+      .groupBy(dinScrapeDins.jobId);
+    const countMap = new Map(
+      counts.map((c) => [c.jobId, Number(c.total) || 0])
+    );
+    return jobs.map((j) => ({ ...j, totalDins: countMap.get(j.id) ?? 0 }));
+  });
 }
 
 export async function updateDinScrapeJob(
@@ -120,7 +141,12 @@ export async function bulkInsertDinScrapeJobCsgIds(
   csgIds: string[]
 ) {
   const db = await getDb();
-  if (!db) return;
+  if (!db) {
+    // Silent no-op would let the runner think 0 IDs were queued and
+    // mark the whole job as completed with no work done. Better to
+    // surface the outage immediately so the caller fails the job.
+    throw new Error("Database unavailable while inserting DIN scrape CSG IDs");
+  }
   const batchSize = 500;
   for (let i = 0; i < csgIds.length; i += batchSize) {
     const batch = csgIds.slice(i, i + batchSize);
