@@ -26,7 +26,6 @@
 import { fetchJson, HttpClientError } from "./httpClient";
 import { normalizeForExtraction, rotateImage } from "./imageOps";
 import { decodeQrPayloads } from "./qrDecoder";
-import { rasterizePdfToPngs } from "./pdfRasterizer";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
@@ -82,11 +81,11 @@ export type ExtractorLog = {
   normalizedMimeType: string;
   normalizedWidth: number;
   normalizedHeight: number;
-  pdfPageCount?: number;
   qr?: {
     payloads: string[];
-    rotationTried: number[];
+    attempts: number;
     matchedDins: string[];
+    error?: string;
   };
   claude?: Array<{
     rotation: 0 | 90 | 180 | 270;
@@ -111,7 +110,12 @@ export type DinExtractionResult = {
 };
 
 function normalizeDin(raw: string): string {
-  const trimmed = raw.trim().replace(/[\s–—]+/g, "-");
+  // Strip any "DIN:" / "DIN " prefix the model might echo back, then
+  // normalize whitespace + unicode dash variants down to ASCII
+  // single-dashes. Case-normalize so dedup works across camelcase
+  // hallucinations.
+  const withoutPrefix = raw.trim().replace(/^DIN[:\s#-]*\s*/i, "");
+  const trimmed = withoutPrefix.trim().replace(/[\s–—]+/g, "-");
   return trimmed.replace(/-+/g, "-").toUpperCase();
 }
 
@@ -174,21 +178,31 @@ const CLAUDE_INSTRUCTIONS = [
   "",
   "FORMAT:",
   'A DIN is prefixed with the literal text "DIN:" or "DIN " and is a segmented alphanumeric code:',
-  '  DIN:1538000-45-A---GF22300270021L0',
+  '  DIN:1538000-45-A---GF22306800002DT',
   '  DIN:1538000-46-B-AB1234567890XY',
-  "The segments are: several digits, a short number, a single letter, then an alphanumeric tail. The separators between segments may be single dashes, multiple dashes, or whitespace.",
+  "Segments: several digits, a short number, a single letter, then an alphanumeric tail (typically starts with 2 uppercase letters then 10+ digits then 1-3 trailing letters/digits).",
+  "Separators may be single dashes, multiple dashes, or whitespace.",
   "",
   "IMPORTANT HINTS:",
-  "- The DIN label is often printed on a hardware sticker next to a QR code, typically labeled 'Scan QR to Commission' or similar.",
-  "- The photograph MAY BE ROTATED — the sticker could be mounted sideways on the hardware. Inspect at all four orientations before concluding.",
-  "- The label may have other fields nearby (Password, SSID, part numbers). Only extract values prefixed with 'DIN'.",
-  "- If the same DIN appears on multiple labels in one photo, return it once.",
+  "- The DIN label is often next to a QR code labeled 'Scan QR to Commission'.",
+  "- The photograph MAY BE ROTATED — the sticker could be mounted sideways. Inspect at all four orientations.",
+  "- Only extract values prefixed with 'DIN'. Ignore Password / SSID / part numbers nearby.",
+  "- If the same DIN appears multiple times, return it once.",
+  "",
+  "*** ACCURACY IS CRITICAL ***",
+  "Every character in the DIN's alphanumeric tail matters. If you cannot read a specific character with high confidence, DO NOT GUESS. Returning a DIN with a single wrong digit is worse than returning no DIN at all — downstream systems will trust it and misroute settlements.",
+  "",
+  "If any of the following are true, return an empty array:",
+  "  - The label is blurry, at an angle, or partially obscured.",
+  "  - Glare, shadow, or camera focus makes any character in the tail ambiguous.",
+  "  - You are extrapolating or pattern-matching any character rather than reading it.",
   "",
   "OUTPUT:",
   'Return STRICT JSON ONLY, no markdown, no prose. Schema:',
-  '  { "dins": string[], "reason"?: string }',
-  "Keep each DIN exactly as printed, including the dashes.",
-  'If no DIN is visible or readable, return {"dins": [], "reason": "<one-sentence explanation>"}. A concrete reason ("label is too blurry", "QR visible but DIN text obscured", "no DIN-labeled sticker in frame") is ALWAYS more useful than an empty array with no reason.',
+  '  { "dins": string[], "confidence": "high" | "low", "reason"?: string }',
+  'Omit the "DIN:" prefix — return just the segmented code.',
+  'For empty results, set confidence: "low" and give a concrete reason ("tail digits ambiguous", "label glare on last segment", "no DIN sticker in frame").',
+  'For populated results, set confidence: "high" — only populate dins[] when you are certain of every character.',
 ].join("\n");
 
 type ClaudeCallResult = {
@@ -216,6 +230,11 @@ async function callClaudeOnImage(
     body: {
       model,
       max_tokens: ANTHROPIC_VISION_MAX_TOKENS,
+      // temperature=0 for deterministic output. Claude is still
+      // capable of hallucinating at T=0, but at least the same
+      // photo produces the same output run-to-run, which helps us
+      // recognize systematic errors vs. random noise.
+      temperature: 0,
       messages: [
         {
           role: "user",
@@ -260,8 +279,22 @@ async function callClaudeOnImage(
   if (!parsed || typeof parsed !== "object") {
     return { dins: [], rawText };
   }
-  const dinList = (parsed as { dins?: unknown }).dins;
+  const parsedObj = parsed as { dins?: unknown; confidence?: unknown };
+  const dinList = parsedObj.dins;
   if (!Array.isArray(dinList)) {
+    return { dins: [], rawText };
+  }
+
+  // If Claude self-reported low confidence, treat as zero DINs.
+  // This is the anti-hallucination gate — Claude is instructed to
+  // emit confidence:"low" whenever any character of the tail is
+  // ambiguous, which is exactly the case where it would otherwise
+  // invent digits.
+  const confidence =
+    typeof parsedObj.confidence === "string"
+      ? parsedObj.confidence.toLowerCase()
+      : null;
+  if (confidence === "low") {
     return { dins: [], rawText };
   }
 
@@ -283,16 +316,50 @@ async function callClaudeOnImage(
 /*  Tesseract (local OCR fallback)                                        */
 /* --------------------------------------------------------------------- */
 
+/**
+ * Cached tesseract worker. tesseract.js v7 requires `createWorker`
+ * (the module-level `recognize` shortcut that older versions had
+ * breaks under esbuild's CJS interop — this was a real bug in
+ * production). Lazy-init on first use, reuse for every subsequent
+ * recognize call.
+ */
+type TesseractWorker = {
+  recognize: (image: Buffer) => Promise<{ data: { text: string } }>;
+  terminate?: () => Promise<void>;
+};
+let cachedTesseractWorker: Promise<TesseractWorker> | null = null;
+
+async function getTesseractWorker(): Promise<TesseractWorker> {
+  if (cachedTesseractWorker) {
+    try {
+      return await cachedTesseractWorker;
+    } catch {
+      cachedTesseractWorker = null;
+      // fall through and retry init
+    }
+  }
+  const promise = (async () => {
+    const mod = await import("tesseract.js");
+    const createWorker =
+      (mod as unknown as { createWorker?: (lang?: string) => Promise<TesseractWorker> })
+        .createWorker ??
+      (mod as unknown as { default: { createWorker: (lang?: string) => Promise<TesseractWorker> } })
+        .default.createWorker;
+    if (typeof createWorker !== "function") {
+      throw new Error("tesseract.js createWorker export not found");
+    }
+    return createWorker("eng");
+  })();
+  cachedTesseractWorker = promise;
+  promise.catch(() => {
+    if (cachedTesseractWorker === promise) cachedTesseractWorker = null;
+  });
+  return promise;
+}
+
 async function tesseractRecognize(data: Uint8Array): Promise<string> {
-  const mod = await import("tesseract.js");
-  const recognize = (mod as unknown as {
-    recognize: (
-      image: Buffer,
-      lang?: string,
-      options?: Record<string, unknown>
-    ) => Promise<{ data: { text: string } }>;
-  }).recognize;
-  const result = await recognize(Buffer.from(data), "eng");
+  const worker = await getTesseractWorker();
+  const result = await worker.recognize(Buffer.from(data));
   return result.data.text ?? "";
 }
 
@@ -302,12 +369,19 @@ async function tesseractRecognize(data: Uint8Array): Promise<string> {
 
 async function extractDinsFromPdfText(data: Uint8Array): Promise<DinMatch[]> {
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  // Avoid spawning a worker — Node pnpm resolution was loading a
+  // 5.5.207 worker against a 5.6.205 API, which threw
+  // "API version does not match Worker version" on every PDF.
+  // Main-thread extraction is plenty fast for the small contract
+  // PDFs we see from the CSG portal. `disableWorker` is a documented
+  // runtime option but missing from the public type, hence the cast.
   const pdf = await getDocument({
     data,
     useSystemFonts: true,
     disableFontFace: true,
     isEvalSupported: false,
-  }).promise;
+    ...({ disableWorker: true } as Record<string, unknown>),
+  } as Parameters<typeof getDocument>[0]).promise;
 
   const chunks: string[] = [];
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
@@ -358,41 +432,33 @@ export async function extractDinsFromPhoto(
     finalExtractor: "none",
   };
 
-  // Step 1 — normalize bytes to a single upright JPEG.
+  // Step 1 — PDFs get text extraction only; no rasterization.
+  // Empirically, CSG portal PDFs are contracts / receipts / brochures
+  // that don't contain DINs in image form, so the only useful thing
+  // we can do is scan their embedded text.
+  if (isPdf) {
+    try {
+      const fromText = await extractDinsFromPdfText(data);
+      if (fromText.length > 0) {
+        log.finalExtractor = "pdfjs";
+        return finalize(fromText, log, { claudeAttempted: false, claudeFailed: false });
+      }
+    } catch (err) {
+      log.tesseract = {
+        rotation: 0,
+        dinsFound: 0,
+        rawTextSnippet: "",
+        error: `pdfjs text extract failed: ${errMsg(err)}`,
+      };
+    }
+    return finalize([], log, { claudeAttempted: false, claudeFailed: false });
+  }
+
+  // Step 1b (images only) — normalize bytes to a single upright JPEG.
   let workingBytes: Uint8Array;
   try {
-    if (isPdf) {
-      // Try the pdfjs text layer first (cheap, works for generated
-      // PDFs that aren't just photo dumps).
-      try {
-        const fromText = await extractDinsFromPdfText(data);
-        if (fromText.length > 0) {
-          log.finalExtractor = "pdfjs";
-          return finalize(fromText, log, { claudeAttempted: false, claudeFailed: false });
-        }
-      } catch (err) {
-        log.tesseract = {
-          rotation: 0,
-          dinsFound: 0,
-          rawTextSnippet: "",
-          error: `pdfjs text extract failed: ${errMsg(err)}`,
-        };
-      }
-
-      // Rasterize to PNG so the rest of the pipeline (QR, rotation
-      // retry, Claude) can treat this as an image.
-      const pages = await rasterizePdfToPngs(data, { maxPages: 1 });
-      log.pdfPageCount = pages.length;
-      if (pages.length === 0) {
-        return finalize([], log, { claudeAttempted: false, claudeFailed: false });
-      }
-      workingBytes = pages[0].pngBytes;
-    } else {
-      const preHeic = await maybeHeicToJpeg(data, mimeType);
-      workingBytes = preHeic.data;
-    }
-
-    const normalized = await normalizeForExtraction(workingBytes, isPdf ? "image/png" : "image/jpeg");
+    const preHeic = await maybeHeicToJpeg(data, mimeType);
+    const normalized = await normalizeForExtraction(preHeic.data, "image/jpeg");
     workingBytes = normalized.data;
     log.normalizedMimeType = normalized.mimeType;
     log.normalizedWidth = normalized.width;
@@ -408,7 +474,9 @@ export async function extractDinsFromPhoto(
   }
 
   // Step 2 — QR decode. If any decoded payload contains a DIN, we're
-  // done. Zero cost, zero model hallucination risk.
+  // done. Zero cost, zero model hallucination risk. Runs a multi-scale
+  // tiled search (see qrDecoder.ts) before giving up, because the
+  // small-QR-in-busy-photo case is where jsqr usually whiffs.
   try {
     const qr = await decodeQrPayloads(workingBytes);
     const matched: DinMatch[] = [];
@@ -417,7 +485,7 @@ export async function extractDinsFromPhoto(
     }
     log.qr = {
       payloads: qr.payloads,
-      rotationTried: qr.rotationTried,
+      attempts: qr.attempts,
       matchedDins: matched.map((m) => m.dinValue),
     };
     if (matched.length > 0) {
@@ -427,11 +495,10 @@ export async function extractDinsFromPhoto(
   } catch (err) {
     log.qr = {
       payloads: [],
-      rotationTried: [],
+      attempts: 0,
       matchedDins: [],
+      error: `qr decode failed: ${errMsg(err)}`,
     };
-    // Log the error on the qr entry
-    (log.qr as { error?: string }).error = `qr decode failed: ${errMsg(err)}`;
   }
 
   // Step 3 — Claude vision with rotation retry.

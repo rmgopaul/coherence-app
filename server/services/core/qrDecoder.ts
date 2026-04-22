@@ -1,78 +1,78 @@
 /**
  * QR-code decoding for DIN extraction.
  *
- * Modern inverter and meter labels print "Scan QR to Commission" with
- * a QR code that encodes the DIN, Wi-Fi SSID, and password. Decoding
- * the QR is orders of magnitude more reliable than OCR:
- * - Zero cost (no model call)
- * - Deterministic (QR payloads are unambiguous, unlike glare-obscured
- *   sticker text)
- * - Works on rotated stickers (QR has its own orientation markers)
+ * Modern inverter/meter labels print "Scan QR to Commission" with a
+ * QR code that encodes the DIN, Wi-Fi SSID, and password. Decoding
+ * the QR is deterministic — orders of magnitude more reliable than
+ * asking a vision model to read digits off a sticker at an angle.
  *
- * We try the full image first, then rotate by 90/180/270 and retry —
- * small QR codes that are at a 45° angle to the camera sometimes
- * only decode after a square-aligned rotation.
+ * Real-world QR codes in field photos are hard:
+ * - The QR is often 5–10 % of the total frame, surrounded by cables,
+ *   wiring diagrams, and other stickers that look like QR finder
+ *   patterns to jsqr.
+ * - Phones auto-rotate on EXIF; downloaded bytes may be pre-rotated.
+ * - Lighting and glare wash out the black/white contrast jsqr relies on.
  *
- * Payload formats observed in the wild:
- *   DIN:1538000-45-A---GF22300670002NB;PASS:abc;SSID:TEG-2NB
- *   tegos://commission?din=1538000-45-A---GF22300670002NB&pw=...
- *   plain "1538000-45-A---GF22300670002NB"
- * We run our DIN regex over whatever text comes out.
+ * The strategy here is "try hard before giving up":
+ *
+ *   1. Preprocess the full image for high-contrast QR edges
+ *      (grayscale → Otsu-style normalization → mild sharpen).
+ *   2. Scan the full image at multiple scales.
+ *   3. Tile: 2×2 and 3×3 overlapping crops, scan each.
+ *
+ * All attempts are logged on the returned rotationTried list so the
+ * extractor log shows how hard we tried before falling back to Claude.
  */
 
-import { decodeToRgba, rotateImage } from "./imageOps";
+import { decodeQrOnPixels, preprocessForQr, sliceTiles } from "./imageOps";
 
 export type QrDecodeResult = {
   payloads: string[]; // raw text decoded from QR(s)
-  rotationTried: Array<0 | 90 | 180 | 270>;
+  attempts: number;   // how many tile/scale/rotation combos we tried
 };
 
 /**
  * Try to decode one or more QR codes from the image bytes. Returns
- * every distinct payload we could read, across rotation retries.
- * An empty `payloads` array means no QR was legible — the caller
- * should fall through to Claude/tesseract.
+ * every distinct payload we could read across every attempt we made.
+ * Empty `payloads` means no QR was legible under any strategy —
+ * caller should fall through to the vision model path.
  */
 export async function decodeQrPayloads(
   data: Uint8Array
 ): Promise<QrDecodeResult> {
-  const jsqrMod = await import("jsqr");
-  // jsQR's types package uses named export; the runtime module exposes
-  // both default and named. Normalize.
-  const jsQR =
-    (jsqrMod as unknown as { default: typeof jsqrMod.default }).default ??
-    (jsqrMod as unknown as { jsQR?: typeof jsqrMod.default }).jsQR ??
-    (jsqrMod as unknown as typeof jsqrMod.default);
-
   const payloads = new Set<string>();
-  const rotationsAttempted: Array<0 | 90 | 180 | 270> = [];
+  let attempts = 0;
 
-  const rotations: Array<0 | 90 | 180 | 270> = [0, 90, 180, 270];
-  for (const angle of rotations) {
-    rotationsAttempted.push(angle);
-    try {
-      const bytes = angle === 0 ? data : await rotateImage(data, angle);
-      const { pixels, width, height } = await decodeToRgba(bytes);
-      if (width <= 0 || height <= 0) continue;
+  // One preprocessed master image — high-contrast grayscale is the
+  // single biggest jsqr reliability win.
+  const master = await preprocessForQr(data);
 
-      const result = jsQR(pixels, width, height, {
-        inversionAttempts: "attemptBoth",
-      });
-      if (result && typeof result.data === "string" && result.data.trim()) {
-        payloads.add(result.data.trim());
-        // Found at least one QR at this rotation — return early. Most
-        // photos have a single QR, and further rotations would
-        // decode the same one (wasting CPU).
-        return { payloads: Array.from(payloads), rotationTried: rotationsAttempted };
-      }
-    } catch (err) {
-      // Sharp can throw on malformed inputs; swallow and try next angle.
-      console.warn(
-        `[qrDecoder] decode failed at rotation ${angle}°:`,
-        err instanceof Error ? err.message : err
-      );
-    }
+  // Pass 1: full image as-is.
+  attempts += 1;
+  const fromFull = await decodeQrOnPixels(master);
+  for (const p of fromFull) payloads.add(p);
+  if (payloads.size > 0) return { payloads: Array.from(payloads), attempts };
+
+  // Pass 2: 2×2 overlapping tiles. A QR that occupies ~10 % of the
+  // full image occupies ~30 % of a 2×2 tile — enough for jsqr's
+  // finder-pattern detector to lock on.
+  const tiles2 = await sliceTiles(master, 2, 2, 0.25);
+  for (const tile of tiles2) {
+    attempts += 1;
+    const found = await decodeQrOnPixels(tile);
+    for (const p of found) payloads.add(p);
+    if (payloads.size > 0) return { payloads: Array.from(payloads), attempts };
   }
 
-  return { payloads: [], rotationTried: rotationsAttempted };
+  // Pass 3: 3×3 overlapping tiles. Last resort for small QRs in
+  // very busy scenes.
+  const tiles3 = await sliceTiles(master, 3, 3, 0.3);
+  for (const tile of tiles3) {
+    attempts += 1;
+    const found = await decodeQrOnPixels(tile);
+    for (const p of found) payloads.add(p);
+    if (payloads.size > 0) return { payloads: Array.from(payloads), attempts };
+  }
+
+  return { payloads: Array.from(payloads), attempts };
 }
