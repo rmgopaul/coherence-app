@@ -752,6 +752,24 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
                   </div>
                 </div>
 
+                {systemBreakdownQuery.data.duplicateTxIdRowCount > 0 ? (
+                  <div className="rounded border border-amber-300 bg-amber-50 p-2 text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+                    <strong>
+                      {systemBreakdownQuery.data.duplicateTxIdRowCount}
+                    </strong>{" "}
+                    duplicate-Transaction-ID row
+                    {systemBreakdownQuery.data.duplicateTxIdRowCount === 1
+                      ? ""
+                      : "s"}{" "}
+                    detected (excluded from all totals below). Excluded qty
+                    net: <strong>
+                      {systemBreakdownQuery.data.duplicateTxIdQtyExcluded.toLocaleString()}
+                    </strong>
+                    . Duplicates are struck through in the Transfer rows table
+                    below.
+                  </div>
+                ) : null}
+
                 {systemBreakdownQuery.data.dyWindows.map((w, i) => (
                   <div
                     key={i}
@@ -931,47 +949,55 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
                           </tr>
                         </thead>
                         <tbody>
-                          {systemBreakdownQuery.data.transferRows.map((r, j) => (
-                            <tr
-                              key={j}
-                              className={
-                                r.direction === 0
-                                  ? "text-muted-foreground"
-                                  : ""
-                              }
-                            >
-                              <td className="pr-3 font-mono">
-                                {r.transactionId ?? ""}
-                              </td>
-                              <td className="pr-3">{r.completionDate ?? ""}</td>
-                              <td className="pr-3">{r.monthYear ?? ""}</td>
-                              <td className="pr-3 text-right">
-                                {r.quantity?.toLocaleString() ?? ""}
-                              </td>
-                              <td className="pr-3 text-right">
-                                {r.direction === 1
-                                  ? "+"
-                                  : r.direction === -1
-                                    ? "−"
-                                    : "·"}
-                              </td>
-                              <td className="pr-3 text-right">
-                                {r.energyYear ?? ""}
-                              </td>
-                              <td
-                                className="pr-3 max-w-[14ch] truncate"
-                                title={r.transferor ?? ""}
-                              >
-                                {r.transferor ?? ""}
-                              </td>
-                              <td
-                                className="max-w-[14ch] truncate"
-                                title={r.transferee ?? ""}
-                              >
-                                {r.transferee ?? ""}
-                              </td>
-                            </tr>
-                          ))}
+                          {systemBreakdownQuery.data.transferRows.map((r, j) => {
+                            const rowClass = r.isDuplicate
+                              ? "line-through text-amber-700 dark:text-amber-400"
+                              : r.direction === 0
+                                ? "text-muted-foreground"
+                                : "";
+                            return (
+                              <tr key={j} className={rowClass}>
+                                <td
+                                  className="pr-3 font-mono"
+                                  title={
+                                    r.isDuplicate
+                                      ? "Duplicate Transaction ID — excluded from totals"
+                                      : undefined
+                                  }
+                                >
+                                  {r.isDuplicate ? "⚠ " : ""}
+                                  {r.transactionId ?? ""}
+                                </td>
+                                <td className="pr-3">{r.completionDate ?? ""}</td>
+                                <td className="pr-3">{r.monthYear ?? ""}</td>
+                                <td className="pr-3 text-right">
+                                  {r.quantity?.toLocaleString() ?? ""}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {r.direction === 1
+                                    ? "+"
+                                    : r.direction === -1
+                                      ? "−"
+                                      : "·"}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {r.energyYear ?? ""}
+                                </td>
+                                <td
+                                  className="pr-3 max-w-[14ch] truncate"
+                                  title={r.transferor ?? ""}
+                                >
+                                  {r.transferor ?? ""}
+                                </td>
+                                <td
+                                  className="max-w-[14ch] truncate"
+                                  title={r.transferee ?? ""}
+                                >
+                                  {r.transferee ?? ""}
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>

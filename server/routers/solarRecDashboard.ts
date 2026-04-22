@@ -2576,7 +2576,7 @@ export const solarRecDashboardRouter = router({
       })
     )
     .query(async ({ input }) => {
-      const CHECKPOINT = "system-delivery-breakdown-v1-2026-04-22";
+      const CHECKPOINT = "system-delivery-breakdown-v2-txid-dedup-2026-04-22";
       try {
         const db = await getDb();
         if (!db) {
@@ -2664,7 +2664,10 @@ export const solarRecDashboardRouter = router({
 
         // Enrich each row with direction, energy year, and monthYear
         // (the latter pulled from rawRow which holds the original CSV
-        // object).
+        // object). `isDuplicate` marks rows whose Transaction ID has
+        // already been seen earlier in the batch — those are the ones
+        // the compute-time dedup drops from the lookup, so we surface
+        // the fact visually rather than silently hiding them.
         type EnrichedTransferRow = {
           transactionId: string | null;
           completionDate: string | null;
@@ -2674,6 +2677,7 @@ export const solarRecDashboardRouter = router({
           transferee: string | null;
           direction: 1 | -1 | 0;
           energyYear: number | null;
+          isDuplicate: boolean;
         };
         const enrichedRows: EnrichedTransferRow[] = transferRowsRaw.map((r) => {
           const transferor = (r.transferor ?? "").toLowerCase();
@@ -2713,25 +2717,46 @@ export const solarRecDashboardRouter = router({
             transferee: r.transferee,
             direction,
             energyYear,
+            isDuplicate: false,
           };
         });
 
-        // Sort by completion date ascending, nulls last.
+        // Sort by completion date ascending, nulls last, so the
+        // "first-write-wins" txId dedup keeps the earliest-dated
+        // occurrence (matching how the production lookup behaves
+        // when rows stream in by insertion order).
         enrichedRows.sort((a, b) => {
           const ad = parseCompletionDate(a.completionDate)?.getTime() ?? Infinity;
           const bd = parseCompletionDate(b.completionDate)?.getTime() ?? Infinity;
           return ad - bd;
         });
 
-        // Energy-year aggregation (only direction !== 0 counts, per the
-        // Carbon-Solutions-to-utility filter in the lookup).
+        // Energy-year aggregation — same algorithm as
+        // computeTransferDeliveryLookupFromRows, including the
+        // Transaction ID first-write-wins dedup. Keeping the panel
+        // in sync with the compute path is critical: when a user
+        // looks up a system to verify the forecast, the numbers
+        // must match what the forecast actually uses.
         const energyYearBuckets = new Map<
           number,
           { netQty: number; rowCount: number }
         >();
+        const seenTxIds = new Set<string>();
+        let duplicateRowCount = 0;
+        let duplicateQtyExcluded = 0;
         for (const r of enrichedRows) {
           if (r.direction === 0 || r.energyYear === null || r.quantity === null)
             continue;
+          const txId = (r.transactionId ?? "").trim();
+          if (txId) {
+            if (seenTxIds.has(txId)) {
+              r.isDuplicate = true;
+              duplicateRowCount += 1;
+              duplicateQtyExcluded += r.quantity * r.direction;
+              continue;
+            }
+            seenTxIds.add(txId);
+          }
           const bucket = energyYearBuckets.get(r.energyYear) ?? {
             netQty: 0,
             rowCount: 0,
@@ -2940,7 +2965,7 @@ export const solarRecDashboardRouter = router({
         });
 
         return {
-          _runnerVersion: "system_delivery_breakdown_v1" as const,
+          _runnerVersion: "system_delivery_breakdown_v2_txid_dedup" as const,
           _checkpoint: CHECKPOINT,
           trackingId: input.trackingId,
           transferBatchId,
@@ -2948,6 +2973,8 @@ export const solarRecDashboardRouter = router({
           transferRowCount: enrichedRows.length,
           transferRows: enrichedRows.slice(0, 200), // bound at 200 for UI
           truncated: enrichedRows.length > 200,
+          duplicateTxIdRowCount: duplicateRowCount,
+          duplicateTxIdQtyExcluded: duplicateQtyExcluded,
           energyYearAgg,
           firstTransferEnergyYear,
           schedules,
