@@ -1,4 +1,5 @@
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import axios from "axios";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
 import { getSessionCookieOptions } from "./cookies";
@@ -34,26 +35,107 @@ function decodeOAuthState(state: string): {
   return { redirectUri: decoded };
 }
 
+/**
+ * Extract Google's OAuth error code from an axios error so we can surface
+ * `redirect_uri_mismatch`, `invalid_grant`, etc. to the client instead of a
+ * generic 500. Secrets are never in the response body, so this is safe.
+ */
+function extractGoogleError(error: unknown): { code?: string; description?: string; status?: number } {
+  if (!axios.isAxiosError(error)) return {};
+  const data = error.response?.data;
+  const status = error.response?.status;
+  if (data && typeof data === "object") {
+    const { error: code, error_description: description } = data as {
+      error?: unknown;
+      error_description?: unknown;
+    };
+    return {
+      code: typeof code === "string" ? code : undefined,
+      description: typeof description === "string" ? description : undefined,
+      status,
+    };
+  }
+  return { status };
+}
+
 export function registerOAuthRoutes(app: Express) {
   app.get("/api/oauth/callback", async (req: Request, res: Response) => {
     const code = getQueryParam(req, "code");
     const state = getQueryParam(req, "state");
+    const providerError = getQueryParam(req, "error");
+
+    if (providerError) {
+      console.error("[OAuth] Provider returned error", {
+        error: providerError,
+        description: getQueryParam(req, "error_description"),
+      });
+      res.status(400).json({
+        error: "oauth_provider_error",
+        provider_error: providerError,
+        description: getQueryParam(req, "error_description"),
+      });
+      return;
+    }
 
     if (!code || !state) {
       res.status(400).json({ error: "code and state are required" });
       return;
     }
 
+    let redirectUri: string;
+    let platform: string | undefined;
     try {
-      const { redirectUri, platform } = decodeOAuthState(state);
-      const tokenResponse = await sdk.exchangeCodeForToken(code, redirectUri);
-      const userInfo = await sdk.getUserInfo(tokenResponse.access_token);
+      ({ redirectUri, platform } = decodeOAuthState(state));
+    } catch (error) {
+      console.error("[OAuth] Failed to decode state", error);
+      res.status(400).json({ error: "invalid_state" });
+      return;
+    }
 
-      if (!userInfo.openId) {
-        res.status(400).json({ error: "openId missing from user info" });
-        return;
-      }
+    let tokenResponse;
+    try {
+      tokenResponse = await sdk.exchangeCodeForToken(code, redirectUri);
+    } catch (error) {
+      const googleError = extractGoogleError(error);
+      console.error("[OAuth] Token exchange failed", {
+        redirectUri,
+        platform,
+        ...googleError,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      res.status(502).json({
+        error: "token_exchange_failed",
+        step: "exchangeCodeForToken",
+        provider_error: googleError.code,
+        description: googleError.description,
+      });
+      return;
+    }
 
+    let userInfo;
+    try {
+      userInfo = await sdk.getUserInfo(tokenResponse.access_token);
+    } catch (error) {
+      const googleError = extractGoogleError(error);
+      console.error("[OAuth] User info fetch failed", {
+        ...googleError,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      res.status(502).json({
+        error: "userinfo_failed",
+        step: "getUserInfo",
+        provider_error: googleError.code,
+        description: googleError.description,
+      });
+      return;
+    }
+
+    if (!userInfo.openId) {
+      res.status(400).json({ error: "openId missing from user info" });
+      return;
+    }
+
+    try {
       // Migration: if a user exists with this email but a different openId
       // (e.g., from a previous OAuth provider), update their openId to the
       // new Google one so all integrations carry over seamlessly.
@@ -109,8 +191,12 @@ export function registerOAuthRoutes(app: Express) {
         res.redirect(302, "/");
       }
     } catch (error) {
-      console.error("[OAuth] Callback failed", error);
-      res.status(500).json({ error: "OAuth callback failed" });
+      console.error("[OAuth] Session creation failed", error);
+      res.status(500).json({
+        error: "session_creation_failed",
+        step: "persistUserAndSign",
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 }
