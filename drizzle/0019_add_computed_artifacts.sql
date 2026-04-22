@@ -13,9 +13,9 @@ CREATE TABLE IF NOT EXISTS `solarRecComputedArtifacts` (
   `createdAt` timestamp NOT NULL DEFAULT (now()),
   `updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP
 );
-
+--> statement-breakpoint
 CREATE UNIQUE INDEX `sr_computed_artifacts_key_idx`
   ON `solarRecComputedArtifacts` (`scopeId`, `artifactType`, `inputVersionHash`);
-
+--> statement-breakpoint
 CREATE INDEX `sr_computed_artifacts_scope_type_updated_idx`
   ON `solarRecComputedArtifacts` (`scopeId`, `artifactType`, `updatedAt`);
