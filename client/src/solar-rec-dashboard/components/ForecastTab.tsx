@@ -429,9 +429,31 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
             </Button>
           </div>
         </CardHeader>
-        {showAudit && auditQuery.data ? (
+        {showAudit ? (
           <CardContent className="space-y-3 text-xs">
-            {!auditQuery.data.activeBatchId ? (
+            {!scopeId ? (
+              <p className="text-muted-foreground">
+                Waiting for scope… (user not yet resolved)
+              </p>
+            ) : auditQuery.isFetching ? (
+              <p className="text-muted-foreground">
+                Running audit — this can take a few seconds on the full batch.
+              </p>
+            ) : auditQuery.error ? (
+              <div className="rounded border border-rose-300 bg-rose-50 p-2 text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">
+                <div className="font-medium">Audit request failed</div>
+                <pre className="mt-1 whitespace-pre-wrap break-words font-mono">
+                  {auditQuery.error instanceof Error
+                    ? auditQuery.error.message
+                    : String(auditQuery.error)}
+                </pre>
+              </div>
+            ) : !auditQuery.data ? (
+              <p className="text-muted-foreground">
+                Query returned no data. Open devtools Network tab and look for
+                the debugTransferHistoryRaw request to inspect the response.
+              </p>
+            ) : !auditQuery.data.activeBatchId ? (
               <p className="text-muted-foreground">
                 No active transferHistory batch for this scope.
               </p>

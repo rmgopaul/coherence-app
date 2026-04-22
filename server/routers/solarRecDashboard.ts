@@ -2308,11 +2308,12 @@ export const solarRecDashboardRouter = router({
   debugTransferHistoryRaw: protectedProcedure
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
-      const CHECKPOINT = "transfer-history-audit-2026-04-22";
+      const CHECKPOINT = "transfer-history-audit-v2-2026-04-22";
+      try {
       const db = await getDb();
       if (!db) {
         return {
-          _runnerVersion: "transfer_history_audit_v1" as const,
+          _runnerVersion: "transfer_history_audit_v2" as const,
           _checkpoint: CHECKPOINT,
           dbUnavailable: true as const,
           activeBatchId: null,
@@ -2342,7 +2343,7 @@ export const solarRecDashboardRouter = router({
 
       if (!activeBatchId) {
         return {
-          _runnerVersion: "transfer_history_audit_v1" as const,
+          _runnerVersion: "transfer_history_audit_v2" as const,
           _checkpoint: CHECKPOINT,
           activeBatchId: null,
           batch: null,
@@ -2379,8 +2380,9 @@ export const solarRecDashboardRouter = router({
       const totalRowCount = Number(totalRow[0]?.count ?? 0);
 
       // Exact-key duplicates (what the ingest dedup is supposed to stop).
-      const exactDupAgg = (await db.execute(sql`
-        SELECT COUNT(*) AS groups, COALESCE(SUM(n - 1), 0) AS extras
+      // mysql2 `db.execute` returns [rows, fields]; unwrap with [0].
+      const exactDupAggRaw = (await db.execute(sql`
+        SELECT COUNT(*) AS dupGroups, COALESCE(SUM(n - 1), 0) AS extraRows
         FROM (
           SELECT COUNT(*) AS n
           FROM srDsTransferHistory
@@ -2388,11 +2390,15 @@ export const solarRecDashboardRouter = router({
           GROUP BY transactionId, unitId, transferCompletionDate, quantity
           HAVING COUNT(*) > 1
         ) t
-      `)) as unknown as Array<{ groups: number | string; extras: number | string }>;
-      const exactDupGroups = Number(exactDupAgg[0]?.groups ?? 0);
-      const exactDupExtraRows = Number(exactDupAgg[0]?.extras ?? 0);
+      `)) as unknown as [
+        Array<{ dupGroups: number | string; extraRows: number | string }>,
+        unknown,
+      ];
+      const exactDupAgg = exactDupAggRaw[0] ?? [];
+      const exactDupGroups = Number(exactDupAgg[0]?.dupGroups ?? 0);
+      const exactDupExtraRows = Number(exactDupAgg[0]?.extraRows ?? 0);
 
-      const topExactDupesRaw = (await db.execute(sql`
+      const topExactDupesResult = (await db.execute(sql`
         SELECT transactionId, unitId, transferCompletionDate, quantity, COUNT(*) AS n
         FROM srDsTransferHistory
         WHERE batchId = ${activeBatchId}
@@ -2400,13 +2406,17 @@ export const solarRecDashboardRouter = router({
         HAVING COUNT(*) > 1
         ORDER BY n DESC
         LIMIT 20
-      `)) as unknown as Array<{
-        transactionId: string | null;
-        unitId: string | null;
-        transferCompletionDate: string | null;
-        quantity: number | null;
-        n: number | string;
-      }>;
+      `)) as unknown as [
+        Array<{
+          transactionId: string | null;
+          unitId: string | null;
+          transferCompletionDate: string | null;
+          quantity: number | null;
+          n: number | string;
+        }>,
+        unknown,
+      ];
+      const topExactDupesRaw = topExactDupesResult[0] ?? [];
       const topExactDupes = topExactDupesRaw.map((r) => ({
         transactionId: r.transactionId,
         unitId: r.unitId,
@@ -2419,8 +2429,8 @@ export const solarRecDashboardRouter = router({
       // different transactionIds. These survive ingest-time dedup
       // because the key includes transactionId — most likely cause of
       // inflated "Delivered" if GATS renumbers txIds across re-exports.
-      const nearDupAgg = (await db.execute(sql`
-        SELECT COUNT(*) AS groups, COALESCE(SUM(n - 1), 0) AS extras
+      const nearDupAggRaw = (await db.execute(sql`
+        SELECT COUNT(*) AS dupGroups, COALESCE(SUM(n - 1), 0) AS extraRows
         FROM (
           SELECT COUNT(*) AS n
           FROM srDsTransferHistory
@@ -2431,11 +2441,15 @@ export const solarRecDashboardRouter = router({
           GROUP BY unitId, transferCompletionDate, quantity
           HAVING COUNT(DISTINCT transactionId) > 1
         ) t
-      `)) as unknown as Array<{ groups: number | string; extras: number | string }>;
-      const nearDupGroups = Number(nearDupAgg[0]?.groups ?? 0);
-      const nearDupExtraRows = Number(nearDupAgg[0]?.extras ?? 0);
+      `)) as unknown as [
+        Array<{ dupGroups: number | string; extraRows: number | string }>,
+        unknown,
+      ];
+      const nearDupAgg = nearDupAggRaw[0] ?? [];
+      const nearDupGroups = Number(nearDupAgg[0]?.dupGroups ?? 0);
+      const nearDupExtraRows = Number(nearDupAgg[0]?.extraRows ?? 0);
 
-      const topNearDupesRaw = (await db.execute(sql`
+      const topNearDupesResult = (await db.execute(sql`
         SELECT unitId, transferCompletionDate, quantity,
                COUNT(DISTINCT transactionId) AS distinctTxIds,
                COUNT(*) AS n
@@ -2448,13 +2462,17 @@ export const solarRecDashboardRouter = router({
         HAVING COUNT(DISTINCT transactionId) > 1
         ORDER BY n DESC, distinctTxIds DESC
         LIMIT 20
-      `)) as unknown as Array<{
-        unitId: string | null;
-        transferCompletionDate: string | null;
-        quantity: number | null;
-        distinctTxIds: number | string;
-        n: number | string;
-      }>;
+      `)) as unknown as [
+        Array<{
+          unitId: string | null;
+          transferCompletionDate: string | null;
+          quantity: number | null;
+          distinctTxIds: number | string;
+          n: number | string;
+        }>,
+        unknown,
+      ];
+      const topNearDupesRaw = topNearDupesResult[0] ?? [];
       const topNearDupes = topNearDupesRaw.map((r) => ({
         unitId: r.unitId,
         transferCompletionDate: r.transferCompletionDate,
@@ -2481,7 +2499,7 @@ export const solarRecDashboardRouter = router({
       }));
 
       return {
-        _runnerVersion: "transfer_history_audit_v1" as const,
+        _runnerVersion: "transfer_history_audit_v2" as const,
         _checkpoint: CHECKPOINT,
         activeBatchId,
         batch: batch
@@ -2508,6 +2526,18 @@ export const solarRecDashboardRouter = router({
         topNearDupes,
         files,
       };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        console.error(
+          `[debugTransferHistoryRaw] failed for scope ${input.scopeId}: ${msg}`,
+          stack
+        );
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `transferHistory audit failed: ${msg}`,
+        });
+      }
     }),
 
   /**
