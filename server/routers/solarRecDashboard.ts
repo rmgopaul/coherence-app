@@ -9,6 +9,7 @@ import {
   scheduleBImportFiles,
   scheduleBImportResults,
   srDsTransferHistory,
+  srDsDeliverySchedule,
   solarRecActiveDatasetVersions,
   solarRecImportBatches,
   solarRecImportFiles,
@@ -2548,6 +2549,420 @@ export const solarRecDashboardRouter = router({
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
           message: `transferHistory audit failed: ${msg}`,
+        });
+      }
+    }),
+
+  /**
+   * Debug-only: trace DY1/DY2/DY3 for one tracking ID.
+   *
+   * Given a trackingSystemRefId (= GATS unitId), returns:
+   *   - raw transferHistory rows for that unit in the active batch,
+   *   - the per-energy-year aggregate (the exact lookup value the
+   *     Forecast tab consumes for this unit),
+   *   - the Schedule B year1-15 entries for that contract,
+   *   - the rolling 3-year DY1/DY2/DY3 window + sources for the
+   *     current energy year, mirroring
+   *     deriveRecPerformanceThreeYearValues on the client.
+   *
+   * Lets us answer "where does DY3 (actual) for NON258210 come from?"
+   * without wading through IDB or the 600k-row lookup.
+   */
+  debugSystemDeliveryBreakdown: protectedProcedure
+    .input(
+      z.object({
+        scopeId: z.string().min(1),
+        trackingId: z.string().min(1).max(64),
+      })
+    )
+    .query(async ({ input }) => {
+      const CHECKPOINT = "system-delivery-breakdown-v1-2026-04-22";
+      try {
+        const db = await getDb();
+        if (!db) {
+          throw new Error("Database not available");
+        }
+
+        const trackingIdLower = input.trackingId.trim().toLowerCase();
+        const trackingIdUpper = input.trackingId.trim().toUpperCase();
+
+        // Active batches for both datasets (independent activation).
+        const activeRows = await db
+          .select({
+            datasetKey: solarRecActiveDatasetVersions.datasetKey,
+            batchId: solarRecActiveDatasetVersions.batchId,
+          })
+          .from(solarRecActiveDatasetVersions)
+          .where(eq(solarRecActiveDatasetVersions.scopeId, input.scopeId));
+        const activeByKey = new Map(
+          activeRows.map((r) => [r.datasetKey, r.batchId])
+        );
+        const transferBatchId = activeByKey.get("transferHistory") ?? null;
+        const scheduleBatchId =
+          activeByKey.get("deliveryScheduleBase") ?? null;
+
+        // --- Transfer rows for this unit -------------------------------
+        type TransferRow = {
+          transactionId: string | null;
+          transferCompletionDate: string | null;
+          quantity: number | null;
+          transferor: string | null;
+          transferee: string | null;
+          rawRow: string | null;
+        };
+        let transferRowsRaw: TransferRow[] = [];
+        if (transferBatchId) {
+          transferRowsRaw = (await db
+            .select({
+              transactionId: srDsTransferHistory.transactionId,
+              transferCompletionDate:
+                srDsTransferHistory.transferCompletionDate,
+              quantity: srDsTransferHistory.quantity,
+              transferor: srDsTransferHistory.transferor,
+              transferee: srDsTransferHistory.transferee,
+              rawRow: srDsTransferHistory.rawRow,
+            })
+            .from(srDsTransferHistory)
+            .where(
+              and(
+                eq(srDsTransferHistory.batchId, transferBatchId),
+                sql`LOWER(${srDsTransferHistory.unitId}) = ${trackingIdLower}`
+              )
+            )) as TransferRow[];
+        }
+
+        const parseCompletionDate = (value: string | null): Date | null => {
+          if (!value) return null;
+          const iso = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+          if (iso) {
+            const d = new Date(
+              Number(iso[1]),
+              Number(iso[2]) - 1,
+              Number(iso[3])
+            );
+            return Number.isNaN(d.getTime()) ? null : d;
+          }
+          const us = value.match(
+            /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/
+          );
+          if (us) {
+            const month = Number(us[1]) - 1;
+            const day = Number(us[2]);
+            const year =
+              Number(us[3]) < 100 ? 2000 + Number(us[3]) : Number(us[3]);
+            let hours = us[4] ? Number(us[4]) : 0;
+            const minutes = us[5] ? Number(us[5]) : 0;
+            const meridiem = us[6]?.toUpperCase();
+            if (meridiem === "PM" && hours < 12) hours += 12;
+            if (meridiem === "AM" && hours === 12) hours = 0;
+            const d = new Date(year, month, day, hours, minutes);
+            return Number.isNaN(d.getTime()) ? null : d;
+          }
+          const fb = new Date(value);
+          return Number.isNaN(fb.getTime()) ? null : fb;
+        };
+
+        // Enrich each row with direction, energy year, and monthYear
+        // (the latter pulled from rawRow which holds the original CSV
+        // object).
+        type EnrichedTransferRow = {
+          transactionId: string | null;
+          completionDate: string | null;
+          monthYear: string | null;
+          quantity: number | null;
+          transferor: string | null;
+          transferee: string | null;
+          direction: 1 | -1 | 0;
+          energyYear: number | null;
+        };
+        const enrichedRows: EnrichedTransferRow[] = transferRowsRaw.map((r) => {
+          const transferor = (r.transferor ?? "").toLowerCase();
+          const transferee = (r.transferee ?? "").toLowerCase();
+          const isFromCS = transferor.includes("carbon solutions");
+          const isToCS = transferee.includes("carbon solutions");
+          const transfereeIsUtility = ["comed", "ameren", "midamerican"].some(
+            (u) => transferee.includes(u)
+          );
+          const transferorIsUtility = ["comed", "ameren", "midamerican"].some(
+            (u) => transferor.includes(u)
+          );
+          let direction: 1 | -1 | 0 = 0;
+          if (isFromCS && transfereeIsUtility) direction = 1;
+          else if (transferorIsUtility && isToCS) direction = -1;
+          const d = parseCompletionDate(r.transferCompletionDate);
+          let energyYear: number | null = null;
+          if (d) {
+            energyYear = d.getMonth() >= 5 ? d.getFullYear() : d.getFullYear() - 1;
+          }
+          let monthYear: string | null = null;
+          if (r.rawRow) {
+            try {
+              const parsed = JSON.parse(r.rawRow) as Record<string, unknown>;
+              const my = parsed["Month/Year"];
+              if (typeof my === "string") monthYear = my;
+            } catch {
+              // ignore
+            }
+          }
+          return {
+            transactionId: r.transactionId,
+            completionDate: r.transferCompletionDate,
+            monthYear,
+            quantity: r.quantity,
+            transferor: r.transferor,
+            transferee: r.transferee,
+            direction,
+            energyYear,
+          };
+        });
+
+        // Sort by completion date ascending, nulls last.
+        enrichedRows.sort((a, b) => {
+          const ad = parseCompletionDate(a.completionDate)?.getTime() ?? Infinity;
+          const bd = parseCompletionDate(b.completionDate)?.getTime() ?? Infinity;
+          return ad - bd;
+        });
+
+        // Energy-year aggregation (only direction !== 0 counts, per the
+        // Carbon-Solutions-to-utility filter in the lookup).
+        const energyYearBuckets = new Map<
+          number,
+          { netQty: number; rowCount: number }
+        >();
+        for (const r of enrichedRows) {
+          if (r.direction === 0 || r.energyYear === null || r.quantity === null)
+            continue;
+          const bucket = energyYearBuckets.get(r.energyYear) ?? {
+            netQty: 0,
+            rowCount: 0,
+          };
+          bucket.netQty += r.quantity * r.direction;
+          bucket.rowCount += 1;
+          energyYearBuckets.set(r.energyYear, bucket);
+        }
+        const energyYearAgg = Array.from(energyYearBuckets.entries())
+          .sort((a, b) => a[0] - b[0])
+          .map(([ey, v]) => ({
+            energyYearStart: ey,
+            label: `${ey}-${ey + 1}`,
+            rowCount: v.rowCount,
+            netQty: v.netQty,
+          }));
+
+        let firstTransferEnergyYear: number | null = null;
+        for (const b of energyYearAgg) {
+          if (b.netQty > 0) {
+            if (
+              firstTransferEnergyYear === null ||
+              b.energyYearStart < firstTransferEnergyYear
+            ) {
+              firstTransferEnergyYear = b.energyYearStart;
+            }
+          }
+        }
+
+        // --- Delivery schedule row(s) for this tracking ID -------------
+        type ScheduleRow = {
+          utilityContractNumber: string | null;
+          systemName: string | null;
+          rawRow: string | null;
+        };
+        let scheduleRows: ScheduleRow[] = [];
+        if (scheduleBatchId) {
+          scheduleRows = (await db
+            .select({
+              utilityContractNumber: srDsDeliverySchedule.utilityContractNumber,
+              systemName: srDsDeliverySchedule.systemName,
+              rawRow: srDsDeliverySchedule.rawRow,
+            })
+            .from(srDsDeliverySchedule)
+            .where(
+              and(
+                eq(srDsDeliverySchedule.batchId, scheduleBatchId),
+                sql`UPPER(${srDsDeliverySchedule.trackingSystemRefId}) = ${trackingIdUpper}`
+              )
+            )) as ScheduleRow[];
+        }
+
+        type ScheduleYearEntry = {
+          yearIndex: number;
+          startDate: string | null;
+          endDate: string | null;
+          required: number;
+          scheduleDelivered: number;
+          energyYearStart: number | null;
+          deliveredFromTransfers: number;
+        };
+        type ScheduleSummary = {
+          utilityContractNumber: string | null;
+          systemName: string | null;
+          years: ScheduleYearEntry[];
+        };
+        const schedules: ScheduleSummary[] = scheduleRows.map((sr) => {
+          const years: ScheduleYearEntry[] = [];
+          if (sr.rawRow) {
+            try {
+              const parsed = JSON.parse(sr.rawRow) as Record<string, unknown>;
+              for (let i = 1; i <= 15; i += 1) {
+                const startRaw = parsed[`year${i}_start_date`];
+                const endRaw = parsed[`year${i}_end_date`];
+                const reqRaw = parsed[`year${i}_quantity_required`];
+                const delRaw = parsed[`year${i}_quantity_delivered`];
+                const start = typeof startRaw === "string" ? startRaw : null;
+                const end = typeof endRaw === "string" ? endRaw : null;
+                const required = Number(reqRaw) || 0;
+                const scheduleDelivered = Number(delRaw) || 0;
+                if (!start && !end && required === 0 && scheduleDelivered === 0) {
+                  continue;
+                }
+                const startDate = parseCompletionDate(start);
+                const energyYearStart = startDate
+                  ? startDate.getFullYear()
+                  : null;
+                const deliveredFromTransfers =
+                  energyYearStart !== null
+                    ? energyYearBuckets.get(energyYearStart)?.netQty ?? 0
+                    : 0;
+                years.push({
+                  yearIndex: i,
+                  startDate: start,
+                  endDate: end,
+                  required,
+                  scheduleDelivered,
+                  energyYearStart,
+                  deliveredFromTransfers,
+                });
+              }
+            } catch {
+              // ignore malformed rawRow
+            }
+          }
+          years.sort((a, b) => a.yearIndex - b.yearIndex);
+          return {
+            utilityContractNumber: sr.utilityContractNumber,
+            systemName: sr.systemName,
+            years,
+          };
+        });
+
+        // --- Forecast DY window (mirrors ForecastTab + recPerformance) --
+        const now = new Date();
+        const forecastEyStartYear =
+          now.getMonth() >= 5 ? now.getFullYear() : now.getFullYear() - 1;
+        const forecastEyLabel = `${forecastEyStartYear}-${forecastEyStartYear + 1}`;
+
+        const dyWindows = schedules.map((s) => {
+          const targetIndex = s.years.findIndex(
+            (y) => y.energyYearStart === forecastEyStartYear
+          );
+          if (targetIndex < 2) {
+            return {
+              utilityContractNumber: s.utilityContractNumber,
+              forecastEyLabel,
+              eligible: false as const,
+              reason:
+                targetIndex === -1
+                  ? `No schedule year matches current EY ${forecastEyLabel}`
+                  : `Target year index ${targetIndex} < 2 (need 3rd+ delivery year)`,
+            };
+          }
+          const dy1 = s.years[targetIndex - 2]!;
+          const dy2 = s.years[targetIndex - 1]!;
+          const dy3 = s.years[targetIndex]!;
+          if (firstTransferEnergyYear === null) {
+            return {
+              utilityContractNumber: s.utilityContractNumber,
+              forecastEyLabel,
+              eligible: false as const,
+              reason:
+                "No positive-net transfers for this unit — firstTransferEnergyYear is null",
+            };
+          }
+          const firstDeliveryYear = firstTransferEnergyYear + 1;
+          const targetEy = dy3.energyYearStart ?? 0;
+          const actualDeliveryYearNumber =
+            targetEy - firstDeliveryYear + 1;
+          if (actualDeliveryYearNumber < 3) {
+            return {
+              utilityContractNumber: s.utilityContractNumber,
+              forecastEyLabel,
+              eligible: false as const,
+              reason: `actualDeliveryYearNumber=${actualDeliveryYearNumber} < 3 (firstTransferEY=${firstTransferEnergyYear}, targetEY=${targetEy})`,
+            };
+          }
+          const isThirdDeliveryYear = actualDeliveryYearNumber === 3;
+          const valDy1 = isThirdDeliveryYear
+            ? dy1.deliveredFromTransfers
+            : dy1.required;
+          const valDy2 = isThirdDeliveryYear
+            ? dy2.deliveredFromTransfers
+            : dy2.required;
+          const valDy3 = dy3.deliveredFromTransfers;
+          return {
+            utilityContractNumber: s.utilityContractNumber,
+            forecastEyLabel,
+            eligible: true as const,
+            firstTransferEnergyYear,
+            firstDeliveryYear,
+            targetYearIndex: targetIndex,
+            actualDeliveryYearNumber,
+            dy1: {
+              yearIndex: dy1.yearIndex,
+              energyYearStart: dy1.energyYearStart,
+              value: valDy1,
+              source: isThirdDeliveryYear
+                ? ("Actual" as const)
+                : ("Expected" as const),
+              required: dy1.required,
+              deliveredFromTransfers: dy1.deliveredFromTransfers,
+            },
+            dy2: {
+              yearIndex: dy2.yearIndex,
+              energyYearStart: dy2.energyYearStart,
+              value: valDy2,
+              source: isThirdDeliveryYear
+                ? ("Actual" as const)
+                : ("Expected" as const),
+              required: dy2.required,
+              deliveredFromTransfers: dy2.deliveredFromTransfers,
+            },
+            dy3: {
+              yearIndex: dy3.yearIndex,
+              energyYearStart: dy3.energyYearStart,
+              value: valDy3,
+              source: "Actual" as const,
+              required: dy3.required,
+              deliveredFromTransfers: dy3.deliveredFromTransfers,
+            },
+            rollingAverage: Math.floor((valDy1 + valDy2 + valDy3) / 3),
+            expectedRecs: dy3.required,
+          };
+        });
+
+        return {
+          _runnerVersion: "system_delivery_breakdown_v1" as const,
+          _checkpoint: CHECKPOINT,
+          trackingId: input.trackingId,
+          transferBatchId,
+          scheduleBatchId,
+          transferRowCount: enrichedRows.length,
+          transferRows: enrichedRows.slice(0, 200), // bound at 200 for UI
+          truncated: enrichedRows.length > 200,
+          energyYearAgg,
+          firstTransferEnergyYear,
+          schedules,
+          dyWindows,
+        };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        console.error(
+          `[debugSystemDeliveryBreakdown] failed for scope ${input.scopeId} tracking ${input.trackingId}: ${msg}`,
+          stack
+        );
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: `system delivery breakdown failed: ${msg}`,
         });
       }
     }),

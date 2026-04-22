@@ -169,6 +169,25 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
     { enabled: false, retry: 1 }
   );
 
+  // Per-system delivery breakdown: user types a tracking ID / unitId
+  // and sees the full DY1/DY2/DY3 trace.
+  const [systemLookupInput, setSystemLookupInput] = useState("");
+  const [systemLookupSubmitted, setSystemLookupSubmitted] = useState<
+    string | null
+  >(null);
+  const systemBreakdownQuery =
+    trpc.solarRecDashboard.debugSystemDeliveryBreakdown.useQuery(
+      {
+        scopeId: scopeId ?? "",
+        trackingId: systemLookupSubmitted ?? "",
+      },
+      {
+        enabled: !!scopeId && !!systemLookupSubmitted,
+        retry: 1,
+        staleTime: 60_000,
+      }
+    );
+
   // Use the same 3-year rolling logic as REC Performance Eval to match
   // baseline numbers. For each system: find the delivery year matching
   // FORECAST_EY_LABEL, require targetYearIndex >= 2 (3rd year or
@@ -634,6 +653,334 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
                 <div className="text-muted-foreground">
                   runner={auditQuery.data._runnerVersion}, checkpoint=
                   {auditQuery.data._checkpoint}
+                </div>
+              </>
+            )}
+          </CardContent>
+        ) : null}
+      </Card>
+
+      <Card className="border-slate-200 bg-slate-50/30 dark:border-slate-800 dark:bg-slate-900/20">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm">
+                Per-System Delivery Breakdown
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Enter a tracking ID / GATS Unit ID (e.g.{" "}
+                <code>NON258210</code>) to see the transfer rows,
+                energy-year aggregation, schedule, and DY1/DY2/DY3 trace for
+                the current energy year.
+              </CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={systemLookupInput}
+                onChange={(e) => setSystemLookupInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && systemLookupInput.trim()) {
+                    setSystemLookupSubmitted(systemLookupInput.trim());
+                  }
+                }}
+                placeholder="NON258210"
+                className="h-7 rounded border border-slate-300 bg-white px-2 text-xs font-mono dark:border-slate-700 dark:bg-black/40"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                disabled={!scopeId || !systemLookupInput.trim()}
+                onClick={() => {
+                  setSystemLookupSubmitted(systemLookupInput.trim());
+                }}
+              >
+                {systemBreakdownQuery.isFetching ? "Looking up…" : "Look up"}
+              </Button>
+            </div>
+          </div>
+        </CardHeader>
+        {systemLookupSubmitted ? (
+          <CardContent className="space-y-3 text-xs">
+            {systemBreakdownQuery.isFetching ? (
+              <p className="text-muted-foreground">
+                Loading breakdown for {systemLookupSubmitted}…
+              </p>
+            ) : systemBreakdownQuery.error ? (
+              <div className="rounded border border-rose-300 bg-rose-50 p-2 text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-200">
+                <div className="font-medium">Breakdown request failed</div>
+                <pre className="mt-1 whitespace-pre-wrap break-words font-mono">
+                  {systemBreakdownQuery.error instanceof Error
+                    ? systemBreakdownQuery.error.message
+                    : String(systemBreakdownQuery.error)}
+                </pre>
+              </div>
+            ) : !systemBreakdownQuery.data ? (
+              <p className="text-muted-foreground">No data.</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <div className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20">
+                    <div className="text-muted-foreground">Tracking ID</div>
+                    <div className="font-mono font-semibold">
+                      {systemBreakdownQuery.data.trackingId}
+                    </div>
+                  </div>
+                  <div className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20">
+                    <div className="text-muted-foreground">Transfer Rows</div>
+                    <div className="font-mono font-semibold">
+                      {systemBreakdownQuery.data.transferRowCount.toLocaleString()}
+                      {systemBreakdownQuery.data.truncated
+                        ? " (showing first 200)"
+                        : ""}
+                    </div>
+                  </div>
+                  <div className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20">
+                    <div className="text-muted-foreground">
+                      First Transfer EY
+                    </div>
+                    <div className="font-mono font-semibold">
+                      {systemBreakdownQuery.data.firstTransferEnergyYear ?? "—"}
+                    </div>
+                  </div>
+                  <div className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20">
+                    <div className="text-muted-foreground">Schedules</div>
+                    <div className="font-mono font-semibold">
+                      {systemBreakdownQuery.data.schedules.length}
+                    </div>
+                  </div>
+                </div>
+
+                {systemBreakdownQuery.data.dyWindows.map((w, i) => (
+                  <div
+                    key={i}
+                    className={`rounded border p-2 ${
+                      w.eligible
+                        ? "border-emerald-200 bg-emerald-50 dark:border-emerald-900 dark:bg-emerald-950/30"
+                        : "border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-900/30"
+                    }`}
+                  >
+                    <div className="font-medium">
+                      DY window — contract {w.utilityContractNumber ?? "—"},
+                      current EY {w.forecastEyLabel}
+                    </div>
+                    {!w.eligible ? (
+                      <div className="text-muted-foreground">
+                        Ineligible: {w.reason}
+                      </div>
+                    ) : (
+                      <div className="mt-1 overflow-x-auto">
+                        <table className="min-w-full">
+                          <thead className="text-muted-foreground">
+                            <tr>
+                              <th className="pr-3 text-left">Year</th>
+                              <th className="pr-3 text-left">Schedule Idx</th>
+                              <th className="pr-3 text-left">EY</th>
+                              <th className="pr-3 text-right">Required</th>
+                              <th className="pr-3 text-right">
+                                Delivered (transfers)
+                              </th>
+                              <th className="pr-3 text-right">Value</th>
+                              <th className="text-left">Source</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {[
+                              { label: "DY1", ...w.dy1 },
+                              { label: "DY2", ...w.dy2 },
+                              { label: "DY3", ...w.dy3 },
+                            ].map((d) => (
+                              <tr key={d.label}>
+                                <td className="pr-3 font-semibold">{d.label}</td>
+                                <td className="pr-3">{d.yearIndex}</td>
+                                <td className="pr-3">
+                                  {d.energyYearStart ?? "—"}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {d.required.toLocaleString()}
+                                </td>
+                                <td className="pr-3 text-right">
+                                  {d.deliveredFromTransfers.toLocaleString()}
+                                </td>
+                                <td className="pr-3 text-right font-mono font-semibold">
+                                  {d.value.toLocaleString()}
+                                </td>
+                                <td>{d.source}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        <div className="mt-1 text-muted-foreground">
+                          actualDeliveryYearNumber=
+                          {w.actualDeliveryYearNumber}, firstDeliveryYear=
+                          {w.firstDeliveryYear}, rolling average=
+                          <span className="font-mono font-semibold">
+                            {" "}
+                            {w.rollingAverage.toLocaleString()}
+                          </span>
+                          , expectedRecs={w.expectedRecs.toLocaleString()}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {systemBreakdownQuery.data.energyYearAgg.length > 0 ? (
+                  <div className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20">
+                    <div className="font-medium">
+                      Energy-year aggregation (CS → utility filter; +qty for
+                      deliveries, −qty for reverses)
+                    </div>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="min-w-full">
+                        <thead className="text-muted-foreground">
+                          <tr>
+                            <th className="pr-3 text-left">Energy Year</th>
+                            <th className="pr-3 text-right">Contributing Rows</th>
+                            <th className="text-right">Net Qty</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {systemBreakdownQuery.data.energyYearAgg.map((ey) => (
+                            <tr key={ey.energyYearStart}>
+                              <td className="pr-3">{ey.label}</td>
+                              <td className="pr-3 text-right">{ey.rowCount}</td>
+                              <td className="text-right font-mono">
+                                {ey.netQty.toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                {systemBreakdownQuery.data.schedules.map((s, i) => (
+                  <div
+                    key={i}
+                    className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20"
+                  >
+                    <div className="font-medium">
+                      Schedule B — contract {s.utilityContractNumber ?? "—"}{" "}
+                      ({s.systemName ?? "—"})
+                    </div>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="min-w-full">
+                        <thead className="text-muted-foreground">
+                          <tr>
+                            <th className="pr-3 text-left">Idx</th>
+                            <th className="pr-3 text-left">Start</th>
+                            <th className="pr-3 text-left">End</th>
+                            <th className="pr-3 text-left">EY</th>
+                            <th className="pr-3 text-right">Required</th>
+                            <th className="pr-3 text-right">
+                              Delivered (schedule)
+                            </th>
+                            <th className="text-right">
+                              Delivered (transfers)
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {s.years.map((y) => (
+                            <tr key={y.yearIndex}>
+                              <td className="pr-3">{y.yearIndex}</td>
+                              <td className="pr-3">{y.startDate ?? "—"}</td>
+                              <td className="pr-3">{y.endDate ?? "—"}</td>
+                              <td className="pr-3">{y.energyYearStart ?? "—"}</td>
+                              <td className="pr-3 text-right">
+                                {y.required.toLocaleString()}
+                              </td>
+                              <td className="pr-3 text-right">
+                                {y.scheduleDelivered.toLocaleString()}
+                              </td>
+                              <td className="text-right font-mono">
+                                {y.deliveredFromTransfers.toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ))}
+
+                {systemBreakdownQuery.data.transferRows.length > 0 ? (
+                  <div className="rounded border border-slate-200 bg-white/50 p-2 dark:border-slate-700 dark:bg-black/20">
+                    <div className="font-medium">
+                      Transfer rows ({systemBreakdownQuery.data.transferRows.length}
+                      {systemBreakdownQuery.data.truncated
+                        ? ` of ${systemBreakdownQuery.data.transferRowCount}`
+                        : ""}
+                      )
+                    </div>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="min-w-full">
+                        <thead className="text-muted-foreground">
+                          <tr>
+                            <th className="pr-3 text-left">TxID</th>
+                            <th className="pr-3 text-left">Completion</th>
+                            <th className="pr-3 text-left">Month/Year</th>
+                            <th className="pr-3 text-right">Qty</th>
+                            <th className="pr-3 text-right">Dir</th>
+                            <th className="pr-3 text-right">EY</th>
+                            <th className="pr-3 text-left">Transferor</th>
+                            <th className="text-left">Transferee</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {systemBreakdownQuery.data.transferRows.map((r, j) => (
+                            <tr
+                              key={j}
+                              className={
+                                r.direction === 0
+                                  ? "text-muted-foreground"
+                                  : ""
+                              }
+                            >
+                              <td className="pr-3 font-mono">
+                                {r.transactionId ?? ""}
+                              </td>
+                              <td className="pr-3">{r.completionDate ?? ""}</td>
+                              <td className="pr-3">{r.monthYear ?? ""}</td>
+                              <td className="pr-3 text-right">
+                                {r.quantity?.toLocaleString() ?? ""}
+                              </td>
+                              <td className="pr-3 text-right">
+                                {r.direction === 1
+                                  ? "+"
+                                  : r.direction === -1
+                                    ? "−"
+                                    : "·"}
+                              </td>
+                              <td className="pr-3 text-right">
+                                {r.energyYear ?? ""}
+                              </td>
+                              <td
+                                className="pr-3 max-w-[14ch] truncate"
+                                title={r.transferor ?? ""}
+                              >
+                                {r.transferor ?? ""}
+                              </td>
+                              <td
+                                className="max-w-[14ch] truncate"
+                                title={r.transferee ?? ""}
+                              >
+                                {r.transferee ?? ""}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="text-muted-foreground">
+                  runner={systemBreakdownQuery.data._runnerVersion}, checkpoint=
+                  {systemBreakdownQuery.data._checkpoint}
                 </div>
               </>
             )}
