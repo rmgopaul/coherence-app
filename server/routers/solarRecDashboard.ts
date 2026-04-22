@@ -4,8 +4,15 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { protectedProcedure, router } from "../_core/trpc";
-import { eq, sql } from "drizzle-orm";
-import { scheduleBImportFiles, scheduleBImportResults } from "../../drizzle/schema";
+import { and, eq, sql } from "drizzle-orm";
+import {
+  scheduleBImportFiles,
+  scheduleBImportResults,
+  srDsTransferHistory,
+  solarRecActiveDatasetVersions,
+  solarRecImportBatches,
+  solarRecImportFiles,
+} from "../../drizzle/schema";
 import { JOB_TTL_MS } from "../constants";
 import {
   bulkInsertScheduleBDriveFiles,
@@ -2275,6 +2282,232 @@ export const solarRecDashboardRouter = router({
         "../services/solar/buildTransferDeliveryLookup"
       );
       return buildTransferDeliveryLookupForScope(input.scopeId);
+    }),
+
+  /**
+   * Debug-only: audit the active transferHistory batch for duplicates.
+   *
+   * Answers: "is the forecast tab's 'Delivered' inflated because the
+   * same transfer rows are in the DB multiple times?"
+   *
+   * Two complementary duplicate checks:
+   *   1. Exact-key dupes: rows that share the full dedup key
+   *      (transactionId | unitId | completionDate | quantity). If any
+   *      exist, the ingest-time dedup missed them (bug or replace-mode
+   *      upload with a pre-duped CSV).
+   *   2. Near-dupes: rows with the same (unitId, completionDate,
+   *      quantity) but *different* transactionIds. These survive the
+   *      ingest-time dedup because the key includes transactionId —
+   *      catches the case where GATS renumbers Transaction IDs across
+   *      re-exports of the same underlying transfer.
+   *
+   * The near-dupe check is the one most likely to surface a real
+   * problem. Exact-key dupes imply a logic bug in ingestion; near-
+   * dupes imply the dedup key is too strict for GATS's behavior.
+   */
+  debugTransferHistoryRaw: protectedProcedure
+    .input(z.object({ scopeId: z.string().min(1) }))
+    .query(async ({ input }) => {
+      const CHECKPOINT = "transfer-history-audit-2026-04-22";
+      const db = await getDb();
+      if (!db) {
+        return {
+          _runnerVersion: "transfer_history_audit_v1" as const,
+          _checkpoint: CHECKPOINT,
+          dbUnavailable: true as const,
+          activeBatchId: null,
+          batch: null,
+          totalRowCount: 0,
+          exactDupGroups: 0,
+          exactDupExtraRows: 0,
+          topExactDupes: [],
+          nearDupGroups: 0,
+          nearDupExtraRows: 0,
+          topNearDupes: [],
+          files: [],
+        };
+      }
+
+      const activeRows = await db
+        .select({ batchId: solarRecActiveDatasetVersions.batchId })
+        .from(solarRecActiveDatasetVersions)
+        .where(
+          and(
+            eq(solarRecActiveDatasetVersions.scopeId, input.scopeId),
+            eq(solarRecActiveDatasetVersions.datasetKey, "transferHistory")
+          )
+        )
+        .limit(1);
+      const activeBatchId = activeRows[0]?.batchId ?? null;
+
+      if (!activeBatchId) {
+        return {
+          _runnerVersion: "transfer_history_audit_v1" as const,
+          _checkpoint: CHECKPOINT,
+          activeBatchId: null,
+          batch: null,
+          totalRowCount: 0,
+          exactDupGroups: 0,
+          exactDupExtraRows: 0,
+          topExactDupes: [],
+          nearDupGroups: 0,
+          nearDupExtraRows: 0,
+          topNearDupes: [],
+          files: [],
+        };
+      }
+
+      const batchRows = await db
+        .select({
+          id: solarRecImportBatches.id,
+          mergeStrategy: solarRecImportBatches.mergeStrategy,
+          status: solarRecImportBatches.status,
+          rowCount: solarRecImportBatches.rowCount,
+          createdAt: solarRecImportBatches.createdAt,
+          completedAt: solarRecImportBatches.completedAt,
+          importedBy: solarRecImportBatches.importedBy,
+        })
+        .from(solarRecImportBatches)
+        .where(eq(solarRecImportBatches.id, activeBatchId))
+        .limit(1);
+      const batch = batchRows[0] ?? null;
+
+      const totalRow = await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(srDsTransferHistory)
+        .where(eq(srDsTransferHistory.batchId, activeBatchId));
+      const totalRowCount = Number(totalRow[0]?.count ?? 0);
+
+      // Exact-key duplicates (what the ingest dedup is supposed to stop).
+      const exactDupAgg = (await db.execute(sql`
+        SELECT COUNT(*) AS groups, COALESCE(SUM(n - 1), 0) AS extras
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM srDsTransferHistory
+          WHERE batchId = ${activeBatchId}
+          GROUP BY transactionId, unitId, transferCompletionDate, quantity
+          HAVING COUNT(*) > 1
+        ) t
+      `)) as unknown as Array<{ groups: number | string; extras: number | string }>;
+      const exactDupGroups = Number(exactDupAgg[0]?.groups ?? 0);
+      const exactDupExtraRows = Number(exactDupAgg[0]?.extras ?? 0);
+
+      const topExactDupesRaw = (await db.execute(sql`
+        SELECT transactionId, unitId, transferCompletionDate, quantity, COUNT(*) AS n
+        FROM srDsTransferHistory
+        WHERE batchId = ${activeBatchId}
+        GROUP BY transactionId, unitId, transferCompletionDate, quantity
+        HAVING COUNT(*) > 1
+        ORDER BY n DESC
+        LIMIT 20
+      `)) as unknown as Array<{
+        transactionId: string | null;
+        unitId: string | null;
+        transferCompletionDate: string | null;
+        quantity: number | null;
+        n: number | string;
+      }>;
+      const topExactDupes = topExactDupesRaw.map((r) => ({
+        transactionId: r.transactionId,
+        unitId: r.unitId,
+        transferCompletionDate: r.transferCompletionDate,
+        quantity: r.quantity,
+        count: Number(r.n),
+      }));
+
+      // Near-duplicates: same (unitId, completionDate, quantity) with
+      // different transactionIds. These survive ingest-time dedup
+      // because the key includes transactionId — most likely cause of
+      // inflated "Delivered" if GATS renumbers txIds across re-exports.
+      const nearDupAgg = (await db.execute(sql`
+        SELECT COUNT(*) AS groups, COALESCE(SUM(n - 1), 0) AS extras
+        FROM (
+          SELECT COUNT(*) AS n
+          FROM srDsTransferHistory
+          WHERE batchId = ${activeBatchId}
+            AND unitId IS NOT NULL
+            AND transferCompletionDate IS NOT NULL
+            AND quantity IS NOT NULL
+          GROUP BY unitId, transferCompletionDate, quantity
+          HAVING COUNT(DISTINCT transactionId) > 1
+        ) t
+      `)) as unknown as Array<{ groups: number | string; extras: number | string }>;
+      const nearDupGroups = Number(nearDupAgg[0]?.groups ?? 0);
+      const nearDupExtraRows = Number(nearDupAgg[0]?.extras ?? 0);
+
+      const topNearDupesRaw = (await db.execute(sql`
+        SELECT unitId, transferCompletionDate, quantity,
+               COUNT(DISTINCT transactionId) AS distinctTxIds,
+               COUNT(*) AS n
+        FROM srDsTransferHistory
+        WHERE batchId = ${activeBatchId}
+          AND unitId IS NOT NULL
+          AND transferCompletionDate IS NOT NULL
+          AND quantity IS NOT NULL
+        GROUP BY unitId, transferCompletionDate, quantity
+        HAVING COUNT(DISTINCT transactionId) > 1
+        ORDER BY n DESC, distinctTxIds DESC
+        LIMIT 20
+      `)) as unknown as Array<{
+        unitId: string | null;
+        transferCompletionDate: string | null;
+        quantity: number | null;
+        distinctTxIds: number | string;
+        n: number | string;
+      }>;
+      const topNearDupes = topNearDupesRaw.map((r) => ({
+        unitId: r.unitId,
+        transferCompletionDate: r.transferCompletionDate,
+        quantity: r.quantity,
+        distinctTransactionIds: Number(r.distinctTxIds),
+        count: Number(r.n),
+      }));
+
+      const fileRows = await db
+        .select({
+          fileName: solarRecImportFiles.fileName,
+          sizeBytes: solarRecImportFiles.sizeBytes,
+          rowCount: solarRecImportFiles.rowCount,
+          createdAt: solarRecImportFiles.createdAt,
+        })
+        .from(solarRecImportFiles)
+        .where(eq(solarRecImportFiles.batchId, activeBatchId))
+        .orderBy(solarRecImportFiles.createdAt);
+      const files = fileRows.map((f) => ({
+        fileName: f.fileName,
+        sizeBytes: f.sizeBytes,
+        rowCount: f.rowCount,
+        createdAt: f.createdAt ? new Date(f.createdAt).toISOString() : null,
+      }));
+
+      return {
+        _runnerVersion: "transfer_history_audit_v1" as const,
+        _checkpoint: CHECKPOINT,
+        activeBatchId,
+        batch: batch
+          ? {
+              id: batch.id,
+              mergeStrategy: batch.mergeStrategy,
+              status: batch.status,
+              rowCount: batch.rowCount,
+              createdAt: batch.createdAt
+                ? new Date(batch.createdAt).toISOString()
+                : null,
+              completedAt: batch.completedAt
+                ? new Date(batch.completedAt).toISOString()
+                : null,
+              importedBy: batch.importedBy,
+            }
+          : null,
+        totalRowCount,
+        exactDupGroups,
+        exactDupExtraRows,
+        topExactDupes,
+        nearDupGroups,
+        nearDupExtraRows,
+        topNearDupes,
+        files,
+      };
     }),
 
   /**

@@ -20,7 +20,7 @@
  * memos.
  */
 
-import { memo, useMemo } from "react";
+import { memo, useMemo, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -31,6 +31,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +41,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { trpc } from "@/lib/trpc";
 import {
   Table,
   TableBody,
@@ -115,6 +117,35 @@ export interface ForecastTabProps {
 // Component
 // ---------------------------------------------------------------------------
 
+function AuditStat({
+  label,
+  value,
+  emphasis,
+}: {
+  label: string;
+  value: string;
+  emphasis?: boolean;
+}) {
+  return (
+    <div
+      className={`rounded border p-2 ${
+        emphasis
+          ? "border-rose-300 bg-rose-50 dark:border-rose-800 dark:bg-rose-950/40"
+          : "border-amber-200 bg-white/50 dark:border-amber-900 dark:bg-black/20"
+      }`}
+    >
+      <div className="text-muted-foreground">{label}</div>
+      <div
+        className={`font-mono font-semibold ${
+          emphasis ? "text-rose-700 dark:text-rose-300" : ""
+        }`}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
 export default memo(function ForecastTab(props: ForecastTabProps) {
   const {
     performanceSourceRows,
@@ -122,6 +153,21 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
     annualProductionByTrackingId,
     generationBaselineByTrackingId,
   } = props;
+
+  // Transfer-history audit: fetched on-demand when the user clicks the
+  // "Audit transfer history" button. Surfaces exact-key duplicates
+  // (ingest-dedup miss) and near-duplicates (same unit/date/qty with
+  // different transactionIds — GATS re-export renumbering).
+  const [showAudit, setShowAudit] = useState(false);
+  const scopeQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
+    staleTime: Infinity,
+    retry: 1,
+  });
+  const scopeId = scopeQuery.data?.scopeId ?? null;
+  const auditQuery = trpc.solarRecDashboard.debugTransferHistoryRaw.useQuery(
+    { scopeId: scopeId ?? "" },
+    { enabled: false, retry: 1 }
+  );
 
   // Use the same 3-year rolling logic as REC Performance Eval to match
   // baseline numbers. For each system: find the delivery year matching
@@ -329,6 +375,208 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
           </CardHeader>
         </Card>
       </div>
+
+      <Card className="border-amber-200 bg-amber-50/30 dark:border-amber-900 dark:bg-amber-950/20">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <CardTitle className="text-sm">
+                Transfer History Audit
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Check the active transferHistory batch for duplicates that
+                would inflate Delivered RECs and therefore Revised Avg.
+              </CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2 text-xs"
+              disabled={!scopeId || auditQuery.isFetching}
+              onClick={async () => {
+                setShowAudit(true);
+                const result = await auditQuery.refetch();
+                if (result.error) {
+                  const msg =
+                    result.error instanceof Error
+                      ? result.error.message
+                      : String(result.error);
+                  toast.error(`Audit failed: ${msg}`);
+                  return;
+                }
+                const d = result.data;
+                if (!d) {
+                  toast.error("Audit returned no data");
+                  return;
+                }
+                if (!d.activeBatchId) {
+                  toast.info("No active transferHistory batch");
+                  return;
+                }
+                const extra = d.exactDupExtraRows + d.nearDupExtraRows;
+                if (extra === 0) {
+                  toast.success(
+                    `No duplicates found in ${d.totalRowCount.toLocaleString()} rows`
+                  );
+                } else {
+                  toast.warning(
+                    `${extra.toLocaleString()} duplicate-equivalent rows detected`
+                  );
+                }
+              }}
+            >
+              {auditQuery.isFetching ? "Auditing…" : "Audit transfer history"}
+            </Button>
+          </div>
+        </CardHeader>
+        {showAudit && auditQuery.data ? (
+          <CardContent className="space-y-3 text-xs">
+            {!auditQuery.data.activeBatchId ? (
+              <p className="text-muted-foreground">
+                No active transferHistory batch for this scope.
+              </p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <AuditStat
+                    label="Active Batch"
+                    value={auditQuery.data.activeBatchId.slice(0, 12) + "…"}
+                  />
+                  <AuditStat
+                    label="Rows in Batch"
+                    value={auditQuery.data.totalRowCount.toLocaleString()}
+                  />
+                  <AuditStat
+                    label="Exact-Key Dup Rows"
+                    value={auditQuery.data.exactDupExtraRows.toLocaleString()}
+                    emphasis={auditQuery.data.exactDupExtraRows > 0}
+                  />
+                  <AuditStat
+                    label="Near-Dup Rows"
+                    value={auditQuery.data.nearDupExtraRows.toLocaleString()}
+                    emphasis={auditQuery.data.nearDupExtraRows > 0}
+                  />
+                </div>
+
+                {auditQuery.data.batch ? (
+                  <div className="rounded border border-amber-200 bg-white/50 p-2 dark:border-amber-900 dark:bg-black/20">
+                    <div className="font-medium">Batch metadata</div>
+                    <div className="text-muted-foreground">
+                      merge={auditQuery.data.batch.mergeStrategy}, status=
+                      {auditQuery.data.batch.status}, rowCount=
+                      {auditQuery.data.batch.rowCount?.toLocaleString() ?? "—"},
+                      created={auditQuery.data.batch.createdAt ?? "—"}
+                    </div>
+                  </div>
+                ) : null}
+
+                {auditQuery.data.files.length > 0 ? (
+                  <div className="rounded border border-amber-200 bg-white/50 p-2 dark:border-amber-900 dark:bg-black/20">
+                    <div className="font-medium">
+                      Files contributing to this batch (
+                      {auditQuery.data.files.length})
+                    </div>
+                    <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                      {auditQuery.data.files.map((f, i) => (
+                        <li key={i}>
+                          {f.fileName} —{" "}
+                          {f.sizeBytes
+                            ? `${(f.sizeBytes / 1024).toFixed(1)} KB`
+                            : "? KB"}
+                          {f.rowCount !== null
+                            ? ` · ${f.rowCount.toLocaleString()} rows`
+                            : ""}{" "}
+                          · {f.createdAt ?? "?"}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+
+                {auditQuery.data.topNearDupes.length > 0 ? (
+                  <div className="rounded border border-amber-300 bg-amber-100/50 p-2 dark:border-amber-800 dark:bg-amber-900/30">
+                    <div className="font-medium">
+                      Top near-duplicates (same unit/date/qty, different
+                      transactionIds — most likely cause of inflation):
+                    </div>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="min-w-full">
+                        <thead className="text-muted-foreground">
+                          <tr>
+                            <th className="pr-3 text-left">Unit</th>
+                            <th className="pr-3 text-left">Completion Date</th>
+                            <th className="pr-3 text-right">Qty</th>
+                            <th className="pr-3 text-right">Distinct TxIDs</th>
+                            <th className="text-right">Rows</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {auditQuery.data.topNearDupes.map((d, i) => (
+                            <tr key={i}>
+                              <td className="pr-3">{d.unitId ?? ""}</td>
+                              <td className="pr-3">
+                                {d.transferCompletionDate ?? ""}
+                              </td>
+                              <td className="pr-3 text-right">
+                                {d.quantity?.toLocaleString() ?? ""}
+                              </td>
+                              <td className="pr-3 text-right">
+                                {d.distinctTransactionIds}
+                              </td>
+                              <td className="text-right">{d.count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                {auditQuery.data.topExactDupes.length > 0 ? (
+                  <div className="rounded border border-rose-300 bg-rose-100/50 p-2 dark:border-rose-800 dark:bg-rose-900/30">
+                    <div className="font-medium">
+                      Top exact-key duplicates (ingest dedup miss):
+                    </div>
+                    <div className="mt-1 overflow-x-auto">
+                      <table className="min-w-full">
+                        <thead className="text-muted-foreground">
+                          <tr>
+                            <th className="pr-3 text-left">TxID</th>
+                            <th className="pr-3 text-left">Unit</th>
+                            <th className="pr-3 text-left">Date</th>
+                            <th className="pr-3 text-right">Qty</th>
+                            <th className="text-right">Rows</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {auditQuery.data.topExactDupes.map((d, i) => (
+                            <tr key={i}>
+                              <td className="pr-3">{d.transactionId ?? ""}</td>
+                              <td className="pr-3">{d.unitId ?? ""}</td>
+                              <td className="pr-3">
+                                {d.transferCompletionDate ?? ""}
+                              </td>
+                              <td className="pr-3 text-right">
+                                {d.quantity?.toLocaleString() ?? ""}
+                              </td>
+                              <td className="text-right">{d.count}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="text-muted-foreground">
+                  runner={auditQuery.data._runnerVersion}, checkpoint=
+                  {auditQuery.data._checkpoint}
+                </div>
+              </>
+            )}
+          </CardContent>
+        ) : null}
+      </Card>
 
       <Card>
         <CardHeader>
