@@ -44,7 +44,7 @@ export function DropDock() {
   const [dragActive, setDragActive] = useState(false);
 
   const { data: items = [], isLoading } = trpc.dock.list.useQuery(undefined, {
-    refetchInterval: 60_000,
+    refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
 

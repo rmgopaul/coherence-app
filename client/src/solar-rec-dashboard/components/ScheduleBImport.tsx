@@ -283,13 +283,13 @@ export function ScheduleBImport({
   const scheduleBStatusQuery = trpc.solarRecDashboard.getScheduleBImportStatus.useQuery(undefined, {
     refetchInterval: (query) => {
       const status = query.state.data?.job?.status;
-      if (status === "running" || status === "queued") return 3_000;
+      if (status === "running" || status === "queued") return 5_000;
       if (status === "completed" || status === "failed" || status === "stopped")
         return false;
       // No job or unknown status — slow poll to detect new jobs
-      return 15_000;
+      return 30_000;
     },
-    refetchOnWindowFocus: true,
+    refetchOnWindowFocus: false,
   });
 
   const activeJobId = scheduleBStatusQuery.data?.job?.id;
@@ -301,7 +301,7 @@ export function ScheduleBImport({
       // (see useEffect below), not on a fixed timer. This avoids
       // re-fetching 50k rows every 4s when nothing has changed.
       refetchInterval: false,
-      refetchOnWindowFocus: true,
+      refetchOnWindowFocus: false,
     }
   );
 

@@ -1,6 +1,5 @@
 export const DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS = [
   { key: "notebook", label: "Notebook" },
-  { key: "clockifyTracker", label: "Clockify" },
   { key: "solarRec", label: "Solar REC" },
   { key: "invoiceMatch", label: "Invoice Match" },
   { key: "deepUpdate", label: "Deep Update" },

@@ -511,8 +511,8 @@ export default function EarlyPayment() {
       enabled: Boolean(activeScanJobId),
       refetchInterval: (query) => {
         const status = query.state.data?.status;
-        if (!status) return 1500;
-        if (status === "queued" || status === "running") return 1500;
+        if (!status) return 3000;
+        if (status === "queued" || status === "running") return 3000;
         return false;
       },
     }

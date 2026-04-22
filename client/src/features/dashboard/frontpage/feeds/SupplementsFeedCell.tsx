@@ -1,13 +1,12 @@
 /**
  * SupplementsFeedCell — compact wire-feed for today's supplement logging.
  *
- * Shows `logged/scheduled` count and a sparse tick row of the most
- * recent logs. Editing stays on /dashboard-legacy.
+ * Shows `logged/scheduled` count and a sparse tick row of the most recent logs.
  */
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 
-const FIVE_MIN = 5 * 60_000;
+const FIFTEEN_MIN = 15 * 60_000;
 
 function formatTodayKey(now: Date): string {
   const y = now.getFullYear();
@@ -41,11 +40,11 @@ export function SupplementsFeedCell({ updatedLabel }: Props) {
 
   const { data: definitions } = trpc.supplements.listDefinitions.useQuery(
     undefined,
-    { refetchInterval: FIVE_MIN }
+    { refetchInterval: FIFTEEN_MIN }
   );
   const { data: logs } = trpc.supplements.getLogs.useQuery(
     { dateKey: todayKey },
-    { refetchInterval: FIVE_MIN }
+    { refetchInterval: FIFTEEN_MIN }
   );
 
   const scheduled = definitions?.length ?? 0;

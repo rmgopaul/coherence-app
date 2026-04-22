@@ -29,7 +29,6 @@ import {
   abpSettlementRouter,
 } from "./routers/jobRunners";
 import {
-  clockifyRouter,
   todoistRouter,
   conversationsRouter,
   openaiRouter,
@@ -103,7 +102,6 @@ export const appRouter = router({
   abpSettlement: abpSettlementRouter,
 
   // Productivity integrations
-  clockify: clockifyRouter,
   todoist: todoistRouter,
   conversations: conversationsRouter,
   openai: openaiRouter,

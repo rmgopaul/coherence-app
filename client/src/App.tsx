@@ -5,7 +5,6 @@ import { Route, Switch, useLocation } from "wouter";
 import { Suspense, lazy, type ComponentType } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalFeedbackWidget from "./components/GlobalFeedbackWidget";
-import GlobalClockifyTimer from "./components/GlobalClockifyTimer";
 import PinGate from "./components/PinGate";
 import TwoFactorGate from "./components/TwoFactorGate";
 import { ThemeProvider } from "./contexts/ThemeContext";
@@ -14,7 +13,6 @@ import { AppShell } from "./components/layout/AppShell";
 
 const Home = lazy(() => import("@/features/dashboard/Home"));
 const Dashboard = lazy(() => import("@/features/dashboard/Dashboard"));
-const DashboardLegacy = lazy(() => import("@/features/dashboard/DashboardLegacy"));
 const OneThing = lazy(() => import("@/features/dashboard/OneThing"));
 const River = lazy(() => import("@/features/dashboard/River"));
 const Canvas = lazy(() => import("@/features/dashboard/Canvas"));
@@ -43,7 +41,6 @@ const Supplements = lazy(() => import("@/features/supplements/Supplements"));
 const Habits = lazy(() => import("@/features/habits/Habits"));
 const Health = lazy(() => import("@/features/health/Health"));
 const TodoistWidget = lazy(() => import("@/features/dashboard/TodoistWidget"));
-const ClockifyWidget = lazy(() => import("@/features/dashboard/ClockifyWidget"));
 const ChatGPTWidget = lazy(() => import("@/features/dashboard/ChatGPTWidget"));
 const GoogleCalendarWidget = lazy(() => import("@/features/dashboard/GoogleCalendarWidget"));
 const GmailWidget = lazy(() => import("@/features/dashboard/GmailWidget"));
@@ -84,7 +81,6 @@ function AppRoutes() {
       <Route path={"/dashboard/river"} component={withRouteSuspense(River)} />
       <Route path={"/dashboard/canvas"} component={withRouteSuspense(Canvas)} />
       <Route path={"/dashboard/command"} component={withRouteSuspense(CommandDeck)} />
-      <Route path={"/dashboard-legacy"} component={withRouteSuspense(DashboardLegacy)} />
       <Route path={"/solar-rec-dashboard"} component={withRouteSuspense(SolarRecDashboard)} />
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
       <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
@@ -118,7 +114,6 @@ function AppRoutes() {
       <Route path={"/health"} component={withRouteSuspense(Health)} />
       <Route path={"/settings"} component={withRouteSuspense(Settings)} />
       <Route path={"/widget/todoist"} component={withRouteSuspense(TodoistWidget)} />
-      <Route path={"/widget/clockify"} component={withRouteSuspense(ClockifyWidget)} />
       <Route path={"/widget/chatgpt"} component={withRouteSuspense(ChatGPTWidget)} />
       <Route path={"/widget/google-calendar"} component={withRouteSuspense(GoogleCalendarWidget)} />
       <Route path={"/widget/gmail"} component={withRouteSuspense(GmailWidget)} />
@@ -146,7 +141,6 @@ function Router() {
     <FocusModeProvider>
       <AppShell>
         <AppRoutes />
-        <GlobalClockifyTimer />
         <GlobalFeedbackWidget />
       </AppShell>
     </FocusModeProvider>

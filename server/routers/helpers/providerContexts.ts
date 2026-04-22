@@ -15,7 +15,6 @@ import {
   ZENDESK_PROVIDER,
   TESLA_SOLAR_PROVIDER,
   TESLA_POWERHUB_PROVIDER,
-  CLOCKIFY_PROVIDER,
   FRONIUS_PROVIDER,
   EGAUGE_PROVIDER,
   SOLIS_PROVIDER,
@@ -38,7 +37,6 @@ import {
   parseTeslaSolarMetadata,
   parseEgaugeMetadata,
   parseTeslaPowerhubMetadata,
-  parseClockifyMetadata,
   parseSolisMetadata,
   parseGoodWeMetadata,
   parseGeneracMetadata,
@@ -138,15 +136,6 @@ export async function getTeslaPowerhubContext(userId: number): Promise<{ clientI
   const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
   if (!clientSecret || !metadata.clientId) throw new IntegrationNotConnectedError("Tesla Powerhub");
   return { clientId: metadata.clientId, clientSecret, tokenUrl: metadata.tokenUrl, apiBaseUrl: metadata.apiBaseUrl, portalBaseUrl: metadata.portalBaseUrl };
-}
-
-export async function getClockifyContext(userId: number): Promise<{ apiKey: string; workspaceId: string; workspaceName: string | null; clockifyUserId: string; userName: string | null; userEmail: string | null }> {
-  const integration = await getIntegrationByProvider(userId, CLOCKIFY_PROVIDER);
-  const apiKey = toNonEmptyString(integration?.accessToken);
-  const metadata = parseClockifyMetadata(integration?.metadata);
-  if (!apiKey) throw new IntegrationNotConnectedError("Clockify");
-  if (!metadata.workspaceId || !metadata.userId) throw new Error("Clockify setup is incomplete. Reconnect Clockify from Settings.");
-  return { apiKey, workspaceId: metadata.workspaceId, workspaceName: metadata.workspaceName, clockifyUserId: metadata.userId, userName: metadata.userName, userEmail: metadata.userEmail };
 }
 
 export async function getSolisContext(userId: number): Promise<{ apiKey: string; apiSecret: string; baseUrl: string | null }> {

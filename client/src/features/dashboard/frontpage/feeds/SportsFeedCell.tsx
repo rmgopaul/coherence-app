@@ -8,7 +8,8 @@
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 
-const FIVE_MIN = 5 * 60_000;
+const THIRTY_SEC = 30_000;
+const TEN_MIN = 10 * 60_000;
 
 interface Props {
   updatedLabel: string;
@@ -49,7 +50,13 @@ function formatBroadcasts(broadcasts?: string[] | null): string {
 
 export function SportsFeedCell({ updatedLabel }: Props) {
   const { data } = trpc.sports.getGames.useQuery(undefined, {
-    refetchInterval: FIVE_MIN,
+    refetchInterval: (query) => {
+      const games = query.state.data?.games ?? [];
+      const hasLive = games.some(
+        (g) => g.status === "in" || g.status === "halftime"
+      );
+      return hasLive ? THIRTY_SEC : TEN_MIN;
+    },
   });
 
   const games = data?.games ?? [];

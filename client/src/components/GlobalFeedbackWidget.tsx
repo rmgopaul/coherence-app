@@ -84,7 +84,7 @@ export default function GlobalFeedbackWidget() {
     {
       enabled: !!user && open,
       retry: false,
-      refetchOnWindowFocus: true,
+      refetchOnWindowFocus: false,
     }
   );
 

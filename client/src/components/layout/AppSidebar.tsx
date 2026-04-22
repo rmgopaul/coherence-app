@@ -8,7 +8,6 @@ import {
   HeartPulse,
   ListChecks,
   Pill,
-  Clock,
   Mail,
   ChevronDown,
   BarChart3,
@@ -76,7 +75,6 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: "Work",
     items: [
-      { label: "Clockify", href: "/widget/clockify", icon: Clock },
       { label: "Gmail", href: "/widget/gmail", icon: Mail },
     ],
   },

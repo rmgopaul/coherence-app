@@ -249,14 +249,14 @@ export default function SportsCard() {
     {
       staleTime: 30_000,
       refetchInterval: (query) => {
-        // Poll every 30s if any game is live, otherwise every 5 min
+        // Poll every 30s if any game is live, otherwise every 10 min
         const games = query.state.data?.games ?? [];
         const hasLive = games.some(
           (g: GameInfo) => g.status === "in" || g.status === "halftime",
         );
-        return hasLive ? 30_000 : 5 * 60_000;
+        return hasLive ? 30_000 : 10 * 60_000;
       },
-      refetchOnWindowFocus: true,
+      refetchOnWindowFocus: false,
     },
   );
 

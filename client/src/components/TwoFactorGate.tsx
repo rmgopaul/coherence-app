@@ -5,6 +5,7 @@ import {
   InputOTPGroup,
   InputOTPSlot,
 } from "@/components/ui/input-otp";
+import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { Loader2, ShieldCheck } from "lucide-react";
 import { useCallback, useState } from "react";
@@ -14,10 +15,7 @@ type TwoFactorGateProps = {
 };
 
 export default function TwoFactorGate({ children }: TwoFactorGateProps) {
-  const meQuery = trpc.auth.me.useQuery(undefined, {
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
+  const { user, loading } = useAuth();
 
   const verifyMutation = trpc.twoFactor.verify.useMutation();
   const utils = trpc.useUtils();
@@ -56,7 +54,7 @@ export default function TwoFactorGate({ children }: TwoFactorGateProps) {
   );
 
   // Loading state
-  if (meQuery.isLoading) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100">
         <Loader2 className="h-6 w-6 animate-spin text-slate-600" />
@@ -65,7 +63,6 @@ export default function TwoFactorGate({ children }: TwoFactorGateProps) {
   }
 
   // Not logged in or no 2FA pending — pass through
-  const user = meQuery.data;
   if (!user || !user.twoFactorPending) {
     return <>{children}</>;
   }

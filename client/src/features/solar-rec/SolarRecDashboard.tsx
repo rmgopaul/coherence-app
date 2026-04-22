@@ -2110,8 +2110,8 @@ export default function SolarRecDashboard() {
       { keys: allDatasetKeys },
       {
         staleTime: 30_000,
-        refetchOnWindowFocus: true,
-        refetchOnReconnect: true,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
       }
     );
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();

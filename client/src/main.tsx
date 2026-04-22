@@ -16,6 +16,9 @@ const queryClient = new QueryClient({
       gcTime: 30 * 60_000,
       refetchOnWindowFocus: false,
       refetchOnReconnect: false,
+      // Pause all refetchInterval timers while the tab is hidden.
+      // Individual queries can opt-in by overriding this per-query.
+      refetchIntervalInBackground: false,
       retry: 1,
     },
     mutations: {

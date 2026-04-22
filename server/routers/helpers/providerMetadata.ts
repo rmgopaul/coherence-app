@@ -194,23 +194,6 @@ export function parseTeslaPowerhubMetadata(metadata: string | null | undefined):
   };
 }
 
-export function parseClockifyMetadata(metadata: string | null | undefined): {
-  workspaceId: string | null;
-  workspaceName: string | null;
-  userId: string | null;
-  userName: string | null;
-  userEmail: string | null;
-} {
-  const parsed = parseJsonMetadata(metadata);
-  return {
-    workspaceId: toNonEmptyString(parsed.workspaceId),
-    workspaceName: toNonEmptyString(parsed.workspaceName),
-    userId: toNonEmptyString(parsed.userId),
-    userName: toNonEmptyString(parsed.userName),
-    userEmail: toNonEmptyString(parsed.userEmail),
-  };
-}
-
 export function parseCsgPortalMetadata(metadata: string | null | undefined): {
   email: string | null;
   baseUrl: string | null;

@@ -115,13 +115,13 @@ export default function ContractScrapeManager() {
     { jobId: activeJobId! },
     {
       enabled: !!activeJobId,
-      refetchInterval: activeJobId ? 1000 : false,
+      refetchInterval: activeJobId ? 3000 : false,
     }
   );
 
   const jobListQuery = trpc.abpSettlement.listDbContractScanJobs.useQuery(
     undefined,
-    { refetchInterval: activeJobId ? 5000 : 30000 }
+    { refetchInterval: activeJobId ? 10000 : 60000 }
   );
 
   const resultsQuery = trpc.abpSettlement.getDbContractScanResults.useQuery(

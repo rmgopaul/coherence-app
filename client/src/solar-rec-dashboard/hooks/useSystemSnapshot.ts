@@ -26,7 +26,7 @@ type SnapshotRow = Omit<
   part2VerificationDate: string | null;
 };
 
-const POLL_INTERVAL_MS = 3000;
+const POLL_INTERVAL_MS = 5000;
 
 function reviveDate(value: string | null): Date | null {
   if (!value) return null;

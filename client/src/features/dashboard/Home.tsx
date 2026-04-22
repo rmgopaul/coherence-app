@@ -68,7 +68,6 @@ export default function Home() {
               <span className="px-4 py-2 bg-primary/10 text-primary rounded-full text-sm font-medium">Google Calendar</span>
               <span className="px-4 py-2 bg-destructive/10 text-destructive rounded-full text-sm font-medium">Gmail</span>
               <span className="px-4 py-2 bg-health/10 text-health rounded-full text-sm font-medium">ChatGPT</span>
-              <span className="px-4 py-2 bg-primary/10 text-primary rounded-full text-sm font-medium">Clockify</span>
               <span className="px-4 py-2 bg-health/10 text-health rounded-full text-sm font-medium">WHOOP</span>
               <span className="px-4 py-2 bg-health/10 text-health rounded-full text-sm font-medium">Samsung Health</span>
               <span className="px-4 py-2 bg-energy/10 text-energy rounded-full text-sm font-medium">Enphase</span>

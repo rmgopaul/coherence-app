@@ -1,13 +1,10 @@
 /**
  * HabitsFeedCell — compact wire-feed for today's habit completion.
- *
- * Shows done/total + top streak. Editing (toggling completion) stays
- * on /dashboard-legacy.
  */
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 
-const FIVE_MIN = 5 * 60_000;
+const FIFTEEN_MIN = 15 * 60_000;
 
 interface Props {
   updatedLabel: string;
@@ -15,10 +12,10 @@ interface Props {
 
 export function HabitsFeedCell({ updatedLabel }: Props) {
   const { data: habits } = trpc.habits.getForDate.useQuery(undefined, {
-    refetchInterval: FIVE_MIN,
+    refetchInterval: FIFTEEN_MIN,
   });
   const { data: streaks } = trpc.habits.getStreaks.useQuery(undefined, {
-    refetchInterval: FIVE_MIN,
+    refetchInterval: FIFTEEN_MIN,
   });
 
   const total = habits?.length ?? 0;

@@ -25,7 +25,6 @@ const ROUTE_TITLES: Record<string, string> = {
   "/widget/google-calendar": "Calendar",
   "/notes": "Notes",
   "/widget/chatgpt": "Chat",
-  "/widget/clockify": "Clockify",
   "/widget/gmail": "Gmail",
   "/settings": "Settings",
   "/solar-rec-dashboard": "Solar REC",

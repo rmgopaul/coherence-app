@@ -6,9 +6,6 @@ import {
   resolveOpenAIModel,
   toNullableScore,
   getTodayDateKey,
-  CLOCKIFY_PROVIDER,
-  parseClockifyMetadata,
-  getClockifyContext,
 } from "./helpers";
 import { toNonEmptyString } from "../services/core/addressCleaning";
 import {
@@ -27,14 +24,6 @@ import { samsungSyncPayloads } from "../../drizzle/schema";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
 import { getValidGoogleToken, getValidWhoopToken } from "../helpers/tokenRefresh";
 import {
-  getClockifyCurrentUser,
-  getClockifyInProgressTimeEntry,
-  getClockifyRecentTimeEntries,
-  listClockifyWorkspaces,
-  startClockifyTimeEntry,
-  stopClockifyInProgressTimeEntry,
-} from "../services/integrations/clockify";
-import {
   getTodoistTasks,
   getTodoistProjects,
   getTodoistCompletedTaskCount,
@@ -52,155 +41,6 @@ import {
   searchGoogleDrive,
 } from "../services/integrations/google";
 import { getWhoopSummary } from "../services/integrations/whoop";
-
-export const clockifyRouter = router({
-  getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, CLOCKIFY_PROVIDER);
-    const metadata = parseClockifyMetadata(integration?.metadata);
-
-    return {
-      connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.workspaceId && metadata.userId),
-      workspaceId: metadata.workspaceId,
-      workspaceName: metadata.workspaceName,
-      userId: metadata.userId,
-      userName: metadata.userName,
-      userEmail: metadata.userEmail,
-    };
-  }),
-  connect: protectedProcedure
-    .input(
-      z.object({
-        apiKey: z.string().min(1),
-        workspaceId: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const existingIntegration = await getIntegrationByProvider(ctx.user.id, CLOCKIFY_PROVIDER);
-      const existingMetadata = parseClockifyMetadata(existingIntegration?.metadata);
-
-      const apiKey = input.apiKey.trim();
-      const user = await getClockifyCurrentUser(apiKey);
-      const workspaces = await listClockifyWorkspaces(apiKey);
-
-      const requestedWorkspaceId = toNonEmptyString(input.workspaceId);
-      let resolvedWorkspace =
-        requestedWorkspaceId
-          ? workspaces.find((workspace) => workspace.id === requestedWorkspaceId) ?? null
-          : null;
-
-      if (requestedWorkspaceId && !resolvedWorkspace) {
-        throw new Error("The selected Clockify workspace ID was not found for this API key.");
-      }
-
-      if (!resolvedWorkspace) {
-        const preferredWorkspaceId =
-          existingMetadata.workspaceId ?? user.activeWorkspaceId ?? user.defaultWorkspaceId;
-        resolvedWorkspace =
-          (preferredWorkspaceId
-            ? workspaces.find((workspace) => workspace.id === preferredWorkspaceId)
-            : null) ?? workspaces[0] ?? null;
-      }
-
-      if (!resolvedWorkspace) {
-        throw new Error("No Clockify workspace was found for this account.");
-      }
-
-      const metadata = JSON.stringify({
-        workspaceId: resolvedWorkspace.id,
-        workspaceName: resolvedWorkspace.name,
-        userId: user.id,
-        userName: user.name || null,
-        userEmail: user.email,
-      });
-
-      await upsertIntegration({
-        id: nanoid(),
-        userId: ctx.user.id,
-        provider: CLOCKIFY_PROVIDER,
-        accessToken: apiKey,
-        refreshToken: null,
-        expiresAt: null,
-        scope: null,
-        metadata,
-      });
-
-      return {
-        success: true,
-        workspaceId: resolvedWorkspace.id,
-        workspaceName: resolvedWorkspace.name,
-        userName: user.name || null,
-        userEmail: user.email,
-      };
-    }),
-  disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, CLOCKIFY_PROVIDER);
-    if (integration?.id) {
-      await deleteIntegration(integration.id);
-    }
-    return { success: true };
-  }),
-  getCurrentEntry: protectedProcedure.query(async ({ ctx }) => {
-    const context = await getClockifyContext(ctx.user.id);
-    return getClockifyInProgressTimeEntry(
-      context.apiKey,
-      context.workspaceId,
-      context.clockifyUserId
-    );
-  }),
-  getRecentEntries: protectedProcedure
-    .input(
-      z
-        .object({
-          limit: z.number().int().min(1).max(100).optional(),
-        })
-        .optional()
-    )
-    .query(async ({ ctx, input }) => {
-      const context = await getClockifyContext(ctx.user.id);
-      return getClockifyRecentTimeEntries(
-        context.apiKey,
-        context.workspaceId,
-        context.clockifyUserId,
-        input?.limit ?? 20
-      );
-    }),
-  startTimer: protectedProcedure
-    .input(
-      z.object({
-        description: z.string().min(1).max(300),
-        projectId: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getClockifyContext(ctx.user.id);
-      const currentEntry = await getClockifyInProgressTimeEntry(
-        context.apiKey,
-        context.workspaceId,
-        context.clockifyUserId
-      );
-      if (currentEntry?.isRunning) {
-        throw new Error("A Clockify timer is already running. Stop it before starting a new one.");
-      }
-
-      return startClockifyTimeEntry(context.apiKey, context.workspaceId, {
-        description: input.description,
-        projectId: toNonEmptyString(input.projectId),
-      });
-    }),
-  stopTimer: protectedProcedure.mutation(async ({ ctx }) => {
-    const context = await getClockifyContext(ctx.user.id);
-    const stoppedEntry = await stopClockifyInProgressTimeEntry(
-      context.apiKey,
-      context.workspaceId,
-      context.clockifyUserId
-    );
-    return {
-      success: true,
-      stopped: Boolean(stoppedEntry),
-      entry: stoppedEntry,
-    };
-  }),
-});
 
 export const todoistRouter = router({
   connect: protectedProcedure

@@ -37,7 +37,7 @@ interface DragState {
 export default function Canvas() {
   const utils = trpc.useUtils();
   const { data: items = [], isLoading } = trpc.dock.list.useQuery(undefined, {
-    refetchInterval: 60_000,
+    refetchInterval: 5 * 60_000,
     refetchOnWindowFocus: false,
   });
   const moveMut = trpc.dock.move.useMutation({

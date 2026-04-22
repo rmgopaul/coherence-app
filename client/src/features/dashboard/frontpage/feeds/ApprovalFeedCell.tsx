@@ -1,11 +1,10 @@
 /**
  * ApprovalFeedCell — Presidential approval averages (RCP + NYT).
  *
- * Replaces the Clockify tile in the wire grid. Data comes from the
- * existing `marketDashboard.getMarketData` endpoint, which already
- * calls `fetchTrumpApprovalRatings()` server-side and returns an
- * `approvalRatings` array of `{ source, approve, disapprove, net,
- * asOf, url, error? }`.
+ * Data comes from the existing `marketDashboard.getMarketData` endpoint,
+ * which already calls `fetchTrumpApprovalRatings()` server-side and returns
+ * an `approvalRatings` array of `{ source, approve, disapprove, net, asOf,
+ * url, error? }`.
  *
  * Layout: one row per source with APPROVE / DISAPPROVE / NET. NET
  * colors green when positive, red when negative. `asOf` rendered in
@@ -93,7 +92,7 @@ export function ApprovalFeedCell({ updatedLabel }: Props) {
       // Match the MarketsCell cadence — same upstream query, same
       // cache, piggybacks on the tRPC batching so we don't fire a
       // second HTTP round-trip.
-      refetchInterval: 5 * 60_000,
+      refetchInterval: 10 * 60_000,
       staleTime: 4 * 60_000,
     }
   );

@@ -17,7 +17,7 @@ function formatRelativeDate(dateStr: string | Date): string {
 export function SolarReadingsCard() {
   const { data, isLoading, error, refetch } = trpc.solarReadings.summary.useQuery(
     undefined,
-    { refetchInterval: 60_000 }
+    { refetchInterval: 5 * 60_000 }
   );
 
   const hasData = data && data.totalReadings > 0;

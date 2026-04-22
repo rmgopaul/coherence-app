@@ -23,6 +23,9 @@ import type { DailyBrief } from "@/lib/dailyBrief";
 
 const ONE_MIN = 60_000;
 const FIVE_MIN = 5 * 60_000;
+const TEN_MIN = 10 * 60_000;
+const FIFTEEN_MIN = 15 * 60_000;
+const THIRTY_MIN = 30 * 60_000;
 
 function formatTodayKey(now: Date): string {
   const y = now.getFullYear();
@@ -42,39 +45,36 @@ export function useDashboardData() {
 
   const { data: dueTodayTasks } = trpc.todoist.getTasks.useQuery(
     { filter: "today" },
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN }
   );
 
   const { data: completedData } = trpc.todoist.getCompletedCount.useQuery(
     { dateKey: todayKey, timezoneOffsetMinutes },
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN }
   );
 
   const { data: calendarEvents } = trpc.google.getCalendarEvents.useQuery(
     undefined,
-    { refetchInterval: ONE_MIN }
+    { refetchInterval: FIVE_MIN }
   );
 
   const { data: gmailMessages } = trpc.google.getGmailMessages.useQuery(
     { maxResults: 50 },
-    { refetchInterval: ONE_MIN }
-  );
-
-  // `getGmailWaitingOn` already exists on the google router — the
-  // Phase D §4 "server-side detection" deviation is already shipped.
-  // We just consume it.
-  const { data: gmailWaitingOn } = trpc.google.getGmailWaitingOn.useQuery(
-    { maxResults: 25 },
     { refetchInterval: FIVE_MIN }
   );
 
+  const { data: gmailWaitingOn } = trpc.google.getGmailWaitingOn.useQuery(
+    { maxResults: 25 },
+    { refetchInterval: TEN_MIN }
+  );
+
   const { data: whoopSummary } = trpc.whoop.getSummary.useQuery(undefined, {
-    refetchInterval: FIVE_MIN,
+    refetchInterval: FIFTEEN_MIN,
   });
 
   const { data: marketData } = trpc.marketDashboard.getMarketData.useQuery(
     undefined,
-    { refetchInterval: FIVE_MIN, staleTime: 4 * ONE_MIN }
+    { refetchInterval: TEN_MIN, staleTime: 4 * ONE_MIN }
   );
 
   const unreadGmailCount = useMemo(() => {
@@ -94,7 +94,7 @@ export function useDashboardData() {
   // client-side headline derivation while loading or on error.
   const { data: kingOfDayServer } = trpc.kingOfDay.get.useQuery(
     { dateKey: todayKey },
-    { refetchInterval: ONE_MIN, staleTime: 30_000 }
+    { refetchInterval: FIVE_MIN, staleTime: FIVE_MIN }
   );
   const kingOfDay = kingOfDayServer ?? null;
 
@@ -104,13 +104,13 @@ export function useDashboardData() {
   // state without errors.
   const { data: weatherData } = trpc.weather.getCurrent.useQuery(
     undefined,
-    { refetchInterval: 15 * ONE_MIN, staleTime: 10 * ONE_MIN }
+    { refetchInterval: THIRTY_MIN, staleTime: FIFTEEN_MIN }
   );
   const weather = weatherData ?? null;
 
   const { data: newsData } = trpc.news.getHeadlines.useQuery(
     { count: 6 },
-    { refetchInterval: 10 * ONE_MIN, staleTime: 5 * ONE_MIN }
+    { refetchInterval: THIRTY_MIN, staleTime: FIFTEEN_MIN }
   );
   // Fallback payload preserves the `{ items, reason }` shape when the
   // query is still loading or errored so NewsCell doesn't have to

@@ -364,7 +364,7 @@ export default function AbpInvoiceSettlement() {
     { jobId: activeScanJobId ?? "__none__" },
     {
       enabled: Boolean(activeScanJobId),
-      refetchInterval: activeScanJobId ? 1200 : false,
+      refetchInterval: activeScanJobId ? 3000 : false,
       retry: 1,
       refetchOnWindowFocus: false,
     }

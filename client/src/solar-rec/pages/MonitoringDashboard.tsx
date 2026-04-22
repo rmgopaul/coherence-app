@@ -858,7 +858,7 @@ export default function MonitoringDashboard() {
   });
   const batchStatusQuery = trpc.monitoring.getBatchStatus.useQuery(
     { batchId: activeBatchId! },
-    { enabled: !!activeBatchId, refetchInterval: 2000 }
+    { enabled: !!activeBatchId, refetchInterval: 5000 }
   );
 
   // Track batch progress via polling
