@@ -13,7 +13,7 @@ const DIN_SCRAPE_CONCURRENCY = 2;
  */
 const CLAUDE_FAILURE_THRESHOLD = 5;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@3";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@4";
 
 const activeRunners = new Set<string>();
 
@@ -187,11 +187,14 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
         const allDins: Array<{
           dinValue: string;
           rawMatch: string;
-          extractedBy: "claude" | "tesseract" | "pdfjs";
+          extractedBy: "claude" | "tesseract" | "pdfjs" | "qr";
           sourceType: "inverter" | "meter" | "unknown";
           sourceUrl: string;
           sourceFileName: string;
         }> = [];
+        // Per-photo extractor audit trail — surfaced in the Sites tab
+        // so zero-DIN photos can be diagnosed without a re-run.
+        const perPhotoLogs: unknown[] = [];
 
         if (!siteError && fetched.photos.length > 0) {
           for (const photo of fetched.photos) {
@@ -204,8 +207,10 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
               const result = await extractDinsFromPhoto(
                 photo.data,
                 photo.mimeType,
-                { anthropicApiKey: effectiveApiKey, anthropicModel }
+                { anthropicApiKey: effectiveApiKey, anthropicModel },
+                { fileName: photo.fileName, url: photo.url }
               );
+              perPhotoLogs.push(result.log);
               if (result.claudeFailed) {
                 claudeFailureCount += 1;
                 if (!claudeDisabled && claudeFailureCount >= CLAUDE_FAILURE_THRESHOLD) {
@@ -230,6 +235,11 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
                 `[dinScrapeJob] Extraction failed for ${csgId} ${photo.url}:`,
                 err instanceof Error ? err.message : err
               );
+              perPhotoLogs.push({
+                photoUrl: photo.url,
+                photoFileName: photo.fileName,
+                error: err instanceof Error ? err.message : String(err),
+              });
             }
           }
         }
@@ -247,6 +257,15 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
           // Single atomic write: upsert result row AND replace din rows
           // inside one withDbRetry. Prevents the stale-result-row bug
           // where the summary claims N dins but no dins were persisted.
+          // extractorLog is stored as JSON text; bound the payload to
+          // keep the mediumtext column under ~1 MB even on pathological
+          // responses.
+          const extractorLogJson = JSON.stringify({
+            photos: perPhotoLogs,
+            circuitBreakerTripped: claudeDisabled,
+            runnerVersion: DIN_SCRAPE_RUNNER_VERSION,
+          }).slice(0, 900_000);
+
           await persistDinScrapeSiteResult({
             result: {
               id: nanoid(),
@@ -257,6 +276,7 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
               meterPhotoCount: meterCount,
               dinCount: deduped.length,
               error: siteError ?? null,
+              extractorLog: extractorLogJson,
               scannedAt: new Date(),
             },
             dins: deduped.map((d) => ({

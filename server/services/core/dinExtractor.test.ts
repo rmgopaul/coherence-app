@@ -111,10 +111,22 @@ describe("DIN_REGEX", () => {
     expect(re.exec("serial ABC")).toBeNull();
   });
 
-  it("requires the alphanumeric tail to be at least 6 chars", () => {
+  it("requires the alphanumeric tail to be at least 4 chars", () => {
+    // Widened from 6 -> 4 in the rotation/QR pass so OCR misreads
+    // of the last segment don't silently drop valid DINs; the
+    // normalization + dedup layer collapses truncated variants.
     const re = new RegExp(DIN_REGEX.source, DIN_REGEX.flags);
-    expect(re.exec("1538000-45-A-SHORT")).toBeNull();
-    expect(re.exec("1538000-45-A-ABCDEF")).not.toBeNull();
+    expect(re.exec("1538000-45-A-AB")).toBeNull();
+    expect(re.exec("1538000-45-A-ABCD")).not.toBeNull();
+  });
+
+  it("accepts unicode dashes (en-dash, em-dash) as segment separators", () => {
+    // OCR and Claude sometimes normalize the triple-dash in
+    // "A---GF22300270021L0" to an em-dash or en-dash.
+    const re1 = new RegExp(DIN_REGEX.source, DIN_REGEX.flags);
+    expect(re1.exec("1538000–45–A–GF22300270021L0")).not.toBeNull();
+    const re2 = new RegExp(DIN_REGEX.source, DIN_REGEX.flags);
+    expect(re2.exec("1538000—45—A—GF22300270021L0")).not.toBeNull();
   });
 
   it("matches case-insensitively — OCR output is often lower-case", () => {

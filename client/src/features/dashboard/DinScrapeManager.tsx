@@ -661,7 +661,75 @@ type SiteRow = {
   dinCount: number;
   error: string | null;
   systemPageUrl: string | null;
+  extractorLog: string | null;
 };
+
+type PhotoLog = {
+  photoFileName?: string;
+  photoUrl?: string;
+  finalExtractor?: "claude" | "tesseract" | "pdfjs" | "qr" | "none";
+  qr?: { payloads?: string[]; matchedDins?: string[]; error?: string };
+  claude?: Array<{
+    rotation: number;
+    dinsFound: number;
+    rawTextSnippet?: string;
+    error?: string;
+  }>;
+  tesseract?: {
+    rotation: number;
+    dinsFound: number;
+    rawTextSnippet?: string;
+    error?: string;
+  };
+  error?: string;
+};
+
+function summarizeExtractorLog(raw: string | null): string {
+  if (!raw) return "—";
+  try {
+    const parsed = JSON.parse(raw) as { photos?: PhotoLog[] };
+    const photos = parsed.photos ?? [];
+    if (photos.length === 0) return "no photos";
+    const parts: string[] = [];
+    for (const p of photos) {
+      const hits = p.finalExtractor ?? "none";
+      if (hits !== "none") {
+        parts.push(`${hits}`);
+      } else if (p.claude && p.claude.length > 0) {
+        const lastReason = p.claude[p.claude.length - 1].rawTextSnippet;
+        const excerpt =
+          typeof lastReason === "string"
+            ? lastReason
+                .replace(/\s+/g, " ")
+                .slice(0, 80)
+            : "";
+        parts.push(`miss${excerpt ? ` (${excerpt}…)` : ""}`);
+      } else {
+        parts.push("miss");
+      }
+    }
+    return parts.join(", ");
+  } catch {
+    return "unparseable";
+  }
+}
+
+function downloadExtractorLog(csgId: string, raw: string | null) {
+  if (!raw) return;
+  let pretty = raw;
+  try {
+    pretty = JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    // keep raw
+  }
+  const blob = new Blob([pretty], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `din-scrape-log-${csgId}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function SitesTable({
   data,
@@ -690,11 +758,12 @@ function SitesTable({
           <TableHeader>
             <TableRow>
               <TableHead>CSG ID</TableHead>
-              <TableHead>Inverter photos</TableHead>
+              <TableHead>Inv photos</TableHead>
               <TableHead>Meter photos</TableHead>
-              <TableHead>DINs found</TableHead>
+              <TableHead>DINs</TableHead>
+              <TableHead>Extractor outcome</TableHead>
               <TableHead>Error</TableHead>
-              <TableHead>Page</TableHead>
+              <TableHead>Links</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -711,22 +780,37 @@ function SitesTable({
                 >
                   {r.dinCount}
                 </TableCell>
-                <TableCell className="text-xs text-red-600 max-w-[260px] truncate">
+                <TableCell
+                  className="text-xs max-w-[320px] truncate"
+                  title={r.extractorLog ?? ""}
+                >
+                  {summarizeExtractorLog(r.extractorLog)}
+                </TableCell>
+                <TableCell className="text-xs text-red-600 max-w-[200px] truncate">
                   {r.error ?? ""}
                 </TableCell>
-                <TableCell>
+                <TableCell className="text-xs whitespace-nowrap">
                   {r.systemPageUrl ? (
                     <a
                       href={r.systemPageUrl}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-xs text-blue-600 underline"
+                      className="text-blue-600 underline mr-2"
                     >
-                      open
+                      page
                     </a>
-                  ) : (
-                    "—"
-                  )}
+                  ) : null}
+                  {r.extractorLog ? (
+                    <button
+                      type="button"
+                      className="text-blue-600 underline"
+                      onClick={() =>
+                        downloadExtractorLog(r.csgId, r.extractorLog)
+                      }
+                    >
+                      log
+                    </button>
+                  ) : null}
                 </TableCell>
               </TableRow>
             ))}

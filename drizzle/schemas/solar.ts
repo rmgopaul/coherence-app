@@ -834,6 +834,14 @@ export const dinScrapeResults = mysqlTable(
     meterPhotoCount: int("meterPhotoCount").default(0).notNull(),
     dinCount: int("dinCount").default(0).notNull(),
     error: text("error"),
+    /**
+     * JSON-serialized audit trail of every extractor attempt for this
+     * site: which photos were tried, what QR/Claude/tesseract said
+     * (including refusals and reasons for zero-DIN results), and what
+     * rotations were used. Makes zero-DIN cases debuggable without
+     * re-running the scraper. Bounded at mediumtext (~16 MB).
+     */
+    extractorLog: mediumtext("extractorLog"),
     scannedAt: timestamp("scannedAt").defaultNow(),
   },
   (table) => ({
@@ -862,7 +870,12 @@ export const dinScrapeDins = mysqlTable(
       .notNull(),
     sourceUrl: varchar("sourceUrl", { length: 512 }),
     sourceFileName: varchar("sourceFileName", { length: 255 }),
-    extractedBy: mysqlEnum("extractedBy", ["claude", "tesseract", "pdfjs"])
+    extractedBy: mysqlEnum("extractedBy", [
+      "claude",
+      "tesseract",
+      "pdfjs",
+      "qr",
+    ])
       .default("claude")
       .notNull(),
     rawMatch: mediumtext("rawMatch"),

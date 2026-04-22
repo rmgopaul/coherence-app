@@ -200,6 +200,7 @@ export async function persistDinScrapeSiteResult(input: {
     meterPhotoCount: result.meterPhotoCount ?? 0,
     dinCount: result.dinCount ?? 0,
     error: result.error ?? null,
+    extractorLog: result.extractorLog ?? null,
     scannedAt,
   };
 
