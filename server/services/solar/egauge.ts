@@ -13,7 +13,11 @@ import {
 export const EGAUGE_DEFAULT_BASE_URL = "https://YOUR-METER.d.egauge.net";
 export const EGAUGE_PORTFOLIO_BASE_URL = "https://www.egauge.net";
 
-export type EgaugeAccessType = "public" | "user_login" | "site_login" | "portfolio_login";
+export type EgaugeAccessType =
+  | "public"
+  | "user_login"
+  | "site_login"
+  | "portfolio_login";
 
 export type EgaugeApiContext = {
   baseUrl?: string | null;
@@ -44,7 +48,7 @@ function tryConvertPortalDevicesUrlToMeterBase(parsed: URL): string | null {
 
   const segments = parsed.pathname
     .split("/")
-    .map((segment) => segment.trim())
+    .map(segment => segment.trim())
     .filter(Boolean);
 
   if (segments.length < 2) return null;
@@ -54,7 +58,9 @@ function tryConvertPortalDevicesUrlToMeterBase(parsed: URL): string | null {
   return `https://${segments[1]}.d.egauge.net`;
 }
 
-export function normalizeEgaugeBaseUrl(value: string | null | undefined): string {
+export function normalizeEgaugeBaseUrl(
+  value: string | null | undefined
+): string {
   const raw = toNonEmptyString(value);
   if (!raw) {
     throw new Error(
@@ -96,15 +102,27 @@ export function normalizeEgaugeBaseUrl(value: string | null | undefined): string
 }
 
 function isCredentialAccess(accessType: EgaugeAccessType): boolean {
-  return accessType === "user_login" || accessType === "site_login" || accessType === "portfolio_login";
+  return (
+    accessType === "user_login" ||
+    accessType === "site_login" ||
+    accessType === "portfolio_login"
+  );
 }
 
 function normalizeEgaugeAccessType(value: unknown): EgaugeAccessType {
-  if (value === "user_login" || value === "site_login" || value === "portfolio_login" || value === "public") return value;
+  if (
+    value === "user_login" ||
+    value === "site_login" ||
+    value === "portfolio_login" ||
+    value === "public"
+  )
+    return value;
   return "public";
 }
 
-export function normalizeEgaugePortfolioBaseUrl(value: string | null | undefined): string {
+export function normalizeEgaugePortfolioBaseUrl(
+  value: string | null | undefined
+): string {
   const raw = toNonEmptyString(value) ?? EGAUGE_PORTFOLIO_BASE_URL;
   const normalizedInput = withHttpsIfMissing(raw);
 
@@ -116,11 +134,15 @@ export function normalizeEgaugePortfolioBaseUrl(value: string | null | undefined
   }
 
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("eGauge portfolio URL must start with http:// or https://.");
+    throw new Error(
+      "eGauge portfolio URL must start with http:// or https://."
+    );
   }
 
   if (!/(^|\.)egauge\.net$/i.test(parsed.hostname)) {
-    throw new Error(`Portfolio URL must be on egauge.net (example: ${EGAUGE_PORTFOLIO_BASE_URL}).`);
+    throw new Error(
+      `Portfolio URL must be on egauge.net (example: ${EGAUGE_PORTFOLIO_BASE_URL}).`
+    );
   }
 
   let path = parsed.pathname.replace(/\/+$/, "");
@@ -129,7 +151,10 @@ export function normalizeEgaugePortfolioBaseUrl(value: string | null | undefined
     path = path.slice(0, eguardMarker);
   }
 
-  const host = parsed.hostname.toLowerCase() === "egauge.net" ? "www.egauge.net" : parsed.hostname;
+  const host =
+    parsed.hostname.toLowerCase() === "egauge.net"
+      ? "www.egauge.net"
+      : parsed.hostname;
   return `${parsed.protocol}//${host}${path}`.replace(/\/+$/, "");
 }
 
@@ -153,11 +178,13 @@ function getSetCookieValues(headers: Headers): string[] {
 
   return single
     .split(/,(?=\s*[A-Za-z0-9_.-]+=)/g)
-    .map((value) => value.trim())
+    .map(value => value.trim())
     .filter(Boolean);
 }
 
-function parseCookiePair(setCookieHeader: string): { name: string; value: string } | null {
+function parseCookiePair(
+  setCookieHeader: string
+): { name: string; value: string } | null {
   const firstPart = setCookieHeader.split(";")[0];
   const separatorIndex = firstPart.indexOf("=");
   if (separatorIndex < 1) return null;
@@ -239,7 +266,9 @@ function extractSummaryString(payload: unknown, keys: string[]): string | null {
     if (value) return value;
   }
 
-  const nested = asRecord(root.system ?? root.info ?? root.device ?? root.data ?? root.response);
+  const nested = asRecord(
+    root.system ?? root.info ?? root.device ?? root.data ?? root.response
+  );
   for (const key of keys) {
     const value = toNonEmptyString(nested[key]);
     if (value) return value;
@@ -276,7 +305,10 @@ function normalizeErrorPayload(errorText: string): string {
 
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    const detail = toNonEmptyString(parsed.detail) ?? toNonEmptyString(parsed.error) ?? toNonEmptyString(parsed.message);
+    const detail =
+      toNonEmptyString(parsed.detail) ??
+      toNonEmptyString(parsed.error) ??
+      toNonEmptyString(parsed.message);
     return detail ?? truncate(trimmed);
   } catch {
     return truncate(trimmed);
@@ -321,7 +353,10 @@ class EgaugeClient {
     this.password = toNonEmptyString(context.password);
   }
 
-  private buildApiUrl(path: string, query?: Record<string, string | null | undefined>): string {
+  private buildApiUrl(
+    path: string,
+    query?: Record<string, string | null | undefined>
+  ): string {
     const safePath = path.startsWith("/") ? path : `/${path}`;
     const url = new URL(`${this.baseUrl}${safePath}`);
 
@@ -342,7 +377,7 @@ class EgaugeClient {
   }
 
   private storeCookies(response: Response): void {
-    getSetCookieValues(response.headers).forEach((setCookieValue) => {
+    getSetCookieValues(response.headers).forEach(setCookieValue => {
       const parsed = parseCookiePair(setCookieValue);
       if (!parsed) return;
       this.cookies.set(parsed.name, parsed.value);
@@ -358,7 +393,8 @@ class EgaugeClient {
       query?: Record<string, string | null | undefined>;
     }
   ): Promise<unknown> {
-    const authRequired = options?.authRequired ?? isCredentialAccess(this.accessType);
+    const authRequired =
+      options?.authRequired ?? isCredentialAccess(this.accessType);
     const url = this.buildApiUrl(path, options?.query);
 
     const headers: Record<string, string> = {
@@ -392,8 +428,13 @@ class EgaugeClient {
     if (!response.ok) {
       const detail = normalizeErrorPayload(responseText);
 
-      if (path === "/api/auth/login" && (response.status === 401 || response.status === 403)) {
-        throw new Error("eGauge login failed. Please verify username/password.");
+      if (
+        path === "/api/auth/login" &&
+        (response.status === 401 || response.status === 403)
+      ) {
+        throw new Error(
+          "eGauge login failed. Please verify username/password."
+        );
       }
 
       if (response.status === 404 && /^\s*<!doctype html/i.test(responseText)) {
@@ -424,7 +465,9 @@ class EgaugeClient {
     if (this.authenticated && (this.jwtToken || this.cookies.size > 0)) return;
 
     if (!this.username || !this.password) {
-      throw new Error("Username and password are required for this eGauge access type.");
+      throw new Error(
+        "Username and password are required for this eGauge access type."
+      );
     }
 
     const challengePayload = await this.requestJson("/api/auth/unauthorized", {
@@ -433,11 +476,15 @@ class EgaugeClient {
     });
 
     const challenge = asRecord(challengePayload);
-    const realm = toNonEmptyString(challenge.rlm) ?? toNonEmptyString(challenge.realm);
-    const nonce = toNonEmptyString(challenge.nnc) ?? toNonEmptyString(challenge.nonce);
+    const realm =
+      toNonEmptyString(challenge.rlm) ?? toNonEmptyString(challenge.realm);
+    const nonce =
+      toNonEmptyString(challenge.nnc) ?? toNonEmptyString(challenge.nonce);
 
     if (!realm || !nonce) {
-      throw new Error("eGauge login challenge failed. Missing realm/nonce response values.");
+      throw new Error(
+        "eGauge login challenge failed. Missing realm/nonce response values."
+      );
     }
 
     const clientNonce = randomBytes(16).toString("hex");
@@ -462,7 +509,9 @@ class EgaugeClient {
     }
 
     if (!this.jwtToken && this.cookies.size === 0) {
-      throw new Error("eGauge login succeeded but no JWT/session cookie was returned.");
+      throw new Error(
+        "eGauge login succeeded but no JWT/session cookie was returned."
+      );
     }
 
     this.authenticated = true;
@@ -597,7 +646,10 @@ class EgaugePortfolioClient {
     this.password = toNonEmptyString(context.password);
   }
 
-  private buildUrl(path: string, query?: Record<string, string | null | undefined>): string {
+  private buildUrl(
+    path: string,
+    query?: Record<string, string | null | undefined>
+  ): string {
     const safePath = path.startsWith("/") ? path : `/${path}`;
     const url = new URL(`${this.baseUrl}${safePath}`);
 
@@ -617,7 +669,7 @@ class EgaugePortfolioClient {
   }
 
   private storeCookies(response: Response): void {
-    getSetCookieValues(response.headers).forEach((setCookieValue) => {
+    getSetCookieValues(response.headers).forEach(setCookieValue => {
       const parsed = parseCookiePair(setCookieValue);
       if (!parsed) return;
       this.cookies.set(parsed.name, parsed.value);
@@ -659,7 +711,7 @@ class EgaugePortfolioClient {
     }
 
     // Django CSRF: for AJAX POST, send the csrftoken cookie value as X-CSRFToken header
-    if ((options?.method === "POST") && this.cookies.has("csrftoken")) {
+    if (options?.method === "POST" && this.cookies.has("csrftoken")) {
       headers["X-CSRFToken"] = this.cookies.get("csrftoken")!;
     }
 
@@ -669,11 +721,17 @@ class EgaugePortfolioClient {
     // losing session cookies set during redirects.
     let currentUrl = url;
     let currentMethod = options?.method ?? "GET";
-    let currentBody: string | undefined = options?.formBody ? options.formBody.toString() : undefined;
+    let currentBody: string | undefined = options?.formBody
+      ? options.formBody.toString()
+      : undefined;
     let currentHeaders = { ...headers };
     const maxRedirects = 10;
 
-    for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
+    for (
+      let redirectCount = 0;
+      redirectCount <= maxRedirects;
+      redirectCount++
+    ) {
       const response = await fetch(currentUrl, {
         method: currentMethod,
         headers: currentHeaders,
@@ -693,7 +751,9 @@ class EgaugePortfolioClient {
         if (!location) break;
 
         // Resolve relative URLs
-        currentUrl = location.startsWith("http") ? location : new URL(location, currentUrl).toString();
+        currentUrl = location.startsWith("http")
+          ? location
+          : new URL(location, currentUrl).toString();
 
         // 303 and most 302s change to GET; 307/308 preserve method
         if (status === 303 || (status === 302 && currentMethod === "POST")) {
@@ -734,19 +794,27 @@ class EgaugePortfolioClient {
   }
 
   private extractCsrfToken(html: string): string | null {
-    const forwardMatch = html.match(/name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)["']/i)?.[1];
+    const forwardMatch = html.match(
+      /name=["']csrfmiddlewaretoken["'][^>]*value=["']([^"']+)["']/i
+    )?.[1];
     if (forwardMatch) return toNonEmptyString(forwardMatch);
 
-    const reverseMatch = html.match(/value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken["']/i)?.[1];
+    const reverseMatch = html.match(
+      /value=["']([^"']+)["'][^>]*name=["']csrfmiddlewaretoken["']/i
+    )?.[1];
     return toNonEmptyString(reverseMatch);
   }
 
   private extractLoginError(html: string): string | null {
-    const alertHtml = html.match(/<div[^>]*class=["'][^"']*alert[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1];
+    const alertHtml = html.match(
+      /<div[^>]*class=["'][^"']*alert[^"']*["'][^>]*>([\s\S]*?)<\/div>/i
+    )?.[1];
     if (!alertHtml) return null;
 
-    const listErrors = Array.from(alertHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi))
-      .map((match) => stripHtml(match[1] ?? ""))
+    const listErrors = Array.from(
+      alertHtml.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/gi)
+    )
+      .map(match => stripHtml(match[1] ?? ""))
       .filter(Boolean);
 
     if (listErrors.length > 0) {
@@ -760,7 +828,9 @@ class EgaugePortfolioClient {
     if (this.authenticated) return;
 
     if (!this.username || !this.password) {
-      throw new Error("Username and password are required for portfolio login.");
+      throw new Error(
+        "Username and password are required for portfolio login."
+      );
     }
 
     const loginPath = "/account/login/";
@@ -772,7 +842,9 @@ class EgaugePortfolioClient {
 
     const csrfToken = this.extractCsrfToken(loginPage.text);
     if (!csrfToken) {
-      throw new Error("eGauge portfolio login page did not return a CSRF token.");
+      throw new Error(
+        "eGauge portfolio login page did not return a CSRF token."
+      );
     }
 
     const formBody = new URLSearchParams();
@@ -794,19 +866,31 @@ class EgaugePortfolioClient {
     if (stillAtPasswordForm) {
       const detail = this.extractLoginError(loginResponse.text);
       if (detail && /correct login and password/i.test(detail)) {
-        throw new Error("eGauge portfolio login failed. Please verify username/password.");
+        throw new Error(
+          "eGauge portfolio login failed. Please verify username/password."
+        );
       }
-      throw new Error(detail ? `eGauge portfolio login failed: ${detail}` : "eGauge portfolio login failed.");
+      throw new Error(
+        detail
+          ? `eGauge portfolio login failed: ${detail}`
+          : "eGauge portfolio login failed."
+      );
     }
 
-    if (/one-time|verification code|multi-factor|two-factor|2fa|mfa/i.test(loginResponse.text)) {
+    if (
+      /one-time|verification code|multi-factor|two-factor|2fa|mfa/i.test(
+        loginResponse.text
+      )
+    ) {
       throw new Error(
         "eGauge portfolio login requires an additional verification step (2FA), which this flow does not yet support."
       );
     }
 
     this.authenticated = true;
-    console.log(`[eGauge Portfolio] Login successful for user: "${this.username}"`);
+    console.log(
+      `[eGauge Portfolio] Login successful for user: "${this.username}"`
+    );
   }
 
   getUsername(): string | null {
@@ -815,9 +899,9 @@ class EgaugePortfolioClient {
 
   /**
    * Fetch the eguard dashboard HTML page and extract embedded device data.
-   * The /eguard/data/ endpoint only returns owned devices (~14).
-   * The full portfolio (726 devices) is rendered in the HTML page itself,
-   * either as embedded JSON in a <script> tag or as table rows.
+   * Some eGauge accounts render a larger client-side table or bootstrap data
+   * in the HTML page. Keep this as a fallback/introspection path when the
+   * JSON list looks unexpectedly empty or stale for a given account.
    */
   async fetchSystemsFromPage(): Promise<{
     rows: unknown[];
@@ -843,30 +927,45 @@ class EgaugePortfolioClient {
     while ((scriptMatch = scriptRegex.exec(page.text)) !== null) {
       const scriptContent = scriptMatch[1];
       // Look for array assignments that could be device data
-      const arrayAssignRegex = /(?:var|let|const|window\.)?\s*\w+\s*=\s*(\[[\s\S]*?\]);/g;
+      const arrayAssignRegex =
+        /(?:var|let|const|window\.)?\s*\w+\s*=\s*(\[[\s\S]*?\]);/g;
       let arrMatch: RegExpExecArray | null;
       while ((arrMatch = arrayAssignRegex.exec(scriptContent)) !== null) {
         try {
           const parsed = JSON.parse(arrMatch[1]);
           if (Array.isArray(parsed) && parsed.length > 10) {
-            console.log(`[eGauge Portfolio] Found JS array with ${parsed.length} items`);
+            console.log(
+              `[eGauge Portfolio] Found JS array with ${parsed.length} items`
+            );
             allJsonArrays.push(parsed as unknown[]);
           }
-        } catch { /* not valid JSON */ }
+        } catch {
+          /* not valid JSON */
+        }
       }
     }
 
     // Use the largest array found (most likely the device data)
     if (allJsonArrays.length > 0) {
       allJsonArrays.sort((a, b) => b.length - a.length);
-      console.log(`[eGauge Portfolio] Using embedded JS array with ${allJsonArrays[0].length} items`);
-      return { rows: allJsonArrays[0], groups: [], pageLength: page.text.length };
+      console.log(
+        `[eGauge Portfolio] Using embedded JS array with ${allJsonArrays[0].length} items`
+      );
+      return {
+        rows: allJsonArrays[0],
+        groups: [],
+        pageLength: page.text.length,
+      };
     }
 
     // Strategy 2: Look for DataTables initialization with ajax URL
-    const ajaxUrlMatch = page.text.match(/["']ajax["']\s*:\s*["']([^"']+)["']/i);
+    const ajaxUrlMatch = page.text.match(
+      /["']ajax["']\s*:\s*["']([^"']+)["']/i
+    );
     if (ajaxUrlMatch) {
-      console.log(`[eGauge Portfolio] Found DataTables ajax URL: ${ajaxUrlMatch[1]}`);
+      console.log(
+        `[eGauge Portfolio] Found DataTables ajax URL: ${ajaxUrlMatch[1]}`
+      );
       // Try fetching this specific URL
       const ajaxResponse = await this.request(ajaxUrlMatch[1], {
         method: "GET",
@@ -876,14 +975,24 @@ class EgaugePortfolioClient {
       });
       try {
         const parsed = JSON.parse(ajaxResponse.text.trim());
-        const rows = Array.isArray(parsed) ? parsed :
-          (parsed?.data && Array.isArray(parsed.data)) ? parsed.data :
-          [];
-        console.log(`[eGauge Portfolio] Ajax URL returned ${(rows as unknown[]).length} rows`);
+        const rows = Array.isArray(parsed)
+          ? parsed
+          : parsed?.data && Array.isArray(parsed.data)
+            ? parsed.data
+            : [];
+        console.log(
+          `[eGauge Portfolio] Ajax URL returned ${(rows as unknown[]).length} rows`
+        );
         if ((rows as unknown[]).length > 0) {
-          return { rows: rows as unknown[], groups: [], pageLength: page.text.length };
+          return {
+            rows: rows as unknown[],
+            groups: [],
+            pageLength: page.text.length,
+          };
         }
-      } catch { /* invalid JSON */ }
+      } catch {
+        /* invalid JSON */
+      }
     }
 
     // Strategy 3: Look for inline DataTables data (data: [...])
@@ -892,18 +1001,28 @@ class EgaugePortfolioClient {
       try {
         const parsed = JSON.parse(dtDataMatch[1]);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          console.log(`[eGauge Portfolio] Found inline DataTables data with ${parsed.length} items`);
-          return { rows: parsed as unknown[], groups: [], pageLength: page.text.length };
+          console.log(
+            `[eGauge Portfolio] Found inline DataTables data with ${parsed.length} items`
+          );
+          return {
+            rows: parsed as unknown[],
+            groups: [],
+            pageLength: page.text.length,
+          };
         }
-      } catch { /* not valid JSON */ }
+      } catch {
+        /* not valid JSON */
+      }
     }
 
     // Strategy 4: Log key HTML sections for debugging
     // Find the portfolio table area
-    const tableIdx = page.text.indexOf('<table');
+    const tableIdx = page.text.indexOf("<table");
     if (tableIdx >= 0) {
       const tableSnippet = page.text.slice(tableIdx, tableIdx + 2000);
-      console.log(`[eGauge Portfolio] First <table>: ${tableSnippet.replace(/\s+/g, " ").slice(0, 1000)}`);
+      console.log(
+        `[eGauge Portfolio] First <table>: ${tableSnippet.replace(/\s+/g, " ").slice(0, 1000)}`
+      );
     }
 
     // Log all script src attributes and inline script previews
@@ -913,30 +1032,44 @@ class EgaugePortfolioClient {
     while ((srcMatch = scriptSrcRegex.exec(page.text)) !== null) {
       scriptSrcs.push(srcMatch[1]);
     }
-    console.log(`[eGauge Portfolio] Script sources: ${JSON.stringify(scriptSrcs)}`);
+    console.log(
+      `[eGauge Portfolio] Script sources: ${JSON.stringify(scriptSrcs)}`
+    );
 
     // Log inline scripts that mention "data" or "ajax" or "table"
     const scriptRegex2 = /<script[^>]*>([\s\S]*?)<\/script>/gi;
     let sm: RegExpExecArray | null;
     while ((sm = scriptRegex2.exec(page.text)) !== null) {
       const content = sm[1].trim();
-      if (content.length > 50 && /(?:data|ajax|table|device|eguard)/i.test(content)) {
-        console.log(`[eGauge Portfolio] Relevant script (${content.length} chars): ${content.replace(/\s+/g, " ").slice(0, 1500)}`);
+      if (
+        content.length > 50 &&
+        /(?:data|ajax|table|device|eguard)/i.test(content)
+      ) {
+        console.log(
+          `[eGauge Portfolio] Relevant script (${content.length} chars): ${content.replace(/\s+/g, " ").slice(0, 1500)}`
+        );
       }
     }
 
     // Extract groups from <select> elements specifically within the eguard content area
     const groups: Array<{ id: string; name: string }> = [];
-    const selectRegex = /<select[^>]*id=["'][^"']*group[^"']*["'][^>]*>([\s\S]*?)<\/select>/gi;
+    const selectRegex =
+      /<select[^>]*id=["'][^"']*group[^"']*["'][^>]*>([\s\S]*?)<\/select>/gi;
     let selMatch: RegExpExecArray | null;
     while ((selMatch = selectRegex.exec(page.text)) !== null) {
-      const optRegex = /<option[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
+      const optRegex =
+        /<option[^>]*value=["']([^"']+)["'][^>]*>([\s\S]*?)<\/option>/gi;
       let oMatch: RegExpExecArray | null;
       while ((oMatch = optRegex.exec(selMatch[1])) !== null) {
-        groups.push({ id: oMatch[1].trim(), name: stripHtml(oMatch[2] ?? "").trim() });
+        groups.push({
+          id: oMatch[1].trim(),
+          name: stripHtml(oMatch[2] ?? "").trim(),
+        });
       }
     }
-    console.log(`[eGauge Portfolio] Groups from select: ${JSON.stringify(groups)}`);
+    console.log(
+      `[eGauge Portfolio] Groups from select: ${JSON.stringify(groups)}`
+    );
 
     // Fallback: return empty (caller will use /eguard/data/)
     return { rows: [], groups, pageLength: page.text.length };
@@ -966,7 +1099,8 @@ class EgaugePortfolioClient {
     });
 
     const trimmed = response.text.trim();
-    if (!trimmed) return { rows: [], recordsTotal: null, recordsFiltered: null };
+    if (!trimmed)
+      return { rows: [], recordsTotal: null, recordsFiltered: null };
 
     try {
       const parsed = JSON.parse(trimmed);
@@ -977,14 +1111,21 @@ class EgaugePortfolioClient {
       } else if (parsed && typeof parsed === "object") {
         const container = parsed as Record<string, unknown>;
         if (Array.isArray(container.data)) rows = container.data as unknown[];
-        else if (Array.isArray(container.rows)) rows = container.rows as unknown[];
-        else if (Array.isArray(container.results)) rows = container.results as unknown[];
+        else if (Array.isArray(container.rows))
+          rows = container.rows as unknown[];
+        else if (Array.isArray(container.results))
+          rows = container.results as unknown[];
       }
 
       return { rows, recordsTotal: null, recordsFiltered: null };
     } catch {
-      if (/<html/i.test(response.text) || /name=["']auth-username["']/i.test(response.text)) {
-        throw new Error("Portfolio request returned HTML instead of JSON. Verify portfolio URL and login credentials.");
+      if (
+        /<html/i.test(response.text) ||
+        /name=["']auth-username["']/i.test(response.text)
+      ) {
+        throw new Error(
+          "Portfolio request returned HTML instead of JSON. Verify portfolio URL and login credentials."
+        );
       }
       throw new Error("Portfolio request returned invalid JSON.");
     }
@@ -998,9 +1139,9 @@ function extractMeterIdFromDevicePath(value: string | null): string | null {
   const fromPath = (pathname: string): string | null => {
     const segments = pathname
       .split("/")
-      .map((segment) => segment.trim())
+      .map(segment => segment.trim())
       .filter(Boolean);
-    const deviceSegmentIndex = segments.findIndex((segment) => {
+    const deviceSegmentIndex = segments.findIndex(segment => {
       const normalized = segment.toLowerCase();
       return normalized === "device" || normalized === "devices";
     });
@@ -1030,7 +1171,9 @@ function extractMeterIdFromQueryParam(value: string | null): string | null {
   const raw = toNonEmptyString(value);
   if (!raw) return null;
 
-  const parseFromSearchParams = (searchParams: URLSearchParams): string | null => {
+  const parseFromSearchParams = (
+    searchParams: URLSearchParams
+  ): string | null => {
     for (const key of ["device_name", "meter_id", "meterId", "name"]) {
       const candidate = toNonEmptyString(searchParams.get(key));
       if (candidate && /^[A-Za-z0-9._-]+$/.test(candidate)) {
@@ -1092,7 +1235,10 @@ function looksLikePortfolioMeterId(value: string | null): boolean {
   return /^egauge/i.test(value) || /\d/.test(value);
 }
 
-function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record<string, unknown>): string | null {
+function extractPortfolioSystemId(
+  record: Record<string, unknown>,
+  extra: Record<string, unknown>
+): string | null {
   const fromLabel = toNonEmptyString(extra.label);
   if (fromLabel && /^[A-Za-z0-9._-]+$/.test(fromLabel)) {
     return fromLabel;
@@ -1129,7 +1275,9 @@ function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record
     return fromDevicePath;
   }
 
-  const fromProxyUrl = extractMeterIdFromProxyUrl(toNonEmptyString(extra.proxy_url));
+  const fromProxyUrl = extractMeterIdFromProxyUrl(
+    toNonEmptyString(extra.proxy_url)
+  );
   if (looksLikePortfolioMeterId(fromProxyUrl)) {
     return fromProxyUrl;
   }
@@ -1142,8 +1290,7 @@ function extractPortfolioSystemId(record: Record<string, unknown>, extra: Record
   }
 
   const fallback =
-    toNonEmptyString(extra.label) ??
-    toNonEmptyString(record.Name);
+    toNonEmptyString(extra.label) ?? toNonEmptyString(record.Name);
   if (looksLikePortfolioMeterId(fallback)) {
     return fallback;
   }
@@ -1165,7 +1312,7 @@ function buildPortfolioRowKey(row: unknown): string {
     toNonEmptyString(record.Job),
   ]
     .filter((value): value is string => Boolean(value))
-    .map((value) => value.toLowerCase());
+    .map(value => value.toLowerCase());
 
   if (parts.length > 0) {
     return parts.join("|");
@@ -1178,13 +1325,14 @@ function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
   const record = asRecord(row);
   const extra = asRecord(record.extra_context);
 
-  const name = toNonEmptyString(record.Name) ?? toNonEmptyString(extra.label) ?? "Unknown";
+  const name =
+    toNonEmptyString(record.Name) ?? toNonEmptyString(extra.label) ?? "Unknown";
   const status = toNonEmptyString(record.Status);
 
   const parsePortfolioMetricKwh = (value: unknown): number | null => {
     if (Array.isArray(value)) {
       const numericValues = value
-        .map((entry) => parseLooseNumber(entry))
+        .map(entry => parseLooseNumber(entry))
         .filter((entry): entry is number => entry !== null);
       if (numericValues.length === 0) return null;
       return safeRound(numericValues[numericValues.length - 1]);
@@ -1210,14 +1358,20 @@ function mapPortfolioSystem(row: unknown): EgaugePortfolioSystem {
     mapLink: toNonEmptyString(record.Map_Link),
     devicePagePath: toNonEmptyString(record.Name_Edit),
     groupEditPath: toNonEmptyString(record.Group_Edit),
-    sinceMidnightGenerationKwh: parsePortfolioMetricKwh(record.Since_Midnight_Gen),
+    sinceMidnightGenerationKwh: parsePortfolioMetricKwh(
+      record.Since_Midnight_Gen
+    ),
     last24HoursGenerationKwh: parsePortfolioMetricKwh(record.Last_24_Hours_Gen),
     lastWeekGenerationKwh: parsePortfolioMetricKwh(record.Last_Week_Gen),
     lastMonthGenerationKwh: parsePortfolioMetricKwh(record.Last_Month_Gen),
     lastYearGenerationKwh: parsePortfolioMetricKwh(record.Last_Year_Gen),
     totalGenerationKwh: parsePortfolioMetricKwh(record.Total_Gen),
-    sinceMidnightConsumptionKwh: parsePortfolioMetricKwh(record.Since_Midnight_Used),
-    last24HoursConsumptionKwh: parsePortfolioMetricKwh(record.Last_24_Hours_Used),
+    sinceMidnightConsumptionKwh: parsePortfolioMetricKwh(
+      record.Since_Midnight_Used
+    ),
+    last24HoursConsumptionKwh: parsePortfolioMetricKwh(
+      record.Last_24_Hours_Used
+    ),
     lastWeekConsumptionKwh: parsePortfolioMetricKwh(record.Last_Week_Used),
     lastMonthConsumptionKwh: parsePortfolioMetricKwh(record.Last_Month_Used),
     lastYearConsumptionKwh: parsePortfolioMetricKwh(record.Last_Year_Used),
@@ -1250,7 +1404,8 @@ function mapPortfolioSystemToSnapshotRow(
     previousCalendarMonthProductionKwh: null,
     last12MonthsProductionKwh: system.lastYearGenerationKwh,
     weeklyProductionKwh: system.lastWeekGenerationKwh,
-    dailyProductionKwh: system.sinceMidnightGenerationKwh ?? system.last24HoursGenerationKwh,
+    dailyProductionKwh:
+      system.sinceMidnightGenerationKwh ?? system.last24HoursGenerationKwh,
     yearlyProductionKwh: system.lastYearGenerationKwh,
     anchorDate,
     monthlyStartDate,
@@ -1305,7 +1460,12 @@ export async function getEgaugeSystemInfo(context: EgaugeApiContext): Promise<{
     baseUrl: normalizeEgaugeBaseUrl(context.baseUrl),
     accessType: normalizeEgaugeAccessType(context.accessType),
     systemName: extractSummaryString(raw, ["name", "system_name", "title"]),
-    serialNumber: extractSummaryString(raw, ["serial", "serial_number", "serialNumber", "device_id"]),
+    serialNumber: extractSummaryString(raw, [
+      "serial",
+      "serial_number",
+      "serialNumber",
+      "device_id",
+    ]),
     raw,
   };
 }
@@ -1329,10 +1489,13 @@ export async function getEgaugeLocalData(context: EgaugeApiContext): Promise<{
   };
 }
 
-export async function getEgaugeRegisterLatest(context: EgaugeApiContext, options?: {
-  register?: string | null;
-  includeRate?: boolean;
-}): Promise<{
+export async function getEgaugeRegisterLatest(
+  context: EgaugeApiContext,
+  options?: {
+    register?: string | null;
+    includeRate?: boolean;
+  }
+): Promise<{
   baseUrl: string;
   accessType: EgaugeAccessType;
   register: string | null;
@@ -1421,15 +1584,18 @@ export async function getEgaugePortfolioSystems(
   const normalizedFilter = toNonEmptyString(options?.filter);
   const normalizedGroupId = toNonEmptyString(options?.groupId);
 
-  // The /eguard/data/ endpoint returns all devices for the authenticated
-  // session. Bootstrap Table calls it with client-side pagination.
-  // With proper redirect cookie handling, this returns the full portfolio.
+  // Different saved eGauge portfolio logins legitimately return different
+  // account scopes, so the caller must choose the intended connection first.
+  // For the selected authenticated session, /eguard/data/ is the primary
+  // portfolio system list used by the eGuard UI.
   const result = await client.fetchSystems({
     filter: normalizedFilter,
     groupId: normalizedGroupId,
   });
 
-  console.log(`[eGauge Portfolio] Got ${result.rows.length} rows from /eguard/data/`);
+  console.log(
+    `[eGauge Portfolio] Got ${result.rows.length} rows from /eguard/data/`
+  );
 
   if (result.rows.length === 0) {
     throw new Error("No portfolio systems were returned.");
@@ -1443,16 +1609,18 @@ export async function getEgaugePortfolioSystems(
   }
 
   const raw = Array.from(mergedRowsByKey.values());
-  const systems = raw.map((row) => mapPortfolioSystem(row));
+  const systems = raw.map(row => mapPortfolioSystem(row));
   const requestedAnchorDate = toNonEmptyString(options?.anchorDate);
   const anchorDate =
     requestedAnchorDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedAnchorDate)
       ? requestedAnchorDate
       : formatIsoDate(new Date());
-  const rows = systems.map((system) => mapPortfolioSystemToSnapshotRow(system, anchorDate));
-  const found = rows.filter((row) => row.status === "Found").length;
-  const notFound = rows.filter((row) => row.status === "Not Found").length;
-  const errored = rows.filter((row) => row.status === "Error").length;
+  const rows = systems.map(system =>
+    mapPortfolioSystemToSnapshotRow(system, anchorDate)
+  );
+  const found = rows.filter(row => row.status === "Found").length;
+  const notFound = rows.filter(row => row.status === "Not Found").length;
+  const errored = rows.filter(row => row.status === "Error").length;
 
   return {
     baseUrl: normalizeEgaugePortfolioBaseUrl(context.baseUrl),
@@ -1486,7 +1654,8 @@ export type EgaugeProductionSnapshot = {
 };
 
 function extractRegisterCumulativeWh(raw: unknown): number | null {
-  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const record =
+    raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 
   // The register endpoint returns registers with cumulative values.
   // Look for common production register names.
@@ -1496,18 +1665,31 @@ function extractRegisterCumulativeWh(raw: unknown): number | null {
   const reg = registers as Record<string, unknown>;
 
   // Try common eGauge production register names.
-  for (const key of ["Generation", "Solar", "Solar+", "generation", "solar", "PV", "Grid", "Total Generation"]) {
+  for (const key of [
+    "Generation",
+    "Solar",
+    "Solar+",
+    "generation",
+    "solar",
+    "PV",
+    "Grid",
+    "Total Generation",
+  ]) {
     const val = reg[key];
     if (typeof val === "number" && Number.isFinite(val)) return val;
     if (val && typeof val === "object") {
       const nested = val as Record<string, unknown>;
-      const cumulative = nested.cumulative ?? nested.total ?? nested.value ?? nested.energy;
-      if (typeof cumulative === "number" && Number.isFinite(cumulative)) return cumulative;
+      const cumulative =
+        nested.cumulative ?? nested.total ?? nested.value ?? nested.energy;
+      if (typeof cumulative === "number" && Number.isFinite(cumulative))
+        return cumulative;
     }
   }
 
   // Fallback: if there's a single numeric register, use it.
-  const values = Object.values(reg).filter((v) => typeof v === "number" && Number.isFinite(v)) as number[];
+  const values = Object.values(reg).filter(
+    v => typeof v === "number" && Number.isFinite(v)
+  ) as number[];
   if (values.length === 1) return values[0];
 
   return null;
@@ -1522,7 +1704,10 @@ export async function getMeterProductionSnapshot(
   try {
     const result = await getEgaugeRegisterLatest(context);
     const lifetimeWh = extractRegisterCumulativeWh(result.raw);
-    const lifetimeKwh = lifetimeWh !== null ? Math.round((lifetimeWh / 1000) * 1000) / 1000 : null;
+    const lifetimeKwh =
+      lifetimeWh !== null
+        ? Math.round((lifetimeWh / 1000) * 1000) / 1000
+        : null;
 
     return {
       meterId,
@@ -1546,4 +1731,3 @@ export async function getMeterProductionSnapshot(
     };
   }
 }
-

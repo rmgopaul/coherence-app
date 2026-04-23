@@ -65,17 +65,24 @@ import {
 
 export const ennexOsRouter = router({
   getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
-    const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      ENNEX_OS_PROVIDER
+    );
+    const metadata = parseEnnexOsMetadata(
+      integration?.metadata,
+      toNonEmptyString(integration?.accessToken)
+    );
     const activeConnection =
-      metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ??
-      metadata.connections[0];
+      metadata.connections.find(
+        connection => connection.id === metadata.activeConnectionId
+      ) ?? metadata.connections[0];
 
     return {
       connected: metadata.connections.length > 0,
       baseUrl: activeConnection?.baseUrl ?? metadata.baseUrl,
       activeConnectionId: activeConnection?.id ?? null,
-      connections: metadata.connections.map((connection) => ({
+      connections: metadata.connections.map(connection => ({
         id: connection.id,
         name: connection.name,
         baseUrl: connection.baseUrl,
@@ -99,13 +106,20 @@ export const ennexOsRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const accessToken =
-        toNonEmptyString(input.accessToken) ?? toNonEmptyString(input.accessKeyId);
+        toNonEmptyString(input.accessToken) ??
+        toNonEmptyString(input.accessKeyId);
       if (!accessToken) {
         throw new Error("Access token is required.");
       }
 
-      const existing = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
-      const existingMetadata = parseEnnexOsMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+      const existing = await getIntegrationByProvider(
+        ctx.user.id,
+        ENNEX_OS_PROVIDER
+      );
+      const existingMetadata = parseEnnexOsMetadata(
+        existing?.metadata,
+        toNonEmptyString(existing?.accessToken)
+      );
       const nowIso = new Date().toISOString();
       const newConnection: EnnexOsConnectionConfig = {
         id: nanoid(),
@@ -152,12 +166,20 @@ export const ennexOsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        ENNEX_OS_PROVIDER
+      );
       if (!integration) {
         throw new IntegrationNotConnectedError("ennexOS");
       }
-      const metadataState = parseEnnexOsMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
-      const activeConnection = metadataState.connections.find((connection) => connection.id === input.connectionId);
+      const metadataState = parseEnnexOsMetadata(
+        integration.metadata,
+        toNonEmptyString(integration.accessToken)
+      );
+      const activeConnection = metadataState.connections.find(
+        connection => connection.id === input.connectionId
+      );
       if (!activeConnection) {
         throw new Error("Selected ennexOS API profile was not found.");
       }
@@ -191,12 +213,20 @@ export const ennexOsRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        ENNEX_OS_PROVIDER
+      );
       if (!integration) {
         throw new IntegrationNotConnectedError("ennexOS");
       }
-      const metadataState = parseEnnexOsMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
-      const nextConnections = metadataState.connections.filter((connection) => connection.id !== input.connectionId);
+      const metadataState = parseEnnexOsMetadata(
+        integration.metadata,
+        toNonEmptyString(integration.accessToken)
+      );
+      const nextConnections = metadataState.connections.filter(
+        connection => connection.id !== input.connectionId
+      );
 
       if (nextConnections.length === 0) {
         if (integration.id) {
@@ -211,8 +241,9 @@ export const ennexOsRouter = router({
       }
 
       const nextActiveConnection =
-        nextConnections.find((connection) => connection.id === metadataState.activeConnectionId) ??
-        nextConnections[0];
+        nextConnections.find(
+          connection => connection.id === metadataState.activeConnectionId
+        ) ?? nextConnections[0];
       const metadata = serializeEnnexOsMetadata(
         nextConnections,
         nextActiveConnection.id,
@@ -238,7 +269,10 @@ export const ennexOsRouter = router({
       };
     }),
   disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      ENNEX_OS_PROVIDER
+    );
     if (integration?.id) {
       await deleteIntegration(integration.id);
     }
@@ -285,7 +319,8 @@ export const ennexOsRouter = router({
           : input.period === "Months" || input.period === "Total"
             ? "Month"
             : "Day";
-      const dateArg = toNonEmptyString(input.to) ?? toNonEmptyString(input.from) ?? null;
+      const dateArg =
+        toNonEmptyString(input.to) ?? toNonEmptyString(input.from) ?? null;
       const raw = await getPlantMeasurements(
         context,
         input.plantId.trim(),
@@ -332,7 +367,10 @@ export const ennexOsRouter = router({
         plantId: z.string().min(1),
         measurementSet: z.string().optional(),
         period: z.string().optional(),
-        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -349,29 +387,45 @@ export const ennexOsRouter = router({
     .input(
       z.object({
         plantId: z.string().min(1),
-        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const context = await getEnnexOsContext(ctx.user.id);
-      return getPlantProductionSnapshotEnnexos(context, input.plantId.trim(), input.anchorDate);
+      return getPlantProductionSnapshotEnnexos(
+        context,
+        input.plantId.trim(),
+        input.anchorDate
+      );
     }),
   getProductionSnapshots: protectedProcedure
     .input(
       z.object({
         plantIds: z.array(z.string().min(1)).min(1).max(200),
-        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
         connectionScope: z.enum(["active", "all"]).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const uniquePlantIds = Array.from(
-        new Set(input.plantIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        new Set(input.plantIds.map(id => id.trim()).filter(id => id.length > 0))
       );
 
       const scope = input.connectionScope ?? "active";
-      const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
-      const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        ENNEX_OS_PROVIDER
+      );
+      const metadata = parseEnnexOsMetadata(
+        integration?.metadata,
+        toNonEmptyString(integration?.accessToken)
+      );
 
       const allConnections = metadata.connections;
       if (allConnections.length === 0) {
@@ -379,8 +433,11 @@ export const ennexOsRouter = router({
       }
 
       const activeConnection =
-        allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
-      const targetConnections = scope === "all" ? allConnections : [activeConnection];
+        allConnections.find(
+          connection => connection.id === metadata.activeConnectionId
+        ) ?? allConnections[0];
+      const targetConnections =
+        scope === "all" ? allConnections : [activeConnection];
 
       // Fetch plant names once upfront to include in snapshot results.
       const plantNameMap = new Map<string, string>();
@@ -396,122 +453,150 @@ export const ennexOsRouter = router({
         // Non-critical — proceed without names if the list call fails.
       }
 
-      const rows = await mapWithConcurrency(uniquePlantIds, 4, async (plantId: string) => {
-        let selectedSnapshot: Awaited<ReturnType<typeof getPlantProductionSnapshotEnnexos>> | null = null;
-        let selectedConnection: (typeof targetConnections)[number] | null = null;
-        let firstError: string | null = null;
-        let fallbackSnapshot: Awaited<ReturnType<typeof getPlantProductionSnapshotEnnexos>> | null = null;
-        const profileStatuses: Array<{
-          connectionId: string;
-          connectionName: string;
-          status: "Found" | "Not Found" | "Error";
-        }> = [];
-        let foundInConnections = 0;
+      const rows = await mapWithConcurrency(
+        uniquePlantIds,
+        4,
+        async (plantId: string) => {
+          let selectedSnapshot: Awaited<
+            ReturnType<typeof getPlantProductionSnapshotEnnexos>
+          > | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null =
+            null;
+          let firstError: string | null = null;
+          let fallbackSnapshot: Awaited<
+            ReturnType<typeof getPlantProductionSnapshotEnnexos>
+          > | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
 
-        for (const connection of targetConnections) {
-          const snapshot = await getPlantProductionSnapshotEnnexos(
-            {
-              accessToken: connection.accessToken,
-              baseUrl: connection.baseUrl ?? metadata.baseUrl,
-            },
-            plantId,
-            input.anchorDate
-          );
+          for (const connection of targetConnections) {
+            const snapshot = await getPlantProductionSnapshotEnnexos(
+              {
+                accessToken: connection.accessToken,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              plantId,
+              input.anchorDate
+            );
 
-          if (!fallbackSnapshot) {
-            fallbackSnapshot = snapshot;
-          }
-
-          profileStatuses.push({
-            connectionId: connection.id,
-            connectionName: connection.name,
-            status: snapshot.status,
-          });
-
-          if (snapshot.status === "Found") {
-            foundInConnections += 1;
-            if (!selectedSnapshot) {
-              selectedSnapshot = snapshot;
-              selectedConnection = connection;
+            if (!fallbackSnapshot) {
+              fallbackSnapshot = snapshot;
             }
-            continue;
+
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
+
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
+            }
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
           }
 
-          if (snapshot.status === "Error" && !firstError) {
-            firstError = snapshot.error ?? "Unknown API error.";
+          const anchorDate =
+            selectedSnapshot?.anchorDate ??
+            fallbackSnapshot?.anchorDate ??
+            input.anchorDate ??
+            "";
+          const monthlyStartDate =
+            selectedSnapshot?.monthlyStartDate ??
+            fallbackSnapshot?.monthlyStartDate ??
+            input.anchorDate ??
+            "";
+          const weeklyStartDate =
+            selectedSnapshot?.weeklyStartDate ??
+            fallbackSnapshot?.weeklyStartDate ??
+            input.anchorDate ??
+            "";
+          const mtdStartDate =
+            selectedSnapshot?.mtdStartDate ??
+            fallbackSnapshot?.mtdStartDate ??
+            input.anchorDate ??
+            "";
+          const previousCalendarMonthStartDate =
+            selectedSnapshot?.previousCalendarMonthStartDate ??
+            fallbackSnapshot?.previousCalendarMonthStartDate ??
+            input.anchorDate ??
+            "";
+          const previousCalendarMonthEndDate =
+            selectedSnapshot?.previousCalendarMonthEndDate ??
+            fallbackSnapshot?.previousCalendarMonthEndDate ??
+            input.anchorDate ??
+            "";
+          const last12MonthsStartDate =
+            selectedSnapshot?.last12MonthsStartDate ??
+            fallbackSnapshot?.last12MonthsStartDate ??
+            input.anchorDate ??
+            "";
+
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              name: plantNameMap.get(plantId) ?? null,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map(row => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
           }
-        }
 
-        const anchorDate = selectedSnapshot?.anchorDate ?? fallbackSnapshot?.anchorDate ?? input.anchorDate ?? "";
-        const monthlyStartDate =
-          selectedSnapshot?.monthlyStartDate ?? fallbackSnapshot?.monthlyStartDate ?? input.anchorDate ?? "";
-        const weeklyStartDate =
-          selectedSnapshot?.weeklyStartDate ?? fallbackSnapshot?.weeklyStartDate ?? input.anchorDate ?? "";
-        const mtdStartDate = selectedSnapshot?.mtdStartDate ?? fallbackSnapshot?.mtdStartDate ?? input.anchorDate ?? "";
-        const previousCalendarMonthStartDate =
-          selectedSnapshot?.previousCalendarMonthStartDate ??
-          fallbackSnapshot?.previousCalendarMonthStartDate ??
-          input.anchorDate ??
-          "";
-        const previousCalendarMonthEndDate =
-          selectedSnapshot?.previousCalendarMonthEndDate ??
-          fallbackSnapshot?.previousCalendarMonthEndDate ??
-          input.anchorDate ??
-          "";
-        const last12MonthsStartDate =
-          selectedSnapshot?.last12MonthsStartDate ?? fallbackSnapshot?.last12MonthsStartDate ?? input.anchorDate ?? "";
-
-        if (selectedSnapshot && selectedConnection) {
+          const notFoundStatus: "Error" | "Not Found" = firstError
+            ? "Error"
+            : "Not Found";
           return {
-            ...selectedSnapshot,
+            plantId,
             name: plantNameMap.get(plantId) ?? null,
-            matchedConnectionId: selectedConnection.id,
-            matchedConnectionName: selectedConnection.name,
+            status: notFoundStatus,
+            found: false,
+            lifetimeKwh: null,
+            hourlyProductionKwh: null,
+            monthlyProductionKwh: null,
+            mtdProductionKwh: null,
+            previousCalendarMonthProductionKwh: null,
+            last12MonthsProductionKwh: null,
+            weeklyProductionKwh: null,
+            dailyProductionKwh: null,
+            anchorDate,
+            monthlyStartDate,
+            weeklyStartDate,
+            mtdStartDate,
+            previousCalendarMonthStartDate,
+            previousCalendarMonthEndDate,
+            last12MonthsStartDate,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
             checkedConnections: targetConnections.length,
             foundInConnections,
             profileStatusSummary: profileStatuses
-              .map((row) => `${row.connectionName}:${row.status}`)
+              .map(row => `${row.connectionName}:${row.status}`)
               .join(" | "),
           };
         }
-
-        const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
-        return {
-          plantId,
-          name: plantNameMap.get(plantId) ?? null,
-          status: notFoundStatus,
-          found: false,
-          lifetimeKwh: null,
-          hourlyProductionKwh: null,
-          monthlyProductionKwh: null,
-          mtdProductionKwh: null,
-          previousCalendarMonthProductionKwh: null,
-          last12MonthsProductionKwh: null,
-          weeklyProductionKwh: null,
-          dailyProductionKwh: null,
-          anchorDate,
-          monthlyStartDate,
-          weeklyStartDate,
-          mtdStartDate,
-          previousCalendarMonthStartDate,
-          previousCalendarMonthEndDate,
-          last12MonthsStartDate,
-          error: firstError,
-          matchedConnectionId: null,
-          matchedConnectionName: null,
-          checkedConnections: targetConnections.length,
-          foundInConnections,
-          profileStatusSummary: profileStatuses
-            .map((row) => `${row.connectionName}:${row.status}`)
-            .join(" | "),
-        };
-      });
+      );
 
       return {
         total: rows.length,
-        found: rows.filter((row) => row.status === "Found").length,
-        notFound: rows.filter((row) => row.status === "Not Found").length,
-        errored: rows.filter((row) => row.status === "Error").length,
+        found: rows.filter(row => row.status === "Found").length,
+        notFound: rows.filter(row => row.status === "Not Found").length,
+        errored: rows.filter(row => row.status === "Error").length,
         scope,
         checkedConnections: targetConnections.length,
         rows,
@@ -521,18 +606,27 @@ export const ennexOsRouter = router({
     .input(
       z.object({
         plantIds: z.array(z.string().min(1)).min(1).max(200),
-        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
         connectionScope: z.enum(["active", "all"]).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const uniquePlantIds = Array.from(
-        new Set(input.plantIds.map((id) => id.trim()).filter((id) => id.length > 0))
+        new Set(input.plantIds.map(id => id.trim()).filter(id => id.length > 0))
       );
 
       const scope = input.connectionScope ?? "active";
-      const integration = await getIntegrationByProvider(ctx.user.id, ENNEX_OS_PROVIDER);
-      const metadata = parseEnnexOsMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        ENNEX_OS_PROVIDER
+      );
+      const metadata = parseEnnexOsMetadata(
+        integration?.metadata,
+        toNonEmptyString(integration?.accessToken)
+      );
 
       const allConnections = metadata.connections;
       if (allConnections.length === 0) {
@@ -540,84 +634,96 @@ export const ennexOsRouter = router({
       }
 
       const activeConnection =
-        allConnections.find((connection) => connection.id === metadata.activeConnectionId) ?? allConnections[0];
-      const targetConnections = scope === "all" ? allConnections : [activeConnection];
+        allConnections.find(
+          connection => connection.id === metadata.activeConnectionId
+        ) ?? allConnections[0];
+      const targetConnections =
+        scope === "all" ? allConnections : [activeConnection];
 
-      const rows = await mapWithConcurrency(uniquePlantIds, 4, async (plantId: string) => {
-        let selectedSnapshot: Awaited<ReturnType<typeof getPlantDeviceSnapshot>> | null = null;
-        let selectedConnection: (typeof targetConnections)[number] | null = null;
-        let firstError: string | null = null;
-        const profileStatuses: Array<{
-          connectionId: string;
-          connectionName: string;
-          status: "Found" | "Not Found" | "Error";
-        }> = [];
-        let foundInConnections = 0;
+      const rows = await mapWithConcurrency(
+        uniquePlantIds,
+        4,
+        async (plantId: string) => {
+          let selectedSnapshot: Awaited<
+            ReturnType<typeof getPlantDeviceSnapshot>
+          > | null = null;
+          let selectedConnection: (typeof targetConnections)[number] | null =
+            null;
+          let firstError: string | null = null;
+          const profileStatuses: Array<{
+            connectionId: string;
+            connectionName: string;
+            status: "Found" | "Not Found" | "Error";
+          }> = [];
+          let foundInConnections = 0;
 
-        for (const connection of targetConnections) {
-          const snapshot = await getPlantDeviceSnapshot(
-            {
-              accessToken: connection.accessToken,
-              baseUrl: connection.baseUrl ?? metadata.baseUrl,
-            },
-            plantId,
-            input.anchorDate
-          );
+          for (const connection of targetConnections) {
+            const snapshot = await getPlantDeviceSnapshot(
+              {
+                accessToken: connection.accessToken,
+                baseUrl: connection.baseUrl ?? metadata.baseUrl,
+              },
+              plantId,
+              input.anchorDate
+            );
 
-          profileStatuses.push({
-            connectionId: connection.id,
-            connectionName: connection.name,
-            status: snapshot.status,
-          });
+            profileStatuses.push({
+              connectionId: connection.id,
+              connectionName: connection.name,
+              status: snapshot.status,
+            });
 
-          if (snapshot.status === "Found") {
-            foundInConnections += 1;
-            if (!selectedSnapshot) {
-              selectedSnapshot = snapshot;
-              selectedConnection = connection;
+            if (snapshot.status === "Found") {
+              foundInConnections += 1;
+              if (!selectedSnapshot) {
+                selectedSnapshot = snapshot;
+                selectedConnection = connection;
+              }
+              continue;
             }
-            continue;
+
+            if (snapshot.status === "Error" && !firstError) {
+              firstError = snapshot.error ?? "Unknown API error.";
+            }
           }
 
-          if (snapshot.status === "Error" && !firstError) {
-            firstError = snapshot.error ?? "Unknown API error.";
+          if (selectedSnapshot && selectedConnection) {
+            return {
+              ...selectedSnapshot,
+              matchedConnectionId: selectedConnection.id,
+              matchedConnectionName: selectedConnection.name,
+              checkedConnections: targetConnections.length,
+              foundInConnections,
+              profileStatusSummary: profileStatuses
+                .map(row => `${row.connectionName}:${row.status}`)
+                .join(" | "),
+            };
           }
-        }
 
-        if (selectedSnapshot && selectedConnection) {
+          const notFoundStatus: "Error" | "Not Found" = firstError
+            ? "Error"
+            : "Not Found";
           return {
-            ...selectedSnapshot,
-            matchedConnectionId: selectedConnection.id,
-            matchedConnectionName: selectedConnection.name,
+            plantId,
+            status: notFoundStatus,
+            found: false,
+            error: firstError,
+            matchedConnectionId: null,
+            matchedConnectionName: null,
             checkedConnections: targetConnections.length,
             foundInConnections,
             profileStatusSummary: profileStatuses
-              .map((row) => `${row.connectionName}:${row.status}`)
+              .map(row => `${row.connectionName}:${row.status}`)
               .join(" | "),
           };
         }
-
-        const notFoundStatus: "Error" | "Not Found" = firstError ? "Error" : "Not Found";
-        return {
-          plantId,
-          status: notFoundStatus,
-          found: false,
-          error: firstError,
-          matchedConnectionId: null,
-          matchedConnectionName: null,
-          checkedConnections: targetConnections.length,
-          foundInConnections,
-          profileStatusSummary: profileStatuses
-            .map((row) => `${row.connectionName}:${row.status}`)
-            .join(" | "),
-        };
-      });
+      );
 
       return {
         total: rows.length,
-        found: rows.filter((row) => row.status === "Found").length,
-        notFound: rows.filter((row) => row.status === "Not Found").length,
-        errored: rows.filter((row) => row.status === "Error").length,
+        found: rows.filter(row => row.status === "Found").length,
+        notFound: rows.filter(row => row.status === "Not Found").length,
+        errored: rows.filter(row => row.status === "Error").length,
         scope,
         checkedConnections: targetConnections.length,
         rows,
@@ -627,11 +733,18 @@ export const ennexOsRouter = router({
 
 export const zendeskRouter = router({
   getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      ZENDESK_PROVIDER
+    );
     const metadata = parseZendeskMetadata(integration?.metadata);
 
     return {
-      connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.subdomain && metadata.email),
+      connected: Boolean(
+        toNonEmptyString(integration?.accessToken) &&
+        metadata.subdomain &&
+        metadata.email
+      ),
       subdomain: metadata.subdomain,
       email: metadata.email,
       trackedUsers: metadata.trackedUsers,
@@ -646,10 +759,17 @@ export const zendeskRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const existingIntegration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
-      const existingMetadata = parseZendeskMetadata(existingIntegration?.metadata);
+      const existingIntegration = await getIntegrationByProvider(
+        ctx.user.id,
+        ZENDESK_PROVIDER
+      );
+      const existingMetadata = parseZendeskMetadata(
+        existingIntegration?.metadata
+      );
 
-      const normalizedSubdomain = normalizeZendeskSubdomainInput(input.subdomain);
+      const normalizedSubdomain = normalizeZendeskSubdomainInput(
+        input.subdomain
+      );
       if (!normalizedSubdomain) {
         throw new Error("Zendesk subdomain is invalid.");
       }
@@ -680,7 +800,10 @@ export const zendeskRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        ZENDESK_PROVIDER
+      );
       if (!integration) {
         throw new IntegrationNotConnectedError("Zendesk");
       }
@@ -712,7 +835,10 @@ export const zendeskRouter = router({
       };
     }),
   disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      ZENDESK_PROVIDER
+    );
     if (integration?.id) {
       await deleteIntegration(integration.id);
     }
@@ -723,32 +849,53 @@ export const zendeskRouter = router({
       z
         .object({
           maxTickets: z.number().int().min(100).max(50000).optional(),
-          periodStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-          periodEndDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          periodStartDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .optional(),
+          periodEndDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .optional(),
           trackedUsersOnly: z.boolean().optional(),
         })
         .optional()
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, ZENDESK_PROVIDER);
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        ZENDESK_PROVIDER
+      );
       const metadata = parseZendeskMetadata(integration?.metadata);
       const zendeskContext = await getZendeskContext(ctx.user.id);
       return getZendeskTicketMetricsByAssignee(zendeskContext, {
         maxTickets: input?.maxTickets ?? 10000,
         periodStartDate: input?.periodStartDate,
         periodEndDate: input?.periodEndDate,
-        trackedUsers: input?.trackedUsersOnly ? metadata.trackedUsers : undefined,
+        trackedUsers: input?.trackedUsersOnly
+          ? metadata.trackedUsers
+          : undefined,
       });
     }),
 });
 
 export const egaugeRouter = router({
   getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
-    const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      EGAUGE_PROVIDER
+    );
+    const metadata = parseEgaugeMetadata(
+      integration?.metadata,
+      toNonEmptyString(integration?.accessToken)
+    );
     const activeConnection =
-      metadata.connections.find((connection) => connection.id === metadata.activeConnectionId) ?? metadata.connections[0];
-    const requiresCredentials = activeConnection ? activeConnection.accessType !== "public" : false;
+      metadata.connections.find(
+        connection => connection.id === metadata.activeConnectionId
+      ) ?? metadata.connections[0];
+    const requiresCredentials = activeConnection
+      ? activeConnection.accessType !== "public"
+      : false;
 
     return {
       connected: metadata.connections.length > 0,
@@ -758,7 +905,7 @@ export const egaugeRouter = router({
       hasPassword: Boolean(activeConnection?.password),
       requiresCredentials,
       activeConnectionId: activeConnection?.id ?? null,
-      connections: metadata.connections.map((connection) => ({
+      connections: metadata.connections.map(connection => ({
         id: connection.id,
         name: connection.name,
         meterId: connection.meterId,
@@ -791,32 +938,45 @@ export const egaugeRouter = router({
         accessType === "portfolio_login"
           ? normalizeEgaugePortfolioBaseUrl(input.baseUrl)
           : normalizeEgaugeBaseUrl(input.baseUrl);
-      const resolvedUsernameForId = toNonEmptyString(input.username)?.toLowerCase().replace(/[^a-z0-9._-]/g, "_") ?? "unknown";
+      const resolvedUsernameForId =
+        toNonEmptyString(input.username)
+          ?.toLowerCase()
+          .replace(/[^a-z0-9._-]/g, "_") ?? "unknown";
       const normalizedMeterId =
         toNonEmptyString(input.meterId)?.toLowerCase() ??
         (accessType === "portfolio_login"
           ? `portfolio-${resolvedUsernameForId}`
           : deriveEgaugeMeterId(normalizedBaseUrl).toLowerCase());
 
-      const existing = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
-      const metadataState = parseEgaugeMetadata(existing?.metadata, toNonEmptyString(existing?.accessToken));
+      const existing = await getIntegrationByProvider(
+        ctx.user.id,
+        EGAUGE_PROVIDER
+      );
+      const metadataState = parseEgaugeMetadata(
+        existing?.metadata,
+        toNonEmptyString(existing?.accessToken)
+      );
       const nowIso = new Date().toISOString();
-      const existingConnection = metadataState.connections.find((connection) => connection.meterId === normalizedMeterId);
+      const existingConnection = metadataState.connections.find(
+        connection => connection.meterId === normalizedMeterId
+      );
       const resolvedUsername =
         accessType === "public"
           ? null
-          : username ?? existingConnection?.username ?? null;
+          : (username ?? existingConnection?.username ?? null);
 
       const usernameChanged =
         existingConnection &&
         resolvedUsername &&
         existingConnection.username &&
-        resolvedUsername.toLowerCase() !== existingConnection.username.toLowerCase();
+        resolvedUsername.toLowerCase() !==
+          existingConnection.username.toLowerCase();
 
       const resolvedPassword =
         accessType === "public"
           ? null
-          : password ?? (usernameChanged ? null : existingConnection?.password ?? null);
+          : (password ??
+            (usernameChanged ? null : (existingConnection?.password ?? null)));
 
       if (accessType !== "public" && (!resolvedUsername || !resolvedPassword)) {
         throw new Error(
@@ -831,7 +991,8 @@ export const egaugeRouter = router({
       if (existingConnection) {
         const updatedConnection: EgaugeConnectionConfig = {
           ...existingConnection,
-          name: toNonEmptyString(input.connectionName) ?? existingConnection.name,
+          name:
+            toNonEmptyString(input.connectionName) ?? existingConnection.name,
           meterId: normalizedMeterId,
           baseUrl: normalizedBaseUrl,
           accessType,
@@ -839,7 +1000,12 @@ export const egaugeRouter = router({
           password: resolvedPassword,
           updatedAt: nowIso,
         };
-        nextConnections = [updatedConnection, ...metadataState.connections.filter((c) => c.id !== existingConnection.id)];
+        nextConnections = [
+          updatedConnection,
+          ...metadataState.connections.filter(
+            c => c.id !== existingConnection.id
+          ),
+        ];
         activeConnectionId = updatedConnection.id;
       } else {
         const newConnection: EgaugeConnectionConfig = {
@@ -861,8 +1027,14 @@ export const egaugeRouter = router({
         activeConnectionId = newConnection.id;
       }
 
-      const activeConnection = nextConnections.find((connection) => connection.id === activeConnectionId) ?? nextConnections[0];
-      const metadata = serializeEgaugeMetadata(nextConnections, activeConnection.id);
+      const activeConnection =
+        nextConnections.find(
+          connection => connection.id === activeConnectionId
+        ) ?? nextConnections[0];
+      const metadata = serializeEgaugeMetadata(
+        nextConnections,
+        activeConnection.id
+      );
 
       await upsertIntegration({
         id: nanoid(),
@@ -889,17 +1061,28 @@ export const egaugeRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        EGAUGE_PROVIDER
+      );
       if (!integration) {
         throw new IntegrationNotConnectedError("eGauge");
       }
-      const metadataState = parseEgaugeMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
-      const activeConnection = metadataState.connections.find((connection) => connection.id === input.connectionId);
+      const metadataState = parseEgaugeMetadata(
+        integration.metadata,
+        toNonEmptyString(integration.accessToken)
+      );
+      const activeConnection = metadataState.connections.find(
+        connection => connection.id === input.connectionId
+      );
       if (!activeConnection) {
         throw new Error("Selected eGauge profile was not found.");
       }
 
-      const metadata = serializeEgaugeMetadata(metadataState.connections, activeConnection.id);
+      const metadata = serializeEgaugeMetadata(
+        metadataState.connections,
+        activeConnection.id
+      );
 
       await upsertIntegration({
         id: nanoid(),
@@ -924,13 +1107,21 @@ export const egaugeRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        EGAUGE_PROVIDER
+      );
       if (!integration) {
         throw new IntegrationNotConnectedError("eGauge");
       }
 
-      const metadataState = parseEgaugeMetadata(integration.metadata, toNonEmptyString(integration.accessToken));
-      const nextConnections = metadataState.connections.filter((connection) => connection.id !== input.connectionId);
+      const metadataState = parseEgaugeMetadata(
+        integration.metadata,
+        toNonEmptyString(integration.accessToken)
+      );
+      const nextConnections = metadataState.connections.filter(
+        connection => connection.id !== input.connectionId
+      );
       if (nextConnections.length === 0) {
         if (integration.id) {
           await deleteIntegration(integration.id);
@@ -944,8 +1135,13 @@ export const egaugeRouter = router({
       }
 
       const nextActiveConnection =
-        nextConnections.find((connection) => connection.id === metadataState.activeConnectionId) ?? nextConnections[0];
-      const metadata = serializeEgaugeMetadata(nextConnections, nextActiveConnection.id);
+        nextConnections.find(
+          connection => connection.id === metadataState.activeConnectionId
+        ) ?? nextConnections[0];
+      const metadata = serializeEgaugeMetadata(
+        nextConnections,
+        nextActiveConnection.id
+      );
 
       await upsertIntegration({
         id: nanoid(),
@@ -966,39 +1162,65 @@ export const egaugeRouter = router({
       };
     }),
   disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      EGAUGE_PROVIDER
+    );
     if (integration?.id) {
       await deleteIntegration(integration.id);
     }
     return { success: true };
   }),
-  getSystemInfo: protectedProcedure.mutation(async ({ ctx }) => {
-    const context = await getEgaugeContext(ctx.user.id);
-    if (context.accessType === "portfolio_login") {
-      throw new Error("System Info is meter-level. Use Fetch Portfolio Systems for portfolio access.");
-    }
-    return getEgaugeSystemInfo(context);
-  }),
-  getLocalData: protectedProcedure.mutation(async ({ ctx }) => {
-    const context = await getEgaugeContext(ctx.user.id);
-    if (context.accessType === "portfolio_login") {
-      throw new Error("Local Data is meter-level. Use Fetch Portfolio Systems for portfolio access.");
-    }
-    return getEgaugeLocalData(context);
-  }),
+  getSystemInfo: protectedProcedure
+    .input(
+      z
+        .object({
+          connectionId: z.string().min(1).optional(),
+        })
+        .optional()
+    )
+    .mutation(async ({ ctx, input }) => {
+      const context = await getEgaugeContext(ctx.user.id, input?.connectionId);
+      if (context.accessType === "portfolio_login") {
+        throw new Error(
+          "System Info is meter-level. Use Fetch Portfolio Systems for portfolio access."
+        );
+      }
+      return getEgaugeSystemInfo(context);
+    }),
+  getLocalData: protectedProcedure
+    .input(
+      z
+        .object({
+          connectionId: z.string().min(1).optional(),
+        })
+        .optional()
+    )
+    .mutation(async ({ ctx, input }) => {
+      const context = await getEgaugeContext(ctx.user.id, input?.connectionId);
+      if (context.accessType === "portfolio_login") {
+        throw new Error(
+          "Local Data is meter-level. Use Fetch Portfolio Systems for portfolio access."
+        );
+      }
+      return getEgaugeLocalData(context);
+    }),
   getRegisterLatest: protectedProcedure
     .input(
       z
         .object({
+          connectionId: z.string().min(1).optional(),
           register: z.string().optional(),
           includeRate: z.boolean().optional(),
         })
         .optional()
     )
     .mutation(async ({ ctx, input }) => {
-      const context = await getEgaugeContext(ctx.user.id);
+      const context = await getEgaugeContext(ctx.user.id, input?.connectionId);
       if (context.accessType === "portfolio_login") {
-        throw new Error("Register Latest is meter-level. Use Fetch Portfolio Systems for portfolio access.");
+        throw new Error(
+          "Register Latest is meter-level. Use Fetch Portfolio Systems for portfolio access."
+        );
       }
       return getEgaugeRegisterLatest(context, {
         register: input?.register,
@@ -1008,6 +1230,7 @@ export const egaugeRouter = router({
   getRegisterHistory: protectedProcedure
     .input(
       z.object({
+        connectionId: z.string().min(1).optional(),
         startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         intervalMinutes: z.number().int().min(1).max(1440).optional(),
@@ -1016,9 +1239,11 @@ export const egaugeRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const context = await getEgaugeContext(ctx.user.id);
+      const context = await getEgaugeContext(ctx.user.id, input.connectionId);
       if (context.accessType === "portfolio_login") {
-        throw new Error("Register History is meter-level. Use Fetch Portfolio Systems for portfolio access.");
+        throw new Error(
+          "Register History is meter-level. Use Fetch Portfolio Systems for portfolio access."
+        );
       }
       return getEgaugeRegisterHistory(context, {
         startDate: input.startDate,
@@ -1032,50 +1257,88 @@ export const egaugeRouter = router({
     .input(
       z
         .object({
+          connectionId: z.string().min(1).optional(),
           filter: z.string().optional(),
           groupId: z.string().optional(),
         })
         .optional()
     )
     .mutation(async ({ ctx, input }) => {
-      const context = await getEgaugeContext(ctx.user.id);
+      const context = await getEgaugeContext(ctx.user.id, input?.connectionId);
       if (context.accessType !== "portfolio_login") {
-        throw new Error("Switch access type to Portfolio Login, then run Fetch Portfolio Systems.");
+        throw new Error(
+          "Switch access type to Portfolio Login, then run Fetch Portfolio Systems."
+        );
       }
-      return getEgaugePortfolioSystems(context, {
+      const result = await getEgaugePortfolioSystems(context, {
         filter: input?.filter,
         groupId: input?.groupId,
       });
+      return {
+        connectionId: context.connectionId,
+        connectionName: context.connectionName,
+        meterId: context.meterId,
+        ...result,
+      };
     }),
   getProductionSnapshots: protectedProcedure
     .input(
       z
         .object({
+          connectionId: z.string().min(1).optional(),
           meterIds: z.array(z.string().min(1)).max(5000).optional(),
-          anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+          anchorDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .optional(),
           autoFetchPortfolioIds: z.boolean().optional(),
           filter: z.string().optional(),
           groupId: z.string().optional(),
         })
         .refine(
-          (value) => Boolean(value.autoFetchPortfolioIds) || (value.meterIds?.length ?? 0) > 0,
+          value =>
+            Boolean(value.autoFetchPortfolioIds) ||
+            (value.meterIds?.length ?? 0) > 0,
           {
-            message: "Provide at least one meter ID or enable portfolio auto-fetch.",
+            message:
+              "Provide at least one meter ID or enable portfolio auto-fetch.",
             path: ["meterIds"],
           }
         )
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
-      const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        EGAUGE_PROVIDER
+      );
+      const metadata = parseEgaugeMetadata(
+        integration?.metadata,
+        toNonEmptyString(integration?.accessToken)
+      );
 
       const allConnections = metadata.connections;
       if (allConnections.length === 0) {
         throw new IntegrationNotConnectedError("eGauge");
       }
-      const activeConnection =
-        allConnections.find((connection) => connection.id === metadata.activeConnectionId) ??
+      const requestedConnection =
+        (toNonEmptyString(input.connectionId)
+          ? allConnections.find(
+              connection => connection.id === input.connectionId
+            )
+          : undefined) ??
+        allConnections.find(
+          connection => connection.id === metadata.activeConnectionId
+        ) ??
         allConnections[0];
+      if (!requestedConnection) {
+        throw new IntegrationNotConnectedError("eGauge");
+      }
+      if (
+        toNonEmptyString(input.connectionId) &&
+        requestedConnection.id !== input.connectionId
+      ) {
+        throw new Error("Selected eGauge profile was not found.");
+      }
 
       const anchorDate =
         input.anchorDate ??
@@ -1085,10 +1348,10 @@ export const egaugeRouter = router({
         })();
 
       const requestedMeterIds = (input.meterIds ?? [])
-        .map((id) => id.trim())
-        .filter((id) => id.length > 0);
+        .map(id => id.trim())
+        .filter(id => id.length > 0);
       const uniqueMeterIdsByKey = new Map<string, string>();
-      requestedMeterIds.forEach((meterId) => {
+      requestedMeterIds.forEach(meterId => {
         const key = meterId.toLowerCase();
         if (!uniqueMeterIdsByKey.has(key)) {
           uniqueMeterIdsByKey.set(key, meterId);
@@ -1097,21 +1360,22 @@ export const egaugeRouter = router({
       const uniqueMeterIds = Array.from(uniqueMeterIdsByKey.values());
 
       const usePortfolioBulk =
-        activeConnection.accessType === "portfolio_login" || Boolean(input.autoFetchPortfolioIds);
+        requestedConnection.accessType === "portfolio_login" ||
+        Boolean(input.autoFetchPortfolioIds);
 
       if (usePortfolioBulk) {
-        if (activeConnection.accessType !== "portfolio_login") {
+        if (requestedConnection.accessType !== "portfolio_login") {
           throw new Error(
-            "Portfolio auto-fetch requires the active eGauge profile to use Portfolio Login."
+            "Portfolio auto-fetch requires the selected eGauge profile to use Portfolio Login."
           );
         }
 
         const portfolioResult = await getEgaugePortfolioSystems(
           {
-            baseUrl: activeConnection.baseUrl,
-            accessType: activeConnection.accessType,
-            username: activeConnection.username,
-            password: activeConnection.password,
+            baseUrl: requestedConnection.baseUrl,
+            accessType: requestedConnection.accessType,
+            username: requestedConnection.username,
+            password: requestedConnection.password,
           },
           {
             filter: input.filter,
@@ -1121,13 +1385,18 @@ export const egaugeRouter = router({
         );
 
         const portfolioRowsByMeterId = new Map(
-          portfolioResult.rows.map((row) => [row.meterId.trim().toLowerCase(), row])
+          portfolioResult.rows.map(row => [
+            row.meterId.trim().toLowerCase(),
+            row,
+          ])
         );
 
         const rows =
           uniqueMeterIds.length > 0
-            ? uniqueMeterIds.map((meterId) => {
-                const matchedRow = portfolioRowsByMeterId.get(meterId.toLowerCase());
+            ? uniqueMeterIds.map(meterId => {
+                const matchedRow = portfolioRowsByMeterId.get(
+                  meterId.toLowerCase()
+                );
                 if (matchedRow) return matchedRow;
                 return {
                   meterId,
@@ -1143,11 +1412,13 @@ export const egaugeRouter = router({
 
         return {
           total: rows.length,
-          found: rows.filter((row) => row.status === "Found").length,
-          notFound: rows.filter((row) => row.status === "Not Found").length,
-          errored: rows.filter((row) => row.status === "Error").length,
+          found: rows.filter(row => row.status === "Found").length,
+          notFound: rows.filter(row => row.status === "Not Found").length,
+          errored: rows.filter(row => row.status === "Error").length,
           source: "portfolio" as const,
-          meterIdsUsed: rows.map((row) => row.meterId),
+          connectionId: requestedConnection.id,
+          connectionName: requestedConnection.name,
+          meterIdsUsed: rows.map(row => row.meterId),
           rows,
         };
       }
@@ -1155,46 +1426,50 @@ export const egaugeRouter = router({
       // Build map from meterId to non-portfolio meter connections for quick lookup.
       const connectionByMeterId = new Map(
         allConnections
-          .filter((conn) => conn.accessType !== "portfolio_login")
-          .map((conn) => [conn.meterId.toLowerCase(), conn])
+          .filter(conn => conn.accessType !== "portfolio_login")
+          .map(conn => [conn.meterId.toLowerCase(), conn])
       );
 
       if (uniqueMeterIds.length === 0) {
         throw new Error("Provide at least one meter ID.");
       }
 
-      const rows = await mapWithConcurrency(uniqueMeterIds, 4, async (meterId: string) => {
-        const conn = connectionByMeterId.get(meterId.toLowerCase());
-        if (!conn) {
-          return {
-            meterId,
-            meterName: null,
-            status: "Not Found" as const,
-            found: false,
-            lifetimeKwh: null,
-            anchorDate,
-            error: `No saved connection for meter ID "${meterId}".`,
-          };
-        }
+      const rows = await mapWithConcurrency(
+        uniqueMeterIds,
+        4,
+        async (meterId: string) => {
+          const conn = connectionByMeterId.get(meterId.toLowerCase());
+          if (!conn) {
+            return {
+              meterId,
+              meterName: null,
+              status: "Not Found" as const,
+              found: false,
+              lifetimeKwh: null,
+              anchorDate,
+              error: `No saved connection for meter ID "${meterId}".`,
+            };
+          }
 
-        return getMeterProductionSnapshotEgauge(
-          {
-            baseUrl: conn.baseUrl,
-            accessType: conn.accessType,
-            username: conn.username,
-            password: conn.password,
-          },
-          meterId,
-          conn.name,
-          anchorDate
-        );
-      });
+          return getMeterProductionSnapshotEgauge(
+            {
+              baseUrl: conn.baseUrl,
+              accessType: conn.accessType,
+              username: conn.username,
+              password: conn.password,
+            },
+            meterId,
+            conn.name,
+            anchorDate
+          );
+        }
+      );
 
       return {
         total: rows.length,
-        found: rows.filter((row) => row.status === "Found").length,
-        notFound: rows.filter((row) => row.status === "Not Found").length,
-        errored: rows.filter((row) => row.status === "Error").length,
+        found: rows.filter(row => row.status === "Found").length,
+        notFound: rows.filter(row => row.status === "Not Found").length,
+        errored: rows.filter(row => row.status === "Error").length,
         source: "saved_connections" as const,
         meterIdsUsed: uniqueMeterIds,
         rows,
@@ -1210,15 +1485,23 @@ export const egaugeRouter = router({
         .optional()
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, EGAUGE_PROVIDER);
-      const metadata = parseEgaugeMetadata(integration?.metadata, toNonEmptyString(integration?.accessToken));
+      const integration = await getIntegrationByProvider(
+        ctx.user.id,
+        EGAUGE_PROVIDER
+      );
+      const metadata = parseEgaugeMetadata(
+        integration?.metadata,
+        toNonEmptyString(integration?.accessToken)
+      );
 
       const portfolioConnections = metadata.connections.filter(
-        (c) => c.accessType === "portfolio_login" && c.username && c.password
+        c => c.accessType === "portfolio_login" && c.username && c.password
       );
 
       if (portfolioConnections.length === 0) {
-        throw new Error("No portfolio login connections found. Save at least one Portfolio Login profile first.");
+        throw new Error(
+          "No portfolio login connections found. Save at least one Portfolio Login profile first."
+        );
       }
 
       const portfolioResults: Array<{
@@ -1279,9 +1562,9 @@ export const egaugeRouter = router({
         portfolioCount: portfolioConnections.length,
         portfolioResults,
         total: mergedRows.length,
-        found: mergedRows.filter((r) => r.status === "Found").length,
-        notFound: mergedRows.filter((r) => r.status === "Not Found").length,
-        errored: mergedRows.filter((r) => r.status === "Error").length,
+        found: mergedRows.filter(r => r.status === "Found").length,
+        notFound: mergedRows.filter(r => r.status === "Not Found").length,
+        errored: mergedRows.filter(r => r.status === "Error").length,
         rows: mergedRows,
       };
     }),
@@ -1289,7 +1572,10 @@ export const egaugeRouter = router({
 
 export const teslaSolarRouter = router({
   getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, TESLA_SOLAR_PROVIDER);
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      TESLA_SOLAR_PROVIDER
+    );
     const metadata = parseTeslaSolarMetadata(integration?.metadata);
     return {
       connected: Boolean(toNonEmptyString(integration?.accessToken)),
@@ -1322,7 +1608,10 @@ export const teslaSolarRouter = router({
       return { success: true };
     }),
   disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, TESLA_SOLAR_PROVIDER);
+    const integration = await getIntegrationByProvider(
+      ctx.user.id,
+      TESLA_SOLAR_PROVIDER
+    );
     if (integration?.id) {
       await deleteIntegration(integration.id);
     }
@@ -1365,8 +1654,14 @@ export const teslaSolarRouter = router({
         siteId: z.string().min(1),
         kind: z.string().optional(),
         period: z.string().optional(),
-        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        startDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        endDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
