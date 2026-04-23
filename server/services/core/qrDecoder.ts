@@ -236,18 +236,92 @@ export async function decodeQrInRegions(
     (jsqrMod as unknown as { default?: unknown }).default ?? jsqrMod;
   const jsQR = jsqrCandidate as JsQrFn;
 
+  const runJsqr = (
+    pixels: Uint8ClampedArray,
+    w: number,
+    h: number
+  ): string | null => {
+    try {
+      const result = jsQR(pixels, w, h, {
+        inversionAttempts: JSQR_INVERSION_MODE,
+      });
+      return result && typeof result.data === "string" && result.data.trim()
+        ? result.data.trim()
+        : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // ZXing is markedly more tolerant than jsqr on slight blur and
+  // perspective distortion — exactly the regime where Claude-located
+  // crops tend to live. Lazy-init once on first use.
+  type ZxingReader = {
+    decode: (pixels: Uint8ClampedArray, w: number, h: number) => string | null;
+  };
+  let zxingReader: ZxingReader | null = null;
+  const getZxing = async (): Promise<ZxingReader> => {
+    if (zxingReader) return zxingReader;
+    const mod = await import("@zxing/library");
+    const { BinaryBitmap, HybridBinarizer, RGBLuminanceSource, MultiFormatReader, DecodeHintType, BarcodeFormat, NotFoundException } = mod;
+    const reader = new MultiFormatReader();
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    reader.setHints(hints);
+    zxingReader = {
+      decode: (pixels, w, h) => {
+        try {
+          const len = pixels.length / 4;
+          const argb = new Int32Array(len);
+          for (let i = 0; i < len; i += 1) {
+            const r = pixels[i * 4];
+            const g = pixels[i * 4 + 1];
+            const b = pixels[i * 4 + 2];
+            argb[i] = (0xff << 24) | (r << 16) | (g << 8) | b;
+          }
+          const source = new RGBLuminanceSource(argb, w, h);
+          const binary = new BinaryBitmap(new HybridBinarizer(source));
+          const result = reader.decode(binary, hints);
+          const text = result.getText();
+          return text && text.trim() ? text.trim() : null;
+        } catch (err) {
+          if (err instanceof NotFoundException) return null;
+          return null;
+        }
+      },
+    };
+    return zxingReader;
+  };
+
+  // Filter bboxes that are obviously too small to contain a
+  // decodable QR at source resolution. Claude occasionally points
+  // at compliance-mark stickers or small logos as "QR-like", and
+  // those bboxes waste a sharp.extract() + decode cycle.
+  const MIN_BBOX_PIXELS = 80;
+  const filteredRegions = regions.filter((r) => {
+    const wPx = Math.round((r.right - r.left) * width);
+    const hPx = Math.round((r.bottom - r.top) * height);
+    return Math.max(wPx, hPx) >= MIN_BBOX_PIXELS;
+  });
+  if (filteredRegions.length === 0) return { payloads: [], attempts: 0 };
+
   const CROP_TARGET_PX = 1000;
+  // Bumped 10% → 25%. QR codes require a "quiet zone" (unprinted
+  // border ≥ 4 modules). Claude tends to draw snug bboxes right
+  // around the printed modules, which leaves no quiet zone and
+  // makes decoders reject the code even when every pixel is
+  // perfectly clear. 25% padding gives ~4 modules of whitespace on
+  // all sides for a typical sticker.
+  const BBOX_PAD = 0.25;
 
   let attempts = 0;
-  for (let i = 0; i < regions.length; i += 1) {
-    const region = regions[i];
-    // Pad each bbox by 10% so the QR's quiet zone (required by the
-    // QR spec but often cropped tight by the model) is preserved.
-    const pad = 0.1;
-    const leftFrac = Math.max(0, region.left - pad);
-    const topFrac = Math.max(0, region.top - pad);
-    const rightFrac = Math.min(1, region.right + pad);
-    const bottomFrac = Math.min(1, region.bottom + pad);
+  for (let i = 0; i < filteredRegions.length; i += 1) {
+    const region = filteredRegions[i];
+    const leftFrac = Math.max(0, region.left - BBOX_PAD);
+    const topFrac = Math.max(0, region.top - BBOX_PAD);
+    const rightFrac = Math.min(1, region.right + BBOX_PAD);
+    const bottomFrac = Math.min(1, region.bottom + BBOX_PAD);
 
     const left = Math.floor(leftFrac * width);
     const top = Math.floor(topFrac * height);
@@ -260,6 +334,9 @@ export async function decodeQrInRegions(
     const outW = Math.round(cropW * scale);
     const outH = Math.round(cropH * scale);
 
+    let pixels: Uint8ClampedArray;
+    let frameW = 0;
+    let frameH = 0;
     try {
       const { data: raw, info } = await sharp(Buffer.from(originalBytes), {
         failOn: "none",
@@ -276,25 +353,35 @@ export async function decodeQrInRegions(
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
-      const pixels = new Uint8ClampedArray(raw.length);
+      pixels = new Uint8ClampedArray(raw.length);
       pixels.set(raw);
-      attempts += 1;
-      const result = jsQR(pixels, info.width, info.height, {
-        inversionAttempts: JSQR_INVERSION_MODE,
-      });
-      const payload =
-        result && typeof result.data === "string" && result.data.trim()
-          ? result.data.trim()
-          : null;
-      if (payload) {
-        return {
-          payloads: [payload],
-          attempts,
-          winningStrategy: `jsqr locator-crop ${i} (${left},${top} ${cropW}x${cropH} → ${outW}x${outH})`,
-        };
-      }
+      frameW = info.width;
+      frameH = info.height;
     } catch {
-      /* skip this bbox, try next */
+      continue;
+    }
+
+    attempts += 1;
+    const jsqrPayload = runJsqr(pixels, frameW, frameH);
+    if (jsqrPayload) {
+      return {
+        payloads: [jsqrPayload],
+        attempts,
+        winningStrategy: `jsqr locator-crop ${i} (${left},${top} ${cropW}x${cropH} → ${outW}x${outH})`,
+      };
+    }
+
+    // ZXing fallback on the same crop. Separate attempt count so
+    // ZXing decodes are visible in the log independent of jsqr.
+    const zxing = await getZxing();
+    attempts += 1;
+    const zxingPayload = zxing.decode(pixels, frameW, frameH);
+    if (zxingPayload) {
+      return {
+        payloads: [zxingPayload],
+        attempts,
+        winningStrategy: `zxing locator-crop ${i} (${left},${top} ${cropW}x${cropH} → ${outW}x${outH})`,
+      };
     }
   }
 
