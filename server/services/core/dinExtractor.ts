@@ -25,7 +25,7 @@
 
 import { fetchJson, HttpClientError } from "./httpClient";
 import { normalizeForExtraction, rotateImage } from "./imageOps";
-import { decodeQrPayloads } from "./qrDecoder";
+import { decodeQrPayloads, decodeQrInRegions } from "./qrDecoder";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
@@ -91,6 +91,20 @@ export type ExtractorLog = {
   qr?: {
     payloads: string[];
     attempts: number;
+    matchedDins: string[];
+    winningStrategy?: string;
+    error?: string;
+  };
+  /** Claude-guided QR localization attempts (step 2.5). */
+  qrLocator?: {
+    attempted: boolean;
+    regions: Array<{
+      left: number;
+      top: number;
+      right: number;
+      bottom: number;
+    }>;
+    payloads: string[];
     matchedDins: string[];
     winningStrategy?: string;
     error?: string;
@@ -370,6 +384,120 @@ async function callClaudeOnImage(
 }
 
 /* --------------------------------------------------------------------- */
+/*  Claude-guided QR localization                                          */
+/* --------------------------------------------------------------------- */
+
+const QR_LOCATOR_INSTRUCTIONS = [
+  "Look at this image. Identify every QR code visible, even if small, at an angle, or partially obscured. A QR code is a square matrix barcode with three large square 'finder patterns' in the corners.",
+  "",
+  "Return STRICT JSON ONLY. Schema:",
+  '  { "qrs": [{ "left": number, "top": number, "right": number, "bottom": number }] }',
+  "",
+  "Coordinates are FRACTIONAL (0.0 to 1.0):",
+  "  - left: horizontal distance from the left edge of the image",
+  "  - top: vertical distance from the top edge of the image",
+  "  - right: horizontal distance from the left edge (right > left)",
+  "  - bottom: vertical distance from the top edge (bottom > top)",
+  "",
+  "Give a SNUG bounding box around the QR code itself, not the whole sticker it sits on. If a QR is visible but partially cut off, return the visible portion. If no QR codes are present, return { \"qrs\": [] }.",
+].join("\n");
+
+/**
+ * Ask Claude to locate every QR code in the image and return
+ * fractional bounding boxes. The caller then crops the original
+ * image at full resolution for each box and runs jsqr on the
+ * upscaled crop — QR decoding stays deterministic (zero
+ * hallucination risk); Claude is only responsible for WHERE to
+ * look, not WHAT the payload is.
+ *
+ * Returns an empty array on any failure. The caller falls through
+ * to the general Claude extraction path.
+ */
+async function locateQrRegionsWithClaude(
+  data: Uint8Array,
+  mimeType: string,
+  credentials: DinExtractorCredentials
+): Promise<Array<{ left: number; top: number; right: number; bottom: number }>> {
+  if (!credentials.anthropicApiKey) return [];
+  if (!isClaudeCompatibleImage(mimeType)) return [];
+
+  const model = credentials.anthropicModel ?? DEFAULT_VISION_MODEL;
+  try {
+    const result = await fetchJson<{
+      content?: Array<{ type: string; text?: string }>;
+    }>(ANTHROPIC_MESSAGES_URL, {
+      service: "Anthropic (QR locator)",
+      method: "POST",
+      timeoutMs: ANTHROPIC_VISION_TIMEOUT_MS,
+      maxRetries: 2,
+      headers: {
+        "x-api-key": credentials.anthropicApiKey,
+        "anthropic-version": ANTHROPIC_API_VERSION,
+      },
+      body: {
+        model,
+        max_tokens: 512,
+        temperature: 0,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: mimeType,
+                  data: toBase64(data),
+                },
+              },
+              { type: "text", text: QR_LOCATOR_INSTRUCTIONS },
+            ],
+          },
+        ],
+      },
+    });
+
+    const rawText =
+      result.data.content?.find((b) => b.type === "text")?.text ?? "";
+    if (!rawText) return [];
+
+    const fenceMatch = /```(?:json)?\s*([\s\S]*?)```/.exec(rawText);
+    const payload = fenceMatch ? fenceMatch[1] : rawText;
+    const start = payload.indexOf("{");
+    const end = payload.lastIndexOf("}");
+    if (start < 0 || end <= start) return [];
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload.slice(start, end + 1));
+    } catch {
+      return [];
+    }
+    if (!parsed || typeof parsed !== "object") return [];
+    const qrs = (parsed as { qrs?: unknown }).qrs;
+    if (!Array.isArray(qrs)) return [];
+
+    const out: Array<{ left: number; top: number; right: number; bottom: number }> = [];
+    for (const q of qrs) {
+      if (!q || typeof q !== "object") continue;
+      const r = q as Record<string, unknown>;
+      const left = typeof r.left === "number" ? r.left : NaN;
+      const top = typeof r.top === "number" ? r.top : NaN;
+      const right = typeof r.right === "number" ? r.right : NaN;
+      const bottom = typeof r.bottom === "number" ? r.bottom : NaN;
+      if (!Number.isFinite(left) || !Number.isFinite(top)) continue;
+      if (!Number.isFinite(right) || !Number.isFinite(bottom)) continue;
+      if (right <= left || bottom <= top) continue;
+      if (left < 0 || top < 0 || right > 1 || bottom > 1) continue;
+      out.push({ left, top, right, bottom });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/* --------------------------------------------------------------------- */
 /*  Tesseract (local OCR fallback)                                        */
 /* --------------------------------------------------------------------- */
 
@@ -562,6 +690,56 @@ export async function extractDinsFromPhoto(
       matchedDins: [],
       error: `qr decode failed: ${errMsg(err)}`,
     };
+  }
+
+  // Step 2.5 — Claude-guided QR localization. Only runs if the
+  // tile-search QR missed AND we have an Anthropic key. Asks Claude
+  // to point at the QR codes in the frame; for each bbox, we crop
+  // the ORIGINAL image at full resolution, upscale the crop, and
+  // run jsqr on it. QR decoding stays deterministic — Claude is
+  // only used for WHERE to look, not for reading the payload.
+  // This catches the wide-angle-inverter case where the QR is
+  // ~150 px in a 12 MP frame and gets lost in the uniform 1500 px
+  // tile search.
+  if (credentials.anthropicApiKey && isClaudeCompatibleImage(log.normalizedMimeType)) {
+    try {
+      const regions = await locateQrRegionsWithClaude(
+        workingBytes,
+        "image/jpeg",
+        credentials
+      );
+      log.qrLocator = {
+        attempted: true,
+        regions,
+        payloads: [],
+        matchedDins: [],
+      };
+      if (regions.length > 0) {
+        const located = await decodeQrInRegions(workingBytes, regions);
+        log.qrLocator.payloads = located.payloads;
+        log.qrLocator.winningStrategy = located.winningStrategy;
+        const locatedDins: DinMatch[] = [];
+        for (const payload of located.payloads) {
+          locatedDins.push(...extractDinsFromQrPayload(payload, "qr"));
+        }
+        log.qrLocator.matchedDins = locatedDins.map((m) => m.dinValue);
+        if (locatedDins.length > 0) {
+          log.finalExtractor = "qr";
+          return finalize(locatedDins, log, {
+            claudeAttempted: true,
+            claudeFailed: false,
+          });
+        }
+      }
+    } catch (err) {
+      log.qrLocator = {
+        attempted: true,
+        regions: [],
+        payloads: [],
+        matchedDins: [],
+        error: `qr locator failed: ${errMsg(err)}`,
+      };
+    }
   }
 
   // Step 3 — Claude vision.

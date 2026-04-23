@@ -194,3 +194,109 @@ export async function decodeQrPayloads(
 
   return { payloads: [], attempts };
 }
+
+/**
+ * Second-stage QR decoder: given bounding boxes produced by a
+ * vision model (see `locateQrRegionsWithVision` in dinExtractor.ts),
+ * crop each region FROM THE ORIGINAL image bytes at full resolution,
+ * upscale the crop so the QR modules are large enough for jsqr,
+ * then run jsqr on the result.
+ *
+ * This catches the wide-angle-inverter-cabinet case where the QR is
+ * ~150 px wide in a 12 MP frame — too small after our uniform 1500 px
+ * tile-search downsample, but decodable once we crop tight and
+ * upscale the crop to ~1000 px.
+ *
+ * Coordinates are fractional (0.0 - 1.0) because the vision model
+ * reasons about the image at its own internal resolution; we map
+ * them to pixel coords against the original image.
+ */
+export async function decodeQrInRegions(
+  originalBytes: Uint8Array,
+  regions: Array<{ left: number; top: number; right: number; bottom: number }>
+): Promise<QrDecodeResult> {
+  if (regions.length === 0) return { payloads: [], attempts: 0 };
+
+  const sharpMod = await import("sharp");
+  const sharp = sharpMod.default;
+
+  let width = 0;
+  let height = 0;
+  try {
+    const meta = await sharp(Buffer.from(originalBytes)).rotate().metadata();
+    width = meta.width ?? 0;
+    height = meta.height ?? 0;
+  } catch {
+    return { payloads: [], attempts: 0 };
+  }
+  if (width === 0 || height === 0) return { payloads: [], attempts: 0 };
+
+  const jsqrMod = await import("jsqr");
+  const jsqrCandidate =
+    (jsqrMod as unknown as { default?: unknown }).default ?? jsqrMod;
+  const jsQR = jsqrCandidate as JsQrFn;
+
+  const CROP_TARGET_PX = 1000;
+
+  let attempts = 0;
+  for (let i = 0; i < regions.length; i += 1) {
+    const region = regions[i];
+    // Pad each bbox by 10% so the QR's quiet zone (required by the
+    // QR spec but often cropped tight by the model) is preserved.
+    const pad = 0.1;
+    const leftFrac = Math.max(0, region.left - pad);
+    const topFrac = Math.max(0, region.top - pad);
+    const rightFrac = Math.min(1, region.right + pad);
+    const bottomFrac = Math.min(1, region.bottom + pad);
+
+    const left = Math.floor(leftFrac * width);
+    const top = Math.floor(topFrac * height);
+    const cropW = Math.max(1, Math.floor((rightFrac - leftFrac) * width));
+    const cropH = Math.max(1, Math.floor((bottomFrac - topFrac) * height));
+    if (cropW <= 0 || cropH <= 0) continue;
+
+    const longEdge = Math.max(cropW, cropH);
+    const scale = longEdge < CROP_TARGET_PX ? CROP_TARGET_PX / longEdge : 1;
+    const outW = Math.round(cropW * scale);
+    const outH = Math.round(cropH * scale);
+
+    try {
+      const { data: raw, info } = await sharp(Buffer.from(originalBytes), {
+        failOn: "none",
+      })
+        .rotate()
+        .extract({ left, top, width: cropW, height: cropH })
+        .resize({
+          width: outW,
+          height: outH,
+          fit: "fill",
+          kernel: "lanczos3",
+        })
+        .toColorspace("srgb")
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const pixels = new Uint8ClampedArray(raw.length);
+      pixels.set(raw);
+      attempts += 1;
+      const result = jsQR(pixels, info.width, info.height, {
+        inversionAttempts: JSQR_INVERSION_MODE,
+      });
+      const payload =
+        result && typeof result.data === "string" && result.data.trim()
+          ? result.data.trim()
+          : null;
+      if (payload) {
+        return {
+          payloads: [payload],
+          attempts,
+          winningStrategy: `jsqr locator-crop ${i} (${left},${top} ${cropW}x${cropH} → ${outW}x${outH})`,
+        };
+      }
+    } catch {
+      /* skip this bbox, try next */
+    }
+  }
+
+  return { payloads: [], attempts };
+}
