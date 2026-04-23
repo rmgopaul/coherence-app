@@ -18,7 +18,7 @@ const DIN_SCRAPE_CONCURRENCY = 4;
  */
 const CLAUDE_FAILURE_THRESHOLD = 20;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@15";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@14";
 
 const activeRunners = new Set<string>();
 
@@ -223,11 +223,6 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
         // Per-photo extractor audit trail — surfaced in the Sites tab
         // so zero-DIN photos can be diagnosed without a re-run.
         const perPhotoLogs: unknown[] = [];
-        // Tesla STE IDs seen across all photos of this site. STE is
-        // site-scoped (one per Tesla system), so we dedup and pick
-        // the single most-common value. In practice all photos of
-        // a site either show the same STE ID or none at all.
-        const siteSteIdVotes = new Map<string, number>();
 
         if (!siteError && fetched.photos.length > 0) {
           for (const photo of fetched.photos) {
@@ -250,12 +245,6 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
                 { fileName: photo.fileName, url: photo.url }
               );
               perPhotoLogs.push(result.log);
-              for (const steId of result.steIds) {
-                siteSteIdVotes.set(
-                  steId,
-                  (siteSteIdVotes.get(steId) ?? 0) + 1
-                );
-              }
               if (result.claudeFailed) {
                 claudeFailureCount += 1;
                 if (!claudeDisabled && claudeFailureCount >= CLAUDE_FAILURE_THRESHOLD) {
@@ -318,23 +307,6 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
             runnerVersion: DIN_SCRAPE_RUNNER_VERSION,
           }).slice(0, 900_000);
 
-          // Pick the STE ID with the most observations across this
-          // site's photos. Ties resolve lexicographically. Stable
-          // against a single flaky OCR read misspelling the ID.
-          let winningSteId: string | null = null;
-          let bestVoteCount = 0;
-          siteSteIdVotes.forEach((votes, steId) => {
-            if (
-              votes > bestVoteCount ||
-              (votes === bestVoteCount &&
-                winningSteId !== null &&
-                steId < winningSteId)
-            ) {
-              winningSteId = steId;
-              bestVoteCount = votes;
-            }
-          });
-
           await persistDinScrapeSiteResult({
             result: {
               id: nanoid(),
@@ -344,7 +316,6 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
               inverterPhotoCount: inverterCount,
               meterPhotoCount: meterCount,
               dinCount: deduped.length,
-              steId: winningSteId,
               error: siteError ?? null,
               extractorLog: extractorLogJson,
               scannedAt: new Date(),

@@ -833,13 +833,6 @@ export const dinScrapeResults = mysqlTable(
     inverterPhotoCount: int("inverterPhotoCount").default(0).notNull(),
     meterPhotoCount: int("meterPhotoCount").default(0).notNull(),
     dinCount: int("dinCount").default(0).notNull(),
-    /**
-     * Tesla System Tesla Energy ID (e.g. "STE20230612-00205") if
-     * visible in any Powerhub-app screenshot OCR'd for this site.
-     * Site-scoped (one per system), so a single column rather than
-     * a one-to-many like dinScrapeDins.
-     */
-    steId: varchar("steId", { length: 64 }),
     error: text("error"),
     /**
      * JSON-serialized audit trail of every extractor attempt for this

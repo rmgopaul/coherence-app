@@ -63,33 +63,6 @@ function isClaudeCompatibleImage(mimeType: string): boolean {
 const DIN_REGEX =
   /\b([0-9]{4,}[-–—\s]+[0-9]{1,3}[-–—\s]+[A-Z][-–—\s]+[A-Z0-9]{4,})\b/gi;
 
-// Tesla System Tesla Energy ID — "STE" + 8-digit install date +
-// "-" + 5-digit sequence, e.g. STE20230612-00205. Appears in
-// Powerhub-app diagnostics screenshots and on some installation
-// paperwork. Site-scoped (one per Tesla system, not per device).
-const STE_ID_REGEX = /\b(STE\d{8}-\d{5})\b/gi;
-
-function normalizeSteId(raw: string): string {
-  return raw.trim().toUpperCase();
-}
-
-/**
- * Collect every distinct STE ID from a block of free text (OCR
- * output or a model response). Used opportunistically: whenever
- * we already have text for DIN extraction, we scan the same text
- * for STE IDs at zero extra cost.
- */
-function extractSteIds(text: string): string[] {
-  if (!text) return [];
-  const seen = new Set<string>();
-  const regex = new RegExp(STE_ID_REGEX.source, STE_ID_REGEX.flags);
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    seen.add(normalizeSteId(match[1]));
-  }
-  return Array.from(seen);
-}
-
 export type DinExtractor = "claude" | "tesseract" | "pdfjs" | "qr";
 
 export type DinMatch = {
@@ -153,13 +126,6 @@ export type ExtractorLog = {
 
 export type DinExtractionResult = {
   dins: DinMatch[];
-  /**
-   * Tesla STE IDs ("STE20230612-00205") seen anywhere in this
-   * photo's text output (tesseract + Claude responses). The
-   * runner aggregates across photos of a site and persists a
-   * single STE ID onto dinScrapeResults.
-   */
-  steIds: string[];
   claudeAttempted: boolean;
   claudeFailed: boolean;
   log: ExtractorLog;
@@ -677,15 +643,6 @@ export async function extractDinsFromPhoto(
     finalExtractor: "none",
   };
 
-  // STE IDs are collected opportunistically from every text source
-  // the pipeline touches — tesseract output + each Claude rotation's
-  // raw response text. A single Set across the whole photo so the
-  // same ID, seen multiple times, only shows up once.
-  const steIdsFound = new Set<string>();
-  const captureStes = (text: string) => {
-    for (const id of extractSteIds(text)) steIdsFound.add(id);
-  };
-
   // Step 1 — PDFs get text extraction only; no rasterization.
   // Empirically, CSG portal PDFs are contracts / receipts / brochures
   // that don't contain DINs in image form, so the only useful thing
@@ -695,7 +652,7 @@ export async function extractDinsFromPhoto(
       const fromText = await extractDinsFromPdfText(data);
       if (fromText.length > 0) {
         log.finalExtractor = "pdfjs";
-        return finalize(fromText, log, { claudeAttempted: false, claudeFailed: false }, steIdsFound);
+        return finalize(fromText, log, { claudeAttempted: false, claudeFailed: false });
       }
     } catch (err) {
       log.tesseract = {
@@ -705,7 +662,7 @@ export async function extractDinsFromPhoto(
         error: `pdfjs text extract failed: ${errMsg(err)}`,
       };
     }
-    return finalize([], log, { claudeAttempted: false, claudeFailed: false }, steIdsFound);
+    return finalize([], log, { claudeAttempted: false, claudeFailed: false });
   }
 
   // Step 1b (images only) — normalize bytes to a single upright JPEG.
@@ -724,7 +681,7 @@ export async function extractDinsFromPhoto(
       rawTextSnippet: "",
       error: `normalize failed: ${errMsg(err)}`,
     };
-    return finalize([], log, { claudeAttempted: false, claudeFailed: false }, steIdsFound);
+    return finalize([], log, { claudeAttempted: false, claudeFailed: false });
   }
 
   // Step 2 — QR decode. If any decoded payload contains a DIN, we're
@@ -750,7 +707,7 @@ export async function extractDinsFromPhoto(
     };
     if (matched.length > 0) {
       log.finalExtractor = "qr";
-      return finalize(matched, log, { claudeAttempted: false, claudeFailed: false }, steIdsFound);
+      return finalize(matched, log, { claudeAttempted: false, claudeFailed: false });
     }
   } catch (err) {
     log.qr = {
@@ -794,12 +751,10 @@ export async function extractDinsFromPhoto(
         log.qrLocator.matchedDins = locatedDins.map((m) => m.dinValue);
         if (locatedDins.length > 0) {
           log.finalExtractor = "qr";
-          return finalize(
-            locatedDins,
-            log,
-            { claudeAttempted: true, claudeFailed: false },
-            steIdsFound
-          );
+          return finalize(locatedDins, log, {
+            claudeAttempted: true,
+            claudeFailed: false,
+          });
         }
       }
     } catch (err) {
@@ -842,7 +797,6 @@ export async function extractDinsFromPhoto(
         "image/jpeg",
         credentials
       );
-      captureStes(rawText);
       log.claude.push({
         rotation: 0,
         dinsFound: dins.length,
@@ -850,7 +804,7 @@ export async function extractDinsFromPhoto(
       });
       if (dins.length > 0) {
         log.finalExtractor = "claude";
-        return finalize(dins, log, { claudeAttempted, claudeFailed }, steIdsFound);
+        return finalize(dins, log, { claudeAttempted, claudeFailed });
       }
     } catch (err) {
       claudeFailed = true;
@@ -885,7 +839,6 @@ export async function extractDinsFromPhoto(
 
       for (const outcome of rotatedAttempts) {
         if (outcome.status === "fulfilled") {
-          captureStes(outcome.value.rawText);
           log.claude.push({
             rotation: outcome.value.rotation,
             dinsFound: outcome.value.dins.length,
@@ -912,7 +865,7 @@ export async function extractDinsFromPhoto(
       );
       if (winner) {
         log.finalExtractor = "claude";
-        return finalize(winner.value.dins, log, { claudeAttempted, claudeFailed }, steIdsFound);
+        return finalize(winner.value.dins, log, { claudeAttempted, claudeFailed });
       }
     }
   }
@@ -920,7 +873,6 @@ export async function extractDinsFromPhoto(
   // Step 4 — tesseract fallback (single pass, image already normalized).
   try {
     const rawText = await tesseractRecognize(workingBytes);
-    captureStes(rawText);
     const dins = collectDinsFromText(rawText, "tesseract");
     log.tesseract = {
       rotation: 0,
@@ -929,7 +881,7 @@ export async function extractDinsFromPhoto(
     };
     if (dins.length > 0) {
       log.finalExtractor = "tesseract";
-      return finalize(dins, log, { claudeAttempted, claudeFailed }, steIdsFound);
+      return finalize(dins, log, { claudeAttempted, claudeFailed });
     }
   } catch (err) {
     log.tesseract = {
@@ -940,21 +892,19 @@ export async function extractDinsFromPhoto(
     };
   }
 
-  return finalize([], log, { claudeAttempted, claudeFailed }, steIdsFound);
+  return finalize([], log, { claudeAttempted, claudeFailed });
 }
 
 function finalize(
   dins: DinMatch[],
   log: ExtractorLog,
-  flags: { claudeAttempted: boolean; claudeFailed: boolean },
-  steIds: Set<string>
+  flags: { claudeAttempted: boolean; claudeFailed: boolean }
 ): DinExtractionResult {
   if (dins.length === 0 && log.finalExtractor === "none") {
     // Leave finalExtractor = "none" — signals "tried everything, got nothing"
   }
   return {
     dins,
-    steIds: Array.from(steIds),
     claudeAttempted: flags.claudeAttempted,
     claudeFailed: flags.claudeFailed,
     log,
@@ -970,8 +920,6 @@ export const __test__ = {
   normalizeDin,
   collectDinsFromText,
   extractDinsFromQrPayload,
-  extractSteIds,
   DIN_REGEX,
   TESLA_QR_REGEX,
-  STE_ID_REGEX,
 };
