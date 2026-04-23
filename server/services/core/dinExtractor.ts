@@ -88,6 +88,7 @@ export type ExtractorLog = {
     payloads: string[];
     attempts: number;
     matchedDins: string[];
+    winningStrategy?: string;
     error?: string;
   };
   claude?: Array<{
@@ -137,6 +138,55 @@ function collectDinsFromText(
     seen.add(normalized);
     out.push({ dinValue: normalized, rawMatch: match[0], extractedBy });
   }
+  return out;
+}
+
+/**
+ * Tesla Gateway QR codes don't embed the DIN as a contiguous string.
+ * The payload looks like:
+ *
+ *   WIFI:T:WPA;S:TEG-2DT;P:YTRBNPWUYF; (P)1538000-45-A (S)GF2230680002DT
+ *
+ * where `(P)` is the part number and `(S)` is the serial. The full
+ * DIN is `{P}-{S}` — here, "1538000-45-A-GF2230680002DT". The regex
+ * in DIN_REGEX looks for the contiguous form; it misses the split
+ * form entirely.
+ *
+ * Parse any `(P)...(S)...` pair we can find and emit the reassembled
+ * DIN. Runs BEFORE collectDinsFromText for QR payloads so the Tesla
+ * format gets picked up first; fall through to the generic regex
+ * handles labels that encode the DIN inline instead of split.
+ */
+const TESLA_QR_REGEX =
+  /\(P\)\s*([0-9]{4,}[-\s][0-9]{1,3}[-\s][A-Z])\s*\(S\)\s*([A-Z0-9]{6,})/gi;
+
+function extractDinsFromQrPayload(
+  payload: string,
+  extractedBy: DinExtractor
+): DinMatch[] {
+  if (!payload) return [];
+  const out: DinMatch[] = [];
+  const seen = new Set<string>();
+
+  // Pass 1: Tesla-format (P)<part> (S)<serial>.
+  const teslaRegex = new RegExp(TESLA_QR_REGEX.source, TESLA_QR_REGEX.flags);
+  let match: RegExpExecArray | null;
+  while ((match = teslaRegex.exec(payload)) !== null) {
+    const reassembled = `${match[1]}-${match[2]}`;
+    const normalized = normalizeDin(reassembled);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push({ dinValue: normalized, rawMatch: match[0], extractedBy });
+  }
+
+  // Pass 2: any contiguous DIN elsewhere in the payload
+  // (vendor-neutral fallback). Dedup against pass 1.
+  for (const m of collectDinsFromText(payload, extractedBy)) {
+    if (seen.has(m.dinValue)) continue;
+    seen.add(m.dinValue);
+    out.push(m);
+  }
+
   return out;
 }
 
@@ -478,18 +528,24 @@ export async function extractDinsFromPhoto(
 
   // Step 2 — QR decode. If any decoded payload contains a DIN, we're
   // done. Zero cost, zero model hallucination risk. Runs a multi-scale
-  // tiled search (see qrDecoder.ts) before giving up, because the
-  // small-QR-in-busy-photo case is where jsqr usually whiffs.
+  // tiled search (see qrDecoder.ts) with jsqr + ZXing fallback, then
+  // parses every decoded payload through extractDinsFromQrPayload —
+  // which handles Tesla's split (P)<part> (S)<serial> format in
+  // addition to the standard contiguous DIN pattern. Without the
+  // Tesla-aware parser, QR succeeded on every inverter photo but
+  // returned zero DINs because my contiguous regex didn't match
+  // the split form.
   try {
     const qr = await decodeQrPayloads(workingBytes);
     const matched: DinMatch[] = [];
     for (const payload of qr.payloads) {
-      matched.push(...collectDinsFromText(payload, "qr"));
+      matched.push(...extractDinsFromQrPayload(payload, "qr"));
     }
     log.qr = {
       payloads: qr.payloads,
       attempts: qr.attempts,
       matchedDins: matched.map((m) => m.dinValue),
+      winningStrategy: qr.winningStrategy,
     };
     if (matched.length > 0) {
       log.finalExtractor = "qr";
@@ -655,5 +711,7 @@ function errMsg(err: unknown): string {
 export const __test__ = {
   normalizeDin,
   collectDinsFromText,
+  extractDinsFromQrPayload,
   DIN_REGEX,
+  TESLA_QR_REGEX,
 };

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { __test__ } from "./dinExtractor";
 
-const { normalizeDin, collectDinsFromText, DIN_REGEX } = __test__;
+const { normalizeDin, collectDinsFromText, extractDinsFromQrPayload, DIN_REGEX } = __test__;
 
 describe("normalizeDin", () => {
   it("uppercases", () => {
@@ -136,5 +136,65 @@ describe("DIN_REGEX", () => {
     const match = re.exec("din:1538000-45-a-gf2230670002nb");
     expect(match).not.toBeNull();
     expect(match?.[1]).toBe("1538000-45-a-gf2230670002nb");
+  });
+});
+
+describe("extractDinsFromQrPayload (Tesla format)", () => {
+  // Real QR payloads captured from production inverter/meter photos.
+  // Tesla Gateway encodes: WiFi credentials + split (P)<part> (S)<serial>.
+  const realPayloads: Array<{ payload: string; expectedDin: string }> = [
+    {
+      payload:
+        "WIFI:T:WPA;S:TEG-2DT;P:YTRBNPWUYF; (P)1538000-45-A (S)GF2230680002DT",
+      expectedDin: "1538000-45-A-GF2230680002DT",
+    },
+    {
+      payload:
+        "WIFI:T:WPA;S:TEG-26H;P:KRSLDTTZGB; (P)1538000-45-A (S)GF22306800026H",
+      expectedDin: "1538000-45-A-GF22306800026H",
+    },
+    {
+      payload:
+        "WIFI:T:WPA;S:TEG-2EB;P:CXGJCCZCDT; (P)1538000-35-F (S)GF2221250002EB",
+      expectedDin: "1538000-35-F-GF2221250002EB",
+    },
+    {
+      payload:
+        "WIFI:T:WPA;S:TeslaPV_8D1771;P:UBHETKXWCM; (P)1538000-00-F (S)GF2222500001LH",
+      expectedDin: "1538000-00-F-GF2222500001LH",
+    },
+  ];
+
+  for (const { payload, expectedDin } of realPayloads) {
+    it(`reassembles DIN from "${payload.slice(0, 40)}..."`, () => {
+      const matches = extractDinsFromQrPayload(payload, "qr");
+      expect(matches).toHaveLength(1);
+      expect(matches[0].dinValue).toBe(expectedDin);
+      expect(matches[0].extractedBy).toBe("qr");
+    });
+  }
+
+  it("returns empty on a payload with no DIN-like content", () => {
+    expect(
+      extractDinsFromQrPayload("WIFI:T:WPA;S:SomeNet;P:pass", "qr")
+    ).toEqual([]);
+  });
+
+  it("falls through to the contiguous DIN regex for non-split payloads", () => {
+    const matches = extractDinsFromQrPayload(
+      "DIN:1538000-45-A-GF2230680002DT",
+      "qr"
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0].dinValue).toBe("1538000-45-A-GF2230680002DT");
+  });
+
+  it("dedupes when Tesla-split and contiguous forms both match", () => {
+    // Contrived but makes sure the Pass-1 + Pass-2 dedup works.
+    const matches = extractDinsFromQrPayload(
+      "(P)1538000-45-A (S)GF2230680002DT alsosee DIN:1538000-45-A-GF2230680002DT",
+      "qr"
+    );
+    expect(matches).toHaveLength(1);
   });
 });
