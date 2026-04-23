@@ -112,11 +112,18 @@ export async function preprocessForQr(
   const sharpMod = await import("sharp");
   const sharp = sharpMod.default;
 
+  // IMPORTANT: do NOT call `.grayscale()` here. `.ensureAlpha()` on a
+  // 1-channel image produces 2 channels (LA), not 4 (RGBA) — the
+  // subsequent sliceTiles call then tells sharp "channels: 4" and
+  // sharp throws "memory area too small" because the buffer is
+  // actually 1 byte/px. Keep it in 3-channel sRGB through normalize
+  // + sharpen, then ensureAlpha gets us to true RGBA that jsqr
+  // expects (4 bytes/px).
   const { data: raw, info } = await sharp(Buffer.from(data), { failOn: "none" })
     .rotate()
-    .grayscale()
     .normalize()
     .sharpen()
+    .toColorspace("srgb")
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });

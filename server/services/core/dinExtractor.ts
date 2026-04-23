@@ -535,8 +535,32 @@ export async function extractDinsFromPhoto(
           rawTextSnippet: rawText.slice(0, 500),
         });
         if (dins.length > 0) {
+          // Anti-hallucination: Claude sometimes returns a
+          // plausible-but-wrong DIN with confidence:"high" (mode
+          // collapse on structurally-similar images). Run a second
+          // independent verification call and require EXACT agreement
+          // on every DIN value. Hallucinations are almost never
+          // reproduced identically; real reads are.
+          const verification = await callClaudeOnImage(
+            frameBytes,
+            "image/jpeg",
+            credentials
+          );
+          const firstSet = new Set(dins.map((d) => d.dinValue));
+          const secondSet = new Set(verification.dins.map((d) => d.dinValue));
+          const agreed = dins.filter((d) => secondSet.has(d.dinValue));
+          log.claude.push({
+            rotation,
+            dinsFound: agreed.length,
+            rawTextSnippet: `VERIFY: ${verification.rawText.slice(0, 460)}`,
+          });
+          if (agreed.length === 0 || agreed.length !== firstSet.size) {
+            // Disagreement — likely hallucination. Continue to next
+            // rotation instead of trusting either.
+            continue;
+          }
           log.finalExtractor = "claude";
-          return finalize(dins, log, { claudeAttempted, claudeFailed });
+          return finalize(agreed, log, { claudeAttempted, claudeFailed });
         }
       } catch (err) {
         claudeFailed = true;
