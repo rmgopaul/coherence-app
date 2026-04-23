@@ -659,6 +659,7 @@ type SiteRow = {
   inverterPhotoCount: number;
   meterPhotoCount: number;
   dinCount: number;
+  steId: string | null;
   error: string | null;
   systemPageUrl: string | null;
   extractorLog: string | null;
@@ -758,6 +759,7 @@ function SitesTable({
           <TableHeader>
             <TableRow>
               <TableHead>CSG ID</TableHead>
+              <TableHead>STE ID</TableHead>
               <TableHead>Inv photos</TableHead>
               <TableHead>Meter photos</TableHead>
               <TableHead>DINs</TableHead>
@@ -773,6 +775,9 @@ function SitesTable({
                 className={r.error ? "bg-red-50/50" : undefined}
               >
                 <TableCell className="font-mono text-xs">{r.csgId}</TableCell>
+                <TableCell className="font-mono text-xs">
+                  {r.steId ?? <span className="text-muted-foreground">—</span>}
+                </TableCell>
                 <TableCell>{r.inverterPhotoCount}</TableCell>
                 <TableCell>{r.meterPhotoCount}</TableCell>
                 <TableCell

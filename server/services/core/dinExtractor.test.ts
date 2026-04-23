@@ -1,7 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { __test__ } from "./dinExtractor";
 
-const { normalizeDin, collectDinsFromText, extractDinsFromQrPayload, DIN_REGEX } = __test__;
+const {
+  normalizeDin,
+  collectDinsFromText,
+  extractDinsFromQrPayload,
+  extractSteIds,
+  DIN_REGEX,
+} = __test__;
 
 describe("normalizeDin", () => {
   it("uppercases", () => {
@@ -238,5 +244,46 @@ describe("extractDinsFromQrPayload (Tesla format)", () => {
         extractDinsFromQrPayload("WIFI:T:WPA;S:TEG-Foo;P:PASS12345", "qr")
       ).toEqual([]);
     });
+  });
+});
+
+describe("extractSteIds (Tesla System IDs)", () => {
+  it("extracts from a canonical Tesla Powerhub-app screenshot", () => {
+    // Real tesseract output from site 109885's WATSON-1.jpg — the
+    // only site where we've recovered an STE ID via OCR so far.
+    const ocrSample =
+      "D TES Lm Powerhub Q STE20230612-00205\nDiagnostics Devices\n" +
+      "A STE20230612-00205\nIdentify common diagnostic issues...";
+    expect(extractSteIds(ocrSample)).toEqual(["STE20230612-00205"]);
+  });
+
+  it("dedupes multiple occurrences of the same STE ID", () => {
+    expect(
+      extractSteIds("STE20230612-00205 and again STE20230612-00205")
+    ).toEqual(["STE20230612-00205"]);
+  });
+
+  it("extracts multiple distinct STE IDs", () => {
+    const matches = extractSteIds(
+      "STE20230612-00205 elsewhere STE20240819-12345"
+    );
+    expect(new Set(matches)).toEqual(
+      new Set(["STE20230612-00205", "STE20240819-12345"])
+    );
+  });
+
+  it("normalizes case — tesseract sometimes returns lowercase", () => {
+    expect(extractSteIds("ste20230612-00205")).toEqual(["STE20230612-00205"]);
+  });
+
+  it("returns empty for text with no STE ID", () => {
+    expect(extractSteIds("no system identifier here")).toEqual([]);
+  });
+
+  it("does NOT match truncated or malformed variants", () => {
+    // Must have exactly 8 digits + dash + 5 digits.
+    expect(extractSteIds("STE2023-00205")).toEqual([]);
+    expect(extractSteIds("STE20230612-205")).toEqual([]);
+    expect(extractSteIds("STE2023061200205")).toEqual([]);
   });
 });
