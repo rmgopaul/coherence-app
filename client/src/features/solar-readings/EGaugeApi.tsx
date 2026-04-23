@@ -1,26 +1,49 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
-import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
+import {
+  buildConvertedReadRow,
+  pushConvertedReadsToRecDashboard,
+} from "@/lib/convertedReads";
 import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import { toErrorMessage, downloadTextFile } from "@/lib/helpers";
-import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
+import {
+  ArrowLeft,
+  Download,
+  Loader2,
+  PlugZap,
+  RefreshCw,
+  Unplug,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
-import {
-  buildCsv,
-  formatDateInput,
-} from "./shared/csvUtils";
+import { buildCsv, formatDateInput } from "./shared/csvUtils";
 
 const EGAUGE_METER_URL_PLACEHOLDER = "https://YOUR-METER.d.egauge.net";
 const EGAUGE_PORTFOLIO_URL_PLACEHOLDER = "https://www.egauge.net";
 
-type EgaugeAccessType = "public" | "user_login" | "site_login" | "portfolio_login";
+type EgaugeAccessType =
+  | "public"
+  | "user_login"
+  | "site_login"
+  | "portfolio_login";
 
 const ACCESS_TYPE_LABELS: Record<EgaugeAccessType, string> = {
   public: "Public Link",
@@ -69,17 +92,23 @@ export default function EGaugeApi() {
   });
 
   const connectMutation = trpc.egauge.connect.useMutation();
-  const setActiveConnectionMutation = trpc.egauge.setActiveConnection.useMutation();
+  const setActiveConnectionMutation =
+    trpc.egauge.setActiveConnection.useMutation();
   const removeConnectionMutation = trpc.egauge.removeConnection.useMutation();
   const disconnectMutation = trpc.egauge.disconnect.useMutation();
   const getSystemInfoMutation = trpc.egauge.getSystemInfo.useMutation();
   const getLocalDataMutation = trpc.egauge.getLocalData.useMutation();
   const getRegisterLatestMutation = trpc.egauge.getRegisterLatest.useMutation();
-  const getRegisterHistoryMutation = trpc.egauge.getRegisterHistory.useMutation();
-  const getPortfolioSystemsMutation = trpc.egauge.getPortfolioSystems.useMutation();
-  const bulkSnapshotsMutation = trpc.egauge.getProductionSnapshots.useMutation();
-  const getAllPortfolioSnapshotsMutation = trpc.egauge.getAllPortfolioSnapshots.useMutation();
-  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
+  const getRegisterHistoryMutation =
+    trpc.egauge.getRegisterHistory.useMutation();
+  const getPortfolioSystemsMutation =
+    trpc.egauge.getPortfolioSystems.useMutation();
+  const bulkSnapshotsMutation =
+    trpc.egauge.getProductionSnapshots.useMutation();
+  const getAllPortfolioSnapshotsMutation =
+    trpc.egauge.getAllPortfolioSnapshots.useMutation();
+  const pushConvertedReadsSource =
+    trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
   type BulkSnapshotRow = {
     meterId: string;
@@ -99,21 +128,51 @@ export default function EGaugeApi() {
     anchorDate: string;
     error: string | null;
   };
+  type PortfolioFetchSummary = {
+    connectionId: string;
+    connectionName: string;
+    total: number;
+    fetchedAt: string;
+    filter: string | null;
+    groupId: string | null;
+  };
   const [bulkMeterIdsCsv, setBulkMeterIdsCsv] = useState("");
   const [bulkIsRunning, setBulkIsRunning] = useState(false);
   const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
+  const [portfolioFetchSummary, setPortfolioFetchSummary] =
+    useState<PortfolioFetchSummary | null>(null);
 
   const downloadConvertedReadsCsv = (rows: BulkSnapshotRow[]) => {
-    const readRows = rows.filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate);
+    const readRows = rows.filter(
+      row => row.found && row.lifetimeKwh != null && row.anchorDate
+    );
     if (readRows.length === 0) {
-      toast.error("No rows with lifetime kWh available for Converted Reads export.");
+      toast.error(
+        "No rows with lifetime kWh available for Converted Reads export."
+      );
       return;
     }
 
-    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
-    const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];
+    const headers = [
+      "monitoring",
+      "monitoring_system_id",
+      "monitoring_system_name",
+      "lifetime_meter_read_wh",
+      "status",
+      "alert_severity",
+      "read_date",
+    ];
+    const csvRows: Array<
+      Record<string, string | number | boolean | null | undefined>
+    > = [];
     for (const row of readRows) {
-      const base = buildConvertedReadRow(MONITORING_CANONICAL_NAMES.egauge, row.meterId, row.meterName ?? "", row.lifetimeKwh!, row.anchorDate);
+      const base = buildConvertedReadRow(
+        MONITORING_CANONICAL_NAMES.egauge,
+        row.meterId,
+        row.meterName ?? "",
+        row.lifetimeKwh!,
+        row.anchorDate
+      );
       // Row 1: system name only (ID blank) — matches by name
       csvRows.push({
         monitoring: base.monitoring,
@@ -139,7 +198,9 @@ export default function EGaugeApi() {
     const csvText = buildCsv(headers, csvRows);
     const fileName = `egauge-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
     downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
-    toast.success(`Downloaded ${NUMBER_FORMATTER.format(csvRows.length)} Converted Reads rows (${NUMBER_FORMATTER.format(readRows.length)} systems × 2 match rows each).`);
+    toast.success(
+      `Downloaded ${NUMBER_FORMATTER.format(csvRows.length)} Converted Reads rows (${NUMBER_FORMATTER.format(readRows.length)} systems × 2 match rows each).`
+    );
   };
 
   useEffect(() => {
@@ -150,23 +211,31 @@ export default function EGaugeApi() {
 
   useEffect(() => {
     if (!statusQuery.data) return;
-    const availableIds = new Set((statusQuery.data.connections ?? []).map((connection) => connection.id));
+    const availableIds = new Set(
+      (statusQuery.data.connections ?? []).map(connection => connection.id)
+    );
     if (availableIds.size === 0) {
       setSelectedConnectionId("");
       return;
     }
 
-    setSelectedConnectionId((current) => {
+    setSelectedConnectionId(current => {
       if (current && availableIds.has(current)) return current;
-      return statusQuery.data?.activeConnectionId ?? statusQuery.data.connections[0]?.id ?? "";
+      return (
+        statusQuery.data?.activeConnectionId ??
+        statusQuery.data.connections[0]?.id ??
+        ""
+      );
     });
   }, [statusQuery.data]);
 
   useEffect(() => {
     if (!statusQuery.data?.connections?.length) return;
     const selected =
-      statusQuery.data.connections.find((connection) => connection.id === selectedConnectionId) ??
-      statusQuery.data.connections.find((connection) => connection.isActive) ??
+      statusQuery.data.connections.find(
+        connection => connection.id === selectedConnectionId
+      ) ??
+      statusQuery.data.connections.find(connection => connection.isActive) ??
       statusQuery.data.connections[0];
     if (!selected) return;
 
@@ -179,12 +248,30 @@ export default function EGaugeApi() {
   }, [selectedConnectionId, statusQuery.data]);
 
   const connections = statusQuery.data?.connections ?? [];
-  const selectedConnection = connections.find((connection) => connection.id === selectedConnectionId);
-  const activeConnection = connections.find((connection) => connection.isActive);
+  const selectedConnection = connections.find(
+    connection => connection.id === selectedConnectionId
+  );
+  const activeConnection = connections.find(connection => connection.isActive);
+  const requestConnection = selectedConnection ?? activeConnection ?? null;
+  const requestConnectionId = requestConnection?.id;
+  const requestAccessType =
+    (requestConnection?.accessType as EgaugeAccessType | undefined) ??
+    accessType;
+  const requestIsPortfolioAccess = requestAccessType === "portfolio_login";
+  const selectedDiffersFromActive = Boolean(
+    selectedConnection &&
+    activeConnection &&
+    selectedConnection.id !== activeConnection.id
+  );
+  const selectedProfileFetchSummary =
+    portfolioFetchSummary?.connectionId === requestConnectionId
+      ? portfolioFetchSummary
+      : null;
   const requiresCredentials = accessType !== "public";
   const formIsPortfolioAccess = accessType === "portfolio_login";
-  const activeIsPortfolioAccess = (activeConnection?.accessType as EgaugeAccessType | undefined) === "portfolio_login";
-  const baseUrlPlaceholder = formIsPortfolioAccess ? EGAUGE_PORTFOLIO_URL_PLACEHOLDER : EGAUGE_METER_URL_PLACEHOLDER;
+  const baseUrlPlaceholder = formIsPortfolioAccess
+    ? EGAUGE_PORTFOLIO_URL_PLACEHOLDER
+    : EGAUGE_METER_URL_PLACEHOLDER;
 
   const handleConnect = async () => {
     const baseUrl = baseUrlInput.trim();
@@ -195,7 +282,8 @@ export default function EGaugeApi() {
 
     const username = usernameInput.trim();
     const password = passwordInput.trim();
-    const submitAccessType = accessType === "site_login" ? "user_login" : accessType;
+    const submitAccessType =
+      accessType === "site_login" ? "user_login" : accessType;
     const hasSavedPassword = Boolean(selectedConnection?.hasPassword);
 
     if (requiresCredentials && !username) {
@@ -204,7 +292,10 @@ export default function EGaugeApi() {
     }
 
     const savedUsername = selectedConnection?.username ?? "";
-    const usernameChanged = hasSavedPassword && savedUsername && username.toLowerCase() !== savedUsername.toLowerCase();
+    const usernameChanged =
+      hasSavedPassword &&
+      savedUsername &&
+      username.toLowerCase() !== savedUsername.toLowerCase();
 
     if (requiresCredentials && !password && !hasSavedPassword) {
       toast.error("Password is required for credentialed login.");
@@ -212,7 +303,9 @@ export default function EGaugeApi() {
     }
 
     if (requiresCredentials && !password && usernameChanged) {
-      toast.error("Password is required when changing the username. Enter the password for the new account.");
+      toast.error(
+        "Password is required when changing the username. Enter the password for the new account."
+      );
       return;
     }
 
@@ -223,7 +316,7 @@ export default function EGaugeApi() {
         baseUrl,
         accessType: submitAccessType,
         username: requiresCredentials ? username : undefined,
-        password: requiresCredentials ? (password || undefined) : undefined,
+        password: requiresCredentials ? password || undefined : undefined,
       });
 
       await trpcUtils.egauge.getStatus.invalidate();
@@ -261,7 +354,9 @@ export default function EGaugeApi() {
     }
 
     try {
-      const response = await removeConnectionMutation.mutateAsync({ connectionId });
+      const response = await removeConnectionMutation.mutateAsync({
+        connectionId,
+      });
       await trpcUtils.egauge.getStatus.invalidate();
       setSelectedConnectionId(response.activeConnectionId ?? "");
       toast.success(
@@ -299,14 +394,46 @@ export default function EGaugeApi() {
     }
   };
 
+  const fetchPortfolioSystemsForRequestConnection = async (options?: {
+    filter?: string;
+    groupId?: string;
+  }) => {
+    if (!requestConnectionId) {
+      throw new Error("Select a saved eGauge profile first.");
+    }
+
+    const result = await getPortfolioSystemsMutation.mutateAsync({
+      connectionId: requestConnectionId,
+      filter: options?.filter,
+      groupId: options?.groupId,
+    });
+
+    setPortfolioFetchSummary({
+      connectionId: result.connectionId ?? requestConnectionId,
+      connectionName:
+        result.connectionName ?? requestConnection?.name ?? "Selected profile",
+      total:
+        typeof result.total === "number"
+          ? result.total
+          : Array.isArray(result.rows)
+            ? result.rows.length
+            : 0,
+      fetchedAt: new Date().toISOString(),
+      filter: options?.filter ?? null,
+      groupId: options?.groupId ?? null,
+    });
+
+    return result;
+  };
+
   const parseBulkMeterIds = (): string[] => {
     const meterIds = bulkMeterIdsCsv
       .split(/[\n,]+/)
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0);
+      .map(value => value.trim())
+      .filter(value => value.length > 0);
 
     const dedupedByCaseInsensitiveKey = new Map<string, string>();
-    meterIds.forEach((meterId) => {
+    meterIds.forEach(meterId => {
       const key = meterId.toLowerCase();
       if (!dedupedByCaseInsensitiveKey.has(key)) {
         dedupedByCaseInsensitiveKey.set(key, meterId);
@@ -320,18 +447,22 @@ export default function EGaugeApi() {
       toast.error("Connect eGauge first.");
       return;
     }
-    if (!activeIsPortfolioAccess) {
-      toast.error("Switch Active Mode to Portfolio Login first.");
+    if (!requestIsPortfolioAccess || !requestConnectionId) {
+      toast.error("Select a Portfolio Login profile first.");
       return;
     }
 
     setBulkIsRunning(true);
     try {
       // Always fetch the full portfolio list here; this button is specifically "all IDs".
-      const result = await getPortfolioSystemsMutation.mutateAsync();
+      const result = await fetchPortfolioSystemsForRequestConnection({
+        filter: portfolioFilter.trim() || undefined,
+        groupId: portfolioGroupId.trim() || undefined,
+      });
       const idsByKey = new Map<string, string>();
       for (const row of result.rows ?? []) {
-        const meterId = typeof row?.meterId === "string" ? row.meterId.trim() : "";
+        const meterId =
+          typeof row?.meterId === "string" ? row.meterId.trim() : "";
         if (!meterId) continue;
         const key = meterId.toLowerCase();
         if (!idsByKey.has(key)) {
@@ -341,7 +472,7 @@ export default function EGaugeApi() {
       const ids = Array.from(idsByKey.values());
       setBulkMeterIdsCsv(ids.join("\n"));
       toast.success(
-        `Fetched ${NUMBER_FORMATTER.format(ids.length)} eGauge IDs from portfolio. Next step: run bulk snapshots.`
+        `Fetched ${NUMBER_FORMATTER.format(ids.length)} eGauge IDs from ${result.connectionName ?? requestConnection?.name ?? "the selected portfolio"}. Next step: run bulk snapshots.`
       );
     } catch (error) {
       toast.error(`Failed to fetch portfolio IDs: ${toErrorMessage(error)}`);
@@ -352,12 +483,13 @@ export default function EGaugeApi() {
 
   const handleRunBulkSnapshots = async () => {
     const ids = parseBulkMeterIds();
-    const shouldAutoFetchPortfolio = activeIsPortfolioAccess && ids.length === 0;
+    const shouldAutoFetchPortfolio =
+      requestIsPortfolioAccess && ids.length === 0;
 
     if (!shouldAutoFetchPortfolio && ids.length === 0) {
       toast.error(
-        activeIsPortfolioAccess
-          ? "Click \"Fetch All Portfolio IDs\" first, or keep IDs blank to auto-fetch during run."
+        requestIsPortfolioAccess
+          ? 'Click "Fetch All Portfolio IDs" first, or keep IDs blank to auto-fetch during run.'
           : "Enter at least one meter ID."
       );
       return;
@@ -368,38 +500,61 @@ export default function EGaugeApi() {
     try {
       // For portfolio mode: use portfolio data directly (has all kWh metrics).
       // This avoids 726 individual API calls and gives richer data.
-      if (activeIsPortfolioAccess) {
-        const portfolioResult = await getPortfolioSystemsMutation.mutateAsync();
-        const portfolioRows: BulkSnapshotRow[] = (portfolioResult.rows ?? []).map((row: Record<string, unknown>) => ({
+      if (requestIsPortfolioAccess && requestConnectionId) {
+        const portfolioResult = await fetchPortfolioSystemsForRequestConnection(
+          {
+            filter: portfolioFilter.trim() || undefined,
+            groupId: portfolioGroupId.trim() || undefined,
+          }
+        );
+        const portfolioRows: BulkSnapshotRow[] = (
+          portfolioResult.rows ?? []
+        ).map((row: Record<string, unknown>) => ({
           meterId: String(row.meterId ?? ""),
           meterName: row.meterName as string | null,
           siteName: row.siteName as string | null,
           group: row.group as string | null,
           status: String(row.status ?? "Found"),
           found: row.found !== false,
-          lifetimeKwh: typeof row.lifetimeKwh === "number" ? row.lifetimeKwh : null,
-          dailyProductionKwh: typeof row.dailyProductionKwh === "number" ? row.dailyProductionKwh : null,
-          weeklyProductionKwh: typeof row.weeklyProductionKwh === "number" ? row.weeklyProductionKwh : null,
-          monthlyProductionKwh: typeof row.monthlyProductionKwh === "number" ? row.monthlyProductionKwh : null,
-          yearlyProductionKwh: typeof row.yearlyProductionKwh === "number" ? row.yearlyProductionKwh : null,
-          last12MonthsProductionKwh: typeof row.last12MonthsProductionKwh === "number" ? row.last12MonthsProductionKwh : null,
+          lifetimeKwh:
+            typeof row.lifetimeKwh === "number" ? row.lifetimeKwh : null,
+          dailyProductionKwh:
+            typeof row.dailyProductionKwh === "number"
+              ? row.dailyProductionKwh
+              : null,
+          weeklyProductionKwh:
+            typeof row.weeklyProductionKwh === "number"
+              ? row.weeklyProductionKwh
+              : null,
+          monthlyProductionKwh:
+            typeof row.monthlyProductionKwh === "number"
+              ? row.monthlyProductionKwh
+              : null,
+          yearlyProductionKwh:
+            typeof row.yearlyProductionKwh === "number"
+              ? row.yearlyProductionKwh
+              : null,
+          last12MonthsProductionKwh:
+            typeof row.last12MonthsProductionKwh === "number"
+              ? row.last12MonthsProductionKwh
+              : null,
           anchorDate: String(row.anchorDate ?? ""),
           error: row.error as string | null,
         }));
         setBulkRows(portfolioRows);
 
-        const portfolioIds = portfolioRows.map((r) => r.meterId).filter(Boolean);
+        const portfolioIds = portfolioRows.map(r => r.meterId).filter(Boolean);
         if (portfolioIds.length > 0) {
           setBulkMeterIdsCsv(portfolioIds.join("\n"));
         }
 
         toast.success(
-          `Portfolio snapshot: ${portfolioResult.found} found, ${portfolioResult.notFound} not found, ${portfolioResult.errored} errors (${portfolioResult.total} total).`
+          `${portfolioResult.connectionName ?? requestConnection?.name ?? "Portfolio"} snapshot: ${portfolioResult.found} found, ${portfolioResult.notFound} not found, ${portfolioResult.errored} errors (${portfolioResult.total} total).`
         );
 
         const readRows = portfolioRows
-          .filter((row) => row.found && row.lifetimeKwh != null)
-          .map((row) =>
+          .filter(row => row.found && row.lifetimeKwh != null)
+          .map(row =>
             buildConvertedReadRow(
               MONITORING_CANONICAL_NAMES.egauge,
               row.meterId,
@@ -414,7 +569,7 @@ export default function EGaugeApi() {
           );
         } else {
           const pushResult = await pushConvertedReadsToRecDashboard(
-            (input) => pushConvertedReadsSource.mutateAsync(input),
+            input => pushConvertedReadsSource.mutateAsync(input),
             readRows,
             MONITORING_CANONICAL_NAMES.egauge
           );
@@ -423,7 +578,9 @@ export default function EGaugeApi() {
               `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
             );
           } else if (pushResult.skipped > 0) {
-            toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+            toast.message(
+              `All ${pushResult.skipped} eGauge Converted Reads rows already exist.`
+            );
           } else {
             toast.message("eGauge Converted Reads push returned 0 rows.");
           }
@@ -431,6 +588,7 @@ export default function EGaugeApi() {
       } else {
         // Non-portfolio mode: per-meter register calls (lifetime only)
         const result = await bulkSnapshotsMutation.mutateAsync({
+          connectionId: requestConnectionId,
           meterIds: ids.length > 0 ? ids : undefined,
           autoFetchPortfolioIds: false,
         });
@@ -442,8 +600,8 @@ export default function EGaugeApi() {
         );
 
         const readRows = rows
-          .filter((row) => row.found && row.lifetimeKwh != null)
-          .map((row) =>
+          .filter(row => row.found && row.lifetimeKwh != null)
+          .map(row =>
             buildConvertedReadRow(
               MONITORING_CANONICAL_NAMES.egauge,
               row.meterId,
@@ -458,7 +616,7 @@ export default function EGaugeApi() {
           );
         } else {
           const pushResult = await pushConvertedReadsToRecDashboard(
-            (input) => pushConvertedReadsSource.mutateAsync(input),
+            input => pushConvertedReadsSource.mutateAsync(input),
             readRows,
             MONITORING_CANONICAL_NAMES.egauge
           );
@@ -467,7 +625,9 @@ export default function EGaugeApi() {
               `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard Converted Reads.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
             );
           } else if (pushResult.skipped > 0) {
-            toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+            toast.message(
+              `All ${pushResult.skipped} eGauge Converted Reads rows already exist.`
+            );
           } else {
             toast.message("eGauge Converted Reads push returned 0 rows.");
           }
@@ -486,7 +646,9 @@ export default function EGaugeApi() {
 
   const handleRunAllPortfolios = async () => {
     if (portfolioConnectionCount === 0) {
-      toast.error("No portfolio login connections saved. Save at least one Portfolio Login profile first.");
+      toast.error(
+        "No portfolio login connections saved. Save at least one Portfolio Login profile first."
+      );
       return;
     }
 
@@ -498,42 +660,67 @@ export default function EGaugeApi() {
         groupId: portfolioGroupId.trim() || undefined,
       });
 
-      const rows: BulkSnapshotRow[] = (result.rows ?? []).map((row: Record<string, unknown>) => ({
-        meterId: String(row.meterId ?? ""),
-        meterName: row.meterName as string | null,
-        siteName: row.siteName as string | null,
-        group: row.group as string | null,
-        portfolioAccount: row.portfolioAccount as string | null,
-        status: String(row.status ?? "Found"),
-        found: row.found !== false,
-        lifetimeKwh: typeof row.lifetimeKwh === "number" ? row.lifetimeKwh : null,
-        dailyProductionKwh: typeof row.dailyProductionKwh === "number" ? row.dailyProductionKwh : null,
-        weeklyProductionKwh: typeof row.weeklyProductionKwh === "number" ? row.weeklyProductionKwh : null,
-        monthlyProductionKwh: typeof row.monthlyProductionKwh === "number" ? row.monthlyProductionKwh : null,
-        yearlyProductionKwh: typeof row.yearlyProductionKwh === "number" ? row.yearlyProductionKwh : null,
-        last12MonthsProductionKwh: typeof row.last12MonthsProductionKwh === "number" ? row.last12MonthsProductionKwh : null,
-        anchorDate: String(row.anchorDate ?? ""),
-        error: row.error as string | null,
-      }));
+      const rows: BulkSnapshotRow[] = (result.rows ?? []).map(
+        (row: Record<string, unknown>) => ({
+          meterId: String(row.meterId ?? ""),
+          meterName: row.meterName as string | null,
+          siteName: row.siteName as string | null,
+          group: row.group as string | null,
+          portfolioAccount: row.portfolioAccount as string | null,
+          status: String(row.status ?? "Found"),
+          found: row.found !== false,
+          lifetimeKwh:
+            typeof row.lifetimeKwh === "number" ? row.lifetimeKwh : null,
+          dailyProductionKwh:
+            typeof row.dailyProductionKwh === "number"
+              ? row.dailyProductionKwh
+              : null,
+          weeklyProductionKwh:
+            typeof row.weeklyProductionKwh === "number"
+              ? row.weeklyProductionKwh
+              : null,
+          monthlyProductionKwh:
+            typeof row.monthlyProductionKwh === "number"
+              ? row.monthlyProductionKwh
+              : null,
+          yearlyProductionKwh:
+            typeof row.yearlyProductionKwh === "number"
+              ? row.yearlyProductionKwh
+              : null,
+          last12MonthsProductionKwh:
+            typeof row.last12MonthsProductionKwh === "number"
+              ? row.last12MonthsProductionKwh
+              : null,
+          anchorDate: String(row.anchorDate ?? ""),
+          error: row.error as string | null,
+        })
+      );
       setBulkRows(rows);
 
-      const portfolioIds = rows.map((r) => r.meterId).filter(Boolean);
+      const portfolioIds = rows.map(r => r.meterId).filter(Boolean);
       if (portfolioIds.length > 0) {
         setBulkMeterIdsCsv(portfolioIds.join("\n"));
       }
 
       // Show per-portfolio summary
       const summaries = (result.portfolioResults ?? [])
-        .map((p: { username: string | null; total: number; error: string | null }) =>
-          p.error ? `${p.username}: ERROR` : `${p.username}: ${p.total} sites`
+        .map(
+          (p: {
+            username: string | null;
+            total: number;
+            error: string | null;
+          }) =>
+            p.error ? `${p.username}: ERROR` : `${p.username}: ${p.total} sites`
         )
         .join(", ");
-      toast.success(`All portfolios: ${result.total} total sites. ${summaries}`);
+      toast.success(
+        `All portfolios: ${result.total} total sites. ${summaries}`
+      );
 
       // Push to REC Dashboard
       const readRows = rows
-        .filter((row) => row.found && row.lifetimeKwh != null)
-        .map((row) =>
+        .filter(row => row.found && row.lifetimeKwh != null)
+        .map(row =>
           buildConvertedReadRow(
             MONITORING_CANONICAL_NAMES.egauge,
             row.meterId,
@@ -548,7 +735,7 @@ export default function EGaugeApi() {
         );
       } else {
         const pushResult = await pushConvertedReadsToRecDashboard(
-          (input) => pushConvertedReadsSource.mutateAsync(input),
+          input => pushConvertedReadsSource.mutateAsync(input),
           readRows,
           MONITORING_CANONICAL_NAMES.egauge
         );
@@ -557,7 +744,9 @@ export default function EGaugeApi() {
             `Pushed ${pushResult.pushed} eGauge rows to Solar REC Dashboard.${pushResult.skipped > 0 ? ` ${pushResult.skipped} duplicates skipped.` : ""}`
           );
         } else if (pushResult.skipped > 0) {
-          toast.message(`All ${pushResult.skipped} eGauge Converted Reads rows already exist.`);
+          toast.message(
+            `All ${pushResult.skipped} eGauge Converted Reads rows already exist.`
+          );
         } else {
           toast.message("eGauge Converted Reads push returned 0 rows.");
         }
@@ -580,19 +769,26 @@ export default function EGaugeApi() {
   if (!user) return null;
 
   const isConnected = Boolean(statusQuery.data?.connected);
-  const statusError = statusQuery.error ? toErrorMessage(statusQuery.error) : null;
+  const statusError = statusQuery.error
+    ? toErrorMessage(statusQuery.error)
+    : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
       <header className="border-b bg-white/90 backdrop-blur-sm sticky top-0 z-10">
         <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
+          <Button
+            variant="ghost"
+            onClick={() => setLocation("/dashboard")}
+            className="mb-2"
+          >
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Dashboard
           </Button>
           <h1 className="text-2xl font-bold text-slate-900">eGauge API</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Meter profiles support Public Link or Credentialed Login. Portfolio Login is available for account-wide system listing.
+            Meter profiles support Public Link or Credentialed Login. Portfolio
+            Login is available for account-wide system listing.
           </p>
         </div>
       </header>
@@ -602,17 +798,20 @@ export default function EGaugeApi() {
           <CardHeader>
             <CardTitle>1) Connect eGauge</CardTitle>
             <CardDescription>
-              Save many meter profiles (hundreds of unique meter IDs). Use Public Link or Credentialed Login per meter.
+              Save many meter profiles (hundreds of unique meter IDs). Use
+              Public Link or Credentialed Login per meter.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="egauge-connection-name">Profile Name (optional)</Label>
+                <Label htmlFor="egauge-connection-name">
+                  Profile Name (optional)
+                </Label>
                 <Input
                   id="egauge-connection-name"
                   value={connectionNameInput}
-                  onChange={(event) => setConnectionNameInput(event.target.value)}
+                  onChange={event => setConnectionNameInput(event.target.value)}
                   placeholder="Example: North Portfolio Meter A"
                 />
               </div>
@@ -621,7 +820,7 @@ export default function EGaugeApi() {
                 <Input
                   id="egauge-meter-id"
                   value={meterIdInput}
-                  onChange={(event) => setMeterIdInput(event.target.value)}
+                  onChange={event => setMeterIdInput(event.target.value)}
                   placeholder="Example: egauge12345"
                 />
               </div>
@@ -630,17 +829,23 @@ export default function EGaugeApi() {
                 <Input
                   id="egauge-base-url"
                   value={baseUrlInput}
-                  onChange={(event) => setBaseUrlInput(event.target.value)}
+                  onChange={event => setBaseUrlInput(event.target.value)}
                   placeholder={baseUrlPlaceholder}
                 />
                 <p className="text-xs text-slate-500">
                   {formIsPortfolioAccess ? (
                     <>
-                      Portfolio login URL example: <span className="font-mono">{EGAUGE_PORTFOLIO_URL_PLACEHOLDER}</span>
+                      Portfolio login URL example:{" "}
+                      <span className="font-mono">
+                        {EGAUGE_PORTFOLIO_URL_PLACEHOLDER}
+                      </span>
                     </>
                   ) : (
                     <>
-                      Meter URL example: <span className="font-mono">{EGAUGE_METER_URL_PLACEHOLDER}</span>
+                      Meter URL example:{" "}
+                      <span className="font-mono">
+                        {EGAUGE_METER_URL_PLACEHOLDER}
+                      </span>
                     </>
                   )}
                 </p>
@@ -648,16 +853,24 @@ export default function EGaugeApi() {
               <div className="space-y-2">
                 <Label>Access Type</Label>
                 <Select
-                  value={accessType === "site_login" ? "user_login" : accessType}
-                  onValueChange={(value) => setAccessType(value as EgaugeAccessType)}
+                  value={
+                    accessType === "site_login" ? "user_login" : accessType
+                  }
+                  onValueChange={value =>
+                    setAccessType(value as EgaugeAccessType)
+                  }
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Select access type" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="public">Public Link</SelectItem>
-                    <SelectItem value="user_login">Credentialed Login</SelectItem>
-                    <SelectItem value="portfolio_login">Portfolio Login</SelectItem>
+                    <SelectItem value="user_login">
+                      Credentialed Login
+                    </SelectItem>
+                    <SelectItem value="portfolio_login">
+                      Portfolio Login
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -667,7 +880,7 @@ export default function EGaugeApi() {
                 <Input
                   id="egauge-username"
                   value={usernameInput}
-                  onChange={(event) => setUsernameInput(event.target.value)}
+                  onChange={event => setUsernameInput(event.target.value)}
                   placeholder="Required for credentialed login"
                   disabled={!requiresCredentials}
                 />
@@ -678,14 +891,15 @@ export default function EGaugeApi() {
                   id="egauge-password"
                   type="password"
                   value={passwordInput}
-                  onChange={(event) => setPasswordInput(event.target.value)}
+                  onChange={event => setPasswordInput(event.target.value)}
                   placeholder={
                     requiresCredentials
-                      ? (selectedConnection?.hasPassword
-                          ? (usernameInput.trim().toLowerCase() !== (selectedConnection?.username ?? "").toLowerCase()
-                              ? "Password required — username changed"
-                              : "Leave blank to keep saved password")
-                          : "Required for credentialed login")
+                      ? selectedConnection?.hasPassword
+                        ? usernameInput.trim().toLowerCase() !==
+                          (selectedConnection?.username ?? "").toLowerCase()
+                          ? "Password required — username changed"
+                          : "Leave blank to keep saved password"
+                        : "Required for credentialed login"
                       : "Not required for public link"
                   }
                   disabled={!requiresCredentials}
@@ -698,12 +912,15 @@ export default function EGaugeApi() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
                   <div className="space-y-2 md:col-span-2">
                     <Label>Saved Meter Profiles</Label>
-                    <Select value={selectedConnectionId} onValueChange={setSelectedConnectionId}>
+                    <Select
+                      value={selectedConnectionId}
+                      onValueChange={setSelectedConnectionId}
+                    >
                       <SelectTrigger>
                         <SelectValue placeholder="Select saved meter profile" />
                       </SelectTrigger>
                       <SelectContent>
-                        {connections.map((connection) => (
+                        {connections.map(connection => (
                           <SelectItem key={connection.id} value={connection.id}>
                             {connection.name} ({connection.meterId})
                           </SelectItem>
@@ -715,7 +932,10 @@ export default function EGaugeApi() {
                     <Button
                       variant="outline"
                       onClick={handleSetActiveConnection}
-                      disabled={!selectedConnectionId || setActiveConnectionMutation.isPending}
+                      disabled={
+                        !selectedConnectionId ||
+                        setActiveConnectionMutation.isPending
+                      }
                     >
                       {setActiveConnectionMutation.isPending ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -725,7 +945,10 @@ export default function EGaugeApi() {
                     <Button
                       variant="outline"
                       onClick={handleRemoveConnection}
-                      disabled={!selectedConnectionId || removeConnectionMutation.isPending}
+                      disabled={
+                        !selectedConnectionId ||
+                        removeConnectionMutation.isPending
+                      }
                     >
                       {removeConnectionMutation.isPending ? (
                         <Loader2 className="h-4 w-4 mr-2 animate-spin" />
@@ -736,12 +959,15 @@ export default function EGaugeApi() {
                 </div>
 
                 <div className="text-xs text-slate-600">
-                  {NUMBER_FORMATTER.format(connections.length)} profile(s) saved. Active profile:{" "}
-                  <span className="font-medium text-slate-900">{activeConnection?.name ?? "N/A"}</span>
+                  {NUMBER_FORMATTER.format(connections.length)} profile(s)
+                  saved. Active profile:{" "}
+                  <span className="font-medium text-slate-900">
+                    {activeConnection?.name ?? "N/A"}
+                  </span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {connections.map((connection) => (
+                  {connections.map(connection => (
                     <div
                       key={connection.id}
                       className={`rounded-md border px-3 py-2 text-xs ${
@@ -752,10 +978,18 @@ export default function EGaugeApi() {
                     >
                       <p className="font-medium">{connection.name}</p>
                       <p>Meter ID: {connection.meterId}</p>
-                      <p>Access: {ACCESS_TYPE_LABELS[connection.accessType as EgaugeAccessType] ?? connection.accessType}</p>
+                      <p>
+                        Access:{" "}
+                        {ACCESS_TYPE_LABELS[
+                          connection.accessType as EgaugeAccessType
+                        ] ?? connection.accessType}
+                      </p>
                       <p>Username: {connection.username ?? "N/A"}</p>
                       <p>URL: {connection.baseUrl}</p>
-                      <p>Updated: {new Date(connection.updatedAt).toLocaleString()}</p>
+                      <p>
+                        Updated:{" "}
+                        {new Date(connection.updatedAt).toLocaleString()}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -769,7 +1003,10 @@ export default function EGaugeApi() {
             ) : null}
 
             <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={handleConnect} disabled={connectMutation.isPending}>
+              <Button
+                onClick={handleConnect}
+                disabled={connectMutation.isPending}
+              >
                 {connectMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
@@ -777,7 +1014,11 @@ export default function EGaugeApi() {
                 )}
                 Save Connection
               </Button>
-              <Button variant="outline" onClick={handleDisconnect} disabled={disconnectMutation.isPending || !isConnected}>
+              <Button
+                variant="outline"
+                onClick={handleDisconnect}
+                disabled={disconnectMutation.isPending || !isConnected}
+              >
                 {disconnectMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
@@ -795,10 +1036,21 @@ export default function EGaugeApi() {
                 Refresh
               </Button>
               <span className="text-sm text-slate-600">
-                Status: {isConnected ? `Connected (${connections.length} profile${connections.length === 1 ? "" : "s"})` : "Not connected"}
+                Status:{" "}
+                {isConnected
+                  ? `Connected (${connections.length} profile${connections.length === 1 ? "" : "s"})`
+                  : "Not connected"}
               </span>
               <span className="text-sm text-slate-600">
-                Active Mode: {activeConnection ? ACCESS_TYPE_LABELS[activeConnection.accessType as EgaugeAccessType] : ACCESS_TYPE_LABELS[accessType]}
+                Active Mode:{" "}
+                {activeConnection
+                  ? ACCESS_TYPE_LABELS[
+                      activeConnection.accessType as EgaugeAccessType
+                    ]
+                  : ACCESS_TYPE_LABELS[accessType]}
+              </span>
+              <span className="text-sm text-slate-600">
+                Action Profile: {requestConnection?.name ?? "N/A"}
               </span>
             </div>
           </CardContent>
@@ -808,29 +1060,68 @@ export default function EGaugeApi() {
           <CardHeader>
             <CardTitle>2) eGauge Data Actions</CardTitle>
             <CardDescription>
-              {activeIsPortfolioAccess
+              {requestIsPortfolioAccess
                 ? "Fetch all systems available from your eGauge portfolio login."
                 : "Fetch system info, local readings, and register data from one meter."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {activeIsPortfolioAccess ? (
+            {selectedDiffersFromActive ? (
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                Fetch actions use the selected profile first. The currently
+                active saved profile is{" "}
+                <span className="font-medium">
+                  {activeConnection?.name ?? "N/A"}
+                </span>
+                , but this page will query{" "}
+                <span className="font-medium">
+                  {requestConnection?.name ?? "N/A"}
+                </span>{" "}
+                until you click Set Active.
+              </div>
+            ) : null}
+
+            <div className="flex flex-wrap gap-2 text-xs">
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">
+                Selected: {requestConnection?.name ?? "N/A"}
+              </span>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-slate-700">
+                Last verified count:{" "}
+                {selectedProfileFetchSummary
+                  ? `${NUMBER_FORMATTER.format(selectedProfileFetchSummary.total)} systems`
+                  : "not fetched yet"}
+              </span>
+              {selectedProfileFetchSummary ? (
+                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-800">
+                  Verified at{" "}
+                  {new Date(
+                    selectedProfileFetchSummary.fetchedAt
+                  ).toLocaleTimeString()}
+                </span>
+              ) : null}
+            </div>
+
+            {requestIsPortfolioAccess ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="egauge-portfolio-filter">Portfolio Filter (optional)</Label>
+                  <Label htmlFor="egauge-portfolio-filter">
+                    Portfolio Filter (optional)
+                  </Label>
                   <Input
                     id="egauge-portfolio-filter"
                     value={portfolioFilter}
-                    onChange={(event) => setPortfolioFilter(event.target.value)}
+                    onChange={event => setPortfolioFilter(event.target.value)}
                     placeholder="Filter by name/group/job (as supported by eGuard)"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="egauge-portfolio-group">Group ID (optional)</Label>
+                  <Label htmlFor="egauge-portfolio-group">
+                    Group ID (optional)
+                  </Label>
                   <Input
                     id="egauge-portfolio-group"
                     value={portfolioGroupId}
-                    onChange={(event) => setPortfolioGroupId(event.target.value)}
+                    onChange={event => setPortfolioGroupId(event.target.value)}
                     placeholder="Optional eGuard group ID"
                   />
                 </div>
@@ -843,7 +1134,7 @@ export default function EGaugeApi() {
                     <Input
                       id="egauge-register"
                       value={registerInput}
-                      onChange={(event) => setRegisterInput(event.target.value)}
+                      onChange={event => setRegisterInput(event.target.value)}
                       placeholder="Example: use /api/register default if blank"
                     />
                   </div>
@@ -853,7 +1144,7 @@ export default function EGaugeApi() {
                       id="egauge-history-start"
                       type="date"
                       value={startDate}
-                      onChange={(event) => setStartDate(event.target.value)}
+                      onChange={event => setStartDate(event.target.value)}
                     />
                   </div>
                   <div className="space-y-2">
@@ -862,21 +1153,23 @@ export default function EGaugeApi() {
                       id="egauge-history-end"
                       type="date"
                       value={endDate}
-                      onChange={(event) => setEndDate(event.target.value)}
+                      onChange={event => setEndDate(event.target.value)}
                     />
                   </div>
                 </div>
 
                 <div className="flex flex-wrap items-end gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="egauge-interval">History Interval (minutes)</Label>
+                    <Label htmlFor="egauge-interval">
+                      History Interval (minutes)
+                    </Label>
                     <Input
                       id="egauge-interval"
                       type="number"
                       min={1}
                       max={1440}
                       value={intervalMinutes}
-                      onChange={(event) => setIntervalMinutes(event.target.value)}
+                      onChange={event => setIntervalMinutes(event.target.value)}
                       className="w-40"
                     />
                   </div>
@@ -885,7 +1178,7 @@ export default function EGaugeApi() {
                     <input
                       type="checkbox"
                       checked={includeRate}
-                      onChange={(event) => setIncludeRate(event.target.checked)}
+                      onChange={event => setIncludeRate(event.target.checked)}
                       className="h-4 w-4 rounded border-slate-300"
                     />
                     Include rate values
@@ -897,17 +1190,23 @@ export default function EGaugeApi() {
             <div className="flex flex-wrap gap-2">
               <Button
                 variant="outline"
-                disabled={isRunningAction || getPortfolioSystemsMutation.isPending || !isConnected || !activeIsPortfolioAccess}
+                disabled={
+                  isRunningAction ||
+                  getPortfolioSystemsMutation.isPending ||
+                  !isConnected ||
+                  !requestIsPortfolioAccess ||
+                  !requestConnectionId
+                }
                 onClick={() =>
                   runAction("Portfolio Systems", () =>
-                    getPortfolioSystemsMutation.mutateAsync({
+                    fetchPortfolioSystemsForRequestConnection({
                       filter: portfolioFilter.trim() || undefined,
                       groupId: portfolioGroupId.trim() || undefined,
                     })
                   )
                 }
               >
-                {(isRunningAction && getPortfolioSystemsMutation.isPending) ? (
+                {isRunningAction && getPortfolioSystemsMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : null}
                 Fetch Portfolio Systems
@@ -915,12 +1214,22 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getSystemInfoMutation.isPending || !isConnected || activeIsPortfolioAccess}
+                disabled={
+                  isRunningAction ||
+                  getSystemInfoMutation.isPending ||
+                  !isConnected ||
+                  requestIsPortfolioAccess ||
+                  !requestConnectionId
+                }
                 onClick={() =>
-                  runAction("System Info", () => getSystemInfoMutation.mutateAsync())
+                  runAction("System Info", () =>
+                    getSystemInfoMutation.mutateAsync({
+                      connectionId: requestConnectionId,
+                    })
+                  )
                 }
               >
-                {(isRunningAction && getSystemInfoMutation.isPending) ? (
+                {isRunningAction && getSystemInfoMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : null}
                 Fetch System Info
@@ -928,12 +1237,22 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getLocalDataMutation.isPending || !isConnected || activeIsPortfolioAccess}
+                disabled={
+                  isRunningAction ||
+                  getLocalDataMutation.isPending ||
+                  !isConnected ||
+                  requestIsPortfolioAccess ||
+                  !requestConnectionId
+                }
                 onClick={() =>
-                  runAction("Local Data", () => getLocalDataMutation.mutateAsync())
+                  runAction("Local Data", () =>
+                    getLocalDataMutation.mutateAsync({
+                      connectionId: requestConnectionId,
+                    })
+                  )
                 }
               >
-                {(isRunningAction && getLocalDataMutation.isPending) ? (
+                {isRunningAction && getLocalDataMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : null}
                 Fetch Local Data
@@ -941,17 +1260,24 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getRegisterLatestMutation.isPending || !isConnected || activeIsPortfolioAccess}
+                disabled={
+                  isRunningAction ||
+                  getRegisterLatestMutation.isPending ||
+                  !isConnected ||
+                  requestIsPortfolioAccess ||
+                  !requestConnectionId
+                }
                 onClick={() =>
                   runAction("Register Latest", () =>
                     getRegisterLatestMutation.mutateAsync({
+                      connectionId: requestConnectionId,
                       register: registerInput.trim() || undefined,
                       includeRate,
                     })
                   )
                 }
               >
-                {(isRunningAction && getRegisterLatestMutation.isPending) ? (
+                {isRunningAction && getRegisterLatestMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : null}
                 Fetch Register Latest
@@ -959,20 +1285,30 @@ export default function EGaugeApi() {
 
               <Button
                 variant="outline"
-                disabled={isRunningAction || getRegisterHistoryMutation.isPending || !isConnected || activeIsPortfolioAccess}
+                disabled={
+                  isRunningAction ||
+                  getRegisterHistoryMutation.isPending ||
+                  !isConnected ||
+                  requestIsPortfolioAccess ||
+                  !requestConnectionId
+                }
                 onClick={() =>
                   runAction("Register History", () =>
                     getRegisterHistoryMutation.mutateAsync({
+                      connectionId: requestConnectionId,
                       startDate,
                       endDate,
-                      intervalMinutes: Number(intervalMinutes) > 0 ? Number(intervalMinutes) : 15,
+                      intervalMinutes:
+                        Number(intervalMinutes) > 0
+                          ? Number(intervalMinutes)
+                          : 15,
                       register: registerInput.trim() || undefined,
                       includeRate,
                     })
                   )
                 }
               >
-                {(isRunningAction && getRegisterHistoryMutation.isPending) ? (
+                {isRunningAction && getRegisterHistoryMutation.isPending ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : null}
                 Fetch Register History
@@ -997,50 +1333,65 @@ export default function EGaugeApi() {
           <CardHeader>
             <CardTitle>4) Bulk Production Snapshots</CardTitle>
             <CardDescription>
-              {activeIsPortfolioAccess
+              {requestIsPortfolioAccess
                 ? "Portfolio mode: fetch all eGauge IDs in your account, then run a bulk lifetime kWh pull. Results auto-push to Solar REC Dashboard Converted Reads."
                 : "Enter meter IDs (one per line) matching your saved connections to fetch lifetime production. Results auto-push to Solar REC Dashboard Converted Reads."}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div>
-              <Label>{activeIsPortfolioAccess ? "eGauge IDs (optional override)" : "Meter IDs (one per line)"}</Label>
+              <Label>
+                {requestIsPortfolioAccess
+                  ? "eGauge IDs (optional override)"
+                  : "Meter IDs (one per line)"}
+              </Label>
               <textarea
                 className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
                 value={bulkMeterIdsCsv}
-                onChange={(e) => setBulkMeterIdsCsv(e.target.value)}
+                onChange={e => setBulkMeterIdsCsv(e.target.value)}
                 placeholder={
-                  activeIsPortfolioAccess
+                  requestIsPortfolioAccess
                     ? "Leave blank to auto-fetch all IDs from your portfolio, or paste specific IDs"
                     : "egauge12345\negauge67890"
                 }
                 disabled={bulkIsRunning}
               />
               <p className="mt-1 text-xs text-slate-500">
-                {activeIsPortfolioAccess
+                {requestIsPortfolioAccess
                   ? "Step 1: Fetch portfolio IDs. Step 2: Run bulk snapshots for lifetime kWh."
                   : "Use saved meter profiles or paste IDs manually."}
               </p>
-              {!activeIsPortfolioAccess && statusQuery.data?.connections && statusQuery.data.connections.length > 0 && (
-                <Button
-                  variant="link"
-                  size="sm"
-                  className="mt-1 px-0"
-                  onClick={() => {
-                    const ids = statusQuery.data!.connections.map((c: { meterId: string }) => c.meterId).join("\n");
-                    setBulkMeterIdsCsv(ids);
-                  }}
-                >
-                  Use all saved meter IDs ({statusQuery.data.connections.length})
-                </Button>
-              )}
+              {!requestIsPortfolioAccess &&
+                statusQuery.data?.connections &&
+                statusQuery.data.connections.length > 0 && (
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="mt-1 px-0"
+                    onClick={() => {
+                      const ids = statusQuery
+                        .data!.connections.map(
+                          (c: { meterId: string }) => c.meterId
+                        )
+                        .join("\n");
+                      setBulkMeterIdsCsv(ids);
+                    }}
+                  >
+                    Use all saved meter IDs (
+                    {statusQuery.data.connections.length})
+                  </Button>
+                )}
             </div>
             <div className="flex gap-2">
-              {activeIsPortfolioAccess ? (
+              {requestIsPortfolioAccess ? (
                 <Button
                   variant="outline"
                   onClick={handlePullAllPortfolioIds}
-                  disabled={bulkIsRunning || !statusQuery.data?.connected}
+                  disabled={
+                    bulkIsRunning ||
+                    !statusQuery.data?.connected ||
+                    !requestConnectionId
+                  }
                 >
                   {bulkIsRunning && getPortfolioSystemsMutation.isPending ? (
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1067,7 +1418,8 @@ export default function EGaugeApi() {
                   disabled={bulkIsRunning || !statusQuery.data?.connected}
                   variant="outline"
                 >
-                  {bulkIsRunning && getAllPortfolioSnapshotsMutation.isPending ? (
+                  {bulkIsRunning &&
+                  getAllPortfolioSnapshotsMutation.isPending ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       Running All...
@@ -1081,10 +1433,25 @@ export default function EGaugeApi() {
                 <Button
                   variant="outline"
                   onClick={() => {
-                    const headers = ["meter_id", "meter_name", "site_name", "group", "portfolio_account", "status", "lifetime_kwh", "daily_production_kwh", "weekly_production_kwh", "monthly_production_kwh", "yearly_production_kwh", "last_12_months_production_kwh", "anchor_date", "error"];
+                    const headers = [
+                      "meter_id",
+                      "meter_name",
+                      "site_name",
+                      "group",
+                      "portfolio_account",
+                      "status",
+                      "lifetime_kwh",
+                      "daily_production_kwh",
+                      "weekly_production_kwh",
+                      "monthly_production_kwh",
+                      "yearly_production_kwh",
+                      "last_12_months_production_kwh",
+                      "anchor_date",
+                      "error",
+                    ];
                     const csvLines = [
                       headers.join(","),
-                      ...bulkRows.map((row) =>
+                      ...bulkRows.map(row =>
                         [
                           row.meterId,
                           `"${(row.meterName ?? "").replace(/"/g, '""')}"`,
@@ -1114,7 +1481,10 @@ export default function EGaugeApi() {
               )}
               <Button
                 variant="outline"
-                disabled={bulkRows.filter((r) => r.found && r.lifetimeKwh != null).length === 0}
+                disabled={
+                  bulkRows.filter(r => r.found && r.lifetimeKwh != null)
+                    .length === 0
+                }
                 onClick={() => downloadConvertedReadsCsv(bulkRows)}
               >
                 <Download className="h-4 w-4 mr-2" />
@@ -1129,7 +1499,7 @@ export default function EGaugeApi() {
                       <th className="text-left p-2">Meter ID</th>
                       <th className="text-left p-2">Name</th>
                       <th className="text-left p-2">Group</th>
-                      {bulkRows.some((r) => r.portfolioAccount) && (
+                      {bulkRows.some(r => r.portfolioAccount) && (
                         <th className="text-left p-2">Account</th>
                       )}
                       <th className="text-left p-2">Status</th>
@@ -1142,21 +1512,50 @@ export default function EGaugeApi() {
                     </tr>
                   </thead>
                   <tbody>
-                    {bulkRows.map((row) => (
-                      <tr key={`${row.portfolioAccount ?? ""}-${row.meterId}`} className="border-b">
+                    {bulkRows.map(row => (
+                      <tr
+                        key={`${row.portfolioAccount ?? ""}-${row.meterId}`}
+                        className="border-b"
+                      >
                         <td className="p-2 font-mono text-xs">{row.meterId}</td>
-                        <td className="p-2 text-xs">{row.meterName ?? "N/A"}</td>
+                        <td className="p-2 text-xs">
+                          {row.meterName ?? "N/A"}
+                        </td>
                         <td className="p-2 text-xs">{row.group ?? ""}</td>
-                        {bulkRows.some((r) => r.portfolioAccount) && (
-                          <td className="p-2 text-xs">{row.portfolioAccount ?? ""}</td>
+                        {bulkRows.some(r => r.portfolioAccount) && (
+                          <td className="p-2 text-xs">
+                            {row.portfolioAccount ?? ""}
+                          </td>
                         )}
                         <td className="p-2 text-xs">{row.status}</td>
-                        <td className="p-2 text-right tabular-nums">{row.lifetimeKwh != null ? row.lifetimeKwh.toLocaleString() : "N/A"}</td>
-                        <td className="p-2 text-right tabular-nums">{row.dailyProductionKwh != null ? row.dailyProductionKwh.toLocaleString() : ""}</td>
-                        <td className="p-2 text-right tabular-nums">{row.weeklyProductionKwh != null ? row.weeklyProductionKwh.toLocaleString() : ""}</td>
-                        <td className="p-2 text-right tabular-nums">{row.monthlyProductionKwh != null ? row.monthlyProductionKwh.toLocaleString() : ""}</td>
-                        <td className="p-2 text-right tabular-nums">{row.yearlyProductionKwh != null ? row.yearlyProductionKwh.toLocaleString() : ""}</td>
-                        <td className="p-2 text-xs text-slate-500">{row.error ?? ""}</td>
+                        <td className="p-2 text-right tabular-nums">
+                          {row.lifetimeKwh != null
+                            ? row.lifetimeKwh.toLocaleString()
+                            : "N/A"}
+                        </td>
+                        <td className="p-2 text-right tabular-nums">
+                          {row.dailyProductionKwh != null
+                            ? row.dailyProductionKwh.toLocaleString()
+                            : ""}
+                        </td>
+                        <td className="p-2 text-right tabular-nums">
+                          {row.weeklyProductionKwh != null
+                            ? row.weeklyProductionKwh.toLocaleString()
+                            : ""}
+                        </td>
+                        <td className="p-2 text-right tabular-nums">
+                          {row.monthlyProductionKwh != null
+                            ? row.monthlyProductionKwh.toLocaleString()
+                            : ""}
+                        </td>
+                        <td className="p-2 text-right tabular-nums">
+                          {row.yearlyProductionKwh != null
+                            ? row.yearlyProductionKwh.toLocaleString()
+                            : ""}
+                        </td>
+                        <td className="p-2 text-xs text-slate-500">
+                          {row.error ?? ""}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
