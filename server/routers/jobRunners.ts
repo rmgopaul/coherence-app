@@ -1192,11 +1192,29 @@ export const dinScrapeRouter = router({
       if (!job || job.userId !== ctx.user.id) {
         throw new Error("DIN scrape job not found.");
       }
-      if (job.status !== "running" && job.status !== "queued") {
+      if (
+        job.status !== "running" &&
+        job.status !== "queued" &&
+        job.status !== "stopping"
+      ) {
         throw new Error(`Cannot stop job with status "${job.status}".`);
       }
+      // If no runner is actually alive on this process, don't bother
+      // with the "stopping" dance — nobody's polling to flip it to
+      // "stopped". Skip straight to terminal. Covers two cases:
+      //   - Stop clicked after a Render redeploy killed the worker.
+      //   - Stop clicked on a stale job stuck in "stopping" from a
+      //     prior session.
+      if (!isDinScrapeRunnerActive(job.id)) {
+        await updateDinScrapeJob(job.id, {
+          status: "stopped",
+          stoppedAt: new Date(),
+          currentCsgId: null,
+        });
+        return { success: true, forced: true };
+      }
       await updateDinScrapeJob(job.id, { status: "stopping" });
-      return { success: true };
+      return { success: true, forced: false };
     }),
 
   resumeJob: protectedProcedure
@@ -1241,9 +1259,16 @@ export const dinScrapeRouter = router({
       if (!job || job.userId !== ctx.user.id) {
         throw new Error("DIN scrape job not found.");
       }
-      // Auto-resume if the runner died (process restart, etc.)
+      // Auto-resume if the runner died (process restart, etc.).
+      // Also covers "stopping" — when the runner is dead and status
+      // is "stopping", runDinScrapeJob will see that and flip to
+      // "stopped" (see dinScrapeJobRunner.ts). Without including
+      // "stopping" here, a stop-in-flight across a deploy just sits
+      // forever because getJobStatus never wakes the runner.
       if (
-        (job.status === "queued" || job.status === "running") &&
+        (job.status === "queued" ||
+          job.status === "running" ||
+          job.status === "stopping") &&
         !isDinScrapeRunnerActive(job.id)
       ) {
         void runDinScrapeJob(job.id);

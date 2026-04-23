@@ -16,7 +16,7 @@ const DIN_SCRAPE_CONCURRENCY = 4;
  */
 const CLAUDE_FAILURE_THRESHOLD = 5;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@8";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@9";
 
 const activeRunners = new Set<string>();
 
