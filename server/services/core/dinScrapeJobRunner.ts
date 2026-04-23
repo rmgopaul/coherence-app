@@ -4,7 +4,10 @@ import { parseJsonMetadata } from "../../routers/helpers/utils";
 import { CSG_PORTAL_PROVIDER } from "../../routers/helpers/constants";
 
 const DIN_SCRAPE_SESSION_REFRESH_INTERVAL = 80;
-const DIN_SCRAPE_CONCURRENCY = 2;
+// Bumped 2 → 4 once the per-site pipeline was cheap enough that the
+// CSG portal's rate-tolerance was the bottleneck rather than our
+// own CPU / Claude spend.
+const DIN_SCRAPE_CONCURRENCY = 4;
 /**
  * After this many Claude/Anthropic failures in a single job, stop
  * attempting Claude for the remainder of the job and rely on
@@ -13,7 +16,7 @@ const DIN_SCRAPE_CONCURRENCY = 2;
  */
 const CLAUDE_FAILURE_THRESHOLD = 5;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@6";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@7";
 
 const activeRunners = new Set<string>();
 

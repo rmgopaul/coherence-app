@@ -31,9 +31,12 @@ const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 const ANTHROPIC_VISION_TIMEOUT_MS = 60_000;
 const ANTHROPIC_VISION_MAX_TOKENS = 2048;
-// Sonnet 4.6 balances quality (scuffed field photos) and cost; users can
+// Opus 4.7 — the highest-accuracy Anthropic vision model. Chosen over
+// Sonnet because field photos of sticker labels are exactly the
+// "small text, adverse angle, digit-heavy" regime where Sonnet
+// mode-collapses to plausible-but-wrong DINs. Users can still
 // override via the integration row's metadata.model.
-const DEFAULT_VISION_MODEL = "claude-sonnet-4-6";
+const DEFAULT_VISION_MODEL = "claude-opus-4-7";
 
 // Anthropic vision only accepts these raster types; TIFF/BMP/HEIC-raw
 // return HTTP 400. After normalizeForExtraction everything becomes
@@ -501,82 +504,104 @@ export async function extractDinsFromPhoto(
     };
   }
 
-  // Step 3 — Claude vision with rotation retry.
+  // Step 3 — Claude vision.
+  //
+  // Strategy:
+  //   1. Rotation 0 first (single call). If it returns DINs, accept
+  //      and return — with a high-accuracy model like Opus, rotation
+  //      0 hits are trustworthy. We previously tried a "double-call
+  //      verification" here to catch hallucinations, but at
+  //      temperature=0 with identical input the model returns
+  //      identical output, hallucination or not — so it was burning
+  //      2× the spend for zero benefit. Accuracy comes from the
+  //      stronger model + the anti-hallucination prompt + (when it
+  //      works) QR ground-truth, not from repeated calls.
+  //   2. If rotation 0 returns no DINs, fire rotations 90/180/270
+  //      in PARALLEL (Promise.all) rather than sequentially. Takes
+  //      1 call-duration wall-clock instead of 3. First non-empty
+  //      response wins.
   let claudeAttempted = false;
   let claudeFailed = false;
   if (credentials.anthropicApiKey && isClaudeCompatibleImage(log.normalizedMimeType)) {
     claudeAttempted = true;
     log.claude = [];
-    const rotations: Array<0 | 90 | 180 | 270> = [0, 90, 180, 270];
 
-    for (const rotation of rotations) {
-      let frameBytes: Uint8Array;
-      try {
-        frameBytes = rotation === 0 ? workingBytes : await rotateImage(workingBytes, rotation);
-      } catch (err) {
-        log.claude.push({
-          rotation,
-          dinsFound: 0,
-          rawTextSnippet: "",
-          error: `rotate failed: ${errMsg(err)}`,
-        });
-        continue;
+    // Rotation 0.
+    try {
+      const { dins, rawText } = await callClaudeOnImage(
+        workingBytes,
+        "image/jpeg",
+        credentials
+      );
+      log.claude.push({
+        rotation: 0,
+        dinsFound: dins.length,
+        rawTextSnippet: rawText.slice(0, 500),
+      });
+      if (dins.length > 0) {
+        log.finalExtractor = "claude";
+        return finalize(dins, log, { claudeAttempted, claudeFailed });
       }
+    } catch (err) {
+      claudeFailed = true;
+      const detail =
+        err instanceof HttpClientError
+          ? `${err.message} (status=${err.statusCode ?? "n/a"})`
+          : errMsg(err);
+      log.claude.push({
+        rotation: 0,
+        dinsFound: 0,
+        rawTextSnippet: "",
+        error: detail,
+      });
+      // Fall through to tesseract; skip parallel rotations since
+      // Anthropic is failing.
+    }
 
-      try {
-        const { dins, rawText } = await callClaudeOnImage(
-          frameBytes,
-          "image/jpeg",
-          credentials
-        );
-        log.claude.push({
-          rotation,
-          dinsFound: dins.length,
-          rawTextSnippet: rawText.slice(0, 500),
-        });
-        if (dins.length > 0) {
-          // Anti-hallucination: Claude sometimes returns a
-          // plausible-but-wrong DIN with confidence:"high" (mode
-          // collapse on structurally-similar images). Run a second
-          // independent verification call and require EXACT agreement
-          // on every DIN value. Hallucinations are almost never
-          // reproduced identically; real reads are.
-          const verification = await callClaudeOnImage(
+    // Rotations 90/180/270 in parallel. Only runs if rotation 0
+    // returned zero DINs AND didn't throw.
+    if (!claudeFailed && log.claude[0] && log.claude[0].dinsFound === 0) {
+      const rotatedAttempts = await Promise.allSettled(
+        ([90, 180, 270] as const).map(async (rotation) => {
+          const frameBytes = await rotateImage(workingBytes, rotation);
+          const { dins, rawText } = await callClaudeOnImage(
             frameBytes,
             "image/jpeg",
             credentials
           );
-          const firstSet = new Set(dins.map((d) => d.dinValue));
-          const secondSet = new Set(verification.dins.map((d) => d.dinValue));
-          const agreed = dins.filter((d) => secondSet.has(d.dinValue));
+          return { rotation, dins, rawText };
+        })
+      );
+
+      for (const outcome of rotatedAttempts) {
+        if (outcome.status === "fulfilled") {
           log.claude.push({
-            rotation,
-            dinsFound: agreed.length,
-            rawTextSnippet: `VERIFY: ${verification.rawText.slice(0, 460)}`,
+            rotation: outcome.value.rotation,
+            dinsFound: outcome.value.dins.length,
+            rawTextSnippet: outcome.value.rawText.slice(0, 500),
           });
-          if (agreed.length === 0 || agreed.length !== firstSet.size) {
-            // Disagreement — likely hallucination. Continue to next
-            // rotation instead of trusting either.
-            continue;
-          }
-          log.finalExtractor = "claude";
-          return finalize(agreed, log, { claudeAttempted, claudeFailed });
+        } else {
+          claudeFailed = true;
+          log.claude.push({
+            rotation: 0,
+            dinsFound: 0,
+            rawTextSnippet: "",
+            error: `parallel rotation failed: ${errMsg(outcome.reason)}`,
+          });
         }
-      } catch (err) {
-        claudeFailed = true;
-        const detail =
-          err instanceof HttpClientError
-            ? `${err.message} (status=${err.statusCode ?? "n/a"})`
-            : errMsg(err);
-        log.claude.push({
-          rotation,
-          dinsFound: 0,
-          rawTextSnippet: "",
-          error: detail,
-        });
-        // On HTTP-layer failures, stop rotating and let the runner's
-        // circuit breaker decide what to do next.
-        break;
+      }
+
+      // Pick the first fulfilled rotation with DINs.
+      const winner = rotatedAttempts.find(
+        (o): o is PromiseFulfilledResult<{
+          rotation: 90 | 180 | 270;
+          dins: DinMatch[];
+          rawText: string;
+        }> => o.status === "fulfilled" && o.value.dins.length > 0
+      );
+      if (winner) {
+        log.finalExtractor = "claude";
+        return finalize(winner.value.dins, log, { claudeAttempted, claudeFailed });
       }
     }
   }
