@@ -16,7 +16,7 @@ const DIN_SCRAPE_CONCURRENCY = 4;
  */
 const CLAUDE_FAILURE_THRESHOLD = 5;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@7";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@8";
 
 const activeRunners = new Set<string>();
 
@@ -37,6 +37,20 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
   const job = await getDinScrapeJob(id);
   if (!job) return;
   if (job.status === "completed" || job.status === "failed") return;
+  // If the user clicked Stop before a redeploy killed the old runner,
+  // status is "stopping" and the DB has been asking the runner to die
+  // since. Honor that: mark as stopped and exit, rather than zombieing
+  // the job back to life by unconditionally setting status to "running"
+  // below. Before this guard, every deploy would reset a stop-in-flight
+  // job back to running.
+  if (job.status === "stopping") {
+    await updateDinScrapeJob(id, {
+      status: "stopped",
+      stoppedAt: new Date(),
+      currentCsgId: null,
+    });
+    return;
+  }
 
   activeRunners.add(id);
 
@@ -148,10 +162,19 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
     let claudeDisabled = false;
 
     let cancelled = false;
-    let cancelCheckCounter = 0;
+    let lastCancelCheckAt = 0;
+    const CANCEL_CHECK_INTERVAL_MS = 5_000;
+    /**
+     * Poll the DB for a "stopping" status. We rate-limit DB hits to
+     * once every 5s — under concurrency=4 with photo-level checks
+     * that's still plenty responsive, and keeps the load off the
+     * jobs table. Once cancelled, subsequent calls short-circuit.
+     */
     const checkCancelled = async (): Promise<boolean> => {
-      cancelCheckCounter += 1;
-      if (cancelCheckCounter % 3 !== 0) return cancelled;
+      if (cancelled) return true;
+      const now = Date.now();
+      if (now - lastCancelCheckAt < CANCEL_CHECK_INTERVAL_MS) return false;
+      lastCancelCheckAt = now;
       const freshJob = await getDinScrapeJob(id);
       if (!freshJob || freshJob.status === "stopping") cancelled = true;
       return cancelled;
@@ -201,6 +224,12 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
 
         if (!siteError && fetched.photos.length > 0) {
           for (const photo of fetched.photos) {
+            // Check for cancellation between photos too, not just
+            // between sites. A wide-angle photo with several failed
+            // Claude rotations can take 30-60s; without this, a
+            // user-initiated stop waits for the whole site to
+            // finish before taking effect.
+            if (await checkCancelled()) break;
             if (photo.sourceType === "inverter") inverterCount += 1;
             else if (photo.sourceType === "meter") meterCount += 1;
             try {
