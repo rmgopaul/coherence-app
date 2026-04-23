@@ -6,34 +6,27 @@
  * form. QR is deterministic — if we decode it, we have ground truth,
  * and never need to trust a vision model's reading of sticker text.
  *
- * Field photos are hostile to QR decoders:
- *   - The QR is typically 5-10% of the frame (small sticker in a
- *     corner, surrounded by wiring / cabinet internals).
- *   - Autofocus is imperfect; edges may be slightly soft.
- *   - Lighting is uneven (glare, shadow, reflective laminate).
- *   - The photo may contain unrelated rectangles that look like
- *     finder patterns to a naive decoder.
+ * Performance matters hugely here. iPhone photos are 12 MP (~3024 ×
+ * 4032). Running jsqr + tile extraction at that resolution is ~30 s
+ * per photo. On a 9-photo site with no-QR photos present, that
+ * compounds to 4-5 minutes per site before any Claude call. For
+ * batch jobs we need to stay under 30 s per photo worst case.
  *
- * Strategy — run the two best open-source decoders against multiple
- * regions of the image, accepting the first success. Order of
- * attempts:
+ * Current strategy:
  *
- *   1. jsqr on full image (1 call)
- *   2. jsqr on 2×2, 3×3, 4×4 overlapping tiles (4 + 9 + 16 = 29)
- *   3. If jsqr exhausted, repeat with ZXing, which has a more
- *      aggressive finder-pattern search and catches codes jsqr
- *      doesn't.
+ *   1. Downsample to max 1500 px on the long edge. QR modules at
+ *      that resolution are still 5-10 px wide — well above jsqr's
+ *      detection floor — and sharp.extract() runs 4× faster.
+ *   2. Try full image + 2×2 + 3×3 overlapping tiles (1 + 4 + 9 = 14
+ *      regions). A QR that's 10% of the frame fills ~30% of a 3×3
+ *      tile, which is plenty.
+ *   3. jsqr only. Earlier versions also ran ZXing as a fallback,
+ *      but jsqr is proven to decode these Tesla codes (see
+ *      production logs) and ZXing adds 15+ s per miss without
+ *      catching anything jsqr doesn't.
  *
- * Tiling matters because a QR that's 300 px in a 3024 px image fills
- * ~10% of the frame; in a 4×4 tile (756 px per side) it fills ~40%,
- * which is well above either decoder's detection threshold.
- *
- * We do NOT apply normalize() or sharpen() preprocessing. Both hurt
- * QR decoding: sharpen() creates halos around high-contrast edges
- * that smear the 1-module-wide bars; normalize() skews the
- * luminance histogram in ways that can invert the finder patterns.
- * Decoders have their own adaptive-threshold layer — feed them raw
- * luminance and let them do their job.
+ * No preprocessing (normalize / sharpen) — both damage the 1-module-
+ * wide bars. Decoders have their own adaptive threshold stage.
  */
 
 const JSQR_INVERSION_MODE = "attemptBoth" as const;
@@ -57,23 +50,53 @@ export type QrDecodeResult = {
  * the image, along with how many decoder invocations we made before
  * finding one (or giving up).
  */
+// Max long-edge pixel count we feed to the QR pipeline. Anything
+// larger gets downsampled once up front; QR modules remain well
+// above jsqr's ~5 px detection threshold at this resolution, and
+// sharp.extract() is ~4× faster on the downsampled image.
+const QR_WORKING_LONG_EDGE = 1500;
+
 export async function decodeQrPayloads(
   data: Uint8Array
 ): Promise<QrDecodeResult> {
   const sharpMod = await import("sharp");
   const sharp = sharpMod.default;
 
-  // Read dimensions after EXIF rotation so our crop math is correct.
+  // One-time: honor EXIF, downsample to QR_WORKING_LONG_EDGE, and
+  // re-encode as JPEG. Every region extract downstream operates on
+  // THIS buffer, not the original 12 MP input.
+  let workingBytes: Buffer;
   let width = 0;
   let height = 0;
   try {
     const meta = await sharp(Buffer.from(data)).rotate().metadata();
-    width = meta.width ?? 0;
-    height = meta.height ?? 0;
+    const rawW = meta.width ?? 0;
+    const rawH = meta.height ?? 0;
+    if (rawW === 0 || rawH === 0) {
+      return { payloads: [], attempts: 0 };
+    }
+    const longEdge = Math.max(rawW, rawH);
+    const downsampleScale =
+      longEdge > QR_WORKING_LONG_EDGE ? QR_WORKING_LONG_EDGE / longEdge : 1;
+
+    const pipeline = sharp(Buffer.from(data), { failOn: "none" }).rotate();
+    const scaled =
+      downsampleScale < 1
+        ? pipeline.resize({
+            width: Math.round(rawW * downsampleScale),
+            height: Math.round(rawH * downsampleScale),
+            fit: "fill",
+            kernel: "lanczos3",
+          })
+        : pipeline;
+
+    const { data: jpeg, info } = await scaled
+      .jpeg({ quality: 90 })
+      .toBuffer({ resolveWithObject: true });
+    workingBytes = jpeg;
+    width = info.width;
+    height = info.height;
   } catch {
-    return { payloads: [], attempts: 0 };
-  }
-  if (width === 0 || height === 0) {
     return { payloads: [], attempts: 0 };
   }
 
@@ -89,8 +112,7 @@ export async function decodeQrPayloads(
       const clampedW = Math.max(1, Math.min(w, width - clampedLeft));
       const clampedH = Math.max(1, Math.min(h, height - clampedTop));
 
-      const { data: raw, info } = await sharp(Buffer.from(data), { failOn: "none" })
-        .rotate()
+      const { data: raw, info } = await sharp(workingBytes, { failOn: "none" })
         .extract({
           left: clampedLeft,
           top: clampedTop,
@@ -101,9 +123,6 @@ export async function decodeQrPayloads(
         .ensureAlpha()
         .raw()
         .toBuffer({ resolveWithObject: true });
-      // Allocate fresh Uint8ClampedArray — the Buffer we got back
-      // is backed by Node's internal pool, which can cause weird
-      // sharing issues if multiple tiles run in parallel.
       const pixels = new Uint8ClampedArray(raw.length);
       pixels.set(raw);
       return { pixels, width: info.width, height: info.height };
@@ -112,7 +131,6 @@ export async function decodeQrPayloads(
     }
   };
 
-  // Lazy-load decoders once.
   const jsqrMod = await import("jsqr");
   const jsqrCandidate =
     (jsqrMod as unknown as { default?: unknown }).default ?? jsqrMod;
@@ -133,60 +151,16 @@ export async function decodeQrPayloads(
     }
   };
 
-  // ZXing is initialized lazily on first use — heavier than jsqr to
-  // spin up, so we only pay the cost when jsqr has already failed.
-  let zxingReader: { decode: (frame: {
-    pixels: Uint8ClampedArray;
-    width: number;
-    height: number;
-  }) => string | null } | null = null;
-  const getZxing = async () => {
-    if (zxingReader) return zxingReader;
-    const mod = await import("@zxing/library");
-    const { BinaryBitmap, HybridBinarizer, RGBLuminanceSource, MultiFormatReader, DecodeHintType, BarcodeFormat, NotFoundException } = mod;
-    const reader = new MultiFormatReader();
-    const hints = new Map();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    reader.setHints(hints);
-    zxingReader = {
-      decode: (frame) => {
-        try {
-          // RGBLuminanceSource takes Int32Array of 0xRRGGBBAA pixels.
-          const len = frame.pixels.length / 4;
-          const argbArr = new Int32Array(len);
-          for (let i = 0; i < len; i++) {
-            const r = frame.pixels[i * 4];
-            const g = frame.pixels[i * 4 + 1];
-            const b = frame.pixels[i * 4 + 2];
-            argbArr[i] = (0xff << 24) | (r << 16) | (g << 8) | b;
-          }
-          const source = new RGBLuminanceSource(argbArr, frame.width, frame.height);
-          const binary = new BinaryBitmap(new HybridBinarizer(source));
-          const result = reader.decode(binary, hints);
-          const text = result.getText();
-          return text && text.trim() ? text.trim() : null;
-        } catch (err) {
-          if (err instanceof NotFoundException) return null;
-          // Other errors: swallow and treat as miss.
-          return null;
-        }
-      },
-    };
-    return zxingReader;
-  };
-
-  // Generate the list of regions to try, from largest (whole frame)
-  // to smallest (4×4 with overlap). Each region = {left, top, w, h}.
+  // Region plan: full + 2×2 + 3×3 = 14 regions. Previous 4×4 layer
+  // (16 more regions) never caught a QR that 3×3 missed in
+  // production logs, so we dropped it to save ~15 s per miss.
   type Region = { left: number; top: number; w: number; h: number; label: string };
   const regions: Region[] = [
     { left: 0, top: 0, w: width, h: height, label: "full" },
   ];
-  for (const grid of [2, 3, 4] as const) {
+  for (const grid of [2, 3] as const) {
     const tileW = Math.ceil(width / grid);
     const tileH = Math.ceil(height / grid);
-    // 30% overlap between tiles so QRs on tile boundaries still fit
-    // cleanly inside at least one tile.
     const overlap = 0.3;
     const stepW = Math.max(1, Math.round(tileW * (1 - overlap)));
     const stepH = Math.max(1, Math.round(tileH * (1 - overlap)));
@@ -204,8 +178,6 @@ export async function decodeQrPayloads(
   }
 
   let attempts = 0;
-
-  // Pass 1: jsqr across every region.
   for (const region of regions) {
     const frame = await extractRgba(region.left, region.top, region.w, region.h);
     if (!frame) continue;
@@ -216,22 +188,6 @@ export async function decodeQrPayloads(
         payloads: [payload],
         attempts,
         winningStrategy: `jsqr ${region.label}`,
-      };
-    }
-  }
-
-  // Pass 2: ZXing across every region. More robust but slower to init.
-  const zxing = await getZxing();
-  for (const region of regions) {
-    const frame = await extractRgba(region.left, region.top, region.w, region.h);
-    if (!frame) continue;
-    attempts += 1;
-    const payload = zxing.decode(frame);
-    if (payload) {
-      return {
-        payloads: [payload],
-        attempts,
-        winningStrategy: `zxing ${region.label}`,
       };
     }
   }

@@ -31,12 +31,16 @@ const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
 const ANTHROPIC_VISION_TIMEOUT_MS = 60_000;
 const ANTHROPIC_VISION_MAX_TOKENS = 2048;
-// Opus 4.7 — the highest-accuracy Anthropic vision model. Chosen over
-// Sonnet because field photos of sticker labels are exactly the
-// "small text, adverse angle, digit-heavy" regime where Sonnet
-// mode-collapses to plausible-but-wrong DINs. Users can still
-// override via the integration row's metadata.model.
-const DEFAULT_VISION_MODEL = "claude-opus-4-7";
+// Sonnet 4.6 is the default. Rationale: QR decoding now handles
+// inverter sticker labels deterministically (the original reason
+// to pick Opus was accuracy on those). Claude is only invoked as a
+// safety net for non-sticker frames — wide shots, diagnostic
+// screenshots, meter photos without QR — where Sonnet is both
+// faster and under a much higher TPM cap. Opus's stricter rate
+// limits were causing the whole job to stall behind 429-retry
+// backoffs with concurrency=4. Override via integration
+// metadata.model if you want Opus anyway.
+const DEFAULT_VISION_MODEL = "claude-sonnet-4-6";
 
 // Anthropic vision only accepts these raster types; TIFF/BMP/HEIC-raw
 // return HTTP 400. After normalizeForExtraction everything becomes
