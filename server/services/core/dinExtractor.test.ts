@@ -197,4 +197,46 @@ describe("extractDinsFromQrPayload (Tesla format)", () => {
     );
     expect(matches).toHaveLength(1);
   });
+
+  // ── Colon-delimited formats observed in production (meters + non-Tesla inverters) ──
+  describe("colon-delimited QR payloads", () => {
+    const colonPayloads: Array<{ payload: string; expectedDin: string; label: string }> = [
+      {
+        payload: "P1112484-14-A:D55045:NVAH5105AB2867",
+        expectedDin: "1112484-14-A-NVAH5105AB2867",
+        label: "Neurio meter 3-field",
+      },
+      {
+        payload: "P1546816-00-C:1TDI921327A00328",
+        expectedDin: "1546816-00-C-1TDI921327A00328",
+        label: "non-Tesla inverter 2-field",
+      },
+      {
+        payload: "P1112484-14-A:D76188:NVAH5105AB1522",
+        expectedDin: "1112484-14-A-NVAH5105AB1522",
+        label: "Neurio meter variant",
+      },
+      {
+        payload: "12484-14-A:S34939:NVAH5309AB1904",
+        expectedDin: "12484-14-A-NVAH5309AB1904",
+        label: "P prefix dropped by decoder",
+      },
+    ];
+
+    for (const { payload, expectedDin, label } of colonPayloads) {
+      it(`parses ${label}: "${payload}"`, () => {
+        const matches = extractDinsFromQrPayload(payload, "qr");
+        expect(matches).toHaveLength(1);
+        expect(matches[0].dinValue).toBe(expectedDin);
+        expect(matches[0].extractedBy).toBe("qr");
+      });
+    }
+
+    it("doesn't misfire on colon-like non-DIN text", () => {
+      // WiFi credentials shouldn't accidentally match the colon pattern.
+      expect(
+        extractDinsFromQrPayload("WIFI:T:WPA;S:TEG-Foo;P:PASS12345", "qr")
+      ).toEqual([]);
+    });
+  });
 });

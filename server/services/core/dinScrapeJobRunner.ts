@@ -9,14 +9,16 @@ const DIN_SCRAPE_SESSION_REFRESH_INTERVAL = 80;
 // own CPU / Claude spend.
 const DIN_SCRAPE_CONCURRENCY = 4;
 /**
- * After this many Claude/Anthropic failures in a single job, stop
- * attempting Claude for the remainder of the job and rely on
- * tesseract fallback. Prevents a prolonged Anthropic outage from
- * freezing a long job in the retry-timeout loop (60s × 3 × N photos).
+ * After this many CONSECUTIVE Claude/Anthropic failures in a job,
+ * stop attempting Claude for the remainder of the job and rely on
+ * tesseract fallback. Threshold is on consecutive misses, not
+ * total — a single 429 burst at job start used to trip the old
+ * counter-based breaker and disable Claude for every remaining
+ * site, even after the rate limit cleared.
  */
-const CLAUDE_FAILURE_THRESHOLD = 5;
+const CLAUDE_FAILURE_THRESHOLD = 20;
 /** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@12";
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@13";
 
 const activeRunners = new Set<string>();
 
@@ -248,9 +250,16 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
                 if (!claudeDisabled && claudeFailureCount >= CLAUDE_FAILURE_THRESHOLD) {
                   claudeDisabled = true;
                   console.warn(
-                    `[dinScrapeJob] Disabling Claude for job ${id} after ${claudeFailureCount} failures; rest of job will use tesseract only.`
+                    `[dinScrapeJob] Disabling Claude for job ${id} after ${claudeFailureCount} consecutive failures; rest of job will use tesseract only.`
                   );
                 }
+              } else if (result.claudeAttempted) {
+                // A successful Claude call (or any non-error outcome)
+                // resets the consecutive-failure counter. Prevents
+                // a short rate-limit spike at job start from
+                // permanently killing Claude for the rest of the
+                // job once the spike clears.
+                claudeFailureCount = 0;
               }
               for (const match of result.dins) {
                 allDins.push({

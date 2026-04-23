@@ -160,23 +160,39 @@ function collectDinsFromText(
 }
 
 /**
- * Tesla Gateway QR codes don't embed the DIN as a contiguous string.
- * The payload looks like:
+ * QR payloads in the CSG universe come in three observed formats:
  *
- *   WIFI:T:WPA;S:TEG-2DT;P:YTRBNPWUYF; (P)1538000-45-A (S)GF2230680002DT
+ * A. Tesla Gateway inverter (split):
+ *      "WIFI:T:WPA;S:TEG-2DT;P:YTRBNPWUYF; (P)1538000-45-A (S)GF2230680002DT"
+ *    Part = "1538000-45-A", Serial = "GF2230680002DT"
+ *    Reassembled DIN = "1538000-45-A-GF2230680002DT"
  *
- * where `(P)` is the part number and `(S)` is the serial. The full
- * DIN is `{P}-{S}` — here, "1538000-45-A-GF2230680002DT". The regex
- * in DIN_REGEX looks for the contiguous form; it misses the split
- * form entirely.
+ * B. Neurio smart meter (colon-delimited, 3 fields):
+ *      "P1112484-14-A:D55045:NVAH5105AB2867"
+ *    Part = "1112484-14-A", middle batch-ID, Serial = "NVAH5105AB2867"
+ *    Reassembled DIN = "1112484-14-A-NVAH5105AB2867"
  *
- * Parse any `(P)...(S)...` pair we can find and emit the reassembled
- * DIN. Runs BEFORE collectDinsFromText for QR payloads so the Tesla
- * format gets picked up first; fall through to the generic regex
- * handles labels that encode the DIN inline instead of split.
+ * C. Non-Tesla inverter (colon-delimited, 2 fields):
+ *      "P1546816-00-C:1TDI921327A00328"
+ *    Part = "1546816-00-C", Serial = "1TDI921327A00328"
+ *    Reassembled DIN = "1546816-00-C-1TDI921327A00328"
+ *
+ * D. Contiguous DIN text anywhere else (vendor-neutral fallback).
+ *
+ * The P prefix in formats B/C is sometimes dropped by the QR decoder
+ * when the sticker is at an angle, leaving e.g.
+ * "12484-14-A:S34939:NVAH5309AB1904" — we handle the P as optional.
  */
 const TESLA_QR_REGEX =
   /\(P\)\s*([0-9]{4,}[-\s][0-9]{1,3}[-\s][A-Z])\s*\(S\)\s*([A-Z0-9]{6,})/gi;
+
+// Colon format: optional leading "P", part number, optional middle
+// field, serial. The serial segment is captured permissively — Neurio
+// meters use NVAH-prefix + digits/letters; non-Tesla inverters use
+// vendor-specific alphanumeric tokens; both need to be at least 6
+// chars to avoid matching arbitrary short junk.
+const COLON_QR_REGEX =
+  /\bP?([0-9]{4,}-[0-9]{1,3}-[A-Z])(?::[A-Z0-9]+)?:([A-Z0-9]{6,})\b/gi;
 
 function extractDinsFromQrPayload(
   payload: string,
@@ -186,23 +202,33 @@ function extractDinsFromQrPayload(
   const out: DinMatch[] = [];
   const seen = new Set<string>();
 
-  // Pass 1: Tesla-format (P)<part> (S)<serial>.
-  const teslaRegex = new RegExp(TESLA_QR_REGEX.source, TESLA_QR_REGEX.flags);
-  let match: RegExpExecArray | null;
-  while ((match = teslaRegex.exec(payload)) !== null) {
-    const reassembled = `${match[1]}-${match[2]}`;
+  const tryAdd = (rawPart: string, rawSerial: string, rawMatch: string) => {
+    const reassembled = `${rawPart}-${rawSerial}`;
     const normalized = normalizeDin(reassembled);
-    if (seen.has(normalized)) continue;
+    if (seen.has(normalized)) return;
     seen.add(normalized);
-    out.push({ dinValue: normalized, rawMatch: match[0], extractedBy });
+    out.push({ dinValue: normalized, rawMatch, extractedBy });
+  };
+
+  // Pass 1: Tesla format (P)<part> (S)<serial>.
+  const teslaRegex = new RegExp(TESLA_QR_REGEX.source, TESLA_QR_REGEX.flags);
+  let m: RegExpExecArray | null;
+  while ((m = teslaRegex.exec(payload)) !== null) {
+    tryAdd(m[1], m[2], m[0]);
   }
 
-  // Pass 2: any contiguous DIN elsewhere in the payload
-  // (vendor-neutral fallback). Dedup against pass 1.
-  for (const m of collectDinsFromText(payload, extractedBy)) {
-    if (seen.has(m.dinValue)) continue;
-    seen.add(m.dinValue);
-    out.push(m);
+  // Pass 2: colon-delimited format P<part>:<middle?>:<serial>.
+  // Matches both Neurio meters and non-Tesla inverters.
+  const colonRegex = new RegExp(COLON_QR_REGEX.source, COLON_QR_REGEX.flags);
+  while ((m = colonRegex.exec(payload)) !== null) {
+    tryAdd(m[1], m[2], m[0]);
+  }
+
+  // Pass 3: any contiguous DIN elsewhere in the payload.
+  for (const match of collectDinsFromText(payload, extractedBy)) {
+    if (seen.has(match.dinValue)) continue;
+    seen.add(match.dinValue);
+    out.push(match);
   }
 
   return out;
