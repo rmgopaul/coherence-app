@@ -97,10 +97,37 @@ async function resolveDatasetUserId(
   return fallbackUserId;
 }
 
+/**
+ * Task 1.2b (PR B) — build both the scope-keyed S3 path and the
+ * legacy per-user path for a dashboard blob. The scope path is the
+ * primary; the legacy path is handed to `loadDashboardPayload`'s
+ * shim so pre-PR-B data stays readable until PR C migrates it.
+ */
+async function buildDashboardStorageKeys(
+  userId: number,
+  relativePath: string
+): Promise<{ key: string; legacyKey: string }> {
+  const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
+  const scopeId = await resolveSolarRecScopeId();
+  return {
+    key: `solar-rec-dashboard/${scopeId}/${relativePath}`,
+    legacyKey: `solar-rec-dashboard/${userId}/${relativePath}`,
+  };
+}
+
+/**
+ * Task 1.2b (PR B) — scope-aware dashboard payload loader with a
+ * read-compat shim. Tries the DB (now filtered by `scopeId`
+ * internally), then the scope-keyed S3 path the caller supplied,
+ * then — for data written before PR B deployed — falls back to the
+ * legacy per-user S3 path. PR C will migrate existing objects and
+ * remove the fallback.
+ */
 async function loadDashboardPayload(
   userId: number,
   dbStorageKey: string,
-  storagePath: string
+  storagePath: string,
+  legacyStoragePath?: string | null
 ): Promise<{ key: string; payload: string } | null> {
   try {
     const payload = await getSolarRecDashboardPayload(userId, dbStorageKey);
@@ -117,16 +144,24 @@ async function loadDashboardPayload(
     );
   }
 
-  try {
-    const { url } = await storageGet(storagePath);
-    const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!response.ok) return null;
-    const payload = await response.text();
-    if (!payload) return null;
-    return { key: storagePath, payload };
-  } catch {
-    return null;
+  const candidatePaths = legacyStoragePath
+    ? [storagePath, legacyStoragePath]
+    : [storagePath];
+  for (const path of candidatePaths) {
+    try {
+      const { url } = await storageGet(path);
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!response.ok) continue;
+      const payload = await response.text();
+      if (!payload) continue;
+      return { key: storagePath, payload };
+    } catch {
+      // Try the next candidate path.
+    }
   }
+  return null;
 }
 
 /**
@@ -423,11 +458,14 @@ export const solarRecDashboardRouter = router({
   }),
 
   getState: protectedProcedure.query(async ({ ctx }) => {
-    const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
+    const { key, legacyKey } = await buildDashboardStorageKeys(
+      ctx.user.id,
+      "state.json"
+    );
     const dbStorageKey = "state";
     return loadDashboardPayloadSingleFlight(
-      `state:${ctx.user.id}`,
-      () => loadDashboardPayload(ctx.user.id, dbStorageKey, key)
+      `state:${key}`,
+      () => loadDashboardPayload(ctx.user.id, dbStorageKey, key, legacyKey)
     );
   }),
   saveState: protectedProcedure
@@ -437,7 +475,10 @@ export const solarRecDashboardRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const key = `solar-rec-dashboard/${ctx.user.id}/state.json`;
+      const { key } = await buildDashboardStorageKeys(
+        ctx.user.id,
+        "state.json"
+      );
       const dbStorageKey = "state";
       let persistedToDatabase = false;
 
@@ -465,11 +506,15 @@ export const solarRecDashboardRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
-      const key = `solar-rec-dashboard/${storageUserId}/datasets/${input.key}.json`;
+      const { key, legacyKey } = await buildDashboardStorageKeys(
+        storageUserId,
+        `datasets/${input.key}.json`
+      );
       const dbStorageKey = `dataset:${input.key}`;
       return loadDashboardPayloadSingleFlight(
-        `dataset:${storageUserId}:${input.key}`,
-        () => loadDashboardPayload(storageUserId, dbStorageKey, key)
+        `dataset:${key}`,
+        () =>
+          loadDashboardPayload(storageUserId, dbStorageKey, key, legacyKey)
       );
     }),
   getDatasetCloudStatuses: protectedProcedure
@@ -1354,7 +1399,10 @@ export const solarRecDashboardRouter = router({
         persistedToDatabase = false;
       }
 
-      const storageKey = `solar-rec-dashboard/${ctx.user.id}/datasets/deliveryScheduleBase.json`;
+      const { key: storageKey } = await buildDashboardStorageKeys(
+        ctx.user.id,
+        "datasets/deliveryScheduleBase.json"
+      );
       let storageSynced = false;
       try {
         await storagePut(storageKey, finalPayload, "application/json");
@@ -1517,7 +1565,10 @@ export const solarRecDashboardRouter = router({
         persistedToDatabase = false;
       }
 
-      const storageKey = `solar-rec-dashboard/${ctx.user.id}/datasets/deliveryScheduleBase.json`;
+      const { key: storageKey } = await buildDashboardStorageKeys(
+        ctx.user.id,
+        "datasets/deliveryScheduleBase.json"
+      );
       let storageSynced = false;
       try {
         await storagePut(storageKey, finalPayload, "application/json");
@@ -1760,7 +1811,10 @@ export const solarRecDashboardRouter = router({
         persistedToDatabase = false;
       }
 
-      const storageKey = `solar-rec-dashboard/${ctx.user.id}/datasets/deliveryScheduleBase.json`;
+      const { key: storageKey } = await buildDashboardStorageKeys(
+        ctx.user.id,
+        "datasets/deliveryScheduleBase.json"
+      );
       let storageSynced = false;
       try {
         await storagePut(storageKey, finalPayload, "application/json");
@@ -1893,7 +1947,10 @@ export const solarRecDashboardRouter = router({
 
       try {
         const data = await readFile(tempPath);
-        const storageKey = `solar-rec-dashboard/${ctx.user.id}/schedule-b/${job.id}/${Date.now()}-${nanoid()}-${safeFileName}`;
+        const { key: storageKey } = await buildDashboardStorageKeys(
+          ctx.user.id,
+          `schedule-b/${job.id}/${Date.now()}-${nanoid()}-${safeFileName}`
+        );
         await storagePut(storageKey, data, "application/pdf");
 
         await markScheduleBImportFileQueued({

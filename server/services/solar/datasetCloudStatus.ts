@@ -39,7 +39,33 @@ function buildDatasetDbStorageKey(rawKey: string): string {
   return `dataset:${rawKey}`;
 }
 
-function buildDatasetStoragePath(userId: number, rawKey: string): string {
+/**
+ * Task 1.2b (PR B) — scope-prefixed S3 path.
+ *
+ * Returns `solar-rec-dashboard/${scopeId}/datasets/${rawKey}.json`.
+ * `userId` is accepted as a compatibility shim; the actual path
+ * segment comes from `resolveSolarRecScopeId()` (single-scope model
+ * today returns `scope-user-${ownerUserId}` regardless of caller).
+ *
+ * Pair with the read-compat shim in `loadDashboardPayload`:
+ * the old `solar-rec-dashboard/${userId}/...` paths remain populated
+ * until PR C's migration script copies them forward.
+ */
+export async function buildDatasetStoragePath(
+  userId: number,
+  rawKey: string
+): Promise<string> {
+  const { resolveSolarRecScopeId } = await import("../../_core/solarRecAuth");
+  const scopeId = await resolveSolarRecScopeId();
+  void userId;
+  return `solar-rec-dashboard/${scopeId}/datasets/${rawKey}.json`;
+}
+
+/** Synchronous legacy path for the read-compat shim's fallback lookup. */
+export function buildLegacyUserDatasetStoragePath(
+  userId: number,
+  rawKey: string
+): string {
   return `solar-rec-dashboard/${userId}/datasets/${rawKey}.json`;
 }
 
@@ -115,7 +141,14 @@ async function loadDatasetPayload(
     return dbPayload;
   }
 
-  return readPayloadFromStoragePath(buildDatasetStoragePath(userId, rawKey));
+  // Read-compat shim: try the scope-keyed path first, fall back to
+  // the legacy per-user path for data written before PR B deployed.
+  const scopedPath = await buildDatasetStoragePath(userId, rawKey);
+  const scopedPayload = await readPayloadFromStoragePath(scopedPath);
+  if (scopedPayload !== null) return scopedPayload;
+  return readPayloadFromStoragePath(
+    buildLegacyUserDatasetStoragePath(userId, rawKey)
+  );
 }
 
 async function isChildKeyRecoverable(
@@ -127,7 +160,10 @@ async function isChildKeyRecoverable(
     if ((record.payloadBytes ?? 0) <= 0) return false;
     if (record.dbPersisted) return true;
     if (record.storageSynced) {
-      return storageExists(buildDatasetStoragePath(userId, rawKey));
+      // Same read-compat shim: check scope path then legacy path.
+      const scopedPath = await buildDatasetStoragePath(userId, rawKey);
+      if (await storageExists(scopedPath)) return true;
+      return storageExists(buildLegacyUserDatasetStoragePath(userId, rawKey));
     }
     return false;
   }
@@ -139,7 +175,9 @@ async function isChildKeyRecoverable(
   if (dbPayload !== null) {
     return dbPayload.length > 0;
   }
-  return storageExists(buildDatasetStoragePath(userId, rawKey));
+  const scopedPath = await buildDatasetStoragePath(userId, rawKey);
+  if (await storageExists(scopedPath)) return true;
+  return storageExists(buildLegacyUserDatasetStoragePath(userId, rawKey));
 }
 
 function collectReferencedDatasetKeys(payload: string): string[] {
