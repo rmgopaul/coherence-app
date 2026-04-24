@@ -50,6 +50,11 @@ type RichTextEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onSaveShortcut?: () => void;
+  /**
+   * Fires on Cmd/Ctrl+T with a non-empty selection. The selected text
+   * is passed so a task-creation modal can pre-fill it.
+   */
+  onCreateTodoistTask?: (selectedText: string) => void;
   onUploadImage?: (file: File) => Promise<string | null>;
   className?: string;
 };
@@ -105,7 +110,14 @@ function ToolbarSep() {
   return <div className="mx-0.5 h-5 w-px bg-slate-300" />;
 }
 
-export default function RichTextEditor({ value, onChange, onSaveShortcut, onUploadImage, className }: RichTextEditorProps) {
+export default function RichTextEditor({
+  value,
+  onChange,
+  onSaveShortcut,
+  onCreateTodoistTask,
+  onUploadImage,
+  className,
+}: RichTextEditorProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageUpload = useCallback(
@@ -164,10 +176,22 @@ export default function RichTextEditor({ value, onChange, onSaveShortcut, onUplo
         class:
           "ProseMirror min-h-[320px] w-full px-5 py-4 font-[ui-serif] text-[15px] leading-7 text-slate-900 outline-none",
       },
-      handleKeyDown: (_view, event) => {
+      handleKeyDown: (view, event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
           event.preventDefault();
           onSaveShortcut?.();
+          return true;
+        }
+        if (
+          (event.metaKey || event.ctrlKey) &&
+          event.key.toLowerCase() === "t" &&
+          onCreateTodoistTask
+        ) {
+          const { from, to } = view.state.selection;
+          if (from === to) return false; // empty selection — let the browser handle
+          event.preventDefault();
+          const selectedText = view.state.doc.textBetween(from, to, " ", " ");
+          onCreateTodoistTask(selectedText);
           return true;
         }
         return false;
