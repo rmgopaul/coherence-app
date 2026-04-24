@@ -7635,8 +7635,8 @@ const aiDataContext = useMemo(() => {
                             </Badge>
                           ) : null}
                           {cloudStatusForDataset === "synced" ? (
-                            <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
-                              Cloud verified
+                            <Badge className="border-amber-200 bg-amber-100 text-amber-900">
+                              In cloud · tap tab to load
                             </Badge>
                           ) : null}
                           {cloudStatusForDataset === "failed" ? (
@@ -7663,8 +7663,8 @@ const aiDataContext = useMemo(() => {
                     ) : serverCloudStatus?.recoverable ? (
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
-                            Cloud verified
+                          <Badge className="border-amber-200 bg-amber-100 text-amber-900">
+                            In cloud · tap tab to load
                           </Badge>
                         </div>
                         <p className="text-xs text-slate-500">
