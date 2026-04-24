@@ -10,15 +10,9 @@ import { ArrowLeft, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
+import { formatDateInput } from "@shared/dateKey";
 
 const DEFAULT_BASE_URL = "https://api.enphaseenergy.com/api/v2";
-
-function formatDateInput(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 export default function EnphaseV2MeterReadsPage() {
   const { user, loading: authLoading } = useAuth();

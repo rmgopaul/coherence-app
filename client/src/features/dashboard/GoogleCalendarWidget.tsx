@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { trpc } from "@/lib/trpc";
+import { formatDateInput } from "@shared/dateKey";
 import { Calendar, ExternalLink, RefreshCw } from "lucide-react";
 import { WidgetPageSkeleton } from "@/components/WidgetPageSkeleton";
 import { useLocation } from "wouter";
@@ -30,12 +31,7 @@ type CalendarEventRow = {
 const CALENDAR_PAGE_SIZE = 12;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function toDateInputValue(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
+const toDateInputValue = formatDateInput;
 
 function parseCalendarEvent(event: CalendarEvent): CalendarEventRow | null {
   const startDateTime = event?.start?.dateTime as string | undefined;

@@ -1,3 +1,4 @@
+import { toDateKey } from "@shared/dateKey";
 import { eq, and, asc, desc, gte, sql, getDb, withDbRetry } from "./_core";
 import {
   supplementLogs,
@@ -20,10 +21,7 @@ import {
 function localDateKeyDaysAgo(days: number, reference: Date = new Date()): string {
   const d = new Date(reference);
   d.setDate(d.getDate() - days);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return toDateKey(d);
 }
 
 type SupplementDefinitionUpdateInput = {

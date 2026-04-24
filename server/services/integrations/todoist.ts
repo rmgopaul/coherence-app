@@ -1,3 +1,5 @@
+import { toDateKey } from "@shared/dateKey";
+
 export interface TodoistTask {
   id: string;
   content: string;
@@ -132,23 +134,15 @@ function sameDay(a: Date, b: Date): boolean {
   );
 }
 
-function toDateKeyLocal(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
 function toDateKeyAtOffset(date: Date, timezoneOffsetMinutes?: number): string {
   if (typeof timezoneOffsetMinutes !== "number" || !Number.isFinite(timezoneOffsetMinutes)) {
-    return toDateKeyLocal(date);
+    return toDateKey(date);
   }
-  // Convert UTC instant into the caller's local wall clock using the provided offset.
+  // Convert UTC instant into the caller's local wall clock using the
+  // provided offset, then format the shifted instant as a UTC date key
+  // (because we've baked the offset into the timestamp itself).
   const shifted = new Date(date.getTime() - timezoneOffsetMinutes * 60 * 1000);
-  const y = shifted.getUTCFullYear();
-  const m = String(shifted.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(shifted.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return toDateKey(shifted, "UTC");
 }
 
 function toStartAndEnd(

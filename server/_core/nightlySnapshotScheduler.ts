@@ -1,14 +1,8 @@
+import { toDateKey } from "@shared/dateKey";
 import { captureDailySnapshotForAllUsers } from "../services/notifications/dailySnapshot";
 import { scheduleDaily } from "./scheduleDaily";
 
 let stopScheduler: (() => void) | null = null;
-
-function toDateKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
 
 async function runNightlySnapshot(dateKey: string): Promise<void> {
   console.log(`[Nightly Snapshot] Starting 10:00 PM capture for ${dateKey}...`);

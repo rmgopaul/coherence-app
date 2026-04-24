@@ -1,3 +1,4 @@
+import { toDateKey as sharedToDateKey } from "@shared/dateKey";
 import type { PlanItemData } from "./types";
 
 export const DEFAULT_TASK_DURATION_MINUTES = 30;
@@ -69,12 +70,7 @@ export const PLAN_SOURCE_PRIORITY: Record<PlanItemData["source"], number> = {
   suggestion: 4,
 };
 
-const toDateKey = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
+const toDateKey = (date: Date): string => sharedToDateKey(date);
 
 const parseDateSafe = (value?: string | null): Date | null => {
   if (!value) return null;

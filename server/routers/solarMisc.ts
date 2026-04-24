@@ -1,6 +1,7 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import { formatTodayKey } from "@shared/dateKey";
 import { mapWithConcurrency } from "../services/core/concurrency";
 import {
   deleteIntegration,
@@ -1340,12 +1341,7 @@ export const egaugeRouter = router({
         throw new Error("Selected eGauge profile was not found.");
       }
 
-      const anchorDate =
-        input.anchorDate ??
-        (() => {
-          const now = new Date();
-          return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-        })();
+      const anchorDate = input.anchorDate ?? formatTodayKey();
 
       const requestedMeterIds = (input.meterIds ?? [])
         .map(id => id.trim())

@@ -1,6 +1,7 @@
 import { protectedProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import { formatTodayKey } from "@shared/dateKey";
 import { mapWithConcurrency } from "../services/core/concurrency";
 import { maskApiKey } from "./solarConnectionFactory";
 import {
@@ -318,12 +319,7 @@ export const enphaseV4Router = router({
         new Set(input.systemIds.map((id) => id.trim()).filter((id) => id.length > 0))
       );
 
-      const anchorDate =
-        input.anchorDate ??
-        (() => {
-          const now = new Date();
-          return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-        })();
+      const anchorDate = input.anchorDate ?? formatTodayKey();
 
       // Fetch system names once upfront.
       const nameMap = new Map<string, string>();

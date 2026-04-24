@@ -1,4 +1,5 @@
 import { nanoid } from "nanoid";
+import { formatTodayKey } from "@shared/dateKey";
 import {
   getDailyMetricByDate,
   getIntegrationByProvider,
@@ -30,18 +31,11 @@ function asNumber(value: unknown): number | null {
   return null;
 }
 
-function toDateKey(date = new Date()): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
 function pickNumber(incoming: number | null, fallback: number | null | undefined): number | null {
   return incoming ?? fallback ?? null;
 }
 
-export async function captureDailySnapshotForUser(userId: number, dateKey = toDateKey()) {
+export async function captureDailySnapshotForUser(userId: number, dateKey = formatTodayKey()) {
   const existingMetric = await getDailyMetricByDate(userId, dateKey);
 
   let whoopPayload: Record<string, unknown> | null = null;
@@ -171,7 +165,7 @@ export async function captureDailySnapshotForUser(userId: number, dateKey = toDa
   };
 }
 
-export async function captureDailySnapshotForAllUsers(dateKey = toDateKey()) {
+export async function captureDailySnapshotForAllUsers(dateKey = formatTodayKey()) {
   const users = await listUsers();
   const results = [];
   for (const user of users) {
@@ -191,5 +185,5 @@ export async function captureDailySnapshotForAllUsers(dateKey = toDateKey()) {
 }
 
 export function getTodayDateKey() {
-  return toDateKey();
+  return formatTodayKey();
 }

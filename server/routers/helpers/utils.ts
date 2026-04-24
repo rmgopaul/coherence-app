@@ -1,3 +1,4 @@
+import { formatTodayKey } from "@shared/dateKey";
 import {
   SEARCH_SCORE_EXACT,
   SEARCH_SCORE_PREFIX,
@@ -37,11 +38,7 @@ export function toNullableScore(value: unknown): number | null {
 }
 
 export function getTodayDateKey(): string {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, "0");
-  const day = String(now.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return formatTodayKey();
 }
 
 export function toFiniteNumber(value: unknown): number | null {
