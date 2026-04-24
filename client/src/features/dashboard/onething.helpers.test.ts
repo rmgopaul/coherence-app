@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveOneThing, pickAfterThat } from "./onething.helpers";
 import type { CalendarEvent, TodoistTask } from "./types";
 
@@ -33,6 +33,14 @@ function calEvent(
 }
 
 describe("deriveOneThing", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("uses the server king when present", () => {
     const out = deriveOneThing({
       kingOfDay: { title: "Ship Schedule B", reason: "blocking everything", source: "manual" },
