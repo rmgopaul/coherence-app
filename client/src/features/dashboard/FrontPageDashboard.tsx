@@ -21,6 +21,7 @@ import { PinDialog } from "./frontpage/PinDialog";
 import { useDashboardData } from "./useDashboardData";
 import { useFocusMode } from "@/contexts/FocusModeContext";
 import { trpc } from "@/lib/trpc";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import "./frontpage/dashboard.css";
 
 export default function FrontPageDashboard() {
@@ -116,6 +117,41 @@ export default function FrontPageDashboard() {
           />
           <InboxPanel messages={data.inbox} />
           <WireFeedsGrid data={data} />
+          <AskAiPanel
+            moduleKey="dashboard"
+            title="Ask AI about today"
+            className="mx-auto mt-6 max-w-3xl"
+            contextGetter={() => ({
+              dateKey: data.todayKey,
+              tasks: {
+                dueToday: data.tasks.dueToday.slice(0, 20).map((t) => ({
+                  id: t.id,
+                  content: t.content,
+                  priority: t.priority,
+                  due: t.due?.date ?? null,
+                })),
+                completedCount: data.tasks.completedCount,
+              },
+              calendar: data.calendar.slice(0, 15).map((e) => ({
+                id: e.id,
+                summary: e.summary,
+                start: e.start,
+                end: e.end,
+              })),
+              inbox: data.inbox.slice(0, 10).map((m) => ({
+                id: m.id,
+                subject: m.subject,
+                sender: m.sender,
+                snippet: m.snippet,
+              })),
+              unreadGmailCount: data.unreadGmailCount,
+              waitingOn: data.waitingOn?.slice(0, 10) ?? [],
+              health: data.health?.whoop ?? null,
+              kingOfDay: data.kingOfDay,
+              weather: data.weather,
+              market: data.market?.quotes ?? [],
+            })}
+          />
         </>
       )}
       </main>

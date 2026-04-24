@@ -47,6 +47,7 @@ import {
   pearsonStrength,
   topQuartileContrast,
 } from "./health.helpers";
+import { AskAiPanel } from "@/components/AskAiPanel";
 
 const WINDOW_OPTIONS = [30, 90, 365] as const;
 
@@ -278,6 +279,36 @@ export function HealthInsightsPanel() {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="health-insights"
+        title="Ask AI about this correlation"
+        contextGetter={() => ({
+          metricA: labelA,
+          metricB: labelB,
+          windowDays,
+          pearsonR: r,
+          pearsonStrength: strength,
+          varianceExplainedPct:
+            rSquared === null ? null : Math.round(rSquared * 100),
+          samplePairs: points.length,
+          metricAMean: statsA.mean,
+          metricAStd: statsA.std,
+          metricBMean: statsB.mean,
+          metricBStd: statsB.std,
+          topQuartileContrast:
+            contrast.topMean !== null &&
+            contrast.overallMean !== null &&
+            contrast.threshold !== null
+              ? {
+                  thresholdA: contrast.threshold,
+                  topN: contrast.topN,
+                  topMeanB: contrast.topMean,
+                  overallMeanB: contrast.overallMean,
+                }
+              : null,
+        })}
+      />
 
       <p className="text-[10px] text-muted-foreground">
         Pearson r captures linear association only. Small samples are noisy;
