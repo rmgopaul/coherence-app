@@ -183,6 +183,13 @@
       "when": 1777055890098,
       "tag": "0029_add_solar_rec_scope_id",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1777062787728,
+      "tag": "0030_add_ask_ai_v2_columns",
+      "breakpoints": true
     }
   ]
 }

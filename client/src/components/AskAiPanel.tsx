@@ -9,15 +9,19 @@
  * heavy pages don't pay the cost unless the user opens them.
  *
  * Backend: trpc.anthropic.ask — takes moduleKey, question, context,
- * conversationHistory, modelOverride. The Anthropic API key comes
- * from the user's existing integration (settable in Settings).
+ * conversationHistory, modelOverride, and (V2) an optional
+ * conversationId. The Anthropic API key comes from the user's
+ * existing integration (settable in Settings).
  *
- * Deferred to follow-up PRs:
- * - Persist conversation history to the `conversations` / `messages`
- *   tables with `source: "ask-ai:${moduleKey}"` so the Notebook's
- *   linked-conversations panel surfaces them.
- * - Per-module default model stored in `userPreferences` so different
- *   modules can default to different cost/quality points.
+ * Task 4.5 V2 persistence:
+ * - `conversationId` state: the server returns one on the first
+ *   ask, we stash it, and subsequent asks in the same session
+ *   keep the thread on the same DB row.
+ * - Per-module model preference: loaded from
+ *   `trpc.anthropic.getModelForModule` on mount; persisted via
+ *   `trpc.anthropic.setModelForModule` when the user changes the
+ *   dropdown. Falls back to the user's Anthropic account default
+ *   when no per-module preference is set.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -104,11 +108,34 @@ export function AskAiPanel({
   const [input, setInput] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [modelSelection, setModelSelection] = useState<string>(DEFAULT_MODEL_VALUE);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const askMutation = trpc.anthropic.ask.useMutation();
   const isLoading = askMutation.isPending;
+
+  // Task 4.5 V2 — load + persist per-module default model.
+  const modelPrefQuery = trpc.anthropic.getModelForModule.useQuery(
+    { moduleKey },
+    { staleTime: 60_000, retry: false }
+  );
+  const setModelPrefMutation = trpc.anthropic.setModelForModule.useMutation();
+  useEffect(() => {
+    const stored = modelPrefQuery.data?.model;
+    if (stored && modelSelection === DEFAULT_MODEL_VALUE) {
+      setModelSelection(stored);
+    }
+    // Only apply the stored value once when it first arrives; ignore
+    // when the user has already touched the dropdown.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelPrefQuery.data?.model]);
+  const handleModelChange = (next: string) => {
+    setModelSelection(next);
+    if (next !== DEFAULT_MODEL_VALUE) {
+      setModelPrefMutation.mutate({ moduleKey, model: next });
+    }
+  };
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -134,11 +161,15 @@ export function AskAiPanel({
         conversationHistory: messages,
         modelOverride:
           modelSelection === DEFAULT_MODEL_VALUE ? undefined : modelSelection,
+        conversationId: conversationId ?? undefined,
       });
       setMessages((prev) => [
         ...prev,
         { role: "assistant", content: result.answer },
       ]);
+      if (result.conversationId && !conversationId) {
+        setConversationId(result.conversationId);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to get response";
       setError(msg);
@@ -148,6 +179,7 @@ export function AskAiPanel({
   }, [
     askMutation,
     contextGetter,
+    conversationId,
     input,
     isLoading,
     messages,
@@ -193,7 +225,7 @@ export function AskAiPanel({
         <CardContent className="pt-0 px-4 pb-4">
           <div className="mb-3 flex items-center gap-2">
             <span className="text-xs text-muted-foreground">Model:</span>
-            <Select value={modelSelection} onValueChange={setModelSelection}>
+            <Select value={modelSelection} onValueChange={handleModelChange}>
               <SelectTrigger className="h-7 w-auto min-w-[180px] text-xs">
                 <SelectValue />
               </SelectTrigger>
@@ -283,6 +315,7 @@ export function AskAiPanel({
                 onClick={() => {
                   setMessages([]);
                   setError(null);
+                  setConversationId(null);
                 }}
                 title="Clear conversation"
               >

@@ -43,15 +43,34 @@ export const oauthCredentials = mysqlTable("oauthCredentials", {
 export type OAuthCredential = typeof oauthCredentials.$inferSelect;
 export type InsertOAuthCredential = typeof oauthCredentials.$inferInsert;
 
-// Conversations table for ChatGPT chat history
+// Conversations table. Original home was the ChatGPT widget's
+// chat history; Task 4.5 V2 extends it to the shared AskAiPanel
+// by adding a `source` tag. Existing ChatGPT rows leave `source`
+// null; AskAiPanel writes `ask-ai:${moduleKey}` so panels filter
+// their own history without cross-contaminating the widget view.
 
-export const conversations = mysqlTable("conversations", {
-  id: varchar("id", { length: 64 }).primaryKey(),
-  userId: int("userId").notNull(),
-  title: text("title").notNull(),
-  createdAt: timestamp("createdAt").defaultNow(),
-  updatedAt: timestamp("updatedAt").defaultNow(),
-});
+export const conversations = mysqlTable(
+  "conversations",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    title: text("title").notNull(),
+    /**
+     * Module origin tag. Null = legacy ChatGPT widget row.
+     * AskAiPanel writes `ask-ai:${moduleKey}` for every conversation
+     * it creates. Indexed alongside `userId` for per-module queries.
+     */
+    source: varchar("source", { length: 128 }),
+    createdAt: timestamp("createdAt").defaultNow(),
+    updatedAt: timestamp("updatedAt").defaultNow(),
+  },
+  (table) => ({
+    userSourceIdx: index("conversations_user_source_idx").on(
+      table.userId,
+      table.source
+    ),
+  })
+);
 
 export type Conversation = typeof conversations.$inferSelect;
 export type InsertConversation = typeof conversations.$inferInsert;
