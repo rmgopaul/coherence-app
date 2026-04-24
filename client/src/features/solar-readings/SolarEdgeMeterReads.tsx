@@ -1,1613 +1,178 @@
-import { useAuth } from "@/_core/hooks/useAuth";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Progress } from "@/components/ui/progress";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
-import { buildConvertedReadRow, pushConvertedReadsToRecDashboard } from "@/lib/convertedReads";
 import { MONITORING_CANONICAL_NAMES } from "@shared/const";
-import { clean, toErrorMessage, formatKwh, downloadTextFile } from "@/lib/helpers";
-import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
-import { useLocation } from "wouter";
-import {
-  parseCsv,
-  buildCsv,
-  formatDateInput,
-  chunkArray,
-  waitForNextFrame,
-  toComparableNumber,
-} from "./shared/csvUtils";
+import MeterReadsPage from "./shared/MeterReadsPage";
+import type { MeterReadsProviderConfig } from "./shared/types";
 
-const DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com/v2";
-const TIME_UNIT_OPTIONS = ["QUARTER_OF_AN_HOUR", "HOUR", "DAY", "WEEK", "MONTH", "YEAR"] as const;
-const BULK_BATCH_SIZE_ACTIVE = 200;
-const BULK_BATCH_SIZE_ALL_PROFILES = 25;
-const BULK_ROWS_RENDER_INTERVAL_ACTIVE = 1;
-const BULK_ROWS_RENDER_INTERVAL_ALL_PROFILES = 4;
-const BULK_PAGE_SIZE = 25;
+/**
+ * SolarEdge page — migrated from 1,613-LOC hand-rolled page onto the
+ * shared `MeterReadsPage` component (Task 4.7 / PR #33 extension).
+ *
+ * SolarEdge exposes three bulk data types (production / meters /
+ * inverters). The server batch procedures `getProductionSnapshots`,
+ * `getMeterSnapshots`, and `getInverterSnapshots` each accept
+ * `siteIds: string[]`; the shared page calls mutations one ID at a
+ * time. The adapters below translate each single-ID call into a
+ * single-element batch call and unwrap `rows[0]`.
+ */
 
-const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
-
-type TimeUnit = (typeof TIME_UNIT_OPTIONS)[number];
-type BulkStatusFilter = "All" | "Found" | "Not Found" | "Error";
-type BulkDataType = "production" | "meters" | "inverters";
-type BulkSortKey =
-  | "siteId"
-  | "status"
-  | "lifetime"
-  | "hourly"
-  | "monthly"
-  | "mtd"
-  | "previousMonth"
-  | "last12Months"
-  | "meterCount"
-  | "productionMeters"
-  | "consumptionMeters"
-  | "inverterCount"
-  | "invertersWithTelemetry"
-  | "inverterFailures"
-  | "inverterLatestPower"
-  | "inverterLatestEnergy"
-  | "weekly"
-  | "daily";
-type BulkConnectionScope = "active" | "all";
-type DatePreset = "mtd" | "prevMonth" | "last12Months";
-
-type BulkSnapshotRow = {
-  siteId: string;
-  status: "Found" | "Not Found" | "Error";
-  found: boolean;
-  siteName?: string | null;
-  lifetimeKwh?: number | null;
-  hourlyProductionKwh?: number | null;
-  monthlyProductionKwh?: number | null;
-  mtdProductionKwh?: number | null;
-  previousCalendarMonthProductionKwh?: number | null;
-  last12MonthsProductionKwh?: number | null;
-  weeklyProductionKwh?: number | null;
-  dailyProductionKwh?: number | null;
+type BatchInput = {
+  siteId?: string;
   anchorDate?: string;
-  monthlyStartDate?: string;
-  weeklyStartDate?: string;
-  mtdStartDate?: string;
-  previousCalendarMonthStartDate?: string;
-  previousCalendarMonthEndDate?: string;
-  last12MonthsStartDate?: string;
-  inverterLifetimes?: Array<{ serialNumber: string; name: string | null; lifetimeWh: number | null }> | null;
-  meterLifetimeKwh?: number | null;
-  meterCount?: number | null;
-  productionMeterCount?: number | null;
-  consumptionMeterCount?: number | null;
-  meterTypes?: string[];
-  inverterCount?: number | null;
-  invertersWithTelemetry?: number | null;
-  inverterFailures?: number | null;
-  totalLatestPowerW?: number | null;
-  totalLatestEnergyWh?: number | null;
-  firstTelemetryAt?: string | null;
-  lastTelemetryAt?: string | null;
-  error: string | null;
-  matchedConnectionId: string | null;
-  matchedConnectionName: string | null;
-  checkedConnections: number;
-  foundInConnections: number;
-  profileStatusSummary: string;
+  connectionScope?: "active" | "all";
 };
 
-
-function normalizeDateOnly(date: Date): Date {
-  const normalized = new Date(date);
-  normalized.setHours(0, 0, 0, 0);
-  return normalized;
-}
-
-function getPresetRange(preset: DatePreset, now: Date = new Date()): { startDate: string; endDate: string } {
-  const today = normalizeDateOnly(now);
-
-  if (preset === "mtd") {
-    const start = new Date(today.getFullYear(), today.getMonth(), 1);
-    return {
-      startDate: formatDateInput(start),
-      endDate: formatDateInput(today),
-    };
-  }
-
-  if (preset === "prevMonth") {
-    const start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const end = new Date(today.getFullYear(), today.getMonth(), 0);
-    return {
-      startDate: formatDateInput(start),
-      endDate: formatDateInput(end),
-    };
-  }
-
-  const start = new Date(today);
-  start.setFullYear(start.getFullYear() - 1);
+function useMetersAdapter() {
+  const mutation = trpc.solarEdge.getMeterSnapshots.useMutation();
   return {
-    startDate: formatDateInput(start),
-    endDate: formatDateInput(today),
+    mutateAsync: async (input: BatchInput) => {
+      const siteId = (input.siteId ?? "").trim();
+      if (!siteId) {
+        return {
+          status: "Error" as const,
+          found: false,
+          error: "Missing Site ID.",
+        };
+      }
+      const result = await mutation.mutateAsync({
+        siteIds: [siteId],
+        connectionScope: input.connectionScope ?? "active",
+      });
+      return (
+        result.rows[0] ?? {
+          status: "Error" as const,
+          found: false,
+          error: "No row returned by SolarEdge meters API.",
+        }
+      );
+    },
+    isPending: mutation.isPending,
   };
 }
 
-function extractSiteIdsFromCsv(text: string): string[] {
-  const parsed = parseCsv(text);
-  const normalizedHeaders = parsed.headers.map((header) => clean(header).toLowerCase().replace(/\s+/g, "_"));
-
-  const preferredIndex = normalizedHeaders.findIndex((header) =>
-    ["site_id", "siteid", "site", "site_number", "site_number_id", "id"].includes(header)
-  );
-
-  if (parsed.headers.length === 1 && preferredIndex === -1) {
-    const headerValue = clean(parsed.headers[0]);
-    const columnValues = parsed.rows.map((row) => clean(row[parsed.headers[0]])).filter(Boolean);
-    const combined = headerValue ? [headerValue, ...columnValues] : columnValues;
-    return Array.from(new Set(combined));
-  }
-
-  if (preferredIndex >= 0) {
-    const siteHeader = parsed.headers[preferredIndex];
-    return Array.from(
-      new Set(
-        parsed.rows
-          .map((row) => clean(row[siteHeader]))
-          .filter((value) => value.length > 0)
-      )
-    );
-  }
-
-  if (parsed.headers.length > 0 && parsed.rows.length > 0) {
-    const fallbackHeader = parsed.headers[0];
-    return Array.from(
-      new Set(
-        parsed.rows
-          .map((row) => clean(row[fallbackHeader]))
-          .filter((value) => value.length > 0)
-      )
-    );
-  }
-
-  if (parsed.headers.length > 0 && parsed.rows.length === 0) {
-    return Array.from(new Set(parsed.headers.map((value) => clean(value)).filter(Boolean)));
-  }
-
-  return [];
+function useInvertersAdapter() {
+  const mutation = trpc.solarEdge.getInverterSnapshots.useMutation();
+  return {
+    mutateAsync: async (input: BatchInput) => {
+      const siteId = (input.siteId ?? "").trim();
+      if (!siteId) {
+        return {
+          status: "Error" as const,
+          found: false,
+          error: "Missing Site ID.",
+        };
+      }
+      const result = await mutation.mutateAsync({
+        siteIds: [siteId],
+        anchorDate: input.anchorDate,
+        connectionScope: input.connectionScope ?? "active",
+      });
+      return (
+        result.rows[0] ?? {
+          status: "Error" as const,
+          found: false,
+          error: "No row returned by SolarEdge inverters API.",
+        }
+      );
+    },
+    isPending: mutation.isPending,
+  };
 }
+
+const config: MeterReadsProviderConfig = {
+  providerName: "SolarEdge",
+  providerSlug: "solaredge",
+  convertedReadsMonitoring: MONITORING_CANONICAL_NAMES.solarEdge,
+  pageTitle: "SolarEdge Monitoring API",
+  pageDescription:
+    "API key connection for SolarEdge monitoring, with bulk CSV processing for production / meters / inverters across thousands of sites.",
+  connectDescription:
+    "Save one or more SolarEdge API keys, switch the active profile, and persist credentials for future sessions.",
+
+  idFieldName: "siteId",
+  idFieldLabel: "Site ID",
+  idFieldLabelPlural: "Site IDs",
+
+  csvIdHeaders: [
+    "site_id",
+    "siteid",
+    "site",
+    "site_number",
+    "site_number_id",
+    "id",
+  ],
+
+  credentialFields: [
+    {
+      name: "apiKey",
+      label: "API Key",
+      type: "password",
+      placeholder: "SolarEdge API Key",
+    },
+    {
+      name: "baseUrl",
+      label: "Base URL",
+      type: "text",
+      placeholder: "https://monitoringapi.solaredge.com",
+      optional: true,
+      helperText:
+        "Leave blank to use the default SolarEdge monitoring host.",
+    },
+  ],
+
+  connectionDisplayField: "apiKeyMasked",
+  savedProfilesLabel: "Saved API Profiles",
+
+  singleOperations: [
+    {
+      value: "getProductionSnapshot",
+      label: "Get Production Snapshot",
+    },
+    { value: "listSites", label: "List Sites" },
+  ],
+
+  bulkDataTypes: [
+    { value: "production", label: "Production Snapshot" },
+    { value: "meters", label: "Meter Inventory" },
+    { value: "inverters", label: "Inverter Snapshot" },
+  ],
+
+  hasListItems: true,
+  listItemsKey: "sites",
+
+  useStatusQuery: (enabled) =>
+    trpc.solarEdge.getStatus.useQuery(undefined, {
+      enabled,
+      retry: false,
+    }),
+
+  useListItemsQuery: (enabled) =>
+    trpc.solarEdge.listSites.useQuery(undefined, {
+      enabled,
+      retry: false,
+    }),
+
+  useConnectMutation: () => trpc.solarEdge.connect.useMutation(),
+  useSetActiveConnectionMutation: () =>
+    trpc.solarEdge.setActiveConnection.useMutation(),
+  useRemoveConnectionMutation: () =>
+    trpc.solarEdge.removeConnection.useMutation(),
+  useDisconnectMutation: () =>
+    trpc.solarEdge.disconnect.useMutation(),
+  useProductionSnapshotMutation: () =>
+    trpc.solarEdge.getProductionSnapshot.useMutation(),
+
+  useBulkSnapshotMutationByType: {
+    meters: useMetersAdapter,
+    inverters: useInvertersAdapter,
+  },
+
+  invalidateQueries: async (utils) => {
+    const u = utils as ReturnType<typeof trpc.useUtils>;
+    await u.solarEdge.getStatus.invalidate();
+    await u.solarEdge.listSites.invalidate();
+  },
+};
 
 export default function SolarEdgeMeterReads() {
-  const { user, loading: authLoading } = useAuth();
-  const [, setLocation] = useLocation();
-  const trpcUtils = trpc.useUtils();
-
-  const today = useMemo(() => formatDateInput(new Date()), []);
-  const defaultStartDate = useMemo(() => {
-    const date = new Date();
-    date.setDate(date.getDate() - 30);
-    return formatDateInput(date);
-  }, []);
-
-  const [apiKeyInput, setApiKeyInput] = useState("");
-  const [connectionNameInput, setConnectionNameInput] = useState("");
-  const [baseUrlInput, setBaseUrlInput] = useState(DEFAULT_BASE_URL);
-  const [selectedConnectionId, setSelectedConnectionId] = useState("");
-  const [selectedSiteId, setSelectedSiteId] = useState("");
-  const [startDate, setStartDate] = useState(defaultStartDate);
-  const [endDate, setEndDate] = useState(today);
-  const [timeUnit, setTimeUnit] = useState<TimeUnit>("DAY");
-  const [resultTitle, setResultTitle] = useState("No request run yet");
-  const [resultText, setResultText] = useState("{}");
-  const [isRunningAction, setIsRunningAction] = useState(false);
-
-  const [bulkAnchorDate, setBulkAnchorDate] = useState(today);
-  const [bulkSiteIds, setBulkSiteIds] = useState<string[]>([]);
-  const [bulkSourceFileName, setBulkSourceFileName] = useState<string | null>(null);
-  const [bulkImportError, setBulkImportError] = useState<string | null>(null);
-  const [bulkRows, setBulkRows] = useState<BulkSnapshotRow[]>([]);
-  const [bulkDataType, setBulkDataType] = useState<BulkDataType>("production");
-  const [bulkIsRunning, setBulkIsRunning] = useState(false);
-  const [bulkProgress, setBulkProgress] = useState({ total: 0, processed: 0, found: 0, notFound: 0, errored: 0 });
-  const [bulkStatusFilter, setBulkStatusFilter] = useState<BulkStatusFilter>("All");
-  const [bulkSearch, setBulkSearch] = useState("");
-  const [bulkSort, setBulkSort] = useState<BulkSortKey>("siteId");
-  const [bulkConnectionScope, setBulkConnectionScope] = useState<BulkConnectionScope>("active");
-  const [bulkPage, setBulkPage] = useState(1);
-  const bulkCancelRef = useRef(false);
-  const bulkStartTimeRef = useRef<number>(0);
-
-  const applyDatePreset = (preset: DatePreset) => {
-    const range = getPresetRange(preset);
-    setStartDate(range.startDate);
-    setEndDate(range.endDate);
-  };
-
-  const statusQuery = trpc.solarEdge.getStatus.useQuery(undefined, {
-    enabled: !!user,
-    retry: false,
-  });
-
-  const sitesQuery = trpc.solarEdge.listSites.useQuery(undefined, {
-    enabled: !!user && !!statusQuery.data?.connected,
-    retry: false,
-  });
-
-  const connectMutation = trpc.solarEdge.connect.useMutation();
-  const setActiveConnectionMutation = trpc.solarEdge.setActiveConnection.useMutation();
-  const removeConnectionMutation = trpc.solarEdge.removeConnection.useMutation();
-  const disconnectMutation = trpc.solarEdge.disconnect.useMutation();
-  const overviewMutation = trpc.solarEdge.getOverview.useMutation();
-  const detailsMutation = trpc.solarEdge.getDetails.useMutation();
-  const energyMutation = trpc.solarEdge.getEnergy.useMutation();
-  const productionReadsMutation = trpc.solarEdge.getProductionMeterReadings.useMutation();
-  const metersMutation = trpc.solarEdge.getMeters.useMutation();
-  const inverterProductionMutation = trpc.solarEdge.getInverterProduction.useMutation();
-  const bulkSnapshotsMutation = trpc.solarEdge.getProductionSnapshots.useMutation();
-  const bulkMeterSnapshotsMutation = trpc.solarEdge.getMeterSnapshots.useMutation();
-  const bulkInverterSnapshotsMutation = trpc.solarEdge.getInverterSnapshots.useMutation();
-  const pushConvertedReadsSource = trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
-
-  useEffect(() => {
-    if (!authLoading && !user) {
-      setLocation("/");
-    }
-  }, [authLoading, user, setLocation]);
-
-  useEffect(() => {
-    if (!statusQuery.data) return;
-    if (statusQuery.data.baseUrl) setBaseUrlInput(statusQuery.data.baseUrl);
-
-    const availableIds = new Set(statusQuery.data.connections.map((connection) => connection.id));
-    if (availableIds.size === 0) {
-      setSelectedConnectionId("");
-      return;
-    }
-
-    setSelectedConnectionId((current) => {
-      if (current && availableIds.has(current)) return current;
-      return statusQuery.data?.activeConnectionId ?? statusQuery.data.connections[0]?.id ?? "";
-    });
-  }, [statusQuery.data]);
-
-  useEffect(() => {
-    const firstSite = sitesQuery.data?.sites?.[0];
-    if (!firstSite) return;
-    if (!selectedSiteId) {
-      setSelectedSiteId(firstSite.siteId);
-    }
-  }, [sitesQuery.data, selectedSiteId]);
-
-  useEffect(() => {
-    setBulkPage(1);
-  }, [bulkRows.length, bulkSearch, bulkSort, bulkStatusFilter, bulkDataType]);
-
-  useEffect(() => {
-    setBulkSort("siteId");
-  }, [bulkDataType]);
-
-  useEffect(() => {
-    setBulkRows([]);
-    setBulkProgress({ total: bulkSiteIds.length, processed: 0, found: 0, notFound: 0, errored: 0 });
-  }, [bulkDataType, bulkSiteIds.length]);
-
-  const handleConnect = async () => {
-    const apiKey = apiKeyInput.trim();
-
-    if (!apiKey) {
-      toast.error("Enter your SolarEdge API key.");
-      return;
-    }
-
-    try {
-      const response = await connectMutation.mutateAsync({
-        apiKey,
-        connectionName: connectionNameInput.trim() || undefined,
-        baseUrl: baseUrlInput.trim(),
-      });
-      await trpcUtils.solarEdge.getStatus.invalidate();
-      await trpcUtils.solarEdge.listSites.invalidate();
-      setSelectedConnectionId(response.activeConnectionId);
-      setApiKeyInput("");
-      setConnectionNameInput("");
-      toast.success(
-        `SolarEdge profile saved. ${NUMBER_FORMATTER.format(response.totalConnections)} profile(s) stored.`
-      );
-    } catch (error) {
-      toast.error(`Failed to connect: ${toErrorMessage(error)}`);
-    }
-  };
-
-  const handleSetActiveConnection = async () => {
-    const connectionId = selectedConnectionId.trim();
-    if (!connectionId) {
-      toast.error("Select an API profile first.");
-      return;
-    }
-
-    try {
-      await setActiveConnectionMutation.mutateAsync({ connectionId });
-      await trpcUtils.solarEdge.getStatus.invalidate();
-      await trpcUtils.solarEdge.listSites.invalidate();
-      setSelectedSiteId("");
-      toast.success("Active SolarEdge API profile updated.");
-    } catch (error) {
-      toast.error(`Failed to switch profile: ${toErrorMessage(error)}`);
-    }
-  };
-
-  const handleRemoveConnection = async () => {
-    const connectionId = selectedConnectionId.trim();
-    if (!connectionId) {
-      toast.error("Select an API profile first.");
-      return;
-    }
-
-    try {
-      const response = await removeConnectionMutation.mutateAsync({ connectionId });
-      await trpcUtils.solarEdge.getStatus.invalidate();
-      await trpcUtils.solarEdge.listSites.invalidate();
-      setSelectedSiteId("");
-      setSelectedConnectionId(response.activeConnectionId ?? "");
-      toast.success(
-        response.connected
-          ? `Removed profile. ${NUMBER_FORMATTER.format(response.totalConnections)} profile(s) remain.`
-          : "Removed final profile. SolarEdge is now disconnected."
-      );
-    } catch (error) {
-      toast.error(`Failed to remove profile: ${toErrorMessage(error)}`);
-    }
-  };
-
-  const handleDisconnect = async () => {
-    try {
-      await disconnectMutation.mutateAsync();
-      await trpcUtils.solarEdge.getStatus.invalidate();
-      await trpcUtils.solarEdge.listSites.invalidate();
-      setSelectedSiteId("");
-      setSelectedConnectionId("");
-      toast.success("SolarEdge disconnected.");
-    } catch (error) {
-      toast.error(`Failed to disconnect: ${toErrorMessage(error)}`);
-    }
-  };
-
-  const runAction = async (title: string, action: () => Promise<unknown>) => {
-    setIsRunningAction(true);
-    try {
-      const payload = await action();
-      setResultTitle(title);
-      setResultText(JSON.stringify(payload, null, 2));
-      toast.success(`${title} loaded.`);
-    } catch (error) {
-      toast.error(toErrorMessage(error));
-    } finally {
-      setIsRunningAction(false);
-    }
-  };
-
-  const handleBulkFileUpload = async (file: File | null) => {
-    if (!file) return;
-    setBulkImportError(null);
-
-    try {
-      const raw = await file.text();
-      const siteIds = extractSiteIdsFromCsv(raw);
-      if (siteIds.length === 0) {
-        setBulkImportError("No valid site IDs found in CSV.");
-        setBulkSiteIds([]);
-        setBulkSourceFileName(file.name);
-        return;
-      }
-
-      setBulkSourceFileName(file.name);
-      setBulkSiteIds(siteIds);
-      setBulkRows([]);
-      setBulkProgress({ total: siteIds.length, processed: 0, found: 0, notFound: 0, errored: 0 });
-      toast.success(`Imported ${NUMBER_FORMATTER.format(siteIds.length)} site IDs.`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to parse CSV.";
-      setBulkImportError(message);
-      setBulkSiteIds([]);
-    }
-  };
-
-  const runBulkSnapshot = async () => {
-    if (!statusQuery.data?.connected) {
-      toast.error("Connect SolarEdge before running bulk processing.");
-      return;
-    }
-    if (bulkSiteIds.length === 0) {
-      toast.error("Upload a CSV with site IDs first.");
-      return;
-    }
-
-    setBulkIsRunning(true);
-    bulkCancelRef.current = false;
-    bulkStartTimeRef.current = Date.now();
-    setBulkRows([]);
-    const effectiveBatchSize =
-      bulkConnectionScope === "all" ? BULK_BATCH_SIZE_ALL_PROFILES : BULK_BATCH_SIZE_ACTIVE;
-    const rowRenderInterval =
-      bulkConnectionScope === "all" ? BULK_ROWS_RENDER_INTERVAL_ALL_PROFILES : BULK_ROWS_RENDER_INTERVAL_ACTIVE;
-    const chunks = chunkArray(bulkSiteIds, effectiveBatchSize);
-    const modeLabel =
-      bulkDataType === "production"
-        ? "production snapshots"
-        : bulkDataType === "meters"
-          ? "meter inventory snapshots"
-          : "inverter snapshots";
-    let processed = 0;
-    let found = 0;
-    let notFound = 0;
-    let errored = 0;
-    const collectedRows: BulkSnapshotRow[] = [];
-    setBulkProgress({
-      total: bulkSiteIds.length,
-      processed: 0,
-      found: 0,
-      notFound: 0,
-      errored: 0,
-    });
-
-    try {
-      for (let chunkIndex = 0; chunkIndex < chunks.length; chunkIndex += 1) {
-        const chunk = chunks[chunkIndex];
-        if (bulkCancelRef.current) break;
-
-        let response: {
-          total: number;
-          found: number;
-          notFound: number;
-          errored: number;
-          rows: BulkSnapshotRow[];
-        };
-
-        if (bulkDataType === "production") {
-          const raw = await bulkSnapshotsMutation.mutateAsync({
-            siteIds: chunk,
-            anchorDate: bulkAnchorDate,
-            connectionScope: bulkConnectionScope,
-          });
-          response = {
-            ...raw,
-            rows: raw.rows as BulkSnapshotRow[],
-          };
-        } else if (bulkDataType === "meters") {
-          const raw = await bulkMeterSnapshotsMutation.mutateAsync({
-            siteIds: chunk,
-            connectionScope: bulkConnectionScope,
-          });
-          response = {
-            ...raw,
-            rows: raw.rows as BulkSnapshotRow[],
-          };
-        } else {
-          const raw = await bulkInverterSnapshotsMutation.mutateAsync({
-            siteIds: chunk,
-            anchorDate: bulkAnchorDate,
-            connectionScope: bulkConnectionScope,
-          });
-          response = {
-            ...raw,
-            rows: raw.rows as BulkSnapshotRow[],
-          };
-        }
-
-        collectedRows.push(...response.rows);
-        processed += response.total;
-        found += response.found;
-        notFound += response.notFound;
-        errored += response.errored;
-
-        setBulkProgress({
-          total: bulkSiteIds.length,
-          processed,
-          found,
-          notFound,
-          errored,
-        });
-
-        const shouldRenderRows =
-          chunkIndex % rowRenderInterval === 0 || chunkIndex === chunks.length - 1 || bulkCancelRef.current;
-        if (shouldRenderRows) {
-          setBulkRows([...collectedRows]);
-        }
-
-        // Yield back to the browser so progress UI can paint between batch requests.
-        await waitForNextFrame();
-      }
-
-      if (bulkCancelRef.current) {
-        toast.message(
-          `Stopped ${modeLabel} after ${NUMBER_FORMATTER.format(processed)} of ${NUMBER_FORMATTER.format(bulkSiteIds.length)} site IDs.`
-        );
-      } else {
-        toast.success(
-          `Completed ${modeLabel} for ${NUMBER_FORMATTER.format(processed)} site IDs using ${bulkConnectionScope === "all" ? "all saved API profiles" : "active API profile"}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
-        );
-
-        // Auto-push Converted Reads to Solar REC Dashboard.
-        if (bulkDataType === "production") {
-          try {
-            const readRows = collectedRows
-              .filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate)
-              .map((row) =>
-                buildConvertedReadRow(
-                  MONITORING_CANONICAL_NAMES.solarEdge,
-                  row.siteId,
-                  row.siteName ?? "",
-                  row.lifetimeKwh!,
-                  row.anchorDate!
-                )
-              );
-            if (readRows.length === 0) {
-              toast.message(
-                `No SolarEdge rows to push to Converted Reads — ${NUMBER_FORMATTER.format(found)} sites returned but none had a lifetime kWh reading.`
-              );
-            } else {
-              const result = await pushConvertedReadsToRecDashboard(
-                (input) => pushConvertedReadsSource.mutateAsync(input),
-                readRows,
-                MONITORING_CANONICAL_NAMES.solarEdge
-              );
-              if (result.pushed > 0) {
-                toast.success(
-                  `Pushed ${NUMBER_FORMATTER.format(result.pushed)} SolarEdge rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`
-                );
-              } else if (result.skipped > 0) {
-                toast.message(
-                  `All ${NUMBER_FORMATTER.format(result.skipped)} SolarEdge Converted Reads rows already exist. No new rows pushed.`
-                );
-              } else {
-                toast.message("SolarEdge Converted Reads push returned 0 rows.");
-              }
-            }
-          } catch (pushError) {
-            toast.error(`Failed to push Converted Reads: ${toErrorMessage(pushError)}`);
-          }
-        }
-      }
-    } catch (error) {
-      toast.error(`Bulk ${modeLabel} failed: ${toErrorMessage(error)}`);
-    } finally {
-      setBulkIsRunning(false);
-    }
-  };
-
-  const filteredBulkRows = useMemo(() => {
-    const normalizedSearch = bulkSearch.trim().toLowerCase();
-    const filtered = bulkRows.filter((row) => {
-      const matchesStatus = bulkStatusFilter === "All" ? true : row.status === bulkStatusFilter;
-      if (!matchesStatus) return false;
-      if (!normalizedSearch) return true;
-      const haystack = `${row.siteId} ${row.status} ${row.error ?? ""} ${(row.meterTypes ?? []).join(" ")}`.toLowerCase();
-      return haystack.includes(normalizedSearch);
-    });
-
-    filtered.sort((a, b) => {
-      switch (bulkSort) {
-        case "status":
-          return a.status.localeCompare(b.status);
-        case "lifetime":
-          return toComparableNumber(b.lifetimeKwh) - toComparableNumber(a.lifetimeKwh);
-        case "hourly":
-          return toComparableNumber(b.hourlyProductionKwh) - toComparableNumber(a.hourlyProductionKwh);
-        case "monthly":
-          return toComparableNumber(b.monthlyProductionKwh) - toComparableNumber(a.monthlyProductionKwh);
-        case "mtd":
-          return toComparableNumber(b.mtdProductionKwh) - toComparableNumber(a.mtdProductionKwh);
-        case "previousMonth":
-          return (
-            toComparableNumber(b.previousCalendarMonthProductionKwh) -
-            toComparableNumber(a.previousCalendarMonthProductionKwh)
-          );
-        case "last12Months":
-          return toComparableNumber(b.last12MonthsProductionKwh) - toComparableNumber(a.last12MonthsProductionKwh);
-        case "meterCount":
-          return toComparableNumber(b.meterCount) - toComparableNumber(a.meterCount);
-        case "productionMeters":
-          return toComparableNumber(b.productionMeterCount) - toComparableNumber(a.productionMeterCount);
-        case "consumptionMeters":
-          return toComparableNumber(b.consumptionMeterCount) - toComparableNumber(a.consumptionMeterCount);
-        case "inverterCount":
-          return toComparableNumber(b.inverterCount) - toComparableNumber(a.inverterCount);
-        case "invertersWithTelemetry":
-          return toComparableNumber(b.invertersWithTelemetry) - toComparableNumber(a.invertersWithTelemetry);
-        case "inverterFailures":
-          return toComparableNumber(b.inverterFailures) - toComparableNumber(a.inverterFailures);
-        case "inverterLatestPower":
-          return toComparableNumber(b.totalLatestPowerW) - toComparableNumber(a.totalLatestPowerW);
-        case "inverterLatestEnergy":
-          return toComparableNumber(b.totalLatestEnergyWh) - toComparableNumber(a.totalLatestEnergyWh);
-        case "weekly":
-          return toComparableNumber(b.weeklyProductionKwh) - toComparableNumber(a.weeklyProductionKwh);
-        case "daily":
-          return toComparableNumber(b.dailyProductionKwh) - toComparableNumber(a.dailyProductionKwh);
-        case "siteId":
-        default:
-          return a.siteId.localeCompare(b.siteId, undefined, { numeric: true, sensitivity: "base" });
-      }
-    });
-
-    return filtered;
-  }, [bulkRows, bulkSearch, bulkSort, bulkStatusFilter]);
-
-  const bulkTotalPages = Math.max(1, Math.ceil(filteredBulkRows.length / BULK_PAGE_SIZE));
-  const bulkCurrentPage = Math.min(bulkPage, bulkTotalPages);
-  const bulkPageStartIndex = (bulkCurrentPage - 1) * BULK_PAGE_SIZE;
-  const bulkPageRows = filteredBulkRows.slice(bulkPageStartIndex, bulkPageStartIndex + BULK_PAGE_SIZE);
-  const bulkProgressPercent =
-    bulkProgress.total > 0 ? Math.min(100, (bulkProgress.processed / bulkProgress.total) * 100) : 0;
-  const bulkDataTypeLabel =
-    bulkDataType === "production"
-      ? "Production Snapshot"
-      : bulkDataType === "meters"
-        ? "Meter Inventory"
-        : "Inverter Snapshot";
-  const bulkSortOptions: Array<{ value: BulkSortKey; label: string }> =
-    bulkDataType === "meters"
-      ? [
-          { value: "siteId", label: "Site ID (A-Z)" },
-          { value: "status", label: "Status" },
-          { value: "meterCount", label: "Meter Count (High-Low)" },
-          { value: "productionMeters", label: "Production Meters (High-Low)" },
-          { value: "consumptionMeters", label: "Consumption Meters (High-Low)" },
-        ]
-      : bulkDataType === "inverters"
-        ? [
-            { value: "siteId", label: "Site ID (A-Z)" },
-            { value: "status", label: "Status" },
-            { value: "inverterCount", label: "Inverter Count (High-Low)" },
-            { value: "invertersWithTelemetry", label: "Inverters With Telemetry (High-Low)" },
-            { value: "inverterFailures", label: "Inverter Failures (High-Low)" },
-            { value: "inverterLatestPower", label: "Latest Power (High-Low)" },
-            { value: "inverterLatestEnergy", label: "Latest Energy (High-Low)" },
-          ]
-        : [
-            { value: "siteId", label: "Site ID (A-Z)" },
-            { value: "status", label: "Status" },
-            { value: "lifetime", label: "Lifetime (High-Low)" },
-            { value: "hourly", label: "Hourly (High-Low)" },
-            { value: "monthly", label: "Monthly (High-Low)" },
-            { value: "mtd", label: "MTD (High-Low)" },
-            { value: "previousMonth", label: "Previous Month (High-Low)" },
-            { value: "last12Months", label: "Last 12 Months (High-Low)" },
-            { value: "weekly", label: "Weekly (High-Low)" },
-            { value: "daily", label: "Daily (High-Low)" },
-          ];
-  const bulkCsvPrefix =
-    bulkDataType === "production"
-      ? "solaredge-production-bulk"
-      : bulkDataType === "meters"
-        ? "solaredge-meters-bulk"
-        : "solaredge-inverters-bulk";
-
-  const downloadBulkCsv = (rows: BulkSnapshotRow[], fileNamePrefix: string) => {
-    if (rows.length === 0) {
-      toast.error("No rows available to export.");
-      return;
-    }
-
-    const commonHeaders = [
-      "site_id",
-      "status",
-      "found",
-      "error",
-      "matched_connection_id",
-      "matched_connection_name",
-      "checked_connections",
-      "found_in_connections",
-      "profile_status_summary",
-    ];
-
-    const commonCells = (row: BulkSnapshotRow) => ({
-      site_id: row.siteId,
-      status: row.status,
-      found: row.found ? "Yes" : "No",
-      error: row.error,
-      matched_connection_id: row.matchedConnectionId,
-      matched_connection_name: row.matchedConnectionName,
-      checked_connections: row.checkedConnections,
-      found_in_connections: row.foundInConnections,
-      profile_status_summary: row.profileStatusSummary,
-    });
-
-    let headers: string[] = [];
-    let csvRows: Array<Record<string, string | number | null | undefined>> = [];
-
-    if (bulkDataType === "meters") {
-      headers = [
-        ...commonHeaders,
-        "meter_count",
-        "production_meter_count",
-        "consumption_meter_count",
-        "meter_types",
-      ];
-      csvRows = rows.map((row) => ({
-        ...commonCells(row),
-        meter_count: row.meterCount,
-        production_meter_count: row.productionMeterCount,
-        consumption_meter_count: row.consumptionMeterCount,
-        meter_types: (row.meterTypes ?? []).join(" | "),
-      }));
-    } else if (bulkDataType === "inverters") {
-      headers = [
-        ...commonHeaders,
-        "inverter_count",
-        "inverters_with_telemetry",
-        "inverter_failures",
-        "total_latest_power_w",
-        "total_latest_energy_wh",
-        "first_telemetry_at",
-        "last_telemetry_at",
-      ];
-      csvRows = rows.map((row) => ({
-        ...commonCells(row),
-        inverter_count: row.inverterCount,
-        inverters_with_telemetry: row.invertersWithTelemetry,
-        inverter_failures: row.inverterFailures,
-        total_latest_power_w: row.totalLatestPowerW,
-        total_latest_energy_wh: row.totalLatestEnergyWh,
-        first_telemetry_at: row.firstTelemetryAt,
-        last_telemetry_at: row.lastTelemetryAt,
-      }));
-    } else {
-      headers = [
-        ...commonHeaders,
-        "site_name",
-        "lifetime_kwh",
-        "hourly_production_kwh",
-        "monthly_production_kwh",
-        "mtd_production_kwh",
-        "previous_calendar_month_production_kwh",
-        "last_12_months_production_kwh",
-        "weekly_production_kwh",
-        "daily_production_kwh",
-        "anchor_date",
-        "monthly_start_date",
-        "weekly_start_date",
-        "mtd_start_date",
-        "previous_calendar_month_start_date",
-        "previous_calendar_month_end_date",
-        "last_12_months_start_date",
-        "inverter_lifetimes",
-        "meter_lifetime_kwh",
-      ];
-      csvRows = rows.map((row) => ({
-        ...commonCells(row),
-        site_name: row.siteName ?? "",
-        lifetime_kwh: row.lifetimeKwh,
-        hourly_production_kwh: row.hourlyProductionKwh,
-        monthly_production_kwh: row.monthlyProductionKwh,
-        mtd_production_kwh: row.mtdProductionKwh,
-        previous_calendar_month_production_kwh: row.previousCalendarMonthProductionKwh,
-        last_12_months_production_kwh: row.last12MonthsProductionKwh,
-        weekly_production_kwh: row.weeklyProductionKwh,
-        daily_production_kwh: row.dailyProductionKwh,
-        anchor_date: row.anchorDate,
-        monthly_start_date: row.monthlyStartDate,
-        weekly_start_date: row.weeklyStartDate,
-        mtd_start_date: row.mtdStartDate,
-        previous_calendar_month_start_date: row.previousCalendarMonthStartDate,
-        previous_calendar_month_end_date: row.previousCalendarMonthEndDate,
-        last_12_months_start_date: row.last12MonthsStartDate,
-        inverter_lifetimes: row.inverterLifetimes && row.inverterLifetimes.length > 0
-          ? row.inverterLifetimes.map((inv) => `${inv.serialNumber}: ${inv.lifetimeWh ?? "N/A"}`).join(" | ")
-          : "",
-        meter_lifetime_kwh: row.meterLifetimeKwh,
-      }));
-    }
-
-    const csvText = buildCsv(headers, csvRows);
-    const fileName = `${fileNamePrefix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
-  };
-
-  const downloadConvertedReadsCsv = (rows: BulkSnapshotRow[]) => {
-    const readRows = rows.filter((row) => row.found && row.lifetimeKwh != null && row.anchorDate);
-    if (readRows.length === 0) {
-      toast.error("No rows with lifetime kWh available for Converted Reads export.");
-      return;
-    }
-
-    const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
-    const csvRows: Array<Record<string, string | number | null | undefined>> = [];
-    for (const row of readRows) {
-      const base = buildConvertedReadRow(MONITORING_CANONICAL_NAMES.solarEdge, row.siteId, row.siteName ?? "", row.lifetimeKwh!, row.anchorDate!);
-      // Row 1: system name only (ID blank) — matches by name
-      csvRows.push({
-        monitoring: base.monitoring,
-        monitoring_system_id: "",
-        monitoring_system_name: base.monitoring_system_name,
-        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
-        read_date: base.read_date,
-        status: base.status,
-        alert_severity: base.alert_severity,
-      });
-      // Row 2: system ID only (name blank) — matches by ID
-      csvRows.push({
-        monitoring: base.monitoring,
-        monitoring_system_id: base.monitoring_system_id,
-        monitoring_system_name: "",
-        lifetime_meter_read_wh: base.lifetime_meter_read_wh,
-        read_date: base.read_date,
-        status: base.status,
-        alert_severity: base.alert_severity,
-      });
-    }
-
-    const csvText = buildCsv(headers, csvRows);
-    const fileName = `solaredge-converted-reads-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    downloadTextFile(fileName, csvText, "text/csv;charset=utf-8");
-    toast.success(`Downloaded ${csvRows.length} Converted Reads rows (${readRows.length} systems \u00d7 2 match rows each).`);
-  };
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="h-8 w-8 animate-spin text-slate-600" />
-      </div>
-    );
-  }
-
-  if (!user) return null;
-
-  const sites = sitesQuery.data?.sites ?? [];
-  const isConnected = Boolean(statusQuery.data?.connected);
-  const connections = statusQuery.data?.connections ?? [];
-  const activeConnection = connections.find((connection) => connection.isActive);
-  const statusError = statusQuery.error ? toErrorMessage(statusQuery.error) : null;
-  const sitesError = sitesQuery.error ? toErrorMessage(sitesQuery.error) : null;
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-emerald-50">
-      <header className="border-b bg-white/90 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4">
-          <Button variant="ghost" onClick={() => setLocation("/dashboard")} className="mb-2">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Dashboard
-          </Button>
-          <h1 className="text-2xl font-bold text-slate-900">SolarEdge Monitoring API</h1>
-          <p className="text-sm text-slate-600 mt-1">
-            API key connection for current SolarEdge monitoring endpoints, including bulk CSV processing for thousands of sites.
-          </p>
-        </div>
-      </header>
-
-      <main className="container mx-auto px-4 py-8 space-y-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>1) Connect SolarEdge</CardTitle>
-            <CardDescription>
-              Save one or more API profiles, switch active profile, and persist keys for future sessions.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="solaredge-connection-name">Profile Name (optional)</Label>
-                <Input
-                  id="solaredge-connection-name"
-                  value={connectionNameInput}
-                  onChange={(e) => setConnectionNameInput(e.target.value)}
-                  placeholder="Example: Utility Batch A"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="solaredge-api-key">API Key</Label>
-                <Input
-                  id="solaredge-api-key"
-                  type="password"
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder="SolarEdge monitoring API key"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="solaredge-base-url">Base API URL (advanced)</Label>
-                <Input
-                  id="solaredge-base-url"
-                  value={baseUrlInput}
-                  onChange={(e) => setBaseUrlInput(e.target.value)}
-                  placeholder={DEFAULT_BASE_URL}
-                />
-              </div>
-            </div>
-
-            {connections.length > 0 ? (
-              <div className="rounded-lg border bg-slate-50/70 p-4 space-y-3">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-                  <div className="space-y-2 md:col-span-2">
-                    <Label>Saved API Profiles</Label>
-                    <Select value={selectedConnectionId} onValueChange={setSelectedConnectionId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select saved profile" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {connections.map((connection) => (
-                          <SelectItem key={connection.id} value={connection.id}>
-                            {connection.name} ({connection.apiKeyMasked})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={handleSetActiveConnection}
-                      disabled={!selectedConnectionId || setActiveConnectionMutation.isPending}
-                    >
-                      {setActiveConnectionMutation.isPending ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : null}
-                      Set Active
-                    </Button>
-                    <Button
-                      variant="outline"
-                      onClick={handleRemoveConnection}
-                      disabled={!selectedConnectionId || removeConnectionMutation.isPending}
-                    >
-                      {removeConnectionMutation.isPending ? (
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      ) : null}
-                      Remove Profile
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="text-xs text-slate-600">
-                  {NUMBER_FORMATTER.format(connections.length)} profile(s) saved. Active profile:{" "}
-                  <span className="font-medium text-slate-900">{activeConnection?.name ?? "N/A"}</span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {connections.map((connection) => (
-                    <div
-                      key={connection.id}
-                      className={`rounded-md border px-3 py-2 text-xs ${
-                        connection.isActive
-                          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-                          : "border-slate-200 bg-white text-slate-700"
-                      }`}
-                    >
-                      <p className="font-medium">{connection.name}</p>
-                      <p>Key: {connection.apiKeyMasked}</p>
-                      <p>Base URL: {connection.baseUrl || DEFAULT_BASE_URL}</p>
-                      <p>Updated: {new Date(connection.updatedAt).toLocaleString()}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {statusError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                Status error: {statusError}
-              </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={handleConnect} disabled={connectMutation.isPending}>
-                {connectMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <PlugZap className="h-4 w-4 mr-2" />
-                )}
-                Connect
-              </Button>
-              <Button
-                variant="outline"
-                onClick={handleDisconnect}
-                disabled={disconnectMutation.isPending || !isConnected}
-              >
-                {disconnectMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Unplug className="h-4 w-4 mr-2" />
-                )}
-                Disconnect
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  statusQuery.refetch();
-                  sitesQuery.refetch();
-                }}
-              >
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Refresh
-              </Button>
-              <span className="text-sm text-slate-600">
-                Status: {isConnected ? `Connected (${connections.length} profile${connections.length === 1 ? "" : "s"})` : "Not connected"}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>2) Single Site API Tester</CardTitle>
-            <CardDescription>
-              Pick a site from `/sites/list` or paste one manually, then fetch endpoint responses.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="space-y-2 md:col-span-1">
-                <Label>Site</Label>
-                <Select value={selectedSiteId} onValueChange={setSelectedSiteId} disabled={!sites.length}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={sites.length ? "Select a site" : "No sites loaded"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {sites.map((site) => (
-                      <SelectItem key={site.siteId} value={site.siteId}>
-                        {site.siteName} ({site.siteId})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="manual-site-id">Manual Site ID (optional)</Label>
-                <Input
-                  id="manual-site-id"
-                  value={selectedSiteId}
-                  onChange={(e) => setSelectedSiteId(e.target.value.trim())}
-                  placeholder="Paste site ID to bypass list loading"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="solaredge-time-unit">Time Unit</Label>
-                <Select value={timeUnit} onValueChange={(value) => setTimeUnit(value as TimeUnit)}>
-                  <SelectTrigger id="solaredge-time-unit">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TIME_UNIT_OPTIONS.map((option) => (
-                      <SelectItem key={option} value={option}>
-                        {option}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="start-date">Start Date</Label>
-                <Input
-                  id="start-date"
-                  type="date"
-                  value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="end-date">End Date</Label>
-                <Input
-                  id="end-date"
-                  type="date"
-                  value={endDate}
-                  onChange={(e) => setEndDate(e.target.value)}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Quick Date Presets</Label>
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" size="sm" onClick={() => applyDatePreset("mtd")}>
-                  MTD
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => applyDatePreset("prevMonth")}>
-                  Previous Calendar Month
-                </Button>
-                <Button type="button" variant="outline" size="sm" onClick={() => applyDatePreset("last12Months")}>
-                  Last 12 Months
-                </Button>
-              </div>
-              <p className="text-xs text-slate-500">
-                MTD = first day of current month through today. Previous Calendar Month = prior month start to end. Last 12
-                Months = same day last year through today.
-              </p>
-            </div>
-
-            {sitesQuery.isLoading && <div className="text-sm text-slate-600">Loading sites...</div>}
-
-            {sitesError && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                Sites load error: {sitesError}
-              </div>
-            )}
-
-            {!sitesQuery.isLoading && !sitesError && isConnected && sites.length === 0 && (
-              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-                No sites were returned for this API key.
-              </div>
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                disabled={!selectedSiteId || isRunningAction}
-                onClick={() =>
-                  runAction("Site Overview", () =>
-                    overviewMutation.mutateAsync({
-                      siteId: selectedSiteId,
-                    })
-                  )
-                }
-              >
-                Fetch Site Overview
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!selectedSiteId || isRunningAction}
-                onClick={() =>
-                  runAction("Site Details", () =>
-                    detailsMutation.mutateAsync({
-                      siteId: selectedSiteId,
-                    })
-                  )
-                }
-              >
-                Fetch Site Details
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!selectedSiteId || isRunningAction}
-                onClick={() =>
-                  runAction("Site Energy", () =>
-                    energyMutation.mutateAsync({
-                      siteId: selectedSiteId,
-                      startDate,
-                      endDate,
-                      timeUnit,
-                    })
-                  )
-                }
-              >
-                Fetch Site Energy
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!selectedSiteId || isRunningAction}
-                onClick={() =>
-                  runAction("Production Meter Readings", () =>
-                    productionReadsMutation.mutateAsync({
-                      siteId: selectedSiteId,
-                      startDate,
-                      endDate,
-                      timeUnit,
-                    })
-                  )
-                }
-              >
-                Fetch Production Meter Readings
-              </Button>
-              <Button
-                disabled={!selectedSiteId || isRunningAction}
-                onClick={() =>
-                  runAction("Site Meters", () =>
-                    metersMutation.mutateAsync({
-                      siteId: selectedSiteId,
-                      startDate,
-                      endDate,
-                    })
-                  )
-                }
-              >
-                Fetch Site Meters
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!selectedSiteId || isRunningAction}
-                onClick={() =>
-                  runAction("Inverter Production", () =>
-                    inverterProductionMutation.mutateAsync({
-                      siteId: selectedSiteId,
-                      startDate,
-                      endDate,
-                    })
-                  )
-                }
-              >
-                Fetch Inverter Production
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>3) Bulk CSV Processing</CardTitle>
-            <CardDescription>
-              Upload a CSV of site IDs, choose bulk data type, and process in batches across API profiles.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              <div className="space-y-2">
-                <Label>Bulk Data Type</Label>
-                <Select value={bulkDataType} onValueChange={(value) => setBulkDataType(value as BulkDataType)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="production">Production Snapshot</SelectItem>
-                    <SelectItem value="meters">Meter Inventory</SelectItem>
-                    <SelectItem value="inverters">Inverter Snapshot</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-slate-500">
-                  Select what to pull per site ID in bulk.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="bulk-anchor-date">Anchor Date</Label>
-                <Input
-                  id="bulk-anchor-date"
-                  type="date"
-                  value={bulkAnchorDate}
-                  onChange={(e) => setBulkAnchorDate(e.target.value)}
-                />
-                <p className="text-xs text-slate-500">
-                  Used for production and inverter snapshots. Production windows: Monthly = last 30 days, MTD = first of current month through anchor day, Previous Month = prior calendar month, Last 12 Months = trailing 12 months ending on anchor day.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label>API Scope</Label>
-                <Select
-                  value={bulkConnectionScope}
-                  onValueChange={(value) => setBulkConnectionScope(value as BulkConnectionScope)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="active">Active API Profile Only</SelectItem>
-                    <SelectItem value="all">All Saved API Profiles</SelectItem>
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-slate-500">
-                  Use <span className="font-medium">All Saved API Profiles</span> to check each site ID against every connected API.
-                </p>
-              </div>
-              <div className="space-y-2 md:col-span-1">
-                <Label htmlFor="bulk-csv-upload">Site IDs CSV</Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    id="bulk-csv-upload"
-                    type="file"
-                    accept=".csv,text/csv"
-                    onChange={(event) => {
-                      void handleBulkFileUpload(event.target.files?.[0] ?? null);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setBulkSiteIds([]);
-                      setBulkRows([]);
-                      setBulkSourceFileName(null);
-                      setBulkImportError(null);
-                      setBulkProgress({ total: 0, processed: 0, found: 0, notFound: 0, errored: 0 });
-                    }}
-                  >
-                    Clear
-                  </Button>
-                </div>
-                <p className="text-xs text-slate-600">
-                  Expected column: <code>site_id</code> (or first column). File: {bulkSourceFileName ?? "None"}
-                </p>
-                {bulkImportError ? <p className="text-xs text-red-600">{bulkImportError}</p> : null}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <Button onClick={runBulkSnapshot} disabled={bulkIsRunning || bulkSiteIds.length === 0 || !isConnected}>
-                {bulkIsRunning ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <Upload className="h-4 w-4 mr-2" />
-                )}
-                Run {bulkDataTypeLabel}
-              </Button>
-              <Button
-                variant="outline"
-                disabled={!bulkIsRunning}
-                onClick={() => {
-                  bulkCancelRef.current = true;
-                }}
-              >
-                Stop
-              </Button>
-              <Button
-                variant="outline"
-                disabled={bulkRows.length === 0}
-                onClick={() => downloadBulkCsv(bulkRows, `${bulkCsvPrefix}-all`)}
-              >
-                Download All CSV
-              </Button>
-              <Button
-                variant="outline"
-                disabled={filteredBulkRows.length === 0}
-                onClick={() => downloadBulkCsv(filteredBulkRows, `${bulkCsvPrefix}-filtered`)}
-              >
-                Download Filtered CSV
-              </Button>
-              {bulkDataType === "production" && (
-                <Button
-                  variant="outline"
-                  disabled={bulkRows.filter((r) => r.found && r.lifetimeKwh != null).length === 0}
-                  onClick={() => downloadConvertedReadsCsv(bulkRows)}
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  Download Converted Reads CSV
-                </Button>
-              )}
-            </div>
-
-            <div className="rounded-lg border bg-white p-3 space-y-2">
-              <div className="flex items-center justify-between text-xs text-slate-600">
-                <span>
-                  Progress: {NUMBER_FORMATTER.format(bulkProgress.processed)} / {NUMBER_FORMATTER.format(bulkProgress.total)} site IDs
-                </span>
-                <span>{bulkProgressPercent.toFixed(1)}%</span>
-              </div>
-              <Progress value={bulkProgressPercent} />
-              {bulkIsRunning && bulkProgress.processed > 0 && (() => {
-                const elapsed = (Date.now() - bulkStartTimeRef.current) / 1000;
-                const rate = bulkProgress.processed / elapsed;
-                const remaining = bulkProgress.total - bulkProgress.processed;
-                const etaSec = rate > 0 ? remaining / rate : 0;
-                const etaMin = Math.floor(etaSec / 60);
-                const etaSecRem = Math.floor(etaSec % 60);
-                const elapsedMin = Math.floor(elapsed / 60);
-                const elapsedSec = Math.floor(elapsed % 60);
-                return (
-                  <p className="text-xs font-medium text-slate-600">
-                    {rate.toFixed(1)} sites/sec | Elapsed: {elapsedMin}m {elapsedSec}s | ETA: {etaMin}m {etaSecRem}s remaining
-                  </p>
-                );
-              })()}
-              <p className="text-xs text-slate-500">
-                Update cadence:{" "}
-                {bulkConnectionScope === "all"
-                  ? `${NUMBER_FORMATTER.format(BULK_BATCH_SIZE_ALL_PROFILES)} sites per request (all API profiles).`
-                  : `${NUMBER_FORMATTER.format(BULK_BATCH_SIZE_ACTIVE)} sites per request (active API profile).`}
-              </p>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-5">
-              <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Imported Site IDs</p>
-                <p className="text-xl font-semibold text-slate-900">{NUMBER_FORMATTER.format(bulkSiteIds.length)}</p>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Processed</p>
-                <p className="text-xl font-semibold text-slate-900">{NUMBER_FORMATTER.format(bulkProgress.processed)}</p>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Found</p>
-                <p className="text-xl font-semibold text-emerald-700">{NUMBER_FORMATTER.format(bulkProgress.found)}</p>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Not Found</p>
-                <p className="text-xl font-semibold text-amber-700">{NUMBER_FORMATTER.format(bulkProgress.notFound)}</p>
-              </div>
-              <div className="rounded-lg border bg-white p-3">
-                <p className="text-xs text-slate-500">Errors</p>
-                <p className="text-xl font-semibold text-rose-700">{NUMBER_FORMATTER.format(bulkProgress.errored)}</p>
-              </div>
-            </div>
-
-            <div className="grid gap-3 md:grid-cols-3">
-              <div className="space-y-2">
-                <Label htmlFor="bulk-search">Search</Label>
-                <Input
-                  id="bulk-search"
-                  value={bulkSearch}
-                  onChange={(event) => setBulkSearch(event.target.value)}
-                  placeholder="Filter by site ID or error"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Status</Label>
-                <Select value={bulkStatusFilter} onValueChange={(value) => setBulkStatusFilter(value as BulkStatusFilter)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="All">All</SelectItem>
-                    <SelectItem value="Found">Found</SelectItem>
-                    <SelectItem value="Not Found">Not Found</SelectItem>
-                    <SelectItem value="Error">Error</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Sort</Label>
-                <Select value={bulkSort} onValueChange={(value) => setBulkSort(value as BulkSortKey)}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {bulkSortOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between text-xs text-slate-600">
-              <span>
-                Showing {NUMBER_FORMATTER.format(bulkPageRows.length)} of {NUMBER_FORMATTER.format(filteredBulkRows.length)} rows
-              </span>
-              <span>
-                Page {NUMBER_FORMATTER.format(bulkCurrentPage)} of {NUMBER_FORMATTER.format(bulkTotalPages)}
-              </span>
-            </div>
-
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Site ID</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Matched API Profile</TableHead>
-                  <TableHead>Found In APIs</TableHead>
-                  {bulkDataType === "production" ? (
-                    <>
-                      <TableHead>Site Name</TableHead>
-                      <TableHead>Lifetime (kWh)</TableHead>
-                      <TableHead>Hourly (kWh)</TableHead>
-                      <TableHead>Monthly (kWh)</TableHead>
-                      <TableHead>MTD (kWh)</TableHead>
-                      <TableHead>Previous Month (kWh)</TableHead>
-                      <TableHead>Last 12 Months (kWh)</TableHead>
-                      <TableHead>Weekly (kWh)</TableHead>
-                      <TableHead>Daily (kWh)</TableHead>
-                      <TableHead>Inverter Lifetimes (Wh)</TableHead>
-                      <TableHead>Meter Lifetime (kWh)</TableHead>
-                    </>
-                  ) : null}
-                  {bulkDataType === "meters" ? (
-                    <>
-                      <TableHead>Meters</TableHead>
-                      <TableHead>Production Meters</TableHead>
-                      <TableHead>Consumption Meters</TableHead>
-                      <TableHead>Meter Types</TableHead>
-                    </>
-                  ) : null}
-                  {bulkDataType === "inverters" ? (
-                    <>
-                      <TableHead>Inverters</TableHead>
-                      <TableHead>With Telemetry</TableHead>
-                      <TableHead>Failures</TableHead>
-                      <TableHead>Latest Power (W)</TableHead>
-                      <TableHead>Latest Energy (Wh)</TableHead>
-                      <TableHead>Last Telemetry</TableHead>
-                    </>
-                  ) : null}
-                  <TableHead>API Check Summary</TableHead>
-                  <TableHead>Error</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {bulkPageRows.map((row) => (
-                  <TableRow key={row.siteId}>
-                    <TableCell className="font-medium">{row.siteId}</TableCell>
-                    <TableCell>{row.status}</TableCell>
-                    <TableCell>{row.matchedConnectionName ?? "N/A"}</TableCell>
-                    <TableCell>
-                      {NUMBER_FORMATTER.format(row.foundInConnections)} / {NUMBER_FORMATTER.format(row.checkedConnections)}
-                    </TableCell>
-                    {bulkDataType === "production" ? (
-                      <>
-                        <TableCell>{row.siteName ?? "N/A"}</TableCell>
-                        <TableCell>{formatKwh(row.lifetimeKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.hourlyProductionKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.monthlyProductionKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.mtdProductionKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.previousCalendarMonthProductionKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.last12MonthsProductionKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.weeklyProductionKwh)}</TableCell>
-                        <TableCell>{formatKwh(row.dailyProductionKwh)}</TableCell>
-                        <TableCell className="text-xs text-slate-600">
-                          {row.inverterLifetimes && row.inverterLifetimes.length > 0
-                            ? row.inverterLifetimes.map((inv) => `${inv.serialNumber}: ${inv.lifetimeWh ?? "N/A"}`).join(" | ")
-                            : "N/A"}
-                        </TableCell>
-                        <TableCell>{formatKwh(row.meterLifetimeKwh)}</TableCell>
-                      </>
-                    ) : null}
-                    {bulkDataType === "meters" ? (
-                      <>
-                        <TableCell>{row.meterCount ?? "N/A"}</TableCell>
-                        <TableCell>{row.productionMeterCount ?? "N/A"}</TableCell>
-                        <TableCell>{row.consumptionMeterCount ?? "N/A"}</TableCell>
-                        <TableCell className="text-xs text-slate-600">
-                          {(row.meterTypes ?? []).length > 0 ? (row.meterTypes ?? []).join(" | ") : "N/A"}
-                        </TableCell>
-                      </>
-                    ) : null}
-                    {bulkDataType === "inverters" ? (
-                      <>
-                        <TableCell>{row.inverterCount ?? "N/A"}</TableCell>
-                        <TableCell>{row.invertersWithTelemetry ?? "N/A"}</TableCell>
-                        <TableCell>{row.inverterFailures ?? "N/A"}</TableCell>
-                        <TableCell>{row.totalLatestPowerW ?? "N/A"}</TableCell>
-                        <TableCell>{row.totalLatestEnergyWh ?? "N/A"}</TableCell>
-                        <TableCell>{row.lastTelemetryAt ?? "N/A"}</TableCell>
-                      </>
-                    ) : null}
-                    <TableCell className="text-xs text-slate-600">{row.profileStatusSummary}</TableCell>
-                    <TableCell className="text-xs text-slate-600">{row.error ?? ""}</TableCell>
-                  </TableRow>
-                ))}
-                {bulkPageRows.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={
-                        bulkDataType === "production"
-                          ? 17
-                          : bulkDataType === "meters"
-                            ? 10
-                            : 12
-                      }
-                      className="py-6 text-center text-slate-500"
-                    >
-                      No bulk rows to display.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-
-            <div className="flex items-center justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setBulkPage((page) => Math.max(1, page - 1))}
-                disabled={bulkCurrentPage <= 1}
-              >
-                Previous
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setBulkPage((page) => Math.min(bulkTotalPages, page + 1))}
-                disabled={bulkCurrentPage >= bulkTotalPages}
-              >
-                Next
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>4) Raw API Response</CardTitle>
-            <CardDescription>{resultTitle}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <pre className="text-xs bg-slate-950 text-slate-100 rounded-md p-4 overflow-auto max-h-[480px]">
-              {resultText}
-            </pre>
-          </CardContent>
-        </Card>
-      </main>
-    </div>
-  );
+  return <MeterReadsPage config={config} />;
 }
