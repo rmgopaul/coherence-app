@@ -211,6 +211,14 @@ export function parseTeslaPowerhubMetadata(
   tokenUrl: string | null;
   apiBaseUrl: string | null;
   portalBaseUrl: string | null;
+  /**
+   * Tesla Powerhub Group ID the connection is scoped to. Meter-read
+   * flows need this to resolve listSites and getProductionSnapshot;
+   * when present, they skip prompting the user for a group per call.
+   */
+  groupId: string | null;
+  /** Human-readable profile label shown in the saved-profiles UI. */
+  connectionName: string | null;
 } {
   const parsed = parseJsonMetadata(metadata);
   return {
@@ -218,6 +226,8 @@ export function parseTeslaPowerhubMetadata(
     tokenUrl: toNonEmptyString(parsed.tokenUrl),
     apiBaseUrl: toNonEmptyString(parsed.apiBaseUrl),
     portalBaseUrl: toNonEmptyString(parsed.portalBaseUrl),
+    groupId: toNonEmptyString(parsed.groupId),
+    connectionName: toNonEmptyString(parsed.connectionName),
   };
 }
 
