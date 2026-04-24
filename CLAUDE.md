@@ -216,6 +216,47 @@ When the answer to any of these is "I'm not sure," figure it out or
 flag it in the PR description. Shipping on "it compiles" is how
 user-facing bugs land.
 
+### Schema migration safety — run before merging, not after
+
+Merging a PR that touches `drizzle/schemas/*.ts` deploys code that
+assumes the new column/table exists. **Drizzle's `select().from(t)`
+enumerates every column declared in the schema**, so a missing
+column on the live DB returns "Unknown column" on *every* call site
+that reads that table — not just the new code path. This is how the
+2026-04-24 auth outage happened: PR 1 added `solarRecUsers.isScopeAdmin`
+and deployed to TiDB before migration 0031 was applied, which broke
+`getSolarRecUserById` for every solar-rec request.
+
+Migrations do **not** run automatically on deploy. Before merging a
+PR that adds a migration:
+
+1. Generate the migration locally: `pnpm db:push` (or
+   `./node_modules/.bin/drizzle-kit generate --name <slug>`).
+2. **Verify the migration file lands in `drizzle/NNNN_*.sql`** and a
+   matching entry appears in `drizzle/meta/_journal.json`. If
+   `drizzle-kit generate` picks a filename that collides with an
+   existing migration, rename both the `.sql` and the corresponding
+   snapshot file (`drizzle/meta/NNNN_snapshot.json`) to the next free
+   integer, then update the `tag` in `_journal.json`.
+3. **Run the migration against prod DATABASE_URL BEFORE merging the
+   code PR**: `./node_modules/.bin/drizzle-kit migrate`. Confirm the
+   table/column exists with a direct query (e.g.
+   `SHOW COLUMNS FROM solarRecUsers LIKE 'isScopeAdmin'`).
+4. If `drizzle-kit migrate` fails silently (exits non-zero with no
+   error, or reports success but leaves the DB unchanged), apply the
+   statements directly via `mysql2` and insert a row into
+   `__drizzle_migrations` with the sha256 of the `.sql` file so
+   future runs remain idempotent. The 2026-04-24 0031 application is
+   the canonical example.
+5. Only then is it safe to merge the code PR.
+
+Corollary: **never split a schema change across two PRs** (e.g. "PR 1
+adds schema + migration, PR 2 uses the column"). Once PR 1 deploys,
+the column is in the Drizzle schema and every read of that table
+fails until the migration applies. Either include the migration in
+the PR that first uses the column, or apply the migration to prod
+*before* merging the schema PR.
+
 ---
 
 ## Project Structure
