@@ -2254,16 +2254,21 @@ export const dockRouter = router({
 
           // Extract event ID from meta (already decoded in frontend) or eid parameter
           let eventId = input.meta?.eventId as string | undefined;
+          let calendarId = input.meta?.calendarId as string | undefined;
 
           if (!eventId) {
             const eid = input.meta?.eid as string;
             if (!eid) return { title: "Calendar Event" };
 
-            // Decode base64 event ID
+            // Decode base64 event ID. Format is "eventId calendarId"
+            // (calendarId absent when the event lives on the primary
+            // calendar). Non-primary calendars require the calendar
+            // id in the API URL or the fetch 404s.
             try {
               const decoded = Buffer.from(eid, "base64").toString("utf-8");
-              // Event ID format: "eventId calendarId"
-              eventId = decoded.split(" ")[0];
+              const parts = decoded.split(" ");
+              eventId = parts[0];
+              if (!calendarId && parts[1]) calendarId = parts[1];
             } catch {
               return { title: "Calendar Event" };
             }
@@ -2272,8 +2277,9 @@ export const dockRouter = router({
           if (!eventId) return { title: "Calendar Event" };
 
           // Fetch event details from Calendar API
+          const targetCalendar = calendarId ?? "primary";
           const response = await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+            `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(targetCalendar)}/events/${encodeURIComponent(eventId)}`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
 
