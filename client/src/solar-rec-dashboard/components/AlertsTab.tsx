@@ -19,6 +19,7 @@
  */
 
 import { memo, useMemo } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -285,6 +286,22 @@ export default memo(function AlertsTab(props: AlertsTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-alerts"
+        title="Ask AI about active alerts"
+        contextGetter={() => ({
+          summary: alertSummary,
+          alerts: alerts.map((a) => ({
+            id: a.id,
+            severity: a.severity,
+            type: a.type,
+            system: a.system,
+            message: a.message,
+            action: a.action,
+          })),
+        })}
+      />
     </div>
   );
 });
