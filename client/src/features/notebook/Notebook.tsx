@@ -14,12 +14,29 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Sheet,
   SheetContent,
   SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Textarea } from "@/components/ui/textarea";
 import { extractTextPreview, normalizeContentForEditor } from "@/lib/noteContent";
 import { NoteSaveController, type NoteDraftSnapshot } from "@/lib/noteSaveController";
 import { trpc } from "@/lib/trpc";
@@ -204,6 +221,11 @@ export default function Notebook() {
   const [mobileNotebooksOpen, setMobileNotebooksOpen] = useState(false);
   const [mobilePagesOpen, setMobilePagesOpen] = useState(false);
 
+  const [todoistDialogOpen, setTodoistDialogOpen] = useState(false);
+  const [todoistTaskContent, setTodoistTaskContent] = useState("");
+  const [todoistProjectId, setTodoistProjectId] = useState<string>("__inbox__");
+  const [todoistDueDate, setTodoistDueDate] = useState("");
+
   const initialDraft = useMemo<NoteDraftSnapshot>(
     () => ({
       noteId: null,
@@ -258,6 +280,12 @@ export default function Notebook() {
   const deleteNoteMutation = trpc.notes.delete.useMutation();
   const removeNoteLinkMutation = trpc.notes.removeLink.useMutation();
   const uploadImageMutation = trpc.notes.uploadImage.useMutation();
+  const addNoteLinkMutation = trpc.notes.addLink.useMutation();
+  const createTodoistTaskMutation = trpc.todoist.createTask.useMutation();
+  const { data: todoistProjects } = trpc.todoist.getProjects.useQuery(
+    undefined,
+    { enabled: !!user, staleTime: 30 * 60_000, refetchOnWindowFocus: false },
+  );
 
   const handleUploadImage = useCallback(async (file: File): Promise<string | null> => {
     try {
@@ -646,6 +674,70 @@ export default function Notebook() {
     },
     [removeNoteLinkMutation, trpcUtils.notes.list]
   );
+
+  const openTodoistTaskDialog = useCallback(
+    (selectedText: string) => {
+      const trimmed = selectedText.trim();
+      if (!trimmed) return;
+      setTodoistTaskContent(trimmed);
+      setTodoistProjectId("__inbox__");
+      setTodoistDueDate("");
+      setTodoistDialogOpen(true);
+    },
+    [],
+  );
+
+  const handleCreateTodoistTask = useCallback(async () => {
+    const content = todoistTaskContent.trim();
+    if (!content) {
+      toast.error("Task content is required.");
+      return;
+    }
+    const noteId = noteDraft.noteId;
+    if (!noteId) {
+      toast.error("Save the note first before creating a linked task.");
+      return;
+    }
+    try {
+      const projectId =
+        todoistProjectId && todoistProjectId !== "__inbox__" ? todoistProjectId : undefined;
+      const dueDate = todoistDueDate || undefined;
+      const task = await createTodoistTaskMutation.mutateAsync({
+        content,
+        projectId,
+        dueDate,
+      });
+      const taskId = String(task.id);
+      try {
+        await addNoteLinkMutation.mutateAsync({
+          noteId,
+          linkType: "todoist_task",
+          externalId: taskId,
+          sourceTitle: content,
+          sourceUrl: `https://todoist.com/app/task/${taskId}`,
+        });
+      } catch (linkError) {
+        console.error("[Notebook] Failed to record note link:", linkError);
+      }
+      await trpcUtils.notes.list.invalidate();
+      toast.success(`Added to Todoist: ${content}`);
+      setTodoistDialogOpen(false);
+    } catch (error) {
+      toast.error(
+        `Failed to create Todoist task: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    }
+  }, [
+    addNoteLinkMutation,
+    createTodoistTaskMutation,
+    noteDraft.noteId,
+    todoistDueDate,
+    todoistProjectId,
+    todoistTaskContent,
+    trpcUtils.notes.list,
+  ]);
 
   useEffect(() => {
     if (!loading && !user) {
@@ -1281,6 +1373,7 @@ export default function Notebook() {
                       onSaveShortcut={() => {
                         void runSave("manual");
                       }}
+                      onCreateTodoistTask={openTodoistTaskDialog}
                       onUploadImage={handleUploadImage}
                       className="h-full"
                     />
@@ -1382,6 +1475,84 @@ export default function Notebook() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog open={todoistDialogOpen} onOpenChange={setTodoistDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create Todoist task</DialogTitle>
+            <DialogDescription>
+              From the selected text in this note. The task will be linked
+              back so this note shows up on the task later.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="todoist-task-content">Task</Label>
+              <Textarea
+                id="todoist-task-content"
+                value={todoistTaskContent}
+                onChange={(e) => setTodoistTaskContent(e.target.value)}
+                rows={3}
+                autoFocus
+              />
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label>Project</Label>
+                <Select value={todoistProjectId} onValueChange={setTodoistProjectId}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Inbox" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__inbox__">Inbox</SelectItem>
+                    {(todoistProjects ?? []).map((project) => (
+                      <SelectItem key={project.id} value={project.id}>
+                        {project.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="todoist-task-due">Due date (optional)</Label>
+                <Input
+                  id="todoist-task-due"
+                  type="date"
+                  value={todoistDueDate}
+                  onChange={(e) => setTodoistDueDate(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => setTodoistDialogOpen(false)}
+              disabled={createTodoistTaskMutation.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                void handleCreateTodoistTask();
+              }}
+              disabled={
+                createTodoistTaskMutation.isPending ||
+                !todoistTaskContent.trim()
+              }
+            >
+              {createTodoistTaskMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating…
+                </>
+              ) : (
+                "Create task"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
