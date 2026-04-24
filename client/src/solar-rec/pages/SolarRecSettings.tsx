@@ -21,6 +21,7 @@ import {
 import { UserPlus, Shield, Trash2, Copy, Link } from "lucide-react";
 import { useSolarRecAuth } from "../hooks/useSolarRecAuth";
 import TeamPermissions from "../components/TeamPermissions";
+import PermissionPresets from "../components/PermissionPresets";
 
 // ---------------------------------------------------------------------------
 // User Management
@@ -449,6 +450,7 @@ export default function SolarRecSettings() {
       </div>
       <UserManagement />
       <TeamPermissions />
+      <PermissionPresets />
       <CredentialsManagement />
     </div>
   );

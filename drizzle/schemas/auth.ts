@@ -130,6 +130,38 @@ export type SolarRecUserModulePermission =
 export type InsertSolarRecUserModulePermission =
   typeof solarRecUserModulePermissions.$inferInsert;
 
+// Task 5.1 — named permission presets. A preset is a template of
+// (moduleKey -> permission level) that admins can reuse when onboarding
+// or editing teammates. Applying a preset overwrites the target user's
+// permission rows (see `replaceSolarRecUserModulePermissions`). Presets
+// themselves are NOT live bindings — editing a preset later does not
+// propagate to users who already had it applied.
+export const solarRecPermissionPresets = mysqlTable(
+  "solarRecPermissionPresets",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    description: varchar("description", { length: 500 }),
+    // JSON blob of Array<{moduleKey, permission}>. Validated against the
+    // canonical module registry on read/write.
+    permissionsJson: text("permissionsJson").notNull(),
+    createdBy: int("createdBy").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    scopeNameIdx: uniqueIndex(
+      "solar_rec_permission_presets_scope_name_idx"
+    ).on(table.scopeId, table.name),
+  })
+);
+
+export type SolarRecPermissionPreset =
+  typeof solarRecPermissionPresets.$inferSelect;
+export type InsertSolarRecPermissionPreset =
+  typeof solarRecPermissionPresets.$inferInsert;
+
 // Time-limited invite tokens for onboarding coworkers.
 
 export const solarRecInvites = mysqlTable(
