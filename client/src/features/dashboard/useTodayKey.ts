@@ -1,0 +1,53 @@
+import { useSyncExternalStore } from "react";
+
+function formatTodayKey(now: Date): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Schedule `callback` at the next local-midnight boundary, then again
+ * at each subsequent midnight until the returned unsubscribe fn is
+ * called. Exported for testing.
+ */
+export function subscribeMidnight(callback: () => void): () => void {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  function schedule() {
+    const now = new Date();
+    const next = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1,
+      0,
+      0,
+      0,
+      0,
+    );
+    timeoutId = setTimeout(() => {
+      callback();
+      schedule();
+    }, next.getTime() - now.getTime());
+  }
+
+  schedule();
+  return () => {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  };
+}
+
+function getSnapshot(): string {
+  return formatTodayKey(new Date());
+}
+
+/**
+ * Local YYYY-MM-DD key for "today". Re-renders the calling component
+ * exactly at midnight without needing any other state change, via
+ * useSyncExternalStore subscribed to a midnight setTimeout that
+ * re-arms itself.
+ */
+export function useTodayKey(): string {
+  return useSyncExternalStore(subscribeMidnight, getSnapshot, getSnapshot);
+}
