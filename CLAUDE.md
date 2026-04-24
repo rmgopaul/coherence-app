@@ -180,6 +180,42 @@ stale. Verify with `wc -l` / `grep` before acting on it. See
 `SESSIONS_POSTMORTEM.md` for examples of sessions derailed by
 stale references.
 
+### Contemplate practical execution before writing code
+
+`tsc --noEmit --incremental false` clean + tests passing means the
+code is syntactically correct. It does **not** mean the code works.
+Before you start typing a non-trivial change, spend 30 seconds
+walking the actual runtime:
+
+1. **Where does this run, and what intercepts events upstream?**
+   OS shortcuts beat browser beat page. Chrome captures
+   `Cmd+T` / `Cmd+W` / `Cmd+N` / `Cmd+Shift+T` at the browser level
+   — page scripts never see the keydown, and `preventDefault()`
+   cannot override them. If you need a keybind, add `Alt`/`Option`
+   so the combo isn't reserved. The Task 4.6 Cmd+T bug
+   shipped with clean tsc + tests because this check was skipped.
+2. **Does the dev environment have the dependencies this assumes?**
+   OAuth tokens (Google, WHOOP, Todoist), seeded rows,
+   `samsungSyncPayloads` history, solar vendor credentials — most
+   of these are absent in a fresh dev env. A feature that looks
+   "working" in preview because the page renders is not verified
+   if the underlying API call returned empty. Say so in the PR
+   description; don't write "tested manually" when you only got to
+   first paint.
+3. **Real cadence and quotas.** Gmail's per-user rate limit,
+   WHOOP's hourly cap, Samsung Health's Health Connect quota,
+   solar vendor budgets. A 60-second poll feels fine until you
+   multiply it by 17 vendors × 100 sites.
+4. **Deployment boundaries.** Multi-instance deploys, rolling
+   restarts, schema drift, feature flags defaulting off. Code that
+   assumes one process on a warm cache is brittle. `dailyJobClaims`
+   exists because the old in-process `lastRunDateKey` didn't
+   survive this question.
+
+When the answer to any of these is "I'm not sure," figure it out or
+flag it in the PR description. Shipping on "it compiles" is how
+user-facing bugs land.
+
 ---
 
 ## Project Structure
