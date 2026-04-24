@@ -23,6 +23,7 @@
 
 import { memo } from "react";
 import type { ReactNode } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
   BarChart,
@@ -523,6 +524,23 @@ export default memo(function DeliveryTrackerTab(props: DeliveryTrackerTabProps) 
           </CardContent>
         </Card>
       )}
+
+      <AskAiPanel
+        moduleKey="solar-rec-delivery-tracker"
+        title="Ask AI about delivery tracking"
+        contextGetter={() => ({
+          totals: {
+            contracts: deliveryTrackerData.contracts.length,
+            rows: deliveryTrackerData.rows.length,
+            totalSystems: deliveryTrackerData.contracts.reduce(
+              (a, c) => a + c.systems,
+              0
+            ),
+          },
+          contracts: deliveryTrackerData.contracts,
+          sampleRows: deliveryTrackerData.rows.slice(0, 20),
+        })}
+      />
     </div>
   );
 });

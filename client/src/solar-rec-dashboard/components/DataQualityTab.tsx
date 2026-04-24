@@ -12,6 +12,7 @@
  */
 
 import { memo, useMemo } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -236,6 +237,25 @@ export default memo(function DataQualityTab(props: DataQualityTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-data-quality"
+        title="Ask AI about data quality"
+        contextGetter={() => ({
+          freshness: dataQualityFreshness,
+          reconciliation: {
+            matchedPercent: dataQualityUnmatched.matchedPercent,
+            inScheduleNotMonitoringCount:
+              dataQualityUnmatched.inScheduleNotMonitoring.length,
+            inMonitoringNotScheduleCount:
+              dataQualityUnmatched.inMonitoringNotSchedule.length,
+            sampleInScheduleNotMonitoring:
+              dataQualityUnmatched.inScheduleNotMonitoring.slice(0, 30),
+            sampleInMonitoringNotSchedule:
+              dataQualityUnmatched.inMonitoringNotSchedule.slice(0, 30),
+          },
+        })}
+      />
     </div>
   );
 });
