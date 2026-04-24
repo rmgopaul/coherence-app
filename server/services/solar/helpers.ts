@@ -65,7 +65,7 @@ export function toUtcEpochSeconds(dateIso: string, endOfDay: boolean): number {
 }
 
 // ---------------------------------------------------------------------------
-// Date formatting & arithmetic
+// Date formatting & arithmetic.
 // ---------------------------------------------------------------------------
 
 export function formatIsoDate(date: Date): string {
