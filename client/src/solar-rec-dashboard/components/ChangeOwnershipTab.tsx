@@ -17,6 +17,7 @@
  */
 
 import { memo, useCallback, useDeferredValue, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
   Card,
@@ -483,6 +484,44 @@ export default memo(function ChangeOwnershipTab(props: ChangeOwnershipTabProps) 
           </Table>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-change-ownership"
+        title="Ask AI about change-of-ownership"
+        contextGetter={() => ({
+          summary: {
+            total: changeOwnershipSummary.total,
+            byStatus: changeOwnershipSummary.counts.map((c) => ({
+              status: c.status,
+              count: c.count,
+            })),
+          },
+          filters: {
+            statusFilter: changeOwnershipFilter,
+            search: deferredChangeOwnershipSearch || null,
+          },
+          filteredCount: filteredChangeOwnershipRows.length,
+          sampleFlaggedSystems: filteredChangeOwnershipRows
+            .slice(0, 20)
+            .map((s) => ({
+              systemName: s.systemName,
+              trackingSystemRefId: s.trackingSystemRefId,
+              contractValue: s.totalContractAmount,
+              installedKwAc: s.installedKwAc,
+              contractedDate: s.contractedDate
+                ? s.contractedDate.toISOString().slice(0, 10)
+                : null,
+              zillowStatus: s.zillowStatus,
+              zillowSoldDate: s.zillowSoldDate
+                ? s.zillowSoldDate.toISOString().slice(0, 10)
+                : null,
+              changeOwnershipStatus: s.changeOwnershipStatus,
+              isReporting: s.isReporting,
+              isTerminated: s.isTerminated,
+              isTransferred: s.isTransferred,
+            })),
+        })}
+      />
     </div>
   );
 });
