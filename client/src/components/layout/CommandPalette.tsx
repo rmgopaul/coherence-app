@@ -25,10 +25,15 @@ import {
   Moon,
   Loader2,
   HardDrive,
+  Pin,
+  FilePlus,
+  Crown,
   type LucideIcon,
 } from "lucide-react";
 import { useTheme } from "@/contexts/ThemeContext";
 import { trpc } from "@/lib/trpc";
+import { formatTodayKey } from "@shared/dateKey";
+import { toast } from "sonner";
 
 type CommandRoute = {
   label: string;
@@ -97,6 +102,20 @@ function searchResultHref(item: {
   }
 }
 
+/**
+ * Which dock `source` best fits a given search result type. Drives
+ * icon + enrichment behavior in the DropDock; unknown types fall
+ * back to the generic `url` source.
+ */
+function dockSourceForResult(
+  type: string
+): "gmail" | "gcal" | "gsheet" | "todoist" | "url" {
+  if (type === "task") return "todoist";
+  if (type === "calendar_event") return "gcal";
+  if (type === "drive_file") return "gsheet";
+  return "url";
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -152,6 +171,71 @@ export function CommandPalette() {
   const navigate = (href: string) => {
     setOpen(false);
     setLocation(href);
+  };
+
+  /* ------------------------------------------------------------------ */
+  /*  Secondary-action mutations (Task 4.3b)                             */
+  /* ------------------------------------------------------------------ */
+
+  const dockAddMutation = trpc.dock.add.useMutation();
+  const notesCreateMutation = trpc.notes.create.useMutation();
+  const kingPinMutation = trpc.kingOfDay.pin.useMutation();
+
+  const handleDock = async (item: {
+    type: string;
+    id: string;
+    title: string;
+    url: string | null;
+  }) => {
+    const url = searchResultHref(item);
+    try {
+      await dockAddMutation.mutateAsync({
+        source: dockSourceForResult(item.type),
+        url,
+        title: item.title,
+      });
+      toast.success("Added to Drop Dock");
+    } catch (error) {
+      toast.error(
+        `Failed to dock: ${error instanceof Error ? error.message : "unknown error"}`
+      );
+    }
+  };
+
+  const handleCreateNote = async (item: {
+    type: string;
+    id: string;
+    title: string;
+  }) => {
+    try {
+      const result = await notesCreateMutation.mutateAsync({
+        title: item.title,
+        content: "",
+      });
+      toast.success("Note created");
+      setOpen(false);
+      setLocation(`/notes?noteId=${encodeURIComponent(result.noteId)}`);
+    } catch (error) {
+      toast.error(
+        `Failed to create note: ${error instanceof Error ? error.message : "unknown error"}`
+      );
+    }
+  };
+
+  const handlePinKing = async (item: { type: string; id: string; title: string }) => {
+    try {
+      await kingPinMutation.mutateAsync({
+        dateKey: formatTodayKey(),
+        title: item.title,
+        taskId: item.type === "task" ? item.id : undefined,
+        eventId: item.type === "calendar_event" ? item.id : undefined,
+      });
+      toast.success("Pinned as King of the Day");
+    } catch (error) {
+      toast.error(
+        `Failed to pin: ${error instanceof Error ? error.message : "unknown error"}`
+      );
+    }
   };
 
   return (
@@ -234,15 +318,59 @@ export function CommandPalette() {
                       key={`${item.type}:${item.id}`}
                       value={`${item.title} ${item.subtitle ?? ""} ${item.type}`}
                       onSelect={() => navigate(searchResultHref(item))}
+                      className="group"
                     >
                       <Icon className="mr-2 size-4" />
-                      <div className="flex min-w-0 flex-col">
+                      <div className="flex min-w-0 flex-col flex-1">
                         <span className="truncate">{item.title}</span>
                         {item.subtitle ? (
                           <span className="truncate text-xs text-slate-500">
                             {item.subtitle}
                           </span>
                         ) : null}
+                      </div>
+                      <div
+                        className="ml-2 flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-data-[selected=true]:opacity-100 focus-within:opacity-100"
+                        // Buttons inside CommandItem would otherwise
+                        // bubble up and fire onSelect as well.
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          aria-label="Add to Drop Dock"
+                          title="Add to Drop Dock"
+                          className="rounded p-1 hover:bg-accent hover:text-accent-foreground"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleDock(item);
+                          }}
+                        >
+                          <Pin className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Create note from this"
+                          title="Create note from this"
+                          className="rounded p-1 hover:bg-accent hover:text-accent-foreground"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleCreateNote(item);
+                          }}
+                        >
+                          <FilePlus className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Pin as King of the Day"
+                          title="Pin as King of the Day"
+                          className="rounded p-1 hover:bg-accent hover:text-accent-foreground"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handlePinKing(item);
+                          }}
+                        >
+                          <Crown className="size-3.5" />
+                        </button>
                       </div>
                     </CommandItem>
                   );
