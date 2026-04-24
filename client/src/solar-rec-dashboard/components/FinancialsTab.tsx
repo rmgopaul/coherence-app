@@ -25,6 +25,7 @@
  */
 
 import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -1521,6 +1522,40 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
           </CardContent>
         </Card>
       )}
+
+      <AskAiPanel
+        moduleKey="solar-rec-financials"
+        title="Ask AI about financials"
+        contextGetter={() => ({
+          profitSummary: {
+            totalProfit: financialProfitData.totalProfit,
+            avgProfit: financialProfitData.avgProfit,
+            systemsWithData: financialProfitData.systemsWithData,
+            totalCollateralization:
+              financialProfitData.totalCollateralization,
+            totalUtilityCollateral:
+              financialProfitData.totalUtilityCollateral,
+            totalAdditionalCollateral:
+              financialProfitData.totalAdditionalCollateral,
+            totalCcAuth: financialProfitData.totalCcAuth,
+          },
+          revenueAtRisk: {
+            total: financialRevenueAtRisk.total,
+            percent: financialRevenueAtRisk.percent,
+            byType: financialRevenueAtRisk.byType,
+            topAtRiskSystems: financialRevenueAtRisk.systems.slice(0, 20),
+          },
+          profitDebug: {
+            queryStatus: financialProfitDebug.queryStatus,
+            queryEnabled: financialProfitDebug.queryEnabled,
+            queryErrorMessage: financialProfitDebug.queryErrorMessage,
+            counts: financialProfitDebug.counts,
+            chain: financialProfitDebug.chain,
+          },
+          flaggedCount: financialFlaggedCount,
+          sampleFlaggedRows: filteredFinancialRows.slice(0, 20),
+        })}
+      />
     </div>
   );
 });

@@ -9,6 +9,7 @@
  */
 
 import { memo, useMemo } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
   BarChart,
@@ -358,6 +359,16 @@ export default memo(function ComparisonsTab(props: ComparisonsTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-comparisons"
+        title="Ask AI about installer + platform comparisons"
+        contextGetter={() => ({
+          totals: { systems: systems.length },
+          installers: comparisonInstallers.slice(0, 30),
+          platforms: comparisonPlatforms.slice(0, 30),
+        })}
+      />
     </div>
   );
 });
