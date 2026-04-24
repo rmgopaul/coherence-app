@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -677,6 +678,67 @@ export default function ZendeskTicketMetrics() {
             </div>
           </CardContent>
         </Card>
+
+        <AskAiPanel
+          moduleKey="zendesk-metrics"
+          title="Ask AI about Zendesk metrics"
+          contextGetter={() => ({
+            connection: {
+              connected: isConnected,
+              subdomain: statusQuery.data?.subdomain ?? null,
+              emailHost:
+                emailInput && emailInput.includes("@")
+                  ? emailInput.split("@")[1]
+                  : null,
+              trackedUsersCount: (statusQuery.data?.trackedUsers ?? []).length,
+              trackedUsersOnly,
+            },
+            parameters: {
+              maxTickets: Number(maxTicketsInput) || null,
+              periodPreset,
+              periodStartDate: periodStartDateInput,
+              periodEndDate: periodEndDateInput,
+            },
+            metrics: metrics
+              ? {
+                  ticketCount: metrics.ticketCount,
+                  maxTickets: metrics.maxTickets,
+                  periodStartDate: metrics.periodStartDate,
+                  periodEndDate: metrics.periodEndDate,
+                  generatedAt: metrics.generatedAt,
+                  resolverActionCount: metrics.resolverActionCount,
+                  truncated: metrics.truncated,
+                  resolverTruncated: metrics.resolverTruncated,
+                  totals: metrics.totals,
+                  resolverTotals: metrics.resolverTotals,
+                  userCount: metrics.users?.length ?? 0,
+                  resolverUserCount: metrics.resolverUsers?.length ?? 0,
+                }
+              : null,
+            sampleUsers: (metrics?.users ?? []).slice(0, 20).map((u) => ({
+              name: u.name,
+              email: u.email,
+              role: u.role,
+              assigned: u.assigned,
+              new: u.new,
+              open: u.open,
+              pending: u.pending,
+              hold: u.hold,
+              solved: u.solved,
+              closed: u.closed,
+            })),
+            sampleResolverUsers: (metrics?.resolverUsers ?? [])
+              .slice(0, 20)
+              .map((u) => ({
+                name: u.name,
+                email: u.email,
+                role: u.role,
+                solvedActions: u.solvedActions,
+                closedActions: u.closedActions,
+                resolvedActions: u.resolvedActions,
+              })),
+          })}
+        />
       </main>
     </div>
   );

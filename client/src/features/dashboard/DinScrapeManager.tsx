@@ -1,5 +1,6 @@
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -565,6 +566,54 @@ export default function DinScrapeManager() {
           </CardContent>
         </Card>
       )}
+
+      <AskAiPanel
+        moduleKey="din-scrape-manager"
+        title="Ask AI about DIN scraping"
+        contextGetter={() => {
+          const pendingInputCount = csgIdInput
+            .split(/[\n,\t]+/)
+            .filter((s) => s.trim()).length;
+          return {
+            pendingInputCount,
+            activeJobId,
+            viewingJobId,
+            viewingTab,
+            job: job
+              ? {
+                  id: job.id,
+                  status: job.status,
+                  totalSites: job.totalSites,
+                  processed: job.processed,
+                  successCount: job.successCount,
+                  failureCount: job.failureCount,
+                  remaining: job.remaining,
+                  percent: job.percent,
+                  currentCsgId: job.currentCsgId,
+                }
+              : null,
+            eta: eta ? { etaMs: eta.etaMs, rate: eta.rate } : null,
+            sampleDins:
+              viewingTab === "dins"
+                ? (dinsQuery.data?.rows ?? []).slice(0, 20)
+                : [],
+            sampleSites:
+              viewingTab === "sites"
+                ? (resultsQuery.data?.rows ?? []).slice(0, 20).map((r) => ({
+                    csgId: r.csgId,
+                    inverterPhotoCount: r.inverterPhotoCount,
+                    meterPhotoCount: r.meterPhotoCount,
+                    dinCount: r.dinCount,
+                    error: r.error,
+                  }))
+                : [],
+            totals: {
+              dins: dinsQuery.data?.total ?? 0,
+              sites: resultsQuery.data?.total ?? 0,
+            },
+          };
+        }}
+      />
     </div>
   );
 }
