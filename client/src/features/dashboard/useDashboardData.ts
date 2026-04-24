@@ -63,7 +63,8 @@ export function useDashboardData() {
   );
 
   const { data: whoopSummary } = trpc.whoop.getSummary.useQuery(undefined, {
-    refetchInterval: FIVE_MIN,
+    staleTime: 20 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
   });
 
   const { data: marketData } = trpc.marketDashboard.getMarketData.useQuery(

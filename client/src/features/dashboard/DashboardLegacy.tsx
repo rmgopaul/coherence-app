@@ -497,8 +497,8 @@ export default function Dashboard() {
   } = trpc.whoop.getSummary.useQuery(undefined, {
     enabled: !!user && hasWhoop,
     retry: false,
-    staleTime: 0,
-    refetchInterval: 300_000,
+    staleTime: 20 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
     refetchOnWindowFocus: true,
   });
 

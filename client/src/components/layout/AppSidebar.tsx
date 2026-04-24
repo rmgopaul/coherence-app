@@ -155,7 +155,8 @@ export function AppSidebar() {
     { staleTime: 60_000, refetchOnWindowFocus: false }
   );
   const { data: whoopSummary } = trpc.whoop.getSummary.useQuery(undefined, {
-    staleTime: 5 * 60_000,
+    staleTime: 20 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
     refetchOnWindowFocus: false,
   });
   const { data: conversations } = trpc.conversations.list.useQuery(undefined, {
