@@ -12,6 +12,7 @@
     "test": "vitest run",
     "db:push": "drizzle-kit generate && drizzle-kit migrate",
     "scheduleb:reconcile": "tsx server/scripts/reconcileScheduleBImportState.ts",
+    "solarrec:migrate-scope": "tsx server/scripts/migrateSolarRecDashboardToScope.ts",
     "prepare": "if [ -d .git ]; then git config core.hooksPath git-hooks; fi"
   },
   "dependencies": {
