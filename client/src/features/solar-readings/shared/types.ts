@@ -3,6 +3,17 @@
  *
  * BulkSnapshotRow uses a generic `entityId` field instead of
  * provider-specific names (meterNumber, plantId, stationId, etc.).
+ *
+ * Bulk data types (Task 4.7 migration scaffold)
+ * ---------------------------------------------
+ * Most vendors only produce "production" snapshots. A few expose
+ * additional data kinds that the hand-rolled pages currently render
+ * as toggles: SolarEdge has "meters" and "inverters"; Fronius has
+ * "devices". A vendor config lists the data types it supports via
+ * `MeterReadsProviderConfig.bulkDataTypes`; the shared page renders
+ * a segmented control when more than one is listed and omits it
+ * otherwise. Rows carry optional per-type columns below so
+ * production-only vendors don't pay any shape cost.
  */
 
 export type BulkStatusFilter =
@@ -21,15 +32,48 @@ export type BulkSortKey =
   | "previousMonth"
   | "last12Months"
   | "weekly"
-  | "daily";
+  | "daily"
+  | "meterCount"
+  | "productionMeters"
+  | "consumptionMeters"
+  | "inverterCount"
+  | "invertersWithTelemetry"
+  | "inverterFailures"
+  | "inverterLatestPower"
+  | "inverterLatestEnergy"
+  | "deviceCount";
 
 export type BulkConnectionScope = "active" | "all";
+
+/**
+ * Canonical bulk data type identifier. Vendors extend the union via
+ * their config; consumers of `BulkSnapshotRow` should treat
+ * `dataType` as an opaque string past this list.
+ */
+export type BulkDataTypeId =
+  | "production"
+  | "meters"
+  | "inverters"
+  | "devices";
+
+export type BulkDataTypeOption = {
+  value: BulkDataTypeId;
+  label: string;
+};
 
 export type BulkSnapshotRow = {
   entityId: string;
   name?: string | null;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
+  /**
+   * Which data type this row represents. Optional for
+   * backward-compat; production-only vendors can omit it and the
+   * shared page treats the row as production.
+   */
+  dataType?: BulkDataTypeId;
+
+  // -- production columns (legacy default) --
   lifetimeKwh?: number | null;
   hourlyProductionKwh?: number | null;
   monthlyProductionKwh?: number | null;
@@ -45,6 +89,22 @@ export type BulkSnapshotRow = {
   previousCalendarMonthStartDate?: string;
   previousCalendarMonthEndDate?: string;
   last12MonthsStartDate?: string;
+
+  // -- meters columns (SolarEdge) --
+  meterCount?: number | null;
+  productionMeters?: number | null;
+  consumptionMeters?: number | null;
+
+  // -- inverters columns (SolarEdge) --
+  inverterCount?: number | null;
+  invertersWithTelemetry?: number | null;
+  inverterFailures?: number | null;
+  inverterLatestPowerKw?: number | null;
+  inverterLatestEnergyKwh?: number | null;
+
+  // -- devices columns (Fronius) --
+  deviceCount?: number | null;
+
   error?: string | null;
   matchedConnectionId?: string | null;
   matchedConnectionName?: string | null;
@@ -218,6 +278,32 @@ export type MeterReadsProviderConfig = {
     mutateAsync: (input: any) => Promise<unknown>;
     isPending: boolean;
   };
+
+  /**
+   * Vendors that expose more than one bulk data type list them here
+   * (e.g. SolarEdge: production/meters/inverters; Fronius:
+   * production/devices). Omit or leave empty/single-entry for the
+   * production-only default — the shared page hides the data-type
+   * selector in that case. The first entry is the default selection.
+   */
+  bulkDataTypes?: BulkDataTypeOption[];
+
+  /**
+   * Per-data-type bulk snapshot mutations. Only consulted when
+   * `bulkDataTypes` has more than one entry; the shared page picks
+   * the mutation for the currently-selected data type. For the
+   * production-only default, `useProductionSnapshotMutation` above
+   * is still the source of truth.
+   */
+  useBulkSnapshotMutationByType?: Partial<
+    Record<
+      BulkDataTypeId,
+      () => {
+        mutateAsync: (input: any) => Promise<unknown>;
+        isPending: boolean;
+      }
+    >
+  >;
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   /**
