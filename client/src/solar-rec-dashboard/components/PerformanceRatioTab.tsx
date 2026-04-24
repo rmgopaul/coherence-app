@@ -22,6 +22,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Upload } from "lucide-react";
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Card,
   CardContent,
@@ -2117,6 +2118,41 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
           </Card>
         </>
       )}
+
+      <AskAiPanel
+        moduleKey="solar-rec-performance-ratio"
+        title="Ask AI about Performance Ratio"
+        contextGetter={() => ({
+          inputs: {
+            convertedReadsProvided: Boolean(convertedReads),
+            annualProductionEstimatesProvided: Boolean(
+              annualProductionEstimates
+            ),
+            generatorDetailsProvided: Boolean(generatorDetails),
+            convertedReadsLabel,
+            annualProductionEstimatesLabel,
+          },
+          allRatioSummary: performanceRatioSummary,
+          compliantRatioSummary: compliantPerformanceRatioSummary,
+          // Ship a small sample of rows — top 20 by performance ratio
+          // so the model sees representative data without paying for
+          // thousands of rows per ask.
+          sampleCompliantRows: compliantPerformanceRatioRows
+            .slice(0, 20)
+            .map((r) => ({
+              monitoring: r.monitoring,
+              monitoringSystemId: r.monitoringSystemId,
+              systemName: r.systemName,
+              performanceRatioPercent: r.performanceRatioPercent,
+              productionDeltaWh: r.productionDeltaWh,
+              expectedProductionWh: r.expectedProductionWh,
+              compliantSource: r.compliantSource,
+              readDate: r.readDate
+                ? new Date(r.readDate).toISOString().slice(0, 10)
+                : null,
+            })),
+        })}
+      />
     </div>
   );
 });
