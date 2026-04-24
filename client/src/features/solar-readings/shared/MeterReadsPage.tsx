@@ -59,6 +59,7 @@ import {
 
 import type {
   BulkConnectionScope,
+  BulkDataTypeId,
   BulkSnapshotRow,
   BulkSortKey,
   BulkStatusFilter,
@@ -76,6 +77,19 @@ const BULK_ROWS_RENDER_INTERVAL_ALL_PROFILES = 4;
 const BULK_PAGE_SIZE = 25;
 
 const NUMBER_FORMATTER = new Intl.NumberFormat("en-US");
+
+/**
+ * Placeholder mutation shape for data types a vendor doesn't implement.
+ * Not a React hook — just a function returning a stable object — so
+ * invoking it in place of a missing hook doesn't change React's hook
+ * order. Real vendor hooks that ARE provided get called in a stable
+ * slot alongside this; configs are expected to be module-level consts.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const noopMutation = (): { mutateAsync: (input: any) => Promise<unknown>; isPending: boolean } => ({
+  mutateAsync: async () => ({}),
+  isPending: false,
+});
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -144,6 +158,13 @@ export default function MeterReadsPage({
   const [bulkPage, setBulkPage] = useState(1);
   const bulkCancelRef = useRef(false);
 
+  const defaultDataType: BulkDataTypeId =
+    config.bulkDataTypes?.[0]?.value ?? "production";
+  const [selectedDataType, setSelectedDataType] =
+    useState<BulkDataTypeId>(defaultDataType);
+  const hasMultipleDataTypes =
+    (config.bulkDataTypes?.length ?? 0) > 1;
+
   /* --- tRPC hooks (from config) --- */
   const statusQuery = config.useStatusQuery(!!user);
 
@@ -159,6 +180,36 @@ export default function MeterReadsPage({
   const disconnectMutation = config.useDisconnectMutation();
   const productionSnapshotMutation =
     config.useProductionSnapshotMutation();
+
+  // Per-data-type mutation hooks. Call all three alternates
+  // unconditionally every render, with a noop fallback so hook order
+  // stays stable regardless of which types this vendor supports.
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const metersSnapshotMutation = (
+    config.useBulkSnapshotMutationByType?.meters ?? noopMutation
+  )();
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const invertersSnapshotMutation = (
+    config.useBulkSnapshotMutationByType?.inverters ?? noopMutation
+  )();
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const devicesSnapshotMutation = (
+    config.useBulkSnapshotMutationByType?.devices ?? noopMutation
+  )();
+
+  const mutationByDataType: Record<
+    BulkDataTypeId,
+    typeof productionSnapshotMutation
+  > = {
+    production: productionSnapshotMutation,
+    meters: metersSnapshotMutation as typeof productionSnapshotMutation,
+    inverters:
+      invertersSnapshotMutation as typeof productionSnapshotMutation,
+    devices:
+      devicesSnapshotMutation as typeof productionSnapshotMutation,
+  };
+  const activeSnapshotMutation = mutationByDataType[selectedDataType];
+
   const pushConvertedReadsSource =
     trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
 
@@ -368,8 +419,12 @@ export default function MeterReadsPage({
         );
         return;
       }
-      void runAction("Production Snapshot", () =>
-        productionSnapshotMutation.mutateAsync({
+      const operationLabel =
+        config.bulkDataTypes?.find(
+          (opt) => opt.value === selectedDataType
+        )?.label ?? "Production Snapshot";
+      void runAction(operationLabel, () =>
+        activeSnapshotMutation.mutateAsync({
           [config.idFieldName]: selectedEntityId,
           anchorDate: bulkAnchorDate || undefined,
         })
@@ -541,7 +596,7 @@ export default function MeterReadsPage({
           if (bulkCancelRef.current) break;
           try {
             const raw =
-              await productionSnapshotMutation.mutateAsync(
+              await activeSnapshotMutation.mutateAsync(
                 {
                   [config.idFieldName]: id,
                   anchorDate: bulkAnchorDate,
@@ -553,6 +608,7 @@ export default function MeterReadsPage({
             // Normalize the provider-specific ID field to entityId
             const row: BulkSnapshotRow = {
               entityId: id,
+              dataType: selectedDataType,
               name:
                 (snapshotRow.name as string | null) ??
                 null,
@@ -628,6 +684,55 @@ export default function MeterReadsPage({
                 snapshotRow.last12MonthsStartDate as
                   | string
                   | undefined,
+
+              // Non-production columns (populated only for the
+              // matching data type; all are optional on BulkSnapshotRow).
+              meterCount:
+                snapshotRow.meterCount as
+                  | number
+                  | null
+                  | undefined,
+              productionMeters:
+                snapshotRow.productionMeters as
+                  | number
+                  | null
+                  | undefined,
+              consumptionMeters:
+                snapshotRow.consumptionMeters as
+                  | number
+                  | null
+                  | undefined,
+              inverterCount:
+                snapshotRow.inverterCount as
+                  | number
+                  | null
+                  | undefined,
+              invertersWithTelemetry:
+                snapshotRow.invertersWithTelemetry as
+                  | number
+                  | null
+                  | undefined,
+              inverterFailures:
+                snapshotRow.inverterFailures as
+                  | number
+                  | null
+                  | undefined,
+              inverterLatestPowerKw:
+                snapshotRow.inverterLatestPowerKw as
+                  | number
+                  | null
+                  | undefined,
+              inverterLatestEnergyKwh:
+                snapshotRow.inverterLatestEnergyKwh as
+                  | number
+                  | null
+                  | undefined,
+              deviceCount:
+                snapshotRow.deviceCount as
+                  | number
+                  | null
+                  | undefined,
+
               matchedConnectionId:
                 (snapshotRow.matchedConnectionId as
                   | string
@@ -683,6 +788,7 @@ export default function MeterReadsPage({
                 .includes("404");
             collectedRows.push({
               entityId: id,
+              dataType: selectedDataType,
               name: null,
               status: isNotFound
                 ? "Not Found"
@@ -723,67 +829,79 @@ export default function MeterReadsPage({
         await waitForNextFrame();
       }
 
+      const runLabel =
+        config.bulkDataTypes?.find(
+          (opt) => opt.value === selectedDataType
+        )?.label ?? "production snapshots";
       if (bulkCancelRef.current) {
         toast.message(
-          `Stopped production snapshots after ${NUMBER_FORMATTER.format(processed)} of ${NUMBER_FORMATTER.format(bulkEntityIds.length)} ${config.idFieldLabelPlural}.`
+          `Stopped ${runLabel.toLowerCase()} after ${NUMBER_FORMATTER.format(processed)} of ${NUMBER_FORMATTER.format(bulkEntityIds.length)} ${config.idFieldLabelPlural}.`
         );
       } else {
         toast.success(
-          `Completed production snapshots for ${NUMBER_FORMATTER.format(processed)} ${config.idFieldLabelPlural}${bulkConnectionScope === "all" ? " using all saved API profiles" : ""}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
+          `Completed ${runLabel.toLowerCase()} for ${NUMBER_FORMATTER.format(processed)} ${config.idFieldLabelPlural}${bulkConnectionScope === "all" ? " using all saved API profiles" : ""}. Found ${NUMBER_FORMATTER.format(found)}, not found ${NUMBER_FORMATTER.format(notFound)}, errors ${NUMBER_FORMATTER.format(errored)}.`
         );
 
-        try {
-          const readRows = collectedRows
-            .filter(
-              (row) =>
-                row.found &&
-                row.lifetimeKwh != null &&
-                row.anchorDate
-            )
-            .map((row) =>
-              buildConvertedReadRow(
-                config.convertedReadsMonitoring,
-                row.entityId,
-                row.name ?? "",
-                row.lifetimeKwh!,
-                row.anchorDate!
+        // Auto-push to Converted Reads is production-only (only
+        // production snapshots produce a lifetime-kWh reading).
+        if (selectedDataType === "production") {
+          try {
+            const readRows = collectedRows
+              .filter(
+                (row) =>
+                  row.found &&
+                  row.lifetimeKwh != null &&
+                  row.anchorDate
               )
-            );
-          if (readRows.length === 0) {
-            toast.message(
-              `No ${config.providerName} rows to push to Converted Reads — ${NUMBER_FORMATTER.format(found)} sites returned but none had a lifetime kWh reading.`
-            );
-          } else {
-            const result =
-              await pushConvertedReadsToRecDashboard(
-                (input) =>
-                  pushConvertedReadsSource.mutateAsync(input),
-                readRows,
-                config.convertedReadsMonitoring
+              .map((row) =>
+                buildConvertedReadRow(
+                  config.convertedReadsMonitoring,
+                  row.entityId,
+                  row.name ?? "",
+                  row.lifetimeKwh!,
+                  row.anchorDate!
+                )
               );
-            if (result.pushed > 0) {
-              toast.success(
-                `Pushed ${NUMBER_FORMATTER.format(result.pushed)} ${config.providerName} rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`
-              );
-            } else if (result.skipped > 0) {
+            if (readRows.length === 0) {
               toast.message(
-                `All ${NUMBER_FORMATTER.format(result.skipped)} ${config.providerName} Converted Reads rows already exist. No new rows pushed.`
+                `No ${config.providerName} rows to push to Converted Reads — ${NUMBER_FORMATTER.format(found)} sites returned but none had a lifetime kWh reading.`
               );
             } else {
-              toast.message(
-                `${config.providerName} Converted Reads push returned 0 rows.`
-              );
+              const result =
+                await pushConvertedReadsToRecDashboard(
+                  (input) =>
+                    pushConvertedReadsSource.mutateAsync(input),
+                  readRows,
+                  config.convertedReadsMonitoring
+                );
+              if (result.pushed > 0) {
+                toast.success(
+                  `Pushed ${NUMBER_FORMATTER.format(result.pushed)} ${config.providerName} rows to Solar REC Dashboard Converted Reads.${result.skipped > 0 ? ` ${NUMBER_FORMATTER.format(result.skipped)} duplicates skipped.` : ""}`
+                );
+              } else if (result.skipped > 0) {
+                toast.message(
+                  `All ${NUMBER_FORMATTER.format(result.skipped)} ${config.providerName} Converted Reads rows already exist. No new rows pushed.`
+                );
+              } else {
+                toast.message(
+                  `${config.providerName} Converted Reads push returned 0 rows.`
+                );
+              }
             }
+          } catch (pushError) {
+            toast.error(
+              `Failed to push Converted Reads: ${toErrorMessage(pushError)}`
+            );
           }
-        } catch (pushError) {
-          toast.error(
-            `Failed to push Converted Reads: ${toErrorMessage(pushError)}`
-          );
         }
       }
     } catch (error) {
+      const failLabel =
+        config.bulkDataTypes?.find(
+          (opt) => opt.value === selectedDataType
+        )?.label ?? "production snapshots";
       toast.error(
-        `Bulk production snapshots failed: ${toErrorMessage(error)}`
+        `Bulk ${failLabel.toLowerCase()} failed: ${toErrorMessage(error)}`
       );
     } finally {
       setBulkIsRunning(false);
@@ -880,6 +998,51 @@ export default function MeterReadsPage({
               a.dailyProductionKwh
             )
           );
+        case "meterCount":
+          return (
+            toComparableNumber(b.meterCount) -
+            toComparableNumber(a.meterCount)
+          );
+        case "productionMeters":
+          return (
+            toComparableNumber(b.productionMeters) -
+            toComparableNumber(a.productionMeters)
+          );
+        case "consumptionMeters":
+          return (
+            toComparableNumber(b.consumptionMeters) -
+            toComparableNumber(a.consumptionMeters)
+          );
+        case "inverterCount":
+          return (
+            toComparableNumber(b.inverterCount) -
+            toComparableNumber(a.inverterCount)
+          );
+        case "invertersWithTelemetry":
+          return (
+            toComparableNumber(b.invertersWithTelemetry) -
+            toComparableNumber(a.invertersWithTelemetry)
+          );
+        case "inverterFailures":
+          return (
+            toComparableNumber(b.inverterFailures) -
+            toComparableNumber(a.inverterFailures)
+          );
+        case "inverterLatestPower":
+          return (
+            toComparableNumber(b.inverterLatestPowerKw) -
+            toComparableNumber(a.inverterLatestPowerKw)
+          );
+        case "inverterLatestEnergy":
+          return (
+            toComparableNumber(b.inverterLatestEnergyKwh) -
+            toComparableNumber(a.inverterLatestEnergyKwh)
+          );
+        case "deviceCount":
+          return (
+            toComparableNumber(b.deviceCount) -
+            toComparableNumber(a.deviceCount)
+          );
         case "entityId":
         default:
           return a.entityId.localeCompare(
@@ -920,27 +1083,333 @@ export default function MeterReadsPage({
   const bulkSortOptions: Array<{
     value: BulkSortKey;
     label: string;
-  }> = [
-    {
-      value: "entityId",
-      label: `${config.idFieldLabel} (A-Z)`,
-    },
-    { value: "status", label: "Status" },
-    { value: "lifetime", label: "Lifetime (High-Low)" },
-    { value: "hourly", label: "Hourly (High-Low)" },
-    { value: "monthly", label: "Monthly (High-Low)" },
-    { value: "mtd", label: "MTD (High-Low)" },
-    {
-      value: "previousMonth",
-      label: "Previous Month (High-Low)",
-    },
-    {
-      value: "last12Months",
-      label: "Last 12 Months (High-Low)",
-    },
-    { value: "weekly", label: "Weekly (High-Low)" },
-    { value: "daily", label: "Daily (High-Low)" },
-  ];
+  }> = useMemo(() => {
+    const commonStart: Array<{
+      value: BulkSortKey;
+      label: string;
+    }> = [
+      {
+        value: "entityId",
+        label: `${config.idFieldLabel} (A-Z)`,
+      },
+      { value: "status", label: "Status" },
+    ];
+    if (selectedDataType === "meters") {
+      return [
+        ...commonStart,
+        { value: "meterCount", label: "Meter Count (High-Low)" },
+        {
+          value: "productionMeters",
+          label: "Production Meters (High-Low)",
+        },
+        {
+          value: "consumptionMeters",
+          label: "Consumption Meters (High-Low)",
+        },
+      ];
+    }
+    if (selectedDataType === "inverters") {
+      return [
+        ...commonStart,
+        {
+          value: "inverterCount",
+          label: "Inverter Count (High-Low)",
+        },
+        {
+          value: "invertersWithTelemetry",
+          label: "With Telemetry (High-Low)",
+        },
+        {
+          value: "inverterFailures",
+          label: "Failures (High-Low)",
+        },
+        {
+          value: "inverterLatestPower",
+          label: "Latest Power (High-Low)",
+        },
+        {
+          value: "inverterLatestEnergy",
+          label: "Latest Energy (High-Low)",
+        },
+      ];
+    }
+    if (selectedDataType === "devices") {
+      return [
+        ...commonStart,
+        { value: "deviceCount", label: "Device Count (High-Low)" },
+      ];
+    }
+    // production (default)
+    return [
+      ...commonStart,
+      { value: "lifetime", label: "Lifetime (High-Low)" },
+      { value: "hourly", label: "Hourly (High-Low)" },
+      { value: "monthly", label: "Monthly (High-Low)" },
+      { value: "mtd", label: "MTD (High-Low)" },
+      {
+        value: "previousMonth",
+        label: "Previous Month (High-Low)",
+      },
+      {
+        value: "last12Months",
+        label: "Last 12 Months (High-Low)",
+      },
+      { value: "weekly", label: "Weekly (High-Low)" },
+      { value: "daily", label: "Daily (High-Low)" },
+    ];
+  }, [selectedDataType, config.idFieldLabel]);
+
+  // If the sort key isn't valid for the active data type, fall back
+  // to entityId so the Select doesn't show a stale selection.
+  useEffect(() => {
+    const valid = bulkSortOptions.some((opt) => opt.value === bulkSort);
+    if (!valid) setBulkSort("entityId");
+  }, [bulkSortOptions, bulkSort]);
+
+  /*
+   * Per-data-type columns used by both the table and CSV exporter.
+   * `tableLabel` shown in the table header; `csvHeader` is the
+   * snake_case CSV column. Table rendering and CSV extraction share a
+   * single source of truth so they can't drift.
+   */
+  type BulkColumn = {
+    key: string;
+    tableLabel: string;
+    tableRender: (row: BulkSnapshotRow) => React.ReactNode;
+    csvHeader: string;
+    csvValue: (
+      row: BulkSnapshotRow
+    ) => string | number | boolean | null | undefined;
+    tableOnly?: boolean;
+    csvOnly?: boolean;
+  };
+
+  const bulkDataColumns: BulkColumn[] = useMemo(() => {
+    if (selectedDataType === "meters") {
+      return [
+        {
+          key: "meterCount",
+          tableLabel: "Meters",
+          tableRender: (row) =>
+            row.meterCount == null
+              ? ""
+              : NUMBER_FORMATTER.format(row.meterCount),
+          csvHeader: "meter_count",
+          csvValue: (row) => row.meterCount,
+        },
+        {
+          key: "productionMeters",
+          tableLabel: "Production",
+          tableRender: (row) =>
+            row.productionMeters == null
+              ? ""
+              : NUMBER_FORMATTER.format(row.productionMeters),
+          csvHeader: "production_meters",
+          csvValue: (row) => row.productionMeters,
+        },
+        {
+          key: "consumptionMeters",
+          tableLabel: "Consumption",
+          tableRender: (row) =>
+            row.consumptionMeters == null
+              ? ""
+              : NUMBER_FORMATTER.format(row.consumptionMeters),
+          csvHeader: "consumption_meters",
+          csvValue: (row) => row.consumptionMeters,
+        },
+      ];
+    }
+    if (selectedDataType === "inverters") {
+      return [
+        {
+          key: "inverterCount",
+          tableLabel: "Inverters",
+          tableRender: (row) =>
+            row.inverterCount == null
+              ? ""
+              : NUMBER_FORMATTER.format(row.inverterCount),
+          csvHeader: "inverter_count",
+          csvValue: (row) => row.inverterCount,
+        },
+        {
+          key: "invertersWithTelemetry",
+          tableLabel: "With Telemetry",
+          tableRender: (row) =>
+            row.invertersWithTelemetry == null
+              ? ""
+              : NUMBER_FORMATTER.format(
+                  row.invertersWithTelemetry
+                ),
+          csvHeader: "inverters_with_telemetry",
+          csvValue: (row) => row.invertersWithTelemetry,
+        },
+        {
+          key: "inverterFailures",
+          tableLabel: "Failures",
+          tableRender: (row) =>
+            row.inverterFailures == null
+              ? ""
+              : NUMBER_FORMATTER.format(row.inverterFailures),
+          csvHeader: "inverter_failures",
+          csvValue: (row) => row.inverterFailures,
+        },
+        {
+          key: "inverterLatestPowerKw",
+          tableLabel: "Latest Power (kW)",
+          tableRender: (row) =>
+            row.inverterLatestPowerKw == null
+              ? ""
+              : row.inverterLatestPowerKw.toFixed(2),
+          csvHeader: "inverter_latest_power_kw",
+          csvValue: (row) => row.inverterLatestPowerKw,
+        },
+        {
+          key: "inverterLatestEnergyKwh",
+          tableLabel: "Latest Energy (kWh)",
+          tableRender: (row) =>
+            formatKwh(row.inverterLatestEnergyKwh),
+          csvHeader: "inverter_latest_energy_kwh",
+          csvValue: (row) => row.inverterLatestEnergyKwh,
+        },
+      ];
+    }
+    if (selectedDataType === "devices") {
+      return [
+        {
+          key: "deviceCount",
+          tableLabel: "Devices",
+          tableRender: (row) =>
+            row.deviceCount == null
+              ? ""
+              : NUMBER_FORMATTER.format(row.deviceCount),
+          csvHeader: "device_count",
+          csvValue: (row) => row.deviceCount,
+        },
+      ];
+    }
+    // production (default): richer set; a few columns are CSV-only
+    // (hourly, anchor/start-date metadata) to match legacy behavior.
+    return [
+      {
+        key: "lifetimeKwh",
+        tableLabel: "Lifetime (kWh)",
+        tableRender: (row) => formatKwh(row.lifetimeKwh),
+        csvHeader: "lifetime_kwh",
+        csvValue: (row) => row.lifetimeKwh,
+      },
+      {
+        key: "dailyProductionKwh",
+        tableLabel: "Daily (kWh)",
+        tableRender: (row) => formatKwh(row.dailyProductionKwh),
+        csvHeader: "daily_production_kwh",
+        csvValue: (row) => row.dailyProductionKwh,
+      },
+      {
+        key: "weeklyProductionKwh",
+        tableLabel: "Weekly (kWh)",
+        tableRender: (row) => formatKwh(row.weeklyProductionKwh),
+        csvHeader: "weekly_production_kwh",
+        csvValue: (row) => row.weeklyProductionKwh,
+      },
+      {
+        key: "mtdProductionKwh",
+        tableLabel: "MTD (kWh)",
+        tableRender: (row) => formatKwh(row.mtdProductionKwh),
+        csvHeader: "mtd_production_kwh",
+        csvValue: (row) => row.mtdProductionKwh,
+      },
+      {
+        key: "monthlyProductionKwh",
+        tableLabel: "Monthly 30d (kWh)",
+        tableRender: (row) => formatKwh(row.monthlyProductionKwh),
+        csvHeader: "monthly_production_kwh",
+        csvValue: (row) => row.monthlyProductionKwh,
+      },
+      {
+        key: "previousCalendarMonthProductionKwh",
+        tableLabel: "Prev Month (kWh)",
+        tableRender: (row) =>
+          formatKwh(row.previousCalendarMonthProductionKwh),
+        csvHeader: "previous_calendar_month_production_kwh",
+        csvValue: (row) => row.previousCalendarMonthProductionKwh,
+      },
+      {
+        key: "last12MonthsProductionKwh",
+        tableLabel: "Last 12M (kWh)",
+        tableRender: (row) => formatKwh(row.last12MonthsProductionKwh),
+        csvHeader: "last_12_months_production_kwh",
+        csvValue: (row) => row.last12MonthsProductionKwh,
+      },
+      {
+        key: "hourlyProductionKwh",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "hourly_production_kwh",
+        csvValue: (row) => row.hourlyProductionKwh,
+        csvOnly: true,
+      },
+      {
+        key: "anchorDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "anchor_date",
+        csvValue: (row) => row.anchorDate,
+        csvOnly: true,
+      },
+      {
+        key: "monthlyStartDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "monthly_start_date",
+        csvValue: (row) => row.monthlyStartDate,
+        csvOnly: true,
+      },
+      {
+        key: "weeklyStartDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "weekly_start_date",
+        csvValue: (row) => row.weeklyStartDate,
+        csvOnly: true,
+      },
+      {
+        key: "mtdStartDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "mtd_start_date",
+        csvValue: (row) => row.mtdStartDate,
+        csvOnly: true,
+      },
+      {
+        key: "previousCalendarMonthStartDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "previous_calendar_month_start_date",
+        csvValue: (row) => row.previousCalendarMonthStartDate,
+        csvOnly: true,
+      },
+      {
+        key: "previousCalendarMonthEndDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "previous_calendar_month_end_date",
+        csvValue: (row) => row.previousCalendarMonthEndDate,
+        csvOnly: true,
+      },
+      {
+        key: "last12MonthsStartDate",
+        tableLabel: "",
+        tableRender: () => null,
+        csvHeader: "last_12_months_start_date",
+        csvValue: (row) => row.last12MonthsStartDate,
+        csvOnly: true,
+      },
+    ];
+  }, [selectedDataType]);
+
+  const tableDataColumns = bulkDataColumns.filter(
+    (col) => !col.csvOnly
+  );
 
   /* --- CSV export helpers --- */
 
@@ -958,7 +1427,7 @@ export default function MeterReadsPage({
       .toLowerCase()
       .replace(/^_/, "");
 
-    const headers = [
+    const commonHeaders = [
       idHeader,
       "system_name",
       "status",
@@ -969,61 +1438,34 @@ export default function MeterReadsPage({
       "checked_connections",
       "found_in_connections",
       "profile_status_summary",
-      "lifetime_kwh",
-      "hourly_production_kwh",
-      "monthly_production_kwh",
-      "mtd_production_kwh",
-      "previous_calendar_month_production_kwh",
-      "last_12_months_production_kwh",
-      "weekly_production_kwh",
-      "daily_production_kwh",
-      "anchor_date",
-      "monthly_start_date",
-      "weekly_start_date",
-      "mtd_start_date",
-      "previous_calendar_month_start_date",
-      "previous_calendar_month_end_date",
-      "last_12_months_start_date",
     ];
+    const dataHeaders = bulkDataColumns
+      .filter((col) => !col.tableOnly)
+      .map((col) => col.csvHeader);
+    const headers = [...commonHeaders, ...dataHeaders];
 
-    const csvRows = rows.map((row) => ({
-      [idHeader]: row.entityId,
-      system_name: row.name,
-      status: row.status,
-      found: row.found ? "Yes" : "No",
-      error: row.error,
-      matched_connection_id: row.matchedConnectionId,
-      matched_connection_name:
-        row.matchedConnectionName,
-      checked_connections: row.checkedConnections,
-      found_in_connections: row.foundInConnections,
-      profile_status_summary:
-        row.profileStatusSummary,
-      lifetime_kwh: row.lifetimeKwh,
-      hourly_production_kwh:
-        row.hourlyProductionKwh,
-      monthly_production_kwh:
-        row.monthlyProductionKwh,
-      mtd_production_kwh: row.mtdProductionKwh,
-      previous_calendar_month_production_kwh:
-        row.previousCalendarMonthProductionKwh,
-      last_12_months_production_kwh:
-        row.last12MonthsProductionKwh,
-      weekly_production_kwh:
-        row.weeklyProductionKwh,
-      daily_production_kwh:
-        row.dailyProductionKwh,
-      anchor_date: row.anchorDate,
-      monthly_start_date: row.monthlyStartDate,
-      weekly_start_date: row.weeklyStartDate,
-      mtd_start_date: row.mtdStartDate,
-      previous_calendar_month_start_date:
-        row.previousCalendarMonthStartDate,
-      previous_calendar_month_end_date:
-        row.previousCalendarMonthEndDate,
-      last_12_months_start_date:
-        row.last12MonthsStartDate,
-    }));
+    const csvRows = rows.map((row) => {
+      const base: Record<
+        string,
+        string | number | boolean | null | undefined
+      > = {
+        [idHeader]: row.entityId,
+        system_name: row.name,
+        status: row.status,
+        found: row.found ? "Yes" : "No",
+        error: row.error,
+        matched_connection_id: row.matchedConnectionId,
+        matched_connection_name: row.matchedConnectionName,
+        checked_connections: row.checkedConnections,
+        found_in_connections: row.foundInConnections,
+        profile_status_summary: row.profileStatusSummary,
+      };
+      for (const col of bulkDataColumns) {
+        if (col.tableOnly) continue;
+        base[col.csvHeader] = col.csvValue(row);
+      }
+      return base;
+    });
 
     const csvText = buildCsv(headers, csvRows);
     const fileName = `${fileNamePrefix}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
@@ -1539,10 +1981,51 @@ export default function MeterReadsPage({
             <CardDescription>
               Upload a CSV of{" "}
               {config.idFieldLabelPlural} and process
-              production snapshots in batches.
+              snapshots in batches.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
+            {hasMultipleDataTypes ? (
+              <div className="space-y-2 max-w-sm">
+                <Label>Bulk Data Type</Label>
+                <Select
+                  value={selectedDataType}
+                  onValueChange={(value) => {
+                    setSelectedDataType(
+                      value as BulkDataTypeId
+                    );
+                    setBulkRows([]);
+                    setBulkProgress({
+                      total: bulkEntityIds.length,
+                      processed: 0,
+                      found: 0,
+                      notFound: 0,
+                      errored: 0,
+                    });
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {config.bulkDataTypes?.map((opt) => (
+                      <SelectItem
+                        key={opt.value}
+                        value={opt.value}
+                      >
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Switches the API called per row, and the
+                  result columns shown below. Rows reset
+                  when you change this.
+                </p>
+              </div>
+            ) : null}
+
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="bulk-anchor-date">
@@ -1685,7 +2168,10 @@ export default function MeterReadsPage({
                 ) : (
                   <Upload className="h-4 w-4 mr-2" />
                 )}
-                Run Production Snapshot
+                Run{" "}
+                {config.bulkDataTypes?.find(
+                  (opt) => opt.value === selectedDataType
+                )?.label ?? "Production Snapshot"}
               </Button>
               <Button
                 variant="outline"
@@ -1702,7 +2188,7 @@ export default function MeterReadsPage({
                 onClick={() =>
                   downloadBulkCsv(
                     bulkRows,
-                    `${config.providerSlug}-production-bulk-all`
+                    `${config.providerSlug}-${selectedDataType}-bulk-all`
                   )
                 }
               >
@@ -1716,7 +2202,7 @@ export default function MeterReadsPage({
                 onClick={() =>
                   downloadBulkCsv(
                     filteredBulkRows,
-                    `${config.providerSlug}-production-bulk-filtered`
+                    `${config.providerSlug}-${selectedDataType}-bulk-filtered`
                   )
                 }
               >
@@ -1725,6 +2211,7 @@ export default function MeterReadsPage({
               <Button
                 variant="outline"
                 disabled={
+                  selectedDataType !== "production" ||
                   bulkRows.filter(
                     (r) =>
                       r.found &&
@@ -1924,25 +2411,11 @@ export default function MeterReadsPage({
                   <TableHead>
                     Found In APIs
                   </TableHead>
-                  <TableHead>
-                    Lifetime (kWh)
-                  </TableHead>
-                  <TableHead>
-                    Daily (kWh)
-                  </TableHead>
-                  <TableHead>
-                    Weekly (kWh)
-                  </TableHead>
-                  <TableHead>MTD (kWh)</TableHead>
-                  <TableHead>
-                    Monthly 30d (kWh)
-                  </TableHead>
-                  <TableHead>
-                    Prev Month (kWh)
-                  </TableHead>
-                  <TableHead>
-                    Last 12M (kWh)
-                  </TableHead>
+                  {tableDataColumns.map((col) => (
+                    <TableHead key={col.key}>
+                      {col.tableLabel}
+                    </TableHead>
+                  ))}
                   <TableHead>Error</TableHead>
                 </TableRow>
               </TableHeader>
@@ -1982,39 +2455,11 @@ export default function MeterReadsPage({
                         row.checkedConnections ?? 0
                       )}
                     </TableCell>
-                    <TableCell>
-                      {formatKwh(row.lifetimeKwh)}
-                    </TableCell>
-                    <TableCell>
-                      {formatKwh(
-                        row.dailyProductionKwh
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {formatKwh(
-                        row.weeklyProductionKwh
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {formatKwh(
-                        row.mtdProductionKwh
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {formatKwh(
-                        row.monthlyProductionKwh
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {formatKwh(
-                        row.previousCalendarMonthProductionKwh
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      {formatKwh(
-                        row.last12MonthsProductionKwh
-                      )}
-                    </TableCell>
+                    {tableDataColumns.map((col) => (
+                      <TableCell key={col.key}>
+                        {col.tableRender(row)}
+                      </TableCell>
+                    ))}
                     <TableCell className="text-xs text-muted-foreground">
                       {row.error ?? ""}
                     </TableCell>
@@ -2023,7 +2468,9 @@ export default function MeterReadsPage({
                 {bulkPageRows.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={13}
+                      colSpan={
+                        6 + tableDataColumns.length
+                      }
                       className="py-6 text-center text-muted-foreground"
                     >
                       No bulk rows to display.
