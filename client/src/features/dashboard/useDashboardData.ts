@@ -20,20 +20,14 @@ import { useMemo } from "react";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import type { DailyBrief } from "@/lib/dailyBrief";
+import { useTodayKey } from "./useTodayKey";
 
 const ONE_MIN = 60_000;
 const FIVE_MIN = 5 * 60_000;
 
-function formatTodayKey(now: Date): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
 export function useDashboardData() {
   const { user } = useAuth();
-  const todayKey = formatTodayKey(new Date());
+  const todayKey = useTodayKey();
   const timezoneOffsetMinutes = new Date().getTimezoneOffset();
 
   const { data: preferences } = trpc.preferences.get.useQuery(undefined, {
