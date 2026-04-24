@@ -8,6 +8,13 @@ import {
   resolveSolarRecScopeId,
   type SolarRecAuthenticatedUser,
 } from "./solarRecAuth";
+import {
+  MODULE_KEYS,
+  MODULES,
+  permissionAtLeast,
+  type ModuleKey,
+  type PermissionLevel,
+} from "../../shared/solarRecModules";
 
 // ---------------------------------------------------------------------------
 // Context
@@ -76,6 +83,52 @@ const solarRecAdminProcedure = t.procedure.use(async ({ ctx, next }) => {
   }
   return next();
 });
+
+// ---------------------------------------------------------------------------
+// Task 5.1 — per-module permission matrix
+// ---------------------------------------------------------------------------
+
+const MODULE_KEY_ZOD = z.enum(MODULE_KEYS as unknown as [ModuleKey, ...ModuleKey[]]);
+const PERMISSION_LEVEL_ZOD = z.enum(["none", "read", "edit", "admin"]);
+const NON_NONE_LEVEL_ZOD = z.enum(["read", "edit", "admin"]);
+
+/**
+ * Build a procedure that requires at least `minLevel` permission on
+ * `moduleKey`. Usage:
+ *
+ *   requirePermission('contract-scanner', 'edit').mutation(...)
+ *
+ * The scope owner (`solarRecScopes.ownerUserId`) and users with
+ * `solarRecUsers.isScopeAdmin = true` bypass the matrix entirely and
+ * always pass the gate. All other callers must have a row with
+ * permission >= minLevel; missing rows are treated as `none` and 403.
+ */
+function requirePermission(moduleKey: ModuleKey, minLevel: "read" | "edit" | "admin") {
+  return t.procedure.use(async ({ ctx, next }) => {
+    if (!ctx.user) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "Authentication required",
+      });
+    }
+    const { resolveEffectivePermission } = await import("../db");
+    const effective = await resolveEffectivePermission(
+      ctx.userId,
+      ctx.scopeId,
+      moduleKey,
+      {
+        user: { id: ctx.user.id, isScopeAdmin: ctx.user.isScopeAdmin },
+      }
+    );
+    if (!permissionAtLeast(effective.level, minLevel)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: `Module ${moduleKey} requires ${minLevel} (you have ${effective.level})`,
+      });
+    }
+    return next({ ctx: { ...ctx, modulePermission: effective.level } });
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Users sub-router
@@ -1723,6 +1776,175 @@ const monitoringRouter = t.router({
 });
 
 // ---------------------------------------------------------------------------
+// Permissions sub-router
+// ---------------------------------------------------------------------------
+//
+// Task 5.1. Read-only endpoints are available to any authenticated user so
+// the client can know what it can render; write endpoints require admin on
+// `team-permissions` (which also implicitly resolves to scope-owner /
+// scope-admin via the middleware).
+
+const permissionsRouter = t.router({
+  /**
+   * Every module the client knows about, plus metadata for the matrix UI.
+   */
+  listModules: solarRecViewerProcedure.query(() => {
+    return MODULES.map((m) => ({
+      key: m.key,
+      label: m.label,
+      description: m.description,
+      maxLevel: m.maxLevel,
+    }));
+  }),
+
+  /**
+   * The caller's own effective permission on each module. Fast path the
+   * UI uses to disable/hide write controls.
+   */
+  getMyPermissions: solarRecViewerProcedure.query(async ({ ctx }) => {
+    const { resolveEffectivePermission } = await import("../db");
+    const entries = await Promise.all(
+      MODULE_KEYS.map(async (moduleKey) => {
+        const eff = await resolveEffectivePermission(
+          ctx.userId,
+          ctx.scopeId,
+          moduleKey,
+          { user: { id: ctx.user!.id, isScopeAdmin: ctx.user!.isScopeAdmin } }
+        );
+        return [moduleKey, eff.level] as const;
+      })
+    );
+    return {
+      scopeId: ctx.scopeId,
+      isScopeAdmin: ctx.user!.isScopeAdmin,
+      permissions: Object.fromEntries(entries) as Record<ModuleKey, PermissionLevel>,
+    };
+  }),
+
+  /**
+   * Full matrix for the scope. Used by the Settings UI. Requires admin on
+   * `team-permissions`.
+   */
+  listScopePermissions: requirePermission("team-permissions", "admin").query(
+    async ({ ctx }) => {
+      const { listSolarRecUserModulePermissions, listSolarRecUsers } =
+        await import("../db");
+      const [rows, users] = await Promise.all([
+        listSolarRecUserModulePermissions(ctx.scopeId),
+        listSolarRecUsers(),
+      ]);
+      return {
+        scopeId: ctx.scopeId,
+        users: users.map((u) => ({
+          id: u.id,
+          email: u.email,
+          name: u.name,
+          role: u.role,
+          isActive: u.isActive,
+          isScopeAdmin: u.isScopeAdmin,
+        })),
+        permissions: rows.map((r) => ({
+          userId: r.userId,
+          moduleKey: r.moduleKey as ModuleKey,
+          permission: r.permission as PermissionLevel,
+          updatedAt: r.updatedAt,
+        })),
+      };
+    }
+  ),
+
+  /**
+   * Update a single cell of the matrix. Admin-only.
+   */
+  setUserPermission: requirePermission("team-permissions", "admin")
+    .input(
+      z.object({
+        userId: z.number().int().positive(),
+        moduleKey: MODULE_KEY_ZOD,
+        permission: PERMISSION_LEVEL_ZOD,
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { upsertSolarRecUserModulePermission } = await import("../db");
+      await upsertSolarRecUserModulePermission({
+        userId: input.userId,
+        scopeId: ctx.scopeId,
+        moduleKey: input.moduleKey,
+        permission: input.permission,
+      });
+      return { ok: true };
+    }),
+
+  /**
+   * Overwrite a user's full set of permissions (used by the preset
+   * "apply" button in the Settings UI). Admin-only.
+   */
+  replaceUserPermissions: requirePermission("team-permissions", "admin")
+    .input(
+      z.object({
+        userId: z.number().int().positive(),
+        permissions: z.array(
+          z.object({
+            moduleKey: MODULE_KEY_ZOD,
+            permission: NON_NONE_LEVEL_ZOD,
+          })
+        ),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { replaceSolarRecUserModulePermissions } = await import("../db");
+      await replaceSolarRecUserModulePermissions({
+        userId: input.userId,
+        scopeId: ctx.scopeId,
+        permissions: input.permissions,
+      });
+      return { ok: true, count: input.permissions.length };
+    }),
+
+  /**
+   * Toggle scope-admin on another user. Requires admin on
+   * `team-permissions`, AND the caller themselves must be the scope owner
+   * or an existing scope-admin — otherwise a regular admin could grant
+   * themselves scope-admin. Lockout prevention: the server prevents
+   * removing the scope-admin flag from the scope owner's own row.
+   */
+  setUserScopeAdmin: requirePermission("team-permissions", "admin")
+    .input(
+      z.object({
+        userId: z.number().int().positive(),
+        isScopeAdmin: z.boolean(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSolarRecScope, setSolarRecUserScopeAdmin } = await import(
+        "../db"
+      );
+      const scope = await getSolarRecScope(ctx.scopeId);
+      // Only scope owner / existing scope-admins may flip this flag.
+      const callerIsOwner = scope?.ownerUserId === ctx.userId;
+      if (!callerIsOwner && !ctx.user!.isScopeAdmin) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Only scope owner or scope-admin may manage scope-admin flags",
+        });
+      }
+      // Lockout prevention: never let the owner lose scope-admin bypass.
+      if (
+        scope &&
+        scope.ownerUserId === input.userId &&
+        input.isScopeAdmin === false
+      ) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Cannot remove scope-admin from the scope owner",
+        });
+      }
+      await setSolarRecUserScopeAdmin(input.userId, input.isScopeAdmin);
+      return { ok: true };
+    }),
+});
+
+// ---------------------------------------------------------------------------
 // Compose root router
 // ---------------------------------------------------------------------------
 //
@@ -1739,6 +1961,7 @@ export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
   monitoring: monitoringRouter,
+  permissions: permissionsRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
