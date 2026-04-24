@@ -190,6 +190,13 @@
       "when": 1777062787728,
       "tag": "0030_add_ask_ai_v2_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "5",
+      "when": 1777071342878,
+      "tag": "0031_add_solar_rec_user_module_permissions",
+      "breakpoints": true
     }
   ]
 }
