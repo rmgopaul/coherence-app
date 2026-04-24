@@ -31,6 +31,8 @@ export function HealthTodayPanel() {
   } = trpc.whoop.getSummary.useQuery(undefined, {
     enabled: !!user && hasWhoop,
     retry: false,
+    staleTime: 20 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
   });
 
   return (
