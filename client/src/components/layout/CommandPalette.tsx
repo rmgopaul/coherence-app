@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import {
   CommandDialog,
@@ -23,9 +23,12 @@ import {
   FileText,
   Sun,
   Moon,
+  Loader2,
+  HardDrive,
   type LucideIcon,
 } from "lucide-react";
 import { useTheme } from "@/contexts/ThemeContext";
+import { trpc } from "@/lib/trpc";
 
 type CommandRoute = {
   label: string;
@@ -62,8 +65,43 @@ const NAV_COMMANDS: CommandRoute[] = [
   { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: FileText, keywords: ["zendesk", "tickets"] },
 ];
 
+const SEARCH_DEBOUNCE_MS = 200;
+const SEARCH_MIN_LENGTH = 3;
+
+const SEARCH_TYPE_ICON: Record<string, LucideIcon> = {
+  note: StickyNote,
+  task: CheckSquare,
+  calendar_event: Calendar,
+  conversation: MessageSquare,
+  drive_file: HardDrive,
+};
+
+function searchResultHref(item: {
+  type: string;
+  id: string;
+  url: string | null;
+}): string {
+  if (item.url) return item.url;
+  switch (item.type) {
+    case "note":
+      return `/notes?noteId=${encodeURIComponent(item.id)}`;
+    case "task":
+      return "/widget/todoist";
+    case "calendar_event":
+      return "/widget/google-calendar";
+    case "conversation":
+      return "/widget/chatgpt";
+    case "drive_file":
+      return "/widget/gmail";
+    default:
+      return "/dashboard";
+  }
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [, setLocation] = useLocation();
   const { theme, toggleTheme } = useTheme();
 
@@ -78,6 +116,40 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setDebouncedQuery(query.trim());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [query]);
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      setDebouncedQuery("");
+    }
+  }, [open]);
+
+  const searchEnabled =
+    open && debouncedQuery.length >= SEARCH_MIN_LENGTH;
+  const searchQuery = trpc.search.global.useQuery(
+    { query: debouncedQuery, limit: 20 },
+    {
+      enabled: searchEnabled,
+      staleTime: 15_000,
+      retry: false,
+    },
+  );
+  const searchResults = useMemo(
+    () => (searchEnabled ? searchQuery.data?.items ?? [] : []),
+    [searchEnabled, searchQuery.data],
+  );
+  const showSearchGroup = searchEnabled;
+  const showSearchLoading =
+    showSearchGroup &&
+    (searchQuery.isPending || searchQuery.isFetching) &&
+    searchResults.length === 0;
+
   const navigate = (href: string) => {
     setOpen(false);
     setLocation(href);
@@ -85,11 +157,15 @@ export function CommandPalette() {
 
   return (
     <CommandDialog open={open} onOpenChange={setOpen} showCloseButton={false}>
-      <CommandInput placeholder="Type a command or search..." />
+      <CommandInput
+        placeholder="Type a command or search notes, tasks, calendar…"
+        value={query}
+        onValueChange={setQuery}
+      />
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
-        <CommandGroup heading="Navigation">
+        <CommandGroup heading="Commands">
           {NAV_COMMANDS.map((cmd) => (
             <CommandItem
               key={cmd.href}
@@ -100,11 +176,6 @@ export function CommandPalette() {
               <span>{cmd.label}</span>
             </CommandItem>
           ))}
-        </CommandGroup>
-
-        <CommandSeparator />
-
-        <CommandGroup heading="Quick Actions">
           <CommandItem
             value="create task new todo"
             onSelect={() => navigate("/widget/todoist")}
@@ -134,6 +205,53 @@ export function CommandPalette() {
             <span>Toggle Theme ({theme === "dark" ? "Light" : "Dark"})</span>
           </CommandItem>
         </CommandGroup>
+
+        {showSearchGroup ? (
+          <>
+            <CommandSeparator />
+            <CommandGroup heading="Search Results">
+              {showSearchLoading ? (
+                <CommandItem
+                  value="__search_loading__"
+                  disabled
+                  className="text-slate-500"
+                >
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  <span>Searching…</span>
+                </CommandItem>
+              ) : searchResults.length === 0 ? (
+                <CommandItem
+                  value="__search_empty__"
+                  disabled
+                  className="text-slate-500"
+                >
+                  <span>No matches in notes, tasks, calendar, or drive.</span>
+                </CommandItem>
+              ) : (
+                searchResults.map((item) => {
+                  const Icon = SEARCH_TYPE_ICON[item.type] ?? FileText;
+                  return (
+                    <CommandItem
+                      key={`${item.type}:${item.id}`}
+                      value={`${item.title} ${item.subtitle ?? ""} ${item.type}`}
+                      onSelect={() => navigate(searchResultHref(item))}
+                    >
+                      <Icon className="mr-2 size-4" />
+                      <div className="flex min-w-0 flex-col">
+                        <span className="truncate">{item.title}</span>
+                        {item.subtitle ? (
+                          <span className="truncate text-xs text-slate-500">
+                            {item.subtitle}
+                          </span>
+                        ) : null}
+                      </div>
+                    </CommandItem>
+                  );
+                })
+              )}
+            </CommandGroup>
+          </>
+        ) : null}
       </CommandList>
     </CommandDialog>
   );
