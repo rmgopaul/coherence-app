@@ -42,6 +42,7 @@ import { toNonEmptyString } from "./helpers";
 import { fetchMarketQuotes } from "../services/integrations/marketData";
 import { fetchNewsHeadlines } from "../services/integrations/newsHeadlines";
 import { fetchTrumpApprovalRatings } from "../services/core/approvalRatings";
+import { fetchPoliticalOdds } from "../services/core/politicalOdds";
 import { fetchMNSportsGames } from "../services/integrations/sports";
 
 export const authRouter = router({
@@ -244,11 +245,13 @@ export const marketDashboardRouter = (() => {
   type MarketQuoteItem = Awaited<ReturnType<typeof fetchMarketQuotes>>[number];
   type HeadlineItem = Awaited<ReturnType<typeof fetchNewsHeadlines>>[number];
   type ApprovalRatingItem = Awaited<ReturnType<typeof fetchTrumpApprovalRatings>>[number];
+  type PoliticalOddsItem = Awaited<ReturnType<typeof fetchPoliticalOdds>>[number];
   // In-memory cache with 5-minute TTL; stale data served if fresh fetch fails.
   const cacheBySymbolKey = new Map<string, {
     quotes: MarketQuoteItem[];
     headlines: HeadlineItem[];
     approvalRatings: ApprovalRatingItem[];
+    politicalOdds: PoliticalOddsItem[];
     fetchedAt: string;
     marketRateLimited?: boolean;
     usingStaleQuotes?: boolean;
@@ -256,6 +259,7 @@ export const marketDashboardRouter = (() => {
   const cacheExpiryBySymbolKey = new Map<string, number>();
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const APPROVAL_FETCH_TIMEOUT_MS = 4_500;
+  const POLITICAL_ODDS_FETCH_TIMEOUT_MS = 5_000;
   const DEFAULT_STOCK_SYMBOLS = ["GEVO", "MNTK", "PLUG", "ALTO", "REX"] as const;
   const DEFAULT_CRYPTO_SYMBOLS = ["BTC-USD", "ETH-USD"] as const;
 
@@ -331,15 +335,17 @@ export const marketDashboardRouter = (() => {
       }
 
       try {
-        const [quotesResult, headlinesResult, approvalResult] = await Promise.allSettled([
+        const [quotesResult, headlinesResult, approvalResult, politicalOddsResult] = await Promise.allSettled([
           fetchMarketQuotes(combinedSymbols),
           fetchNewsHeadlines(),
           withTimeout(fetchTrumpApprovalRatings(), APPROVAL_FETCH_TIMEOUT_MS, [] as any[]),
+          withTimeout(fetchPoliticalOdds(), POLITICAL_ODDS_FETCH_TIMEOUT_MS, [] as any[]),
         ]);
 
         const quotes = quotesResult.status === "fulfilled" ? quotesResult.value : [];
         const headlines = headlinesResult.status === "fulfilled" ? headlinesResult.value : [];
         const approvalRatings = approvalResult.status === "fulfilled" ? approvalResult.value : [];
+        const politicalOdds = politicalOddsResult.status === "fulfilled" ? politicalOddsResult.value : [];
         const quotesError =
           quotesResult.status === "rejected" ? String((quotesResult.reason as any)?.message ?? quotesResult.reason ?? "") : "";
         const marketRateLimited =
@@ -355,6 +361,9 @@ export const marketDashboardRouter = (() => {
         if (approvalResult.status === "rejected") {
           console.warn("[MarketDashboard] Approval ratings fetch failed:", approvalResult.reason);
         }
+        if (politicalOddsResult.status === "rejected") {
+          console.warn("[MarketDashboard] Political odds fetch failed:", politicalOddsResult.reason);
+        }
 
         // If Yahoo is rate-limited, prefer serving the last good cached quotes
         // instead of returning an empty market section.
@@ -364,6 +373,8 @@ export const marketDashboardRouter = (() => {
             headlines: headlines.length > 0 ? headlines : cachedData.headlines,
             approvalRatings:
               approvalRatings.length > 0 ? approvalRatings : cachedData.approvalRatings,
+            politicalOdds:
+              politicalOdds.length > 0 ? politicalOdds : cachedData.politicalOdds,
             marketRateLimited: true,
             usingStaleQuotes: true,
           };
@@ -376,11 +387,17 @@ export const marketDashboardRouter = (() => {
           quotes,
           headlines,
           approvalRatings,
+          politicalOdds,
           fetchedAt: new Date().toISOString(),
           marketRateLimited,
         };
         // Only update cache if we got meaningful data
-        if (quotes.length > 0 || headlines.length > 0 || approvalRatings.length > 0) {
+        if (
+          quotes.length > 0 ||
+          headlines.length > 0 ||
+          approvalRatings.length > 0 ||
+          politicalOdds.length > 0
+        ) {
           cacheBySymbolKey.set(symbolCacheKey, freshData);
           cacheExpiryBySymbolKey.set(symbolCacheKey, now + CACHE_TTL_MS);
         }
@@ -389,7 +406,13 @@ export const marketDashboardRouter = (() => {
         console.warn("[MarketDashboard] Fetch failed, returning stale cache if available:", error);
         // Return stale data rather than nothing
         if (cachedData) return cachedData;
-        return { quotes: [], headlines: [], approvalRatings: [], fetchedAt: new Date().toISOString() };
+        return {
+          quotes: [],
+          headlines: [],
+          approvalRatings: [],
+          politicalOdds: [],
+          fetchedAt: new Date().toISOString(),
+        };
       }
     }),
   });
