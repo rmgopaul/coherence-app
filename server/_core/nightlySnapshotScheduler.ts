@@ -1,7 +1,7 @@
 import { captureDailySnapshotForAllUsers } from "../services/notifications/dailySnapshot";
+import { scheduleDaily } from "./scheduleDaily";
 
-let intervalId: NodeJS.Timeout | null = null;
-let lastRunDateKey: string | null = null;
+let stopScheduler: (() => void) | null = null;
 
 function toDateKey(date: Date): string {
   const y = date.getFullYear();
@@ -10,25 +10,14 @@ function toDateKey(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-async function maybeRunNightlySnapshot() {
+async function runNightlySnapshot(dateKey: string): Promise<void> {
+  console.log(`[Nightly Snapshot] Starting 10:00 PM capture for ${dateKey}...`);
+  const results = await captureDailySnapshotForAllUsers(dateKey);
+  console.log(
+    `[Nightly Snapshot] Completed for ${dateKey}. Users processed: ${results.length}`,
+  );
+
   const now = new Date();
-  if (now.getHours() !== 22 || now.getMinutes() !== 0) {
-    return;
-  }
-
-  const dateKey = toDateKey(now);
-  if (lastRunDateKey === dateKey) {
-    return;
-  }
-  lastRunDateKey = dateKey;
-
-  try {
-    console.log(`[Nightly Snapshot] Starting 10:00 PM capture for ${dateKey}...`);
-    const results = await captureDailySnapshotForAllUsers(dateKey);
-    console.log(`[Nightly Snapshot] Completed for ${dateKey}. Users processed: ${results.length}`);
-  } catch (error) {
-    console.error("[Nightly Snapshot] Failed to capture nightly snapshots:", error);
-  }
 
   // Prune engagement data older than 90 days
   try {
@@ -55,21 +44,33 @@ async function maybeRunNightlySnapshot() {
   } catch (error) {
     console.error("[Nightly Snapshot] Failed to prune monitoring api runs:", error);
   }
+
+  // Prune dailyJobClaims older than 365 days — tiny table, but still
+  // unbounded without this.
+  try {
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - 365);
+    const cutoffKey = toDateKey(cutoff);
+    const { pruneDailyJobClaims } = await import("../db");
+    await pruneDailyJobClaims(cutoffKey);
+    console.log(`[Nightly Snapshot] Pruned daily job claims older than ${cutoffKey}`);
+  } catch (error) {
+    console.error("[Nightly Snapshot] Failed to prune daily job claims:", error);
+  }
 }
 
 export function startNightlySnapshotScheduler() {
-  if (intervalId) return;
-
-  // Check every minute and trigger once at 10:00 PM local server time.
-  intervalId = setInterval(() => {
-    maybeRunNightlySnapshot().catch((error) => {
-      console.error("[Nightly Snapshot] Interval error:", error);
-    });
-  }, 60_000);
-
-  // Run a startup check (useful if server starts right around 10:00 PM).
-  maybeRunNightlySnapshot().catch((error) => {
-    console.error("[Nightly Snapshot] Startup check error:", error);
+  if (stopScheduler) return;
+  stopScheduler = scheduleDaily({
+    hour: 22,
+    runKey: "nightly-snapshot",
+    run: runNightlySnapshot,
   });
 }
 
+export function stopNightlySnapshotScheduler() {
+  if (stopScheduler) {
+    stopScheduler();
+    stopScheduler = null;
+  }
+}

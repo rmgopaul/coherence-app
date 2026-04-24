@@ -483,3 +483,33 @@ export const userFeedback = mysqlTable(
 
 export type UserFeedback = typeof userFeedback.$inferSelect;
 export type InsertUserFeedback = typeof userFeedback.$inferInsert;
+
+// Distributed daily-job claim table. First process to INSERT for a given
+// (dateKey, runKey) wins; duplicate inserts fail the unique constraint
+// and the losing process skips that day's work. Prevents multi-instance
+// deploys from double-firing daily jobs, and lets a restart inside the
+// target minute still pick up the work (the claim, not the clock, is
+// what's checked).
+export const dailyJobClaims = mysqlTable(
+  "dailyJobClaims",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    dateKey: varchar("dateKey", { length: 10 }).notNull(), // YYYY-MM-DD local
+    runKey: varchar("runKey", { length: 64 }).notNull(),
+    claimedAt: timestamp("claimedAt").defaultNow().notNull(),
+    status: mysqlEnum("status", ["running", "completed", "failed"])
+      .default("running")
+      .notNull(),
+    completedAt: timestamp("completedAt"),
+    errorMessage: text("errorMessage"),
+  },
+  (table) => ({
+    uniq: uniqueIndex("dailyJobClaims_dateKey_runKey").on(
+      table.dateKey,
+      table.runKey,
+    ),
+  }),
+);
+
+export type DailyJobClaim = typeof dailyJobClaims.$inferSelect;
+export type InsertDailyJobClaim = typeof dailyJobClaims.$inferInsert;
