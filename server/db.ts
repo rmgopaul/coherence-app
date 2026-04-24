@@ -26,6 +26,7 @@ export * from "./db/feedback";
 export * from "./db/totp";
 export * from "./db/productionReadings";
 export * from "./db/solarRec";
+export * from "./db/solarRecPermissions";
 export * from "./db/monitoring";
 export * from "./db/contractScans";
 export * from "./db/dinScrapes";

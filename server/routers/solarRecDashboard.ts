@@ -566,11 +566,17 @@ export const solarRecDashboardRouter = router({
 
       const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.user.id);
       const dbStorageKey = `dataset:${input.datasetKey}`;
-      const storagePath = `solar-rec-dashboard/${storageUserId}/datasets/${input.datasetKey}.json`;
+      const { key: storagePath, legacyKey: legacyStoragePath } =
+        await buildDashboardStorageKeys(
+          storageUserId,
+          `datasets/${input.datasetKey}.json`
+        );
 
       const [syncRow] = await getSolarRecDatasetSyncStates(storageUserId, [dbStorageKey]);
       const dbPayload = await getSolarRecDashboardPayload(storageUserId, dbStorageKey);
-      const topLevelStoragePresent = await storageExists(storagePath);
+      const topLevelStoragePresent =
+        (await storageExists(storagePath)) ||
+        (await storageExists(legacyStoragePath));
 
       // Extract chunk references (either _rawSourcesV1 manifest or Schedule-B chunk pointer)
       const chunkKeys: string[] = [];
@@ -611,9 +617,15 @@ export const solarRecDashboardRouter = router({
       const chunkDiagnostics = [];
       for (const chunkKey of chunkKeysToProbe) {
         const childDbKey = `dataset:${chunkKey}`;
-        const childStoragePath = `solar-rec-dashboard/${storageUserId}/datasets/${chunkKey}.json`;
+        const { key: childStoragePath, legacyKey: childLegacyStoragePath } =
+          await buildDashboardStorageKeys(
+            storageUserId,
+            `datasets/${chunkKey}.json`
+          );
         const childDb = await getSolarRecDashboardPayload(storageUserId, childDbKey);
-        const childStoragePresent = await storageExists(childStoragePath);
+        const childStoragePresent =
+          (await storageExists(childStoragePath)) ||
+          (await storageExists(childLegacyStoragePath));
         chunkDiagnostics.push({
           key: chunkKey,
           syncRow: rowByKey.get(childDbKey) ?? null,
@@ -649,14 +661,22 @@ export const solarRecDashboardRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
-      const key = `solar-rec-dashboard/${storageUserId}/datasets/${input.key}.json`;
+      const { key } = await buildDashboardStorageKeys(
+        storageUserId,
+        `datasets/${input.key}.json`
+      );
       const dbStorageKey = `dataset:${input.key}`;
       let persistedToDatabase = false;
 
       try {
         persistedToDatabase = await saveSolarRecDashboardPayload(storageUserId, dbStorageKey, input.payload);
-      } catch {
+      } catch (dbError) {
         persistedToDatabase = false;
+        console.warn(
+          "[saveDataset] DB persist failed:",
+          dbStorageKey,
+          dbError instanceof Error ? dbError.message : dbError
+        );
       }
 
       try {
@@ -675,7 +695,13 @@ export const solarRecDashboardRouter = router({
           );
           return false;
         });
-        return { success: true, key, persistedToDatabase, storageSynced: true };
+        return {
+          _checkpoint: "saveDataset-scope-v1",
+          success: true,
+          key,
+          persistedToDatabase,
+          storageSynced: true,
+        };
       } catch (storageError) {
         if (persistedToDatabase) {
           await upsertSolarRecDatasetSyncState({
@@ -692,7 +718,13 @@ export const solarRecDashboardRouter = router({
             );
             return false;
           });
-          return { success: true, key, persistedToDatabase, storageSynced: false };
+          return {
+            _checkpoint: "saveDataset-scope-v1",
+            success: true,
+            key,
+            persistedToDatabase,
+            storageSynced: false,
+          };
         }
         throw storageError;
       }

@@ -21,6 +21,11 @@ export type SolarRecAuthenticatedUser = {
   name: string | null;
   role: "owner" | "admin" | "operator" | "viewer";
   avatarUrl: string | null;
+  /**
+   * Task 5.1 scope-admin flag. Users with this flag bypass the per-module
+   * permission matrix and have implicit admin on every module.
+   */
+  isScopeAdmin: boolean;
 };
 
 type GoogleUserInfo = {
@@ -182,6 +187,7 @@ export async function authenticateSolarRecRequest(
     name: user.name,
     role: user.role as SolarRecAuthenticatedUser["role"],
     avatarUrl: user.avatarUrl,
+    isScopeAdmin: user.isScopeAdmin ?? false,
   };
 }
 
