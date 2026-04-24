@@ -27,6 +27,7 @@
  */
 
 import { memo, useCallback, useMemo, useRef, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { FileText, Loader2 } from "lucide-react";
 import jsPDF from "jspdf";
 import autoTable, { type CellHookData } from "jspdf-autotable";
@@ -1509,6 +1510,46 @@ export default memo(function AppPipelineTab(props: AppPipelineTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-application-pipeline"
+        title="Ask AI about the application pipeline"
+        contextGetter={() => ({
+          ranges: {
+            counts: pipelineCountRange,
+            kw: pipelineKwRange,
+            interconnected: pipelineInterconnectedRange,
+            cashFlow: pipelineCashFlowRange,
+          },
+          monthlyRows3Year: pipelineRows3Year.map((r) => ({
+            month: r.month,
+            part1Count: r.part1Count,
+            part2Count: r.part2Count,
+            interconnectedCount: r.interconnectedCount,
+            part1KwAc: r.part1KwAc,
+            part2KwAc: r.part2KwAc,
+            interconnectedKwAc: r.interconnectedKwAc,
+          })),
+          monthlyRows12Month: pipelineRows12Month.map((r) => ({
+            month: r.month,
+            part1Count: r.part1Count,
+            part2Count: r.part2Count,
+            interconnectedCount: r.interconnectedCount,
+            part1KwAc: r.part1KwAc,
+            part2KwAc: r.part2KwAc,
+            interconnectedKwAc: r.interconnectedKwAc,
+          })),
+          cashFlowRows3Year: cashFlowRows3Year,
+          cashFlowRows12Month: cashFlowRows12Month,
+          financialCsgIdCount,
+          totals: {
+            systems: systems.length,
+            part2VerifiedAbp: part2VerifiedAbpRows.length,
+            contractScanResults: contractScanResults.length,
+            localOverrides: localOverrides.size,
+          },
+        })}
+      />
     </div>
   );
 });
