@@ -21,6 +21,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
   BarChart,
@@ -1213,6 +1214,29 @@ export default memo(function ForecastTab(props: ForecastTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-forecast"
+        title="Ask AI about the REC forecast"
+        contextGetter={() => ({
+          summary: forecastSummary,
+          sampleContracts: [...forecastProjections]
+            .sort((a, b) => a.gapReporting - b.gapReporting)
+            .slice(0, 20)
+            .map((c) => ({
+              contract: c.contract,
+              systemsTotal: c.systemsTotal,
+              systemsReporting: c.systemsReporting,
+              requiredRecs: c.requiredRecs,
+              baselineRollingAvg: c.baselineRollingAvg,
+              revisedRollingAvgReporting: c.revisedRollingAvgReporting,
+              revisedRollingAvgAll: c.revisedRollingAvgAll,
+              delPercent: c.delPercent,
+              gapReporting: c.gapReporting,
+              gapAll: c.gapAll,
+            })),
+        })}
+      />
     </div>
   );
 });
