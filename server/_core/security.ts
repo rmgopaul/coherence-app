@@ -57,6 +57,7 @@ export function registerSecurityMiddleware(app: Express) {
         "x-solar-signature",
         "x-solar-timestamp",
         "x-solar-nonce",
+        "x-sync-key",
       ],
     })
   );
