@@ -117,10 +117,10 @@ export default function UniversalDropDock() {
       // Google Sheets
       if (host === "docs.google.com" && pathname.includes("/spreadsheets/")) {
         const parts = pathname.split("/");
-        const sheetId = parts[parts.indexOf("d") + 1];
+        const spreadsheetId = parts[parts.indexOf("d") + 1];
         return {
           type: "gsheet" as const,
-          meta: { sheetId },
+          meta: { spreadsheetId },
         };
       }
 
