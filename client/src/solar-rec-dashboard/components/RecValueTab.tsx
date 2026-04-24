@@ -21,6 +21,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
   BarChart,
@@ -386,6 +387,26 @@ export default memo(function RecValueTab(props: RecValueTabProps) {
           </div>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-rec-value"
+        title="Ask AI about REC value"
+        contextGetter={() => ({
+          part2ValueSummary: snapshotPart2ValueSummary,
+          valueByStatus: recValueByStatusChartRows,
+          topValueGapSystems: recTopGapChartRows,
+          sampleWorstGapRows: recValueRows.slice(0, 20).map((s) => ({
+            systemName: s.systemName,
+            trackingSystemRefId: s.trackingSystemRefId,
+            contractedValue: s.contractedValue,
+            deliveredValue: s.deliveredValue,
+            valueGap: s.valueGap,
+            isReporting: s.isReporting,
+            isTerminated: s.isTerminated,
+            contractStatusText: s.contractStatusText,
+          })),
+        })}
+      />
     </div>
   );
 });
