@@ -34,6 +34,7 @@ import {
   formatMean,
 } from "@/features/_shared/insights/InsightsLayout";
 import { cohensDMagnitude } from "./habits.helpers";
+import { AskAiPanel } from "@/components/AskAiPanel";
 
 type MetricValue = (typeof METRIC_OPTIONS)[number]["value"];
 const METRIC_GROUPS = Array.from(new Set(METRIC_OPTIONS.map((m) => m.group)));
@@ -210,6 +211,38 @@ export function HabitsInsightsPanel({ definitions }: HabitsInsightsPanelProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="habits-insights"
+        title="Ask AI about this correlation"
+        contextGetter={() => {
+          const def = activeDefs.find((d) => d.id === habitId);
+          if (!data) {
+            return {
+              habit: def?.name ?? null,
+              metric: metricLabel,
+              windowDays,
+              lagDays,
+              status: "no data loaded yet",
+            };
+          }
+          return {
+            habit: def?.name ?? null,
+            metric: metricLabel,
+            windowDays,
+            lagDays,
+            insufficientData: data.insufficientData,
+            onMean: data.onMean,
+            onN: data.onN,
+            offMean: data.offMean,
+            offN: data.offN,
+            cohensD: data.cohensD,
+            cohensDLabel: cohensDMagnitude(data.cohensD),
+            pearsonR: data.pearsonR,
+            sampleCount: data.points.length,
+          };
+        }}
+      />
 
       <p className="text-[10px] text-muted-foreground">
         Descriptive only. Small-sample effect sizes are fragile; use this to

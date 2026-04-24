@@ -39,6 +39,7 @@ import {
   MetricBlock,
   formatMean,
 } from "@/features/_shared/insights/InsightsLayout";
+import { AskAiPanel } from "@/components/AskAiPanel";
 
 export const METRIC_OPTIONS = [
   { group: "Whoop", value: "whoopRecoveryScore", label: "Recovery score" },
@@ -256,6 +257,40 @@ export function SupplementsInsightsPanel({
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="supplements-insights"
+        title="Ask AI about this correlation"
+        contextGetter={() => {
+          const def = definitions.find((d) => d.id === definitionId);
+          if (!data) {
+            return {
+              supplement: def?.name ?? null,
+              metric: metricLabel,
+              windowDays,
+              lagDays,
+              status: "no data loaded yet",
+            };
+          }
+          return {
+            supplement: def?.name ?? null,
+            metric: metricLabel,
+            windowDays,
+            lagDays,
+            insufficientData: data.insufficientData,
+            onMean: data.onMean,
+            onN: data.onN,
+            offMean: data.offMean,
+            offN: data.offN,
+            cohensD: data.cohensD,
+            cohensDLabel: cohensDLabel(data.cohensD),
+            pearsonR: data.pearsonR,
+            // Point count only, not all points — we don't want to
+            // ship ~90 rows of daily samples to the model every ask.
+            sampleCount: data.points.length,
+          };
+        }}
+      />
 
       <p className="text-[10px] text-muted-foreground">
         Descriptive only. Small-sample effect sizes are fragile; use this to
