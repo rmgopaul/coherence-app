@@ -111,7 +111,10 @@ export default function MeterReadsPage({
     Record<string, string>
   >(() =>
     Object.fromEntries(
-      config.credentialFields.map((f) => [f.name, ""])
+      config.credentialFields.map((f) => [
+        f.name,
+        f.type === "select" ? f.options?.[0]?.value ?? "" : "",
+      ])
     )
   );
   const setCredential = (name: string, value: string) =>
@@ -316,7 +319,10 @@ export default function MeterReadsPage({
       // Reset credential inputs
       setCredentialValues(
         Object.fromEntries(
-          config.credentialFields.map((f) => [f.name, ""])
+          config.credentialFields.map((f) => [
+            f.name,
+            f.type === "select" ? f.options?.[0]?.value ?? "" : "",
+          ])
         )
       );
       setConnectionNameInput("");
@@ -1705,22 +1711,53 @@ export default function MeterReadsPage({
                       ? " (optional)"
                       : ""}
                   </Label>
-                  <Input
-                    id={`${config.providerSlug}-${field.name}`}
-                    type={field.type ?? "text"}
-                    value={
-                      credentialValues[
-                        field.name
-                      ] ?? ""
-                    }
-                    onChange={(e) =>
-                      setCredential(
-                        field.name,
-                        e.target.value
-                      )
-                    }
-                    placeholder={field.placeholder}
-                  />
+                  {field.type === "select" ? (
+                    <Select
+                      value={
+                        credentialValues[field.name] ??
+                        field.options?.[0]?.value ??
+                        ""
+                      }
+                      onValueChange={(value) =>
+                        setCredential(field.name, value)
+                      }
+                    >
+                      <SelectTrigger
+                        id={`${config.providerSlug}-${field.name}`}
+                      >
+                        <SelectValue
+                          placeholder={field.placeholder}
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {field.options?.map((opt) => (
+                          <SelectItem
+                            key={opt.value}
+                            value={opt.value}
+                          >
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      id={`${config.providerSlug}-${field.name}`}
+                      type={field.type ?? "text"}
+                      value={
+                        credentialValues[
+                          field.name
+                        ] ?? ""
+                      }
+                      onChange={(e) =>
+                        setCredential(
+                          field.name,
+                          e.target.value
+                        )
+                      }
+                      placeholder={field.placeholder}
+                    />
+                  )}
                   {field.helperText ? (
                     <p className="text-xs text-muted-foreground">
                       {field.helperText}
@@ -1986,6 +2023,7 @@ export default function MeterReadsPage({
         </Card>
 
         {/* Section 3: Bulk CSV Processing */}
+        {config.noBulkFetch ? null : (
         <Card>
           <CardHeader>
             <CardTitle>
@@ -2526,6 +2564,7 @@ export default function MeterReadsPage({
             </div>
           </CardContent>
         </Card>
+        )}
 
         {/* Section 4: Raw API Response */}
         <Card>
