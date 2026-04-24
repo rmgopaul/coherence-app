@@ -46,6 +46,14 @@ export const solarRecDashboardStorage = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: int("userId").notNull(),
+    /**
+     * Team scope this row belongs to. Added as nullable in Task 1.2b
+     * migration (PR A) so existing per-user rows keep working while
+     * PR B rewrites the procedures to resolve by scope. Backfilled
+     * to `scope-user-${userId}` at migration time. Tightens to NOT
+     * NULL in a follow-up once all readers are on the new column.
+     */
+    scopeId: varchar("scopeId", { length: 64 }),
     storageKey: varchar("storageKey", { length: 191 }).notNull(),
     chunkIndex: int("chunkIndex").notNull(),
     payload: mediumtext("payload").notNull(),
@@ -59,6 +67,15 @@ export const solarRecDashboardStorage = mysqlTable(
       table.chunkIndex
     ),
     userKeyIdx: index("solar_rec_dashboard_storage_user_key_idx").on(table.userId, table.storageKey),
+    scopeKeyChunkIdx: uniqueIndex("solar_rec_dashboard_storage_scope_key_chunk_idx").on(
+      table.scopeId,
+      table.storageKey,
+      table.chunkIndex
+    ),
+    scopeKeyIdx: index("solar_rec_dashboard_storage_scope_key_idx").on(
+      table.scopeId,
+      table.storageKey
+    ),
   })
 );
 
@@ -70,6 +87,8 @@ export const solarRecDatasetSyncState = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: int("userId").notNull(),
+    /** See `solarRecDashboardStorage.scopeId` — same migration semantics. */
+    scopeId: varchar("scopeId", { length: 64 }),
     storageKey: varchar("storageKey", { length: 191 }).notNull(),
     payloadSha256: varchar("payloadSha256", { length: 64 }).notNull().default(""),
     payloadBytes: int("payloadBytes").notNull().default(0),
@@ -85,6 +104,14 @@ export const solarRecDatasetSyncState = mysqlTable(
     ),
     userUpdatedAtIdx: index("solar_rec_dataset_sync_state_user_updated_idx").on(
       table.userId,
+      table.updatedAt
+    ),
+    scopeStorageKeyIdx: uniqueIndex("solar_rec_dataset_sync_state_scope_key_idx").on(
+      table.scopeId,
+      table.storageKey
+    ),
+    scopeUpdatedAtIdx: index("solar_rec_dataset_sync_state_scope_updated_idx").on(
+      table.scopeId,
       table.updatedAt
     ),
   })
