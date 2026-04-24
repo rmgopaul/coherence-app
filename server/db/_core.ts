@@ -228,6 +228,7 @@ export async function ensureSolarRecDashboardStorageTable() {
       CREATE TABLE IF NOT EXISTS solarRecDashboardStorage (
         id varchar(64) NOT NULL,
         userId int NOT NULL,
+        scopeId varchar(64) NULL,
         storageKey varchar(191) NOT NULL,
         chunkIndex int NOT NULL,
         payload mediumtext NOT NULL,
@@ -235,7 +236,9 @@ export async function ensureSolarRecDashboardStorageTable() {
         updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         UNIQUE KEY solar_rec_dashboard_storage_user_key_chunk_idx (userId, storageKey, chunkIndex),
-        KEY solar_rec_dashboard_storage_user_key_idx (userId, storageKey)
+        KEY solar_rec_dashboard_storage_user_key_idx (userId, storageKey),
+        UNIQUE KEY solar_rec_dashboard_storage_scope_key_chunk_idx (scopeId, storageKey, chunkIndex),
+        KEY solar_rec_dashboard_storage_scope_key_idx (scopeId, storageKey)
       )
     `);
 
@@ -243,6 +246,27 @@ export async function ensureSolarRecDashboardStorageTable() {
     await db.execute(sql`
       ALTER TABLE solarRecDashboardStorage
       MODIFY COLUMN payload MEDIUMTEXT NOT NULL
+    `);
+
+    // Task 1.2b (PR A): add scopeId column + indexes to older installs.
+    // Idempotent: IF NOT EXISTS guards avoid errors on fresh DBs where
+    // the CREATE TABLE above already includes them.
+    await db.execute(sql`
+      ALTER TABLE solarRecDashboardStorage
+      ADD COLUMN IF NOT EXISTS scopeId varchar(64) NULL AFTER userId
+    `);
+    await db.execute(sql`
+      UPDATE solarRecDashboardStorage
+      SET scopeId = CONCAT('scope-user-', userId)
+      WHERE scopeId IS NULL
+    `);
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS solar_rec_dashboard_storage_scope_key_chunk_idx
+      ON solarRecDashboardStorage (scopeId, storageKey, chunkIndex)
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS solar_rec_dashboard_storage_scope_key_idx
+      ON solarRecDashboardStorage (scopeId, storageKey)
     `);
   });
 
@@ -260,6 +284,7 @@ export async function ensureSolarRecDatasetSyncStateTable() {
       CREATE TABLE IF NOT EXISTS solarRecDatasetSyncState (
         id varchar(64) NOT NULL,
         userId int NOT NULL,
+        scopeId varchar(64) NULL,
         storageKey varchar(191) NOT NULL,
         payloadSha256 varchar(64) NOT NULL DEFAULT '',
         payloadBytes int NOT NULL DEFAULT 0,
@@ -269,8 +294,29 @@ export async function ensureSolarRecDatasetSyncStateTable() {
         updatedAt timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         UNIQUE KEY solar_rec_dataset_sync_state_user_key_idx (userId, storageKey),
-        KEY solar_rec_dataset_sync_state_user_updated_idx (userId, updatedAt)
+        KEY solar_rec_dataset_sync_state_user_updated_idx (userId, updatedAt),
+        UNIQUE KEY solar_rec_dataset_sync_state_scope_key_idx (scopeId, storageKey),
+        KEY solar_rec_dataset_sync_state_scope_updated_idx (scopeId, updatedAt)
       )
+    `);
+
+    // Task 1.2b (PR A): add scopeId column + indexes to older installs.
+    await db.execute(sql`
+      ALTER TABLE solarRecDatasetSyncState
+      ADD COLUMN IF NOT EXISTS scopeId varchar(64) NULL AFTER userId
+    `);
+    await db.execute(sql`
+      UPDATE solarRecDatasetSyncState
+      SET scopeId = CONCAT('scope-user-', userId)
+      WHERE scopeId IS NULL
+    `);
+    await db.execute(sql`
+      CREATE UNIQUE INDEX IF NOT EXISTS solar_rec_dataset_sync_state_scope_key_idx
+      ON solarRecDatasetSyncState (scopeId, storageKey)
+    `);
+    await db.execute(sql`
+      CREATE INDEX IF NOT EXISTS solar_rec_dataset_sync_state_scope_updated_idx
+      ON solarRecDatasetSyncState (scopeId, updatedAt)
     `);
   });
 

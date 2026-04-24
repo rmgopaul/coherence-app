@@ -176,6 +176,13 @@
       "when": 1777002416050,
       "tag": "0028_add_gmail_waiting_on_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1777055890098,
+      "tag": "0029_add_solar_rec_scope_id",
+      "breakpoints": true
     }
   ]
 }
