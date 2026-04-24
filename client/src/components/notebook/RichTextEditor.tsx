@@ -51,8 +51,11 @@ type RichTextEditorProps = {
   onChange: (value: string) => void;
   onSaveShortcut?: () => void;
   /**
-   * Fires on Cmd/Ctrl+T with a non-empty selection. The selected text
-   * is passed so a task-creation modal can pre-fill it.
+   * Fires on Cmd+Alt+T (Mac) / Ctrl+Alt+T (Win/Linux) with a non-empty
+   * selection. Chrome reserves plain Cmd+T for "new tab" at the browser
+   * level — pages cannot intercept it — so we add Alt/Option to the
+   * combo. The selected text is passed so a task-creation modal can
+   * pre-fill it.
    */
   onCreateTodoistTask?: (selectedText: string) => void;
   onUploadImage?: (file: File) => Promise<string | null>;
@@ -182,9 +185,15 @@ export default function RichTextEditor({
           onSaveShortcut?.();
           return true;
         }
+        // Cmd+Alt+T (Mac) / Ctrl+Alt+T (Win/Linux). Plain Cmd+T opens
+        // a new tab at the Chrome level and is not preventDefault'able
+        // from page code — see commit history for the original bug.
+        // event.code === "KeyT" because Option+T on Mac produces "†"
+        // in event.key, not "t".
         if (
           (event.metaKey || event.ctrlKey) &&
-          event.key.toLowerCase() === "t" &&
+          event.altKey &&
+          event.code === "KeyT" &&
           onCreateTodoistTask
         ) {
           const { from, to } = view.state.selection;

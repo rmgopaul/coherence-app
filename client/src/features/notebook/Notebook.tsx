@@ -1481,8 +1481,11 @@ export default function Notebook() {
           <DialogHeader>
             <DialogTitle>Create Todoist task</DialogTitle>
             <DialogDescription>
-              From the selected text in this note. The task will be linked
-              back so this note shows up on the task later.
+              From the selected text in this note (shortcut:{" "}
+              <kbd className="rounded border px-1 py-0.5 text-xs">⌘⌥T</kbd>
+              {" "}on Mac, <kbd className="rounded border px-1 py-0.5 text-xs">Ctrl+Alt+T</kbd>{" "}
+              on Win/Linux). The task will be linked back so this note
+              shows up on the task later.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
