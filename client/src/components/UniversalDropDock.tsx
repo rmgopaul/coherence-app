@@ -87,30 +87,39 @@ export default function UniversalDropDock() {
         };
       }
 
-      // Google Calendar
-      if (host === "www.google.com" && pathname.startsWith("/calendar")) {
+      // Google Calendar. The `eid` query param is a base64-encoded
+      // string of the form "eventId [calendarId]" — calendarId is
+      // absent only when the event lives on the primary calendar.
+      // We must forward calendarId to the server; otherwise the
+      // Calendar API call defaults to /calendars/primary and 404s
+      // on non-primary calendar events.
+      if (
+        (host === "www.google.com" && pathname.startsWith("/calendar")) ||
+        host === "calendar.google.com"
+      ) {
         const eid = searchParams.get("eid");
         if (eid) {
           try {
             const decoded = atob(eid);
-            const eventId = decoded.split(" ")[0];
+            const parts = decoded.split(" ");
+            const eventId = parts[0];
+            const calendarId = parts[1] || undefined;
             return {
               type: "gcal" as const,
-              meta: { eid, eventId },
+              meta: {
+                eid,
+                eventId,
+                ...(calendarId ? { calendarId } : {}),
+              },
             };
           } catch (e) {
             console.error("[Drop Dock] Failed to decode eid:", e);
+            // Fall through and let the server decode from raw eid.
+            return {
+              type: "gcal" as const,
+              meta: { eid },
+            };
           }
-        }
-      }
-
-      if (host === "calendar.google.com") {
-        const eventId = searchParams.get("eid");
-        if (eventId) {
-          return {
-            type: "gcal" as const,
-            meta: { eventId },
-          };
         }
       }
 
