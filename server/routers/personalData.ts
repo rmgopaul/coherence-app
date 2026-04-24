@@ -2,7 +2,9 @@ import { verifySolarReadingsSignedRequest } from "../_core/solarReadingsIngest";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import { eq } from "drizzle-orm";
 import { formatTodayKey, toDateKey } from "@shared/dateKey";
+import { conversations, userPreferences } from "../../drizzle/schema";
 import {
   IntegrationNotConnectedError,
   parseJsonMetadata,
@@ -2557,10 +2559,16 @@ export const anthropicRouter = router({
 
   /**
    * Generic "Ask AI about this data" endpoint. The shared AskAiPanel
-   * component calls this with a moduleKey + on-screen context. The
-   * moduleKey is embedded in the system prompt for traceability and
-   * will become the persistence key once conversation storage lands
-   * in a follow-up PR.
+   * component calls this with a moduleKey + on-screen context.
+   *
+   * Task 4.5 V2: optional `conversationId` lets the panel resume a
+   * prior thread instead of starting fresh every ask. When the
+   * caller omits `conversationId` AND `persistConversation` is true,
+   * a new `conversations` row is created with
+   * `source = "ask-ai:${moduleKey}"` and both the user's question
+   * and the assistant's response are persisted to `messages`.
+   * Returns `{answer, model, conversationId}` so the client can
+   * stash the id and keep the thread alive.
    */
   ask: protectedProcedure
     .input(
@@ -2578,6 +2586,8 @@ export const anthropicRouter = router({
           .max(20)
           .default([]),
         modelOverride: z.string().max(64).optional(),
+        conversationId: z.string().max(64).optional(),
+        persistConversation: z.boolean().default(true),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -2608,7 +2618,7 @@ export const anthropicRouter = router({
         `- If the context doesn't contain enough info to answer, say so rather than guessing.`,
       ].join("\n");
 
-      const messages = [
+      const messagesForApi = [
         ...input.conversationHistory.map((m) => ({
           role: m.role as "user" | "assistant",
           content: m.content,
@@ -2624,7 +2634,12 @@ export const anthropicRouter = router({
           "anthropic-version": "2023-06-01",
         },
         signal: AbortSignal.timeout(60_000),
-        body: JSON.stringify({ model, max_tokens: 4096, system: systemPrompt, messages }),
+        body: JSON.stringify({
+          model,
+          max_tokens: 4096,
+          system: systemPrompt,
+          messages: messagesForApi,
+        }),
       });
 
       if (!response.ok) {
@@ -2649,7 +2664,176 @@ export const anthropicRouter = router({
           .map((b) => b.text)
           .join("\n") ?? "";
       if (!text) throw new Error("Empty response from Claude.");
-      return { answer: text, model };
+
+      // Task 4.5 V2 — persist conversation + messages when enabled.
+      let conversationId: string | null = input.conversationId ?? null;
+      if (input.persistConversation) {
+        try {
+          if (!conversationId) {
+            const { createConversation } = await import("../db");
+            // Title from the user's first question, trimmed to fit
+            // the `text` column comfortably (no hard limit in the
+            // schema, but we want it readable in the list UI).
+            const title = input.question.slice(0, 120);
+            conversationId = await createConversation(
+              ctx.user.id,
+              title,
+              `ask-ai:${input.moduleKey}`
+            );
+          }
+          const { addMessage } = await import("../db");
+          await addMessage({
+            id: nanoid(),
+            conversationId,
+            role: "user",
+            content: input.question,
+          });
+          await addMessage({
+            id: nanoid(),
+            conversationId,
+            role: "assistant",
+            content: text,
+          });
+        } catch (persistError) {
+          // Persistence failures must not block the answer. Log and
+          // proceed; the client will still render the response and
+          // simply won't have a conversationId to re-anchor next ask.
+          console.warn(
+            "[anthropic.ask] conversation persistence failed:",
+            persistError instanceof Error
+              ? persistError.message
+              : persistError
+          );
+          conversationId = null;
+        }
+      }
+
+      return { answer: text, model, conversationId };
+    }),
+
+  /**
+   * Task 4.5 V2 — per-module model preference. Stored in
+   * `userPreferences.askAiModelsJson` as
+   * `{ [moduleKey: string]: modelId }`. Returns null when the user
+   * has no saved preference for this module (client falls back to
+   * the account-wide default).
+   */
+  getModelForModule: protectedProcedure
+    .input(z.object({ moduleKey: z.string().min(1).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const { getDb } = await import("../db");
+      const db = await getDb();
+      if (!db) return { model: null as string | null };
+      const [row] = await db
+        .select({ askAiModelsJson: userPreferences.askAiModelsJson })
+        .from(userPreferences)
+        .where(eq(userPreferences.userId, ctx.user.id))
+        .limit(1);
+      if (!row?.askAiModelsJson) return { model: null };
+      try {
+        const parsed = JSON.parse(row.askAiModelsJson) as Record<
+          string,
+          string
+        >;
+        const candidate = parsed[input.moduleKey];
+        return {
+          model: typeof candidate === "string" && candidate.length > 0
+            ? candidate
+            : null,
+        };
+      } catch {
+        return { model: null };
+      }
+    }),
+
+  setModelForModule: protectedProcedure
+    .input(
+      z.object({
+        moduleKey: z.string().min(1).max(64),
+        model: z.string().min(1).max(64),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getDb } = await import("../db");
+      const db = await getDb();
+      if (!db) return { success: false as const };
+      const [existing] = await db
+        .select({ askAiModelsJson: userPreferences.askAiModelsJson })
+        .from(userPreferences)
+        .where(eq(userPreferences.userId, ctx.user.id))
+        .limit(1);
+      let prefs: Record<string, string> = {};
+      if (existing?.askAiModelsJson) {
+        try {
+          const parsed = JSON.parse(existing.askAiModelsJson);
+          if (parsed && typeof parsed === "object")
+            prefs = parsed as Record<string, string>;
+        } catch {
+          /* fall through to empty */
+        }
+      }
+      prefs[input.moduleKey] = input.model;
+      const nextJson = JSON.stringify(prefs);
+      if (existing !== undefined) {
+        await db
+          .update(userPreferences)
+          .set({ askAiModelsJson: nextJson })
+          .where(eq(userPreferences.userId, ctx.user.id));
+      } else {
+        await db.insert(userPreferences).values({
+          id: nanoid(),
+          userId: ctx.user.id,
+          askAiModelsJson: nextJson,
+        });
+      }
+      return { success: true as const };
+    }),
+
+  /**
+   * Task 4.5 V2 — list conversations created by the AskAiPanel for
+   * a given moduleKey. Used by the panel's "prior sessions" UI.
+   */
+  listAskAiConversations: protectedProcedure
+    .input(z.object({ moduleKey: z.string().min(1).max(64), limit: z.number().int().min(1).max(100).default(20) }))
+    .query(async ({ ctx, input }) => {
+      const { listConversationsBySource } = await import("../db");
+      const rows = await listConversationsBySource(
+        ctx.user.id,
+        `ask-ai:${input.moduleKey}`,
+        input.limit
+      );
+      return rows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        createdAt: row.createdAt
+          ? new Date(row.createdAt).toISOString()
+          : null,
+        updatedAt: row.updatedAt
+          ? new Date(row.updatedAt).toISOString()
+          : null,
+      }));
+    }),
+
+  getAskAiConversationMessages: protectedProcedure
+    .input(z.object({ conversationId: z.string().min(1).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const { getConversationMessages, getDb } = await import("../db");
+      const db = await getDb();
+      if (!db) return [];
+      // Ownership check: only the conversation's owner may read.
+      const [row] = await db
+        .select({ userId: conversations.userId })
+        .from(conversations)
+        .where(eq(conversations.id, input.conversationId))
+        .limit(1);
+      if (!row || row.userId !== ctx.user.id) return [];
+      const rows = await getConversationMessages(input.conversationId);
+      return rows.map((m) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        createdAt: m.createdAt ? new Date(m.createdAt).toISOString() : null,
+      }));
     }),
 });
 

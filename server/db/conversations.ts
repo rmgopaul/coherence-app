@@ -78,7 +78,11 @@ export async function getConversationSummaries(userId: number, limit = 100) {
   });
 }
 
-export async function createConversation(userId: number, title: string) {
+export async function createConversation(
+  userId: number,
+  title: string,
+  source: string | null = null
+): Promise<string> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
@@ -88,10 +92,35 @@ export async function createConversation(userId: number, title: string) {
       id,
       userId,
       title,
+      source,
     });
   });
 
   return id;
+}
+
+/**
+ * List conversations with a matching `source` tag — used by the
+ * shared AskAiPanel to find prior panel sessions for a given
+ * moduleKey without pulling the legacy ChatGPT widget's rows.
+ */
+export async function listConversationsBySource(
+  userId: number,
+  source: string,
+  limit = 50
+): Promise<Array<typeof conversations.$inferSelect>> {
+  const db = await getDb();
+  if (!db) return [];
+
+  const cappedLimit = Math.max(1, Math.min(limit, 200));
+  return withDbRetry("list conversations by source", async () =>
+    db
+      .select()
+      .from(conversations)
+      .where(and(eq(conversations.userId, userId), eq(conversations.source, source)))
+      .orderBy(desc(conversations.updatedAt), desc(conversations.createdAt))
+      .limit(cappedLimit)
+  );
 }
 
 export async function getConversationMessages(conversationId: string) {

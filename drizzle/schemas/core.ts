@@ -19,6 +19,13 @@ export const userPreferences = mysqlTable("userPreferences", {
   enabledWidgets: text("enabledWidgets"), // JSON array of enabled widget IDs
   widgetLayout: text("widgetLayout"), // JSON object for widget positions
   theme: varchar("theme", { length: 32 }).default("light"),
+  /**
+   * Task 4.5 V2 — per-module AskAiPanel model preference.
+   * JSON object of shape `{ [moduleKey: string]: modelId }`, e.g.
+   * `{ "notebook": "claude-sonnet-4-6", "supplements-insights":
+   * "claude-opus-4-7" }`. Null means no stored preference.
+   */
+  askAiModelsJson: text("askAiModelsJson"),
   createdAt: timestamp("createdAt").defaultNow(),
   updatedAt: timestamp("updatedAt").defaultNow(),
 });
