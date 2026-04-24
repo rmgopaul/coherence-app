@@ -39,7 +39,6 @@ const ROUTE_TITLES: Record<string, string> = {
   "/fronius-meter-reads": "Fronius",
   "/ennexos-meter-reads": "ennexOS",
   "/egauge-api": "eGauge",
-  "/tesla-solar-api": "Tesla Solar",
   "/tesla-powerhub-api": "Tesla Powerhub",
   "/solis-meter-reads": "Solis",
   "/goodwe-meter-reads": "GoodWe SEMS",

@@ -26,7 +26,6 @@ const SolarEdgeMeterReads = lazy(() => import("@/features/solar-readings/SolarEd
 const FroniusMeterReads = lazy(() => import("@/features/solar-readings/FroniusMeterReads"));
 const EnnexOsMeterReads = lazy(() => import("@/features/solar-readings/EnnexOsMeterReads"));
 const EGaugeApi = lazy(() => import("@/features/solar-readings/EGaugeApi"));
-const TeslaSolarApi = lazy(() => import("@/features/solar-readings/TeslaSolarApi"));
 const TeslaPowerhubApi = lazy(() => import("@/features/solar-readings/TeslaPowerhubApi"));
 const ZendeskTicketMetrics = lazy(() => import("@/features/dashboard/ZendeskTicketMetrics"));
 const DeepUpdateSynthesizer = lazy(() => import("@/features/dashboard/DeepUpdateSynthesizer"));
@@ -100,7 +99,6 @@ function AppRoutes() {
       <Route path={"/fronius-meter-reads"} component={withRouteSuspense(FroniusMeterReads)} />
       <Route path={"/ennexos-meter-reads"} component={withRouteSuspense(EnnexOsMeterReads)} />
       <Route path={"/egauge-api"} component={withRouteSuspense(EGaugeApi)} />
-      <Route path={"/tesla-solar-api"} component={withRouteSuspense(TeslaSolarApi)} />
       <Route path={"/tesla-powerhub-api"} component={withRouteSuspense(TeslaPowerhubApi)} />
       <Route path={"/solis-meter-reads"} component={withRouteSuspense(SolisMeterReads)} />
       <Route path={"/goodwe-meter-reads"} component={withRouteSuspense(GoodWeMeterReads)} />

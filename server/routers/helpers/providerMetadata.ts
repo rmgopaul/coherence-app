@@ -43,15 +43,6 @@ export function parseZendeskMetadata(metadata: string | null | undefined): {
   };
 }
 
-export function parseTeslaSolarMetadata(metadata: string | null | undefined): {
-  baseUrl: string | null;
-} {
-  const parsed = parseJsonMetadata(metadata);
-  return {
-    baseUrl: toNonEmptyString(parsed.baseUrl),
-  };
-}
-
 export type EgaugeAccessType =
   | "public"
   | "user_login"

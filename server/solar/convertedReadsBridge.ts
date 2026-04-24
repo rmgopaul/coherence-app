@@ -79,8 +79,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   "egauge-monitoring": MONITORING_CANONICAL_NAMES.egauge,
   "tesla-powerhub": MONITORING_CANONICAL_NAMES.teslaPowerhub,
   teslapowerhub: MONITORING_CANONICAL_NAMES.teslaPowerhub,
-  "tesla-solar": MONITORING_CANONICAL_NAMES.teslaSolar,
-  teslasolar: MONITORING_CANONICAL_NAMES.teslaSolar,
   ennexos: MONITORING_CANONICAL_NAMES.ennexos,
   ekm: MONITORING_CANONICAL_NAMES.ekm,
 };

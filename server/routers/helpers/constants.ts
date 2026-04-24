@@ -9,7 +9,6 @@ export const ENPHASE_V4_PROVIDER = "enphase-v4";
 export const SOLAR_EDGE_PROVIDER = "solaredge-monitoring";
 export const ENNEX_OS_PROVIDER = "ennexos-monitoring";
 export const ZENDESK_PROVIDER = "zendesk";
-export const TESLA_SOLAR_PROVIDER = "tesla-solar";
 export const TESLA_POWERHUB_PROVIDER = "tesla-powerhub";
 export const CLOCKIFY_PROVIDER = "clockify";
 export const CSG_PORTAL_PROVIDER = "csg-portal";
