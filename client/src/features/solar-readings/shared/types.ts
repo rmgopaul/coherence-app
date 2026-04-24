@@ -345,4 +345,19 @@ export type MeterReadsProviderConfig = {
    * tester; they just skip Section 3.
    */
   noBulkFetch?: boolean;
+
+  /**
+   * Optional extra content rendered between the credential-field
+   * grid and the Connect button in Card 1. Used by vendors whose
+   * connect flow needs more than a plain form — e.g. Enphase V4's
+   * OAuth authorize link that's built dynamically from the live
+   * clientId + redirectUri the user has entered. The function
+   * receives the current credential values so the rendered content
+   * can react to what the user has typed (e.g. computing an
+   * authorize URL).
+   */
+  preConnectContent?: (ctx: {
+    credentialValues: Record<string, string>;
+    providerName: string;
+  }) => React.ReactNode;
 };
