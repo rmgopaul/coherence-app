@@ -72,11 +72,34 @@ export async function upsertUserPreferences(prefs: InsertUserPreference) {
   });
 }
 
+/**
+ * Task 1.2b (PR B) — scope-keyed DB resolution.
+ *
+ * The `userId` parameter on these helpers is retained as a
+ * compatibility shim so the 30+ existing call sites don't churn; the
+ * actual filter/write predicate is `scopeId`, derived once via
+ * `resolveSolarRecScopeId()` (returns `scope-user-${ownerUserId}` for
+ * the single-scope model — same string regardless of caller). Writes
+ * still set `userId` to keep the NOT NULL column populated for audit;
+ * the legacy `(userId, storageKey)` unique index is retained by PR A
+ * for backward compat, so existing data remains readable until PR C
+ * migrates the S3 blobs.
+ */
+async function resolveScopeIdFromUserId(userId: number): Promise<string> {
+  const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
+  return resolveSolarRecScopeId();
+  // userId is accepted for call-site compatibility; today's
+  // single-scope model derives the canonical scope string without
+  // consulting the passed userId.
+  void userId;
+}
+
 export async function getSolarRecDashboardPayload(userId: number, storageKey: string): Promise<string | null> {
   const db = await getDb();
   if (!db) return null;
   const ensured = await ensureSolarRecDashboardStorageTable();
   if (!ensured) return null;
+  const scopeId = await resolveScopeIdFromUserId(userId);
 
   const rows = await withDbRetry("load solar rec dashboard payload", async () =>
     db
@@ -87,7 +110,7 @@ export async function getSolarRecDashboardPayload(userId: number, storageKey: st
       .from(solarRecDashboardStorage)
       .where(
         and(
-          eq(solarRecDashboardStorage.userId, userId),
+          eq(solarRecDashboardStorage.scopeId, scopeId),
           eq(solarRecDashboardStorage.storageKey, storageKey)
         )
       )
@@ -103,6 +126,7 @@ export async function saveSolarRecDashboardPayload(userId: number, storageKey: s
   if (!db) return false;
   const ensured = await ensureSolarRecDashboardStorageTable();
   if (!ensured) return false;
+  const scopeId = await resolveScopeIdFromUserId(userId);
 
   const chunks = splitIntoChunks(payload, SOLAR_REC_DB_CHUNK_CHARS);
   const now = new Date();
@@ -113,7 +137,7 @@ export async function saveSolarRecDashboardPayload(userId: number, storageKey: s
         .delete(solarRecDashboardStorage)
         .where(
           and(
-            eq(solarRecDashboardStorage.userId, userId),
+            eq(solarRecDashboardStorage.scopeId, scopeId),
             eq(solarRecDashboardStorage.storageKey, storageKey)
           )
         );
@@ -122,6 +146,7 @@ export async function saveSolarRecDashboardPayload(userId: number, storageKey: s
         chunks.map((chunk, index) => ({
           id: nanoid(),
           userId,
+          scopeId,
           storageKey,
           chunkIndex: index,
           payload: chunk,
@@ -159,6 +184,7 @@ export async function upsertSolarRecDatasetSyncState(input: {
   if (!db) return false;
   const ensured = await ensureSolarRecDatasetSyncStateTable();
   if (!ensured) return false;
+  const scopeId = await resolveScopeIdFromUserId(input.userId);
 
   const now = new Date();
   await withDbRetry("upsert solar rec dataset sync state", async () => {
@@ -167,6 +193,7 @@ export async function upsertSolarRecDatasetSyncState(input: {
       .values({
         id: nanoid(),
         userId: input.userId,
+        scopeId,
         storageKey: input.storageKey,
         payloadSha256: input.payload.length > 0 ? hashSolarRecPayload(input.payload) : "",
         payloadBytes: Buffer.byteLength(input.payload, "utf8"),
@@ -177,6 +204,10 @@ export async function upsertSolarRecDatasetSyncState(input: {
       })
       .onDuplicateKeyUpdate({
         set: {
+          // Bumps whichever row the unique index points to — since PR A
+          // retained both (userId, storageKey) and (scopeId, storageKey)
+          // unique indexes, we're still safe against double-writes.
+          scopeId,
           payloadSha256: input.payload.length > 0 ? hashSolarRecPayload(input.payload) : "",
           payloadBytes: Buffer.byteLength(input.payload, "utf8"),
           dbPersisted: input.dbPersisted,
@@ -197,6 +228,7 @@ export async function getSolarRecDatasetSyncStates(
   if (!db || storageKeys.length === 0) return [];
   const ensured = await ensureSolarRecDatasetSyncStateTable();
   if (!ensured) return [];
+  const scopeId = await resolveScopeIdFromUserId(userId);
 
   const rows = await withDbRetry("load solar rec dataset sync states", async () =>
     db
@@ -211,7 +243,7 @@ export async function getSolarRecDatasetSyncStates(
       .from(solarRecDatasetSyncState)
       .where(
         and(
-          eq(solarRecDatasetSyncState.userId, userId),
+          eq(solarRecDatasetSyncState.scopeId, scopeId),
           inArray(solarRecDatasetSyncState.storageKey, storageKeys)
         )
       )
