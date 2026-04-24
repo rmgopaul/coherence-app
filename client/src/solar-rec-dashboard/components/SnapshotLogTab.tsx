@@ -34,6 +34,7 @@
  */
 
 import { memo, useEffect, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Trash2 } from "lucide-react";
 import {
   Area,
@@ -1102,6 +1103,41 @@ export default memo(function SnapshotLogTab(props: SnapshotLogTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-snapshot-log"
+        title="Ask AI about snapshot log trends"
+        contextGetter={() => ({
+          logEntryCount: logEntries.length,
+          latestColumns: snapshotLogColumns.slice(0, 6).map((col) => ({
+            id: col.id,
+            createdAt: col.createdAt
+              ? col.createdAt.toISOString().slice(0, 10)
+              : null,
+            totalSystems: col.totalSystems,
+            reportingSystems: col.reportingSystems,
+            reportingPercent: col.reportingPercent,
+          })),
+          trendSummary: snapshotTrendSummary,
+          trendRows: snapshotTrendRows.map((r) => ({
+            label: r.label,
+            reportingPercent: r.reportingPercent,
+            contractValueReportingPercent: r.contractValueReportingPercent,
+            reportingDelta: r.reportingDelta,
+            cooNotTransferredNotReporting: r.cooNotTransferredNotReporting,
+          })),
+          monthlyTransitionSummary:
+            monthlySnapshotTransitions.length > 0
+              ? {
+                  months: monthlySnapshotTransitions.length,
+                  latestMonthLabel:
+                    monthlySnapshotTransitions[
+                      monthlySnapshotTransitions.length - 1
+                    ]?.monthLabel ?? null,
+                }
+              : null,
+        })}
+      />
     </div>
   );
 });

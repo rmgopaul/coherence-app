@@ -36,6 +36,7 @@ import {
   type MeterReadsConversionResult,
 } from "@/lib/meterReads";
 import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
+import { AskAiPanel } from "@/components/AskAiPanel";
 
 export default memo(function MeterReadsTab() {
   const [meterReadsResult, setMeterReadsResult] =
@@ -200,6 +201,22 @@ export default memo(function MeterReadsTab() {
           </CardContent>
         </Card>
       ) : null}
+
+      <AskAiPanel
+        moduleKey="solar-rec-meter-reads"
+        title="Ask AI about meter reads"
+        contextGetter={() =>
+          meterReadsResult
+            ? {
+                sourceWorkbookName: meterReadsResult.sourceWorkbookName,
+                readDate: meterReadsResult.readDate,
+                totalRows: meterReadsResult.totalRows,
+                byMonitoring: meterReadsResult.byMonitoring,
+                notes: meterReadsResult.notes,
+              }
+            : { status: "no workbook converted yet" }
+        }
+      />
     </div>
   );
 });
