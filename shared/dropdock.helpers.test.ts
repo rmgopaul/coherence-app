@@ -3,6 +3,7 @@ import {
   canonicalizeUrl,
   classifyUrl,
   extractUrlFromPaste,
+  hasSensitiveParams,
 } from "./dropdock.helpers";
 
 describe("canonicalizeUrl", () => {
@@ -33,6 +34,28 @@ describe("canonicalizeUrl", () => {
     expect(canonicalizeUrl("https://x.com/?gclid=abc&fbclid=def")).toBe(
       "https://x.com/"
     );
+  });
+
+  it.each([
+    "token",
+    "access_token",
+    "code",
+    "state",
+    "sig",
+    "auth",
+    "key",
+  ])("strips the %s query parameter so credentials don't enter the dedup key", (param) => {
+    expect(canonicalizeUrl(`https://example.com/?${param}=FAKE123`)).toBe(
+      "https://example.com/"
+    );
+  });
+
+  it("strips sensitive params alongside tracking params and keeps everything else", () => {
+    expect(
+      canonicalizeUrl(
+        "https://example.com/?utm_source=n&token=T&code=C&keep=me"
+      )
+    ).toBe("https://example.com/?keep=me");
   });
 
   it("preserves the URL hash (Gmail uses it to identify a thread)", () => {
@@ -134,5 +157,31 @@ describe("extractUrlFromPaste", () => {
 
   it("trims surrounding whitespace", () => {
     expect(extractUrlFromPaste("   https://a.com   ")).toBe("https://a.com");
+  });
+});
+
+describe("hasSensitiveParams", () => {
+  it.each([
+    "token",
+    "access_token",
+    "code",
+    "state",
+    "sig",
+    "auth",
+    "key",
+  ])("flags URLs carrying %s", (param) => {
+    expect(hasSensitiveParams(`https://example.com/?${param}=FAKE123`)).toBe(
+      true
+    );
+  });
+
+  it("returns false for clean URLs", () => {
+    expect(hasSensitiveParams("https://example.com/?utm_source=x")).toBe(false);
+    expect(hasSensitiveParams("https://example.com/path")).toBe(false);
+  });
+
+  it("returns false for unparseable input", () => {
+    expect(hasSensitiveParams("not a url")).toBe(false);
+    expect(hasSensitiveParams("")).toBe(false);
   });
 });
