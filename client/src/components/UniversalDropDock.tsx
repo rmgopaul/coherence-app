@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { X, Mail, Calendar, FileSpreadsheet, CheckSquare, Link as LinkIcon } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { toast } from "sonner";
+import { hasSensitiveParams } from "@shared/dropdock.helpers";
 
 interface DroppedItem {
   id: string;
@@ -163,6 +164,15 @@ export default function UniversalDropDock() {
     if (!parsed) {
       toast.error("Invalid URL");
       return;
+    }
+
+    if (hasSensitiveParams(url)) {
+      // Canonicalization in shared/dropdock.helpers.ts strips these
+      // for the dedup key, but the raw URL is stored verbatim —
+      // warn so the user can decide whether to keep the token.
+      toast.warning(
+        "URL contains auth-like parameters (token/code/state/…). Consider removing them before saving."
+      );
     }
 
     const newItem: DroppedItem = {
