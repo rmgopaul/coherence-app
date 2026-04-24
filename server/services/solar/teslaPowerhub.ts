@@ -1739,3 +1739,46 @@ export function normalizeTeslaPowerhubUrl(raw: string | null | undefined): strin
   if (!normalized) return null;
   return normalized.replace(/\/+$/, "");
 }
+
+/*
+ * In-memory group-metrics cache. A single Tesla Powerhub group
+ * snapshot spans *all* sites in that group (each
+ * `getTeslaPowerhubGroupProductionMetrics` call fetches the group
+ * wholesale). The shared MeterReadsPage loops mutations one site at a
+ * time; without memoization, N sites in the same group trigger N
+ * redundant full-group fetches. This cache holds each (userId+groupId)
+ * result for 5 minutes so the bulk loop amortizes to a single upstream
+ * hit per group, per run.
+ */
+type CachedGroupMetrics = Awaited<ReturnType<typeof getTeslaPowerhubGroupProductionMetrics>>;
+const TESLA_POWERHUB_GROUP_CACHE_TTL_MS = 5 * 60 * 1000;
+const teslaPowerhubGroupCache = new Map<
+  string,
+  { expiresAt: number; value: CachedGroupMetrics }
+>();
+
+export async function getTeslaPowerhubGroupProductionMetricsCached(
+  context: TeslaPowerhubApiContext,
+  options: {
+    groupId: string;
+    cacheKey: string;
+    endpointUrl?: string | null;
+    signal?: string | null;
+  }
+): Promise<CachedGroupMetrics> {
+  const now = Date.now();
+  const cached = teslaPowerhubGroupCache.get(options.cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  const result = await getTeslaPowerhubGroupProductionMetrics(context, {
+    groupId: options.groupId,
+    endpointUrl: options.endpointUrl ?? null,
+    signal: options.signal ?? null,
+  });
+  teslaPowerhubGroupCache.set(options.cacheKey, {
+    expiresAt: now + TESLA_POWERHUB_GROUP_CACHE_TTL_MS,
+    value: result,
+  });
+  return result;
+}
