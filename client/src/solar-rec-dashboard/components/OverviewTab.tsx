@@ -34,6 +34,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   formatCapacityKw,
   formatNumber,
@@ -567,6 +568,39 @@ export default memo(function OverviewTab(props: OverviewTabProps) {
           </div>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-overview"
+        title="Ask AI about this overview"
+        contextGetter={() => ({
+          systemCounts: {
+            totalSystems: summary.totalSystems,
+            reportingSystems: summary.reportingSystems,
+            reportingPercent: summary.reportingPercent,
+            smallSystems: summary.smallSystems,
+            largeSystems: summary.largeSystems,
+          },
+          part2Totals: overviewPart2Totals,
+          sizeBuckets: sizeBreakdownRows,
+          ownership: {
+            statuses: changeOwnershipSummary.counts.map((c) => ({
+              status: c.status,
+              count: c.count,
+            })),
+            total: changeOwnershipSummary.total,
+            overview: summary.ownershipOverview,
+          },
+          financialProfit: financialProfitData
+            ? {
+                totalProfit: financialProfitData.totalProfit,
+                avgProfit: financialProfitData.avgProfit,
+                systemsWithData: financialProfitData.systemsWithData,
+                totalCollateralization:
+                  financialProfitData.totalCollateralization,
+              }
+            : null,
+        })}
+      />
     </div>
   );
 });
