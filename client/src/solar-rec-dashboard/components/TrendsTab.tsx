@@ -12,6 +12,7 @@
  */
 
 import { memo, useMemo } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
   BarChart,
@@ -308,6 +309,30 @@ export default memo(function TrendsTab(props: TrendsTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-trends"
+        title="Ask AI about trends"
+        contextGetter={() => ({
+          deliveryPace: {
+            points: trendDeliveryPace.length,
+            recent12: trendDeliveryPace.slice(-12),
+          },
+          productionMoM: {
+            monthsCovered: trendProductionMoM.length,
+            topSiteIds: trendTopSiteIds,
+            recent12: trendProductionMoM.slice(-12),
+          },
+          reportingLogEntries: logEntries.length,
+          latestLogEntries: logEntries.slice(-12).map((e) => ({
+            createdAt: e.createdAt
+              ? e.createdAt.toISOString().slice(0, 10)
+              : null,
+            totalSystems: e.totalSystems,
+            reportingPercent: e.reportingPercent,
+          })),
+        })}
+      />
     </div>
   );
 });
