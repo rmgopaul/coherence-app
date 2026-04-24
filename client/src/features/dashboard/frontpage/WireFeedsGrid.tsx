@@ -19,7 +19,7 @@
  */
 import type { ReactNode } from "react";
 import type { DashboardData } from "../useDashboardData";
-import { ApprovalFeedCell } from "./feeds/ApprovalFeedCell";
+import { PoliticsFeedCell } from "./feeds/PoliticsFeedCell";
 import { SupplementsFeedCell } from "./feeds/SupplementsFeedCell";
 import { HabitsFeedCell } from "./feeds/HabitsFeedCell";
 import { SportsFeedCell } from "./feeds/SportsFeedCell";
@@ -398,7 +398,7 @@ export function WireFeedsGrid({ data }: WireFeedsGridProps) {
       <MarketsCell market={data.market} />
       <NewsCell news={data.news} />
       <WeatherCell weather={data.weather} />
-      <ApprovalFeedCell updatedLabel={updatedLabel} />
+      <PoliticsFeedCell updatedLabel={updatedLabel} />
       <SupplementsFeedCell updatedLabel={updatedLabel} />
       <HabitsFeedCell updatedLabel={updatedLabel} />
       <SportsFeedCell updatedLabel={updatedLabel} />
