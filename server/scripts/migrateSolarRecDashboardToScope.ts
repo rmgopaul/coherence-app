@@ -28,6 +28,7 @@
  * intentionally skipped. If a future uploaded file needs to be
  * preserved, re-run the Schedule B import.
  */
+import "dotenv/config";
 import { asc, eq, inArray } from "drizzle-orm";
 import { getDb } from "../db";
 import {
