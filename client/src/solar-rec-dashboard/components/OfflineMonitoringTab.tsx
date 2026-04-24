@@ -21,6 +21,7 @@
  */
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { formatCurrency, formatPercent } from "@/lib/helpers";
 import {
   Card,
@@ -1387,6 +1388,34 @@ export default memo(function OfflineMonitoringTab(props: OfflineMonitoringTabPro
           </div>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-offline-monitoring"
+        title="Ask AI about offline monitoring"
+        contextGetter={() => ({
+          summary: offlineSummary,
+          monitoringTypeBreakdown: offlineMonitoringBreakdownRows,
+          platformBreakdown: offlinePlatformBreakdownRows,
+          installerBreakdown: offlineInstallerBreakdownRows,
+          zeroReportingInstallerPlatform: zeroReportingInstallerPlatformRows,
+          sampleOfflineSystems: filteredOfflineSystems
+            .slice(0, 20)
+            .map((s) => ({
+              systemName: s.systemName,
+              trackingSystemRefId: s.trackingSystemRefId,
+              installedKwAc: s.installedKwAc,
+              contractedValue: s.contractedValue,
+              monitoringType: s.monitoringType,
+              monitoringPlatform: s.monitoringPlatform,
+              latestReportingDate: s.latestReportingDate
+                ? s.latestReportingDate.toISOString().slice(0, 10)
+                : null,
+              contractedDate: s.contractedDate
+                ? s.contractedDate.toISOString().slice(0, 10)
+                : null,
+            })),
+        })}
+      />
     </div>
   );
 });
