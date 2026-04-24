@@ -13,11 +13,13 @@
  * (see shared/dropdock.helpers.ts) so the dedupe key is stable.
  */
 import { useCallback, useRef, useState } from "react";
+import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import {
   classifyUrl,
   extractUrlFromPaste,
+  hasSensitiveParams,
   type DockSource,
 } from "@shared/dropdock.helpers";
 
@@ -64,6 +66,14 @@ export function DropDock() {
     async (raw: string) => {
       const url = extractUrlFromPaste(raw);
       if (!url) return;
+      if (hasSensitiveParams(url)) {
+        // Canonicalization strips these so the dedup key is clean,
+        // but the original URL is still stored verbatim. Warn so the
+        // user can decide whether to keep it.
+        toast.warning(
+          "URL contains auth-like parameters (token/code/state/…). Consider removing them before saving."
+        );
+      }
       const classified = classifyUrl(url);
 
       // Optimistic title from the URL itself; the existing

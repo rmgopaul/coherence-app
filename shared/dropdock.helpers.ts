@@ -48,7 +48,24 @@ const TRACKING_PARAMS = new Set([
   "ref_src",
 ]);
 
-function stripTrackingParams(u: URL): URL {
+/**
+ * Query parameters that typically carry short-lived credentials or
+ * OAuth/CSRF state. Stripped from the canonical form so dedup ignores
+ * them (two pastes of the same page with rotating tokens collapse to
+ * one chip), and exposed to the UI via `hasSensitiveParams` so callers
+ * can warn the user before they store a URL that leaks a credential.
+ */
+export const SENSITIVE_PARAMS = new Set([
+  "token",
+  "access_token",
+  "code",
+  "state",
+  "sig",
+  "auth",
+  "key",
+]);
+
+function stripParams(u: URL, blocklist: Set<string>): URL {
   const out = new URL(u.toString());
   // Snapshot keys via forEach to avoid downlevelIteration on the
   // URLSearchParamsIterator (server tsconfig doesn't allow direct iter).
@@ -57,9 +74,31 @@ function stripTrackingParams(u: URL): URL {
     keys.push(key);
   });
   for (const key of keys) {
-    if (TRACKING_PARAMS.has(key)) out.searchParams.delete(key);
+    if (blocklist.has(key)) out.searchParams.delete(key);
   }
   return out;
+}
+
+/**
+ * True when the URL carries at least one query parameter from
+ * `SENSITIVE_PARAMS`. Intended for UI paste handlers so they can
+ * warn the user that they're about to save a URL with a credential.
+ */
+export function hasSensitiveParams(input: string): boolean {
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  try {
+    const u = new URL(trimmed);
+    // Iterate via forEach to sidestep the server tsconfig's
+    // no-downlevelIteration restriction on Set<string>.
+    let found = false;
+    u.searchParams.forEach((_value, key) => {
+      if (SENSITIVE_PARAMS.has(key)) found = true;
+    });
+    return found;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -78,7 +117,8 @@ export function canonicalizeUrl(input: string): string {
     // unique constraint still de-duplicates plain text pastes.
     return trimmed.toLowerCase();
   }
-  u = stripTrackingParams(u);
+  u = stripParams(u, TRACKING_PARAMS);
+  u = stripParams(u, SENSITIVE_PARAMS);
   u.protocol = u.protocol.toLowerCase();
   u.hostname = u.hostname.toLowerCase();
   // Drop a single trailing slash on the pathname (but never on bare "/").
