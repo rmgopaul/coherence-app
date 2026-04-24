@@ -12,7 +12,6 @@ import {
 } from "./routers/auth";
 import { solarRecDashboardRouter } from "./routers/solarRecDashboard";
 import {
-  enphaseV2Router,
   enphaseV4Router,
   solarEdgeRouter,
   froniusRouter,
@@ -87,7 +86,6 @@ export const appRouter = router({
   solarRecDashboard: solarRecDashboardRouter,
 
   // Solar inverter monitoring
-  enphaseV2: enphaseV2Router,
   enphaseV4: enphaseV4Router,
   solarEdge: solarEdgeRouter,
   fronius: froniusRouter,

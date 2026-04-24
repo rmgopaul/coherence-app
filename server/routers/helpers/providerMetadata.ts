@@ -5,17 +5,6 @@ import { parseJsonMetadata } from "./utils";
 // Provider metadata types, parsers, serializers
 // ---------------------------------------------------------------------------
 
-export function parseEnphaseV2Metadata(metadata: string | null | undefined): {
-  userId: string | null;
-  baseUrl: string | null;
-} {
-  const parsed = parseJsonMetadata(metadata);
-  return {
-    userId: toNonEmptyString(parsed.userId),
-    baseUrl: toNonEmptyString(parsed.baseUrl),
-  };
-}
-
 export function parseEnphaseV4Metadata(metadata: string | null | undefined): {
   apiKey: string | null;
   clientId: string | null;

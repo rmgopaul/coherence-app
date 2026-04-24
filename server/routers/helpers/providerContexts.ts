@@ -3,7 +3,6 @@ import { IntegrationNotConnectedError } from "../../errors";
 import { getIntegrationByProvider, upsertIntegration } from "../../db";
 import { refreshEnphaseV4AccessToken } from "../../services/solar/enphaseV4";
 import {
-  ENPHASE_V2_PROVIDER,
   ENPHASE_V4_PROVIDER,
   SOLAR_EDGE_PROVIDER,
   ENNEX_OS_PROVIDER,
@@ -24,7 +23,6 @@ import {
   SOLAR_LOG_PROVIDER,
 } from "./constants";
 import {
-  parseEnphaseV2Metadata,
   parseEnphaseV4Metadata,
   parseSolarEdgeMetadata,
   parseEnnexOsMetadata,
@@ -86,20 +84,6 @@ export async function getEnnexOsContext(
     accessToken: activeConnection.accessToken,
     baseUrl: activeConnection.baseUrl ?? metadata.baseUrl,
   };
-}
-
-export async function getEnphaseV2Credentials(
-  userId: number
-): Promise<{ apiKey: string; userId: string; baseUrl: string | null }> {
-  const integration = await getIntegrationByProvider(
-    userId,
-    ENPHASE_V2_PROVIDER
-  );
-  const apiKey = toNonEmptyString(integration?.accessToken);
-  const metadata = parseEnphaseV2Metadata(integration?.metadata);
-  if (!apiKey || !metadata.userId)
-    throw new IntegrationNotConnectedError("Enphase v2");
-  return { apiKey, userId: metadata.userId, baseUrl: metadata.baseUrl };
 }
 
 export async function getEnphaseV4Context(

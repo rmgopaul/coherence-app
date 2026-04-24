@@ -35,7 +35,6 @@ type NavItem = { label: string; href: string; icon: LucideIcon };
 
 const METER_READ_ITEMS: NavItem[] = [
   { label: "SolarEdge", href: "/solar-rec/meter-reads/solaredge", icon: Zap },
-  { label: "Enphase V2", href: "/solar-rec/meter-reads/enphase-v2", icon: Zap },
   { label: "Enphase V4", href: "/solar-rec/meter-reads/enphase-v4", icon: Zap },
   { label: "APsystems", href: "/solar-rec/meter-reads/apsystems", icon: Zap },
   { label: "Hoymiles", href: "/solar-rec/meter-reads/hoymiles", icon: Zap },
