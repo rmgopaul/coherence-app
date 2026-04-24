@@ -1572,6 +1572,8 @@ export default function MeterReadsPage({
         return `Key: ${connection.apiKeyMasked ?? "N/A"}`;
       case "accountMasked":
         return `Account: ${connection.accountMasked ?? "N/A"}`;
+      case "accessKeyIdMasked":
+        return `Access Key ID: ${connection.accessKeyIdMasked ?? "N/A"}`;
       case "baseUrl":
         return `URL: ${connection.baseUrl ?? "N/A"}`;
       case "idSlice":
@@ -1588,6 +1590,8 @@ export default function MeterReadsPage({
         return `${connection.name} (${connection.apiKeyMasked ?? connection.id.slice(0, 8)})`;
       case "accountMasked":
         return `${connection.name} (${connection.accountMasked ?? connection.id.slice(0, 8)})`;
+      case "accessKeyIdMasked":
+        return `${connection.name} (${connection.accessKeyIdMasked ?? connection.id.slice(0, 8)})`;
       case "baseUrl":
         return `${connection.name} (${connection.baseUrl ?? connection.id.slice(0, 8)})`;
       case "idSlice":
