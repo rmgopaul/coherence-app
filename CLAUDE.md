@@ -13,32 +13,90 @@ Full-stack personal productivity dashboard integrating Google Calendar, Gmail, D
 
 ---
 
-## 🚨 READ THIS FIRST — the dual tRPC router trap
+## 🚨 READ THIS FIRST — the dual tRPC router boundary
 
-**If you skip this section and start editing tRPC procedures, you will
-lose hours. This has already happened. Read
-`SESSIONS_POSTMORTEM.md` at the project root for the 2026-04-10
-story.**
+**Used to be called "the trap" because new code kept landing on the wrong
+side and losing hours. It's now a rule: personal vs. business features
+live on different routers, and features on the wrong side are scheduled
+to migrate in Phase 5. Before editing any tRPC procedure, know which
+router you are editing and why. See `SESSIONS_POSTMORTEM.md` for the
+2026-04-10 story that made this explicit.**
 
-This repo has **two** tRPC routers with overlapping sub-router names:
+See `docs/architectural-split.md` for the full split, `scopeId`-vs-
+`userId` decision rules, and the feature-by-feature inventory of where
+every procedure lives today and where it's going.
 
-- `productivity-hub/server/routers.ts` — `appRouter`, the **live** router
-  for everything the main productivity dashboard + the
-  SolarRecDashboard page (and its Schedule B scanner) call.
-- `productivity-hub/server/_core/solarRecRouter.ts` — `solarRecAppRouter`,
-  a mostly-separate router used only by 3 pages under
-  `client/src/solar-rec/pages/` (MonitoringDashboard,
-  MonitoringOverview, SolarRecSettings). Its `solarRecDashboard`
-  sub-router is **dead code** — no client calls it — but the file
-  itself is NOT dead (it serves `monitoring.*`, `users.*`, `auth.*`,
-  `credentials.*`, `enphaseV2.*` for the 3 pages above).
+### The rule
 
-**Before editing ANY tRPC procedure, do this checklist:**
+- `productivity-hub/server/routers.ts` = **main (`/`), personal,
+  single-user features only.** This is the router for the front-page
+  dashboard and every feed/widget it composes — Todoist, Gmail,
+  Calendar, Drive, WHOOP, Samsung Health, supplements, habits, health,
+  sleep notes, notebook, DropDock, Canvas, King of the Day, Clockify,
+  feedback, markets, weather, news, personal settings.
+
+- `productivity-hub/server/_core/solarRecRouter.ts` = **solar-rec
+  (`/solar-rec/*`), business, multi-user, scope-aware features only.**
+  Everything the team uses: Solar REC Dashboard and tabs, daily
+  monitoring scheduler, all 16 solar vendor adapters (Enphase V2 is
+  deprecated — see Task 4.2), meter-read pages, `monitoringApiRuns`,
+  job runners (contract scan, DIN scrape, Schedule B, CSG Schedule B),
+  ABP Invoice Settlement, Early Payment, Invoice Match, Address
+  Checker, Zendesk Ticket Metrics, Contract Scanner, Deep Update
+  Synthesizer.
+
+**Decision for a new feature:** who uses it? Just Rhett → `server/
+routers.ts`. The whole team → `server/_core/solarRecRouter.ts`.
+
+### Wrong-side features today (pending Phase 5 migration)
+
+Every feature below currently lives on `server/routers.ts` but logically
+belongs on the solar-rec router. Do **not** add new sub-procedures to
+these while they're on the wrong side — if you need to extend them,
+stop and discuss the migration timing first.
+
+- `solarRecDashboard.*` (Solar REC Dashboard + Schedule B scanner)
+  — migrates in Task 5.5
+- monitoring scheduler + `monitoringApiRuns` — Task 5.3
+- 9 meter-read pages (consolidated to `MeterReadsPage`) — Task 5.4
+- Schedule B import + CSG Schedule B import — Task 5.6
+- Contract scan runner + ContractScanner + ContractScrapeManager —
+  Task 5.7
+- DIN scrape runner + DinScrapeManager — Task 5.8
+- ABP Invoice Settlement — Task 5.9
+- Early Payment + Invoice Match Dashboard — Task 5.10
+- Address Checker, Zendesk Metrics, Deep Update Synthesizer — Task 5.11
+
+### Consequences of the split
+
+- **Vendor API tokens on solar-rec are team-wide**, stored in
+  `solarRecTeamCredentials`. Rhett's personal Google tokens stay on
+  main and never mingle with team credentials. A credential rotation
+  on solar-rec affects everyone on the team — accepted tradeoff.
+- **Every migrated business table needs a `scopeId`** (or equivalent)
+  for multi-tenant isolation within a single team. Some solar tables
+  already have it (e.g. the 7 `srDs*` row tables); most do not yet.
+- **Data visibility is team-wide within a scope.** Team members see
+  each other's uploads, runs, results. What differs per user is
+  *what they can do*, not *what they can see* — see the
+  `dailyJobClaims`-style per-module permission model in Task 5.1.
+
+### Canonical system key: CSG ID
+
+The `CSG ID` is the single identifier for every system in the
+portfolio. It comes from the **Solar Applications** dataset ("Main
+system list with system size, price, and contract status"). The ABP ID
+is a secondary identifier created after the CSG ID and may not exist
+on a given system. Every workbench view, every mapping, every drill-in
+keys off the CSG ID from Solar Applications. Vendor site IDs are
+per-vendor, not canonical.
+
+### Before editing any tRPC procedure
 
 1. **Grep for the procedure name.** If it shows up in both
    `server/routers.ts` AND `server/_core/solarRecRouter.ts`, stop.
-2. **Open `productivity-hub/docs/server-routing.md`** and use the
-   decision tree to figure out which file is live for your caller.
+2. **Open `docs/server-routing.md`** and use the decision tree to
+   figure out which file is live for your caller.
 3. **Add a `_checkpoint: "unique-string"` field to the response** as
    your first change. Deploy. Verify the string appears in the
    browser devtools Network response. If it doesn't, the code isn't
@@ -48,17 +106,20 @@ This repo has **two** tRPC routers with overlapping sub-router names:
    "why doesn't my fix work", the user should be able to click a
    button that dumps the raw DB state for the affected tables.
 
-**Rule of thumb for editing**:
+### Rule of thumb for editing (reflects today's wrong-side state)
+
 - **Editing `solarRecDashboard.*`, or anything used from
   `client/src/features/`** → edit `server/routers.ts`. Leave
   `_core/solarRecRouter.ts` alone.
 - **Editing `monitoring.*`, `users.*`, `auth.*`, `credentials.*`, or
   `enphaseV2.*` that's called from `client/src/solar-rec/pages/`** →
   edit `_core/solarRecRouter.ts`.
-- **Anything else** → edit `server/routers.ts`.
+- **Anything else personal** → edit `server/routers.ts`.
+- **New team/business feature** → edit `_core/solarRecRouter.ts`. Do
+  not pile onto `server/routers.ts`.
 
-See `productivity-hub/docs/server-routing.md` for the full URL →
-file map, the dispatcher logic, and the verification recipe.
+See `docs/server-routing.md` for the full URL → file map, the
+dispatcher logic, and the verification recipe.
 
 ---
 
