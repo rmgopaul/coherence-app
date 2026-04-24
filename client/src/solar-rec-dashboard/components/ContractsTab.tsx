@@ -21,6 +21,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { toDateKey } from "@shared/dateKey";
 import {
   Bar,
@@ -554,6 +555,49 @@ export default memo(function ContractsTab(props: ContractsTabProps) {
           </div>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-contracts"
+        title="Ask AI about utility contracts"
+        contextGetter={() => ({
+          totals: {
+            contracts: contractSummaryRows.length,
+            deliveryRows: contractDeliveryRows.length,
+            totalRequired: contractSummaryRows.reduce(
+              (sum, r) => sum + r.required,
+              0
+            ),
+            totalDelivered: contractSummaryRows.reduce(
+              (sum, r) => sum + r.delivered,
+              0
+            ),
+            totalRequiredValue: contractSummaryRows.reduce(
+              (sum, r) => sum + r.requiredValue,
+              0
+            ),
+            totalDeliveredValue: contractSummaryRows.reduce(
+              (sum, r) => sum + r.deliveredValue,
+              0
+            ),
+          },
+          // Worst-gap contracts first so the model sees the shortfall tail.
+          sampleContracts: [...contractSummaryRows]
+            .sort((a, b) => b.gap - a.gap)
+            .slice(0, 20)
+            .map((c) => ({
+              contractId: c.contractId,
+              required: c.required,
+              delivered: c.delivered,
+              gap: c.gap,
+              deliveredPercent: c.deliveredPercent,
+              requiredValue: c.requiredValue,
+              deliveredValue: c.deliveredValue,
+              valueGap: c.valueGap,
+              projectCount: c.projectCount,
+              pricedProjectCount: c.pricedProjectCount,
+            })),
+        })}
+      />
     </div>
   );
 });

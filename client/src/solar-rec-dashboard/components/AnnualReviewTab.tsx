@@ -19,6 +19,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { toDateKey } from "@shared/dateKey";
 import {
   CartesianGrid,
@@ -913,6 +914,41 @@ export default memo(function AnnualReviewTab(props: AnnualReviewTabProps) {
           </div>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-annual-review"
+        title="Ask AI about the annual REC review"
+        contextGetter={() => ({
+          portfolio: annualPortfolioSummary,
+          vintageRows: annualVintageRows.map((r) => ({
+            label: r.label,
+            required: r.required,
+            delivered: r.delivered,
+            gap: r.gap,
+            requiredValue: r.requiredValue,
+            deliveredValue: r.deliveredValue,
+            projectCount: r.projectCount,
+            reportingProjectCount: r.reportingProjectCount,
+          })),
+          // Worst-gap contract/vintage pairs first
+          sampleContractVintages: [...annualContractVintageRows]
+            .sort(
+              (a, b) =>
+                b.required - b.delivered - (a.required - a.delivered)
+            )
+            .slice(0, 20)
+            .map((r) => ({
+              contractId: r.contractId,
+              deliveryStartRaw: r.deliveryStartRaw,
+              required: r.required,
+              delivered: r.delivered,
+              requiredValue: r.requiredValue,
+              deliveredValue: r.deliveredValue,
+              projectCount: r.projectCount,
+            })),
+          trendChartRows: annualVintageTrendChartRows,
+        })}
+      />
     </div>
   );
 });
