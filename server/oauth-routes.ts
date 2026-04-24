@@ -437,6 +437,8 @@ router.post("/webhooks/whoop", async (req, res) => {
  * `{ error, status }` on failure; the caller should short-circuit
  * with the error shape.
  */
+// Main is single-user by design; this webhook is scoped to
+// SAMSUNG_HEALTH_USER_ID. Do not generalize without rethinking auth.
 function resolveSamsungWebhookUser(
   req: Request
 ): { userId: number } | { status: number; error: string } {

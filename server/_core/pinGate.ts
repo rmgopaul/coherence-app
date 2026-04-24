@@ -42,6 +42,8 @@ function isAllowedWithoutPin(path: string): boolean {
   if (path === "/api/pin/status") return true;
   if (path === "/api/pin/verify") return true;
   if (path === "/api/pin/logout") return true;
+  // Main is single-user by design; this webhook is scoped to
+  // SAMSUNG_HEALTH_USER_ID. Do not generalize without rethinking auth.
   if (path === "/api/webhooks/samsung-health") return true;
   if (path === "/api/webhooks/samsung-health/batch") return true;
   if (path === "/api/webhooks/samsung-health/debug") return true;
