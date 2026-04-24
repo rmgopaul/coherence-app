@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1396,6 +1397,29 @@ export default function InvoiceMatchDashboard() {
           <Upload className="h-4 w-4" />
           Re-upload either CSV anytime to refresh this dashboard with newer rows, System IDs, and invoice numbers.
         </div>
+
+        <AskAiPanel
+          moduleKey="invoice-match"
+          title="Ask AI about invoice matching"
+          contextGetter={() => ({
+            totals: {
+              systems: rows.length,
+              filteredSystems: filteredRows.length,
+              systemsWithPotentialMatches,
+              systemsWithMissingInvoiceNumber,
+              maxInvoiceSlots,
+              maxLineItemSlotsPerInvoice,
+            },
+            availableStatuses,
+            sampleFilteredRows: filteredRows.slice(0, 20).map((r) => ({
+              systemId: r.systemId,
+              statuses: r.statuses,
+              invoiceCount: r.invoiceCount,
+              hasMissingInvoiceNumber: r.hasMissingInvoiceNumber,
+              potentialMatchCount: r.potentialMatches.length,
+            })),
+          })}
+        />
       </main>
     </div>
   );
