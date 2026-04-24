@@ -274,12 +274,12 @@ Small, high-confidence, user-visible bugs on the main app (where they currently 
 ### Task 4.6 — [NEW, Rhett] Todoist task from Notebook text selection
 - **Context.** Notebook uses Tiptap 3. The existing `noteLinks` table already supports linking a note to a Todoist task.
 - **Fix.**
-  1. Add a Tiptap extension that listens for `Cmd+T` (Mac) / `Ctrl+T` (Win) when there's a non-empty text selection.
+  1. Add a Tiptap extension that listens for `Cmd+Alt+T` (Mac) / `Ctrl+Alt+T` (Win/Linux) when there's a non-empty text selection. **Do not use plain `Cmd+T` / `Ctrl+T`** — Chrome captures those at the browser level (new tab) before the page sees the keydown, and `event.preventDefault()` in the ProseMirror handler cannot override that. The same constraint applies to `Cmd+W`, `Cmd+N`, `Cmd+Shift+T`. Detection should check `event.code === "KeyT"` (not `event.key`) because `Option+T` on Mac produces `†` in `event.key`.
   2. On trigger: capture the selected text, open a small modal: task content (pre-filled with selection, editable), project/label selector (Todoist projects already fetched by the existing router), due date optional.
   3. On submit: call `todoist.createTask`. On success, create a `noteLinks` row linking the current note to the new task (`linkType: "todoist_task"`, `externalId: <Todoist task id>`).
   4. Also add a UI button in the Tiptap toolbar that does the same thing (equivalent affordance for users who don't use the hotkey).
   5. Small toast on success with a link to the task.
-- **Definition of Done.** (a) Select text in a note, press Cmd+T, confirm modal, task appears in Todoist with selected text. (b) Toolbar button produces the same result. (c) The note shows a linked-task indicator (builds on Task 10.3's reverse note-link rendering when that ships).
+- **Definition of Done.** (a) Select text in a note, press Cmd+Alt+T, confirm modal, task appears in Todoist with selected text. (b) Toolbar button produces the same result. (c) The note shows a linked-task indicator (builds on Task 10.3's reverse note-link rendering when that ships).
 - **Evidence.** Screen recording.
 
 ### Task 4.7 — [Both, Rhett] MeterReadsPage migration *(prerequisite for Phase 5)*
