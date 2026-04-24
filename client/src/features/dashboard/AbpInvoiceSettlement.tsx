@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -4064,6 +4065,47 @@ export default function AbpInvoiceSettlement() {
             </CardContent>
           </Card>
         ) : null}
+
+        <AskAiPanel
+          moduleKey="abp-invoice-settlement"
+          title="Ask AI about this settlement run"
+          contextGetter={() => ({
+            runConfig: {
+              monthKey,
+              runLabel,
+              emailSendByDate: emailSendByDateText,
+              emailUpdateDeadline: emailUpdateDeadlineText,
+            },
+            inputCounts: {
+              utilityRows: utilityRows.length,
+              csgSystemMappings: csgSystemMappings.length,
+              projectApplications: projectApplications.length,
+              quickBooksInvoices: quickBooksByInvoice.size,
+              paymentsReportRows: paymentsReportRows.length,
+              csgPortalDatabaseRows: csgPortalDatabaseRows.length,
+              payeeUpdateRows: payeeUpdateRows.length,
+              installerRules: installerRules.length,
+              savedInvoiceNumberMapRows: savedInvoiceNumberMapRows.length,
+              invoiceNumberMapRows: invoiceNumberMapRows.length,
+              manualOverrides: Object.keys(manualOverridesByRowId).length,
+            },
+            computation: computationResult
+              ? {
+                  totalRows: computationResult.rows.length,
+                  sampleRows: computationResult.rows.slice(0, 20).map((r) => ({
+                    csgId: r.csgId,
+                    systemId: r.systemId,
+                    classification: r.classification,
+                    paymentMethod: r.paymentMethod,
+                    grossContractValue: r.grossContractValue,
+                    vendorFeeAmount: r.vendorFeeAmount,
+                    netPayoutThisRow: r.netPayoutThisRow,
+                    recQuantity: r.recQuantity,
+                  })),
+                }
+              : { status: "no computation result yet" },
+          })}
+        />
       </main>
     </div>
   );

@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -1377,6 +1378,39 @@ export default function EarlyPayment() {
           </div>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="early-payment"
+        title="Ask AI about this early-payment run"
+        contextGetter={() => ({
+          runConfig: { monthKey },
+          inputs: {
+            icc2Rows: icc2Dataset?.rows?.length ?? 0,
+            icc3Rows: icc3Dataset?.rows?.length ?? 0,
+            selectedCsgIds: selectedCsgIds.length,
+            matchedOutputRows: rowsByCsgId.size,
+          },
+          scanJob: scanJobQuery.data
+            ? {
+                status: scanJobQuery.data.status,
+                startedAt: scanJobQuery.data.startedAt ?? null,
+                updatedAt: scanJobQuery.data.updatedAt ?? null,
+                progress: scanJobQuery.data.progress ?? null,
+              }
+            : null,
+          sampleComputedRows: Array.from(rowsByCsgId.values())
+            .slice(0, 20)
+            .map((r) => ({
+              csgId: r.csgId,
+              systemId: r.systemId,
+              classification: r.classification,
+              grossContractValue: r.grossContractValue,
+              vendorFeeAmount: r.vendorFeeAmount,
+              netPayoutThisRow: r.netPayoutThisRow,
+              recQuantity: r.recQuantity,
+            })),
+        })}
+      />
     </div>
   );
 }
