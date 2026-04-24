@@ -513,3 +513,32 @@ export const dailyJobClaims = mysqlTable(
 
 export type DailyJobClaim = typeof dailyJobClaims.$inferSelect;
 export type InsertDailyJobClaim = typeof dailyJobClaims.$inferInsert;
+
+// 15-minute cache of the server-computed Gmail "waiting on" result so
+// two tabs (or a WebSocket reconnect) don't each trigger a fresh
+// Gmail API round-trip within the same window. Key is (userId,
+// queryHash) where queryHash is sha256 of the normalized input params;
+// bumping the query contract (e.g. changing maxResults bounds) makes
+// new hashes naturally invalidate the old cache rows.
+export const gmailWaitingOnCache = mysqlTable(
+  "gmailWaitingOnCache",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    queryHash: varchar("queryHash", { length: 64 }).notNull(),
+    payload: text("payload").notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    uniq: uniqueIndex("gmailWaitingOnCache_userId_queryHash").on(
+      table.userId,
+      table.queryHash,
+    ),
+    expiresIdx: index("gmailWaitingOnCache_expiresAt").on(table.expiresAt),
+  }),
+);
+
+export type GmailWaitingOnCache = typeof gmailWaitingOnCache.$inferSelect;
+export type InsertGmailWaitingOnCache =
+  typeof gmailWaitingOnCache.$inferInsert;

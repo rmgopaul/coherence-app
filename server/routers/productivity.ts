@@ -22,6 +22,9 @@ import {
   getDb,
   getIntegrationByProvider,
   upsertIntegration,
+  hashGmailWaitingOnQuery,
+  getCachedGmailWaitingOn,
+  setCachedGmailWaitingOn,
 } from "../db";
 import { samsungSyncPayloads } from "../../drizzle/schema";
 import { and, desc, eq, gte, lte } from "drizzle-orm";
@@ -945,8 +948,31 @@ export const googleRouter = router({
   getGmailWaitingOn: protectedProcedure
     .input(z.object({ maxResults: z.number().int().min(1).max(100).optional() }).optional())
     .query(async ({ ctx, input }) => {
+      const maxResults = input?.maxResults ?? 25;
+      const queryHash = hashGmailWaitingOnQuery({ maxResults });
+
+      // 15-minute server-side cache. Gmail API is rate-limited per
+      // user, and two tabs open (or a WebSocket reconnect) would
+      // otherwise each fire their own round-trip every minute.
+      const cached = await getCachedGmailWaitingOn({
+        userId: ctx.user.id,
+        queryHash,
+      });
+      if (cached) {
+        return JSON.parse(cached) as Awaited<
+          ReturnType<typeof getGmailWaitingOn>
+        >;
+      }
+
       const accessToken = await getValidGoogleToken(ctx.user.id);
-      return getGmailWaitingOn(accessToken, input?.maxResults ?? 25);
+      const result = await getGmailWaitingOn(accessToken, maxResults);
+      await setCachedGmailWaitingOn({
+        userId: ctx.user.id,
+        queryHash,
+        payload: JSON.stringify(result),
+        expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+      });
+      return result;
     }),
   markGmailAsRead: protectedProcedure
     .input(z.object({ messageId: z.string().min(1) }))
