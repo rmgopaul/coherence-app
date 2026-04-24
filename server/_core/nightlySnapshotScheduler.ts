@@ -41,6 +41,20 @@ async function maybeRunNightlySnapshot() {
   } catch (error) {
     console.error("[Nightly Snapshot] Failed to prune engagement data:", error);
   }
+
+  // Prune monitoringApiRuns older than 365 days so the table stays
+  // bounded. One row per (provider, site, date) builds up fast across
+  // 17 vendors, and nothing on the dashboard reads beyond the last year.
+  try {
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - 365);
+    const cutoffKey = toDateKey(cutoff);
+    const { pruneMonitoringApiRuns } = await import("../db");
+    await pruneMonitoringApiRuns(cutoffKey);
+    console.log(`[Nightly Snapshot] Pruned monitoring api runs older than ${cutoffKey}`);
+  } catch (error) {
+    console.error("[Nightly Snapshot] Failed to prune monitoring api runs:", error);
+  }
 }
 
 export function startNightlySnapshotScheduler() {
