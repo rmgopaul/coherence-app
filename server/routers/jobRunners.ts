@@ -27,22 +27,15 @@ import {
   parseCsgPortalMetadata,
   serializeCsgPortalMetadata,
   getTeslaPowerhubContext,
-  teslaPowerhubProductionJobs,
-  teslaPowerhubResumingJobIds,
   abpSettlementJobs,
   abpSettlementActiveScanRunners,
-  pruneTeslaPowerhubProductionJobs,
   pruneAbpSettlementJobs,
-  saveTeslaPowerhubProductionJobSnapshot,
-  loadTeslaPowerhubProductionJobSnapshot,
-  launchTeslaPowerhubProductionJobWorker,
   saveAbpSettlementScanJobSnapshot,
   loadAbpSettlementScanJobSnapshot,
   runAbpSettlementContractScanJob,
   saveAbpSettlementRun,
   getAbpSettlementRun,
   getAbpSettlementRunsIndex,
-  fetchTeslaPowerhubServerEgressIpv4,
   parseJsonMetadata,
   resolveOpenAIModel,
 } from "./helpers";
@@ -50,9 +43,7 @@ import type {
   AbpSettlementContractScanJob,
 } from "./helpers";
 import {
-  getTeslaPowerhubGroupProductionMetrics,
   getTeslaPowerhubGroupProductionMetricsCached,
-  getTeslaPowerhubGroupUsers,
   normalizeTeslaPowerhubUrl,
 } from "../services/solar/teslaPowerhub";
 import { maskApiKey } from "./solarConnectionFactory";
@@ -104,24 +95,6 @@ export const teslaPowerhubRouter = router({
       portalBaseUrl: metadata.portalBaseUrl,
       groupId: metadata.groupId,
     };
-  }),
-  getServerEgressIpv4: protectedProcedure
-    .input(
-      z
-        .object({
-          forceRefresh: z.boolean().optional(),
-        })
-        .optional()
-    )
-    .query(async ({ input }) => {
-      return fetchTeslaPowerhubServerEgressIpv4({
-        forceRefresh: Boolean(input?.forceRefresh),
-      });
-    }),
-  refreshServerEgressIpv4: protectedProcedure.mutation(async () => {
-    return fetchTeslaPowerhubServerEgressIpv4({
-      forceRefresh: true,
-    });
   }),
   connect: protectedProcedure
     .input(
@@ -288,206 +261,6 @@ export const teslaPowerhubRouter = router({
     }
     return { success: true };
   }),
-  startGroupProductionMetricsJob: protectedProcedure
-    .input(
-      z.object({
-        groupId: z.string().min(1),
-        endpointUrl: z.string().optional(),
-        signal: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getTeslaPowerhubContext(ctx.user.id);
-      const nowMs = Date.now();
-      const nowIso = new Date(nowMs).toISOString();
-      pruneTeslaPowerhubProductionJobs(nowMs);
-
-      const jobId = nanoid();
-      const groupId = input.groupId.trim();
-      const endpointUrl = input.endpointUrl;
-      const signal = input.signal;
-
-      teslaPowerhubProductionJobs.set(jobId, {
-        id: jobId,
-        userId: ctx.user.id,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        startedAt: null,
-        finishedAt: null,
-        status: "queued",
-        progress: {
-          currentStep: 0,
-          totalSteps: 7,
-          percent: 0,
-          message: "Queued",
-          windowKey: null,
-        },
-        error: null,
-        result: null,
-        jobConfig: {
-          groupId,
-          endpointUrl: endpointUrl ?? null,
-          signal: signal ?? null,
-        },
-      });
-      const initialJob = teslaPowerhubProductionJobs.get(jobId);
-      if (initialJob) {
-        void saveTeslaPowerhubProductionJobSnapshot(initialJob).catch((error) => {
-          console.warn(
-            "[snapshot] Tesla Powerhub initial job snapshot write failed:",
-            error instanceof Error ? error.message : error
-          );
-        });
-      }
-
-      launchTeslaPowerhubProductionJobWorker(jobId, context, { groupId, endpointUrl: endpointUrl ?? null, signal: signal ?? null });
-
-      return {
-        jobId,
-        status: "queued" as const,
-      };
-    }),
-  getGroupProductionMetricsJob: protectedProcedure
-    .input(
-      z.object({
-        jobId: z.string().min(1),
-      })
-    )
-    .query(async ({ ctx, input }) => {
-      pruneTeslaPowerhubProductionJobs(Date.now());
-      const normalizedJobId = input.jobId.trim();
-      const inMemoryJob = teslaPowerhubProductionJobs.get(normalizedJobId);
-      if (inMemoryJob && inMemoryJob.userId === ctx.user.id) {
-        return inMemoryJob;
-      }
-
-      const snapshotJob = await loadTeslaPowerhubProductionJobSnapshot(ctx.user.id, normalizedJobId);
-      if (!snapshotJob) {
-        throw new Error("Tesla production job not found.");
-      }
-
-      let resolvedJob = snapshotJob;
-      // If the process restarted, a queued/running snapshot cannot continue in this instance.
-      // Auto-resume if we have the original job config; otherwise fall back to failed status.
-      if (snapshotJob.status === "queued" || snapshotJob.status === "running") {
-        if (snapshotJob.jobConfig && !teslaPowerhubResumingJobIds.has(normalizedJobId)) {
-          // Auto-resume: re-launch the job from scratch using persisted config
-          teslaPowerhubResumingJobIds.add(normalizedJobId);
-          const nowIso = new Date().toISOString();
-          resolvedJob = {
-            ...snapshotJob,
-            status: "queued",
-            updatedAt: nowIso,
-            finishedAt: null,
-            error: null,
-            result: null,
-            progress: {
-              currentStep: 0,
-              totalSteps: snapshotJob.progress.totalSteps,
-              percent: 0,
-              message: "Resuming after server restart...",
-              windowKey: null,
-            },
-          };
-          teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
-          void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch(() => {});
-
-          // Re-fetch credentials and launch worker
-          try {
-            const context = await getTeslaPowerhubContext(snapshotJob.userId);
-            launchTeslaPowerhubProductionJobWorker(normalizedJobId, context, snapshotJob.jobConfig);
-            console.info(`[resume] Tesla Powerhub job ${normalizedJobId} auto-resumed after server restart.`);
-          } catch (resumeError) {
-            teslaPowerhubResumingJobIds.delete(normalizedJobId);
-            const errorNowIso = new Date().toISOString();
-            resolvedJob = {
-              ...resolvedJob,
-              status: "failed",
-              updatedAt: errorNowIso,
-              finishedAt: errorNowIso,
-              error: `Auto-resume failed: ${resumeError instanceof Error ? resumeError.message : "Unknown error"}. Please rerun.`,
-              progress: { ...resolvedJob.progress, message: "Resume failed" },
-            };
-            teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
-            void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch(() => {});
-          }
-        } else if (!teslaPowerhubResumingJobIds.has(normalizedJobId)) {
-          // Legacy job without config — cannot resume, mark as failed
-          const nowIso = new Date().toISOString();
-          resolvedJob = {
-            ...snapshotJob,
-            status: "failed",
-            updatedAt: nowIso,
-            finishedAt: nowIso,
-            error:
-              snapshotJob.error ??
-              "Tesla production job was interrupted (server restarted or deployment changed). Please rerun.",
-            progress: {
-              ...snapshotJob.progress,
-              message: "Interrupted",
-              windowKey: null,
-            },
-          };
-          void saveTeslaPowerhubProductionJobSnapshot(resolvedJob).catch(() => {});
-        }
-        // else: job is already being resumed by another poll — return current in-memory state
-      }
-
-      teslaPowerhubProductionJobs.set(normalizedJobId, resolvedJob);
-      return resolvedJob;
-    }),
-  getGroupUsers: protectedProcedure
-    .input(
-      z.object({
-        groupId: z.string().min(1),
-        endpointUrl: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getTeslaPowerhubContext(ctx.user.id);
-      const groupId = input.groupId.trim();
-
-      return getTeslaPowerhubGroupUsers(
-        {
-          clientId: context.clientId,
-          clientSecret: context.clientSecret,
-          tokenUrl: context.tokenUrl,
-          apiBaseUrl: context.apiBaseUrl,
-          portalBaseUrl: context.portalBaseUrl,
-        },
-        {
-          groupId,
-          endpointUrl: input.endpointUrl,
-        }
-      );
-    }),
-  getGroupProductionMetrics: protectedProcedure
-    .input(
-      z.object({
-        groupId: z.string().min(1),
-        endpointUrl: z.string().optional(),
-        signal: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getTeslaPowerhubContext(ctx.user.id);
-      const groupId = input.groupId.trim();
-
-      return getTeslaPowerhubGroupProductionMetrics(
-        {
-          clientId: context.clientId,
-          clientSecret: context.clientSecret,
-          tokenUrl: context.tokenUrl,
-          apiBaseUrl: context.apiBaseUrl,
-          portalBaseUrl: context.portalBaseUrl,
-        },
-        {
-          groupId,
-          endpointUrl: input.endpointUrl,
-          signal: input.signal,
-        }
-      );
-    }),
 });
 
 export const csgPortalRouter = router({

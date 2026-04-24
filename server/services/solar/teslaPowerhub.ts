@@ -1173,56 +1173,6 @@ async function fetchTelemetryWindowTotals(
   );
 }
 
-export async function getTeslaPowerhubGroupUsers(
-  context: TeslaPowerhubApiContext,
-  options: {
-    groupId: string;
-    endpointUrl?: string | null;
-  }
-): Promise<{
-  users: TeslaPowerhubUser[];
-  requestedGroupId: string;
-  resolvedEndpointUrl: string;
-  token: {
-    tokenType: string;
-    expiresIn: number | null;
-    scope: string | null;
-  };
-  raw: unknown;
-}> {
-  const groupId = options.groupId.trim();
-  if (!groupId) {
-    throw new Error("groupId is required.");
-  }
-
-  const token = await requestClientCredentialsToken(context);
-  const candidateUrls = buildCandidateUrls(context, groupId, toNonEmptyString(options.endpointUrl));
-  if (candidateUrls.length === 0) {
-    throw new Error("No endpoint URL candidates are available.");
-  }
-
-  let lastError: string | null = null;
-  for (const url of candidateUrls) {
-    try {
-      const raw = await fetchJsonWithBearerToken(url, token.access_token);
-      return {
-        users: extractUsers(raw),
-        requestedGroupId: groupId,
-        resolvedEndpointUrl: url,
-        token: {
-          tokenType: token.token_type ?? "Bearer",
-          expiresIn: typeof token.expires_in === "number" ? token.expires_in : null,
-          scope: token.scope ?? null,
-        },
-        raw,
-      };
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : "Unknown request error.";
-    }
-  }
-
-  throw new Error(`Tesla Powerhub users request failed for all endpoint candidates.${lastError ? ` Last error ${lastError}` : ""}`);
-}
 
 export async function getTeslaPowerhubGroupProductionMetrics(
   context: TeslaPowerhubApiContext,
