@@ -37,6 +37,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { extractTextPreview, normalizeContentForEditor } from "@/lib/noteContent";
 import { NoteSaveController, type NoteDraftSnapshot } from "@/lib/noteSaveController";
 import { trpc } from "@/lib/trpc";
@@ -1381,6 +1382,17 @@ export default function Notebook() {
                 </div>
 
                 <div className="hidden min-h-0 flex-col border-t border-slate-200 bg-slate-50/60 xl:flex xl:border-t-0">
+                  <div className="border-b border-slate-200 p-3">
+                    <AskAiPanel
+                      moduleKey="notebook"
+                      title="Ask AI about this note"
+                      contextGetter={() => ({
+                        title: noteDraft.title,
+                        notebook: noteDraft.notebook,
+                        content: extractTextPreview(noteDraft.contentHtml),
+                      })}
+                    />
+                  </div>
                   <div className="border-b border-slate-200 px-4 py-3">
                     <p className="text-sm font-semibold text-slate-900">Linked Items</p>
                     <p className="mt-0.5 text-xs text-slate-500">

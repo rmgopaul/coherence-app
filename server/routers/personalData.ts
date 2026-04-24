@@ -2554,6 +2554,103 @@ export const anthropicRouter = router({
       });
       return { success: true, model };
     }),
+
+  /**
+   * Generic "Ask AI about this data" endpoint. The shared AskAiPanel
+   * component calls this with a moduleKey + on-screen context. The
+   * moduleKey is embedded in the system prompt for traceability and
+   * will become the persistence key once conversation storage lands
+   * in a follow-up PR.
+   */
+  ask: protectedProcedure
+    .input(
+      z.object({
+        moduleKey: z.string().min(1).max(64),
+        question: z.string().min(1).max(8000),
+        contextText: z.string().max(200_000).optional(),
+        conversationHistory: z
+          .array(
+            z.object({
+              role: z.enum(["user", "assistant"]),
+              content: z.string(),
+            })
+          )
+          .max(20)
+          .default([]),
+        modelOverride: z.string().max(64).optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const integration = await getIntegrationByProvider(ctx.user.id, "anthropic");
+      const apiKey = toNonEmptyString(integration?.accessToken);
+      if (!apiKey) {
+        throw new Error(
+          "Anthropic API key not configured. Go to Settings and connect your Anthropic account."
+        );
+      }
+      const metadata = parseJsonMetadata(integration?.metadata);
+      const defaultModel =
+        toNonEmptyString(metadata.model) ?? "claude-sonnet-4-20250514";
+      const model =
+        toNonEmptyString(input.modelOverride) ?? defaultModel;
+
+      const systemPrompt = [
+        `You are an analyst assistant for the Coherence Productivity Hub.`,
+        `The user is on the "${input.moduleKey}" module and wants to ask questions about on-screen data.`,
+        input.contextText && input.contextText.trim().length > 0
+          ? `\nDATA CONTEXT:\n${input.contextText}`
+          : `\nNo explicit data context was provided — reason only from the conversation itself.`,
+        `\nINSTRUCTIONS:`,
+        `- Answer using ONLY the provided data unless the user explicitly asks you to reason beyond it.`,
+        `- Be specific: cite numbers, names, dates verbatim from the context.`,
+        `- Use markdown tables when comparing multiple rows.`,
+        `- Keep answers concise but thorough.`,
+        `- If the context doesn't contain enough info to answer, say so rather than guessing.`,
+      ].join("\n");
+
+      const messages = [
+        ...input.conversationHistory.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        })),
+        { role: "user" as const, content: input.question },
+      ];
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        signal: AbortSignal.timeout(60_000),
+        body: JSON.stringify({ model, max_tokens: 4096, system: systemPrompt, messages }),
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text().catch(() => "");
+        let message = "Claude API error";
+        try {
+          message =
+            (JSON.parse(errorBody) as { error?: { message?: string } })?.error
+              ?.message ?? message;
+        } catch {
+          /* leave fallback */
+        }
+        throw new Error(`Claude API error (${response.status}): ${message}`);
+      }
+
+      const payload = (await response.json()) as {
+        content?: Array<{ type: string; text?: string }>;
+      };
+      const text =
+        payload.content
+          ?.filter((b) => b.type === "text" && b.text)
+          .map((b) => b.text)
+          .join("\n") ?? "";
+      if (!text) throw new Error("Empty response from Claude.");
+      return { answer: text, model };
+    }),
 });
 
 // ── SunPower PVS production readings (mobile app → DB → dashboard) ──
