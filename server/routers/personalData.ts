@@ -2290,12 +2290,14 @@ export const dockRouter = router({
           }
           const accessToken = await getValidGoogleToken(ctx.user.id);
 
-          const sheetId = input.meta?.sheetId as string;
-          if (!sheetId) return { title: "Spreadsheet" };
+          const spreadsheetId =
+            (input.meta?.spreadsheetId as string | undefined) ??
+            (input.meta?.sheetId as string | undefined);
+          if (!spreadsheetId) return { title: "Spreadsheet" };
 
           // Fetch spreadsheet details from Drive API
           const response = await fetch(
-            `https://www.googleapis.com/drive/v3/files/${sheetId}?fields=name`,
+            `https://www.googleapis.com/drive/v3/files/${spreadsheetId}?fields=name`,
             { headers: { Authorization: `Bearer ${accessToken}` } }
           );
 
