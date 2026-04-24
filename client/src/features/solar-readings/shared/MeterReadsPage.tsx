@@ -600,6 +600,11 @@ export default function MeterReadsPage({
                 {
                   [config.idFieldName]: id,
                   anchorDate: bulkAnchorDate,
+                  // Passed through to providers that honor it
+                  // (e.g. SolarEdge fans out to "active" vs "all").
+                  // Vendors that don't recognize the field have Zod
+                  // `.object()` strip it by default.
+                  connectionScope: bulkConnectionScope,
                 }
               );
             const snapshotRow =

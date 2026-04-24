@@ -69,8 +69,8 @@ export type SolarEdgeMeterSnapshot = {
   status: "Found" | "Not Found" | "Error";
   found: boolean;
   meterCount: number | null;
-  productionMeterCount: number | null;
-  consumptionMeterCount: number | null;
+  productionMeters: number | null;
+  consumptionMeters: number | null;
   meterTypes: string[];
   error: string | null;
 };
@@ -82,8 +82,8 @@ export type SolarEdgeInverterSnapshot = {
   inverterCount: number | null;
   invertersWithTelemetry: number | null;
   inverterFailures: number | null;
-  totalLatestPowerW: number | null;
-  totalLatestEnergyWh: number | null;
+  inverterLatestPowerKw: number | null;
+  inverterLatestEnergyKwh: number | null;
   firstTelemetryAt: string | null;
   lastTelemetryAt: string | null;
   error: string | null;
@@ -93,7 +93,7 @@ export type SolarEdgeProductionSnapshot = {
   siteId: string;
   status: "Found" | "Not Found" | "Error";
   found: boolean;
-  siteName: string | null;
+  name: string | null;
   lifetimeKwh: number | null;
   hourlyProductionKwh: number | null;
   monthlyProductionKwh: number | null;
@@ -813,16 +813,16 @@ export async function getSiteMeterSnapshot(
   try {
     const payload = await getSiteMeters(context, siteId);
     const meterTypes = extractMeterTypeRows(payload);
-    const productionMeterCount = meterTypes.filter((type) => /production|prod/i.test(type)).length;
-    const consumptionMeterCount = meterTypes.filter((type) => /consumption|cons/i.test(type)).length;
+    const productionMeters = meterTypes.filter((type) => /production|prod/i.test(type)).length;
+    const consumptionMeters = meterTypes.filter((type) => /consumption|cons/i.test(type)).length;
 
     return {
       siteId,
       status: "Found",
       found: true,
       meterCount: meterTypes.length,
-      productionMeterCount,
-      consumptionMeterCount,
+      productionMeters,
+      consumptionMeters,
       meterTypes: Array.from(new Set(meterTypes)).sort((a, b) => a.localeCompare(b)),
       error: null,
     };
@@ -833,8 +833,8 @@ export async function getSiteMeterSnapshot(
         status: "Not Found",
         found: false,
         meterCount: null,
-        productionMeterCount: null,
-        consumptionMeterCount: null,
+        productionMeters: null,
+        consumptionMeters: null,
         meterTypes: [],
         error: error instanceof Error ? error.message : "Site not found.",
       };
@@ -845,8 +845,8 @@ export async function getSiteMeterSnapshot(
       status: "Error",
       found: false,
       meterCount: null,
-      productionMeterCount: null,
-      consumptionMeterCount: null,
+      productionMeters: null,
+      consumptionMeters: null,
       meterTypes: [],
       error: error instanceof Error ? error.message : "Unknown error.",
     };
@@ -884,8 +884,10 @@ export async function getSiteInverterSnapshot(
       inverterCount: result.inventoryCount,
       invertersWithTelemetry,
       inverterFailures,
-      totalLatestPowerW,
-      totalLatestEnergyWh,
+      inverterLatestPowerKw:
+        totalLatestPowerW == null ? null : totalLatestPowerW / 1000,
+      inverterLatestEnergyKwh:
+        totalLatestEnergyWh == null ? null : totalLatestEnergyWh / 1000,
       firstTelemetryAt,
       lastTelemetryAt,
       error: null,
@@ -899,8 +901,8 @@ export async function getSiteInverterSnapshot(
         inverterCount: null,
         invertersWithTelemetry: null,
         inverterFailures: null,
-        totalLatestPowerW: null,
-        totalLatestEnergyWh: null,
+        inverterLatestPowerKw: null,
+        inverterLatestEnergyKwh: null,
         firstTelemetryAt: null,
         lastTelemetryAt: null,
         error: error instanceof Error ? error.message : "Site not found.",
@@ -914,8 +916,8 @@ export async function getSiteInverterSnapshot(
       inverterCount: null,
       invertersWithTelemetry: null,
       inverterFailures: null,
-      totalLatestPowerW: null,
-      totalLatestEnergyWh: null,
+      inverterLatestPowerKw: null,
+      inverterLatestEnergyKwh: null,
       firstTelemetryAt: null,
       lastTelemetryAt: null,
       error: error instanceof Error ? error.message : "Unknown error.",
@@ -950,7 +952,7 @@ export async function getSiteProductionSnapshot(
       getSiteDetails(context, siteId).catch(() => null),
     ]);
 
-    const siteName = extractSiteNameFromDetails(detailsPayload);
+    const name = extractSiteNameFromDetails(detailsPayload);
     const lifetimeKwh = extractOverviewLifetimeKwh(overviewPayload);
     const periodSeries = extractDailyEnergySeriesKwh(periodEnergyPayload);
     const last12MonthsSeries = extractDailyEnergySeriesKwh(last12MonthsEnergyPayload);
@@ -1006,7 +1008,7 @@ export async function getSiteProductionSnapshot(
       siteId,
       status: "Found",
       found: true,
-      siteName,
+      name,
       lifetimeKwh,
       hourlyProductionKwh,
       monthlyProductionKwh,
@@ -1032,7 +1034,7 @@ export async function getSiteProductionSnapshot(
         siteId,
         status: "Not Found",
         found: false,
-        siteName: null,
+        name: null,
         lifetimeKwh: null,
         hourlyProductionKwh: null,
         monthlyProductionKwh: null,
@@ -1058,7 +1060,7 @@ export async function getSiteProductionSnapshot(
       siteId,
       status: "Error",
       found: false,
-      siteName: null,
+      name: null,
       lifetimeKwh: null,
       hourlyProductionKwh: null,
       monthlyProductionKwh: null,

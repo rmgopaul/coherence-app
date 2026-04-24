@@ -123,7 +123,7 @@ const adapter = {
           if (snap.status === "Found" || snap.found) {
             results.push({
               siteId,
-              siteName: snap.siteName ?? null,
+              siteName: snap.name ?? null,
               status: snap.status as "Found" | "Not Found" | "Error",
               lifetimeKwh: snap.lifetimeKwh ?? null,
             });
@@ -139,7 +139,7 @@ const adapter = {
           const snap = await getSiteProductionSnapshot(contexts[0], siteId, anchorDate);
           results.push({
             siteId,
-            siteName: snap.siteName ?? null,
+            siteName: snap.name ?? null,
             status: snap.status as "Found" | "Not Found" | "Error",
             lifetimeKwh: snap.lifetimeKwh ?? null,
           });
