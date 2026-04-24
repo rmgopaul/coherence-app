@@ -18,6 +18,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -292,6 +293,31 @@ export default memo(function SizeReportingTab(props: SizeReportingTabProps) {
           )}
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-size-reporting"
+        title="Ask AI about size + reporting"
+        contextGetter={() => ({
+          sizeBuckets: sizeBreakdownRows,
+          part2EligibleSystems: {
+            total: part2EligibleSystemsForSizeReporting.length,
+            reporting: part2EligibleSystemsForSizeReporting.filter(
+              (s) => s.isReporting
+            ).length,
+            notReporting: sizeTabNotReportingPart2Rows.length,
+          },
+          sampleNotReportingSites: sizeTabNotReportingPart2Rows
+            .slice(0, 20)
+            .map((s) => ({
+              systemName: s.systemName,
+              trackingSystemRefId: s.trackingSystemRefId,
+              installedKwAc: s.installedKwAc,
+              installedKwDc: s.installedKwDc,
+              sizeBucket: s.sizeBucket,
+              monitoringPlatform: s.monitoringPlatform,
+            })),
+        })}
+      />
     </div>
   );
 });
