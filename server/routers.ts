@@ -20,7 +20,6 @@ import {
   ennexOsRouter,
   zendeskRouter,
   egaugeRouter,
-  teslaSolarRouter,
 } from "./routers/solarMisc";
 import {
   teslaPowerhubRouter,
@@ -94,7 +93,6 @@ export const appRouter = router({
   ennexOs: ennexOsRouter,
   zendesk: zendeskRouter,
   egauge: egaugeRouter,
-  teslaSolar: teslaSolarRouter,
 
   // Job runners
   teslaPowerhub: teslaPowerhubRouter,

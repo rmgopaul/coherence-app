@@ -7,7 +7,6 @@ import {
   SOLAR_EDGE_PROVIDER,
   ENNEX_OS_PROVIDER,
   ZENDESK_PROVIDER,
-  TESLA_SOLAR_PROVIDER,
   TESLA_POWERHUB_PROVIDER,
   CLOCKIFY_PROVIDER,
   FRONIUS_PROVIDER,
@@ -28,7 +27,6 @@ import {
   parseEnnexOsMetadata,
   parseFroniusMetadata,
   parseZendeskMetadata,
-  parseTeslaSolarMetadata,
   parseEgaugeMetadata,
   parseTeslaPowerhubMetadata,
   parseClockifyMetadata,
@@ -162,18 +160,6 @@ export async function getZendeskContext(
   return { subdomain: metadata.subdomain, email: metadata.email, apiToken };
 }
 
-export async function getTeslaSolarContext(
-  userId: number
-): Promise<{ accessToken: string; baseUrl: string | null }> {
-  const integration = await getIntegrationByProvider(
-    userId,
-    TESLA_SOLAR_PROVIDER
-  );
-  const accessToken = toNonEmptyString(integration?.accessToken);
-  const metadata = parseTeslaSolarMetadata(integration?.metadata);
-  if (!accessToken) throw new IntegrationNotConnectedError("Tesla Solar");
-  return { accessToken, baseUrl: metadata.baseUrl };
-}
 
 export async function getEgaugeContext(
   userId: number,

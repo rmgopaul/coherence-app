@@ -11,7 +11,6 @@ export const DASHBOARD_HEADER_TOOL_BUTTON_OPTIONS = [
   { key: "froniusApi", label: "Fronius API" },
   { key: "ennexOsApi", label: "ennexOS API" },
   { key: "egaugeApi", label: "eGauge API" },
-  { key: "teslaSolarApi", label: "Tesla Solar API" },
   { key: "teslaPowerhubApi", label: "Tesla Powerhub API" },
   { key: "zendeskApi", label: "Zendesk API" },
 ] as const;

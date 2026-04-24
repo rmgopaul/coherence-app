@@ -70,7 +70,6 @@ export const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
   { key: "froniusApi", label: "Fronius API", route: "/fronius-meter-reads", icon: Database },
   { key: "ennexOsApi", label: "ennexOS API", route: "/ennexos-meter-reads", icon: Database },
   { key: "egaugeApi", label: "eGauge API", route: "/egauge-api", icon: Database },
-  { key: "teslaSolarApi", label: "Tesla Solar API", route: "/tesla-solar-api", icon: Database },
   { key: "teslaPowerhubApi", label: "Tesla Powerhub API", route: "/tesla-powerhub-api", icon: Database },
   { key: "zendeskApi", label: "Zendesk API", route: "/zendesk-ticket-metrics", icon: Database },
 ];

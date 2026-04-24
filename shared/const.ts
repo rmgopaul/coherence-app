@@ -35,7 +35,6 @@ export const MONITORING_CANONICAL_NAMES = {
   growatt: "Growatt",
   egauge: "eGauge",
   teslaPowerhub: "Tesla Powerhub",
-  teslaSolar: "Tesla Solar",
   ennexos: "ennexOS",
   ekm: "EKM Encompass.io",
 } as const;

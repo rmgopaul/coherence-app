@@ -14,18 +14,15 @@ import {
   ENNEX_OS_PROVIDER,
   ZENDESK_PROVIDER,
   EGAUGE_PROVIDER,
-  TESLA_SOLAR_PROVIDER,
   parseEnnexOsMetadata,
   serializeEnnexOsMetadata,
   parseZendeskMetadata,
   serializeZendeskMetadata,
   parseEgaugeMetadata,
   serializeEgaugeMetadata,
-  parseTeslaSolarMetadata,
   getEnnexOsContext,
   getZendeskContext,
   getEgaugeContext,
-  getTeslaSolarContext,
   getTodayDateKey,
   deriveEgaugeMeterId,
 } from "./helpers";
@@ -57,12 +54,6 @@ import {
   normalizeZendeskSubdomainInput,
   getZendeskTicketMetricsByAssignee,
 } from "../services/integrations/zendesk";
-import {
-  listTeslaProducts,
-  getTeslaEnergySiteLiveStatus,
-  getTeslaEnergySiteInfo,
-  getTeslaEnergySiteHistory,
-} from "../services/solar/teslaSolar";
 
 export const ennexOsRouter = router({
   getStatus: protectedProcedure.query(async ({ ctx }) => {
@@ -1563,110 +1554,5 @@ export const egaugeRouter = router({
         errored: mergedRows.filter(r => r.status === "Error").length,
         rows: mergedRows,
       };
-    }),
-});
-
-export const teslaSolarRouter = router({
-  getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(
-      ctx.user.id,
-      TESLA_SOLAR_PROVIDER
-    );
-    const metadata = parseTeslaSolarMetadata(integration?.metadata);
-    return {
-      connected: Boolean(toNonEmptyString(integration?.accessToken)),
-      baseUrl: metadata.baseUrl,
-    };
-  }),
-  connect: protectedProcedure
-    .input(
-      z.object({
-        accessToken: z.string().min(1),
-        baseUrl: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const metadata = JSON.stringify({
-        baseUrl: toNonEmptyString(input.baseUrl),
-      });
-
-      await upsertIntegration({
-        id: nanoid(),
-        userId: ctx.user.id,
-        provider: TESLA_SOLAR_PROVIDER,
-        accessToken: input.accessToken.trim(),
-        refreshToken: null,
-        expiresAt: null,
-        scope: null,
-        metadata,
-      });
-
-      return { success: true };
-    }),
-  disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(
-      ctx.user.id,
-      TESLA_SOLAR_PROVIDER
-    );
-    if (integration?.id) {
-      await deleteIntegration(integration.id);
-    }
-    return { success: true };
-  }),
-  listProducts: protectedProcedure.query(async ({ ctx }) => {
-    const context = await getTeslaSolarContext(ctx.user.id);
-    return listTeslaProducts(context);
-  }),
-  listSites: protectedProcedure.query(async ({ ctx }) => {
-    const context = await getTeslaSolarContext(ctx.user.id);
-    const result = await listTeslaProducts(context);
-    return {
-      sites: result.energySites,
-    };
-  }),
-  getLiveStatus: protectedProcedure
-    .input(
-      z.object({
-        siteId: z.string().min(1),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getTeslaSolarContext(ctx.user.id);
-      return getTeslaEnergySiteLiveStatus(context, input.siteId.trim());
-    }),
-  getSiteInfo: protectedProcedure
-    .input(
-      z.object({
-        siteId: z.string().min(1),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getTeslaSolarContext(ctx.user.id);
-      return getTeslaEnergySiteInfo(context, input.siteId.trim());
-    }),
-  getHistory: protectedProcedure
-    .input(
-      z.object({
-        siteId: z.string().min(1),
-        kind: z.string().optional(),
-        period: z.string().optional(),
-        startDate: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/)
-          .optional(),
-        endDate: z
-          .string()
-          .regex(/^\d{4}-\d{2}-\d{2}$/)
-          .optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const context = await getTeslaSolarContext(ctx.user.id);
-      return getTeslaEnergySiteHistory(context, input.siteId.trim(), {
-        kind: input.kind,
-        period: input.period,
-        startDate: input.startDate,
-        endDate: input.endDate,
-      });
     }),
 });

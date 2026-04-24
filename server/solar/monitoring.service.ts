@@ -57,8 +57,6 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
   "tesla-powerhub": () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
   teslapowerhub: () => import("./adapters/teslaPowerhub.adapter").then((m) => m.default),
   ennexos: () => import("./adapters/ennexos.adapter").then((m) => m.default),
-  "tesla-solar": () => import("./adapters/teslaSolar.adapter").then((m) => m.default),
-  teslasolar: () => import("./adapters/teslaSolar.adapter").then((m) => m.default),
   ekm: () => import("./adapters/ekm.adapter").then((m) => m.default),
 };
 

@@ -57,7 +57,6 @@ const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
 const SunpowerReadings = lazy(
   () => import("../features/solar-readings/SunpowerReadings")
 );
-const TeslaSolarApi = lazy(() => import("../features/solar-readings/TeslaSolarApi"));
 const TeslaPowerhubApi = lazy(() => import("../features/solar-readings/TeslaPowerhubApi"));
 
 function PageLoader() {
@@ -136,9 +135,6 @@ function AuthenticatedApp() {
               </Route>
               <Route path="/solar-rec/meter-reads/sunpower">
                 <SunpowerReadings />
-              </Route>
-              <Route path="/solar-rec/meter-reads/tesla-solar">
-                <TeslaSolarApi />
               </Route>
               <Route path="/solar-rec/meter-reads/tesla-powerhub">
                 <TeslaPowerhubApi />
