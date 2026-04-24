@@ -57,6 +57,18 @@ async function runNightlySnapshot(dateKey: string): Promise<void> {
   } catch (error) {
     console.error("[Nightly Snapshot] Failed to prune daily job claims:", error);
   }
+
+  // Sweep expired Gmail waiting-on cache rows. 15-minute TTL means
+  // stale rows accumulate quickly for any query that stops being
+  // asked; the cache helper doesn't lazy-delete, so this is the only
+  // place they get cleaned up.
+  try {
+    const { pruneExpiredGmailWaitingOn } = await import("../db");
+    await pruneExpiredGmailWaitingOn();
+    console.log(`[Nightly Snapshot] Pruned expired gmail waiting-on cache rows`);
+  } catch (error) {
+    console.error("[Nightly Snapshot] Failed to prune gmail waiting-on cache:", error);
+  }
 }
 
 export function startNightlySnapshotScheduler() {
