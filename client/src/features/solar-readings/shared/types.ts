@@ -120,14 +120,24 @@ export type CredentialField = {
   name: string;
   /** UI label shown above the input */
   label: string;
-  /** HTML input type (defaults to "text") */
-  type?: "text" | "password";
-  /** Placeholder text */
+  /**
+   * Field type. "select" renders a dropdown and requires `options`
+   * to be set; "text" and "password" render plain inputs. Defaults
+   * to "text".
+   */
+  type?: "text" | "password" | "select";
+  /** Placeholder text (used for inputs and as the Select placeholder) */
   placeholder: string;
   /** If true, this field is optional for the connect call */
   optional?: boolean;
   /** Optional helper text below the input */
   helperText?: string;
+  /**
+   * Options for `type: "select"` fields. Ignored for text/password
+   * fields. The first option is used as the default value when the
+   * field is untouched.
+   */
+  options?: Array<{ value: string; label: string }>;
 };
 
 /* ---------- Single-operation dropdown items ---------- */
@@ -324,4 +334,15 @@ export type MeterReadsProviderConfig = {
    * Only relevant for providers that have a listItems query.
    */
   hasListItems: boolean;
+
+  /**
+   * If true, the shared page hides the bulk CSV processing card
+   * entirely. Used by vendors where bulk flows don't apply — eGauge,
+   * where each saved profile IS a meter/device (no central pool of
+   * IDs to upload), and portfolio mode already returns all systems
+   * in one call so looping would re-fetch redundantly. Vendors with
+   * this flag still get connection management + the single-operation
+   * tester; they just skip Section 3.
+   */
+  noBulkFetch?: boolean;
 };
