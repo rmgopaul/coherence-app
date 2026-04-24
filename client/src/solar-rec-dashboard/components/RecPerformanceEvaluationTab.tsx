@@ -27,6 +27,7 @@
  */
 
 import { memo, useDeferredValue, useEffect, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -1128,6 +1129,63 @@ export default memo(function RecPerformanceEvaluationTab(
           </Card>
         </>
       )}
+
+      <AskAiPanel
+        moduleKey="solar-rec-performance-eval"
+        title="Ask AI about REC performance"
+        contextGetter={() => ({
+          filters: {
+            contractId: effectivePerformanceContractId,
+            deliveryYearKey: effectivePerformanceDeliveryYearKey,
+            previousSurplus: performancePreviousSurplus,
+            previousDrawdown: performancePreviousDrawdown,
+          },
+          evaluation: {
+            systemCount: recPerformanceEvaluation.systemCount,
+            surplusSystemCount: recPerformanceEvaluation.surplusSystemCount,
+            shortfallSystemCount:
+              recPerformanceEvaluation.shortfallSystemCount,
+            surplusBeforeAllocation:
+              recPerformanceEvaluation.surplusBeforeAllocation,
+            totalAllocatedRecs: recPerformanceEvaluation.totalAllocatedRecs,
+            netSurplusAfterAllocation:
+              recPerformanceEvaluation.netSurplusAfterAllocation,
+            unallocatedShortfallRecs:
+              recPerformanceEvaluation.unallocatedShortfallRecs,
+            drawdownThisReport: recPerformanceEvaluation.drawdownThisReport,
+            drawdownCumulative: recPerformanceEvaluation.drawdownCumulative,
+          },
+          contractYearTotals: recPerformanceContractYearSummaryTotals,
+          sampleShortfallRows: recPerformanceEvaluation.rows
+            .filter((r) => r.surplusShortfall < 0)
+            .sort((a, b) => a.surplusShortfall - b.surplusShortfall)
+            .slice(0, 20)
+            .map((r) => ({
+              applicationId: r.applicationId,
+              unitId: r.unitId,
+              systemName: r.systemName,
+              contractId: r.contractId,
+              rollingAverage: r.rollingAverage,
+              expectedRecs: r.expectedRecs,
+              surplusShortfall: r.surplusShortfall,
+              allocatedRecs: r.allocatedRecs,
+              drawdownPayment: r.drawdownPayment,
+            })),
+          sampleSurplusRows: recPerformanceEvaluation.rows
+            .filter((r) => r.surplusShortfall > 0)
+            .sort((a, b) => b.surplusShortfall - a.surplusShortfall)
+            .slice(0, 10)
+            .map((r) => ({
+              applicationId: r.applicationId,
+              unitId: r.unitId,
+              systemName: r.systemName,
+              contractId: r.contractId,
+              rollingAverage: r.rollingAverage,
+              expectedRecs: r.expectedRecs,
+              surplusShortfall: r.surplusShortfall,
+            })),
+        })}
+      />
     </div>
   );
 });
