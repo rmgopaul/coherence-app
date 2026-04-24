@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import { extractContractDataFromPdf, type ContractExtraction } from "@/lib/contractScanner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -372,6 +373,31 @@ export default function ContractScanner() {
             )}
           </CardContent>
         </Card>
+
+        <AskAiPanel
+          moduleKey="contract-scanner"
+          title="Ask AI about this contract scan batch"
+          contextGetter={() => ({
+            totals: {
+              processed: rows.length,
+              successful: successfulRows.length,
+              failed: rows.length - successfulRows.length,
+            },
+            progressText,
+            isProcessing,
+            sampleRows: rows.slice(0, 20).map((r) => {
+              // ContractExtractionRow flattens ContractExtraction fields
+              // directly; pass a stripped snapshot excluding internal id.
+              const { id: _id, error, ...extracted } = r;
+              void _id;
+              return {
+                fileName: r.fileName,
+                error,
+                extracted: error ? null : extracted,
+              };
+            }),
+          })}
+        />
       </main>
     </div>
   );
