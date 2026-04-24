@@ -16,6 +16,7 @@
  */
 
 import { memo, useDeferredValue, useMemo, useState } from "react";
+import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Card,
   CardContent,
@@ -174,6 +175,49 @@ export default memo(function OwnershipTab(props: OwnershipTabProps) {
           </Table>
         </CardContent>
       </Card>
+
+      <AskAiPanel
+        moduleKey="solar-rec-ownership-status"
+        title="Ask AI about ownership status"
+        contextGetter={() => {
+          const counts = new Map<string, number>();
+          for (const s of part2EligibleSystemsForSizeReporting) {
+            counts.set(
+              s.ownershipStatus,
+              (counts.get(s.ownershipStatus) ?? 0) + 1
+            );
+          }
+          return {
+            totalPart2Eligible: part2EligibleSystemsForSizeReporting.length,
+            byOwnershipStatus: Array.from(counts.entries()).map(
+              ([status, count]) => ({ status, count })
+            ),
+            filters: {
+              category: ownershipFilter,
+              search: deferredSearchTerm || null,
+            },
+            filteredCount: filteredOwnershipRows.length,
+            sampleFilteredSystems: filteredOwnershipRows
+              .slice(0, 20)
+              .map((s) => ({
+                systemName: s.systemName,
+                systemId: s.systemId,
+                trackingSystemRefId: s.trackingSystemRefId,
+                ownershipStatus: s.ownershipStatus,
+                isReporting: s.isReporting,
+                isTransferred: s.isTransferred,
+                isTerminated: s.isTerminated,
+                contractType: s.contractType,
+                latestReportingDate: s.latestReportingDate
+                  ? s.latestReportingDate.toISOString().slice(0, 10)
+                  : null,
+                contractedDate: s.contractedDate
+                  ? s.contractedDate.toISOString().slice(0, 10)
+                  : null,
+              })),
+          };
+        }}
+      />
     </div>
   );
 });
