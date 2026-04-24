@@ -79,6 +79,10 @@ export const solarRecUsers = mysqlTable(
     avatarUrl: varchar("avatarUrl", { length: 512 }),
     role: mysqlEnum("role", ["owner", "admin", "operator", "viewer"]).default("operator").notNull(),
     isActive: boolean("isActive").default(true).notNull(),
+    // Scope-wide admin flag. Independent of the coarse `role`: whoever is
+    // scope-admin bypasses the per-module permission matrix introduced in
+    // Task 5.1 and has implicit admin on every module. Prevents lockout.
+    isScopeAdmin: boolean("isScopeAdmin").default(false).notNull(),
     invitedBy: int("invitedBy"),
     lastSignedIn: timestamp("lastSignedIn"),
     createdAt: timestamp("createdAt").defaultNow(),
@@ -92,6 +96,39 @@ export const solarRecUsers = mysqlTable(
 
 export type SolarRecUser = typeof solarRecUsers.$inferSelect;
 export type InsertSolarRecUser = typeof solarRecUsers.$inferInsert;
+
+// Task 5.1 — per-module permission matrix. One row per (userId, scopeId,
+// moduleKey). Absence of a row is treated as `none` (module hidden, all
+// writes 403). Scope owner and users with `solarRecUsers.isScopeAdmin=true`
+// bypass this table and have implicit admin on every module.
+export const solarRecUserModulePermissions = mysqlTable(
+  "solarRecUserModulePermissions",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    userId: int("userId").notNull(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    moduleKey: varchar("moduleKey", { length: 64 }).notNull(),
+    permission: mysqlEnum("permission", ["none", "read", "edit", "admin"])
+      .default("none")
+      .notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    userScopeModuleIdx: uniqueIndex(
+      "solar_rec_user_module_permissions_user_scope_module_idx"
+    ).on(table.userId, table.scopeId, table.moduleKey),
+    scopeModuleIdx: index("solar_rec_user_module_permissions_scope_module_idx").on(
+      table.scopeId,
+      table.moduleKey
+    ),
+  })
+);
+
+export type SolarRecUserModulePermission =
+  typeof solarRecUserModulePermissions.$inferSelect;
+export type InsertSolarRecUserModulePermission =
+  typeof solarRecUserModulePermissions.$inferInsert;
 
 // Time-limited invite tokens for onboarding coworkers.
 
