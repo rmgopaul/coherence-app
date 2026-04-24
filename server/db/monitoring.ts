@@ -118,6 +118,22 @@ export async function getMonitoringHealthSummary() {
   );
 }
 
+/**
+ * Delete every monitoringApiRuns row older than `olderThanDateKey`.
+ * Called nightly with a 365-day cutoff so the table stays bounded.
+ * Mirrors the pruneSectionEngagement pattern in server/db/engagement.ts.
+ */
+export async function pruneMonitoringApiRuns(olderThanDateKey: string) {
+  const db = await getDb();
+  if (!db) return;
+
+  await withDbRetry("prune monitoring api runs", async () => {
+    await db
+      .delete(monitoringApiRuns)
+      .where(sql`${monitoringApiRuns.dateKey} < ${olderThanDateKey}`);
+  });
+}
+
 // ── Monitoring Batch Runs ───────────────────────────────────────────
 
 export async function createMonitoringBatchRun(data: {
