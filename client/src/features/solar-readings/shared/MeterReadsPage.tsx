@@ -1885,6 +1885,13 @@ export default function MeterReadsPage({
               </div>
             )}
 
+            {config.preConnectContent
+              ? config.preConnectContent({
+                  credentialValues,
+                  providerName: config.providerName,
+                })
+              : null}
+
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 onClick={handleConnect}
