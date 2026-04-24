@@ -142,6 +142,7 @@ export type SingleOperationOption = {
 export type ConnectionDisplayField =
   | "apiKeyMasked"
   | "accountMasked"
+  | "accessKeyIdMasked"
   | "baseUrl"
   | "idSlice";
 
@@ -157,6 +158,7 @@ type StatusQueryResult = {
     updatedAt: string;
     apiKeyMasked?: string;
     accountMasked?: string;
+    accessKeyIdMasked?: string;
     baseUrl?: string;
   }>;
 };
@@ -217,6 +219,7 @@ export type MeterReadsProviderConfig = {
     id: string;
     apiKeyMasked?: string;
     accountMasked?: string;
+    accessKeyIdMasked?: string;
     baseUrl?: string;
   }) => string;
 
