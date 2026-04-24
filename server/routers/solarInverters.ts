@@ -7,17 +7,14 @@ import { maskApiKey } from "./solarConnectionFactory";
 import {
   IntegrationNotConnectedError,
   toNonEmptyString,
-  parseEnphaseV2Metadata,
   parseEnphaseV4Metadata,
   parseSolarEdgeMetadata,
   serializeSolarEdgeMetadata,
   parseFroniusMetadata,
   serializeFroniusMetadata,
-  getEnphaseV2Credentials,
   getEnphaseV4Context,
   getSolarEdgeContext,
   getFroniusContext,
-  ENPHASE_V2_PROVIDER,
   ENPHASE_V4_PROVIDER,
   SOLAR_EDGE_PROVIDER,
   FRONIUS_PROVIDER,
@@ -31,14 +28,6 @@ import {
   getIntegrationByProvider,
   upsertIntegration,
 } from "../db";
-// Enphase V2 service (aliased imports)
-import {
-  listSystems as listSystemsEnphaseV2,
-  getSystemSummary as getSystemSummaryEnphaseV2,
-  getSystemEnergyLifetime as getSystemEnergyLifetimeEnphaseV2,
-  getSystemRgmStats as getSystemRgmStatsEnphaseV2,
-  getSystemProductionMeterReadings,
-} from "../services/solar/enphaseV2";
 // Enphase V4 service (aliased imports)
 import {
   listSystems as listSystemsEnphaseV4,
@@ -73,116 +62,6 @@ import {
   extractPvSystems,
   getPvSystemDeviceSnapshot,
 } from "../services/solar/fronius";
-
-// ---------------------------------------------------------------------------
-// enphaseV2
-// ---------------------------------------------------------------------------
-export const enphaseV2Router = router({
-  getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, ENPHASE_V2_PROVIDER);
-    const metadata = parseEnphaseV2Metadata(integration?.metadata);
-
-    return {
-      connected: Boolean(toNonEmptyString(integration?.accessToken) && metadata.userId),
-      userId: metadata.userId,
-      baseUrl: metadata.baseUrl,
-    };
-  }),
-  connect: protectedProcedure
-    .input(
-      z.object({
-        apiKey: z.string().min(1),
-        userId: z.string().min(1),
-        baseUrl: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const metadata = JSON.stringify({
-        userId: input.userId.trim(),
-        baseUrl: toNonEmptyString(input.baseUrl),
-      });
-
-      await upsertIntegration({
-        id: nanoid(),
-        userId: ctx.user.id,
-        provider: ENPHASE_V2_PROVIDER,
-        accessToken: input.apiKey.trim(),
-        refreshToken: null,
-        expiresAt: null,
-        scope: null,
-        metadata,
-      });
-
-      return { success: true };
-    }),
-  disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, ENPHASE_V2_PROVIDER);
-    if (integration?.id) {
-      await deleteIntegration(integration.id);
-    }
-    return { success: true };
-  }),
-  listSystems: protectedProcedure.query(async ({ ctx }) => {
-    const credentials = await getEnphaseV2Credentials(ctx.user.id);
-    return listSystemsEnphaseV2(credentials);
-  }),
-  getSummary: protectedProcedure
-    .input(
-      z.object({
-        systemId: z.string().min(1),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const credentials = await getEnphaseV2Credentials(ctx.user.id);
-      return getSystemSummaryEnphaseV2(credentials, input.systemId.trim());
-    }),
-  getEnergyLifetime: protectedProcedure
-    .input(
-      z.object({
-        systemId: z.string().min(1),
-        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const credentials = await getEnphaseV2Credentials(ctx.user.id);
-      return getSystemEnergyLifetimeEnphaseV2(
-        credentials,
-        input.systemId.trim(),
-        input.startDate,
-        input.endDate
-      );
-    }),
-  getRgmStats: protectedProcedure
-    .input(
-      z.object({
-        systemId: z.string().min(1),
-        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const credentials = await getEnphaseV2Credentials(ctx.user.id);
-      return getSystemRgmStatsEnphaseV2(credentials, input.systemId.trim(), input.startDate, input.endDate);
-    }),
-  getProductionMeterReadings: protectedProcedure
-    .input(
-      z.object({
-        systemId: z.string().min(1),
-        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const credentials = await getEnphaseV2Credentials(ctx.user.id);
-      return getSystemProductionMeterReadings(
-        credentials,
-        input.systemId.trim(),
-        input.startDate,
-        input.endDate
-      );
-    }),
-});
 
 // ---------------------------------------------------------------------------
 // enphaseV4

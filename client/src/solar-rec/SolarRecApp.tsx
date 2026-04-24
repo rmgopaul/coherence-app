@@ -19,9 +19,6 @@ const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
 const SolarEdgeMeterReads = lazy(
   () => import("../features/solar-readings/SolarEdgeMeterReads")
 );
-const EnphaseV2MeterReadsPage = lazy(
-  () => import("../features/solar-readings/EnphaseV2MeterReadsPage")
-);
 const EnphaseV4MeterReads = lazy(
   () => import("../features/solar-readings/EnphaseV4MeterReads")
 );
@@ -97,9 +94,6 @@ function AuthenticatedApp() {
               {/* Meter read pages */}
               <Route path="/solar-rec/meter-reads/solaredge">
                 <SolarEdgeMeterReads />
-              </Route>
-              <Route path="/solar-rec/meter-reads/enphase-v2">
-                <EnphaseV2MeterReadsPage />
               </Route>
               <Route path="/solar-rec/meter-reads/enphase-v4">
                 <EnphaseV4MeterReads />
