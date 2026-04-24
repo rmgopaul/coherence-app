@@ -40,6 +40,10 @@ const SOURCE_COLOR: Record<DockSource, string> = {
 export function DropDock() {
   const utils = trpc.useUtils();
   const inputRef = useRef<HTMLInputElement>(null);
+  // 200ms cooldown between accepted paste/drop events so a user
+  // mashing ⌘V doesn't fire two overlapping enrich+add round-trips
+  // that race the dedup check.
+  const pasteCooldownRef = useRef(false);
   const [hint, setHint] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
@@ -59,6 +63,14 @@ export function DropDock() {
     onSuccess: () => void utils.dock.list.invalidate(),
   });
   const enrich = trpc.dock.getItemDetails.useMutation();
+  const mutationBusy = addItem.isPending || enrich.isPending;
+
+  function armPasteCooldown() {
+    pasteCooldownRef.current = true;
+    window.setTimeout(() => {
+      pasteCooldownRef.current = false;
+    }, 200);
+  }
 
   const handleAddText = useCallback(
     async (raw: string) => {
@@ -92,18 +104,25 @@ export function DropDock() {
   );
 
   function onPaste(e: React.ClipboardEvent<HTMLInputElement>) {
+    if (pasteCooldownRef.current || mutationBusy) {
+      e.preventDefault();
+      return;
+    }
     const text = e.clipboardData.getData("text/uri-list") ||
       e.clipboardData.getData("text/plain");
     if (!text) return;
     e.preventDefault();
+    armPasteCooldown();
     void handleAddText(text);
     if (inputRef.current) inputRef.current.value = "";
   }
 
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (pasteCooldownRef.current || mutationBusy) return;
     const value = inputRef.current?.value ?? "";
     if (!value.trim()) return;
+    armPasteCooldown();
     void handleAddText(value);
     if (inputRef.current) inputRef.current.value = "";
   }
@@ -120,10 +139,14 @@ export function DropDock() {
   function onDrop(e: React.DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setDragActive(false);
+    if (pasteCooldownRef.current || mutationBusy) return;
     const text =
       e.dataTransfer.getData("text/uri-list") ||
       e.dataTransfer.getData("text/plain");
-    if (text) void handleAddText(text);
+    if (text) {
+      armPasteCooldown();
+      void handleAddText(text);
+    }
   }
 
   return (
@@ -150,12 +173,13 @@ export function DropDock() {
             autoComplete="off"
             placeholder="paste a Gmail / Calendar / Sheets / Todoist link…"
             onPaste={onPaste}
+            disabled={mutationBusy}
             aria-label="Paste a URL to add to the dock"
           />
           <button
             type="submit"
             className="fp-dock__add"
-            disabled={addItem.isPending || enrich.isPending}
+            disabled={mutationBusy}
           >
             ADD
           </button>
