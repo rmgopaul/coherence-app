@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { trpc } from "@/lib/trpc";
+import { toDateKey } from "@shared/dateKey";
 
 type EngagementEvent = {
   sectionId: string;
@@ -13,10 +14,7 @@ const MIN_VIEW_DURATION_MS = 2_000;
 const FLUSH_INTERVAL_MS = 30_000;
 
 function buildLocalDateKey(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return toDateKey(date);
 }
 
 /**

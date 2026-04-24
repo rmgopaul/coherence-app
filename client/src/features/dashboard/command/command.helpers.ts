@@ -4,6 +4,7 @@
  * overdue counting, headline + reason derivation, and the "next event
  * + countdown" pick.
  */
+import { toDateKey } from "@shared/dateKey";
 import type { CalendarEvent, TodoistTask } from "../types";
 
 /** "14:23:05" — 24h-ish HH:MM:SS, uppercased to match the deck strip. */
@@ -38,10 +39,7 @@ export function countOverdue(
 }
 
 function todayKey(now: Date): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return toDateKey(now);
 }
 
 export interface DerivedCommandHeadline {

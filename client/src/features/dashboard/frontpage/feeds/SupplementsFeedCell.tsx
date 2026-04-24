@@ -6,15 +6,9 @@
  */
 import { useMemo } from "react";
 import { trpc } from "@/lib/trpc";
+import { formatTodayKey } from "@shared/dateKey";
 
 const FIVE_MIN = 5 * 60_000;
-
-function formatTodayKey(now: Date): string {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
 
 /**
  * Some supplement logs store the dose as "3G" (value + unit baked in)
@@ -37,7 +31,7 @@ interface Props {
 }
 
 export function SupplementsFeedCell({ updatedLabel }: Props) {
-  const todayKey = formatTodayKey(new Date());
+  const todayKey = formatTodayKey();
 
   const { data: definitions } = trpc.supplements.listDefinitions.useQuery(
     undefined,

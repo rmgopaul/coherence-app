@@ -3,6 +3,7 @@
  *
  * Previously duplicated across 15+ solar service files.
  */
+import { toDateKey } from "@shared/dateKey";
 
 export function toNullableString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -69,10 +70,7 @@ export function toUtcEpochSeconds(dateIso: string, endOfDay: boolean): number {
 // ---------------------------------------------------------------------------
 
 export function formatIsoDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return toDateKey(date);
 }
 
 export function shiftIsoDate(dateIso: string, deltaDays: number): string {

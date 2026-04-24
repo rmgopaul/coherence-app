@@ -19,6 +19,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { toDateKey } from "@shared/dateKey";
 import {
   CartesianGrid,
   Legend,
@@ -143,9 +144,7 @@ export default memo(function AnnualReviewTab(props: AnnualReviewTabProps) {
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
       const dateKey = deliveryStartDate
-        ? `${deliveryStartDate.getFullYear()}-${String(
-            deliveryStartDate.getMonth() + 1,
-          ).padStart(2, "0")}-${String(deliveryStartDate.getDate()).padStart(2, "0")}`
+        ? toDateKey(deliveryStartDate)
         : deliveryStartRaw;
       const key = `${contractId}__${dateKey}`;
 
@@ -231,9 +230,7 @@ export default memo(function AnnualReviewTab(props: AnnualReviewTabProps) {
 
     annualContractVintageRows.forEach((row) => {
       const dateKey = row.deliveryStartDate
-        ? `${row.deliveryStartDate.getFullYear()}-${String(
-            row.deliveryStartDate.getMonth() + 1,
-          ).padStart(2, "0")}-${String(row.deliveryStartDate.getDate()).padStart(2, "0")}`
+        ? toDateKey(row.deliveryStartDate)
         : row.deliveryStartRaw;
       let current = groups.get(dateKey);
       if (!current) {

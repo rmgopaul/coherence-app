@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { toDateKey } from "@shared/dateKey";
 import TwoFactorSettings from "@/components/TwoFactorSettings";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -2521,7 +2522,7 @@ function EngagementInsightsPanel() {
   const sinceDate = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return toDateKey(d);
   }, []);
 
   const { data: summary, isLoading: summaryLoading } = trpc.engagement.getSummary.useQuery(

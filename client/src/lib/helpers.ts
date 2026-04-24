@@ -5,6 +5,7 @@
  * clean(), formatKwh(), downloadTextFile(), etc. were copy-pasted into
  * 9+ page components independently.
  */
+import { toDateKey } from "@shared/dateKey";
 
 /* ------------------------------------------------------------------ */
 /*  String helpers                                                      */
@@ -100,10 +101,7 @@ export function formatDateTime(iso: string | null | undefined): string {
  * sees on their calendar that day.
  */
 export function toLocalDateKey(date: Date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return toDateKey(date);
 }
 
 /** Format milliseconds to HH:MM:SS. */

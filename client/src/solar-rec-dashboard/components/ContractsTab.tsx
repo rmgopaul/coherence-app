@@ -21,6 +21,7 @@
  */
 
 import { memo, useMemo, useState } from "react";
+import { toDateKey } from "@shared/dateKey";
 import {
   Bar,
   BarChart,
@@ -137,9 +138,7 @@ export default memo(function ContractsTab(props: ContractsTabProps) {
       const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
 
       const dateKey = deliveryStartDate
-        ? `${deliveryStartDate.getFullYear()}-${String(
-            deliveryStartDate.getMonth() + 1,
-          ).padStart(2, "0")}-${String(deliveryStartDate.getDate()).padStart(2, "0")}`
+        ? toDateKey(deliveryStartDate)
         : deliveryStartRaw;
       const key = `${contractId}__${dateKey}`;
 

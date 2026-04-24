@@ -2,6 +2,7 @@ import { verifySolarReadingsSignedRequest } from "../_core/solarReadingsIngest";
 import { protectedProcedure, publicProcedure, router } from "../_core/trpc";
 import { z } from "zod";
 import { nanoid } from "nanoid";
+import { formatTodayKey, toDateKey } from "@shared/dateKey";
 import {
   IntegrationNotConnectedError,
   parseJsonMetadata,
@@ -782,12 +783,7 @@ export const supplementsRouter = router({
       const end = new Date();
       const start = new Date();
       start.setDate(start.getDate() - (input.windowDays - 1));
-      const toKey = (d: Date) => {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const day = String(d.getDate()).padStart(2, "0");
-        return `${y}-${m}-${day}`;
-      };
+      const toKey = (d: Date) => toDateKey(d);
       const startKey = toKey(start);
       const endKey = toKey(end);
 
@@ -865,12 +861,7 @@ export const supplementsRouter = router({
       const end = new Date();
       const start = new Date();
       start.setDate(start.getDate() - (input.windowDays - 1));
-      const toKey = (d: Date) => {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const day = String(d.getDate()).padStart(2, "0");
-        return `${y}-${m}-${day}`;
-      };
+      const toKey = (d: Date) => toDateKey(d);
       const startKey = toKey(start);
       const endKey = toKey(end);
 
@@ -1098,10 +1089,7 @@ export const supplementsRouter = router({
             ? (() => {
                 const d2 = new Date(today);
                 d2.setDate(d2.getDate() + daysRemaining);
-                const y = d2.getFullYear();
-                const m = String(d2.getMonth() + 1).padStart(2, "0");
-                const dd = String(d2.getDate()).padStart(2, "0");
-                return `${y}-${m}-${dd}`;
+                return toDateKey(d2);
               })()
             : null;
         return {
@@ -1206,7 +1194,7 @@ export const habitsRouter = router({
     // Get last 14 days of data for streak calculation (show 7 days, need 14 for streak count)
     const sinceDate = new Date(today);
     sinceDate.setDate(sinceDate.getDate() - 13);
-    const sinceDateKey = `${sinceDate.getFullYear()}-${String(sinceDate.getMonth() + 1).padStart(2, "0")}-${String(sinceDate.getDate()).padStart(2, "0")}`;
+    const sinceDateKey = toDateKey(sinceDate);
 
     const [definitions, completions] = await Promise.all([
       listHabitDefinitions(ctx.user.id),
@@ -1227,7 +1215,7 @@ export const habitsRouter = router({
     for (let i = 6; i >= 0; i--) {
       const d = new Date(today);
       d.setDate(d.getDate() - i);
-      last7Days.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
+      last7Days.push(toDateKey(d));
     }
 
     return definitions.map((habit) => {
@@ -1238,7 +1226,7 @@ export const habitsRouter = router({
       for (let i = 0; i < 14; i++) {
         const d = new Date(today);
         d.setDate(d.getDate() - i);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        const key = toDateKey(d);
         if (completedDates.has(key)) {
           streak++;
         } else if (i === 0) {
@@ -1390,12 +1378,7 @@ export const habitsRouter = router({
       const end = new Date();
       const start = new Date();
       start.setDate(start.getDate() - (input.windowDays - 1));
-      const toKey = (d: Date) => {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const day = String(d.getDate()).padStart(2, "0");
-        return `${y}-${m}-${day}`;
-      };
+      const toKey = (d: Date) => toDateKey(d);
       const startKey = toKey(start);
       const endKey = toKey(end);
 
@@ -1459,12 +1442,7 @@ export const habitsRouter = router({
       const end = new Date();
       const start = new Date();
       start.setDate(start.getDate() - (input.windowDays - 1));
-      const toKey = (d: Date) => {
-        const y = d.getFullYear();
-        const m = String(d.getMonth() + 1).padStart(2, "0");
-        const day = String(d.getDate()).padStart(2, "0");
-        return `${y}-${m}-${day}`;
-      };
+      const toKey = (d: Date) => toDateKey(d);
       const startKey = toKey(start);
       const endKey = toKey(end);
 
@@ -1940,17 +1918,7 @@ export const dataExportRouter = router({
         const date = new Date(`${dateKey}T00:00:00`);
         if (Number.isNaN(date.getTime())) return dateKey;
         date.setDate(date.getDate() + 1);
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, "0");
-        const d = String(date.getDate()).padStart(2, "0");
-        return `${y}-${m}-${d}`;
-      };
-
-      const toDateKey = (date: Date): string => {
-        const y = date.getFullYear();
-        const m = String(date.getMonth() + 1).padStart(2, "0");
-        const d = String(date.getDate()).padStart(2, "0");
-        return `${y}-${m}-${d}`;
+        return toDateKey(date);
       };
 
       const completedTodoistTaskCountsByDate = new Map<string, number>();
@@ -2518,8 +2486,7 @@ export const engagementRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const now = new Date();
-      const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+      const dateKey = formatTodayKey();
       await insertSectionEngagementBatch([
         {
           userId: ctx.user.id,

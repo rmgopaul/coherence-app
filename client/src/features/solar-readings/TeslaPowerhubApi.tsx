@@ -1,4 +1,5 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { formatTodayKey } from "@shared/dateKey";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -167,8 +168,7 @@ export default function TeslaPowerhubApi() {
         // Note: use "Tesla Powerhub" (lowercase h) to match the canonical
         // name used by the monitoring batch bridge (PROVIDER_LABELS).
         if (snapshot.result?.sites && snapshot.result.sites.length > 0) {
-          const today = new Date();
-          const anchorDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+          const anchorDate = formatTodayKey();
           const totalSites = snapshot.result.sites.length;
           const readRows = snapshot.result.sites
             .filter((site: SiteProductionRow) => site.lifetimeKwh > 0)
@@ -395,8 +395,7 @@ export default function TeslaPowerhubApi() {
       return;
     }
 
-    const today = new Date();
-    const anchorDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    const anchorDate = formatTodayKey();
 
     const headers = ["monitoring", "monitoring_system_id", "monitoring_system_name", "lifetime_meter_read_wh", "status", "alert_severity", "read_date"];
     const csvRows: Array<Record<string, string | number | boolean | null | undefined>> = [];

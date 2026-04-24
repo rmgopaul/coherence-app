@@ -12,6 +12,7 @@
  * behind a minimum sample threshold so small random splits don't read as
  * signal.
  */
+import { toDateKey } from "@shared/dateKey";
 
 /** Minimum samples required in BOTH on and off groups for a result. */
 export const MIN_GROUP_SIZE = 7;
@@ -61,10 +62,7 @@ function shiftDateKey(dateKey: string, deltaDays: number): string {
   );
   if (Number.isNaN(d.getTime())) return dateKey;
   d.setDate(d.getDate() + deltaDays);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return toDateKey(d);
 }
 
 function mean(values: readonly number[]): number | null {
