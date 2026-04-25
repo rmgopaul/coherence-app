@@ -107,6 +107,7 @@ type SiteProgressCallback = (delta: {
 
 export async function executeProviderRun(
   provider: string,
+  scopeId: string,
   dateKey: string,
   triggeredBy: number | null,
   options?: {
@@ -135,6 +136,7 @@ export async function executeProviderRun(
     try {
       await db.upsertMonitoringApiRun({
         id: nanoid(),
+        scopeId,
         provider,
         connectionId: credentials[0]?.id ?? null,
         siteId: `provider:${provider}`,
@@ -233,7 +235,7 @@ export async function executeProviderRun(
           }
 
           // Persist immediately and notify batch of incremental progress
-          await db.upsertMonitoringApiRun({ id: nanoid(), ...row });
+          await db.upsertMonitoringApiRun({ id: nanoid(), scopeId, ...row });
           options?.onSiteProgress?.({
             success: row.status === "success" ? 1 : 0,
             error: row.status === "error" ? 1 : 0,
@@ -264,7 +266,7 @@ export async function executeProviderRun(
             triggeredBy,
             triggeredAt: new Date(),
           };
-          await db.upsertMonitoringApiRun({ id: nanoid(), ...row });
+          await db.upsertMonitoringApiRun({ id: nanoid(), scopeId, ...row });
           options?.onSiteProgress?.({ success: 0, error: 1, noData: 0 });
           return row;
         }
@@ -278,6 +280,7 @@ export async function executeProviderRun(
       try {
         await db.upsertMonitoringApiRun({
           id: nanoid(),
+          scopeId,
           provider,
           connectionId: cred.id,
           siteId: `credential:${cred.id}`,
@@ -310,6 +313,7 @@ export async function executeProviderRun(
 
 export async function executeMonitoringBatch(
   batchId: string,
+  scopeId: string,
   dateKey: string,
   triggeredBy: number | null,
   selectedProviders?: string[],
@@ -393,6 +397,7 @@ export async function executeMonitoringBatch(
 
       const { success, error, noData } = await executeProviderRun(
         provider,
+        scopeId,
         dateKey,
         triggeredBy,
         {

@@ -11,14 +11,14 @@ import {
 export async function upsertMonitoringApiRun(data: InsertMonitoringApiRun) {
   const db = await getDb();
   if (!db) return;
+  if (!data.scopeId) {
+    throw new Error("upsertMonitoringApiRun: scopeId is required");
+  }
   await withDbRetry("upsert monitoring api run", async () => {
-    // Lookup now matches the updated unique index
-    // (provider, connectionId, siteId, dateKey). Previously the upsert
-    // ignored connectionId and one run would overwrite another when
-    // multiple credentials managed the same provider+site+date.
-    //
-    // connectionId is nullable in the schema, but legacy rows exist with
-    // NULL. We use `IS NULL`-safe matching for that case.
+    // Lookup matches the scope-aware unique index
+    // (scopeId, provider, connectionId, siteId, dateKey). connectionId is
+    // nullable in the schema; legacy rows exist with NULL, so we use
+    // `IS NULL`-safe matching for that case.
     const connectionIdPredicate =
       data.connectionId === null || data.connectionId === undefined
         ? sql`${monitoringApiRuns.connectionId} IS NULL`
@@ -29,6 +29,7 @@ export async function upsertMonitoringApiRun(data: InsertMonitoringApiRun) {
       .from(monitoringApiRuns)
       .where(
         and(
+          eq(monitoringApiRuns.scopeId, data.scopeId),
           eq(monitoringApiRuns.provider, data.provider),
           connectionIdPredicate,
           eq(monitoringApiRuns.siteId, data.siteId),
@@ -58,7 +59,11 @@ export async function upsertMonitoringApiRun(data: InsertMonitoringApiRun) {
   });
 }
 
-export async function getMonitoringGrid(startDate: string, endDate: string) {
+export async function getMonitoringGrid(
+  scopeId: string,
+  startDate: string,
+  endDate: string
+) {
   const db = await getDb();
   if (!db) return [];
   return withDbRetry("get monitoring grid", async () =>
@@ -67,15 +72,25 @@ export async function getMonitoringGrid(startDate: string, endDate: string) {
       .from(monitoringApiRuns)
       .where(
         and(
+          eq(monitoringApiRuns.scopeId, scopeId),
           gte(monitoringApiRuns.dateKey, startDate),
           sql`${monitoringApiRuns.dateKey} <= ${endDate}`
         )
       )
-      .orderBy(asc(monitoringApiRuns.provider), asc(monitoringApiRuns.siteId), asc(monitoringApiRuns.dateKey))
+      .orderBy(
+        asc(monitoringApiRuns.provider),
+        asc(monitoringApiRuns.siteId),
+        asc(monitoringApiRuns.dateKey)
+      )
   );
 }
 
-export async function getMonitoringRunDetail(provider: string, siteId: string, dateKey: string) {
+export async function getMonitoringRunDetail(
+  scopeId: string,
+  provider: string,
+  siteId: string,
+  dateKey: string
+) {
   const db = await getDb();
   if (!db) return null;
   return withDbRetry("get monitoring run detail", async () => {
@@ -84,6 +99,7 @@ export async function getMonitoringRunDetail(provider: string, siteId: string, d
       .from(monitoringApiRuns)
       .where(
         and(
+          eq(monitoringApiRuns.scopeId, scopeId),
           eq(monitoringApiRuns.provider, provider),
           eq(monitoringApiRuns.siteId, siteId),
           eq(monitoringApiRuns.dateKey, dateKey)
@@ -94,7 +110,7 @@ export async function getMonitoringRunDetail(provider: string, siteId: string, d
   });
 }
 
-export async function getMonitoringHealthSummary() {
+export async function getMonitoringHealthSummary(scopeId: string) {
   const db = await getDb();
   if (!db) return [];
   const sevenDaysAgo = new Date();
@@ -113,7 +129,12 @@ export async function getMonitoringHealthSummary() {
         lastSuccess: sql<string>`MAX(CASE WHEN ${monitoringApiRuns.status} = 'success' THEN ${monitoringApiRuns.dateKey} END)`,
       })
       .from(monitoringApiRuns)
-      .where(gte(monitoringApiRuns.dateKey, startDate))
+      .where(
+        and(
+          eq(monitoringApiRuns.scopeId, scopeId),
+          gte(monitoringApiRuns.dateKey, startDate)
+        )
+      )
       .groupBy(monitoringApiRuns.provider)
   );
 }
@@ -121,7 +142,9 @@ export async function getMonitoringHealthSummary() {
 /**
  * Delete every monitoringApiRuns row older than `olderThanDateKey`.
  * Called nightly with a 365-day cutoff so the table stays bounded.
- * Mirrors the pruneSectionEngagement pattern in server/db/engagement.ts.
+ * Deliberately scope-agnostic: the nightly prune runs across every
+ * scope's rows at once. Mirrors the pruneSectionEngagement pattern in
+ * server/db/engagement.ts.
  */
 export async function pruneMonitoringApiRuns(olderThanDateKey: string) {
   const db = await getDb();
@@ -137,6 +160,7 @@ export async function pruneMonitoringApiRuns(olderThanDateKey: string) {
 // ── Monitoring Batch Runs ───────────────────────────────────────────
 
 export async function createMonitoringBatchRun(data: {
+  scopeId: string;
   dateKey: string;
   triggeredBy: number | null;
 }) {
@@ -146,6 +170,7 @@ export async function createMonitoringBatchRun(data: {
   await withDbRetry("create monitoring batch run", async () => {
     await db.insert(monitoringBatchRuns).values({
       id,
+      scopeId: data.scopeId,
       dateKey: data.dateKey,
       status: "running",
       triggeredBy: data.triggeredBy,
@@ -186,14 +211,18 @@ export async function getMonitoringBatchRun(id: string) {
   });
 }
 
-/** Returns the most recently created MonitoringBatchRun (or null). Used by the debug endpoint. */
-export async function getLatestMonitoringBatchRun() {
+/**
+ * Returns the most recently created MonitoringBatchRun for a scope
+ * (or null). Used by the debug endpoint.
+ */
+export async function getLatestMonitoringBatchRun(scopeId: string) {
   const db = await getDb();
   if (!db) return null;
   return withDbRetry("get latest monitoring batch run", async () => {
     const [row] = await db
       .select()
       .from(monitoringBatchRuns)
+      .where(eq(monitoringBatchRuns.scopeId, scopeId))
       .orderBy(desc(monitoringBatchRuns.createdAt))
       .limit(1);
     return row ?? null;
@@ -205,6 +234,9 @@ export async function getLatestMonitoringBatchRun() {
  * `failed`. Called on server startup to clean up orphaned batches from
  * the prior Node process (killed by deploy, crash, OOM, etc.) — without
  * this, the dashboard's UI polls these rows forever.
+ *
+ * Deliberately scope-agnostic: a startup sweep across every scope's
+ * orphans is correct because no process survived to own them.
  *
  * Returns the number of rows updated.
  */

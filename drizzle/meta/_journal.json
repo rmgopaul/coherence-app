@@ -211,6 +211,13 @@
       "when": 1777077980188,
       "tag": "0033_add_invite_preset_id",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1777082240632,
+      "tag": "0034_add_monitoring_scope_id",
+      "breakpoints": true
     }
   ]
 }

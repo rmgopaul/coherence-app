@@ -11,6 +11,7 @@
  *   SOLAR_REC_MONITOR_HOUR=8   (0-23, default 8 = 8 AM)
  */
 import { scheduleDaily } from "../_core/scheduleDaily";
+import { resolveSolarRecScopeId } from "../_core/solarRecAuth";
 import { executeMonitoringBatch } from "./monitoring.service";
 import * as db from "../db";
 
@@ -27,11 +28,17 @@ function getScheduledHour(): number {
 
 async function runMonitoringBatch(dateKey: string): Promise<void> {
   console.log(`[MonitoringScheduler] Starting daily run for ${dateKey}...`);
+  // Single-scope today (Rhett's scope). When Task 5.2 onboards a second
+  // scope with its own team credentials, this loop will iterate every
+  // active scope; for now resolveSolarRecScopeId() is the single-tenant
+  // helper.
+  const scopeId = await resolveSolarRecScopeId();
   const batchId = await db.createMonitoringBatchRun({
+    scopeId,
     dateKey,
     triggeredBy: null, // system-triggered
   });
-  await executeMonitoringBatch(batchId, dateKey, null);
+  await executeMonitoringBatch(batchId, scopeId, dateKey, null);
   console.log(`[MonitoringScheduler] Completed daily run for ${dateKey}`);
 }
 

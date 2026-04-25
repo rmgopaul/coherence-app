@@ -126,6 +126,10 @@ export const monitoringApiRuns = mysqlTable(
   "monitoringApiRuns",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
+    // Task 5.3 — scope the run to a solar-rec tenant. Existing rows are
+    // backfilled to Rhett's scope by migration 0034; all new inserts must
+    // pass a scopeId from the request context.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     provider: varchar("provider", { length: 64 }).notNull(),
     connectionId: varchar("connectionId", { length: 64 }),
     siteId: varchar("siteId", { length: 128 }).notNull(),
@@ -141,15 +145,16 @@ export const monitoringApiRuns = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow(),
   },
   (table) => ({
-    // Previously: unique on (provider, siteId, dateKey). That collided when
-    // multiple logins for the same provider managed the same site on the
-    // same day — the second run overwrote the first. connectionId is now
-    // part of the unique key so each (provider, connection, site, date)
-    // combination owns its own row.
-    providerConnectionSiteDateIdx: uniqueIndex(
-      "monitoring_api_runs_provider_conn_site_date_idx"
-    ).on(table.provider, table.connectionId, table.siteId, table.dateKey),
+    // Previously: unique on (provider, connectionId, siteId, dateKey).
+    // scopeId is now part of the unique key so two scopes can each own
+    // rows for the same external site without colliding. connectionId is
+    // still included so multiple logins for the same provider/scope can
+    // each own their own row per day.
+    scopeProviderConnectionSiteDateIdx: uniqueIndex(
+      "monitoring_api_runs_scope_provider_conn_site_date_idx"
+    ).on(table.scopeId, table.provider, table.connectionId, table.siteId, table.dateKey),
     dateKeyIdx: index("monitoring_api_runs_date_key_idx").on(table.dateKey),
+    scopeDateIdx: index("monitoring_api_runs_scope_date_idx").on(table.scopeId, table.dateKey),
     providerDateIdx: index("monitoring_api_runs_provider_date_idx").on(table.provider, table.dateKey),
     statusDateIdx: index("monitoring_api_runs_status_date_idx").on(table.status, table.dateKey),
   })
@@ -164,6 +169,9 @@ export const monitoringBatchRuns = mysqlTable(
   "monitoringBatchRuns",
   {
     id: varchar("id", { length: 64 }).primaryKey(),
+    // Task 5.3 — scope the batch run to a solar-rec tenant. Same
+    // semantics as monitoringApiRuns.scopeId.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     dateKey: varchar("dateKey", { length: 10 }).notNull(),
     status: mysqlEnum("status", ["running", "completed", "failed"]).default("running").notNull(),
     totalSites: int("totalSites").default(0).notNull(),
@@ -181,6 +189,10 @@ export const monitoringBatchRuns = mysqlTable(
   },
   (table) => ({
     dateKeyIdx: index("monitoring_batch_runs_date_key_idx").on(table.dateKey),
+    scopeDateIdx: index("monitoring_batch_runs_scope_date_idx").on(
+      table.scopeId,
+      table.dateKey
+    ),
     statusIdx: index("monitoring_batch_runs_status_idx").on(table.status),
   })
 );

@@ -1405,14 +1405,14 @@ const monitoringRouter = t.router({
         endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const { getMonitoringGrid } = await import("../db");
-      return getMonitoringGrid(input.startDate, input.endDate);
+      return getMonitoringGrid(ctx.scopeId, input.startDate, input.endDate);
     }),
 
-  getHealthSummary: solarRecViewerProcedure.query(async () => {
+  getHealthSummary: solarRecViewerProcedure.query(async ({ ctx }) => {
     const { getMonitoringHealthSummary } = await import("../db");
-    return getMonitoringHealthSummary();
+    return getMonitoringHealthSummary(ctx.scopeId);
   }),
 
   getBatchStatus: solarRecViewerProcedure
@@ -1490,15 +1490,18 @@ const monitoringRouter = t.router({
         )
       );
       const batchId = await createMonitoringBatchRun({
+        scopeId: ctx.scopeId,
         dateKey,
         triggeredBy: ctx.userId,
       });
 
       // Fire-and-forget: run the batch in background
+      const batchScopeId = ctx.scopeId;
       import("../solar/monitoring.service").then(mod =>
         mod
           .executeMonitoringBatch(
             batchId,
+            batchScopeId,
             dateKey,
             ctx.userId,
             selectedProviders,
@@ -1581,7 +1584,7 @@ const monitoringRouter = t.router({
   debugConvertedReadsState: requirePermission(
     "monitoring-overview",
     "edit"
-  ).query(async () => {
+  ).query(async ({ ctx }) => {
     const { getSolarRecDashboardPayload, getLatestMonitoringBatchRun } =
       await import("../db");
     const ownerUserId = await resolveSolarRecOwnerUserId();
@@ -1615,7 +1618,7 @@ const monitoringRouter = t.router({
       ageSeconds: number | null;
     } | null = null;
     try {
-      const row = await getLatestMonitoringBatchRun();
+      const row = await getLatestMonitoringBatchRun(ctx.scopeId);
       if (row) {
         const createdAt = row.createdAt
           ? new Date(row.createdAt).toISOString()
@@ -1928,12 +1931,12 @@ const monitoringRouter = t.router({
         endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const { getMonitoringGrid } = await import("../db");
       const { listSolarRecTeamCredentials } = await import("../db");
 
       const [runs, creds] = await Promise.all([
-        getMonitoringGrid(input.startDate, input.endDate),
+        getMonitoringGrid(ctx.scopeId, input.startDate, input.endDate),
         listSolarRecTeamCredentials(),
       ]);
 
