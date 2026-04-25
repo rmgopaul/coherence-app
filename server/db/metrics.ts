@@ -66,8 +66,7 @@ export async function upsertDailyMetric(metric: InsertDailyHealthMetric) {
 
 /**
  * Upsert *only* the Samsung Health columns of a daily metric row,
- * preserving any whoop* / todoist* values already present and any
- * previously-stored samsung* value when the incoming field is null.
+ * preserving any whoop* / todoist* values already present.
  *
  * Called by the Samsung Health webhook ingest so the phone (which
  * reads from `dailyHealthMetrics`) sees the same values the web app
@@ -76,10 +75,20 @@ export async function upsertDailyMetric(metric: InsertDailyHealthMetric) {
  * that `captureDailySnapshotForUser` performs keeps the webhook fast
  * enough for the 31-row batch endpoint.
  *
- * Null-preservation is important because a historical backfill
- * payload may not carry every field for every day (e.g. an old day
- * without manualScores set). Without preservation, backfilling would
- * clobber a previously-stored sleepScore with null.
+ * **Field-level merge semantics:**
+ * - **Record-derived fields** (`samsungSteps`, `samsungSleepHours`,
+ *   `samsungSpo2AvgPercent`) preserve previously-stored values when
+ *   the incoming field is null. A flaky Health Connect read or a
+ *   historical day without that record type shouldn't clobber real
+ *   data we collected on an earlier sync.
+ * - **Manual-score fields** (`samsungSleepScore`, `samsungEnergyScore`)
+ *   are inherently per-date and ALWAYS overwrite. They reflect the
+ *   user's current manual entry for the row's dateKey. The caller
+ *   (`ingestSamsungPayload`) only passes non-null values when the
+ *   payload's date is the live "today"; for historical backfill it
+ *   passes null, and that null MUST land in the row — otherwise
+ *   today's score gets propagated back to past days (the 2026-04-25
+ *   bug).
  */
 export async function upsertSamsungDailyMetric(args: {
   userId: number;
@@ -106,8 +115,11 @@ export async function upsertSamsungDailyMetric(args: {
     samsungSteps: args.samsungSteps ?? existing[0]?.samsungSteps ?? null,
     samsungSleepHours: args.samsungSleepHours ?? existing[0]?.samsungSleepHours ?? null,
     samsungSpo2AvgPercent: args.samsungSpo2AvgPercent ?? existing[0]?.samsungSpo2AvgPercent ?? null,
-    samsungSleepScore: args.samsungSleepScore ?? existing[0]?.samsungSleepScore ?? null,
-    samsungEnergyScore: args.samsungEnergyScore ?? existing[0]?.samsungEnergyScore ?? null,
+    // Manual scores: always overwrite with the incoming value (incl.
+    // null). See the doc comment above for why preservation is wrong
+    // here — historical backfill MUST be able to clear stale scores.
+    samsungSleepScore: args.samsungSleepScore,
+    samsungEnergyScore: args.samsungEnergyScore,
   };
 
   if (existing.length > 0) {

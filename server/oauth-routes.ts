@@ -567,7 +567,20 @@ async function ingestSamsungPayload(
   // nightly snapshot job runs (and historical backfill never updates
   // the table at all). The web reads from the integration metadata
   // directly, hence the live-summary gating below for that path only.
-  const metadata = buildSamsungMetadata(payloadRecord, receivedAt, manualScores, {
+  //
+  // Manual scores (sleepScore, energyScore) are stored as a single
+  // global slot on the integration metadata and are inherently per-date
+  // — they reflect the user's manual entry for the *current* live day.
+  // Applying them to a historical backfill payload would stamp today's
+  // 75/93 onto every past day, which is exactly the bug we hit on
+  // 2026-04-25. So only fall back to manualScores when the incoming
+  // payload's date matches the live summary's date (i.e. this is a
+  // sync for "today"). Historical payloads pass null and the
+  // dailyHealthMetrics row's manual-score columns get overwritten with
+  // null too (see upsertSamsungDailyMetric — manual columns are not
+  // null-preserved).
+  const manualScoresForThisPayload = sameDateAsExisting ? manualScores : null;
+  const metadata = buildSamsungMetadata(payloadRecord, receivedAt, manualScoresForThisPayload, {
     previousSummary: existingSummary,
     preservePreviousIfDegraded: degradedSync && sameDateAsExisting,
   });
