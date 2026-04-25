@@ -18,8 +18,10 @@ const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
 const SolarEdgeMeterReads = lazy(
   () => import("../features/solar-readings/SolarEdgeMeterReads")
 );
+// Task 5.4 vendor 12/16 — Enphase V4 migrated to solar-rec-native page
+// backed by team credentials with OAuth refresh.
 const EnphaseV4MeterReads = lazy(
-  () => import("../features/solar-readings/EnphaseV4MeterReads")
+  () => import("./pages/meter-reads/EnphaseV4MeterReads")
 );
 // Task 5.4 vendor 6/16 — APsystems migrated to solar-rec-native page backed
 // by team credentials.
