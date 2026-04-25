@@ -12,13 +12,16 @@
  */
 
 import { nanoid } from "nanoid";
-import { and, eq, getDb, withDbRetry } from "./_core";
+import { and, asc, eq, getDb, withDbRetry } from "./_core";
 import {
+  solarRecPermissionPresets,
   solarRecScopes,
   solarRecUserModulePermissions,
   solarRecUsers,
 } from "../../drizzle/schema";
 import {
+  isModuleKey,
+  PERMISSION_LEVELS,
   PERMISSION_ORDER,
   permissionAtLeast,
   type ModuleKey,
@@ -256,6 +259,177 @@ async function getSolarRecScopeAdminFlag(
       .where(eq(solarRecUsers.id, userId))
       .limit(1);
     return row ?? null;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Presets
+// ---------------------------------------------------------------------------
+
+export interface PresetPermissionEntry {
+  moduleKey: ModuleKey;
+  permission: PermissionLevel;
+}
+
+export interface HydratedPreset {
+  id: string;
+  scopeId: string;
+  name: string;
+  description: string | null;
+  permissions: PresetPermissionEntry[];
+  createdBy: number;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+}
+
+function serializePresetEntries(entries: PresetPermissionEntry[]): string {
+  return JSON.stringify(
+    entries.map((entry) => ({
+      moduleKey: entry.moduleKey,
+      permission: entry.permission,
+    }))
+  );
+}
+
+/**
+ * Parse the JSON blob in `permissionsJson`. Entries with unknown module
+ * keys or invalid permission levels are dropped rather than throwing —
+ * presets stay usable after a module rename without a manual data fix.
+ */
+function parsePresetEntries(raw: string): PresetPermissionEntry[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const validLevels = new Set<string>(PERMISSION_LEVELS);
+  const out: PresetPermissionEntry[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const moduleKey = (item as Record<string, unknown>).moduleKey;
+    const permission = (item as Record<string, unknown>).permission;
+    if (
+      typeof moduleKey !== "string" ||
+      typeof permission !== "string" ||
+      !isModuleKey(moduleKey) ||
+      !validLevels.has(permission)
+    ) {
+      continue;
+    }
+    out.push({
+      moduleKey: moduleKey as ModuleKey,
+      permission: permission as PermissionLevel,
+    });
+  }
+  return out;
+}
+
+function hydratePreset(row: {
+  id: string;
+  scopeId: string;
+  name: string;
+  description: string | null;
+  permissionsJson: string;
+  createdBy: number;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+}): HydratedPreset {
+  return {
+    id: row.id,
+    scopeId: row.scopeId,
+    name: row.name,
+    description: row.description,
+    permissions: parsePresetEntries(row.permissionsJson),
+    createdBy: row.createdBy,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export async function listSolarRecPermissionPresets(
+  scopeId: string
+): Promise<HydratedPreset[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return withDbRetry("list solar rec permission presets", async () => {
+    const rows = await db
+      .select()
+      .from(solarRecPermissionPresets)
+      .where(eq(solarRecPermissionPresets.scopeId, scopeId))
+      .orderBy(asc(solarRecPermissionPresets.name));
+    return rows.map(hydratePreset);
+  });
+}
+
+export async function getSolarRecPermissionPreset(
+  id: string
+): Promise<HydratedPreset | null> {
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec permission preset", async () => {
+    const [row] = await db
+      .select()
+      .from(solarRecPermissionPresets)
+      .where(eq(solarRecPermissionPresets.id, id))
+      .limit(1);
+    return row ? hydratePreset(row) : null;
+  });
+}
+
+export async function createSolarRecPermissionPreset(data: {
+  scopeId: string;
+  name: string;
+  description: string | null;
+  permissions: PresetPermissionEntry[];
+  createdBy: number;
+}): Promise<string> {
+  const db = await getDb();
+  if (!db) throw new Error("Database unavailable");
+  const id = nanoid();
+  await withDbRetry("create solar rec permission preset", async () => {
+    await db.insert(solarRecPermissionPresets).values({
+      id,
+      scopeId: data.scopeId,
+      name: data.name,
+      description: data.description,
+      permissionsJson: serializePresetEntries(data.permissions),
+      createdBy: data.createdBy,
+    });
+  });
+  return id;
+}
+
+export async function updateSolarRecPermissionPreset(data: {
+  id: string;
+  name?: string;
+  description?: string | null;
+  permissions?: PresetPermissionEntry[];
+}): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("update solar rec permission preset", async () => {
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (data.name !== undefined) updates.name = data.name;
+    if (data.description !== undefined) updates.description = data.description;
+    if (data.permissions !== undefined) {
+      updates.permissionsJson = serializePresetEntries(data.permissions);
+    }
+    await db
+      .update(solarRecPermissionPresets)
+      .set(updates)
+      .where(eq(solarRecPermissionPresets.id, data.id));
+  });
+}
+
+export async function deleteSolarRecPermissionPreset(id: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await withDbRetry("delete solar rec permission preset", async () => {
+    await db
+      .delete(solarRecPermissionPresets)
+      .where(eq(solarRecPermissionPresets.id, id));
   });
 }
 

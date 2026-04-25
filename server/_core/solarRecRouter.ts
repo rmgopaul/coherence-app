@@ -1942,6 +1942,134 @@ const permissionsRouter = t.router({
       await setSolarRecUserScopeAdmin(input.userId, input.isScopeAdmin);
       return { ok: true };
     }),
+
+  /**
+   * List named presets for the current scope. Admin-only so the preset
+   * manager stays tied to the Team & Permissions tab.
+   */
+  listPresets: requirePermission("team-permissions", "admin").query(
+    async ({ ctx }) => {
+      const { listSolarRecPermissionPresets } = await import("../db");
+      return listSolarRecPermissionPresets(ctx.scopeId);
+    }
+  ),
+
+  createPreset: requirePermission("team-permissions", "admin")
+    .input(
+      z.object({
+        name: z.string().trim().min(1).max(120),
+        description: z.string().trim().max(500).nullish(),
+        permissions: z.array(
+          z.object({
+            moduleKey: MODULE_KEY_ZOD,
+            permission: PERMISSION_LEVEL_ZOD,
+          })
+        ),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { createSolarRecPermissionPreset } = await import("../db");
+      const id = await createSolarRecPermissionPreset({
+        scopeId: ctx.scopeId,
+        name: input.name,
+        description: input.description ?? null,
+        permissions: input.permissions,
+        createdBy: ctx.userId,
+      });
+      return { id };
+    }),
+
+  updatePreset: requirePermission("team-permissions", "admin")
+    .input(
+      z.object({
+        id: z.string().min(1),
+        name: z.string().trim().min(1).max(120).optional(),
+        description: z.string().trim().max(500).nullish(),
+        permissions: z
+          .array(
+            z.object({
+              moduleKey: MODULE_KEY_ZOD,
+              permission: PERMISSION_LEVEL_ZOD,
+            })
+          )
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSolarRecPermissionPreset, updateSolarRecPermissionPreset } =
+        await import("../db");
+      const existing = await getSolarRecPermissionPreset(input.id);
+      if (!existing || existing.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Preset not found",
+        });
+      }
+      await updateSolarRecPermissionPreset({
+        id: input.id,
+        name: input.name,
+        description: input.description === undefined ? undefined : input.description ?? null,
+        permissions: input.permissions,
+      });
+      return { ok: true };
+    }),
+
+  deletePreset: requirePermission("team-permissions", "admin")
+    .input(z.object({ id: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const { getSolarRecPermissionPreset, deleteSolarRecPermissionPreset } =
+        await import("../db");
+      const existing = await getSolarRecPermissionPreset(input.id);
+      if (!existing || existing.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Preset not found",
+        });
+      }
+      await deleteSolarRecPermissionPreset(input.id);
+      return { ok: true };
+    }),
+
+  /**
+   * Apply a preset to a user: overwrites their matrix rows to match the
+   * preset's entries, including setting `none` on any module the preset
+   * explicitly marks as `none`. Modules not mentioned in the preset are
+   * left as `none` too (via replaceSolarRecUserModulePermissions, which
+   * deletes rows not in the payload).
+   */
+  applyPreset: requirePermission("team-permissions", "admin")
+    .input(
+      z.object({
+        presetId: z.string().min(1),
+        userId: z.number().int().positive(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const {
+        getSolarRecPermissionPreset,
+        replaceSolarRecUserModulePermissions,
+      } = await import("../db");
+      const preset = await getSolarRecPermissionPreset(input.presetId);
+      if (!preset || preset.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Preset not found",
+        });
+      }
+      const nonNone = preset.permissions.filter(
+        (entry) => entry.permission !== "none"
+      );
+      await replaceSolarRecUserModulePermissions({
+        userId: input.userId,
+        scopeId: ctx.scopeId,
+        permissions: nonNone,
+      });
+      return {
+        ok: true,
+        applied: nonNone.length,
+        presetName: preset.name,
+      };
+    }),
 });
 
 // ---------------------------------------------------------------------------

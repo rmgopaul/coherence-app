@@ -197,6 +197,13 @@
       "when": 1777071342878,
       "tag": "0031_add_solar_rec_user_module_permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1777074230710,
+      "tag": "0032_add_solar_rec_permission_presets",
+      "breakpoints": true
     }
   ]
 }
