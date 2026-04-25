@@ -2269,11 +2269,134 @@ const permissionsRouter = t.router({
 // happens to arrive at /solar-rec/api/trpc/{auth,enphaseV2}.* now falls
 // through the dispatcher to the main appRouter instead of 404-ing here.
 
+// ---------------------------------------------------------------------------
+// Task 5.4 — per-vendor meter-read routers (scope-aware, team-credential-backed).
+//
+// First vendor: Generac (PWRview). Credentials come from
+// `solarRecTeamCredentials[provider='generac']` via the existing team-
+// credentials admin UI in SolarRecSettings. The meter-reads page on
+// solar-rec only exposes RUN operations (list systems, single-system
+// snapshot) — credential lifecycle is managed in Settings, not here.
+//
+// Gating:
+//   - reads     → requirePermission("meter-reads", "read")
+//   - snapshots → requirePermission("meter-reads", "edit") (they run
+//                 the vendor API and bill against the team's quota)
+// ---------------------------------------------------------------------------
+
+type GeneracTeamContext = {
+  apiKey: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseGeneracTeamMetadata(raw: string | null): GeneracTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const apiKey =
+      typeof parsed?.apiKey === "string" && parsed.apiKey.trim().length > 0
+        ? parsed.apiKey.trim()
+        : null;
+    if (!apiKey) return null;
+    return {
+      apiKey,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the active Generac team credential for a scope. Returns the
+ * first credential whose metadata parses cleanly; later we'll layer an
+ * explicit activeConnectionId here when a scope has more than one.
+ */
+async function resolveGeneracTeamContext(
+  scopeId: string
+): Promise<GeneracTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("generac");
+  for (const cred of credentials) {
+    const parsed = parseGeneracTeamMetadata(cred.metadata);
+    if (parsed) {
+      return {
+        ...parsed,
+        baseUrl: parsed.baseUrl,
+        credentialId: cred.id,
+      };
+    }
+    const fallbackApiKey = cred.accessToken?.trim();
+    if (fallbackApiKey) {
+      return { apiKey: fallbackApiKey, baseUrl: null, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Generac team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const generacRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("generac");
+    const active = credentials.find(
+      (cred) =>
+        parseGeneracTeamMetadata(cred.metadata) !== null ||
+        (cred.accessToken?.trim().length ?? 0) > 0
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listSystems: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listSystems } = await import("../services/solar/generac");
+      const context = await resolveGeneracTeamContext(ctx.scopeId);
+      return listSystems({ apiKey: context.apiKey, baseUrl: context.baseUrl });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        systemId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSystemProductionSnapshot } = await import(
+        "../services/solar/generac"
+      );
+      const context = await resolveGeneracTeamContext(ctx.scopeId);
+      return getSystemProductionSnapshot(
+        { apiKey: context.apiKey, baseUrl: context.baseUrl },
+        input.systemId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
   monitoring: monitoringRouter,
   permissions: permissionsRouter,
+  generac: generacRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
