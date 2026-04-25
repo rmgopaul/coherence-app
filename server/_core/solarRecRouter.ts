@@ -4058,6 +4058,42 @@ const teslaPowerhubRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 15/16 — SunPower. Different from every credential-backed
+// vendor: there is no upstream API. Production readings are submitted by
+// the SunPower Reader Expo app to the main router's
+// `solarReadings.submit` endpoint (HMAC-signed, hardcoded URL in the
+// mobile app — must NOT move) and stored in `productionReadings`.
+//
+// What moves: the dashboard read path. `summary` and `list` were on the
+// main router; the new solar-rec page calls them through the standalone
+// router behind the `meter-reads` permission gate. The legacy main
+// router still exposes the same procedures so existing personal
+// dashboards keep working until Phase 5.5 deprecates them.
+// ---------------------------------------------------------------------------
+
+const sunpowerRouter = t.router({
+  summary: requirePermission("meter-reads", "read").query(async () => {
+    const { getProductionReadingSummary } = await import("../db");
+    return getProductionReadingSummary();
+  }),
+
+  list: requirePermission("meter-reads", "read")
+    .input(
+      z
+        .object({
+          limit: z.number().int().min(1).max(500).optional(),
+          email: z.string().optional(),
+          nonId: z.string().optional(),
+        })
+        .optional()
+    )
+    .query(async ({ input }) => {
+      const { listProductionReadings } = await import("../db");
+      return listProductionReadings(input ?? undefined);
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -4077,6 +4113,7 @@ export const solarRecAppRouter = t.router({
   enphaseV4: enphaseV4Router,
   solaredge: solaredgeRouter,
   teslaPowerhub: teslaPowerhubRouter,
+  sunpower: sunpowerRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
