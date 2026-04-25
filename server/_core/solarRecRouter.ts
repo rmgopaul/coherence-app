@@ -3272,6 +3272,122 @@ const ekmRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 10/16 — Fronius (Solar.web). Team credential stores
+// `{accessKeyId, accessKeyValue, baseUrl}`; lists PV systems and runs
+// single-system snapshots.
+// ---------------------------------------------------------------------------
+
+type FroniusTeamContext = {
+  accessKeyId: string;
+  accessKeyValue: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseFroniusTeamMetadata(
+  raw: string | null
+): FroniusTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const accessKeyId =
+      typeof parsed?.accessKeyId === "string" &&
+      parsed.accessKeyId.trim().length > 0
+        ? parsed.accessKeyId.trim()
+        : null;
+    const accessKeyValue =
+      typeof parsed?.accessKeyValue === "string" &&
+      parsed.accessKeyValue.trim().length > 0
+        ? parsed.accessKeyValue.trim()
+        : null;
+    if (!accessKeyId || !accessKeyValue) return null;
+    return {
+      accessKeyId,
+      accessKeyValue,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveFroniusTeamContext(
+  scopeId: string
+): Promise<FroniusTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("fronius");
+  for (const cred of credentials) {
+    const parsed = parseFroniusTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Fronius team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const froniusRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("fronius");
+    const active = credentials.find(
+      (cred) => parseFroniusTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listPvSystems: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listPvSystems } = await import("../services/solar/fronius");
+      const context = await resolveFroniusTeamContext(ctx.scopeId);
+      return listPvSystems({
+        accessKeyId: context.accessKeyId,
+        accessKeyValue: context.accessKeyValue,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        pvSystemId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getPvSystemProductionSnapshot } = await import(
+        "../services/solar/fronius"
+      );
+      const context = await resolveFroniusTeamContext(ctx.scopeId);
+      return getPvSystemProductionSnapshot(
+        {
+          accessKeyId: context.accessKeyId,
+          accessKeyValue: context.accessKeyValue,
+          baseUrl: context.baseUrl,
+        },
+        input.pvSystemId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3286,6 +3402,7 @@ export const solarRecAppRouter = t.router({
   solarlog: solarlogRouter,
   growatt: growattRouter,
   ekm: ekmRouter,
+  fronius: froniusRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
