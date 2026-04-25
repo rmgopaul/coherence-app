@@ -2963,6 +2963,113 @@ const apsystemsRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 7/16 — SolarLog (device-local). Team credential stores
+// `{baseUrl|deviceUrl, password}`; lists devices on the connected
+// SolarLog appliance and runs single-device snapshots.
+// ---------------------------------------------------------------------------
+
+type SolarLogTeamContext = {
+  baseUrl: string;
+  password: string | null;
+  credentialId: string;
+};
+
+function parseSolarLogTeamMetadata(
+  raw: string | null
+): SolarLogTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    // The Settings UI stores either `baseUrl` or the legacy alias
+    // `deviceUrl`; the monitoring batch adapter accepts both, so we
+    // do too.
+    const candidate =
+      typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+        ? parsed.baseUrl.trim()
+        : typeof parsed?.deviceUrl === "string" &&
+            parsed.deviceUrl.trim().length > 0
+          ? parsed.deviceUrl.trim()
+          : null;
+    if (!candidate) return null;
+    const password =
+      typeof parsed?.password === "string" && parsed.password.length > 0
+        ? parsed.password
+        : null;
+    return { baseUrl: candidate, password, credentialId: "" };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSolarLogTeamContext(
+  scopeId: string
+): Promise<SolarLogTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("solarlog");
+  for (const cred of credentials) {
+    const parsed = parseSolarLogTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No SolarLog team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const solarlogRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials =
+      await getSolarRecTeamCredentialsByProvider("solarlog");
+    const active = credentials.find(
+      (cred) => parseSolarLogTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listDevices: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listDevices } = await import("../services/solar/solarLog");
+      const context = await resolveSolarLogTeamContext(ctx.scopeId);
+      return listDevices({
+        baseUrl: context.baseUrl,
+        password: context.password,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        deviceId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getDeviceProductionSnapshot } = await import(
+        "../services/solar/solarLog"
+      );
+      const context = await resolveSolarLogTeamContext(ctx.scopeId);
+      return getDeviceProductionSnapshot(
+        { baseUrl: context.baseUrl, password: context.password },
+        input.deviceId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -2974,6 +3081,7 @@ export const solarRecAppRouter = t.router({
   hoymiles: hoymilesRouter,
   locus: locusRouter,
   apsystems: apsystemsRouter,
+  solarlog: solarlogRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
