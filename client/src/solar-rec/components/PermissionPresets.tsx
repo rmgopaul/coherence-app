@@ -79,7 +79,7 @@ function mapFromEntries(
 function mapToEntries(
   map: Record<ModuleKey, PermissionLevel>
 ): Array<{ moduleKey: ModuleKey; permission: PermissionLevel }> {
-  return MODULES.map((m) => ({
+  return MODULES.map(m => ({
     moduleKey: m.key,
     permission: map[m.key] ?? "none",
   }));
@@ -103,7 +103,7 @@ export default function PermissionPresets() {
       setEditor(null);
       toast.success("Preset created");
     },
-    onError: (err) => toast.error(`Create failed: ${err.message}`),
+    onError: err => toast.error(`Create failed: ${err.message}`),
   });
 
   const updateMutation = trpc.permissions.updatePreset.useMutation({
@@ -112,7 +112,7 @@ export default function PermissionPresets() {
       setEditor(null);
       toast.success("Preset updated");
     },
-    onError: (err) => toast.error(`Update failed: ${err.message}`),
+    onError: err => toast.error(`Update failed: ${err.message}`),
   });
 
   const deleteMutation = trpc.permissions.deletePreset.useMutation({
@@ -120,18 +120,19 @@ export default function PermissionPresets() {
       utils.permissions.listPresets.invalidate();
       toast.success("Preset deleted");
     },
-    onError: (err) => toast.error(`Delete failed: ${err.message}`),
+    onError: err => toast.error(`Delete failed: ${err.message}`),
   });
 
   const applyMutation = trpc.permissions.applyPreset.useMutation({
-    onSuccess: (data) => {
+    onSuccess: data => {
       utils.permissions.listScopePermissions.invalidate();
+      utils.permissions.getMyPermissions.invalidate();
       setApplyState(null);
       toast.success(
         `Applied ${data.presetName}: ${data.applied} module(s) set`
       );
     },
-    onError: (err) => toast.error(`Apply failed: ${err.message}`),
+    onError: err => toast.error(`Apply failed: ${err.message}`),
   });
 
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -187,10 +188,7 @@ export default function PermissionPresets() {
   const presetModuleCount = useMemo(() => {
     const map = new Map<string, number>();
     for (const p of presets) {
-      map.set(
-        p.id,
-        p.permissions.filter((e) => e.permission !== "none").length
-      );
+      map.set(p.id, p.permissions.filter(e => e.permission !== "none").length);
     }
     return map;
   }, [presets]);
@@ -225,7 +223,7 @@ export default function PermissionPresets() {
           </p>
         ) : (
           <div className="space-y-2">
-            {presets.map((preset) => {
+            {presets.map(preset => {
               const nonNone = presetModuleCount.get(preset.id) ?? 0;
               return (
                 <div
@@ -251,9 +249,7 @@ export default function PermissionPresets() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() =>
-                        setApplyState({ preset, userId: null })
-                      }
+                      onClick={() => setApplyState({ preset, userId: null })}
                     >
                       <UserPlus2 className="h-3.5 w-3.5 mr-1" />
                       Apply
@@ -293,7 +289,7 @@ export default function PermissionPresets() {
       {/* Editor dialog */}
       <Dialog
         open={editor !== null}
-        onOpenChange={(open) => {
+        onOpenChange={open => {
           if (!open) setEditor(null);
         }}
       >
@@ -315,7 +311,7 @@ export default function PermissionPresets() {
                   <Input
                     id="preset-name"
                     value={editor.name}
-                    onChange={(e) =>
+                    onChange={e =>
                       setEditor({ ...editor, name: e.target.value })
                     }
                     placeholder="Monitoring Operator"
@@ -326,7 +322,7 @@ export default function PermissionPresets() {
                   <Textarea
                     id="preset-description"
                     value={editor.description}
-                    onChange={(e) =>
+                    onChange={e =>
                       setEditor({ ...editor, description: e.target.value })
                     }
                     rows={2}
@@ -338,14 +334,16 @@ export default function PermissionPresets() {
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50 sticky top-0">
                     <tr>
-                      <th className="text-left py-2 px-3 font-medium">Module</th>
+                      <th className="text-left py-2 px-3 font-medium">
+                        Module
+                      </th>
                       <th className="text-left py-2 px-3 font-medium w-[140px]">
                         Permission
                       </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {MODULES.map((m) => {
+                    {MODULES.map(m => {
                       const current = editor.map[m.key];
                       return (
                         <tr key={m.key} className="border-t">
@@ -360,7 +358,7 @@ export default function PermissionPresets() {
                           <td className="py-2 px-3">
                             <Select
                               value={current}
-                              onValueChange={(value) =>
+                              onValueChange={value =>
                                 setEditor({
                                   ...editor,
                                   map: {
@@ -374,7 +372,7 @@ export default function PermissionPresets() {
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {PERMISSION_LEVELS.map((level) => (
+                                {PERMISSION_LEVELS.map(level => (
                                   <SelectItem key={level} value={level}>
                                     {level}
                                   </SelectItem>
@@ -396,9 +394,7 @@ export default function PermissionPresets() {
             </Button>
             <Button
               onClick={saveEditor}
-              disabled={
-                createMutation.isPending || updateMutation.isPending
-              }
+              disabled={createMutation.isPending || updateMutation.isPending}
             >
               {createMutation.isPending || updateMutation.isPending ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
@@ -412,7 +408,7 @@ export default function PermissionPresets() {
       {/* Apply dialog */}
       <Dialog
         open={applyState !== null}
-        onOpenChange={(open) => {
+        onOpenChange={open => {
           if (!open) setApplyState(null);
         }}
       >
@@ -435,7 +431,7 @@ export default function PermissionPresets() {
                       ? String(applyState.userId)
                       : undefined
                   }
-                  onValueChange={(value) =>
+                  onValueChange={value =>
                     setApplyState({
                       ...applyState,
                       userId: Number(value),
@@ -446,7 +442,7 @@ export default function PermissionPresets() {
                     <SelectValue placeholder="Pick a user" />
                   </SelectTrigger>
                   <SelectContent>
-                    {users.map((u) => (
+                    {users.map(u => (
                       <SelectItem key={u.id} value={String(u.id)}>
                         {u.name ? `${u.name} — ${u.email}` : u.email}
                       </SelectItem>
@@ -455,11 +451,13 @@ export default function PermissionPresets() {
                 </Select>
               </div>
               <div className="rounded border bg-muted/30 px-3 py-2 text-xs">
-                This preset sets {
+                This preset sets{" "}
+                {
                   applyState.preset.permissions.filter(
-                    (e) => e.permission !== "none"
+                    e => e.permission !== "none"
                   ).length
-                } module(s).
+                }{" "}
+                module(s).
               </div>
             </div>
           )}

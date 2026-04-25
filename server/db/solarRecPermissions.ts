@@ -18,6 +18,7 @@ import {
   solarRecScopes,
   solarRecUserModulePermissions,
   solarRecUsers,
+  users,
 } from "../../drizzle/schema";
 import {
   isModuleKey,
@@ -42,6 +43,77 @@ export async function getSolarRecScope(scopeId: string) {
       .where(eq(solarRecScopes.id, scopeId))
       .limit(1);
     return row ?? null;
+  });
+}
+
+type SolarRecPermissionUserIdentity = {
+  id: number;
+  googleOpenId?: string | null;
+  email?: string | null;
+};
+
+function normalizeEmail(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
+async function getSolarRecPermissionUserIdentity(
+  user: number | SolarRecPermissionUserIdentity
+): Promise<SolarRecPermissionUserIdentity | null> {
+  if (typeof user !== "number") return user;
+  const db = await getDb();
+  if (!db) return null;
+  return withDbRetry("get solar rec permission user identity", async () => {
+    const [row] = await db
+      .select({
+        id: solarRecUsers.id,
+        googleOpenId: solarRecUsers.googleOpenId,
+        email: solarRecUsers.email,
+      })
+      .from(solarRecUsers)
+      .where(eq(solarRecUsers.id, user))
+      .limit(1);
+    return row ?? null;
+  });
+}
+
+/**
+ * `solarRecScopes.ownerUserId` currently points at the main app `users.id`,
+ * while Solar REC auth and permission rows use `solarRecUsers.id`. Treat the
+ * scope owner as the Solar REC user whose Google subject or email matches the
+ * main owner row. Do not compare `ownerUserId` directly to `solarRecUsers.id`;
+ * those are different autoincrement domains and can collide accidentally.
+ */
+export async function isSolarRecScopeOwnerUser(
+  scope: { ownerUserId: number } | null | undefined,
+  user: number | SolarRecPermissionUserIdentity | null | undefined
+): Promise<boolean> {
+  if (!scope || user == null) return false;
+
+  const solarRecUser = await getSolarRecPermissionUserIdentity(user);
+  if (!solarRecUser) return false;
+  const solarRecEmail = normalizeEmail(solarRecUser.email);
+  if (!solarRecUser.googleOpenId && !solarRecEmail) return false;
+
+  const db = await getDb();
+  if (!db) return false;
+  return withDbRetry("check solar rec scope owner identity", async () => {
+    const [owner] = await db
+      .select({
+        openId: users.openId,
+        email: users.email,
+      })
+      .from(users)
+      .where(eq(users.id, scope.ownerUserId))
+      .limit(1);
+    if (!owner) return false;
+
+    const ownerEmail = normalizeEmail(owner.email);
+    return (
+      (!!solarRecUser.googleOpenId &&
+        owner.openId === solarRecUser.googleOpenId) ||
+      (!!ownerEmail && ownerEmail === solarRecEmail)
+    );
   });
 }
 
@@ -162,10 +234,9 @@ export async function replaceSolarRecUserModulePermissions(data: {
 }): Promise<void> {
   const db = await getDb();
   if (!db) return;
-  await withDbRetry(
-    "replace solar rec user module permissions",
-    async () => {
-      await db
+  await withDbRetry("replace solar rec user module permissions", async () => {
+    await db.transaction(async tx => {
+      await tx
         .delete(solarRecUserModulePermissions)
         .where(
           and(
@@ -174,8 +245,8 @@ export async function replaceSolarRecUserModulePermissions(data: {
           )
         );
       if (data.permissions.length > 0) {
-        await db.insert(solarRecUserModulePermissions).values(
-          data.permissions.map((p) => ({
+        await tx.insert(solarRecUserModulePermissions).values(
+          data.permissions.map(p => ({
             id: nanoid(),
             userId: data.userId,
             scopeId: data.scopeId,
@@ -184,8 +255,8 @@ export async function replaceSolarRecUserModulePermissions(data: {
           }))
         );
       }
-    }
-  );
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -219,17 +290,17 @@ export async function resolveEffectivePermission(
   scopeId: string,
   moduleKey: ModuleKey,
   opts?: {
-    user?: { id: number; isScopeAdmin: boolean } | null;
+    user?: {
+      id: number;
+      isScopeAdmin: boolean;
+      googleOpenId?: string | null;
+      email?: string | null;
+    } | null;
     scope?: { id: string; ownerUserId: number } | null;
   }
 ): Promise<EffectivePermission> {
   const scope =
-    opts?.scope !== undefined
-      ? opts.scope
-      : await getSolarRecScope(scopeId);
-  if (scope && scope.ownerUserId === userId) {
-    return { level: "admin", isBypass: true };
-  }
+    opts?.scope !== undefined ? opts.scope : await getSolarRecScope(scopeId);
 
   const user =
     opts?.user !== undefined
@@ -238,15 +309,21 @@ export async function resolveEffectivePermission(
   if (user?.isScopeAdmin) {
     return { level: "admin", isBypass: true };
   }
+  if (await isSolarRecScopeOwnerUser(scope, user ?? userId)) {
+    return { level: "admin", isBypass: true };
+  }
 
   const row = await getSolarRecUserModulePermission(userId, scopeId, moduleKey);
   if (!row) return { level: "none", isBypass: false };
   return { level: row.permission as PermissionLevel, isBypass: false };
 }
 
-async function getSolarRecScopeAdminFlag(
-  userId: number
-): Promise<{ id: number; isScopeAdmin: boolean } | null> {
+async function getSolarRecScopeAdminFlag(userId: number): Promise<{
+  id: number;
+  isScopeAdmin: boolean;
+  googleOpenId: string | null;
+  email: string | null;
+} | null> {
   const db = await getDb();
   if (!db) return null;
   return withDbRetry("get solar rec user scope admin flag", async () => {
@@ -254,6 +331,8 @@ async function getSolarRecScopeAdminFlag(
       .select({
         id: solarRecUsers.id,
         isScopeAdmin: solarRecUsers.isScopeAdmin,
+        googleOpenId: solarRecUsers.googleOpenId,
+        email: solarRecUsers.email,
       })
       .from(solarRecUsers)
       .where(eq(solarRecUsers.id, userId))
@@ -284,7 +363,7 @@ export interface HydratedPreset {
 
 function serializePresetEntries(entries: PresetPermissionEntry[]): string {
   return JSON.stringify(
-    entries.map((entry) => ({
+    entries.map(entry => ({
       moduleKey: entry.moduleKey,
       permission: entry.permission,
     }))
@@ -423,7 +502,9 @@ export async function updateSolarRecPermissionPreset(data: {
   });
 }
 
-export async function deleteSolarRecPermissionPreset(id: string): Promise<void> {
+export async function deleteSolarRecPermissionPreset(
+  id: string
+): Promise<void> {
   const db = await getDb();
   if (!db) return;
   await withDbRetry("delete solar rec permission preset", async () => {

@@ -62,35 +62,24 @@ const t = initTRPC.context<SolarRecContext>().create({
 // Any authenticated user
 const solarRecViewerProcedure = t.procedure;
 
-// Requires owner, admin, or operator role
-const solarRecOperatorProcedure = t.procedure.use(async ({ ctx, next }) => {
-  if (!ctx.user || !["owner", "admin", "operator"].includes(ctx.user.role)) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Operator access required",
-    });
-  }
-  return next();
-});
-
-// Requires owner or admin role
-const solarRecAdminProcedure = t.procedure.use(async ({ ctx, next }) => {
-  if (!ctx.user || !["owner", "admin"].includes(ctx.user.role)) {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Admin access required",
-    });
-  }
-  return next();
-});
-
 // ---------------------------------------------------------------------------
 // Task 5.1 — per-module permission matrix
 // ---------------------------------------------------------------------------
 
-const MODULE_KEY_ZOD = z.enum(MODULE_KEYS as unknown as [ModuleKey, ...ModuleKey[]]);
+const MODULE_KEY_ZOD = z.enum(
+  MODULE_KEYS as unknown as [ModuleKey, ...ModuleKey[]]
+);
 const PERMISSION_LEVEL_ZOD = z.enum(["none", "read", "edit", "admin"]);
 const NON_NONE_LEVEL_ZOD = z.enum(["read", "edit", "admin"]);
+
+function permissionUserIdentity(user: SolarRecAuthenticatedUser) {
+  return {
+    id: user.id,
+    isScopeAdmin: user.isScopeAdmin,
+    googleOpenId: user.googleOpenId,
+    email: user.email,
+  };
+}
 
 /**
  * Build a procedure that requires at least `minLevel` permission on
@@ -103,7 +92,10 @@ const NON_NONE_LEVEL_ZOD = z.enum(["read", "edit", "admin"]);
  * always pass the gate. All other callers must have a row with
  * permission >= minLevel; missing rows are treated as `none` and 403.
  */
-function requirePermission(moduleKey: ModuleKey, minLevel: "read" | "edit" | "admin") {
+function requirePermission(
+  moduleKey: ModuleKey,
+  minLevel: "read" | "edit" | "admin"
+) {
   return t.procedure.use(async ({ ctx, next }) => {
     if (!ctx.user) {
       throw new TRPCError({
@@ -117,7 +109,7 @@ function requirePermission(moduleKey: ModuleKey, minLevel: "read" | "edit" | "ad
       ctx.scopeId,
       moduleKey,
       {
-        user: { id: ctx.user.id, isScopeAdmin: ctx.user.isScopeAdmin },
+        user: permissionUserIdentity(ctx.user),
       }
     );
     if (!permissionAtLeast(effective.level, minLevel)) {
@@ -139,10 +131,10 @@ const usersRouter = t.router({
     return ctx.user;
   }),
 
-  list: solarRecAdminProcedure.query(async () => {
+  list: requirePermission("team-permissions", "admin").query(async () => {
     const { listSolarRecUsers } = await import("../db");
     const users = await listSolarRecUsers();
-    return users.map((u) => ({
+    return users.map(u => ({
       id: u.id,
       email: u.email,
       name: u.name,
@@ -154,7 +146,7 @@ const usersRouter = t.router({
     }));
   }),
 
-  invite: solarRecAdminProcedure
+  invite: requirePermission("team-permissions", "admin")
     .input(
       z.object({
         email: z.string().email(),
@@ -207,12 +199,14 @@ const usersRouter = t.router({
       };
     }),
 
-  listInvites: solarRecAdminProcedure.query(async () => {
-    const { listSolarRecInvites } = await import("../db");
-    return listSolarRecInvites();
-  }),
+  listInvites: requirePermission("team-permissions", "admin").query(
+    async () => {
+      const { listSolarRecInvites } = await import("../db");
+      return listSolarRecInvites();
+    }
+  ),
 
-  deleteInvite: solarRecAdminProcedure
+  deleteInvite: requirePermission("team-permissions", "admin")
     .input(z.object({ inviteId: z.string() }))
     .mutation(async ({ input }) => {
       const { deleteSolarRecInvite } = await import("../db");
@@ -220,7 +214,7 @@ const usersRouter = t.router({
       return { success: true };
     }),
 
-  updateRole: solarRecAdminProcedure
+  updateRole: requirePermission("team-permissions", "admin")
     .input(
       z.object({
         userId: z.number(),
@@ -234,17 +228,22 @@ const usersRouter = t.router({
           message: "Cannot change your own role",
         });
       }
-      const { updateSolarRecUserRole, getSolarRecUserById } = await import("../db");
+      const { updateSolarRecUserRole, getSolarRecUserById } =
+        await import("../db");
       const target = await getSolarRecUserById(input.userId);
-      if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      if (!target)
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       if (target.role === "owner") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Cannot change owner role" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Cannot change owner role",
+        });
       }
       await updateSolarRecUserRole(input.userId, input.role);
       return { success: true };
     }),
 
-  deactivate: solarRecAdminProcedure
+  deactivate: requirePermission("team-permissions", "admin")
     .input(z.object({ userId: z.number() }))
     .mutation(async ({ ctx, input }) => {
       if (input.userId === ctx.userId) {
@@ -253,15 +252,20 @@ const usersRouter = t.router({
           message: "Cannot deactivate yourself",
         });
       }
-      const { deactivateSolarRecUser, getSolarRecUserById } = await import("../db");
+      const { deactivateSolarRecUser, getSolarRecUserById } =
+        await import("../db");
       const target = await getSolarRecUserById(input.userId);
-      if (!target) throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+      if (!target)
+        throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
       if (target.role === "owner") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "Cannot deactivate owner" });
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "Cannot deactivate owner",
+        });
       }
       await deactivateSolarRecUser(input.userId);
       return { success: true };
-  }),
+    }),
 });
 
 // ---------------------------------------------------------------------------
@@ -286,7 +290,9 @@ type MigrationPayload = {
 };
 
 function toNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : null;
 }
 
 function parseMetadataRecord(
@@ -400,7 +406,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
 
       if (payloads.length > 0) return payloads;
 
@@ -442,7 +451,8 @@ function extractMigrationPayloads(
             sourceConnectionId: "primary",
             connectionName: "Enphase V4 (Migrated)",
             accessToken,
-            refreshToken: toNonEmptyString(integration.refreshToken) ?? undefined,
+            refreshToken:
+              toNonEmptyString(integration.refreshToken) ?? undefined,
             expiresAt,
             metadata: buildSourceMetadata(
               {
@@ -490,7 +500,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const accessKeyId =
@@ -547,7 +560,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const apiKey =
@@ -600,7 +616,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const username = toNonEmptyString(metadata.username);
@@ -613,7 +632,11 @@ function extractMigrationPayloads(
             sourceConnectionId: "legacy",
             connectionName: "Hoymiles (Migrated)",
             metadata: buildSourceMetadata(
-              { username, password, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              {
+                username,
+                password,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
               integration.provider,
               "legacy"
             ),
@@ -651,7 +674,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const account = toNonEmptyString(metadata.account);
@@ -664,7 +690,11 @@ function extractMigrationPayloads(
             sourceConnectionId: "legacy",
             connectionName: "GoodWe (Migrated)",
             metadata: buildSourceMetadata(
-              { account, password, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              {
+                account,
+                password,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
               integration.provider,
               "legacy"
             ),
@@ -703,7 +733,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const apiKey =
@@ -719,7 +752,11 @@ function extractMigrationPayloads(
             connectionName: "Solis (Migrated)",
             accessToken: apiKey,
             metadata: buildSourceMetadata(
-              { apiKey, apiSecret, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              {
+                apiKey,
+                apiSecret,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
               integration.provider,
               "legacy"
             ),
@@ -759,7 +796,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const clientId = toNonEmptyString(metadata.clientId);
@@ -819,7 +859,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const appId =
@@ -878,7 +921,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const baseUrl =
@@ -930,7 +976,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const username = toNonEmptyString(metadata.username);
@@ -943,7 +992,11 @@ function extractMigrationPayloads(
             sourceConnectionId: "legacy",
             connectionName: "Growatt (Migrated)",
             metadata: buildSourceMetadata(
-              { username, password, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              {
+                username,
+                password,
+                baseUrl: toNonEmptyString(metadata.baseUrl),
+              },
               integration.provider,
               "legacy"
             ),
@@ -988,7 +1041,10 @@ function extractMigrationPayloads(
             },
           };
         })
-        .filter((item) => item !== null) as Array<{ solarProvider: string; payload: MigrationPayload }>;
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
       if (payloads.length > 0) return payloads;
 
       const baseUrl = toNonEmptyString(metadata.baseUrl);
@@ -1063,11 +1119,11 @@ function extractMigrationPayloads(
 // ---------------------------------------------------------------------------
 
 const credentialsRouter = t.router({
-  list: solarRecOperatorProcedure.query(async () => {
+  list: requirePermission("solar-rec-settings", "read").query(async () => {
     const { listSolarRecTeamCredentials } = await import("../db");
     const creds = await listSolarRecTeamCredentials();
     // Strip sensitive tokens for non-admin views
-    return creds.map((c) => ({
+    return creds.map(c => ({
       id: c.id,
       provider: c.provider,
       connectionName: c.connectionName,
@@ -1080,7 +1136,7 @@ const credentialsRouter = t.router({
     }));
   }),
 
-  connect: solarRecAdminProcedure
+  connect: requirePermission("solar-rec-settings", "admin")
     .input(
       z.object({
         id: z.string().optional(),
@@ -1105,7 +1161,7 @@ const credentialsRouter = t.router({
       return { id };
     }),
 
-  disconnect: solarRecAdminProcedure
+  disconnect: requirePermission("solar-rec-settings", "admin")
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {
       const { deleteSolarRecTeamCredential } = await import("../db");
@@ -1113,7 +1169,7 @@ const credentialsRouter = t.router({
       return { success: true };
     }),
 
-  getSiteIds: solarRecOperatorProcedure
+  getSiteIds: requirePermission("monitoring-overview", "edit")
     .input(z.object({ credentialId: z.string() }))
     .query(async ({ input }) => {
       const { getSolarRecTeamCredential } = await import("../db");
@@ -1121,13 +1177,18 @@ const credentialsRouter = t.router({
       if (!cred) return { siteIds: [] };
       const meta = parseMetadataRecord(cred.metadata);
       const raw = Array.isArray(meta.siteIds) ? meta.siteIds : [];
-      type RawSiteEntry = { siteId?: string | number; id?: string | number; name?: string };
+      type RawSiteEntry = {
+        siteId?: string | number;
+        id?: string | number;
+        name?: string;
+      };
       const siteIds = raw
-        .filter((s: unknown): s is RawSiteEntry =>
-          typeof s === "object" && s !== null && (
-            (s as RawSiteEntry).siteId !== undefined ||
-            (s as RawSiteEntry).id !== undefined
-          )
+        .filter(
+          (s: unknown): s is RawSiteEntry =>
+            typeof s === "object" &&
+            s !== null &&
+            ((s as RawSiteEntry).siteId !== undefined ||
+              (s as RawSiteEntry).id !== undefined)
         )
         .map((s: RawSiteEntry) => ({
           siteId: String(s.siteId ?? s.id).trim(),
@@ -1136,7 +1197,7 @@ const credentialsRouter = t.router({
       return { siteIds };
     }),
 
-  setSiteIds: solarRecOperatorProcedure
+  setSiteIds: requirePermission("monitoring-overview", "edit")
     .input(
       z.object({
         credentialId: z.string(),
@@ -1158,7 +1219,7 @@ const credentialsRouter = t.router({
       const existing = parseMetadataRecord(cred.metadata);
       const merged = {
         ...existing,
-        siteIds: input.siteIds.map((s) => ({
+        siteIds: input.siteIds.map(s => ({
           siteId: s.siteId,
           name: s.name ?? null,
         })),
@@ -1177,151 +1238,159 @@ const credentialsRouter = t.router({
       return { count: input.siteIds.length };
     }),
 
-  migrateFromMain: solarRecAdminProcedure.mutation(async ({ ctx }) => {
-    const {
-      getUserIntegrations,
-      listSolarRecTeamCredentials,
-      upsertSolarRecTeamCredential,
-    } = await import("../db");
+  migrateFromMain: requirePermission("solar-rec-settings", "admin").mutation(
+    async ({ ctx }) => {
+      const {
+        getUserIntegrations,
+        listSolarRecTeamCredentials,
+        upsertSolarRecTeamCredential,
+      } = await import("../db");
 
-    const ownerUserId = await resolveSolarRecOwnerUserId();
-    const sourceIntegrations = (
-      await getUserIntegrations(ownerUserId)
-    ) as MainIntegrationRecord[];
-    const existingCreds = await listSolarRecTeamCredentials();
-    const existingByProvider = new Map<string, typeof existingCreds>();
-    for (const cred of existingCreds) {
-      const list = existingByProvider.get(cred.provider) ?? [];
-      list.push(cred);
-      existingByProvider.set(cred.provider, list);
-    }
-    const existingBySource = new Map<string, (typeof existingCreds)[number]>();
-    for (const cred of existingCreds) {
-      const metadata = parseMetadataRecord(cred.metadata);
-      const sourceProvider = toNonEmptyString(metadata._sourceProvider);
-      const sourceConnectionId = toNonEmptyString(metadata._sourceConnectionId);
-      if (!sourceProvider || !sourceConnectionId) continue;
-      existingBySource.set(
-        `${cred.provider}::${sourceProvider}::${sourceConnectionId}`,
-        cred
-      );
-    }
-
-    const supportedMainProviders = [
-      "solaredge-monitoring",
-      "enphase-v4",
-      "fronius-solar",
-      "generac-pwrfleet",
-      "hoymiles-smiles",
-      "goodwe-sems",
-      "solis-cloud",
-      "locus-energy",
-      "apsystems-ema",
-      "solar-log",
-      "growatt-server",
-      "egauge-monitoring",
-      "tesla-powerhub",
-    ] as const;
-
-    let created = 0;
-    let updated = 0;
-    const usedExistingIds = new Set<string>();
-    const results: Array<{
-      mainProvider: string;
-      solarProvider: string | null;
-      status: "created" | "updated" | "skipped";
-      reason?: string;
-      connectionName?: string;
-      sourceConnectionId?: string;
-      credentialId?: string;
-    }> = [];
-
-    for (const mainProvider of supportedMainProviders) {
-      const integration =
-        sourceIntegrations.find((item) => item.provider === mainProvider) ?? null;
-      if (!integration) {
-        results.push({
-          mainProvider,
-          solarProvider: null,
-          status: "skipped",
-          reason: "No main-branch integration found",
-        });
-        continue;
+      const ownerUserId = await resolveSolarRecOwnerUserId();
+      const sourceIntegrations = (await getUserIntegrations(
+        ownerUserId
+      )) as MainIntegrationRecord[];
+      const existingCreds = await listSolarRecTeamCredentials();
+      const existingByProvider = new Map<string, typeof existingCreds>();
+      for (const cred of existingCreds) {
+        const list = existingByProvider.get(cred.provider) ?? [];
+        list.push(cred);
+        existingByProvider.set(cred.provider, list);
+      }
+      const existingBySource = new Map<
+        string,
+        (typeof existingCreds)[number]
+      >();
+      for (const cred of existingCreds) {
+        const metadata = parseMetadataRecord(cred.metadata);
+        const sourceProvider = toNonEmptyString(metadata._sourceProvider);
+        const sourceConnectionId = toNonEmptyString(
+          metadata._sourceConnectionId
+        );
+        if (!sourceProvider || !sourceConnectionId) continue;
+        existingBySource.set(
+          `${cred.provider}::${sourceProvider}::${sourceConnectionId}`,
+          cred
+        );
       }
 
-      const extractedPayloads = extractMigrationPayloads(integration);
-      if (extractedPayloads.length === 0) {
-        results.push({
-          mainProvider,
-          solarProvider: null,
-          status: "skipped",
-          reason: "Integration exists but required credential fields are missing",
-        });
-        continue;
+      const supportedMainProviders = [
+        "solaredge-monitoring",
+        "enphase-v4",
+        "fronius-solar",
+        "generac-pwrfleet",
+        "hoymiles-smiles",
+        "goodwe-sems",
+        "solis-cloud",
+        "locus-energy",
+        "apsystems-ema",
+        "solar-log",
+        "growatt-server",
+        "egauge-monitoring",
+        "tesla-powerhub",
+      ] as const;
+
+      let created = 0;
+      let updated = 0;
+      const usedExistingIds = new Set<string>();
+      const results: Array<{
+        mainProvider: string;
+        solarProvider: string | null;
+        status: "created" | "updated" | "skipped";
+        reason?: string;
+        connectionName?: string;
+        sourceConnectionId?: string;
+        credentialId?: string;
+      }> = [];
+
+      for (const mainProvider of supportedMainProviders) {
+        const integration =
+          sourceIntegrations.find(item => item.provider === mainProvider) ??
+          null;
+        if (!integration) {
+          results.push({
+            mainProvider,
+            solarProvider: null,
+            status: "skipped",
+            reason: "No main-branch integration found",
+          });
+          continue;
+        }
+
+        const extractedPayloads = extractMigrationPayloads(integration);
+        if (extractedPayloads.length === 0) {
+          results.push({
+            mainProvider,
+            solarProvider: null,
+            status: "skipped",
+            reason:
+              "Integration exists but required credential fields are missing",
+          });
+          continue;
+        }
+
+        for (let index = 0; index < extractedPayloads.length; index += 1) {
+          const extracted = extractedPayloads[index];
+          const sourceKey = `${extracted.solarProvider}::${mainProvider}::${extracted.payload.sourceConnectionId}`;
+          let existing = existingBySource.get(sourceKey);
+
+          if (existing && usedExistingIds.has(existing.id)) {
+            existing = undefined;
+          }
+
+          if (!existing) {
+            const providerExisting = (
+              existingByProvider.get(extracted.solarProvider) ?? []
+            ).filter(cred => !usedExistingIds.has(cred.id));
+
+            existing =
+              providerExisting.find(
+                cred =>
+                  (cred.connectionName ?? "").trim().toLowerCase() ===
+                  extracted.payload.connectionName.trim().toLowerCase()
+              ) ?? (index === 0 ? providerExisting[0] : undefined);
+          }
+
+          const credentialId = await upsertSolarRecTeamCredential({
+            id: existing?.id,
+            provider: extracted.solarProvider,
+            connectionName: extracted.payload.connectionName,
+            accessToken: extracted.payload.accessToken,
+            refreshToken: extracted.payload.refreshToken,
+            expiresAt: extracted.payload.expiresAt,
+            metadata: extracted.payload.metadata,
+            createdBy: ctx.userId,
+          });
+
+          if (existing) {
+            updated += 1;
+            usedExistingIds.add(existing.id);
+          } else {
+            created += 1;
+          }
+
+          results.push({
+            mainProvider,
+            solarProvider: extracted.solarProvider,
+            status: existing ? "updated" : "created",
+            connectionName: extracted.payload.connectionName,
+            sourceConnectionId: extracted.payload.sourceConnectionId,
+            credentialId,
+          });
+        }
       }
 
-      for (let index = 0; index < extractedPayloads.length; index += 1) {
-        const extracted = extractedPayloads[index];
-        const sourceKey = `${extracted.solarProvider}::${mainProvider}::${extracted.payload.sourceConnectionId}`;
-        let existing = existingBySource.get(sourceKey);
-
-        if (existing && usedExistingIds.has(existing.id)) {
-          existing = undefined;
-        }
-
-        if (!existing) {
-          const providerExisting = (existingByProvider.get(extracted.solarProvider) ?? []).filter(
-            (cred) => !usedExistingIds.has(cred.id)
-          );
-
-          existing =
-            providerExisting.find(
-              (cred) =>
-                (cred.connectionName ?? "").trim().toLowerCase() ===
-                extracted.payload.connectionName.trim().toLowerCase()
-            ) ??
-            (index === 0 ? providerExisting[0] : undefined);
-        }
-
-        const credentialId = await upsertSolarRecTeamCredential({
-          id: existing?.id,
-          provider: extracted.solarProvider,
-          connectionName: extracted.payload.connectionName,
-          accessToken: extracted.payload.accessToken,
-          refreshToken: extracted.payload.refreshToken,
-          expiresAt: extracted.payload.expiresAt,
-          metadata: extracted.payload.metadata,
-          createdBy: ctx.userId,
-        });
-
-        if (existing) {
-          updated += 1;
-          usedExistingIds.add(existing.id);
-        } else {
-          created += 1;
-        }
-
-        results.push({
-          mainProvider,
-          solarProvider: extracted.solarProvider,
-          status: existing ? "updated" : "created",
-          connectionName: extracted.payload.connectionName,
-          sourceConnectionId: extracted.payload.sourceConnectionId,
-          credentialId,
-        });
-      }
+      const skipped = results.filter(item => item.status === "skipped").length;
+      return {
+        ownerUserId,
+        created,
+        updated,
+        skipped,
+        total: results.length,
+        results,
+      };
     }
-
-    const skipped = results.filter((item) => item.status === "skipped").length;
-    return {
-      ownerUserId,
-      created,
-      updated,
-      skipped,
-      total: results.length,
-      results,
-    };
-  }),
+  ),
 });
 
 // ---------------------------------------------------------------------------
@@ -1356,16 +1425,21 @@ const monitoringRouter = t.router({
   getConfiguredProviders: solarRecViewerProcedure.query(async () => {
     const { listSolarRecTeamCredentials } = await import("../db");
     const credentials = await listSolarRecTeamCredentials();
-    return Array.from(new Set(credentials.map((credential) => credential.provider)))
-      .filter((provider) => provider.trim().length > 0)
+    return Array.from(
+      new Set(credentials.map(credential => credential.provider))
+    )
+      .filter(provider => provider.trim().length > 0)
       .sort((a, b) => a.localeCompare(b));
   }),
 
-  getConfiguredCredentials: solarRecViewerProcedure.query(async () => {
+  getConfiguredCredentials: requirePermission(
+    "monitoring-overview",
+    "edit"
+  ).query(async () => {
     const { listSolarRecTeamCredentials } = await import("../db");
     const credentials = await listSolarRecTeamCredentials();
     return credentials
-      .map((credential) => ({
+      .map(credential => ({
         id: credential.id,
         provider: credential.provider,
         connectionName: credential.connectionName ?? null,
@@ -1378,10 +1452,13 @@ const monitoringRouter = t.router({
       );
   }),
 
-  runAll: solarRecOperatorProcedure
+  runAll: requirePermission("monitoring-overview", "edit")
     .input(
       z.object({
-        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
         providers: z.array(z.string().min(1)).optional(),
         credentialIds: z.array(z.string().min(1)).optional(),
       })
@@ -1399,10 +1476,18 @@ const monitoringRouter = t.router({
           day: "2-digit",
         }).format(new Date());
       const selectedProviders = Array.from(
-        new Set((input.providers ?? []).map((provider) => provider.trim()).filter((provider) => provider.length > 0))
+        new Set(
+          (input.providers ?? [])
+            .map(provider => provider.trim())
+            .filter(provider => provider.length > 0)
+        )
       );
       const selectedCredentialIds = Array.from(
-        new Set((input.credentialIds ?? []).map((credentialId) => credentialId.trim()).filter((credentialId) => credentialId.length > 0))
+        new Set(
+          (input.credentialIds ?? [])
+            .map(credentialId => credentialId.trim())
+            .filter(credentialId => credentialId.length > 0)
+        )
       );
       const batchId = await createMonitoringBatchRun({
         dateKey,
@@ -1410,10 +1495,16 @@ const monitoringRouter = t.router({
       });
 
       // Fire-and-forget: run the batch in background
-      import("../solar/monitoring.service").then((mod) =>
-        mod.executeMonitoringBatch(batchId, dateKey, ctx.userId, selectedProviders, selectedCredentialIds).catch((err) =>
-          console.error("[MonitoringBatch] Failed:", err)
-        )
+      import("../solar/monitoring.service").then(mod =>
+        mod
+          .executeMonitoringBatch(
+            batchId,
+            dateKey,
+            ctx.userId,
+            selectedProviders,
+            selectedCredentialIds
+          )
+          .catch(err => console.error("[MonitoringBatch] Failed:", err))
       );
 
       return { batchId, dateKey, selectedProviders, selectedCredentialIds };
@@ -1426,16 +1517,21 @@ const monitoringRouter = t.router({
    * any actively-running process — only updates the DB row so the client
    * dashboard stops polling.
    */
-  markBatchFailed: solarRecOperatorProcedure
+  markBatchFailed: requirePermission("monitoring-overview", "edit")
     .input(z.object({ batchId: z.string().min(1) }))
     .mutation(async ({ input }) => {
-      const { updateMonitoringBatchRun, getMonitoringBatchRun } = await import("../db");
+      const { updateMonitoringBatchRun, getMonitoringBatchRun } =
+        await import("../db");
       const existing = await getMonitoringBatchRun(input.batchId);
       if (!existing) {
         throw new Error(`Batch ${input.batchId} not found.`);
       }
       if (existing.status !== "running") {
-        return { ok: false, previousStatus: existing.status, message: "Batch is not running — nothing to mark failed." };
+        return {
+          ok: false,
+          previousStatus: existing.status,
+          message: "Batch is not running — nothing to mark failed.",
+        };
       }
       await updateMonitoringBatchRun(input.batchId, {
         status: "failed",
@@ -1451,7 +1547,10 @@ const monitoringRouter = t.router({
    * a corrupted dataset before re-running meter-read APIs. Client-side
    * IndexedDB must be cleared separately by the caller.
    */
-  clearConvertedReads: solarRecOperatorProcedure.mutation(async () => {
+  clearConvertedReads: requirePermission(
+    "monitoring-overview",
+    "edit"
+  ).mutation(async () => {
     const { saveSolarRecDashboardPayload } = await import("../db");
     const ownerUserId = await resolveSolarRecOwnerUserId();
     // Writing an empty string is how the dashboard's auto-sync signals "cleared"
@@ -1479,8 +1578,12 @@ const monitoringRouter = t.router({
    * Also returns the latest MonitoringBatchRun status so we can see if an
    * active batch is actually making progress or stalled.
    */
-  debugConvertedReadsState: solarRecOperatorProcedure.query(async () => {
-    const { getSolarRecDashboardPayload, getLatestMonitoringBatchRun } = await import("../db");
+  debugConvertedReadsState: requirePermission(
+    "monitoring-overview",
+    "edit"
+  ).query(async () => {
+    const { getSolarRecDashboardPayload, getLatestMonitoringBatchRun } =
+      await import("../db");
     const ownerUserId = await resolveSolarRecOwnerUserId();
 
     // Today in America/Chicago (project timezone)
@@ -1514,7 +1617,9 @@ const monitoringRouter = t.router({
     try {
       const row = await getLatestMonitoringBatchRun();
       if (row) {
-        const createdAt = row.createdAt ? new Date(row.createdAt).toISOString() : null;
+        const createdAt = row.createdAt
+          ? new Date(row.createdAt).toISOString()
+          : null;
         latestBatch = {
           id: row.id,
           status: row.status,
@@ -1526,8 +1631,12 @@ const monitoringRouter = t.router({
           noDataCount: row.noDataCount ?? 0,
           currentProvider: row.currentProvider ?? null,
           currentCredentialName: row.currentCredentialName ?? null,
-          startedAt: row.startedAt ? new Date(row.startedAt).toISOString() : null,
-          completedAt: row.completedAt ? new Date(row.completedAt).toISOString() : null,
+          startedAt: row.startedAt
+            ? new Date(row.startedAt).toISOString()
+            : null,
+          completedAt: row.completedAt
+            ? new Date(row.completedAt).toISOString()
+            : null,
           createdAt,
           ageSeconds: createdAt
             ? Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000)
@@ -1535,11 +1644,17 @@ const monitoringRouter = t.router({
         };
       }
     } catch (err) {
-      console.warn("[debugConvertedReadsState] latest batch lookup failed:", err);
+      console.warn(
+        "[debugConvertedReadsState] latest batch lookup failed:",
+        err
+      );
     }
 
     const DB_STORAGE_KEY = "dataset:convertedReads";
-    const payloadRaw = await getSolarRecDashboardPayload(ownerUserId, DB_STORAGE_KEY);
+    const payloadRaw = await getSolarRecDashboardPayload(
+      ownerUserId,
+      DB_STORAGE_KEY
+    );
     if (!payloadRaw) {
       return {
         ownerUserId,
@@ -1553,7 +1668,11 @@ const monitoringRouter = t.router({
         todayRowCount: 0,
         sampleRows: [] as Array<Record<string, string>>,
         lastRows: [] as Array<Record<string, string>>,
-        sources: [] as Array<{ fileName: string; uploadedAt: string; rowCount: number }>,
+        sources: [] as Array<{
+          fileName: string;
+          uploadedAt: string;
+          rowCount: number;
+        }>,
         rawPayloadBytes: 0,
         rawPayloadPreview: "",
         topLevelKeys: [] as string[],
@@ -1586,12 +1705,21 @@ const monitoringRouter = t.router({
         chunkKeys?: unknown;
         sources?: unknown;
       };
-      if (maybeWrapper && maybeWrapper._chunkedDataset === true && Array.isArray(maybeWrapper.chunkKeys)) {
+      if (
+        maybeWrapper &&
+        maybeWrapper._chunkedDataset === true &&
+        Array.isArray(maybeWrapper.chunkKeys)
+      ) {
         chunked = true;
-        chunkKeys = maybeWrapper.chunkKeys.filter((k): k is string => typeof k === "string");
+        chunkKeys = maybeWrapper.chunkKeys.filter(
+          (k): k is string => typeof k === "string"
+        );
         const parts: string[] = [];
         for (const chunkKey of chunkKeys) {
-          const chunkPayload = await getSolarRecDashboardPayload(ownerUserId, `dataset:${chunkKey}`);
+          const chunkPayload = await getSolarRecDashboardPayload(
+            ownerUserId,
+            `dataset:${chunkKey}`
+          );
           if (chunkPayload) parts.push(chunkPayload);
         }
         effectivePayload = parts.join("");
@@ -1636,10 +1764,15 @@ const monitoringRouter = t.router({
         }
 
         // Fetch each chunk for this source and concatenate
-        const chunkKeyList = Array.isArray(source.chunkKeys) ? source.chunkKeys : [];
+        const chunkKeyList = Array.isArray(source.chunkKeys)
+          ? source.chunkKeys
+          : [];
         const parts: string[] = [];
         for (const ck of chunkKeyList) {
-          const p = await getSolarRecDashboardPayload(ownerUserId, `dataset:${ck}`);
+          const p = await getSolarRecDashboardPayload(
+            ownerUserId,
+            `dataset:${ck}`
+          );
           if (p) parts.push(p);
         }
         const sourcePayload = parts.join("");
@@ -1652,7 +1785,11 @@ const monitoringRouter = t.router({
         let csvText = sourcePayload;
         try {
           const maybeJson = JSON.parse(sourcePayload);
-          if (maybeJson && typeof maybeJson === "object" && typeof maybeJson.csvText === "string") {
+          if (
+            maybeJson &&
+            typeof maybeJson === "object" &&
+            typeof maybeJson.csvText === "string"
+          ) {
             csvText = maybeJson.csvText;
           } else if (typeof maybeJson === "string") {
             csvText = maybeJson;
@@ -1670,7 +1807,7 @@ const monitoringRouter = t.router({
       }
 
       const todayRowsFromManifest = aggregatedRows.filter(
-        (r) =>
+        r =>
           r.read_date === todayLocal ||
           r.read_date === todayIso ||
           (typeof r.read_date === "string" && r.read_date.startsWith(todayIso))
@@ -1703,7 +1840,11 @@ const monitoringRouter = t.router({
       rows?: Array<Record<string, string>>;
       csvText?: string;
       headers?: string[];
-      sources?: Array<{ fileName: string; uploadedAt: string; rowCount: number }>;
+      sources?: Array<{
+        fileName: string;
+        uploadedAt: string;
+        rowCount: number;
+      }>;
     } = {};
     try {
       parsed = JSON.parse(effectivePayload);
@@ -1733,14 +1874,20 @@ const monitoringRouter = t.router({
 
     // Some payloads (e.g. client auto-sync) write only `csvText`, not `rows`.
     // Fall back to parsing csvText with the shared CSV parser.
-    let rows: Array<Record<string, string>> = Array.isArray(parsed.rows) ? parsed.rows : [];
-    if (rows.length === 0 && typeof parsed.csvText === "string" && parsed.csvText.trim().length > 0) {
+    let rows: Array<Record<string, string>> = Array.isArray(parsed.rows)
+      ? parsed.rows
+      : [];
+    if (
+      rows.length === 0 &&
+      typeof parsed.csvText === "string" &&
+      parsed.csvText.trim().length > 0
+    ) {
       const { parseCsvText } = await import("../routers/helpers");
       rows = parseCsvText(parsed.csvText).rows;
     }
 
     const todayRows = rows.filter(
-      (r) =>
+      r =>
         r.read_date === todayLocal ||
         r.read_date === todayIso ||
         (typeof r.read_date === "string" && r.read_date.startsWith(todayIso))
@@ -1790,7 +1937,7 @@ const monitoringRouter = t.router({
         listSolarRecTeamCredentials(),
       ]);
 
-      const credentials = creds.map((c) => ({
+      const credentials = creds.map(c => ({
         id: c.id,
         name: credentialLabel(c),
         provider: c.provider,
@@ -1814,7 +1961,7 @@ const permissionsRouter = t.router({
    * Every module the client knows about, plus metadata for the matrix UI.
    */
   listModules: solarRecViewerProcedure.query(() => {
-    return MODULES.map((m) => ({
+    return MODULES.map(m => ({
       key: m.key,
       label: m.label,
       description: m.description,
@@ -1829,12 +1976,12 @@ const permissionsRouter = t.router({
   getMyPermissions: solarRecViewerProcedure.query(async ({ ctx }) => {
     const { resolveEffectivePermission } = await import("../db");
     const entries = await Promise.all(
-      MODULE_KEYS.map(async (moduleKey) => {
+      MODULE_KEYS.map(async moduleKey => {
         const eff = await resolveEffectivePermission(
           ctx.userId,
           ctx.scopeId,
           moduleKey,
-          { user: { id: ctx.user!.id, isScopeAdmin: ctx.user!.isScopeAdmin } }
+          { user: permissionUserIdentity(ctx.user!) }
         );
         return [moduleKey, eff.level] as const;
       })
@@ -1842,7 +1989,10 @@ const permissionsRouter = t.router({
     return {
       scopeId: ctx.scopeId,
       isScopeAdmin: ctx.user!.isScopeAdmin,
-      permissions: Object.fromEntries(entries) as Record<ModuleKey, PermissionLevel>,
+      permissions: Object.fromEntries(entries) as Record<
+        ModuleKey,
+        PermissionLevel
+      >,
     };
   }),
 
@@ -1860,7 +2010,7 @@ const permissionsRouter = t.router({
       ]);
       return {
         scopeId: ctx.scopeId,
-        users: users.map((u) => ({
+        users: users.map(u => ({
           id: u.id,
           email: u.email,
           name: u.name,
@@ -1868,7 +2018,7 @@ const permissionsRouter = t.router({
           isActive: u.isActive,
           isScopeAdmin: u.isScopeAdmin,
         })),
-        permissions: rows.map((r) => ({
+        permissions: rows.map(r => ({
           userId: r.userId,
           moduleKey: r.moduleKey as ModuleKey,
           permission: r.permission as PermissionLevel,
@@ -1941,24 +2091,27 @@ const permissionsRouter = t.router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { getSolarRecScope, setSolarRecUserScopeAdmin } = await import(
-        "../db"
-      );
+      const {
+        getSolarRecScope,
+        isSolarRecScopeOwnerUser,
+        setSolarRecUserScopeAdmin,
+      } = await import("../db");
       const scope = await getSolarRecScope(ctx.scopeId);
       // Only scope owner / existing scope-admins may flip this flag.
-      const callerIsOwner = scope?.ownerUserId === ctx.userId;
+      const callerIsOwner = await isSolarRecScopeOwnerUser(
+        scope,
+        permissionUserIdentity(ctx.user!)
+      );
       if (!callerIsOwner && !ctx.user!.isScopeAdmin) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Only scope owner or scope-admin may manage scope-admin flags",
+          message:
+            "Only scope owner or scope-admin may manage scope-admin flags",
         });
       }
       // Lockout prevention: never let the owner lose scope-admin bypass.
-      if (
-        scope &&
-        scope.ownerUserId === input.userId &&
-        input.isScopeAdmin === false
-      ) {
+      const targetIsOwner = await isSolarRecScopeOwnerUser(scope, input.userId);
+      if (targetIsOwner && input.isScopeAdmin === false) {
         throw new TRPCError({
           code: "BAD_REQUEST",
           message: "Cannot remove scope-admin from the scope owner",
@@ -2033,7 +2186,10 @@ const permissionsRouter = t.router({
       await updateSolarRecPermissionPreset({
         id: input.id,
         name: input.name,
-        description: input.description === undefined ? undefined : input.description ?? null,
+        description:
+          input.description === undefined
+            ? undefined
+            : (input.description ?? null),
         permissions: input.permissions,
       });
       return { ok: true };
@@ -2082,7 +2238,7 @@ const permissionsRouter = t.router({
         });
       }
       const nonNone = preset.permissions.filter(
-        (entry) => entry.permission !== "none"
+        entry => entry.permission !== "none"
       );
       await replaceSolarRecUserModulePermissions({
         userId: input.userId,
