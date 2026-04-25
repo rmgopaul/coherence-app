@@ -291,7 +291,12 @@ fun SettingsScreen(onBack: () -> Unit) {
             OptionGroup(
               title = "Days to backfill",
               options = listOf("7", "14", "30"),
-              selectedIndex = listOf("7", "14", "30").indexOf(backfillDaysText).coerceAtLeast(2),
+              // `coerceAtLeast(0)` (not 2) — `2` snapped any successful
+              // selection back to "30", making 7 and 14 unselectable.
+              // `-1` (indexOf miss) is still impossible because the
+              // initial state is "30" and onSelected only sets values
+              // that exist in the list.
+              selectedIndex = listOf("7", "14", "30").indexOf(backfillDaysText).coerceAtLeast(0),
               onSelected = { index ->
                 backfillDaysText = listOf("7", "14", "30")[index]
               },
@@ -314,8 +319,21 @@ fun SettingsScreen(onBack: () -> Unit) {
               "Last backfill failed — tap to retry" to true
             backfillState == WorkInfo.State.CANCELLED ->
               "Backfill cancelled — tap to retry" to true
-            backfillState == WorkInfo.State.SUCCEEDED ->
-              "Backfill complete — run again" to true
+            backfillState == WorkInfo.State.SUCCEEDED -> {
+              // Distinguish a clean run from a partial run. The worker
+              // sets KEY_FAILURE_REASON on SUCCEEDED when some days
+              // were skipped (rate limit, missing permissions). Saying
+              // "complete" in that case lies to the user.
+              val partialReason = backfillWorkInfos
+                .firstOrNull { it.state == WorkInfo.State.SUCCEEDED }
+                ?.outputData
+                ?.getString(HistoricalSyncWorker.KEY_FAILURE_REASON)
+              if (!partialReason.isNullOrBlank()) {
+                "Backfill partial — tap to retry" to true
+              } else {
+                "Backfill complete — run again" to true
+              }
+            }
             else -> "Start backfill" to true
           }
           Button(
@@ -329,16 +347,20 @@ fun SettingsScreen(onBack: () -> Unit) {
           ) {
             Text(buttonLabel)
           }
-          // Surface the most recent failure reason if the worker put
-          // one in its output data. The Historical sync worker sets
-          // this when a rate-limit error finally exhausts retries.
-          val lastFailureMessage = backfillWorkInfos
-            .firstOrNull { it.state == WorkInfo.State.FAILED }
+          // Surface the most recent reason if the worker put one in
+          // its output data. The historical sync worker sets this on
+          // FAILED runs (e.g. exhausted retries) AND on SUCCEEDED runs
+          // that completed with rate-limit warnings or dropped days
+          // (a "partial" backfill). Reading it from any non-null
+          // outputData captures both cases without misleading the
+          // SUCCESS path with a generic "complete" label.
+          val lastReason = backfillWorkInfos
+            .firstOrNull { it.outputData.getString(HistoricalSyncWorker.KEY_FAILURE_REASON) != null }
             ?.outputData
             ?.getString(HistoricalSyncWorker.KEY_FAILURE_REASON)
-          if (!lastFailureMessage.isNullOrBlank()) {
+          if (!lastReason.isNullOrBlank()) {
             Text(
-              text = lastFailureMessage,
+              text = lastReason,
               style = MaterialTheme.typography.bodySmall,
               color = MaterialTheme.colorScheme.error,
             )

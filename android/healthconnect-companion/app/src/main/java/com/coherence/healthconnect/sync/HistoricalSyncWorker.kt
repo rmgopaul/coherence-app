@@ -98,9 +98,48 @@ class HistoricalSyncWorker(
       val payloads = repository.collectPayloadRange(startDate, endDate)
       Log.i(TAG, "Collected ${payloads.size} historical payloads")
 
+      // Drop days where the read was effectively blocked by Health
+      // Connect's rate limiter. Their payloads carry "rate limit" or
+      // "quota" warnings and zero/empty record arrays — POSTing them
+      // creates ghost rows on the server that the user can't tell
+      // apart from genuinely-quiet days, and they overwrite previously
+      // ingested real data unless the server-side preservation kicks
+      // in. Better to skip and report the gap so the user can retry
+      // after the cooldown.
+      val (usable, skippedRateLimited) = payloads.partition { payload ->
+        val warnings = payload.sync.warnings
+        val rateLimited = warnings.any {
+          it.contains("rate limit", ignoreCase = true) ||
+            it.contains("rate-limit", ignoreCase = true) ||
+            it.contains("quota", ignoreCase = true)
+        }
+        !rateLimited
+      }
+      if (skippedRateLimited.isNotEmpty()) {
+        Log.w(
+          TAG,
+          "Skipping ${skippedRateLimited.size} of ${payloads.size} days due to rate-limit warnings",
+        )
+      }
+      val totalRequested = payloads.size
+      val skippedCount = skippedRateLimited.size
+
+      if (usable.isEmpty()) {
+        // Every day in the range was rate-limited. Treat this as a
+        // failure with a clear reason rather than a successful no-op.
+        val message = if (skippedCount > 0) {
+          "Backfill blocked by Health Connect rate limit — 0 of $totalRequested days had usable data. " +
+            "Wait an hour and retry."
+        } else {
+          "Health Connect returned no records for $startDate..$endDate."
+        }
+        Log.w(TAG, message)
+        return Result.failure(workDataOf(KEY_FAILURE_REASON to message))
+      }
+
       // Chunk into 7-day batches so a single POST never carries more
       // than a week's worth of high-frequency samples.
-      val chunks = payloads.chunked(BATCH_CHUNK_DAYS)
+      val chunks = usable.chunked(BATCH_CHUNK_DAYS)
       var hasRetryable = false
       for ((index, chunk) in chunks.withIndex()) {
         when (val response = webhookClient.postSamsungHealthBatch(chunk)) {
@@ -138,20 +177,32 @@ class HistoricalSyncWorker(
       if (hasRetryable) {
         Result.retry()
       } else {
-        // If the mapper surfaced rate-limit warnings on the payloads
-        // themselves, promote the first one into the WorkInfo output
-        // so the UI can show it even though the worker returned
-        // success (data archived, just with gaps).
-        val rateLimitWarning = payloads.asSequence()
-          .flatMap { it.sync.warnings.asSequence() }
-          .firstOrNull { it.contains("rate limit", ignoreCase = true) || it.contains("quota", ignoreCase = true) }
-        if (rateLimitWarning != null) {
-          Log.w(TAG, "Backfill completed with rate-limit warnings: $rateLimitWarning")
-          Result.success(
-            workDataOf(KEY_FAILURE_REASON to "Partial: $rateLimitWarning"),
-          )
+        // Distinguish "all $totalRequested days posted cleanly" from
+        // "posted ${usable.size} of $totalRequested, skipped the rest
+        // due to rate limit". The UI keys off this output to show
+        // "partial — tap to retry" vs "complete — run again".
+        if (skippedCount > 0) {
+          val message = "Posted ${usable.size} of $totalRequested days. " +
+            "$skippedCount day(s) skipped due to Health Connect rate limit. " +
+            "Wait an hour and retry to fill the gaps."
+          Log.w(TAG, "Backfill partial: $message")
+          Result.success(workDataOf(KEY_FAILURE_REASON to message))
         } else {
-          Result.success()
+          // Even when no days were skipped outright, surface any
+          // residual rate-limit warning so the user knows some
+          // record types within usable days may have come back empty.
+          val rateLimitWarning = usable.asSequence()
+            .flatMap { it.sync.warnings.asSequence() }
+            .firstOrNull {
+              it.contains("rate limit", ignoreCase = true) ||
+                it.contains("quota", ignoreCase = true)
+            }
+          if (rateLimitWarning != null) {
+            Log.w(TAG, "Backfill completed with residual rate-limit warning: $rateLimitWarning")
+            Result.success(workDataOf(KEY_FAILURE_REASON to "Partial: $rateLimitWarning"))
+          } else {
+            Result.success()
+          }
         }
       }
     } catch (error: Throwable) {
