@@ -81,7 +81,12 @@ const EkmMeterReads = lazy(
 const EnnexOsMeterReads = lazy(
   () => import("./pages/meter-reads/EnnexOsMeterReads")
 );
-const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
+// Task 5.4 vendor 16/16 — eGauge migrated to solar-rec-native page
+// backed by team credentials. Each credential row is one meter
+// profile (baseUrl + accessType + optional username/password/meterId).
+const EGaugeApi = lazy(
+  () => import("./pages/meter-reads/EgaugeMeterReads")
+);
 // Task 5.4 vendor 15/16 — SunPower migrated to solar-rec-native page
 // backed by `productionReadings` (mobile-app submissions). The Expo
 // app's `solarReadings.submit` endpoint stays on the main router.

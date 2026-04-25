@@ -4094,6 +4094,170 @@ const sunpowerRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 16/16 — eGauge. Final special case: each saved
+// credential row IS a meter profile, with its own baseUrl + accessType
+// + (optional) username/password/meterId. There is no "list sites"
+// concept — the device is the credential. The Settings form puts every
+// field directly into metadata as a JSON blob (including password —
+// matches the legacy main-router shape; admins manage it through
+// Solar REC Settings → Credentials with the existing form).
+//
+// Access types:
+//   - "public"          — no credentials, public-link meters
+//   - "user_login"      — username + password
+//   - "site_login"      — username + password (legacy alias)
+//   - "portfolio_login" — username + password against egauge.net portal
+// ---------------------------------------------------------------------------
+
+type EgaugeTeamMetadata = {
+  baseUrl: string;
+  accessType: "public" | "user_login" | "site_login" | "portfolio_login";
+  username: string | null;
+  password: string | null;
+  meterId: string | null;
+};
+
+function parseEgaugeTeamMetadata(
+  raw: string | null
+): EgaugeTeamMetadata | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const baseUrl =
+      typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+        ? parsed.baseUrl.trim()
+        : null;
+    const accessTypeRaw =
+      typeof parsed?.accessType === "string"
+        ? parsed.accessType.trim().toLowerCase()
+        : "";
+    const accessType:
+      | EgaugeTeamMetadata["accessType"]
+      | null =
+      accessTypeRaw === "public" ||
+      accessTypeRaw === "user_login" ||
+      accessTypeRaw === "site_login" ||
+      accessTypeRaw === "portfolio_login"
+        ? (accessTypeRaw as EgaugeTeamMetadata["accessType"])
+        : null;
+    if (!baseUrl || !accessType) return null;
+    return {
+      baseUrl,
+      accessType,
+      username:
+        typeof parsed?.username === "string" && parsed.username.trim().length > 0
+          ? parsed.username.trim()
+          : null,
+      password:
+        typeof parsed?.password === "string" && parsed.password.length > 0
+          ? parsed.password
+          : null,
+      meterId:
+        typeof parsed?.meterId === "string" && parsed.meterId.trim().length > 0
+          ? parsed.meterId.trim()
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const egaugeRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("egauge");
+    const profiles = credentials
+      .map((cred, index) => {
+        const meta = parseEgaugeTeamMetadata(cred.metadata);
+        if (!meta) return null;
+        return {
+          credentialId: cred.id,
+          name:
+            cred.connectionName?.trim().length
+              ? cred.connectionName.trim()
+              : `eGauge ${index + 1}`,
+          baseUrl: meta.baseUrl,
+          accessType: meta.accessType,
+          username: meta.username,
+          hasPassword: !!meta.password,
+          defaultMeterId: meta.meterId,
+        };
+      })
+      .filter((p): p is NonNullable<typeof p> => p !== null);
+    return {
+      connected: profiles.length > 0,
+      connectionCount: profiles.length,
+      profiles,
+    };
+  }),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        credentialId: z.string().min(1),
+        meterId: z.string().min(1).optional(),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+      const credentials = await getSolarRecTeamCredentialsByProvider("egauge");
+      const cred = credentials.find((c) => c.id === input.credentialId);
+      if (!cred) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "eGauge credential not found.",
+        });
+      }
+      const meta = parseEgaugeTeamMetadata(cred.metadata);
+      if (!meta) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "eGauge credential is missing required metadata (baseUrl + accessType).",
+        });
+      }
+      if (
+        meta.accessType !== "public" &&
+        (!meta.username || !meta.password)
+      ) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "eGauge credential requires username + password for this access type.",
+        });
+      }
+      const meterId = input.meterId?.trim() || meta.meterId;
+      if (!meterId) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message:
+            "Provide a meter ID, or set a default meter ID on the credential.",
+        });
+      }
+      const anchorDate =
+        input.anchorDate ?? new Date().toISOString().slice(0, 10);
+      const { getMeterProductionSnapshot } = await import(
+        "../services/solar/egauge"
+      );
+      return getMeterProductionSnapshot(
+        {
+          baseUrl: meta.baseUrl,
+          accessType: meta.accessType,
+          username: meta.username,
+          password: meta.password,
+        },
+        meterId,
+        null,
+        anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -4114,6 +4278,7 @@ export const solarRecAppRouter = t.router({
   solaredge: solaredgeRouter,
   teslaPowerhub: teslaPowerhubRouter,
   sunpower: sunpowerRouter,
+  egauge: egaugeRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
