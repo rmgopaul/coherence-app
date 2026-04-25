@@ -82,8 +82,11 @@ const EnnexOsMeterReads = lazy(
   () => import("./pages/meter-reads/EnnexOsMeterReads")
 );
 const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
+// Task 5.4 vendor 15/16 — SunPower migrated to solar-rec-native page
+// backed by `productionReadings` (mobile-app submissions). The Expo
+// app's `solarReadings.submit` endpoint stays on the main router.
 const SunpowerReadings = lazy(
-  () => import("../features/solar-readings/SunpowerReadings")
+  () => import("./pages/meter-reads/SunpowerMeterReads")
 );
 // Task 5.4 vendor 14/16 — Tesla Powerhub migrated to solar-rec-native
 // page backed by team credentials (single bulk endpoint).
