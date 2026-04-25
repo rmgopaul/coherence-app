@@ -2727,6 +2727,127 @@ const hoymilesRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 5/16 — Locus Energy. Team credential stores
+// `{clientId, clientSecret, partnerId, baseUrl}`; single-site reads.
+// ---------------------------------------------------------------------------
+
+type LocusTeamContext = {
+  clientId: string;
+  clientSecret: string;
+  partnerId: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseLocusTeamMetadata(raw: string | null): LocusTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const clientId =
+      typeof parsed?.clientId === "string" && parsed.clientId.trim().length > 0
+        ? parsed.clientId.trim()
+        : null;
+    const clientSecret =
+      typeof parsed?.clientSecret === "string" &&
+      parsed.clientSecret.trim().length > 0
+        ? parsed.clientSecret.trim()
+        : null;
+    const partnerId =
+      typeof parsed?.partnerId === "string" &&
+      parsed.partnerId.trim().length > 0
+        ? parsed.partnerId.trim()
+        : null;
+    if (!clientId || !clientSecret || !partnerId) return null;
+    return {
+      clientId,
+      clientSecret,
+      partnerId,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveLocusTeamContext(
+  scopeId: string
+): Promise<LocusTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("locus");
+  for (const cred of credentials) {
+    const parsed = parseLocusTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Locus Energy team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const locusRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("locus");
+    const active = credentials.find(
+      (cred) => parseLocusTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listSites: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listSites } = await import("../services/solar/locus");
+      const context = await resolveLocusTeamContext(ctx.scopeId);
+      return listSites({
+        clientId: context.clientId,
+        clientSecret: context.clientSecret,
+        partnerId: context.partnerId,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        siteId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSiteProductionSnapshot } = await import(
+        "../services/solar/locus"
+      );
+      const context = await resolveLocusTeamContext(ctx.scopeId);
+      return getSiteProductionSnapshot(
+        {
+          clientId: context.clientId,
+          clientSecret: context.clientSecret,
+          partnerId: context.partnerId,
+          baseUrl: context.baseUrl,
+        },
+        input.siteId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -2736,6 +2857,7 @@ export const solarRecAppRouter = t.router({
   solis: solisRouter,
   goodwe: goodweRouter,
   hoymiles: hoymilesRouter,
+  locus: locusRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

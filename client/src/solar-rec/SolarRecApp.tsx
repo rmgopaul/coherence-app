@@ -48,8 +48,10 @@ const GoodWeMeterReads = lazy(
 const SolisMeterReads = lazy(
   () => import("./pages/meter-reads/SolisMeterReads")
 );
+// Task 5.4 vendor 5/16 — Locus migrated to solar-rec-native page backed
+// by team credentials.
 const LocusMeterReads = lazy(
-  () => import("../features/solar-readings/LocusMeterReads")
+  () => import("./pages/meter-reads/LocusMeterReads")
 );
 const GrowattMeterReads = lazy(
   () => import("../features/solar-readings/GrowattMeterReads")
