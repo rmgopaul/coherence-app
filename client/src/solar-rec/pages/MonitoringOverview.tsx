@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Download, ArrowLeft } from "lucide-react";
+import { PermissionGate } from "../components/PermissionGate";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -66,6 +67,14 @@ type ConnectionSummary = {
 // ── Component ───────────────────────────────────────────────────────
 
 export default function MonitoringOverview() {
+  return (
+    <PermissionGate moduleKey="monitoring-overview">
+      <MonitoringOverviewImpl />
+    </PermissionGate>
+  );
+}
+
+function MonitoringOverviewImpl() {
   const { startDate, endDate, dateKeys } = useMemo(() => getLast30Days(), []);
   const [showLast7, setShowLast7] = useState(true);
 

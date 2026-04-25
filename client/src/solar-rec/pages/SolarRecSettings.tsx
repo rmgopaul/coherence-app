@@ -22,6 +22,7 @@ import { UserPlus, Shield, Trash2, Copy, Link } from "lucide-react";
 import { useSolarRecAuth } from "../hooks/useSolarRecAuth";
 import TeamPermissions from "../components/TeamPermissions";
 import PermissionPresets from "../components/PermissionPresets";
+import { PermissionGate } from "../components/PermissionGate";
 
 // ---------------------------------------------------------------------------
 // User Management
@@ -428,30 +429,20 @@ function CredentialsManagement() {
 // ---------------------------------------------------------------------------
 
 export default function SolarRecSettings() {
-  const { isAdmin } = useSolarRecAuth();
-
-  if (!isAdmin) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <p className="text-sm text-muted-foreground">
-          Admin access required.
-        </p>
-      </div>
-    );
-  }
-
   return (
-    <div className="max-w-3xl mx-auto p-6 space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage team members and API connections.
-        </p>
+    <PermissionGate moduleKey="solar-rec-settings">
+      <div className="max-w-3xl mx-auto p-6 space-y-6">
+        <div>
+          <h1 className="text-xl font-semibold">Settings</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage team members and API connections.
+          </p>
+        </div>
+        <UserManagement />
+        <TeamPermissions />
+        <PermissionPresets />
+        <CredentialsManagement />
       </div>
-      <UserManagement />
-      <TeamPermissions />
-      <PermissionPresets />
-      <CredentialsManagement />
-    </div>
+    </PermissionGate>
   );
 }
