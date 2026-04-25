@@ -2503,6 +2503,117 @@ const solisRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 3/16 — GoodWe SEMS. Team credential stores
+// `{account, password, baseUrl}`; single-station reads.
+// ---------------------------------------------------------------------------
+
+type GoodWeTeamContext = {
+  account: string;
+  password: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseGoodWeTeamMetadata(raw: string | null): GoodWeTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const account =
+      typeof parsed?.account === "string" && parsed.account.trim().length > 0
+        ? parsed.account.trim()
+        : null;
+    const password =
+      typeof parsed?.password === "string" && parsed.password.length > 0
+        ? parsed.password
+        : null;
+    if (!account || !password) return null;
+    return {
+      account,
+      password,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGoodWeTeamContext(
+  scopeId: string
+): Promise<GoodWeTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("goodwe");
+  for (const cred of credentials) {
+    const parsed = parseGoodWeTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No GoodWe team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const goodweRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("goodwe");
+    const active = credentials.find(
+      (cred) => parseGoodWeTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listStations: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listStations } = await import("../services/solar/goodwe");
+      const context = await resolveGoodWeTeamContext(ctx.scopeId);
+      return listStations({
+        account: context.account,
+        password: context.password,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        stationId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getStationProductionSnapshot } = await import(
+        "../services/solar/goodwe"
+      );
+      const context = await resolveGoodWeTeamContext(ctx.scopeId);
+      return getStationProductionSnapshot(
+        {
+          account: context.account,
+          password: context.password,
+          baseUrl: context.baseUrl,
+        },
+        input.stationId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -2510,6 +2621,7 @@ export const solarRecAppRouter = t.router({
   permissions: permissionsRouter,
   generac: generacRouter,
   solis: solisRouter,
+  goodwe: goodweRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

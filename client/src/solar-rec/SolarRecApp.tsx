@@ -36,8 +36,10 @@ const FroniusMeterReads = lazy(
 const GeneracMeterReads = lazy(
   () => import("./pages/meter-reads/GeneracMeterReads")
 );
+// Task 5.4 vendor 3/16 — GoodWe migrated to solar-rec-native page backed
+// by team credentials.
 const GoodWeMeterReads = lazy(
-  () => import("../features/solar-readings/GoodWeMeterReads")
+  () => import("./pages/meter-reads/GoodWeMeterReads")
 );
 // Task 5.4 vendor 2/16 — Solis migrated to solar-rec-native page backed
 // by team credentials.
