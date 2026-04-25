@@ -76,12 +76,18 @@ export default function TeamPermissions() {
   const utils = trpc.useUtils();
 
   const setOne = trpc.permissions.setUserPermission.useMutation({
-    onSuccess: () => utils.permissions.listScopePermissions.invalidate(),
-    onError: (err) => toast.error(`Save failed: ${err.message}`),
+    onSuccess: () => {
+      utils.permissions.listScopePermissions.invalidate();
+      utils.permissions.getMyPermissions.invalidate();
+    },
+    onError: err => toast.error(`Save failed: ${err.message}`),
   });
   const setScopeAdmin = trpc.permissions.setUserScopeAdmin.useMutation({
-    onSuccess: () => utils.permissions.listScopePermissions.invalidate(),
-    onError: (err) => toast.error(`Save failed: ${err.message}`),
+    onSuccess: () => {
+      utils.permissions.listScopePermissions.invalidate();
+      utils.permissions.getMyPermissions.invalidate();
+    },
+    onError: err => toast.error(`Save failed: ${err.message}`),
   });
 
   const matrix = useMemo(() => {
@@ -130,7 +136,7 @@ export default function TeamPermissions() {
                 <th className="py-2 px-2 text-center font-medium whitespace-nowrap">
                   Scope admin
                 </th>
-                {modules.map((m) => (
+                {modules.map(m => (
                   <th
                     key={m.key}
                     className="py-2 px-2 text-left font-medium whitespace-nowrap"
@@ -142,15 +148,13 @@ export default function TeamPermissions() {
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => {
+              {users.map(u => {
                 const row = matrix.get(u.id) ?? new Map();
                 return (
                   <tr key={u.id} className="border-b last:border-b-0">
                     <td className="py-2 pr-3 align-top sticky left-0 bg-background">
                       <div className="flex flex-col">
-                        <span className="font-medium">
-                          {u.name ?? u.email}
-                        </span>
+                        <span className="font-medium">{u.name ?? u.email}</span>
                         <span className="text-xs text-muted-foreground">
                           {u.email}
                         </span>
@@ -159,10 +163,7 @@ export default function TeamPermissions() {
                             {u.role}
                           </Badge>
                           {!u.isActive && (
-                            <Badge
-                              variant="destructive"
-                              className="text-xs"
-                            >
+                            <Badge variant="destructive" className="text-xs">
                               inactive
                             </Badge>
                           )}
@@ -174,7 +175,7 @@ export default function TeamPermissions() {
                         <Switch
                           checked={u.isScopeAdmin}
                           disabled={setScopeAdmin.isPending}
-                          onCheckedChange={(checked) =>
+                          onCheckedChange={checked =>
                             setScopeAdmin.mutate({
                               userId: u.id,
                               isScopeAdmin: checked,
@@ -192,18 +193,15 @@ export default function TeamPermissions() {
                         )}
                       </div>
                     </td>
-                    {modules.map((m) => {
+                    {modules.map(m => {
                       const current: PermissionLevel =
                         row.get(m.key as ModuleKey) ?? "none";
                       return (
-                        <td
-                          key={m.key}
-                          className="py-2 px-2 align-top"
-                        >
+                        <td key={m.key} className="py-2 px-2 align-top">
                           <Select
                             value={current}
                             disabled={u.isScopeAdmin || setOne.isPending}
-                            onValueChange={(value) =>
+                            onValueChange={value =>
                               setOne.mutate({
                                 userId: u.id,
                                 moduleKey: m.key as ModuleKey,
@@ -222,7 +220,7 @@ export default function TeamPermissions() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {PERMISSION_LEVELS.map((level) => (
+                              {PERMISSION_LEVELS.map(level => (
                                 <SelectItem key={level} value={level}>
                                   {level}
                                 </SelectItem>

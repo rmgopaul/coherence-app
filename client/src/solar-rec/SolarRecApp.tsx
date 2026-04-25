@@ -1,18 +1,17 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, type ReactNode } from "react";
 import { Route, Switch, Redirect, Router } from "wouter";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { useSolarRecAuth } from "./hooks/useSolarRecAuth";
 import SolarRecSidebar from "./components/SolarRecSidebar";
 import SolarRecLoginPage from "./SolarRecLoginPage";
+import { PermissionGate } from "./components/PermissionGate";
 
 // Lazy-load pages
-const SolarRecDashboard = lazy(() => import("../features/solar-rec/SolarRecDashboard"));
-const MonitoringDashboard = lazy(
-  () => import("./pages/MonitoringDashboard")
+const SolarRecDashboard = lazy(
+  () => import("../features/solar-rec/SolarRecDashboard")
 );
-const MonitoringOverview = lazy(
-  () => import("./pages/MonitoringOverview")
-);
+const MonitoringDashboard = lazy(() => import("./pages/MonitoringDashboard"));
+const MonitoringOverview = lazy(() => import("./pages/MonitoringOverview"));
 const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
 
 // Meter read pages (existing, reused from main app)
@@ -49,7 +48,9 @@ const GrowattMeterReads = lazy(
 const SolarLogMeterReads = lazy(
   () => import("../features/solar-readings/SolarLogMeterReads")
 );
-const EkmMeterReads = lazy(() => import("../features/solar-readings/EkmMeterReads"));
+const EkmMeterReads = lazy(
+  () => import("../features/solar-readings/EkmMeterReads")
+);
 const EnnexOsMeterReads = lazy(
   () => import("../features/solar-readings/EnnexOsMeterReads")
 );
@@ -57,7 +58,9 @@ const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
 const SunpowerReadings = lazy(
   () => import("../features/solar-readings/SunpowerReadings")
 );
-const TeslaPowerhubApi = lazy(() => import("../features/solar-readings/TeslaPowerhubApi"));
+const TeslaPowerhubApi = lazy(
+  () => import("../features/solar-readings/TeslaPowerhubApi")
+);
 
 function PageLoader() {
   return (
@@ -65,6 +68,10 @@ function PageLoader() {
       <p className="text-sm text-muted-foreground">Loading...</p>
     </div>
   );
+}
+
+function MeterReadsGate({ children }: { children: ReactNode }) {
+  return <PermissionGate moduleKey="meter-reads">{children}</PermissionGate>;
 }
 
 function AuthenticatedApp() {
@@ -78,7 +85,9 @@ function AuthenticatedApp() {
           <Suspense fallback={<PageLoader />}>
             <Switch>
               <Route path="/solar-rec/dashboard">
-                <SolarRecDashboard />
+                <PermissionGate moduleKey="solar-rec-dashboard">
+                  <SolarRecDashboard />
+                </PermissionGate>
               </Route>
               <Route path="/solar-rec/monitoring">
                 <MonitoringDashboard />
@@ -92,52 +101,84 @@ function AuthenticatedApp() {
 
               {/* Meter read pages */}
               <Route path="/solar-rec/meter-reads/solaredge">
-                <SolarEdgeMeterReads />
+                <MeterReadsGate>
+                  <SolarEdgeMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/enphase-v4">
-                <EnphaseV4MeterReads />
+                <MeterReadsGate>
+                  <EnphaseV4MeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/apsystems">
-                <APsystemsMeterReads />
+                <MeterReadsGate>
+                  <APsystemsMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/hoymiles">
-                <HoymilesMeterReads />
+                <MeterReadsGate>
+                  <HoymilesMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/fronius">
-                <FroniusMeterReads />
+                <MeterReadsGate>
+                  <FroniusMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/generac">
-                <GeneracMeterReads />
+                <MeterReadsGate>
+                  <GeneracMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/goodwe">
-                <GoodWeMeterReads />
+                <MeterReadsGate>
+                  <GoodWeMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/solis">
-                <SolisMeterReads />
+                <MeterReadsGate>
+                  <SolisMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/locus">
-                <LocusMeterReads />
+                <MeterReadsGate>
+                  <LocusMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/growatt">
-                <GrowattMeterReads />
+                <MeterReadsGate>
+                  <GrowattMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/solarlog">
-                <SolarLogMeterReads />
+                <MeterReadsGate>
+                  <SolarLogMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/ekm">
-                <EkmMeterReads />
+                <MeterReadsGate>
+                  <EkmMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/ennexos">
-                <EnnexOsMeterReads />
+                <MeterReadsGate>
+                  <EnnexOsMeterReads />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/egauge">
-                <EGaugeApi />
+                <MeterReadsGate>
+                  <EGaugeApi />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/sunpower">
-                <SunpowerReadings />
+                <MeterReadsGate>
+                  <SunpowerReadings />
+                </MeterReadsGate>
               </Route>
               <Route path="/solar-rec/meter-reads/tesla-powerhub">
-                <TeslaPowerhubApi />
+                <MeterReadsGate>
+                  <TeslaPowerhubApi />
+                </MeterReadsGate>
               </Route>
 
               {/* Default: redirect to dashboard */}

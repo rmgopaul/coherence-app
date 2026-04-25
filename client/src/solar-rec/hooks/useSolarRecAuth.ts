@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 export type SolarRecUser = {
   id: number;
   email: string;
+  isScopeAdmin: boolean;
   name: string | null;
   role: "owner" | "admin" | "operator" | "viewer";
   avatarUrl: string | null;
@@ -57,7 +58,10 @@ export function useSolarRecAuth() {
     window.location.href = "/solar-rec/api/auth/google";
   }, []);
 
-  const isAdmin = state.user?.role === "owner" || state.user?.role === "admin";
+  const isAdmin =
+    state.user?.isScopeAdmin === true ||
+    state.user?.role === "owner" ||
+    state.user?.role === "admin";
   const isOperator = isAdmin || state.user?.role === "operator";
 
   return {

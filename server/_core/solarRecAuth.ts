@@ -2,7 +2,11 @@ import type express from "express";
 import { parse as parseCookieHeader } from "cookie";
 import axios from "axios";
 import { SignJWT, jwtVerify } from "jose";
-import { ONE_YEAR_MS, SOLAR_REC_SESSION_COOKIE, AXIOS_TIMEOUT_MS } from "@shared/const";
+import {
+  ONE_YEAR_MS,
+  SOLAR_REC_SESSION_COOKIE,
+  AXIOS_TIMEOUT_MS,
+} from "@shared/const";
 import { ENV, getValidatedJwtSecret } from "./env";
 
 // ---------------------------------------------------------------------------
@@ -18,6 +22,7 @@ export type SolarRecSessionPayload = {
 export type SolarRecAuthenticatedUser = {
   id: number;
   email: string;
+  googleOpenId: string | null;
   name: string | null;
   role: "owner" | "admin" | "operator" | "viewer";
   avatarUrl: string | null;
@@ -101,7 +106,10 @@ function shouldUseSecureCookie(req: express.Request): boolean {
   if (process.env.NODE_ENV === "production") return true;
   if (req.secure) return true;
   const forwardedProto = req.header("x-forwarded-proto");
-  return typeof forwardedProto === "string" && forwardedProto.split(",")[0].trim() === "https";
+  return (
+    typeof forwardedProto === "string" &&
+    forwardedProto.split(",")[0].trim() === "https"
+  );
 }
 
 function setSolarRecSessionCookie(
@@ -184,6 +192,7 @@ export async function authenticateSolarRecRequest(
   return {
     id: user.id,
     email: user.email,
+    googleOpenId: user.googleOpenId,
     name: user.name,
     role: user.role as SolarRecAuthenticatedUser["role"],
     avatarUrl: user.avatarUrl,
@@ -255,7 +264,7 @@ export async function resolveSolarRecOwnerUserId(): Promise<number> {
       if (users.length === 0) return configured;
 
       const scored = await Promise.all(
-        users.map(async (user) => {
+        users.map(async user => {
           const integrations = await getUserIntegrations(user.id);
           const score = integrations.reduce((total, integration) => {
             const provider = integration.provider ?? "";
@@ -305,7 +314,6 @@ export async function resolveSolarRecOwnerUserId(): Promise<number> {
 // ---------------------------------------------------------------------------
 
 export function registerSolarRecAuth(app: express.Express) {
-
   // --- Status ---
   app.get("/solar-rec/api/auth/status", async (req, res) => {
     const user = await authenticateSolarRecRequest(req);
@@ -315,6 +323,7 @@ export function registerSolarRecAuth(app: express.Express) {
         user: {
           id: user.id,
           email: user.email,
+          isScopeAdmin: user.isScopeAdmin,
           name: user.name,
           role: user.role,
           avatarUrl: user.avatarUrl,
@@ -340,7 +349,9 @@ export function registerSolarRecAuth(app: express.Express) {
       state: Buffer.from(redirectUri).toString("base64"),
     });
 
-    res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`);
+    res.redirect(
+      `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
+    );
   });
 
   // --- Google OAuth callback ---
@@ -379,17 +390,26 @@ export function registerSolarRecAuth(app: express.Express) {
 
       if (user) {
         if (!user.isActive) {
-          return res.status(403).send("Account is deactivated. Contact an admin.");
+          return res
+            .status(403)
+            .send("Account is deactivated. Contact an admin.");
         }
         // Update last sign-in and link Google OpenID if not yet set
-        await updateSolarRecUserLastSignIn(user.id, googleUser.id, googleUser.name, googleUser.picture);
+        await updateSolarRecUserLastSignIn(
+          user.id,
+          googleUser.id,
+          googleUser.name,
+          googleUser.picture
+        );
       } else {
         // No existing user — check for a pending invite
         const invite = await getSolarRecInviteByEmail(email);
         if (!invite) {
-          return res.status(403).send(
-            "You are not authorized to access Solar REC. Ask an admin for an invite."
-          );
+          return res
+            .status(403)
+            .send(
+              "You are not authorized to access Solar REC. Ask an admin for an invite."
+            );
         }
 
         // Create the user from the invite
@@ -416,7 +436,7 @@ export function registerSolarRecAuth(app: express.Express) {
             if (preset) {
               const scopeId = await resolveSolarRecScopeId();
               const nonNone = preset.permissions.filter(
-                (entry) => entry.permission !== "none"
+                entry => entry.permission !== "none"
               );
               await replaceSolarRecUserModulePermissions({
                 userId: user.id,
