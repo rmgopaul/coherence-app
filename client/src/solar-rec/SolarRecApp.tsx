@@ -65,8 +65,10 @@ const GrowattMeterReads = lazy(
 const SolarLogMeterReads = lazy(
   () => import("./pages/meter-reads/SolarLogMeterReads")
 );
+// Task 5.4 vendor 9/16 — EKM migrated to solar-rec-native page backed
+// by team credentials.
 const EkmMeterReads = lazy(
-  () => import("../features/solar-readings/EkmMeterReads")
+  () => import("./pages/meter-reads/EkmMeterReads")
 );
 const EnnexOsMeterReads = lazy(
   () => import("../features/solar-readings/EnnexOsMeterReads")
