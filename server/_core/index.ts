@@ -71,6 +71,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "goodwe",
   "hoymiles",
   "locus",
+  "apsystems",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
