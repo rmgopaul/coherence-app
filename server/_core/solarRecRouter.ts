@@ -159,10 +159,18 @@ const usersRouter = t.router({
       z.object({
         email: z.string().email(),
         role: z.enum(["admin", "operator", "viewer"]).default("operator"),
+        // Task 5.2 — optional preset to snapshot onto the invitee on
+        // accept. Validated against the current scope so cross-scope IDs
+        // can't be used.
+        presetId: z.string().min(1).optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { createSolarRecInvite, getSolarRecUserByEmail } = await import("../db");
+      const {
+        createSolarRecInvite,
+        getSolarRecUserByEmail,
+        getSolarRecPermissionPreset,
+      } = await import("../db");
 
       // Check if user already exists
       const existing = await getSolarRecUserByEmail(input.email);
@@ -173,13 +181,30 @@ const usersRouter = t.router({
         });
       }
 
+      if (input.presetId) {
+        const preset = await getSolarRecPermissionPreset(input.presetId);
+        if (!preset || preset.scopeId !== ctx.scopeId) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Preset not found in this scope",
+          });
+        }
+      }
+
       const { token, expiresAt } = await createSolarRecInvite({
         email: input.email,
         role: input.role,
         createdBy: ctx.userId,
+        presetId: input.presetId ?? null,
       });
 
-      return { email: input.email, role: input.role, expiresAt, token };
+      return {
+        email: input.email,
+        role: input.role,
+        presetId: input.presetId ?? null,
+        expiresAt,
+        token,
+      };
     }),
 
   listInvites: solarRecAdminProcedure.query(async () => {

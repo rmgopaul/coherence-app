@@ -204,6 +204,13 @@
       "when": 1777074230710,
       "tag": "0032_add_solar_rec_permission_presets",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1777077980188,
+      "tag": "0033_add_invite_preset_id",
+      "breakpoints": true
     }
   ]
 }

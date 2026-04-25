@@ -108,6 +108,13 @@ export async function createSolarRecInvite(data: {
   role: "admin" | "operator" | "viewer";
   createdBy: number;
   expiresInDays?: number;
+  /**
+   * Task 5.2 — bind the invite to a permission preset whose entries are
+   * snapshotted onto the invitee on accept. Optional; absent means the
+   * invitee starts at "all none" and the admin will dial permissions
+   * per-cell after they sign in.
+   */
+  presetId?: string | null;
 }) {
   const db = await getDb();
   if (!db) throw new Error("Database unavailable");
@@ -124,6 +131,7 @@ export async function createSolarRecInvite(data: {
       tokenHash,
       createdBy: data.createdBy,
       expiresAt,
+      presetId: data.presetId ?? null,
     });
   });
 
