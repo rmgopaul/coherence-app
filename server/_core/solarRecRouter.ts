@@ -3184,6 +3184,94 @@ const growattRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 9/16 — EKM (push API). Team credential stores
+// `{apiKey, baseUrl}`; single-meter snapshots only (vendor has no
+// list-meters endpoint, so the user supplies the meter number).
+// ---------------------------------------------------------------------------
+
+type EkmTeamContext = {
+  apiKey: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseEkmTeamMetadata(raw: string | null): EkmTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const apiKey =
+      typeof parsed?.apiKey === "string" && parsed.apiKey.trim().length > 0
+        ? parsed.apiKey.trim()
+        : null;
+    if (!apiKey) return null;
+    return {
+      apiKey,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveEkmTeamContext(scopeId: string): Promise<EkmTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("ekm");
+  for (const cred of credentials) {
+    const parsed = parseEkmTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No EKM team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const ekmRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("ekm");
+    const active = credentials.find(
+      (cred) => parseEkmTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        meterNumber: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getMeterProductionSnapshot } = await import(
+        "../services/solar/ekm"
+      );
+      const context = await resolveEkmTeamContext(ctx.scopeId);
+      return getMeterProductionSnapshot(
+        { apiKey: context.apiKey, baseUrl: context.baseUrl },
+        input.meterNumber.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3197,6 +3285,7 @@ export const solarRecAppRouter = t.router({
   apsystems: apsystemsRouter,
   solarlog: solarlogRouter,
   growatt: growattRouter,
+  ekm: ekmRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

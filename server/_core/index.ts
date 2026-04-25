@@ -74,6 +74,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "apsystems",
   "solarlog",
   "growatt",
+  "ekm",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
