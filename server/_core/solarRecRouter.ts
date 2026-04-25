@@ -2848,6 +2848,121 @@ const locusRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 6/16 — APsystems (EMA). Team credential stores
+// `{appId, appSecret, baseUrl}`; single-system reads.
+// ---------------------------------------------------------------------------
+
+type APsystemsTeamContext = {
+  appId: string;
+  appSecret: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseAPsystemsTeamMetadata(
+  raw: string | null
+): APsystemsTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const appId =
+      typeof parsed?.appId === "string" && parsed.appId.trim().length > 0
+        ? parsed.appId.trim()
+        : null;
+    const appSecret =
+      typeof parsed?.appSecret === "string" &&
+      parsed.appSecret.trim().length > 0
+        ? parsed.appSecret.trim()
+        : null;
+    if (!appId || !appSecret) return null;
+    return {
+      appId,
+      appSecret,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveAPsystemsTeamContext(
+  scopeId: string
+): Promise<APsystemsTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("apsystems");
+  for (const cred of credentials) {
+    const parsed = parseAPsystemsTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No APsystems team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const apsystemsRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials =
+      await getSolarRecTeamCredentialsByProvider("apsystems");
+    const active = credentials.find(
+      (cred) => parseAPsystemsTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listSystems: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listSystems } = await import("../services/solar/apsystems");
+      const context = await resolveAPsystemsTeamContext(ctx.scopeId);
+      return listSystems({
+        appId: context.appId,
+        appSecret: context.appSecret,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        systemId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSystemProductionSnapshot } = await import(
+        "../services/solar/apsystems"
+      );
+      const context = await resolveAPsystemsTeamContext(ctx.scopeId);
+      return getSystemProductionSnapshot(
+        {
+          appId: context.appId,
+          appSecret: context.appSecret,
+          baseUrl: context.baseUrl,
+        },
+        input.systemId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -2858,6 +2973,7 @@ export const solarRecAppRouter = t.router({
   goodwe: goodweRouter,
   hoymiles: hoymilesRouter,
   locus: locusRouter,
+  apsystems: apsystemsRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

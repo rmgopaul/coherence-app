@@ -21,8 +21,10 @@ const SolarEdgeMeterReads = lazy(
 const EnphaseV4MeterReads = lazy(
   () => import("../features/solar-readings/EnphaseV4MeterReads")
 );
+// Task 5.4 vendor 6/16 — APsystems migrated to solar-rec-native page backed
+// by team credentials.
 const APsystemsMeterReads = lazy(
-  () => import("../features/solar-readings/APsystemsMeterReads")
+  () => import("./pages/meter-reads/APsystemsMeterReads")
 );
 // Task 5.4 vendor 4/16 — Hoymiles migrated to solar-rec-native page backed
 // by team credentials.
