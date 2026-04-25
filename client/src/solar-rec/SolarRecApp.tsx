@@ -72,8 +72,10 @@ const SolarLogMeterReads = lazy(
 const EkmMeterReads = lazy(
   () => import("./pages/meter-reads/EkmMeterReads")
 );
+// Task 5.4 vendor 11/16 — EnnexOS migrated to solar-rec-native page backed
+// by team credentials.
 const EnnexOsMeterReads = lazy(
-  () => import("../features/solar-readings/EnnexOsMeterReads")
+  () => import("./pages/meter-reads/EnnexOsMeterReads")
 );
 const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
 const SunpowerReadings = lazy(

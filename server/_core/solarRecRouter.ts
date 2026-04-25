@@ -3388,6 +3388,119 @@ const froniusRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 11/16 — EnnexOS (SMA Sandbox/Cloud). Team credential
+// stores `{accessToken, baseUrl}`; lists plants and runs single-plant
+// snapshots.
+// ---------------------------------------------------------------------------
+
+type EnnexOsTeamContext = {
+  accessToken: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseEnnexOsTeamMetadata(
+  raw: string | null
+): EnnexOsTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const accessToken =
+      typeof parsed?.accessToken === "string" &&
+      parsed.accessToken.trim().length > 0
+        ? parsed.accessToken.trim()
+        : null;
+    if (!accessToken) return null;
+    return {
+      accessToken,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveEnnexOsTeamContext(
+  scopeId: string
+): Promise<EnnexOsTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("ennexos");
+  for (const cred of credentials) {
+    const parsed = parseEnnexOsTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+    // Fall back to top-level accessToken (the credential row's column,
+    // not metadata) so admins who pasted the token via the generic
+    // "accessToken" field still authenticate.
+    const fallback = cred.accessToken?.trim();
+    if (fallback) {
+      return { accessToken: fallback, baseUrl: null, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No EnnexOS team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const ennexOsRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("ennexos");
+    const active = credentials.find(
+      (cred) =>
+        parseEnnexOsTeamMetadata(cred.metadata) !== null ||
+        (cred.accessToken?.trim().length ?? 0) > 0
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listPlants: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listPlants } = await import("../services/solar/ennexos");
+      const context = await resolveEnnexOsTeamContext(ctx.scopeId);
+      return listPlants({
+        accessToken: context.accessToken,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        plantId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getPlantProductionSnapshot } = await import(
+        "../services/solar/ennexos"
+      );
+      const context = await resolveEnnexOsTeamContext(ctx.scopeId);
+      return getPlantProductionSnapshot(
+        { accessToken: context.accessToken, baseUrl: context.baseUrl },
+        input.plantId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3403,6 +3516,7 @@ export const solarRecAppRouter = t.router({
   growatt: growattRouter,
   ekm: ekmRouter,
   fronius: froniusRouter,
+  ennexos: ennexOsRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
