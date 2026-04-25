@@ -2391,12 +2391,125 @@ const generacRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 2/16 — Solis (SolisCloud). Same shape as Generac: team
+// credential → { apiKey, apiSecret, baseUrl } → single-station reads.
+// ---------------------------------------------------------------------------
+
+type SolisTeamContext = {
+  apiKey: string;
+  apiSecret: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseSolisTeamMetadata(raw: string | null): SolisTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const apiKey =
+      typeof parsed?.apiKey === "string" && parsed.apiKey.trim().length > 0
+        ? parsed.apiKey.trim()
+        : null;
+    const apiSecret =
+      typeof parsed?.apiSecret === "string" &&
+      parsed.apiSecret.trim().length > 0
+        ? parsed.apiSecret.trim()
+        : null;
+    if (!apiKey || !apiSecret) return null;
+    return {
+      apiKey,
+      apiSecret,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSolisTeamContext(
+  scopeId: string
+): Promise<SolisTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("solis");
+  for (const cred of credentials) {
+    const parsed = parseSolisTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Solis team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const solisRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("solis");
+    const active = credentials.find(
+      (cred) => parseSolisTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listStations: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listStations } = await import("../services/solar/solis");
+      const context = await resolveSolisTeamContext(ctx.scopeId);
+      return listStations({
+        apiKey: context.apiKey,
+        apiSecret: context.apiSecret,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        stationId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getStationProductionSnapshot } = await import(
+        "../services/solar/solis"
+      );
+      const context = await resolveSolisTeamContext(ctx.scopeId);
+      return getStationProductionSnapshot(
+        {
+          apiKey: context.apiKey,
+          apiSecret: context.apiSecret,
+          baseUrl: context.baseUrl,
+        },
+        input.stationId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
   monitoring: monitoringRouter,
   permissions: permissionsRouter,
   generac: generacRouter,
+  solis: solisRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
