@@ -367,6 +367,8 @@ export function registerSolarRecAuth(app: express.Express) {
         updateSolarRecUserLastSignIn,
         getSolarRecInviteByEmail,
         markSolarRecInviteUsed,
+        getSolarRecPermissionPreset,
+        replaceSolarRecUserModulePermissions,
       } = await import("../db");
 
       // Try to find existing user by Google OpenID or email
@@ -399,6 +401,40 @@ export function registerSolarRecAuth(app: express.Express) {
           role: invite.role as "admin" | "operator" | "viewer",
           invitedBy: invite.createdBy,
         });
+
+        // Task 5.2 — if the invite was bound to a permission preset,
+        // snapshot the preset's non-`none` entries onto the new user.
+        // Modules the preset omits or marks `none` are left at none
+        // (replaceSolarRecUserModulePermissions clears any existing rows
+        // first, so a fresh user starts with exactly the preset's set).
+        // Failure here is logged but doesn't block sign-in: a user with
+        // no permissions can still log in and an admin can dial the
+        // matrix manually.
+        if (invite.presetId) {
+          try {
+            const preset = await getSolarRecPermissionPreset(invite.presetId);
+            if (preset) {
+              const scopeId = await resolveSolarRecScopeId();
+              const nonNone = preset.permissions.filter(
+                (entry) => entry.permission !== "none"
+              );
+              await replaceSolarRecUserModulePermissions({
+                userId: user.id,
+                scopeId,
+                permissions: nonNone,
+              });
+            } else {
+              console.warn(
+                `[SolarRecAuth] Invite ${invite.id} referenced missing preset ${invite.presetId}; user created with all-none permissions`
+              );
+            }
+          } catch (presetErr) {
+            console.error(
+              "[SolarRecAuth] Failed to apply invite preset:",
+              presetErr
+            );
+          }
+        }
 
         await markSolarRecInviteUsed(invite.id);
       }
