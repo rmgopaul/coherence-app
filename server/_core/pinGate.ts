@@ -42,6 +42,13 @@ function isAllowedWithoutPin(path: string): boolean {
   if (path === "/api/pin/status") return true;
   if (path === "/api/pin/verify") return true;
   if (path === "/api/pin/logout") return true;
+  // Android app stores the PIN cookie in EncryptedSharedPreferences and
+  // sends it on its own API calls, but Google OAuth opens Chrome Custom
+  // Tabs (separate cookie jar). The redirect back to /api/oauth/callback
+  // therefore arrives with no PIN cookie. Exempting the callback is safe:
+  // the handler still requires a valid Google-issued code matching the
+  // registered redirect_uri, so no data is exposed without it.
+  if (path === "/api/oauth/callback") return true;
   // Main is single-user by design; this webhook is scoped to
   // SAMSUNG_HEALTH_USER_ID. Do not generalize without rethinking auth.
   if (path === "/api/webhooks/samsung-health") return true;
