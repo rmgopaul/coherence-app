@@ -30,6 +30,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import type { SolarRecUser } from "../hooks/useSolarRecAuth";
+import { useSolarRecPermissions } from "../hooks/useSolarRecPermission";
+import type { ModuleKey, PermissionLevel } from "@shared/solarRecModules";
 
 type NavItem = { label: string; href: string; icon: LucideIcon };
 
@@ -64,7 +66,19 @@ export default function SolarRecSidebar({
     location.startsWith("/solar-rec/meter-reads")
   );
 
-  const isAdmin = user?.role === "owner" || user?.role === "admin";
+  const { permissions, isScopeAdmin, loading: permsLoading } =
+    useSolarRecPermissions();
+  // Until permissions load, show items based on role so the sidebar
+  // doesn't blink. Once loaded, hide modules the user has `none` on.
+  const canSee = (moduleKey: ModuleKey): boolean => {
+    if (permsLoading) return true;
+    if (isScopeAdmin) return true;
+    const level = (permissions?.[moduleKey] ?? "none") as PermissionLevel;
+    return level !== "none";
+  };
+
+  const canSeeSettings =
+    canSee("solar-rec-settings") || canSee("team-permissions");
 
   return (
     <Sidebar>
@@ -101,33 +115,39 @@ export default function SolarRecSidebar({
           <SidebarGroupLabel>Main</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  onClick={() => setLocation("/solar-rec/dashboard")}
-                  isActive={location === "/solar-rec/dashboard" || location === "/solar-rec/" || location === "/solar-rec"}
-                >
-                  <LayoutDashboard className="h-4 w-4" />
-                  <span>Dashboard</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  onClick={() => setLocation("/solar-rec/monitoring")}
-                  isActive={location === "/solar-rec/monitoring"}
-                >
-                  <Activity className="h-4 w-4" />
-                  <span>Monitoring</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  onClick={() => setLocation("/solar-rec/monitoring-overview")}
-                  isActive={location === "/solar-rec/monitoring-overview"}
-                >
-                  <Activity className="h-4 w-4" />
-                  <span>Monitoring Overview</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
+              {canSee("solar-rec-dashboard") && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    onClick={() => setLocation("/solar-rec/dashboard")}
+                    isActive={location === "/solar-rec/dashboard" || location === "/solar-rec/" || location === "/solar-rec"}
+                  >
+                    <LayoutDashboard className="h-4 w-4" />
+                    <span>Dashboard</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
+              {canSee("monitoring-overview") && (
+                <>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setLocation("/solar-rec/monitoring")}
+                      isActive={location === "/solar-rec/monitoring"}
+                    >
+                      <Activity className="h-4 w-4" />
+                      <span>Monitoring</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                  <SidebarMenuItem>
+                    <SidebarMenuButton
+                      onClick={() => setLocation("/solar-rec/monitoring-overview")}
+                      isActive={location === "/solar-rec/monitoring-overview"}
+                    >
+                      <Activity className="h-4 w-4" />
+                      <span>Monitoring Overview</span>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                </>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
@@ -135,6 +155,7 @@ export default function SolarRecSidebar({
         <SidebarSeparator />
 
         {/* Meter Reads (collapsible) */}
+        {canSee("meter-reads") && (
         <Collapsible open={meterReadsOpen} onOpenChange={setMeterReadsOpen}>
           <SidebarGroup>
             <CollapsibleTrigger asChild>
@@ -168,11 +189,12 @@ export default function SolarRecSidebar({
             </CollapsibleContent>
           </SidebarGroup>
         </Collapsible>
+        )}
 
         <SidebarSeparator />
 
         {/* Admin */}
-        {isAdmin && (
+        {canSeeSettings && (
           <SidebarGroup>
             <SidebarGroupLabel>Admin</SidebarGroupLabel>
             <SidebarGroupContent>

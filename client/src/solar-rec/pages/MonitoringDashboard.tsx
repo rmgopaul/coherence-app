@@ -23,7 +23,8 @@ import {
   Upload,
   Bug,
 } from "lucide-react";
-import { useSolarRecAuth } from "../hooks/useSolarRecAuth";
+import { useSolarRecPermission } from "../hooks/useSolarRecPermission";
+import { PermissionGate } from "../components/PermissionGate";
 import { parseCsv } from "@/solar-rec-dashboard/lib/csvIo";
 
 // ---------------------------------------------------------------------------
@@ -834,6 +835,14 @@ type ConfiguredCredential = {
 const GRID_PAGE_SIZE = 50;
 
 export default function MonitoringDashboard() {
+  return (
+    <PermissionGate moduleKey="monitoring-overview">
+      <MonitoringDashboardImpl />
+    </PermissionGate>
+  );
+}
+
+function MonitoringDashboardImpl() {
   const [daysBack] = useState(30);
   const { startDate, endDate } = useMemo(() => getDateRange(daysBack), [daysBack]);
   const today = todayProjectDate();
@@ -844,7 +853,7 @@ export default function MonitoringDashboard() {
   const [uploadCredentialId, setUploadCredentialId] = useState<string | null>(null);
   const [uploadCredentialLabel, setUploadCredentialLabel] = useState("");
   const [debugOpen, setDebugOpen] = useState(false);
-  const { isOperator } = useSolarRecAuth();
+  const { canEdit: isOperator } = useSolarRecPermission("monitoring-overview");
   const [activeBatchId, setActiveBatchId] = useState<string | null>(null);
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
   const [showSystemPerformance, setShowSystemPerformance] = useState(false);
