@@ -3070,6 +3070,120 @@ const solarlogRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 8/16 — Growatt (OpenAPI). Team credential stores
+// `{username, password, baseUrl}`; lists plants and runs single-plant
+// snapshots.
+// ---------------------------------------------------------------------------
+
+type GrowattTeamContext = {
+  username: string;
+  password: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseGrowattTeamMetadata(
+  raw: string | null
+): GrowattTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const username =
+      typeof parsed?.username === "string" && parsed.username.trim().length > 0
+        ? parsed.username.trim()
+        : null;
+    const password =
+      typeof parsed?.password === "string" && parsed.password.length > 0
+        ? parsed.password
+        : null;
+    if (!username || !password) return null;
+    return {
+      username,
+      password,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveGrowattTeamContext(
+  scopeId: string
+): Promise<GrowattTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("growatt");
+  for (const cred of credentials) {
+    const parsed = parseGrowattTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Growatt team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const growattRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("growatt");
+    const active = credentials.find(
+      (cred) => parseGrowattTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listPlants: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listPlants } = await import("../services/solar/growatt");
+      const context = await resolveGrowattTeamContext(ctx.scopeId);
+      return listPlants({
+        username: context.username,
+        password: context.password,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        plantId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getPlantProductionSnapshot } = await import(
+        "../services/solar/growatt"
+      );
+      const context = await resolveGrowattTeamContext(ctx.scopeId);
+      return getPlantProductionSnapshot(
+        {
+          username: context.username,
+          password: context.password,
+          baseUrl: context.baseUrl,
+        },
+        input.plantId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3082,6 +3196,7 @@ export const solarRecAppRouter = t.router({
   locus: locusRouter,
   apsystems: apsystemsRouter,
   solarlog: solarlogRouter,
+  growatt: growattRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
