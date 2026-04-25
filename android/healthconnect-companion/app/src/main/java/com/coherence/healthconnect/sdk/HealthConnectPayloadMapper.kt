@@ -798,9 +798,19 @@ class HealthConnectPayloadMapper {
     val totalSleepFromStages = totalMinutes(
       mergeIntervals(lightIntervals + deepIntervals + remIntervals + otherSleepIntervals),
     )
-    val totalSleepMinutes =
-      if (totalSleepFromStages > 0) totalSleepFromStages
-      else (inBedMinutes - awakeMinutes).coerceAtLeast(0)
+    // Samsung Health (and Health Connect more generally) sometimes writes
+    // sparse stage data — labeled stages with unlabeled gaps inside the
+    // session. Summing only the labeled stage intervals therefore
+    // *underreports* sleep when those gaps exist (e.g. SH UI says 8h 18m
+    // but stage sum says 7h 49m). Samsung's own definition of "total
+    // sleep" is `inBed - awake`, so we take that as a floor and the
+    // stages-based total as an alternative — whichever is larger wins.
+    // When stages tile the session perfectly the two values match; when
+    // gaps exist, the floor recovers them as sleep.
+    val totalSleepMinutes = maxOf(
+      totalSleepFromStages,
+      (inBedMinutes - awakeMinutes).coerceAtLeast(0),
+    )
 
     val efficiency = if (inBedMinutes > 0) {
       (totalSleepMinutes.toDouble() / inBedMinutes.toDouble()) * 100.0

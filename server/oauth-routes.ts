@@ -6,6 +6,7 @@ import {
   getIntegrationByProvider,
   addSamsungSyncPayload,
   getLatestSamsungSyncPayload,
+  upsertSamsungDailyMetric,
   getDb,
 } from "./db";
 import { samsungSyncPayloads } from "../drizzle/schema";
@@ -559,12 +560,19 @@ async function ingestSamsungPayload(
     payload: JSON.stringify(payloadRecord),
   });
 
-  if (options.updateLiveSummary) {
-    const metadata = buildSamsungMetadata(payloadRecord, receivedAt, manualScores, {
-      previousSummary: existingSummary,
-      preservePreviousIfDegraded: degradedSync && sameDateAsExisting,
-    });
+  // Always compute the summary block so we can write the day's row to
+  // dailyHealthMetrics regardless of whether this ingest is updating the
+  // live integration summary. The Android Health screen reads from
+  // dailyHealthMetrics, so without this the phone stays empty until the
+  // nightly snapshot job runs (and historical backfill never updates
+  // the table at all). The web reads from the integration metadata
+  // directly, hence the live-summary gating below for that path only.
+  const metadata = buildSamsungMetadata(payloadRecord, receivedAt, manualScores, {
+    previousSummary: existingSummary,
+    preservePreviousIfDegraded: degradedSync && sameDateAsExisting,
+  });
 
+  if (options.updateLiveSummary) {
     await upsertIntegration({
       id: nanoid(),
       userId: targetUserId,
@@ -575,6 +583,32 @@ async function ingestSamsungPayload(
       scope: null,
       metadata,
     });
+  }
+
+  try {
+    const parsedMetadata = JSON.parse(metadata) as {
+      summary?: Record<string, unknown>;
+    };
+    const summary = parsedMetadata.summary ?? {};
+    const sleepMinutes = asNumber(summary.sleepTotalMinutes);
+    await upsertSamsungDailyMetric({
+      userId: targetUserId,
+      dateKey: rawDateKey,
+      samsungSteps: asNumber(summary.steps),
+      samsungSleepHours:
+        sleepMinutes !== null ? Number((sleepMinutes / 60).toFixed(1)) : null,
+      samsungSpo2AvgPercent: asNumber(summary.spo2AvgPercent),
+      samsungSleepScore: asNumber(summary.sleepScore),
+      samsungEnergyScore: asNumber(summary.energyScore),
+    });
+  } catch (error) {
+    // Don't fail the webhook over the secondary write — the integration
+    // metadata is the source of truth, dailyHealthMetrics is a
+    // denormalized convenience for the Android client.
+    console.error(
+      "[Samsung Health Webhook] Failed to upsert dailyHealthMetrics:",
+      error,
+    );
   }
 
   return { success: true, receivedAt, dateKey: rawDateKey };

@@ -1,3 +1,4 @@
+import { nanoid } from "nanoid";
 import { eq, and, desc, getDb, withDbRetry } from "./_core";
 import { dailyHealthMetrics, InsertDailyHealthMetric } from "../../drizzle/schema";
 
@@ -57,6 +58,80 @@ export async function upsertDailyMetric(metric: InsertDailyHealthMetric) {
   await withDbRetry("insert daily metric", async () => {
     await db.insert(dailyHealthMetrics).values({
       ...metric,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
+/**
+ * Upsert *only* the Samsung Health columns of a daily metric row,
+ * preserving any whoop* / todoist* values already present and any
+ * previously-stored samsung* value when the incoming field is null.
+ *
+ * Called by the Samsung Health webhook ingest so the phone (which
+ * reads from `dailyHealthMetrics`) sees the same values the web app
+ * reads from the integration metadata, without waiting for the
+ * nightly snapshot job. Skipping the WHOOP / Todoist HTTP fetches
+ * that `captureDailySnapshotForUser` performs keeps the webhook fast
+ * enough for the 31-row batch endpoint.
+ *
+ * Null-preservation is important because a historical backfill
+ * payload may not carry every field for every day (e.g. an old day
+ * without manualScores set). Without preservation, backfilling would
+ * clobber a previously-stored sleepScore with null.
+ */
+export async function upsertSamsungDailyMetric(args: {
+  userId: number;
+  dateKey: string;
+  samsungSteps: number | null;
+  samsungSleepHours: number | null;
+  samsungSpo2AvgPercent: number | null;
+  samsungSleepScore: number | null;
+  samsungEnergyScore: number | null;
+}) {
+  const db = await getDb();
+  if (!db) return;
+
+  const now = new Date();
+  const existing = await withDbRetry("load daily metric before samsung upsert", async () =>
+    db
+      .select()
+      .from(dailyHealthMetrics)
+      .where(and(eq(dailyHealthMetrics.userId, args.userId), eq(dailyHealthMetrics.dateKey, args.dateKey)))
+      .limit(1)
+  );
+
+  const merged = {
+    samsungSteps: args.samsungSteps ?? existing[0]?.samsungSteps ?? null,
+    samsungSleepHours: args.samsungSleepHours ?? existing[0]?.samsungSleepHours ?? null,
+    samsungSpo2AvgPercent: args.samsungSpo2AvgPercent ?? existing[0]?.samsungSpo2AvgPercent ?? null,
+    samsungSleepScore: args.samsungSleepScore ?? existing[0]?.samsungSleepScore ?? null,
+    samsungEnergyScore: args.samsungEnergyScore ?? existing[0]?.samsungEnergyScore ?? null,
+  };
+
+  if (existing.length > 0) {
+    await withDbRetry("update samsung daily metric", async () => {
+      await db
+        .update(dailyHealthMetrics)
+        .set({ ...merged, updatedAt: now })
+        .where(eq(dailyHealthMetrics.id, existing[0].id));
+    });
+    return;
+  }
+
+  await withDbRetry("insert samsung daily metric", async () => {
+    await db.insert(dailyHealthMetrics).values({
+      id: nanoid(),
+      userId: args.userId,
+      dateKey: args.dateKey,
+      whoopRecoveryScore: null,
+      whoopDayStrain: null,
+      whoopSleepHours: null,
+      whoopHrvMs: null,
+      whoopRestingHr: null,
+      ...merged,
+      todoistCompletedCount: null,
       createdAt: now,
       updatedAt: now,
     });
