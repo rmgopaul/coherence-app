@@ -55,8 +55,10 @@ const SolisMeterReads = lazy(
 const LocusMeterReads = lazy(
   () => import("./pages/meter-reads/LocusMeterReads")
 );
+// Task 5.4 vendor 8/16 — Growatt migrated to solar-rec-native page backed
+// by team credentials.
 const GrowattMeterReads = lazy(
-  () => import("../features/solar-readings/GrowattMeterReads")
+  () => import("./pages/meter-reads/GrowattMeterReads")
 );
 // Task 5.4 vendor 7/16 — SolarLog migrated to solar-rec-native page backed
 // by team credentials.
