@@ -85,8 +85,10 @@ const EGaugeApi = lazy(() => import("../features/solar-readings/EGaugeApi"));
 const SunpowerReadings = lazy(
   () => import("../features/solar-readings/SunpowerReadings")
 );
+// Task 5.4 vendor 14/16 — Tesla Powerhub migrated to solar-rec-native
+// page backed by team credentials (single bulk endpoint).
 const TeslaPowerhubApi = lazy(
-  () => import("../features/solar-readings/TeslaPowerhubApi")
+  () => import("./pages/meter-reads/TeslaPowerhubMeterReads")
 );
 
 function PageLoader() {

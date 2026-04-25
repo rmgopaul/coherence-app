@@ -3858,6 +3858,206 @@ const solaredgeRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 14/16 — Tesla Powerhub. Different shape from every
+// other vendor: a single bulk endpoint returns all sites in a group at
+// once with daily/weekly/monthly/yearly/lifetime kWh per site. We
+// expose `getStatus`, `listSites` (which calls the bulk endpoint then
+// strips to {id, name}), and `getSiteSnapshot` (also calls the bulk
+// endpoint and picks the matching site). The bulk endpoint is
+// expensive — service has its own 5-min cache keyed by groupId.
+//
+// Team credential row stores:
+//   - accessToken column → clientSecret
+//   - metadata           → {clientId, groupId, tokenUrl, apiBaseUrl,
+//                          portalBaseUrl, signal?}
+// ---------------------------------------------------------------------------
+
+type TeslaPowerhubTeamMetadata = {
+  clientId: string;
+  groupId: string;
+  tokenUrl: string | null;
+  apiBaseUrl: string | null;
+  portalBaseUrl: string | null;
+  signal: string | null;
+};
+
+type TeslaPowerhubTeamContext = {
+  apiContext: {
+    clientId: string;
+    clientSecret: string;
+    tokenUrl: string | null;
+    apiBaseUrl: string | null;
+    portalBaseUrl: string | null;
+  };
+  groupId: string;
+  signal: string | null;
+  credentialId: string;
+};
+
+function parseTeslaPowerhubTeamMetadata(
+  raw: string | null
+): TeslaPowerhubTeamMetadata | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const clientId =
+      typeof parsed?.clientId === "string" && parsed.clientId.trim().length > 0
+        ? parsed.clientId.trim()
+        : null;
+    const groupId =
+      typeof parsed?.groupId === "string" && parsed.groupId.trim().length > 0
+        ? parsed.groupId.trim()
+        : null;
+    if (!clientId || !groupId) return null;
+    return {
+      clientId,
+      groupId,
+      tokenUrl:
+        typeof parsed?.tokenUrl === "string" && parsed.tokenUrl.trim().length > 0
+          ? parsed.tokenUrl.trim()
+          : null,
+      apiBaseUrl:
+        typeof parsed?.apiBaseUrl === "string" &&
+        parsed.apiBaseUrl.trim().length > 0
+          ? parsed.apiBaseUrl.trim()
+          : null,
+      portalBaseUrl:
+        typeof parsed?.portalBaseUrl === "string" &&
+        parsed.portalBaseUrl.trim().length > 0
+          ? parsed.portalBaseUrl.trim()
+          : null,
+      signal:
+        typeof parsed?.signal === "string" && parsed.signal.trim().length > 0
+          ? parsed.signal.trim()
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveTeslaPowerhubTeamContext(
+  scopeId: string
+): Promise<TeslaPowerhubTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials =
+    await getSolarRecTeamCredentialsByProvider("tesla-powerhub");
+  for (const cred of credentials) {
+    const meta = parseTeslaPowerhubTeamMetadata(cred.metadata);
+    const clientSecret = cred.accessToken?.trim();
+    if (!meta || !clientSecret) continue;
+    return {
+      apiContext: {
+        clientId: meta.clientId,
+        clientSecret,
+        tokenUrl: meta.tokenUrl,
+        apiBaseUrl: meta.apiBaseUrl,
+        portalBaseUrl: meta.portalBaseUrl,
+      },
+      groupId: meta.groupId,
+      signal: meta.signal,
+      credentialId: cred.id,
+    };
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Tesla Powerhub team credential found. An admin must add one (clientId + clientSecret + groupId) in Solar REC Settings → Credentials.",
+  });
+}
+
+const teslaPowerhubRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials =
+      await getSolarRecTeamCredentialsByProvider("tesla-powerhub");
+    const active = credentials.find(
+      (cred) =>
+        parseTeslaPowerhubTeamMetadata(cred.metadata) !== null &&
+        (cred.accessToken?.trim().length ?? 0) > 0
+    );
+    const meta = active
+      ? parseTeslaPowerhubTeamMetadata(active.metadata)
+      : null;
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+      groupId: meta?.groupId ?? null,
+    };
+  }),
+
+  listSites: requirePermission("meter-reads", "read").query(async ({ ctx }) => {
+    const { getTeslaPowerhubGroupProductionMetricsCached } = await import(
+      "../services/solar/teslaPowerhub"
+    );
+    const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
+    const result = await getTeslaPowerhubGroupProductionMetricsCached(
+      team.apiContext,
+      {
+        groupId: team.groupId,
+        cacheKey: `solar-rec:${team.credentialId}:${team.groupId}`,
+        signal: team.signal,
+      }
+    );
+    return {
+      sites: result.sites.map((site) => ({
+        siteId: site.siteId,
+        siteName: site.siteName ?? site.siteExternalId ?? site.siteId,
+      })),
+    };
+  }),
+
+  getSiteSnapshot: requirePermission("meter-reads", "edit")
+    .input(z.object({ siteId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const { getTeslaPowerhubGroupProductionMetricsCached } = await import(
+        "../services/solar/teslaPowerhub"
+      );
+      const team = await resolveTeslaPowerhubTeamContext(ctx.scopeId);
+      const result = await getTeslaPowerhubGroupProductionMetricsCached(
+        team.apiContext,
+        {
+          groupId: team.groupId,
+          cacheKey: `solar-rec:${team.credentialId}:${team.groupId}`,
+          signal: team.signal,
+        }
+      );
+      const trimmed = input.siteId.trim();
+      const site = result.sites.find(
+        (s) => s.siteId === trimmed || s.siteExternalId === trimmed
+      );
+      if (!site) {
+        return {
+          siteId: trimmed,
+          status: "Not Found" as const,
+          siteName: null,
+          dailyKwh: null,
+          weeklyKwh: null,
+          monthlyKwh: null,
+          yearlyKwh: null,
+          lifetimeKwh: null,
+          dataSource: null,
+          error: null,
+        };
+      }
+      return {
+        siteId: site.siteId,
+        status: "Found" as const,
+        siteName: site.siteName,
+        dailyKwh: site.dailyKwh,
+        weeklyKwh: site.weeklyKwh,
+        monthlyKwh: site.monthlyKwh,
+        yearlyKwh: site.yearlyKwh,
+        lifetimeKwh: site.lifetimeKwh,
+        dataSource: site.dataSource,
+        error: null,
+      };
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3876,6 +4076,7 @@ export const solarRecAppRouter = t.router({
   ennexos: ennexOsRouter,
   enphaseV4: enphaseV4Router,
   solaredge: solaredgeRouter,
+  teslaPowerhub: teslaPowerhubRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
