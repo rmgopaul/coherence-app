@@ -3501,6 +3501,212 @@ const ennexOsRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 12/16 — Enphase V4 (OAuth refresh). Team credential
+// stores `{apiKey, clientId, clientSecret, baseUrl}` in metadata + the
+// row's accessToken / refreshToken / expiresAt columns. Differs from
+// every other vendor migrated so far because the access token expires
+// and must be refreshed inline before each call. Refreshed tokens are
+// persisted back to the credential row so the next request gets the
+// fresh token without re-running the refresh.
+// ---------------------------------------------------------------------------
+
+type EnphaseV4TeamMetadata = {
+  apiKey: string;
+  clientId: string;
+  clientSecret: string;
+  baseUrl: string | null;
+};
+
+type EnphaseV4TeamContext = {
+  accessToken: string;
+  apiKey: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseEnphaseV4TeamMetadata(
+  raw: string | null
+): EnphaseV4TeamMetadata | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const apiKey =
+      typeof parsed?.apiKey === "string" && parsed.apiKey.trim().length > 0
+        ? parsed.apiKey.trim()
+        : null;
+    const clientId =
+      typeof parsed?.clientId === "string" && parsed.clientId.trim().length > 0
+        ? parsed.clientId.trim()
+        : null;
+    const clientSecret =
+      typeof parsed?.clientSecret === "string" &&
+      parsed.clientSecret.trim().length > 0
+        ? parsed.clientSecret.trim()
+        : null;
+    if (!apiKey || !clientId || !clientSecret) return null;
+    return {
+      apiKey,
+      clientId,
+      clientSecret,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+const ENPHASE_V4_REFRESH_LEAD_TIME_MS = 5 * 60 * 1000;
+
+async function persistRefreshedEnphaseV4Tokens(
+  credentialId: string,
+  tokens: { accessToken: string; refreshToken: string | null; expiresAt: Date }
+): Promise<void> {
+  const { getDb, withDbRetry } = await import("../db");
+  const db = await getDb();
+  if (!db) return;
+  const { eq } = await import("drizzle-orm");
+  const { solarRecTeamCredentials } = await import("../../drizzle/schema");
+  await withDbRetry("update enphase v4 team credential tokens", async () => {
+    await db
+      .update(solarRecTeamCredentials)
+      .set({
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+        expiresAt: tokens.expiresAt,
+      })
+      .where(eq(solarRecTeamCredentials.id, credentialId));
+  });
+}
+
+async function resolveEnphaseV4TeamContext(
+  scopeId: string
+): Promise<EnphaseV4TeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("enphase-v4");
+  for (const cred of credentials) {
+    const meta = parseEnphaseV4TeamMetadata(cred.metadata);
+    const accessToken = cred.accessToken?.trim();
+    if (!meta || !accessToken) continue;
+
+    const now = Date.now();
+    const expiresAt = cred.expiresAt
+      ? new Date(cred.expiresAt).getTime()
+      : null;
+    const needsRefresh =
+      !expiresAt || expiresAt - now < ENPHASE_V4_REFRESH_LEAD_TIME_MS;
+
+    if (!needsRefresh) {
+      return {
+        accessToken,
+        apiKey: meta.apiKey,
+        baseUrl: meta.baseUrl,
+        credentialId: cred.id,
+      };
+    }
+
+    if (!cred.refreshToken) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message:
+          "Enphase V4 access token has expired and no refresh token is stored. An admin must re-connect the credential in Solar REC Settings.",
+      });
+    }
+
+    const { refreshEnphaseV4AccessToken } = await import(
+      "../services/solar/enphaseV4"
+    );
+    const refreshed = await refreshEnphaseV4AccessToken({
+      clientId: meta.clientId,
+      clientSecret: meta.clientSecret,
+      refreshToken: cred.refreshToken,
+    });
+    const newExpiresAt = new Date(Date.now() + refreshed.expires_in * 1000);
+    await persistRefreshedEnphaseV4Tokens(cred.id, {
+      accessToken: refreshed.access_token,
+      refreshToken: refreshed.refresh_token || cred.refreshToken,
+      expiresAt: newExpiresAt,
+    });
+
+    return {
+      accessToken: refreshed.access_token,
+      apiKey: meta.apiKey,
+      baseUrl: meta.baseUrl,
+      credentialId: cred.id,
+    };
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Enphase V4 team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const enphaseV4Router = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials =
+      await getSolarRecTeamCredentialsByProvider("enphase-v4");
+    const active = credentials.find(
+      (cred) =>
+        parseEnphaseV4TeamMetadata(cred.metadata) !== null &&
+        (cred.accessToken?.trim().length ?? 0) > 0
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+      hasRefreshToken: !!active?.refreshToken,
+      expiresAt: active?.expiresAt
+        ? new Date(active.expiresAt).toISOString()
+        : null,
+    };
+  }),
+
+  listSystems: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listSystems } = await import("../services/solar/enphaseV4");
+      const context = await resolveEnphaseV4TeamContext(ctx.scopeId);
+      return listSystems({
+        accessToken: context.accessToken,
+        apiKey: context.apiKey,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        systemId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/),
+        systemName: z.string().nullish(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSystemProductionSnapshot } = await import(
+        "../services/solar/enphaseV4"
+      );
+      const context = await resolveEnphaseV4TeamContext(ctx.scopeId);
+      return getSystemProductionSnapshot(
+        {
+          accessToken: context.accessToken,
+          apiKey: context.apiKey,
+          baseUrl: context.baseUrl,
+        },
+        input.systemId.trim(),
+        input.anchorDate,
+        input.systemName ?? null
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3517,6 +3723,7 @@ export const solarRecAppRouter = t.router({
   ekm: ekmRouter,
   fronius: froniusRouter,
   ennexos: ennexOsRouter,
+  enphaseV4: enphaseV4Router,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

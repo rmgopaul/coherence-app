@@ -77,6 +77,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "ekm",
   "fronius",
   "ennexos",
+  "enphaseV4",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
