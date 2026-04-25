@@ -39,8 +39,10 @@ const GeneracMeterReads = lazy(
 const GoodWeMeterReads = lazy(
   () => import("../features/solar-readings/GoodWeMeterReads")
 );
+// Task 5.4 vendor 2/16 — Solis migrated to solar-rec-native page backed
+// by team credentials.
 const SolisMeterReads = lazy(
-  () => import("../features/solar-readings/SolisMeterReads")
+  () => import("./pages/meter-reads/SolisMeterReads")
 );
 const LocusMeterReads = lazy(
   () => import("../features/solar-readings/LocusMeterReads")
