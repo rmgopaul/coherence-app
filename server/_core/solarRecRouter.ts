@@ -2614,6 +2614,119 @@ const goodweRouter = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 4/16 — Hoymiles (S-Miles Cloud). Team credential
+// stores `{username, password, baseUrl}`; single-station reads.
+// ---------------------------------------------------------------------------
+
+type HoymilesTeamContext = {
+  username: string;
+  password: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseHoymilesTeamMetadata(
+  raw: string | null
+): HoymilesTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const username =
+      typeof parsed?.username === "string" && parsed.username.trim().length > 0
+        ? parsed.username.trim()
+        : null;
+    const password =
+      typeof parsed?.password === "string" && parsed.password.length > 0
+        ? parsed.password
+        : null;
+    if (!username || !password) return null;
+    return {
+      username,
+      password,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveHoymilesTeamContext(
+  scopeId: string
+): Promise<HoymilesTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials = await getSolarRecTeamCredentialsByProvider("hoymiles");
+  for (const cred of credentials) {
+    const parsed = parseHoymilesTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No Hoymiles team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const hoymilesRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials = await getSolarRecTeamCredentialsByProvider("hoymiles");
+    const active = credentials.find(
+      (cred) => parseHoymilesTeamMetadata(cred.metadata) !== null
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listStations: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listStations } = await import("../services/solar/hoymiles");
+      const context = await resolveHoymilesTeamContext(ctx.scopeId);
+      return listStations({
+        username: context.username,
+        password: context.password,
+        baseUrl: context.baseUrl,
+      });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        stationId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getStationProductionSnapshot } = await import(
+        "../services/solar/hoymiles"
+      );
+      const context = await resolveHoymilesTeamContext(ctx.scopeId);
+      return getStationProductionSnapshot(
+        {
+          username: context.username,
+          password: context.password,
+          baseUrl: context.baseUrl,
+        },
+        input.stationId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -2622,6 +2735,7 @@ export const solarRecAppRouter = t.router({
   generac: generacRouter,
   solis: solisRouter,
   goodwe: goodweRouter,
+  hoymiles: hoymilesRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
