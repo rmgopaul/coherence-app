@@ -15,8 +15,10 @@ const MonitoringOverview = lazy(() => import("./pages/MonitoringOverview"));
 const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
 
 // Meter read pages (existing, reused from main app)
+// Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
+// backed by team credentials.
 const SolarEdgeMeterReads = lazy(
-  () => import("../features/solar-readings/SolarEdgeMeterReads")
+  () => import("./pages/meter-reads/SolarEdgeMeterReads")
 );
 // Task 5.4 vendor 12/16 — Enphase V4 migrated to solar-rec-native page
 // backed by team credentials with OAuth refresh.
