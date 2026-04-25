@@ -337,6 +337,7 @@ const PROVIDERS = [
   { key: "apsystems", label: "APsystems", fields: ["appId", "appSecret"] },
   { key: "solarlog", label: "SolarLog", fields: ["deviceUrl", "password"] },
   { key: "growatt", label: "Growatt", fields: ["username", "password"] },
+  { key: "ennexos", label: "EnnexOS (SMA)", fields: ["accessToken", "baseUrl"] },
   {
     key: "egauge",
     label: "eGauge",
