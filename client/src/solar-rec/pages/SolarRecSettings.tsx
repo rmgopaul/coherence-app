@@ -31,10 +31,16 @@ import { PermissionGate } from "../components/PermissionGate";
 function UserManagement() {
   const usersQuery = trpc.users.list.useQuery();
   const invitesQuery = trpc.users.listInvites.useQuery();
+  // Presets list — admin-only on the server. retry: false avoids the
+  // 401 spam loop when this card is rendered during initial auth.
+  const presetsQuery = trpc.permissions.listPresets.useQuery(undefined, {
+    retry: false,
+  });
   const inviteMutation = trpc.users.invite.useMutation({
     onSuccess: () => {
       invitesQuery.refetch();
       setInviteEmail("");
+      setInvitePresetId("");
       setInviteDialogOpen(false);
     },
   });
@@ -51,12 +57,17 @@ function UserManagement() {
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"operator" | "viewer" | "admin">("operator");
+  const [invitePresetId, setInvitePresetId] = useState<string>("");
   const [lastInviteToken, setLastInviteToken] = useState<string | null>(null);
   const { user: currentUser } = useSolarRecAuth();
 
   const handleInvite = () => {
     inviteMutation.mutate(
-      { email: inviteEmail, role: inviteRole },
+      {
+        email: inviteEmail,
+        role: inviteRole,
+        presetId: invitePresetId === "" ? undefined : invitePresetId,
+      },
       {
         onSuccess: (data) => {
           setLastInviteToken(data.token);
@@ -111,6 +122,33 @@ function UserManagement() {
                     <SelectItem value="admin">Admin (manage users)</SelectItem>
                   </SelectContent>
                 </Select>
+                <div className="space-y-1">
+                  <p className="text-xs text-muted-foreground">
+                    Permission preset (optional). Snapshotted onto the user
+                    when they accept; later edits to the preset don&rsquo;t
+                    propagate.
+                  </p>
+                  <Select
+                    value={invitePresetId === "" ? "__none" : invitePresetId}
+                    onValueChange={(v) =>
+                      setInvitePresetId(v === "__none" ? "" : v)
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="No preset (start at 'all none')" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none">
+                        No preset (start at &lsquo;all none&rsquo;)
+                      </SelectItem>
+                      {(presetsQuery.data ?? []).map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
                 {lastInviteToken && (
                   <div className="rounded-md border p-3 bg-muted/50">
                     <p className="text-xs text-muted-foreground mb-1">

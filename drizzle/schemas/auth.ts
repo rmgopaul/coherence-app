@@ -175,6 +175,12 @@ export const solarRecInvites = mysqlTable(
     expiresAt: timestamp("expiresAt").notNull(),
     usedAt: timestamp("usedAt"),
     createdAt: timestamp("createdAt").defaultNow(),
+    // Task 5.2 — optional preset to apply to the invitee on accept. The
+    // accept flow snapshots the preset's `permissionsJson` into
+    // `solarRecUserModulePermissions`; later edits to the preset do not
+    // propagate. Nullable: an admin may skip the selector and start the
+    // invitee at "all none" so they can dial permissions per-cell later.
+    presetId: varchar("presetId", { length: 64 }),
   },
   (table) => ({
     emailIdx: index("solar_rec_invites_email_idx").on(table.email),
