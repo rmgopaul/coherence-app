@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
 
   <uses-permission android:name="android.permission.INTERNET" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -94,6 +95,20 @@
         <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
       </intent-filter>
     </receiver>
+
+    <!--
+      WorkManager's SystemForegroundService runs our Health Connect sync
+      workers as foreground services. Android 14+ requires the service's
+      foregroundServiceType attribute to cover every type the worker sets
+      on its ForegroundInfo. Our workers set FOREGROUND_SERVICE_TYPE_HEALTH
+      (0x100); the library's default manifest declares 0x0, so the system
+      rejects startForeground with IllegalArgumentException. Merge "health"
+      into the library's service declaration.
+    -->
+    <service
+      android:name="androidx.work.impl.foreground.SystemForegroundService"
+      android:foregroundServiceType="health"
+      tools:node="merge" />
 
     <!-- Home-screen dashboard widget -->
     <receiver
