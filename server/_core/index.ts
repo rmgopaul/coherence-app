@@ -68,6 +68,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "permissions",
   "generac",
   "solis",
+  "goodwe",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
