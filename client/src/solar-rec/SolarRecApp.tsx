@@ -31,8 +31,10 @@ const APsystemsMeterReads = lazy(
 const HoymilesMeterReads = lazy(
   () => import("./pages/meter-reads/HoymilesMeterReads")
 );
+// Task 5.4 vendor 10/16 — Fronius migrated to solar-rec-native page backed
+// by team credentials.
 const FroniusMeterReads = lazy(
-  () => import("../features/solar-readings/FroniusMeterReads")
+  () => import("./pages/meter-reads/FroniusMeterReads")
 );
 // Task 5.4 — Generac migrated to solar-rec-native page backed by team
 // credentials; main's per-user Generac page is the fallback while the
