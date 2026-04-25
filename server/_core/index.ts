@@ -78,6 +78,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "fronius",
   "ennexos",
   "enphaseV4",
+  "solaredge",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {

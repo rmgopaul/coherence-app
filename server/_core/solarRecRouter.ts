@@ -3707,6 +3707,157 @@ const enphaseV4Router = t.router({
     }),
 });
 
+// ---------------------------------------------------------------------------
+// Task 5.4 vendor 13/16 — SolarEdge. Team credential stores
+// `{apiKey, baseUrl}`; in addition to the standard production snapshot,
+// SolarEdge exposes per-site meter and inverter snapshots that the
+// legacy meter-reads page uses when reconciling fleet data. Three
+// snapshot procedures here mirror that fleet-data UX.
+// ---------------------------------------------------------------------------
+
+type SolarEdgeTeamContext = {
+  apiKey: string;
+  baseUrl: string | null;
+  credentialId: string;
+};
+
+function parseSolarEdgeTeamMetadata(
+  raw: string | null
+): SolarEdgeTeamContext | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const apiKey =
+      typeof parsed?.apiKey === "string" && parsed.apiKey.trim().length > 0
+        ? parsed.apiKey.trim()
+        : null;
+    if (!apiKey) return null;
+    return {
+      apiKey,
+      baseUrl:
+        typeof parsed?.baseUrl === "string" && parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl.trim()
+          : null,
+      credentialId: "",
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function resolveSolarEdgeTeamContext(
+  scopeId: string
+): Promise<SolarEdgeTeamContext> {
+  void scopeId;
+  const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+  const credentials =
+    await getSolarRecTeamCredentialsByProvider("solaredge");
+  for (const cred of credentials) {
+    const parsed = parseSolarEdgeTeamMetadata(cred.metadata);
+    if (parsed) {
+      return { ...parsed, credentialId: cred.id };
+    }
+    // Fall back to top-level accessToken column for admins who pasted
+    // the API key via the generic accessToken field.
+    const fallbackKey = cred.accessToken?.trim();
+    if (fallbackKey) {
+      return {
+        apiKey: fallbackKey,
+        baseUrl: null,
+        credentialId: cred.id,
+      };
+    }
+  }
+  throw new TRPCError({
+    code: "PRECONDITION_FAILED",
+    message:
+      "No SolarEdge team credential found. An admin must add one in Solar REC Settings → Credentials.",
+  });
+}
+
+const solaredgeRouter = t.router({
+  getStatus: requirePermission("meter-reads", "read").query(async () => {
+    const { getSolarRecTeamCredentialsByProvider } = await import("../db");
+    const credentials =
+      await getSolarRecTeamCredentialsByProvider("solaredge");
+    const active = credentials.find(
+      (cred) =>
+        parseSolarEdgeTeamMetadata(cred.metadata) !== null ||
+        (cred.accessToken?.trim().length ?? 0) > 0
+    );
+    return {
+      connected: !!active,
+      connectionCount: credentials.length,
+      activeConnectionId: active?.id ?? null,
+    };
+  }),
+
+  listSites: requirePermission("meter-reads", "read").query(
+    async ({ ctx }) => {
+      const { listSites } = await import("../services/solar/solarEdge");
+      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      return listSites({ apiKey: context.apiKey, baseUrl: context.baseUrl });
+    }
+  ),
+
+  getProductionSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        siteId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSiteProductionSnapshot } = await import(
+        "../services/solar/solarEdge"
+      );
+      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      return getSiteProductionSnapshot(
+        { apiKey: context.apiKey, baseUrl: context.baseUrl },
+        input.siteId.trim(),
+        input.anchorDate
+      );
+    }),
+
+  getMeterSnapshot: requirePermission("meter-reads", "edit")
+    .input(z.object({ siteId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const { getSiteMeterSnapshot } = await import(
+        "../services/solar/solarEdge"
+      );
+      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      return getSiteMeterSnapshot(
+        { apiKey: context.apiKey, baseUrl: context.baseUrl },
+        input.siteId.trim()
+      );
+    }),
+
+  getInverterSnapshot: requirePermission("meter-reads", "edit")
+    .input(
+      z.object({
+        siteId: z.string().min(1),
+        anchorDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { getSiteInverterSnapshot } = await import(
+        "../services/solar/solarEdge"
+      );
+      const context = await resolveSolarEdgeTeamContext(ctx.scopeId);
+      return getSiteInverterSnapshot(
+        { apiKey: context.apiKey, baseUrl: context.baseUrl },
+        input.siteId.trim(),
+        input.anchorDate
+      );
+    }),
+});
+
 export const solarRecAppRouter = t.router({
   users: usersRouter,
   credentials: credentialsRouter,
@@ -3724,6 +3875,7 @@ export const solarRecAppRouter = t.router({
   fronius: froniusRouter,
   ennexos: ennexOsRouter,
   enphaseV4: enphaseV4Router,
+  solaredge: solaredgeRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;
