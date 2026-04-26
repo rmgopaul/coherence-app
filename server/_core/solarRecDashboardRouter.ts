@@ -1134,7 +1134,7 @@ export const solarRecDashboardRouter = t.router({
     }),
   ensureScheduleBImportJob: requirePermission("solar-rec-dashboard", "edit")
     .mutation(async ({ ctx }) => {
-      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.scopeId, ctx.userId);
       const counts = await getScheduleBImportJobCounts(job.id);
       const knownFileNames = await listScheduleBImportFileNames(job.id, {
         includeStatuses: ["uploading", "queued", "processing"],
@@ -1214,7 +1214,7 @@ export const solarRecDashboardRouter = t.router({
         );
       }
 
-      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.scopeId, ctx.userId);
 
       const { inserted, skipped } = await bulkInsertScheduleBDriveFiles(
         job.id,
@@ -1269,7 +1269,7 @@ export const solarRecDashboardRouter = t.router({
       if (uniqueIds.length === 0) throw new Error("No valid CSG IDs provided.");
 
       // 3. Get/create job
-      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.scopeId, ctx.userId);
 
       // 4. Insert CSG IDs
       const { inserted, skipped } = await bulkInsertScheduleBImportCsgIds(
@@ -1302,7 +1302,7 @@ export const solarRecDashboardRouter = t.router({
     }),
   getScheduleBImportStatus: requirePermission("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.userId);
+      const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
         return {
           _runnerVersion: "v2_atomic_counters" as const,
@@ -1423,7 +1423,7 @@ export const solarRecDashboardRouter = t.router({
       const requestedJobId = input?.jobId?.trim();
       let job = requestedJobId
         ? await getScheduleBImportJob(requestedJobId)
-        : await getLatestScheduleBImportJob(ctx.userId);
+        : await getLatestScheduleBImportJob(ctx.scopeId);
 
       // Defensive: Number()-coerce both sides before comparing in case the
       // mysql2 driver returns job.userId as a BigInt or string for any
@@ -1438,7 +1438,7 @@ export const solarRecDashboardRouter = t.router({
         console.warn(
           `[listScheduleBImportResults] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.userId}; falling back to latest job for caller`
         );
-        job = await getLatestScheduleBImportJob(ctx.userId);
+        job = await getLatestScheduleBImportJob(ctx.scopeId);
       }
 
       if (!job) {
@@ -1489,7 +1489,7 @@ export const solarRecDashboardRouter = t.router({
       const requestedJobId = input?.jobId?.trim();
       let job = requestedJobId
         ? await getScheduleBImportJob(requestedJobId)
-        : await getLatestScheduleBImportJob(ctx.userId);
+        : await getLatestScheduleBImportJob(ctx.scopeId);
 
       // Same Number()-coercion + latest-job fallback as
       // listScheduleBImportResults above — mysql2 driver occasionally
@@ -1498,7 +1498,7 @@ export const solarRecDashboardRouter = t.router({
         console.warn(
           `[applyScheduleBToDeliveryObligations] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.userId}; falling back to latest job for caller`
         );
-        job = await getLatestScheduleBImportJob(ctx.userId);
+        job = await getLatestScheduleBImportJob(ctx.scopeId);
       }
       if (!job) {
         throw new Error("Schedule B import job not found.");
@@ -2334,7 +2334,7 @@ export const solarRecDashboardRouter = t.router({
     }),
   forceRunScheduleBImport: requirePermission("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.userId);
+      const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
         return { success: false, reason: "no_job" as const };
       }
@@ -2353,7 +2353,7 @@ export const solarRecDashboardRouter = t.router({
     }),
   clearScheduleBImport: requirePermission("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.userId);
+      const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (job) {
         await deleteScheduleBImportJobData(job.id);
       }
@@ -2376,7 +2376,7 @@ export const solarRecDashboardRouter = t.router({
    */
   clearScheduleBImportStuckUploads: requirePermission("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.userId);
+      const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
         return {
           _checkpoint: "clear-stuck-uploads-2026-04-11" as const,
@@ -2431,7 +2431,7 @@ export const solarRecDashboardRouter = t.router({
    */
   debugScheduleBImportRaw: requirePermission("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.userId);
+      const job = await getLatestScheduleBImportJob(ctx.scopeId);
       if (!job) {
         return {
           _runnerVersion: "v2_atomic_counters" as const,

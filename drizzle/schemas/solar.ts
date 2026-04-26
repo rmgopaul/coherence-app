@@ -319,6 +319,11 @@ export const scheduleBImportJobs = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: int("userId").notNull(),
+    // Task 5.6 PR-B (2026-04-26): scope tenancy key. Backfilled to
+    // `scope-user-${userId}` for existing rows so the single-tenant
+    // production state is preserved. New jobs set this from
+    // `ctx.scopeId` (the standalone Solar REC context).
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     status: varchar("status", { length: 32 }).default("queued").notNull(),
     currentFileName: varchar("currentFileName", { length: 255 }),
     // Atomic counters mirroring contractScanJobs. The runner increments
@@ -336,6 +341,7 @@ export const scheduleBImportJobs = mysqlTable(
   },
   (table) => ({
     userIdx: index("schedule_b_import_jobs_user_idx").on(table.userId),
+    scopeIdx: index("schedule_b_import_jobs_scope_idx").on(table.scopeId),
     statusIdx: index("schedule_b_import_jobs_status_idx").on(table.status),
   })
 );
@@ -350,6 +356,11 @@ export const scheduleBImportFiles = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.6 PR-B (2026-04-26): denormalized scope tenancy key.
+    // Mirrors the parent job's scopeId so file-level queries can
+    // filter without an additional join. Backfilled via
+    // UPDATE…JOIN scheduleBImportJobs in the migration.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     fileName: varchar("fileName", { length: 255 }).notNull(),
     fileSize: int("fileSize"),
     storageKey: varchar("storageKey", { length: 512 }),
@@ -374,6 +385,7 @@ export const scheduleBImportFiles = mysqlTable(
       table.jobId,
       table.createdAt
     ),
+    scopeIdx: index("schedule_b_import_files_scope_idx").on(table.scopeId),
   })
 );
 
@@ -387,6 +399,10 @@ export const scheduleBImportResults = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.6 PR-B (2026-04-26): denormalized scope tenancy key.
+    // Mirrors the parent job's scopeId. Backfilled via UPDATE…JOIN
+    // scheduleBImportJobs in the migration.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     fileName: varchar("fileName", { length: 255 }).notNull(),
     designatedSystemId: varchar("designatedSystemId", { length: 64 }),
     gatsId: varchar("gatsId", { length: 64 }),
@@ -420,6 +436,7 @@ export const scheduleBImportResults = mysqlTable(
       table.jobId,
       table.appliedAt
     ),
+    scopeIdx: index("schedule_b_import_results_scope_idx").on(table.scopeId),
   })
 );
 
@@ -431,6 +448,10 @@ export const scheduleBImportCsgIds = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.6 PR-B (2026-04-26): denormalized scope tenancy key.
+    // Mirrors the parent job's scopeId. Backfilled via UPDATE…JOIN
+    // scheduleBImportJobs in the migration.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     csgId: varchar("csgId", { length: 64 }).notNull(),
     nonId: varchar("nonId", { length: 64 }),
     abpId: varchar("abpId", { length: 64 }),
@@ -442,6 +463,7 @@ export const scheduleBImportCsgIds = mysqlTable(
       table.csgId
     ),
     jobIdx: index("schedule_b_csg_ids_job_idx").on(table.jobId),
+    scopeIdx: index("schedule_b_csg_ids_scope_idx").on(table.scopeId),
   })
 );
 

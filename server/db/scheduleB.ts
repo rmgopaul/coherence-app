@@ -38,6 +38,7 @@ export type ScheduleBImportFileStatus =
 export async function createScheduleBImportJob(
   data: {
     userId: number;
+    scopeId: string;
   }
 ) {
   const db = await getDb();
@@ -51,6 +52,7 @@ export async function createScheduleBImportJob(
     await db.insert(scheduleBImportJobs).values({
       id,
       userId: data.userId,
+      scopeId: data.scopeId,
       status: "queued",
       currentFileName: null,
       error: null,
@@ -79,7 +81,7 @@ export async function getScheduleBImportJob(jobId: string) {
   });
 }
 
-export async function getLatestScheduleBImportJob(userId: number) {
+export async function getLatestScheduleBImportJob(scopeId: string) {
   const db = await getDb();
   if (!db) return null;
   const ensured = await ensureScheduleBImportTables();
@@ -88,7 +90,7 @@ export async function getLatestScheduleBImportJob(userId: number) {
     const [row] = await db
       .select()
       .from(scheduleBImportJobs)
-      .where(eq(scheduleBImportJobs.userId, userId))
+      .where(eq(scheduleBImportJobs.scopeId, scopeId))
       .orderBy(desc(scheduleBImportJobs.createdAt))
       .limit(1);
     return row ?? null;
@@ -145,10 +147,13 @@ export async function incrementScheduleBImportJobCounter(
   });
 }
 
-export async function getOrCreateLatestScheduleBImportJob(userId: number) {
-  const existing = await getLatestScheduleBImportJob(userId);
+export async function getOrCreateLatestScheduleBImportJob(
+  scopeId: string,
+  userId: number
+) {
+  const existing = await getLatestScheduleBImportJob(scopeId);
   if (existing) return existing;
-  const id = await createScheduleBImportJob({ userId });
+  const id = await createScheduleBImportJob({ userId, scopeId });
   const created = await getScheduleBImportJob(id);
   if (!created) {
     throw new Error("Failed to create Schedule B import job.");
@@ -176,6 +181,30 @@ export async function getScheduleBImportFile(jobId: string, fileName: string) {
       .limit(1);
     return row ?? null;
   });
+}
+
+/**
+ * Resolve the scopeId for a job by reading the parent
+ * `scheduleBImportJobs` row. Used by insert helpers in this module
+ * that take a `jobId` but need to set `scopeId` on the new child row
+ * to satisfy the post-Task-5.6-PR-B NOT NULL constraint.
+ */
+async function resolveScopeIdForJob(jobId: string): Promise<string> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database unavailable");
+  }
+  const [row] = await db
+    .select({ scopeId: scheduleBImportJobs.scopeId })
+    .from(scheduleBImportJobs)
+    .where(eq(scheduleBImportJobs.id, jobId))
+    .limit(1);
+  if (!row?.scopeId) {
+    throw new Error(
+      `Schedule B job ${jobId} has no scopeId — backfill migration may not have run`
+    );
+  }
+  return row.scopeId;
 }
 
 export async function upsertScheduleBImportFileUploadProgress(
@@ -227,9 +256,11 @@ export async function upsertScheduleBImportFileUploadProgress(
       return;
     }
 
+    const scopeId = await resolveScopeIdForJob(data.jobId);
     await db.insert(scheduleBImportFiles).values({
       id: nanoid(),
       jobId: data.jobId,
+      scopeId,
       fileName: data.fileName,
       fileSize: data.fileSize,
       storageKey: data.storageKey ?? null,
@@ -287,9 +318,11 @@ export async function markScheduleBImportFileQueued(
       return;
     }
 
+    const scopeId = await resolveScopeIdForJob(data.jobId);
     await db.insert(scheduleBImportFiles).values({
       id: nanoid(),
       jobId: data.jobId,
+      scopeId,
       fileName: data.fileName,
       fileSize: data.fileSize,
       totalChunks: data.totalChunks,
@@ -381,12 +414,14 @@ export async function bulkInsertScheduleBDriveFiles(
   //    balance between throughput and statement size.
   const CHUNK_SIZE = 500;
   let inserted = 0;
+  const scopeId = await resolveScopeIdForJob(jobId);
   for (let start = 0; start < fresh.length; start += CHUNK_SIZE) {
     const chunk = fresh.slice(start, start + CHUNK_SIZE);
     const now = new Date();
     const rows = chunk.map((file) => ({
       id: nanoid(),
       jobId,
+      scopeId,
       fileName: file.fileName,
       fileSize: file.fileSize ?? 0,
       storageKey: `drive:${file.driveFileId}`,
@@ -985,9 +1020,11 @@ export async function upsertScheduleBImportResult(
       return;
     }
 
+    const scopeId = await resolveScopeIdForJob(data.jobId);
     await db.insert(scheduleBImportResults).values({
       id: nanoid(),
       jobId: data.jobId,
+      scopeId,
       fileName: data.fileName,
       designatedSystemId: data.designatedSystemId,
       gatsId: data.gatsId,
@@ -1202,6 +1239,7 @@ export async function bulkInsertScheduleBImportCsgIds(
   const ensured = await ensureScheduleBImportCsgIdsTable();
   if (!ensured) return { inserted: 0, skipped: items.length };
 
+  const scopeId = await resolveScopeIdForJob(jobId);
   let inserted = 0;
   let skipped = 0;
 
@@ -1251,6 +1289,7 @@ export async function bulkInsertScheduleBImportCsgIds(
       await db.insert(scheduleBImportCsgIds).values({
         id: nanoid(),
         jobId,
+        scopeId,
         csgId: item.csgId,
         nonId: item.nonId || null,
         abpId: item.abpId || null,
