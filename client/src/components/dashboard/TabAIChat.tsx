@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* moved to the standalone
+// Solar REC router. The aliased import keeps every `trpc.solarRec
+// Dashboard.*` call site unchanged while routing through the typed
+// solarRecTrpc client (which targets /solar-rec/api/trpc).
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChevronDown, ChevronUp, Loader2, MessageSquare, Send, Trash2 } from "lucide-react";

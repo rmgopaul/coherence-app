@@ -10,6 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* moved to the standalone
+// Solar REC router. ABP Invoice Settlement still lives on the main
+// router (Task 5.9 wrong-side feature) but its dashboard data calls
+// have to follow the procedure to the new home.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import {
   applyPayeeMailingUpdatesToContractTerms,
   buildLatestPayeeMailingUpdates,
@@ -352,8 +357,8 @@ export default function AbpInvoiceSettlement() {
   const cleanMailingDataMutation = trpc.abpSettlement.cleanMailingData.useMutation();
   const verifyAddressesMutation = trpc.abpSettlement.verifyAddresses.useMutation();
   const saveRunMutation = trpc.abpSettlement.saveRun.useMutation();
-  const getUploadStateMutation = trpc.solarRecDashboard.getDataset.useMutation();
-  const saveUploadStateMutation = trpc.solarRecDashboard.saveDataset.useMutation();
+  const getUploadStateMutation = solarRecTrpc.solarRecDashboard.getDataset.useMutation();
+  const saveUploadStateMutation = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
   const getUploadStateMutationRef = useRef(getUploadStateMutation);
   getUploadStateMutationRef.current = getUploadStateMutation;
   const saveUploadStateMutationRef = useRef(saveUploadStateMutation);

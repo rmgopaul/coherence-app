@@ -43,10 +43,17 @@ The solar-rec app mounts **TWO** tRPC providers:
 older bundles that still POST to `/solar-rec/api/trpc/...`:
 
 ```ts
+// Current as of 2026-04-26 (Task 5.5 complete).
 const SOLAR_REC_ROUTER_ROOTS = new Set([
-  "auth", "users", "credentials", "monitoring", "enphaseV2",
-  // "solarRecDashboard" was here — removed 2026-04-10 because the
-  // duplicate copy in _core/solarRecRouter.ts is dead code.
+  "users", "credentials", "monitoring", "permissions",
+  // 16 vendor sub-routers (Task 5.4)
+  "generac", "solis", "goodwe", "hoymiles", "locus", "apsystems",
+  "solarlog", "growatt", "ekm", "fronius", "ennexos", "enphaseV4",
+  "solaredge", "teslaPowerhub", "sunpower", "egauge",
+  // Task 5.5 (2026-04-26): solarRecDashboard re-added; the new
+  // gated copy at server/_core/solarRecDashboardRouter.ts is now
+  // the only live one.
+  "solarRecDashboard",
 ]);
 
 app.use("/solar-rec/api/trpc", (req, res, next) => {
@@ -59,43 +66,43 @@ app.use("/solar-rec/api/trpc", (req, res, next) => {
 ```
 
 Anything whose procedure root is in the set goes to
-`_core/solarRecRouter.ts`. Anything else falls through to
-`server/routers.ts`. A legacy client calling
-`/solar-rec/api/trpc/solarRecDashboard.anything` therefore now ends
-up at `server/routers.ts` — the same file the modern solar-rec app
-hits via `/solar-rec/api/main-trpc`.
+`_core/solarRecRouter.ts` (which composes `solarRecDashboardRouter`
+from a sibling file). Anything else falls through to
+`server/routers.ts`.
 
 ## Canonical map — "where does X live?"
 
 | Client call | Resolves to file | Sub-router |
 |---|---|---|
-| `trpc.solarRecDashboard.*` (from any page) | **`server/routers.ts`** | inline at ~line 3260 |
+| `solarRecTrpc.solarRecDashboard.*` (from any page) | **`server/_core/solarRecDashboardRouter.ts`** (Task 5.5, 2026-04-26) | inline; composed into `solarRecAppRouter` |
+| `trpc.solarRecDashboard.*` | **No longer exists.** Removed from main router in Task 5.5. Callers must use `solarRecTrpc.solarRecDashboard.*`. |
 | `trpc.monitoring.*` (main app) | `server/routers.ts` | |
 | `trpc.users.*` (main app) | `server/routers.ts` | |
-| `solarRecTrpc.monitoring.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `monitoringRouter` at line 1924 |
-| `solarRecTrpc.users.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `usersRouter` at line 845 |
-| `solarRecTrpc.auth.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `authRouter` at line 2102 |
-| `solarRecTrpc.credentials.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `credentialsRouter` at line 1722 |
-| `solarRecTrpc.enphaseV2.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `enphaseV2Router` at line 2163 |
-| `solarRecTrpc.solarRecDashboard.*` | **Dead code.** No client uses this path. The sub-router exists at `_core/solarRecRouter.ts:121` (`dashboardRouter`) but nothing imports it. See the deprecation banner at the top of that file. |
+| `solarRecTrpc.monitoring.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `monitoringRouter` |
+| `solarRecTrpc.users.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `usersRouter` |
+| `solarRecTrpc.credentials.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `credentialsRouter` |
+| `solarRecTrpc.permissions.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | `permissionsRouter` |
+| `solarRecTrpc.<16 vendors>.*` (solar-rec app) | `server/_core/solarRecRouter.ts` | per-vendor sub-routers (Task 5.4) |
+| `solarRecTrpc.auth.*` | **Removed 2026-04-15.** Main-app auth router serves all auth flows. |
+| `solarRecTrpc.enphaseV2.*` | **Removed 2026-04-15** alongside the V2 deprecation (Task 4.2). |
 
 ## Decision tree: "I need to edit a tRPC procedure"
 
 ```
 I need to edit trpc.FOO.BAR
 
-1. Is FOO one of: monitoring, users, auth, credentials, enphaseV2?
-   ↓
-   Is the ONLY caller in client/src/solar-rec/pages/?
-   ↓ YES → Edit server/_core/solarRecRouter.ts
-   ↓ NO  → Edit server/routers.ts
-           (and leave _core/solarRecRouter.ts alone even if it
-            also defines FOO — that copy is only reachable via
-            solarRecTrpc which only the 3 solar-rec pages use)
+1. Is FOO one of: solarRecDashboard, or any of the 16 vendor roots
+   (Task 5.4), or any solar-rec native (users/credentials/monitoring
+   /permissions)?
+   ↓ → Edit server/_core/solarRecRouter.ts (or its sibling
+       solarRecDashboardRouter.ts for solarRecDashboard.*).
+       Wrap procedures with requirePermission(moduleKey, level).
+       Server/routers.ts no longer defines these.
 
-2. Is FOO anything else (solarRecDashboard, and ~40 other sub-routers)?
-   ↓ → Edit server/routers.ts. _core/solarRecRouter.ts does not
-       define these and should never need to.
+2. Is FOO anything else (everything personal/main — todoist, gmail,
+   abpSettlement, csgPortal, etc.)?
+   ↓ → Edit server/routers.ts. server/_core/solarRecRouter.ts does
+       not define these and should never need to.
 ```
 
 ## Verification recipe

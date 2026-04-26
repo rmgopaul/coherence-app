@@ -10,7 +10,11 @@ import {
   sportsRouter,
   feedbackRouter,
 } from "./routers/auth";
-import { solarRecDashboardRouter } from "./routers/solarRecDashboard";
+// Task 5.5 (2026-04-26): solarRecDashboard moved to the standalone
+// Solar REC router (server/_core/solarRecDashboardRouter.ts). It is
+// no longer mounted on the main /api/trpc tree — every call now goes
+// through /solar-rec/api/trpc/solarRecDashboard.* via the dispatcher
+// in _core/index.ts.
 import { zendeskRouter } from "./routers/solarMisc";
 import {
   csgPortalRouter,
@@ -60,8 +64,10 @@ export const appRouter = router({
   sports: sportsRouter,
   feedback: feedbackRouter,
 
-  // Solar REC dashboard
-  solarRecDashboard: solarRecDashboardRouter,
+  // Solar REC dashboard — migrated in Task 5.5 (2026-04-26) to
+  // server/_core/solarRecDashboardRouter.ts. Composed under
+  // solarRecAppRouter; reachable via /solar-rec/api/trpc/
+  // solarRecDashboard.* through the dispatcher in _core/index.ts.
 
   // Solar misc monitoring
   zendesk: zendeskRouter,

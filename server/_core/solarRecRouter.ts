@@ -1,6 +1,5 @@
-import { initTRPC, TRPCError } from "@trpc/server";
+import { TRPCError } from "@trpc/server";
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import superjson from "superjson";
 import { z } from "zod";
 import {
   authenticateSolarRecRequest,
@@ -11,22 +10,27 @@ import {
 import {
   MODULE_KEYS,
   MODULES,
-  permissionAtLeast,
   type ModuleKey,
   type PermissionLevel,
 } from "../../shared/solarRecModules";
+import {
+  t,
+  solarRecViewerProcedure,
+  MODULE_KEY_ZOD,
+  PERMISSION_LEVEL_ZOD,
+  NON_NONE_LEVEL_ZOD,
+  requirePermission,
+  permissionUserIdentity,
+  type SolarRecContext,
+} from "./solarRecBase";
+import { solarRecDashboardRouter } from "./solarRecDashboardRouter";
 
 // ---------------------------------------------------------------------------
-// Context
+// Context — `createSolarRecContext` stays here because `_core/index.ts`
+// imports it from this file. Type + tRPC instance + permission helpers
+// live in `./solarRecBase` so sibling sub-router files can import them
+// without circular deps.
 // ---------------------------------------------------------------------------
-
-type SolarRecContext = {
-  req: CreateExpressContextOptions["req"];
-  res: CreateExpressContextOptions["res"];
-  user: SolarRecAuthenticatedUser | null;
-  userId: number;
-  scopeId: string;
-};
 
 export async function createSolarRecContext(
   opts: CreateExpressContextOptions
@@ -49,77 +53,6 @@ export async function createSolarRecContext(
     userId: user.id,
     scopeId,
   };
-}
-
-// ---------------------------------------------------------------------------
-// tRPC instance & permission middleware
-// ---------------------------------------------------------------------------
-
-const t = initTRPC.context<SolarRecContext>().create({
-  transformer: superjson,
-});
-
-// Any authenticated user
-const solarRecViewerProcedure = t.procedure;
-
-// ---------------------------------------------------------------------------
-// Task 5.1 — per-module permission matrix
-// ---------------------------------------------------------------------------
-
-const MODULE_KEY_ZOD = z.enum(
-  MODULE_KEYS as unknown as [ModuleKey, ...ModuleKey[]]
-);
-const PERMISSION_LEVEL_ZOD = z.enum(["none", "read", "edit", "admin"]);
-const NON_NONE_LEVEL_ZOD = z.enum(["read", "edit", "admin"]);
-
-function permissionUserIdentity(user: SolarRecAuthenticatedUser) {
-  return {
-    id: user.id,
-    isScopeAdmin: user.isScopeAdmin,
-    googleOpenId: user.googleOpenId,
-    email: user.email,
-  };
-}
-
-/**
- * Build a procedure that requires at least `minLevel` permission on
- * `moduleKey`. Usage:
- *
- *   requirePermission('contract-scanner', 'edit').mutation(...)
- *
- * The scope owner (`solarRecScopes.ownerUserId`) and users with
- * `solarRecUsers.isScopeAdmin = true` bypass the matrix entirely and
- * always pass the gate. All other callers must have a row with
- * permission >= minLevel; missing rows are treated as `none` and 403.
- */
-function requirePermission(
-  moduleKey: ModuleKey,
-  minLevel: "read" | "edit" | "admin"
-) {
-  return t.procedure.use(async ({ ctx, next }) => {
-    if (!ctx.user) {
-      throw new TRPCError({
-        code: "UNAUTHORIZED",
-        message: "Authentication required",
-      });
-    }
-    const { resolveEffectivePermission } = await import("../db");
-    const effective = await resolveEffectivePermission(
-      ctx.userId,
-      ctx.scopeId,
-      moduleKey,
-      {
-        user: permissionUserIdentity(ctx.user),
-      }
-    );
-    if (!permissionAtLeast(effective.level, minLevel)) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: `Module ${moduleKey} requires ${minLevel} (you have ${effective.level})`,
-      });
-    }
-    return next({ ctx: { ...ctx, modulePermission: effective.level } });
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -4567,6 +4500,7 @@ export const solarRecAppRouter = t.router({
   teslaPowerhub: teslaPowerhubRouter,
   sunpower: sunpowerRouter,
   egauge: egaugeRouter,
+  solarRecDashboard: solarRecDashboardRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

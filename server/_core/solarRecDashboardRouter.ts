@@ -3,7 +3,7 @@ import { mkdir, appendFile, readFile, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
-import { protectedProcedure, router } from "../_core/trpc";
+import { t, requirePermission } from "./solarRecBase";
 import { and, eq, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
@@ -51,7 +51,7 @@ import {
   upsertScheduleBImportFileUploadProgress,
 } from "../db";
 import { storageGet, storagePut } from "../storage";
-import { resolveSolarRecOwnerUserId } from "../_core/solarRecAuth";
+import { resolveSolarRecOwnerUserId } from "./solarRecAuth";
 import { Semaphore } from "../services/core/concurrency";
 
 /**
@@ -74,7 +74,7 @@ import { Semaphore } from "../services/core/concurrency";
  *
  * Does NOT match user-uploaded source chunks like
  * "src_convertedReads_mo0rczoydl24xs0j_chunk_0000" — those are stored
- * under ctx.user.id by the dashboard's auto-sync and must stay per-user
+ * under ctx.userId by the dashboard's auto-sync and must stay per-user
  * for backward compatibility with chunks written before the team-wide fix.
  */
 function isTeamWideDatasetKey(inputKey: string): boolean {
@@ -322,15 +322,15 @@ import {
   SCHEDULE_B_UPLOAD_TMP_ROOT,
   SCHEDULE_B_UPLOAD_ID_PATTERN,
   SCHEDULE_B_UPLOAD_CHUNK_BASE64_LIMIT,
-} from "./helpers";
-import type { ParsedRemoteCsvDataset } from "./helpers";
+} from "../routers/helpers";
+import type { ParsedRemoteCsvDataset } from "../routers/helpers";
 
-export const solarRecDashboardRouter = router({
+export const solarRecDashboardRouter = t.router({
   /**
    * Returns the scopeId for the current user's Solar REC context.
    * Used by the client to pass to server-side dataset endpoints.
    */
-  getScopeId: protectedProcedure.query(async () => {
+  getScopeId: requirePermission("solar-rec-dashboard", "read").query(async () => {
     const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
     const { resolveSolarRecOwnerUserId } = await import("../_core/solarRecAuth");
     const { getOrCreateScope } = await import("../db");
@@ -349,7 +349,7 @@ export const solarRecDashboardRouter = router({
    * This sidesteps the browser-based migration for users whose
    * datasets are too large for the tab to hold in memory.
    */
-  startServerSideMigration: protectedProcedure.mutation(async () => {
+  startServerSideMigration: requirePermission("solar-rec-dashboard", "admin").mutation(async () => {
     const { resolveSolarRecScopeId, resolveSolarRecOwnerUserId } = await import(
       "../_core/solarRecAuth"
     );
@@ -367,7 +367,7 @@ export const solarRecDashboardRouter = router({
   /**
    * Poll the status of a server-side migration job.
    */
-  getServerSideMigrationStatus: protectedProcedure
+  getServerSideMigrationStatus: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getServerMigrationJob } = await import(
@@ -383,7 +383,7 @@ export const solarRecDashboardRouter = router({
    * this scope, or null. Lets the client resume polling after a
    * tab reload without needing to persist the jobId.
    */
-  getActiveServerSideMigration: protectedProcedure.query(async () => {
+  getActiveServerSideMigration: requirePermission("solar-rec-dashboard", "read").query(async () => {
     const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
     const { getActiveJobForScope } = await import(
       "../services/solar/serverSideMigration"
@@ -412,7 +412,7 @@ export const solarRecDashboardRouter = router({
    * See commits de59fca (in-process single-flight v1) and
    * 06fdda4 (move to background job) for the history.
    */
-  syncCoreDatasetFromStorage: protectedProcedure
+  syncCoreDatasetFromStorage: requirePermission("solar-rec-dashboard", "edit")
     .input(z.object({ datasetKey: z.string().min(1) }))
     .mutation(async ({ input }) => {
       const { resolveSolarRecScopeId, resolveSolarRecOwnerUserId } =
@@ -444,7 +444,7 @@ export const solarRecDashboardRouter = router({
    * persist for up to 30 min so a slow poller doesn't miss the
    * transition.
    */
-  getCoreDatasetSyncStatus: protectedProcedure
+  getCoreDatasetSyncStatus: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getSyncJob } = await import(
@@ -478,7 +478,7 @@ export const solarRecDashboardRouter = router({
    * 200 batches per call so the request doesn't exceed Render's
    * proxy timeout; run twice if `skippedDueToLimit` is true.
    */
-  purgeOrphanedDatasetRows: protectedProcedure.mutation(async () => {
+  purgeOrphanedDatasetRows: requirePermission("solar-rec-dashboard", "admin").mutation(async () => {
     try {
       const { purgeOrphanedDatasetRowsNow } = await import(
         "../db/solarRecDatasets"
@@ -503,7 +503,7 @@ export const solarRecDashboardRouter = router({
    * resumes polling instead of losing track of the background
    * work.
    */
-  getActiveCoreDatasetSyncJobs: protectedProcedure.query(async () => {
+  getActiveCoreDatasetSyncJobs: requirePermission("solar-rec-dashboard", "read").query(async () => {
     const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
     const { listActiveJobsForScope } = await import(
       "../services/solar/coreDatasetSyncJobs"
@@ -519,18 +519,18 @@ export const solarRecDashboardRouter = router({
     }));
   }),
 
-  getState: protectedProcedure.query(async ({ ctx }) => {
+  getState: requirePermission("solar-rec-dashboard", "read").query(async ({ ctx }) => {
     const { key, legacyKey } = await buildDashboardStorageKeys(
-      ctx.user.id,
+      ctx.userId,
       "state.json"
     );
     const dbStorageKey = "state";
     return loadDashboardPayloadSingleFlight(
       `state:${key}`,
-      () => loadDashboardPayload(ctx.user.id, dbStorageKey, key, legacyKey)
+      () => loadDashboardPayload(ctx.userId, dbStorageKey, key, legacyKey)
     );
   }),
-  saveState: protectedProcedure
+  saveState: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         payload: z.string(),
@@ -538,14 +538,14 @@ export const solarRecDashboardRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       const { key } = await buildDashboardStorageKeys(
-        ctx.user.id,
+        ctx.userId,
         "state.json"
       );
       const dbStorageKey = "state";
       let persistedToDatabase = false;
 
       try {
-        persistedToDatabase = await saveSolarRecDashboardPayload(ctx.user.id, dbStorageKey, input.payload);
+        persistedToDatabase = await saveSolarRecDashboardPayload(ctx.userId, dbStorageKey, input.payload);
       } catch {
         persistedToDatabase = false;
       }
@@ -560,14 +560,14 @@ export const solarRecDashboardRouter = router({
         throw storageError;
       }
     }),
-  getDataset: protectedProcedure
+  getDataset: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({
         key: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
+      const storageUserId = await resolveDatasetUserId(input.key, ctx.userId);
       const { key, legacyKey } = await buildDashboardStorageKeys(
         storageUserId,
         `datasets/${input.key}.json`
@@ -602,16 +602,16 @@ export const solarRecDashboardRouter = router({
    *      Task 1.2b's saveDataset scope-path migration that didn't yet
    *      mirror writes to the database.
    */
-  getDatasetAssembled: protectedProcedure
+  getDatasetAssembled: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const { parseChunkPointerPayload } = await import("./helpers/scheduleB");
+      const { parseChunkPointerPayload } = await import("../routers/helpers/scheduleB");
 
-      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.user.id);
+      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.userId);
       const { key: topKey, legacyKey: topLegacyKey } = await buildDashboardStorageKeys(
         storageUserId,
         `datasets/${input.datasetKey}.json`
@@ -779,7 +779,7 @@ export const solarRecDashboardRouter = router({
    * DB in one query — closer to the <5s cold-load goal than even the
    * `getDatasetAssembled` batched-fetch path.
    */
-  getDatasetRowsFromSrDs: protectedProcedure
+  getDatasetRowsFromSrDs: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -917,7 +917,7 @@ export const solarRecDashboardRouter = router({
         };
       });
     }),
-  getDatasetCloudStatuses: protectedProcedure
+  getDatasetCloudStatuses: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({
         keys: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/)).min(1).max(32),
@@ -929,7 +929,7 @@ export const solarRecDashboardRouter = router({
       );
       const uniqueKeys = Array.from(new Set(input.keys));
       const statuses = await getRawDatasetCloudStatuses(uniqueKeys, (datasetKey) =>
-        resolveDatasetUserId(datasetKey, ctx.user.id)
+        resolveDatasetUserId(datasetKey, ctx.userId)
       );
       return {
         // Version marker for CLAUDE.md "is my code actually running" checks.
@@ -951,7 +951,7 @@ export const solarRecDashboardRouter = router({
    * Diagnostic use only — not wired into the UI path. Callers should
    * treat this as slow (O(chunks) HEAD checks) and not poll it.
    */
-  debugDatasetSyncStateRaw: protectedProcedure
+  debugDatasetSyncStateRaw: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({
         datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -962,9 +962,9 @@ export const solarRecDashboardRouter = router({
       const sampleChunks = input.sampleChunks ?? 10;
       const { getSolarRecDatasetSyncStates } = await import("../db");
       const { storageExists } = await import("../storage");
-      const { parseChunkPointerPayload } = await import("./helpers/scheduleB");
+      const { parseChunkPointerPayload } = await import("../routers/helpers/scheduleB");
 
-      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.user.id);
+      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.userId);
       const dbStorageKey = `dataset:${input.datasetKey}`;
       const { key: storagePath, legacyKey: legacyStoragePath } =
         await buildDashboardStorageKeys(
@@ -1052,7 +1052,7 @@ export const solarRecDashboardRouter = router({
         chunkDiagnostics,
       };
     }),
-  saveDataset: protectedProcedure
+  saveDataset: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         key: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
@@ -1060,7 +1060,7 @@ export const solarRecDashboardRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const storageUserId = await resolveDatasetUserId(input.key, ctx.user.id);
+      const storageUserId = await resolveDatasetUserId(input.key, ctx.userId);
       const { key } = await buildDashboardStorageKeys(
         storageUserId,
         `datasets/${input.key}.json`
@@ -1139,7 +1139,7 @@ export const solarRecDashboardRouter = router({
    * sees the same rows — matching how `isTeamWideDatasetKey` routes the
    * manifest + chunk reads.
    */
-  pushConvertedReadsSource: protectedProcedure
+  pushConvertedReadsSource: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         providerKey: z
@@ -1181,7 +1181,7 @@ export const solarRecDashboardRouter = router({
    * blobs for its user-uploaded sources. This mutation only rewrites
    * the manifest blob at `dataset:convertedReads`.
    */
-  syncConvertedReadsUserSources: protectedProcedure
+  syncConvertedReadsUserSources: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         userSources: z
@@ -1223,9 +1223,9 @@ export const solarRecDashboardRouter = router({
         userSourceCount: result.userSourceCount,
       };
     }),
-  ensureScheduleBImportJob: protectedProcedure
+  ensureScheduleBImportJob: requirePermission("solar-rec-dashboard", "edit")
     .mutation(async ({ ctx }) => {
-      const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
       const counts = await getScheduleBImportJobCounts(job.id);
       const knownFileNames = await listScheduleBImportFileNames(job.id, {
         includeStatuses: ["uploading", "queued", "processing"],
@@ -1277,7 +1277,7 @@ export const solarRecDashboardRouter = router({
    * Response carries _checkpoint: "drive-link-v1" for deploy
    * verification per docs/server-routing.md.
    */
-  linkScheduleBDriveFolder: protectedProcedure
+  linkScheduleBDriveFolder: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         folderUrl: z.string().min(1).max(500),
@@ -1291,7 +1291,7 @@ export const solarRecDashboardRouter = router({
         );
       }
 
-      const accessToken = await getValidGoogleToken(ctx.user.id);
+      const accessToken = await getValidGoogleToken(ctx.userId);
 
       const discovered = await listGoogleDrivePdfsInFolder(
         accessToken,
@@ -1305,7 +1305,7 @@ export const solarRecDashboardRouter = router({
         );
       }
 
-      const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
 
       const { inserted, skipped } = await bulkInsertScheduleBDriveFiles(
         job.id,
@@ -1342,7 +1342,7 @@ export const solarRecDashboardRouter = router({
         skippedExisting: skipped,
       };
     }),
-  importScheduleBFromCsgPortal: protectedProcedure
+  importScheduleBFromCsgPortal: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         csgIds: z.array(z.string().min(1).max(64)).min(1).max(1000),
@@ -1350,7 +1350,7 @@ export const solarRecDashboardRouter = router({
     )
     .mutation(async ({ ctx, input }) => {
       // 1. Validate CSG portal credentials
-      const integration = await getIntegrationByProvider(ctx.user.id, "csg-portal");
+      const integration = await getIntegrationByProvider(ctx.userId, "csg-portal");
       if (!integration?.accessToken) {
         throw new Error("CSG portal credentials not configured. Go to Settings to add your portal email and password.");
       }
@@ -1360,7 +1360,7 @@ export const solarRecDashboardRouter = router({
       if (uniqueIds.length === 0) throw new Error("No valid CSG IDs provided.");
 
       // 3. Get/create job
-      const job = await getOrCreateLatestScheduleBImportJob(ctx.user.id);
+      const job = await getOrCreateLatestScheduleBImportJob(ctx.userId);
 
       // 4. Insert CSG IDs
       const { inserted, skipped } = await bulkInsertScheduleBImportCsgIds(
@@ -1391,9 +1391,9 @@ export const solarRecDashboardRouter = router({
         skippedExisting: skipped,
       };
     }),
-  getScheduleBImportStatus: protectedProcedure
+  getScheduleBImportStatus: requirePermission("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.user.id);
+      const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
         return {
           _runnerVersion: "v2_atomic_counters" as const,
@@ -1500,7 +1500,7 @@ export const solarRecDashboardRouter = router({
         },
       };
     }),
-  listScheduleBImportResults: protectedProcedure
+  listScheduleBImportResults: requirePermission("solar-rec-dashboard", "read")
     .input(
       z
         .object({
@@ -1514,7 +1514,7 @@ export const solarRecDashboardRouter = router({
       const requestedJobId = input?.jobId?.trim();
       let job = requestedJobId
         ? await getScheduleBImportJob(requestedJobId)
-        : await getLatestScheduleBImportJob(ctx.user.id);
+        : await getLatestScheduleBImportJob(ctx.userId);
 
       // Defensive: Number()-coerce both sides before comparing in case the
       // mysql2 driver returns job.userId as a BigInt or string for any
@@ -1525,16 +1525,16 @@ export const solarRecDashboardRouter = router({
       // fall back to the latest job for the user instead of returning
       // empty — it's safer to show the user their own data than pretend
       // there isn't any.
-      if (job && Number(job.userId) !== Number(ctx.user.id)) {
+      if (job && Number(job.userId) !== Number(ctx.userId)) {
         console.warn(
-          `[listScheduleBImportResults] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.user.id}; falling back to latest job for caller`
+          `[listScheduleBImportResults] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.userId}; falling back to latest job for caller`
         );
-        job = await getLatestScheduleBImportJob(ctx.user.id);
+        job = await getLatestScheduleBImportJob(ctx.userId);
       }
 
       if (!job) {
         console.warn(
-          `[listScheduleBImportResults] no job found for user ${ctx.user.id} (requestedJobId=${requestedJobId ?? "none"})`
+          `[listScheduleBImportResults] no job found for user ${ctx.userId} (requestedJobId=${requestedJobId ?? "none"})`
         );
         return { jobId: null, rows: [], total: 0, debug: { requestedJobId: requestedJobId ?? null, resolvedJobId: null } };
       }
@@ -1568,7 +1568,7 @@ export const solarRecDashboardRouter = router({
         total: result.total,
       };
     }),
-  applyScheduleBToDeliveryObligations: protectedProcedure
+  applyScheduleBToDeliveryObligations: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z
         .object({
@@ -1580,16 +1580,16 @@ export const solarRecDashboardRouter = router({
       const requestedJobId = input?.jobId?.trim();
       let job = requestedJobId
         ? await getScheduleBImportJob(requestedJobId)
-        : await getLatestScheduleBImportJob(ctx.user.id);
+        : await getLatestScheduleBImportJob(ctx.userId);
 
       // Same Number()-coercion + latest-job fallback as
       // listScheduleBImportResults above — mysql2 driver occasionally
       // returns job.userId as a string/bigint and strict !== fails.
-      if (job && Number(job.userId) !== Number(ctx.user.id)) {
+      if (job && Number(job.userId) !== Number(ctx.userId)) {
         console.warn(
-          `[applyScheduleBToDeliveryObligations] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.user.id}; falling back to latest job for caller`
+          `[applyScheduleBToDeliveryObligations] requested jobId ${job.id} belongs to user ${job.userId} but caller is ${ctx.userId}; falling back to latest job for caller`
         );
-        job = await getLatestScheduleBImportJob(ctx.user.id);
+        job = await getLatestScheduleBImportJob(ctx.userId);
       }
       if (!job) {
         throw new Error("Schedule B import job not found.");
@@ -1597,7 +1597,7 @@ export const solarRecDashboardRouter = router({
 
       const loadDatasetPayloadByKey = async (key: string): Promise<string | null> => {
         const basePayload = await getSolarRecDashboardPayload(
-          ctx.user.id,
+          ctx.userId,
           `dataset:${key}`
         );
         if (!basePayload) return null;
@@ -1610,7 +1610,7 @@ export const solarRecDashboardRouter = router({
         let merged = "";
         for (const chunkKey of chunkKeys) {
           const chunk = await getSolarRecDashboardPayload(
-            ctx.user.id,
+            ctx.userId,
             `dataset:${chunkKey}`
           );
           if (typeof chunk !== "string") {
@@ -1627,7 +1627,7 @@ export const solarRecDashboardRouter = router({
       // procedure-specific handling around them.
       const existingDataset = await loadDeliveryScheduleBaseDataset(
         (key) =>
-          getSolarRecDashboardPayload(ctx.user.id, `dataset:${key}`)
+          getSolarRecDashboardPayload(ctx.userId, `dataset:${key}`)
       );
 
       const contractIdByTrackingId = new Map<string, string>();
@@ -1645,7 +1645,7 @@ export const solarRecDashboardRouter = router({
       // Existing row assignments take priority (already in the map).
       try {
         const savedMappingText = await getSolarRecDashboardPayload(
-          ctx.user.id,
+          ctx.userId,
           "dashboard:schedule_b_contract_id_mapping"
         );
         if (savedMappingText) {
@@ -1823,7 +1823,7 @@ export const solarRecDashboardRouter = router({
       let persistedToDatabase = false;
       try {
         persistedToDatabase = await saveSolarRecDashboardPayload(
-          ctx.user.id,
+          ctx.userId,
           "dataset:deliveryScheduleBase",
           finalPayload
         );
@@ -1832,7 +1832,7 @@ export const solarRecDashboardRouter = router({
       }
 
       const { key: storageKey } = await buildDashboardStorageKeys(
-        ctx.user.id,
+        ctx.userId,
         "datasets/deliveryScheduleBase.json"
       );
       let storageSynced = false;
@@ -1906,7 +1906,7 @@ export const solarRecDashboardRouter = router({
    * Returns _checkpoint so the client can confirm live deployment via
    * the browser devtools Network tab (per CLAUDE.md convention).
    */
-  uploadDeliveryScheduleCsv: protectedProcedure
+  uploadDeliveryScheduleCsv: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         csvText: z.string().min(1).max(10 * 1024 * 1024),
@@ -1923,7 +1923,7 @@ export const solarRecDashboardRouter = router({
 
       const existingDataset = await loadDeliveryScheduleBaseDataset(
         (key) =>
-          getSolarRecDashboardPayload(ctx.user.id, `dataset:${key}`)
+          getSolarRecDashboardPayload(ctx.userId, `dataset:${key}`)
       );
 
       // Build a Set of keys already in the dataset — keys match
@@ -1982,7 +1982,7 @@ export const solarRecDashboardRouter = router({
       let persistedToDatabase = false;
       try {
         persistedToDatabase = await saveSolarRecDashboardPayload(
-          ctx.user.id,
+          ctx.userId,
           "dataset:deliveryScheduleBase",
           finalPayload
         );
@@ -1991,14 +1991,14 @@ export const solarRecDashboardRouter = router({
         // server logs instead of a silent success that lies about
         // persistence state.
         console.warn(
-          `[uploadDeliveryScheduleCsv] DB persist failed for user ${ctx.user.id}:`,
+          `[uploadDeliveryScheduleCsv] DB persist failed for user ${ctx.userId}:`,
           dbError
         );
         persistedToDatabase = false;
       }
 
       const { key: storageKey } = await buildDashboardStorageKeys(
-        ctx.user.id,
+        ctx.userId,
         "datasets/deliveryScheduleBase.json"
       );
       let storageSynced = false;
@@ -2010,7 +2010,7 @@ export const solarRecDashboardRouter = router({
           throw storageError;
         }
         console.warn(
-          `[uploadDeliveryScheduleCsv] S3 sync failed for user ${ctx.user.id} (DB persist OK):`,
+          `[uploadDeliveryScheduleCsv] S3 sync failed for user ${ctx.userId} (DB persist OK):`,
           storageError
         );
       }
@@ -2053,9 +2053,9 @@ export const solarRecDashboardRouter = router({
    *      "Last mapping: X patched, Y unchanged" panel and so
    *      onApplyComplete can reload the dataset from cloud.
    */
-  getScheduleBContractIdMapping: protectedProcedure.query(async ({ ctx }) => {
+  getScheduleBContractIdMapping: requirePermission("solar-rec-dashboard", "read").query(async ({ ctx }) => {
     const mappingText = await getSolarRecDashboardPayload(
-      ctx.user.id,
+      ctx.userId,
       "dashboard:schedule_b_contract_id_mapping"
     );
     return {
@@ -2063,7 +2063,7 @@ export const solarRecDashboardRouter = router({
       mappingText: mappingText ?? "",
     };
   }),
-  applyScheduleBContractIdMapping: protectedProcedure
+  applyScheduleBContractIdMapping: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         // 24k entries × ~30 bytes/line = ~720KB. Cap at 5 MB to
@@ -2077,7 +2077,7 @@ export const solarRecDashboardRouter = router({
       //    on next mount. Do this FIRST so even if the patch step
       //    fails the user doesn't lose their pasted mapping.
       await saveSolarRecDashboardPayload(
-        ctx.user.id,
+        ctx.userId,
         "dashboard:schedule_b_contract_id_mapping",
         input.mappingText
       );
@@ -2106,7 +2106,7 @@ export const solarRecDashboardRouter = router({
         key: string
       ): Promise<string | null> => {
         const basePayload = await getSolarRecDashboardPayload(
-          ctx.user.id,
+          ctx.userId,
           `dataset:${key}`
         );
         if (!basePayload) return null;
@@ -2117,7 +2117,7 @@ export const solarRecDashboardRouter = router({
         let merged = "";
         for (const chunkKey of chunkKeys) {
           const chunk = await getSolarRecDashboardPayload(
-            ctx.user.id,
+            ctx.userId,
             `dataset:${chunkKey}`
           );
           if (typeof chunk !== "string") {
@@ -2235,7 +2235,7 @@ export const solarRecDashboardRouter = router({
       let persistedToDatabase = false;
       try {
         persistedToDatabase = await saveSolarRecDashboardPayload(
-          ctx.user.id,
+          ctx.userId,
           "dataset:deliveryScheduleBase",
           finalPayload
         );
@@ -2244,7 +2244,7 @@ export const solarRecDashboardRouter = router({
       }
 
       const { key: storageKey } = await buildDashboardStorageKeys(
-        ctx.user.id,
+        ctx.userId,
         "datasets/deliveryScheduleBase.json"
       );
       let storageSynced = false;
@@ -2268,7 +2268,7 @@ export const solarRecDashboardRouter = router({
         mappingTextSaved: true,
       };
     }),
-  uploadScheduleBFileChunk: protectedProcedure
+  uploadScheduleBFileChunk: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         jobId: z.string().min(1).max(64),
@@ -2283,7 +2283,7 @@ export const solarRecDashboardRouter = router({
     .mutation(async ({ ctx, input }) => {
       const safeFileName = sanitizeScheduleBFileName(input.fileName);
       const job = await getScheduleBImportJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
+      if (!job || job.userId !== ctx.userId) {
         throw new Error("Schedule B import job not found.");
       }
 
@@ -2299,7 +2299,7 @@ export const solarRecDashboardRouter = router({
 
       const tempDir = path.join(
         SCHEDULE_B_UPLOAD_TMP_ROOT,
-        String(ctx.user.id),
+        String(ctx.userId),
         job.id
       );
       const tempPath = path.join(tempDir, `${input.uploadId}.part`);
@@ -2380,7 +2380,7 @@ export const solarRecDashboardRouter = router({
       try {
         const data = await readFile(tempPath);
         const { key: storageKey } = await buildDashboardStorageKeys(
-          ctx.user.id,
+          ctx.userId,
           `schedule-b/${job.id}/${Date.now()}-${nanoid()}-${safeFileName}`
         );
         await storagePut(storageKey, data, "application/pdf");
@@ -2423,9 +2423,9 @@ export const solarRecDashboardRouter = router({
         await rm(tempPath, { force: true }).catch(() => undefined);
       }
     }),
-  forceRunScheduleBImport: protectedProcedure
+  forceRunScheduleBImport: requirePermission("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.user.id);
+      const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
         return { success: false, reason: "no_job" as const };
       }
@@ -2442,14 +2442,14 @@ export const solarRecDashboardRouter = router({
       void runScheduleBImportJob(job.id);
       return { success: true, jobId: job.id };
     }),
-  clearScheduleBImport: protectedProcedure
+  clearScheduleBImport: requirePermission("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.user.id);
+      const job = await getLatestScheduleBImportJob(ctx.userId);
       if (job) {
         await deleteScheduleBImportJobData(job.id);
       }
 
-      const userTmpDir = path.join(SCHEDULE_B_UPLOAD_TMP_ROOT, String(ctx.user.id));
+      const userTmpDir = path.join(SCHEDULE_B_UPLOAD_TMP_ROOT, String(ctx.userId));
       await rm(userTmpDir, { recursive: true, force: true }).catch(() => undefined);
       return { success: true };
     }),
@@ -2465,9 +2465,9 @@ export const solarRecDashboardRouter = router({
    * afterwards so the job row's totalFiles counter catches up and the
    * runner re-evaluates whether to finalize as 'completed'.
    */
-  clearScheduleBImportStuckUploads: protectedProcedure
+  clearScheduleBImportStuckUploads: requirePermission("solar-rec-dashboard", "admin")
     .mutation(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.user.id);
+      const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
         return {
           _checkpoint: "clear-stuck-uploads-2026-04-11" as const,
@@ -2485,7 +2485,7 @@ export const solarRecDashboardRouter = router({
       // not a correctness issue, so we swallow errors here.
       const userJobTmpDir = path.join(
         SCHEDULE_B_UPLOAD_TMP_ROOT,
-        String(ctx.user.id),
+        String(ctx.userId),
         job.id
       );
       await rm(userJobTmpDir, { recursive: true, force: true }).catch(
@@ -2520,9 +2520,9 @@ export const solarRecDashboardRouter = router({
    * card. Shows the actual DB counts instead of any client-side
    * interpretation so we can diagnose counter-vs-result divergence.
    */
-  debugScheduleBImportRaw: protectedProcedure
+  debugScheduleBImportRaw: requirePermission("solar-rec-dashboard", "read")
     .query(async ({ ctx }) => {
-      const job = await getLatestScheduleBImportJob(ctx.user.id);
+      const job = await getLatestScheduleBImportJob(ctx.userId);
       if (!job) {
         return {
           _runnerVersion: "v2_atomic_counters" as const,
@@ -2636,7 +2636,7 @@ export const solarRecDashboardRouter = router({
         sampleFilesWithNoResult,
       };
     }),
-  askTabQuestion: protectedProcedure
+  askTabQuestion: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
         tabId: z.string().min(1).max(64),
@@ -2648,7 +2648,7 @@ export const solarRecDashboardRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, "anthropic");
+      const integration = await getIntegrationByProvider(ctx.userId, "anthropic");
       const apiKey = toNonEmptyString(integration?.accessToken);
       if (!apiKey) {
         throw new Error("Anthropic API key not configured. Go to Settings and connect your Anthropic account.");
@@ -2697,7 +2697,7 @@ export const solarRecDashboardRouter = router({
 
   // -- Server-side dataset architecture (Step 2) -------------------------
 
-  getImportStatus: protectedProcedure
+  getImportStatus: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ batchId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getImportBatch, getImportErrors } = await import("../db");
@@ -2735,7 +2735,7 @@ export const solarRecDashboardRouter = router({
    * Tabs that consume this: Overview, Ownership, Offline, Size, Value,
    * Change Ownership, and any tab that reads the `systems` prop.
    */
-  getSystemSnapshot: protectedProcedure
+  getSystemSnapshot: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getOrBuildSystemSnapshot } = await import(
@@ -2765,7 +2765,7 @@ export const solarRecDashboardRouter = router({
    * 25k tracking IDs × ~3 years), so runs synchronously without
    * the snapshot-style async build machinery.
    */
-  getTransferDeliveryLookup: protectedProcedure
+  getTransferDeliveryLookup: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { buildTransferDeliveryLookupForScope } = await import(
@@ -2795,7 +2795,7 @@ export const solarRecDashboardRouter = router({
    * problem. Exact-key dupes imply a logic bug in ingestion; near-
    * dupes imply the dedup key is too strict for GATS's behavior.
    */
-  debugTransferHistoryRaw: protectedProcedure
+  debugTransferHistoryRaw: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const CHECKPOINT = "transfer-history-audit-v2-2026-04-22";
@@ -3057,7 +3057,7 @@ export const solarRecDashboardRouter = router({
    * Lets us answer "where does DY3 (actual) for NON258210 come from?"
    * without wading through IDB or the 600k-row lookup.
    */
-  debugSystemDeliveryBreakdown: protectedProcedure
+  debugSystemDeliveryBreakdown: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({
         scopeId: z.string().min(1),
@@ -3487,7 +3487,7 @@ export const solarRecDashboardRouter = router({
    * Get the current input version hash for the system snapshot.
    * Clients use this to check freshness without fetching the full payload.
    */
-  getSystemSnapshotHash: protectedProcedure
+  getSystemSnapshotHash: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { computeSystemSnapshotHash } = await import(
@@ -3501,7 +3501,7 @@ export const solarRecDashboardRouter = router({
    * Get the active dataset versions for a scope.
    * Used by the client to show which datasets are loaded and their batch IDs.
    */
-  getActiveDatasetVersions: protectedProcedure
+  getActiveDatasetVersions: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getActiveDatasetVersions } = await import("../db");
@@ -3524,7 +3524,7 @@ export const solarRecDashboardRouter = router({
    * deliveryScheduleBase + transferHistory. Independent version hash
    * from the system snapshot.
    */
-  getDeliverySnapshot: protectedProcedure
+  getDeliverySnapshot: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { getOrBuildDeliverySnapshot } = await import(
@@ -3546,7 +3546,7 @@ export const solarRecDashboardRouter = router({
    * Includes CSV dataset versions + completed scan job + latest override.
    * Clients use this to check if their cached financials data is stale.
    */
-  getFinancialsHash: protectedProcedure
+  getFinancialsHash: requirePermission("solar-rec-dashboard", "read")
     .input(z.object({ scopeId: z.string().min(1) }))
     .query(async ({ input }) => {
       const { computeFinancialsHash } = await import(
