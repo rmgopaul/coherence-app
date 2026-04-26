@@ -63,7 +63,12 @@ stop and discuss the migration timing first.
   2026-04-24** (#80).
 - ~~9 meter-read pages (consolidated to `MeterReadsPage`) — Task 5.4~~
   **DONE 2026-04-26** (16/16 vendors migrated, #81–#102).
-- Schedule B import + CSG Schedule B import — Task 5.6
+- ~~Schedule B import + CSG Schedule B import — Task 5.6~~
+  **PARTIAL 2026-04-26.** Procedures already moved as part of
+  Task 5.5 (PR #110); reclassified to `requirePermission("schedule-
+  b", level)` in PR-A. **Remaining**: add `scopeId` to the 4
+  `scheduleBImport*` tables + backfill + filter reads/writes by
+  scope (PR-B).
 - Contract scan runner + ContractScanner + ContractScrapeManager —
   Task 5.7
 - DIN scrape runner + DinScrapeManager — Task 5.8
