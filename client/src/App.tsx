@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/features/dashboard/NotFound";
-import { Route, Switch, useLocation } from "wouter";
+import { Redirect, Route, Switch, useLocation } from "wouter";
 import { Suspense, lazy, useEffect, type ComponentType } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalFeedbackWidget from "./components/GlobalFeedbackWidget";
@@ -19,7 +19,10 @@ const OneThing = lazy(() => import("@/features/dashboard/OneThing"));
 const River = lazy(() => import("@/features/dashboard/River"));
 const Canvas = lazy(() => import("@/features/dashboard/Canvas"));
 const CommandDeck = lazy(() => import("@/features/dashboard/CommandDeck"));
-const SolarRecDashboard = lazy(() => import("@/features/solar-rec/SolarRecDashboard"));
+// SolarRecDashboard is no longer lazy-loaded here — Task 5.5 (2026-04-26)
+// retired the legacy /solar-rec-dashboard URL in favor of /solar-rec/
+// dashboard on the standalone Solar REC app. The route below now
+// redirects rather than rendering the page.
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
 const ZendeskTicketMetrics = lazy(() => import("@/features/dashboard/ZendeskTicketMetrics"));
 const DeepUpdateSynthesizer = lazy(() => import("@/features/dashboard/DeepUpdateSynthesizer"));
@@ -100,7 +103,13 @@ function AppRoutes() {
       <Route path={"/dashboard/canvas"} component={withRouteSuspense(Canvas)} />
       <Route path={"/dashboard/command"} component={withRouteSuspense(CommandDeck)} />
       <Route path={"/dashboard-legacy"} component={withRouteSuspense(DashboardLegacy)} />
-      <Route path={"/solar-rec-dashboard"} component={withRouteSuspense(SolarRecDashboard)} />
+      {/* Task 5.5 (2026-04-26): legacy /solar-rec-dashboard URL retired
+          in favor of /solar-rec/dashboard on the standalone Solar REC
+          app. Wouter is client-side only — the redirect runs as soon as
+          the bundle hydrates and bookmarks land on the right URL. */}
+      <Route path={"/solar-rec-dashboard"}>
+        <Redirect to="/solar-rec/dashboard" />
+      </Route>
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
       <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
       <Route path={"/contract-scanner"} component={withRouteSuspense(ContractScanner)} />

@@ -5,7 +5,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* moved to the standalone
+// Solar REC router. Aliased import keeps the call sites unchanged.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import {
   type DeepUpdateReportData,
   type DeepUpdateReportKey,

@@ -11,7 +11,9 @@
 import { memo, useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, AlertTriangle, Loader2, ChevronDown, ChevronUp, FlaskConical } from "lucide-react";
-import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* on the standalone Solar
+// REC router. Alias keeps call sites unchanged.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { readIndexedDbDatasets } from "../lib/readIndexedDb";
 import { isPart2VerifiedAbpRow } from "../lib/helpers/abp";
 import { diffSystems, type ParityReport } from "../lib/parityDiff";

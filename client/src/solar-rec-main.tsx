@@ -41,7 +41,9 @@ const trpcFetch: typeof fetch = async (input, init) => {
 
 // Main app trpc instance used by meter read pages and shared dashboard helpers.
 // Route this client directly to the main-trpc endpoint to avoid split-routing
-// edge cases in production.
+// edge cases in production. After Task 5.5 (2026-04-26) `solarRecDashboard.*`
+// is no longer on the main router — pages that need it import `solarRecTrpc`
+// (which targets /solar-rec/api/trpc) directly.
 const trpcClient = trpc.createClient({
   links: [
     httpLink({

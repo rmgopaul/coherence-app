@@ -32,6 +32,11 @@ import {
   toErrorMessage,
 } from "@/lib/helpers";
 import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* moved to the standalone
+// Solar REC router. Early Payment still lives on the main router
+// (Task 5.10 wrong-side feature) but its dashboard data calls have to
+// follow the procedure to the new home.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { ArrowLeft, Download, ExternalLink, FileSearch, Loader2, Play, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -499,8 +504,8 @@ export default function EarlyPayment() {
   const { user, loading: authLoading } = useAuth();
 
   const { mutateAsync: getDatasetAsync } =
-    trpc.solarRecDashboard.getDataset.useMutation();
-  const saveDatasetMutation = trpc.solarRecDashboard.saveDataset.useMutation();
+    solarRecTrpc.solarRecDashboard.getDataset.useMutation();
+  const saveDatasetMutation = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
   const startScanJobMutation = trpc.abpSettlement.startContractScanJob.useMutation();
   const [activeScanJobId, setActiveScanJobId] = useState<string | null>(() =>
     typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SCAN_JOB_STORAGE_KEY) : null

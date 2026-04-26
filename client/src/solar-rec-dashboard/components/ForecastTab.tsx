@@ -42,7 +42,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* on the standalone Solar
+// REC router. Alias keeps call sites unchanged.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import {
   Table,
   TableBody,

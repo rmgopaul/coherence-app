@@ -15,6 +15,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 // remaining parent-level table consumers were the SystemDetailSheet
 // (now its own component) and chart memos that moved into tabs.
 import { trpc } from "@/lib/trpc";
+// Task 5.5 (2026-04-26): solarRecDashboard.* moved to the standalone
+// Solar REC router. The abpSettlement call sites stay on `trpc`
+// (their migration is Task 5.9); dashboard procedures use the
+// standalone client.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 
 const TabAIChatLazy = lazy(() =>
   import("@/components/dashboard/TabAIChat").then((m) => ({
@@ -2022,6 +2027,7 @@ export default function SolarRecDashboard() {
   const [location, setLocation] = useLocation();
   const search = useSearch();
   const trpcUtils = trpc.useUtils();
+  const solarRecTrpcUtils = solarRecTrpc.useUtils();
   const [datasets, setDatasets] = useState<Partial<Record<DatasetKey, CsvDataset>>>({});
   const [datasetsHydrated, setDatasetsHydrated] = useState(false);
   // Phase 16: progress counter for the streaming hydration path, so
@@ -2091,7 +2097,7 @@ export default function SolarRecDashboard() {
     []
   );
   // Server-side storage: resolve scopeId for migration + tab endpoints
-  const scopeIdQuery = trpc.solarRecDashboard.getScopeId.useQuery(undefined, {
+  const scopeIdQuery = solarRecTrpc.solarRecDashboard.getScopeId.useQuery(undefined, {
     retry: 2,
     staleTime: 5 * 60 * 1000,
   });
@@ -2099,7 +2105,7 @@ export default function SolarRecDashboard() {
   const scopeIdRef = useRef<string | null>(scopeId);
   scopeIdRef.current = scopeId;
 
-  const remoteDashboardStateQuery = trpc.solarRecDashboard.getState.useQuery(undefined, {
+  const remoteDashboardStateQuery = solarRecTrpc.solarRecDashboard.getState.useQuery(undefined, {
     retry: 4,
     retryDelay: (attempt) => Math.min(2000 * (attempt + 1), 10_000),
     staleTime: 5 * 60 * 1000,
@@ -2111,7 +2117,7 @@ export default function SolarRecDashboard() {
     refetchOnReconnect: false,
   });
   const datasetCloudStatusesQuery =
-    trpc.solarRecDashboard.getDatasetCloudStatuses.useQuery(
+    solarRecTrpc.solarRecDashboard.getDatasetCloudStatuses.useQuery(
       { keys: allDatasetKeys },
       {
         staleTime: 30_000,
@@ -2119,15 +2125,15 @@ export default function SolarRecDashboard() {
         refetchOnReconnect: true,
       }
     );
-  const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
-  const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  const saveRemoteDashboardState = solarRecTrpc.solarRecDashboard.saveState.useMutation();
+  const getRemoteDataset = solarRecTrpc.solarRecDashboard.getDataset.useMutation();
   // Single-roundtrip batch read of a whole dataset (manifest + every
   // source's assembled payload). Used by cold-cache hydration to avoid
   // the per-chunk fan-out that turns 18-dataset loads into 2000+ tRPC
   // calls. Falls back to per-key getDataset if the batch endpoint
   // errors or returns nothing usable.
   const getRemoteDatasetAssembled =
-    trpc.solarRecDashboard.getDatasetAssembled.useMutation();
+    solarRecTrpc.solarRecDashboard.getDatasetAssembled.useMutation();
   // Direct row-table hydration for the 7 core datasets (Solar
   // Applications / Account Solar Generation / Transfer History /
   // ABP Report / Generation Entry / Contracted Date / Delivery
@@ -2135,17 +2141,17 @@ export default function SolarRecDashboard() {
   // Returns null when the key isn't row-backed or no active batch
   // exists — caller falls through to getDatasetAssembled.
   const getRemoteDatasetRowsFromSrDs =
-    trpc.solarRecDashboard.getDatasetRowsFromSrDs.useMutation();
-  const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
+    solarRecTrpc.solarRecDashboard.getDatasetRowsFromSrDs.useMutation();
+  const saveRemoteDataset = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
   // Atomic read-merge-write for the convertedReads manifest. Used in place
   // of saveRemoteDataset when key === "convertedReads" so server-managed
   // sources (mon_batch_*, individual_*) survive dashboard auto-sync even
   // when the client's in-memory state was hydrated before the server-side
   // bridge added them.
   const syncConvertedReadsUserSources =
-    trpc.solarRecDashboard.syncConvertedReadsUserSources.useMutation();
+    solarRecTrpc.solarRecDashboard.syncConvertedReadsUserSources.useMutation();
   const syncCoreDatasetToSrDs =
-    trpc.solarRecDashboard.syncCoreDatasetFromStorage.useMutation();
+    solarRecTrpc.solarRecDashboard.syncCoreDatasetFromStorage.useMutation();
   const syncCoreDatasetToSrDsRef = useRef(syncCoreDatasetToSrDs);
   syncCoreDatasetToSrDsRef.current = syncCoreDatasetToSrDs;
   const activeCoreDatasetSyncJobRef = useRef<Partial<Record<DatasetKey, string>>>({});
@@ -2260,10 +2266,10 @@ export default function SolarRecDashboard() {
           updatedAt: Date.now(),
         });
         await Promise.all([
-          trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
-          trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
-          trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
-          trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
         ]);
         window.setTimeout(() => {
           setDatasetSyncProgressState(key, undefined);
@@ -2277,10 +2283,10 @@ export default function SolarRecDashboard() {
       // a restart even though the underlying batch already activated.
       if (sid) {
         await Promise.all([
-          trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
-          trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
-          trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
-          trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId: sid }),
+          solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId: sid }),
         ]);
       }
       // eslint-disable-next-line no-console
@@ -2354,7 +2360,7 @@ export default function SolarRecDashboard() {
             return;
           }
 
-          const status = await trpcUtils.solarRecDashboard.getCoreDatasetSyncStatus
+          const status = await solarRecTrpcUtils.solarRecDashboard.getCoreDatasetSyncStatus
             .fetch({ jobId })
             .catch(() => null);
 
@@ -2430,7 +2436,7 @@ export default function SolarRecDashboard() {
   const syncConvertedReadsUserSourcesRef = useRef(syncConvertedReadsUserSources);
   syncConvertedReadsUserSourcesRef.current = syncConvertedReadsUserSources;
   const invalidateDatasetCloudStatuses = useCallback(() => {
-    void trpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate({
+    void solarRecTrpcUtils.solarRecDashboard.getDatasetCloudStatuses.invalidate({
       keys: allDatasetKeys,
     });
   }, [allDatasetKeys, trpcUtils]);
@@ -2742,10 +2748,10 @@ export default function SolarRecDashboard() {
   const invalidateServerDerivedSolarData = useCallback(async () => {
     if (!scopeId) return;
     await Promise.all([
-      trpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId }),
-      trpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId }),
-      trpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId }),
-      trpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId }),
+      solarRecTrpcUtils.solarRecDashboard.getSystemSnapshot.invalidate({ scopeId }),
+      solarRecTrpcUtils.solarRecDashboard.getTransferDeliveryLookup.invalidate({ scopeId }),
+      solarRecTrpcUtils.solarRecDashboard.getActiveDatasetVersions.invalidate({ scopeId }),
+      solarRecTrpcUtils.solarRecDashboard.getSystemSnapshotHash.invalidate({ scopeId }),
     ]);
   }, [scopeId, trpcUtils]);
 
@@ -2757,7 +2763,7 @@ export default function SolarRecDashboard() {
         if (activeCoreDatasetSyncJobRef.current[key] !== jobId) return;
 
         const status =
-          await trpcUtils.solarRecDashboard.getCoreDatasetSyncStatus.fetch({
+          await solarRecTrpcUtils.solarRecDashboard.getCoreDatasetSyncStatus.fetch({
             jobId,
           }).catch(() => null);
 
@@ -2815,7 +2821,7 @@ export default function SolarRecDashboard() {
     if (!scopeId) return;
     let cancelled = false;
     void (async () => {
-      const active = await trpcUtils.solarRecDashboard.getActiveCoreDatasetSyncJobs
+      const active = await solarRecTrpcUtils.solarRecDashboard.getActiveCoreDatasetSyncJobs
         .fetch()
         .catch(() => null);
       if (cancelled || !active) return;

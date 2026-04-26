@@ -55,10 +55,14 @@ belongs on the solar-rec router. Do **not** add new sub-procedures to
 these while they're on the wrong side — if you need to extend them,
 stop and discuss the migration timing first.
 
-- `solarRecDashboard.*` (Solar REC Dashboard + Schedule B scanner)
-  — migrates in Task 5.5
-- monitoring scheduler + `monitoringApiRuns` — Task 5.3
-- 9 meter-read pages (consolidated to `MeterReadsPage`) — Task 5.4
+- ~~`solarRecDashboard.*` (Solar REC Dashboard + Schedule B scanner)
+  — migrates in Task 5.5~~ **DONE 2026-04-26.** Lives at
+  `server/_core/solarRecDashboardRouter.ts`; reachable from clients
+  via `solarRecTrpc.solarRecDashboard.*`.
+- ~~monitoring scheduler + `monitoringApiRuns` — Task 5.3~~ **DONE
+  2026-04-24** (#80).
+- ~~9 meter-read pages (consolidated to `MeterReadsPage`) — Task 5.4~~
+  **DONE 2026-04-26** (16/16 vendors migrated, #81–#102).
 - Schedule B import + CSG Schedule B import — Task 5.6
 - Contract scan runner + ContractScanner + ContractScrapeManager —
   Task 5.7
@@ -108,15 +112,20 @@ per-vendor, not canonical.
 
 ### Rule of thumb for editing (reflects today's wrong-side state)
 
-- **Editing `solarRecDashboard.*`, or anything used from
-  `client/src/features/`** → edit `server/routers.ts`. Leave
-  `_core/solarRecRouter.ts` alone.
+- **Editing `solarRecDashboard.*`** → edit
+  `server/_core/solarRecDashboardRouter.ts` (migrated 2026-04-26 in
+  Task 5.5). Procedures use `requirePermission("solar-rec-dashboard",
+  level)` with `t` from `_core/solarRecBase`. Clients call via
+  `solarRecTrpc.solarRecDashboard.*`. The legacy
+  `server/routers/solarRecDashboard.ts` no longer exists.
 - **Editing `monitoring.*`, `users.*`, `auth.*`, `credentials.*`, or
   `enphaseV2.*` that's called from `client/src/solar-rec/pages/`** →
   edit `_core/solarRecRouter.ts`.
 - **Anything else personal** → edit `server/routers.ts`.
-- **New team/business feature** → edit `_core/solarRecRouter.ts`. Do
-  not pile onto `server/routers.ts`.
+- **New team/business feature** → edit `_core/solarRecRouter.ts` (or
+  a new sibling sub-router file like `solarRecDashboardRouter.ts`,
+  importing `t` and `requirePermission` from `_core/solarRecBase`).
+  Do not pile onto `server/routers.ts`.
 
 See `docs/server-routing.md` for the full URL → file map, the
 dispatcher logic, and the verification recipe.

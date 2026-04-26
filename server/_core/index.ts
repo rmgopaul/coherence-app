@@ -46,21 +46,24 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 // whose procedure root is in this set gets handled by that router;
 // anything else falls through to the main router in server/routers.ts.
 //
-// NOTE: "solarRecDashboard" was removed from this set on 2026-04-10
-// because the dashboardRouter inside _core/solarRecRouter.ts is dead
-// code — no client calls solarRecTrpc.solarRecDashboard.*. Any legacy
-// request to /solar-rec/api/trpc/solarRecDashboard.* now routes to
-// server/routers.ts (the live copy), matching the modern solar-rec
-// client which goes through /solar-rec/api/main-trpc. See the
-// 2026-04-10 entry in productivity-hub/docs/SESSIONS_POSTMORTEM.md and
-// productivity-hub/docs/server-routing.md for the full story.
+// HISTORY:
+// 2026-04-10: "solarRecDashboard" was removed from this set because
+//   the in-_core dashboardRouter was dead code — no client called
+//   solarRecTrpc.solarRecDashboard.*. Legacy traffic to
+//   /solar-rec/api/trpc/solarRecDashboard.* fell through to the
+//   main router in server/routers.ts (the live copy at the time).
 // 2026-04-15: "auth" and "enphaseV2" removed alongside their dead
-// sub-routers in _core/solarRecRouter.ts. The solar-rec standalone
-// client never called solarRecTrpc.auth.* or solarRecTrpc.enphaseV2.*
-// — main-app pages use the main appRouter's auth/enphaseV2 routers
-// via the primary trpc client, not solarRecTrpc. Any legacy request
-// that happens to hit /solar-rec/api/trpc/{auth,enphaseV2}.* now
-// falls through this dispatcher to the main appRouter.
+//   sub-routers. Main-app pages use the main appRouter's auth /
+//   enphaseV2 routers via the primary trpc client, not solarRecTrpc.
+// 2026-04-26 (Task 5.5): "solarRecDashboard" RE-ADDED. The router
+//   has been migrated from server/routers/solarRecDashboard.ts to
+//   server/_core/solarRecDashboardRouter.ts and is now composed
+//   into solarRecAppRouter with `requirePermission("solar-rec-
+//   dashboard", level)` middleware on every procedure. The old
+//   main-router mount has been removed; main-app /api/trpc/
+//   solarRecDashboard.* requests would now 404. The legacy
+//   /solar-rec-dashboard URL on App.tsx has been retired in favor
+//   of the /solar-rec/dashboard route on SolarRecApp.tsx.
 const SOLAR_REC_ROUTER_ROOTS = new Set([
   "users",
   "credentials",
@@ -82,6 +85,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "teslaPowerhub",
   "sunpower",
   "egauge",
+  "solarRecDashboard",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
