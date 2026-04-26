@@ -786,6 +786,29 @@ export const solarRecDashboardRouter = t.router({
     )
     .mutation(async ({ ctx, input }) => {
       void ctx;
+      void input;
+      // ---------------------------------------------------------------
+      // Globally disabled (2026-04-26).
+      //
+      // PR #107 introduced direct row-table hydration for the 7
+      // srDs*-backed datasets. PR #111 trimmed the hot two
+      // (accountSolarGeneration, transferHistory) after a server-side
+      // OOM. Production then surfaced a SECOND OOM: Chrome tabs
+      // blowing past their ~4 GB cap while parsing the JSON response
+      // for the still-enabled 5 medium tables — the response sizes
+      // (50–150 MB each) peak the browser at 2-3× during JSON.parse,
+      // and several datasets hydrating in parallel pushed the tab over.
+      //
+      // Until we ship server-side gzip + per-batch artifact caching
+      // (so the wire payload is compressed AND the client never
+      // double-buffers the parsed array), every datasetKey returns
+      // `null` and the client falls through to `getDatasetAssembled`
+      // (#103). That path is memory-bounded by chunk size and was
+      // working pre-#107.
+      //
+      // The schema mapping below is preserved (referenced by tests
+      // and follow-up PRs) but unused by the runtime path.
+      // ---------------------------------------------------------------
       const TABLES_BY_DATASET_KEY = {
         solarApplications: srDsSolarApplications,
         abpReport: srDsAbpReport,
@@ -795,38 +818,17 @@ export const solarRecDashboardRouter = t.router({
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
       } as const;
-      /**
-       * Datasets temporarily excluded from row-table hydration because
-       * the JSON-serialized response payload is too large to fit
-       * Render's ~4 GB Node heap under parallel client fan-out:
-       *
-       *   - `accountSolarGeneration`: ~405k rows × ~30 columns + rawRow
-       *     JSON merge ≈ 600 MB peak per call. With 7 datasets
-       *     hydrating in parallel, V8's working set blew past 4 GB on
-       *     the first cold-cache request (2026-04-26 incident).
-       *   - `transferHistory`: ~633k rows. `loadDatasetRows` skips
-       *     rawRow for this table, but the typed-column response is
-       *     still ~125 MB per call — borderline alone, definitely
-       *     over budget when stacked with other tables.
-       *
-       * These two fall through to `getDatasetAssembled` (#103), which
-       * is memory-bounded by chunk size. Lift this exclusion once
-       * server-side gzip + per-batch artifact caching lands so the
-       * row-table path can stream compressed bytes instead of building
-       * a full in-memory CsvRow[].
-       */
-      const ROW_HYDRATION_EXCLUDED = new Set<string>([
-        "accountSolarGeneration",
-        "transferHistory",
-      ]);
+      void TABLES_BY_DATASET_KEY;
+      return null;
+      // eslint-disable-next-line no-unreachable -- legacy code path
+      // kept under the early-return so the next session can re-enable
+      // by deleting the `return null` once the streaming/cache path
+      // lands. Until then the bodies below are dead code.
       type RowTableKey = keyof typeof TABLES_BY_DATASET_KEY;
       const isRowTableKey = (k: string): k is RowTableKey =>
         Object.prototype.hasOwnProperty.call(TABLES_BY_DATASET_KEY, k);
       const rawDatasetKey: string = input.datasetKey;
       if (!isRowTableKey(rawDatasetKey)) {
-        return null;
-      }
-      if (ROW_HYDRATION_EXCLUDED.has(rawDatasetKey)) {
         return null;
       }
       const datasetKey: RowTableKey = rawDatasetKey;
