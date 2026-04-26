@@ -755,29 +755,28 @@ export const solarRecDashboardRouter = t.router({
       });
     }),
   /**
-   * Direct row-table hydration for the 7 datasets backed by `srDs*`
-   * tables. Skips the chunked-CSV fetch + reassembly + client-side CSV
-   * parse path entirely — those rows already live as parsed records in
-   * the active import batch.
+   * Direct row-table hydration for `srDs*`-backed datasets. Skips the
+   * chunked-CSV fetch + reassembly + client-side CSV parse path
+   * entirely — those rows already live as parsed records in the
+   * active import batch.
    *
    * Returns `null` when:
-   *   - the datasetKey isn't in the row-table-backed set (caller must
-   *     fall back to `getDatasetAssembled`); or
-   *   - no active batch exists for this scope/datasetKey (the dataset
-   *     hasn't been ingested via the new sync path yet — caller falls
-   *     back to chunked CSV).
+   *   - the datasetKey isn't in the row-table-backed set;
+   *   - the datasetKey is row-backed but **temporarily excluded** to
+   *     stay under Render's ~4 GB Node heap (currently
+   *     `accountSolarGeneration` and `transferHistory` — see
+   *     `ROW_HYDRATION_EXCLUDED` for the rationale and the lift
+   *     condition); or
+   *   - no active batch exists for this scope/datasetKey.
+   *
+   * In every `null` case the client falls through to
+   * `getDatasetAssembled` (#103), which is bounded by chunk size and
+   * therefore memory-safe.
    *
    * Returns `{ rows, headers, sources }` otherwise. The `rows` are
    * already deduped (dedup happens at parse time before persist), and
    * `sources` mirrors the `_rawSourcesV1` source list shape so the
    * client's "files loaded" count + force-sync UX still work.
-   *
-   * Why this matters: cold-cache hydration of the largest datasets
-   * (Account Solar Generation: 405k rows, Transfer History: 633k rows,
-   * Solar Applications: 32k rows) used to fetch 24 MB of chunked CSV +
-   * parse it in the browser. This endpoint streams the rows out of the
-   * DB in one query — closer to the <5s cold-load goal than even the
-   * `getDatasetAssembled` batched-fetch path.
    */
   getDatasetRowsFromSrDs: requirePermission("solar-rec-dashboard", "read")
     .input(
@@ -796,11 +795,38 @@ export const solarRecDashboardRouter = t.router({
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
       } as const;
+      /**
+       * Datasets temporarily excluded from row-table hydration because
+       * the JSON-serialized response payload is too large to fit
+       * Render's ~4 GB Node heap under parallel client fan-out:
+       *
+       *   - `accountSolarGeneration`: ~405k rows × ~30 columns + rawRow
+       *     JSON merge ≈ 600 MB peak per call. With 7 datasets
+       *     hydrating in parallel, V8's working set blew past 4 GB on
+       *     the first cold-cache request (2026-04-26 incident).
+       *   - `transferHistory`: ~633k rows. `loadDatasetRows` skips
+       *     rawRow for this table, but the typed-column response is
+       *     still ~125 MB per call — borderline alone, definitely
+       *     over budget when stacked with other tables.
+       *
+       * These two fall through to `getDatasetAssembled` (#103), which
+       * is memory-bounded by chunk size. Lift this exclusion once
+       * server-side gzip + per-batch artifact caching lands so the
+       * row-table path can stream compressed bytes instead of building
+       * a full in-memory CsvRow[].
+       */
+      const ROW_HYDRATION_EXCLUDED = new Set<string>([
+        "accountSolarGeneration",
+        "transferHistory",
+      ]);
       type RowTableKey = keyof typeof TABLES_BY_DATASET_KEY;
       const isRowTableKey = (k: string): k is RowTableKey =>
         Object.prototype.hasOwnProperty.call(TABLES_BY_DATASET_KEY, k);
       const rawDatasetKey: string = input.datasetKey;
       if (!isRowTableKey(rawDatasetKey)) {
+        return null;
+      }
+      if (ROW_HYDRATION_EXCLUDED.has(rawDatasetKey)) {
         return null;
       }
       const datasetKey: RowTableKey = rawDatasetKey;
