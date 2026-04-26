@@ -66,6 +66,8 @@ const providerAdapters: Record<string, () => Promise<ProviderAdapter>> = {
 
 /** Max time (ms) to wait for a single site's getSnapshots call before recording a timeout error. */
 const PER_SITE_TIMEOUT_MS = 30_000;
+const PROGRESS_UPDATE_SITE_INTERVAL = 250;
+const PROGRESS_UPDATE_MS = 10_000;
 
 /** Extract a human-readable label from a credential's metadata (username, account, apiKey prefix). */
 function extractCredentialLabel(
@@ -173,7 +175,7 @@ export async function executeProviderRun(
       const sites = await adapter.listSites(cred);
       if (sites.length === 0) continue;
 
-      const snapshots = await mapWithConcurrency(sites, 4, async (site) => {
+      const rowsToPersist = await mapWithConcurrency(sites, 4, async (site) => {
         const start = Date.now();
         try {
           // Wrap each site call with a timeout to prevent one slow API from blocking the batch
@@ -234,8 +236,6 @@ export async function executeProviderRun(
             };
           }
 
-          // Persist immediately and notify batch of incremental progress
-          await db.upsertMonitoringApiRun({ id: nanoid(), scopeId, ...row });
           options?.onSiteProgress?.({
             success: row.status === "success" ? 1 : 0,
             error: row.status === "error" ? 1 : 0,
@@ -249,7 +249,7 @@ export async function executeProviderRun(
               status: row.status,
             },
           });
-          return row;
+          return { id: nanoid(), scopeId, ...row };
         } catch (err) {
           error++;
           const row = {
@@ -266,12 +266,11 @@ export async function executeProviderRun(
             triggeredBy,
             triggeredAt: new Date(),
           };
-          await db.upsertMonitoringApiRun({ id: nanoid(), scopeId, ...row });
           options?.onSiteProgress?.({ success: 0, error: 1, noData: 0 });
-          return row;
+          return { id: nanoid(), scopeId, ...row };
         }
       });
-      // Results already persisted per-site above
+      await db.upsertMonitoringApiRuns(rowsToPersist);
     } catch (err) {
       console.error(`[Monitoring] Provider ${provider} credential ${cred.id} failed:`, err);
       const message = err instanceof Error ? err.message : String(err);
@@ -374,6 +373,26 @@ export async function executeMonitoringBatch(
     // is already persisted to the Performance Ratio dataset as stable
     // per-provider source entries in the `_rawSourcesV1` manifest format.
     const allCompletedRuns: MonitoringRunRow[] = [];
+    let lastProgressUpdateAt = 0;
+    let lastProgressUpdateSites = 0;
+    const maybePersistProgress = (force = false) => {
+      const now = Date.now();
+      if (
+        !force &&
+        totalSites - lastProgressUpdateSites < PROGRESS_UPDATE_SITE_INTERVAL &&
+        now - lastProgressUpdateAt < PROGRESS_UPDATE_MS
+      ) {
+        return;
+      }
+      lastProgressUpdateAt = now;
+      lastProgressUpdateSites = totalSites;
+      db.updateMonitoringBatchRun(batchId, {
+        totalSites,
+        successCount: totalSuccess,
+        errorCount: totalError,
+        noDataCount: totalNoData,
+      }).catch(() => {});
+    };
 
     let providersCompleted = 0;
     for (const provider of providers) {
@@ -409,13 +428,7 @@ export async function executeMonitoringBatch(
             totalNoData += delta.noData;
             totalSites += delta.success + delta.error + delta.noData;
             if (delta.run) allCompletedRuns.push(delta.run);
-            // Fire-and-forget DB update — don't await to avoid slowing down the batch
-            db.updateMonitoringBatchRun(batchId, {
-              totalSites,
-              successCount: totalSuccess,
-              errorCount: totalError,
-              noDataCount: totalNoData,
-            }).catch(() => {});
+            maybePersistProgress();
           },
         }
       );
@@ -463,6 +476,7 @@ export async function executeMonitoringBatch(
         errorCount: totalError,
         noDataCount: totalNoData,
       });
+      maybePersistProgress(true);
     }
 
     // No final push needed — each provider writes/replaces its own source
