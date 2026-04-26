@@ -745,12 +745,17 @@ async function mapWithBoundedConcurrency<TInput, TOutput>(
 const REMOTE_WRITE_CONCURRENCY = 4;
 /**
  * Remote hydrate used to fan out very aggressively across datasets,
- * source files, and chunk reads. That improved throughput on good
- * networks, but on large portfolios it also created big short-lived
- * memory spikes in Chrome. Keep reads parallel, just not explosively
- * parallel.
+ * source files, and chunk reads. The previous value of 1 was set after
+ * an explosively-parallel version (50+ concurrent) caused memory spikes
+ * in Chrome on cold-cache hydration of large portfolios. But strict
+ * serial reads make cold-cache hydration take minutes for a portfolio
+ * with 2k+ chunks — concurrency=8 is the safe middle ground: 8x
+ * throughput, ~8 × 250KB ≈ 2MB peak chunk-buffer pressure, still well
+ * below memory-spike territory. See the get-dataset-assembled batch
+ * endpoint for the longer-term fix that collapses chunk fan-out
+ * server-side.
  */
-const REMOTE_READ_CONCURRENCY = 1;
+const REMOTE_READ_CONCURRENCY = 8;
 /** Byte slice size for streamed remote file uploads. Keeps browser memory bounded. */
 const REMOTE_FILE_STREAM_SLICE_BYTES = 256 * 1024;
 
@@ -2116,6 +2121,13 @@ export default function SolarRecDashboard() {
     );
   const saveRemoteDashboardState = trpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = trpc.solarRecDashboard.getDataset.useMutation();
+  // Single-roundtrip batch read of a whole dataset (manifest + every
+  // source's assembled payload). Used by cold-cache hydration to avoid
+  // the per-chunk fan-out that turns 18-dataset loads into 2000+ tRPC
+  // calls. Falls back to per-key getDataset if the batch endpoint
+  // errors or returns nothing usable.
+  const getRemoteDatasetAssembled =
+    trpc.solarRecDashboard.getDatasetAssembled.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
   // Atomic read-merge-write for the convertedReads manifest. Used in place
   // of saveRemoteDataset when key === "convertedReads" so server-managed
@@ -2401,6 +2413,8 @@ export default function SolarRecDashboard() {
   saveRemoteDashboardStateRef.current = saveRemoteDashboardState;
   const getRemoteDatasetRef = useRef(getRemoteDataset);
   getRemoteDatasetRef.current = getRemoteDataset;
+  const getRemoteDatasetAssembledRef = useRef(getRemoteDatasetAssembled);
+  getRemoteDatasetAssembledRef.current = getRemoteDatasetAssembled;
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
   const syncConvertedReadsUserSourcesRef = useRef(syncConvertedReadsUserSources);
@@ -5137,31 +5151,80 @@ export default function SolarRecDashboard() {
           const debug = isSolarRecDebugEnabled();
           const t0 = debug ? performance.now() : 0;
           try {
-            const loadedPayload = await loadPayloadByKey(rawKey);
-            if (!loadedPayload?.payload) {
-              if (debug) {
-                const ms = Math.round(performance.now() - t0);
-                // eslint-disable-next-line no-console
-                console.log(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (no payload)`);
+            // Prefer the single-roundtrip batch endpoint
+            // (`getDatasetAssembled`). It collapses the entire dataset's
+            // chunk-fetch fan-out (manifest + every source's chunks)
+            // into one tRPC call. Fall back to the per-key fetch path
+            // if the endpoint errors or returns nothing usable —
+            // preserves correctness on legacy data and during partial
+            // rollouts.
+            let datasetPayload: string | null = null;
+            let topChunkKeys: string[] = [];
+            let assembledSources: Map<string, string> | null = null;
+
+            try {
+              const batched = await withRetry(
+                () =>
+                  getRemoteDatasetAssembledRef.current.mutateAsync({
+                    datasetKey: rawKey,
+                  }),
+                3,
+                250
+              );
+              if (batched?.topPayload) {
+                datasetPayload = batched.topPayload;
+                if (Array.isArray(batched.sources)) {
+                  assembledSources = new Map();
+                  for (const entry of batched.sources) {
+                    if (entry && typeof entry.storageKey === "string") {
+                      assembledSources.set(entry.storageKey, entry.payload ?? "");
+                    }
+                  }
+                }
               }
-              return;
+            } catch {
+              // Fall through to the per-key path below.
             }
-            const datasetPayload = loadedPayload.payload;
-            loadedChunkKeys[rawKey] = loadedPayload.chunkKeys;
+
+            if (datasetPayload === null) {
+              const loadedPayload = await loadPayloadByKey(rawKey);
+              if (!loadedPayload?.payload) {
+                if (debug) {
+                  const ms = Math.round(performance.now() - t0);
+                  // eslint-disable-next-line no-console
+                  console.log(`${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (no payload)`);
+                }
+                return;
+              }
+              datasetPayload = loadedPayload.payload;
+              topChunkKeys = loadedPayload.chunkKeys;
+            }
+            loadedChunkKeys[rawKey] = topChunkKeys;
 
             const sourceManifest = parseRemoteSourceManifestPayload(datasetPayload);
             if (sourceManifest) {
-              // Fetch every source's payload in parallel, then parse in
-              // parallel, preserving the original manifest order so
-              // "latest source" semantics match what the sync path wrote.
+              // Per-source: prefer the batch-assembled payload (cheap
+              // map lookup); fall back to per-key fetch only if that
+              // source wasn't in the batch result. Parsing still runs
+              // in parallel so we don't block on the slowest CSV.
               const sourcePayloads = await mapWithBoundedConcurrency(
                 sourceManifest.sources,
                 REMOTE_READ_CONCURRENCY,
                 async (source) => {
                   if (cancelled) return null;
-                  const sourcePayload = await loadPayloadByKey(source.storageKey);
-                  if (!sourcePayload?.payload) return null;
-                  const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayload.payload);
+                  let sourcePayloadText: string | null = null;
+                  let sourceChunkKeys: string[] = [];
+                  if (assembledSources?.has(source.storageKey)) {
+                    sourcePayloadText =
+                      assembledSources.get(source.storageKey) ?? null;
+                  } else {
+                    const sourcePayload = await loadPayloadByKey(source.storageKey);
+                    if (!sourcePayload?.payload) return null;
+                    sourcePayloadText = sourcePayload.payload;
+                    sourceChunkKeys = sourcePayload.chunkKeys;
+                  }
+                  if (!sourcePayloadText) return null;
+                  const parsed = await parseSourcePayloadForDataset(rawKey, source, sourcePayloadText);
                   if (!parsed) return null;
                   return {
                     source: {
@@ -5169,7 +5232,7 @@ export default function SolarRecDashboard() {
                       chunkKeys:
                         source.chunkKeys && source.chunkKeys.length > 0
                           ? source.chunkKeys
-                          : sourcePayload.chunkKeys,
+                          : sourceChunkKeys,
                     },
                     parsed,
                   };
