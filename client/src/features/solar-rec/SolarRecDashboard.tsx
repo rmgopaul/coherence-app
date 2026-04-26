@@ -2128,6 +2128,14 @@ export default function SolarRecDashboard() {
   // errors or returns nothing usable.
   const getRemoteDatasetAssembled =
     trpc.solarRecDashboard.getDatasetAssembled.useMutation();
+  // Direct row-table hydration for the 7 core datasets (Solar
+  // Applications / Account Solar Generation / Transfer History /
+  // ABP Report / Generation Entry / Contracted Date / Delivery
+  // Schedule). Skips chunked-CSV fetch + client-side parse entirely.
+  // Returns null when the key isn't row-backed or no active batch
+  // exists — caller falls through to getDatasetAssembled.
+  const getRemoteDatasetRowsFromSrDs =
+    trpc.solarRecDashboard.getDatasetRowsFromSrDs.useMutation();
   const saveRemoteDataset = trpc.solarRecDashboard.saveDataset.useMutation();
   // Atomic read-merge-write for the convertedReads manifest. Used in place
   // of saveRemoteDataset when key === "convertedReads" so server-managed
@@ -2415,6 +2423,8 @@ export default function SolarRecDashboard() {
   getRemoteDatasetRef.current = getRemoteDataset;
   const getRemoteDatasetAssembledRef = useRef(getRemoteDatasetAssembled);
   getRemoteDatasetAssembledRef.current = getRemoteDatasetAssembled;
+  const getRemoteDatasetRowsFromSrDsRef = useRef(getRemoteDatasetRowsFromSrDs);
+  getRemoteDatasetRowsFromSrDsRef.current = getRemoteDatasetRowsFromSrDs;
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
   const syncConvertedReadsUserSourcesRef = useRef(syncConvertedReadsUserSources);
@@ -5151,7 +5161,68 @@ export default function SolarRecDashboard() {
           const debug = isSolarRecDebugEnabled();
           const t0 = debug ? performance.now() : 0;
           try {
-            // Prefer the single-roundtrip batch endpoint
+            // Fastest path: the 7 core datasets are persisted as parsed
+            // rows in the `srDs*` tables (Account Solar Generation /
+            // Transfer History / Solar Applications etc.). Reading them
+            // directly from those tables skips the chunked-CSV fetch +
+            // reassembly + client-side parse entirely. Returns null
+            // when the dataset isn't row-backed or has no active batch
+            // — caller falls through to the chunked-CSV path below.
+            if (CORE_DATASET_KEYS_FOR_SNAPSHOT.has(rawKey)) {
+              try {
+                const rowResponse = await withRetry(
+                  () =>
+                    getRemoteDatasetRowsFromSrDsRef.current.mutateAsync({
+                      datasetKey: rawKey,
+                    }),
+                  3,
+                  250
+                );
+                if (rowResponse && Array.isArray(rowResponse.rows)) {
+                  const rowsTyped = rowResponse.rows as CsvRow[];
+                  const headersTyped = Array.isArray(rowResponse.headers)
+                    ? (rowResponse.headers as string[])
+                    : [];
+                  const sourcesMeta = Array.isArray(rowResponse.sources)
+                    ? rowResponse.sources
+                    : [];
+                  if (rowsTyped.length > 0 || sourcesMeta.length > 0) {
+                    const sourceRows = sourcesMeta.map((s) => ({
+                      fileName: s.fileName,
+                      uploadedAt: new Date(s.uploadedAt),
+                      rowCount: s.rowCount,
+                    }));
+                    const latestSource =
+                      sourceRows[sourceRows.length - 1] ?? null;
+                    loadedDatasets[rawKey] = {
+                      fileName:
+                        sourceRows.length > 1
+                          ? `${sourceRows.length} files loaded`
+                          : latestSource?.fileName ??
+                            `${DATASET_DEFINITIONS[rawKey].label} upload`,
+                      uploadedAt: latestSource?.uploadedAt ?? new Date(),
+                      headers: headersTyped,
+                      rows: rowsTyped,
+                      sources: sourceRows,
+                    };
+                    loadedSignatures[rawKey] = `srDs:${rowResponse.batchId ?? ""}|${rowsTyped.length}`;
+                    loadedChunkKeys[rawKey] = [];
+                    if (debug) {
+                      const ms = Math.round(performance.now() - t0);
+                      // eslint-disable-next-line no-console
+                      console.log(
+                        `${HYDRATE_LOG_PREFIX_CLOUD} ${rawKey} ${ms}ms (srDs rows=${rowsTyped.length})`
+                      );
+                    }
+                    return;
+                  }
+                }
+              } catch {
+                // Fall through to the chunked-CSV path on any error.
+              }
+            }
+
+            // Next-best path: the single-roundtrip batch endpoint
             // (`getDatasetAssembled`). It collapses the entire dataset's
             // chunk-fetch fan-out (manifest + every source's chunks)
             // into one tRPC call. Fall back to the per-key fetch path

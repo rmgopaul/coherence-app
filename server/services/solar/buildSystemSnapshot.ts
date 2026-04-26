@@ -131,8 +131,13 @@ const SKIP_RAW_ROW_TABLES = new Set<string>([
 /**
  * Load rows from a dataset table and reconstruct CsvRow[] from
  * typed columns + rawRow JSON. Works with any of the 7 tables.
+ *
+ * Exported so `getDatasetRowsFromSrDs` can reuse the exact CsvRow
+ * reconstruction (typed-column → CSV-key remap + rawRow merge) — both
+ * call sites need identical output and the remap table is the only
+ * source of truth.
  */
-async function loadDatasetRows(
+export async function loadDatasetRows(
   scopeId: string,
   batchId: string | null,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types are complex unions
