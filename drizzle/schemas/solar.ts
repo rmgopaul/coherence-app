@@ -213,6 +213,13 @@ export const contractScanJobs = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: int("userId").notNull(),
+    // Task 5.7 PR-A (2026-04-26): scope tenancy key. Backfilled to
+    // `scope-user-${userId}` for existing rows so the single-tenant
+    // production state is preserved. New jobs set this from
+    // `resolveSolarRecScopeId()` (computed at the proc layer until
+    // Task 5.7 PR-B moves the procs onto the standalone router with
+    // `ctx.scopeId` available directly).
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     status: mysqlEnum("status", [
       "queued",
       "running",
@@ -236,6 +243,7 @@ export const contractScanJobs = mysqlTable(
   },
   (table) => ({
     userIdx: index("contract_scan_jobs_user_idx").on(table.userId),
+    scopeIdx: index("contract_scan_jobs_scope_idx").on(table.scopeId),
     statusIdx: index("contract_scan_jobs_status_idx").on(table.status),
   })
 );
@@ -250,6 +258,10 @@ export const contractScanJobCsgIds = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.7 PR-A (2026-04-26): denormalized scope tenancy key.
+    // Mirrors the parent job's scopeId. Backfilled via UPDATE…JOIN
+    // contractScanJobs in the migration.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     csgId: varchar("csgId", { length: 64 }).notNull(),
   },
   (table) => ({
@@ -258,6 +270,7 @@ export const contractScanJobCsgIds = mysqlTable(
       table.csgId
     ),
     jobIdx: index("contract_scan_job_csg_ids_job_idx").on(table.jobId),
+    scopeIdx: index("contract_scan_job_csg_ids_scope_idx").on(table.scopeId),
   })
 );
 
@@ -272,6 +285,10 @@ export const contractScanResults = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.7 PR-A (2026-04-26): denormalized scope tenancy key.
+    // Mirrors the parent job's scopeId. Backfilled via UPDATE…JOIN
+    // contractScanJobs in the migration.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     csgId: varchar("csgId", { length: 64 }).notNull(),
     systemName: varchar("systemName", { length: 255 }),
     vendorFeePercent: double("vendorFeePercent"),
@@ -305,6 +322,7 @@ export const contractScanResults = mysqlTable(
       table.csgId
     ),
     csgIdx: index("contract_scan_results_csg_idx").on(table.csgId),
+    scopeIdx: index("contract_scan_results_scope_idx").on(table.scopeId),
   })
 );
 

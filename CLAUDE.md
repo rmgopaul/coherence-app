@@ -70,8 +70,14 @@ stop and discuss the migration timing first.
   `scope-user-${userId}` UPDATE…JOIN, and switched
   `getLatestScheduleBImportJob` /
   `getOrCreateLatestScheduleBImportJob` to filter by scope.
-- Contract scan runner + ContractScanner + ContractScrapeManager —
-  Task 5.7
+- ~~Contract scan runner + ContractScanner + ContractScrapeManager —
+  Task 5.7~~ **PARTIAL 2026-04-26.** PR-A added `scopeId` to the 3
+  `contractScan*` tables, backfilled, switched DB helpers + procs to
+  filter by scope. **Remaining (PR-B)**: move procs from main
+  `abpSettlementRouter` to standalone with `requirePermission(
+  "contract-scanner" | "contract-scrape-manager", level)`; move
+  `ContractScanner` and `ContractScrapeManager` pages to
+  `client/src/solar-rec/pages/`.
 - DIN scrape runner + DinScrapeManager — Task 5.8
 - ABP Invoice Settlement — Task 5.9
 - Early Payment + Invoice Match Dashboard — Task 5.10

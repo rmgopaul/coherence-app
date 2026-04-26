@@ -20,6 +20,7 @@ import {
 
 export async function createContractScanJob(data: {
   userId: number;
+  scopeId: string;
   totalContracts: number;
 }) {
   const db = await getDb();
@@ -31,6 +32,7 @@ export async function createContractScanJob(data: {
       await db.insert(contractScanJobs).values({
         id,
         userId: data.userId,
+        scopeId: data.scopeId,
         status: "queued",
         totalContracts: data.totalContracts,
         successCount: 0,
@@ -53,6 +55,30 @@ export async function createContractScanJob(data: {
   return id;
 }
 
+/**
+ * Resolve the scopeId for a job by reading the parent
+ * `contractScanJobs` row. Used by insert helpers in this module that
+ * take a `jobId` but need to set `scopeId` on the new child row to
+ * satisfy the post-Task-5.7-PR-A NOT NULL constraint.
+ */
+async function resolveScopeIdForJob(jobId: string): Promise<string> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database unavailable");
+  }
+  const [row] = await db
+    .select({ scopeId: contractScanJobs.scopeId })
+    .from(contractScanJobs)
+    .where(eq(contractScanJobs.id, jobId))
+    .limit(1);
+  if (!row?.scopeId) {
+    throw new Error(
+      `Contract scan job ${jobId} has no scopeId — backfill migration may not have run`
+    );
+  }
+  return row.scopeId;
+}
+
 export async function getContractScanJob(id: string) {
   const db = await getDb();
   if (!db) return null;
@@ -66,14 +92,14 @@ export async function getContractScanJob(id: string) {
   });
 }
 
-export async function getLatestContractScanJob(userId: number) {
+export async function getLatestContractScanJob(scopeId: string) {
   const db = await getDb();
   if (!db) return null;
   return withDbRetry("get latest contract scan job", async () => {
     const [row] = await db
       .select()
       .from(contractScanJobs)
-      .where(eq(contractScanJobs.userId, userId))
+      .where(eq(contractScanJobs.scopeId, scopeId))
       .orderBy(desc(contractScanJobs.createdAt))
       .limit(1);
     return row ?? null;
@@ -81,7 +107,7 @@ export async function getLatestContractScanJob(userId: number) {
 }
 
 export async function listContractScanJobs(
-  userId: number,
+  scopeId: string,
   limit = 20
 ) {
   const db = await getDb();
@@ -90,7 +116,7 @@ export async function listContractScanJobs(
     db
       .select()
       .from(contractScanJobs)
-      .where(eq(contractScanJobs.userId, userId))
+      .where(eq(contractScanJobs.scopeId, scopeId))
       .orderBy(desc(contractScanJobs.createdAt))
       .limit(limit)
   );
@@ -147,6 +173,7 @@ export async function bulkInsertContractScanJobCsgIds(
 ) {
   const db = await getDb();
   if (!db) return;
+  const scopeId = await resolveScopeIdForJob(jobId);
   // Insert in batches of 500 to avoid query size limits
   const batchSize = 500;
   for (let i = 0; i < csgIds.length; i += batchSize) {
@@ -158,6 +185,7 @@ export async function bulkInsertContractScanJobCsgIds(
           batch.map((csgId) => ({
             id: nanoid(),
             jobId,
+            scopeId,
             csgId,
           }))
         );
@@ -177,9 +205,11 @@ export async function insertContractScanResult(
   await ensureContractScanOverrideColumns();
   // Truncate milliseconds from scannedAt for TiDB timestamp compatibility
   const scannedAt = data.scannedAt ? new Date(Math.floor(data.scannedAt.getTime() / 1000) * 1000) : new Date();
+  const scopeId = data.scopeId ?? (await resolveScopeIdForJob(data.jobId));
   const row = {
     id: data.id ?? nanoid(),
     jobId: data.jobId,
+    scopeId,
     csgId: data.csgId,
     systemName: data.systemName ?? null,
     vendorFeePercent: data.vendorFeePercent ?? null,
@@ -220,7 +250,7 @@ export async function insertContractScanResult(
         .limit(1);
 
       if (existing.length > 0) {
-        const { id: _id, jobId: _jobId, csgId: _csgId, ...updateFields } = row;
+        const { id: _id, jobId: _jobId, scopeId: _scopeId, csgId: _csgId, ...updateFields } = row;
         await db
           .update(contractScanResults)
           .set(updateFields)
@@ -306,17 +336,16 @@ export async function getAllContractScanResultsForJob(jobId: string) {
 
 /**
  * Returns the latest successful contractScanResults row per csgId,
- * filtered to scan jobs owned by the given user.
+ * filtered to the given scope.
  *
- * IMPORTANT: contractScanResults has no userId column of its own — it
- * links to a user via contractScanJobs.userId. Earlier versions of
- * this function omitted the JOIN and returned ANY user's scan
- * results matching the csgIds, which was a cross-tenant data
- * leakage bug AND an obstacle to correctly attributing data on the
- * Financials tab. The userId parameter is now required.
+ * Pre-Task-5.7-PR-A this function joined `contractScanJobs` and
+ * filtered by `contractScanJobs.userId` for cross-tenant isolation.
+ * After Task 5.7 PR-A's denormalization, `contractScanResults.scopeId`
+ * is set directly on every row, so the JOIN is dropped — equivalent
+ * isolation, one fewer table scanned per query.
  */
 export async function getLatestScanResultsByCsgIds(
-  userId: number,
+  scopeId: string,
   csgIds: string[]
 ) {
   const db = await getDb();
@@ -336,45 +365,11 @@ export async function getLatestScanResultsByCsgIds(
       `get latest scan results batch ${i}`,
       async () =>
         db
-          .select({
-            id: contractScanResults.id,
-            jobId: contractScanResults.jobId,
-            csgId: contractScanResults.csgId,
-            systemName: contractScanResults.systemName,
-            vendorFeePercent: contractScanResults.vendorFeePercent,
-            additionalCollateralPercent:
-              contractScanResults.additionalCollateralPercent,
-            ccAuthorizationCompleted:
-              contractScanResults.ccAuthorizationCompleted,
-            additionalFivePercentSelected:
-              contractScanResults.additionalFivePercentSelected,
-            ccCardAsteriskCount: contractScanResults.ccCardAsteriskCount,
-            paymentMethod: contractScanResults.paymentMethod,
-            payeeName: contractScanResults.payeeName,
-            mailingAddress1: contractScanResults.mailingAddress1,
-            mailingAddress2: contractScanResults.mailingAddress2,
-            cityStateZip: contractScanResults.cityStateZip,
-            recQuantity: contractScanResults.recQuantity,
-            recPrice: contractScanResults.recPrice,
-            acSizeKw: contractScanResults.acSizeKw,
-            dcSizeKw: contractScanResults.dcSizeKw,
-            pdfUrl: contractScanResults.pdfUrl,
-            pdfFileName: contractScanResults.pdfFileName,
-            error: contractScanResults.error,
-            scannedAt: contractScanResults.scannedAt,
-            overrideVendorFeePercent: contractScanResults.overrideVendorFeePercent,
-            overrideAdditionalCollateralPercent: contractScanResults.overrideAdditionalCollateralPercent,
-            overrideNotes: contractScanResults.overrideNotes,
-            overriddenAt: contractScanResults.overriddenAt,
-          })
+          .select()
           .from(contractScanResults)
-          .innerJoin(
-            contractScanJobs,
-            eq(contractScanResults.jobId, contractScanJobs.id)
-          )
           .where(
             and(
-              eq(contractScanJobs.userId, userId),
+              eq(contractScanResults.scopeId, scopeId),
               sql`${contractScanResults.csgId} IN (${sql.join(
                 batch.map((id) => sql`${id}`),
                 sql`, `
@@ -402,7 +397,7 @@ export async function getLatestScanResultsByCsgIds(
 // ── Contract Scan Overrides ───────────────────────────────────────
 
 export async function updateContractScanResultOverrides(
-  userId: number,
+  scopeId: string,
   csgId: string,
   overrides: {
     vendorFeePercent?: number | null;
@@ -414,14 +409,14 @@ export async function updateContractScanResultOverrides(
   if (!db) return null;
   await ensureContractScanOverrideColumns();
 
-  // Find the latest result for this user+csgId (joins to jobs for isolation)
+  // Find the latest result for this scope+csgId. Post-Task-5.7-PR-A
+  // contractScanResults.scopeId is denormalized so no JOIN needed.
   const results = await db
     .select({ id: contractScanResults.id })
     .from(contractScanResults)
-    .innerJoin(contractScanJobs, eq(contractScanResults.jobId, contractScanJobs.id))
     .where(
       and(
-        eq(contractScanJobs.userId, userId),
+        eq(contractScanResults.scopeId, scopeId),
         eq(contractScanResults.csgId, csgId),
         sql`${contractScanResults.error} IS NULL`
       )

@@ -225,6 +225,7 @@ export async function runContractScanJob(
           await insertContractScanResult({
             id: nanoid(),
             jobId: id,
+            scopeId: job.scopeId,
             csgId,
             systemName:
               (extraction?.systemName as string) ?? null,

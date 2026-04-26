@@ -20,6 +20,13 @@ import {
   updateContractScanResultOverrides,
   upsertIntegration,
 } from "../db";
+// Task 5.7 PR-A (2026-04-26): contract-scan tables are now scope-keyed.
+// Until Task 5.7 PR-B moves these procedures onto the standalone Solar
+// REC router (where `ctx.scopeId` is part of the context), the procs
+// resolve scope inline via the canonical helper. Single-tenant prod
+// returns `scope-user-${ownerUserId}` so this matches what
+// `getLatestContractScanJob` etc. now filter on.
+import { resolveSolarRecScopeId } from "../_core/solarRecAuth";
 import {
   CSG_PORTAL_PROVIDER,
   parseCsgPortalMetadata,
@@ -310,8 +317,10 @@ export const abpSettlementRouter = router({
         throw new Error("At least one CSG ID is required.");
       }
 
+      const scopeId = await resolveSolarRecScopeId();
       const jobId = await createContractScanJob({
         userId: ctx.user.id,
+        scopeId,
         totalContracts: uniqueIds.length,
       });
 
@@ -410,8 +419,9 @@ export const abpSettlementRouter = router({
         .object({ limit: z.number().int().min(1).max(50).optional() })
         .optional()
     )
-    .query(async ({ ctx, input }) => {
-      return listContractScanJobs(ctx.user.id, input?.limit ?? 20);
+    .query(async ({ input }) => {
+      const scopeId = await resolveSolarRecScopeId();
+      return listContractScanJobs(scopeId, input?.limit ?? 20);
     }),
 
   getDbContractScanResults: protectedProcedure
@@ -492,15 +502,14 @@ export const abpSettlementRouter = router({
         csgIds: z.array(z.string().min(1).max(64)).min(1).max(50000),
       })
     )
-    .query(async ({ ctx, input }) => {
-      // user-isolation fix 2026-04-11: previously this called
-      // getLatestScanResultsByCsgIds(input.csgIds) without a user
-      // filter, which returned ANY user's contract scan results
-      // matching those csgIds (cross-tenant data leakage).
-      // contractScanResults links to a user via contractScanJobs.userId,
-      // so the helper now requires a userId param and JOINs through
-      // the jobs table.
-      return getLatestScanResultsByCsgIds(ctx.user.id, input.csgIds);
+    .query(async ({ input }) => {
+      // Cross-tenant isolation: post-Task-5.7-PR-A
+      // contractScanResults.scopeId is denormalized so the helper
+      // filters by scopeId directly (no JOIN through contractScanJobs
+      // needed). The earlier 2026-04-11 `userId`-based JOIN fix is
+      // superseded by per-scope filtering.
+      const scopeId = await resolveSolarRecScopeId();
+      return getLatestScanResultsByCsgIds(scopeId, input.csgIds);
     }),
 
   updateContractOverride: protectedProcedure
@@ -512,8 +521,9 @@ export const abpSettlementRouter = router({
         notes: z.string().max(512).nullable().optional(),
       })
     )
-    .mutation(async ({ ctx, input }) => {
-      const result = await updateContractScanResultOverrides(ctx.user.id, input.csgId, {
+    .mutation(async ({ input }) => {
+      const scopeId = await resolveSolarRecScopeId();
+      const result = await updateContractScanResultOverrides(scopeId, input.csgId, {
         vendorFeePercent: input.vendorFeePercent ?? null,
         additionalCollateralPercent: input.additionalCollateralPercent ?? null,
         notes: input.notes ?? null,
@@ -550,7 +560,8 @@ export const abpSettlementRouter = router({
       const extraction = await extractContractDataFromPdfBuffer(fetchResult.pdfData, fetchResult.pdfFileName || `contract-${input.csgId}.pdf`);
 
       // 3. Get a job ID to associate the result with
-      const latestJob = await getLatestContractScanJob(ctx.user.id);
+      const scopeId = await resolveSolarRecScopeId();
+      const latestJob = await getLatestContractScanJob(scopeId);
       if (!latestJob) {
         throw new Error("No contract scan job exists. Run a contract scan first, then re-scan individual systems.");
       }
@@ -559,6 +570,7 @@ export const abpSettlementRouter = router({
       await insertContractScanResult({
         id: nanoid(),
         jobId: latestJob.id,
+        scopeId: latestJob.scopeId,
         csgId: input.csgId,
         systemName: extraction.systemName ?? null,
         vendorFeePercent: extraction.vendorFeePercent ?? null,
