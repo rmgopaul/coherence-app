@@ -831,7 +831,12 @@ export const solarRecDashboardRouter = t.router({
       const { getRawDatasetCloudStatuses } = await import(
         "../services/solar/datasetCloudStatus"
       );
-      const uniqueKeys = Array.from(new Set(input.keys));
+      // Annotate explicitly: CI's tsc was inferring this as a narrower
+      // SrDsDatasetKey union from downstream context (works locally on
+      // the same TS 5.9.3 + lockfile; differs only in the CI Node
+      // version). `getRawDatasetCloudStatuses` accepts `string[]` so
+      // the annotation matches the signature precisely.
+      const uniqueKeys: string[] = Array.from(new Set(input.keys));
       const statuses = await getRawDatasetCloudStatuses(uniqueKeys, (datasetKey) =>
         resolveDatasetUserId(datasetKey, ctx.userId)
       );
