@@ -81,6 +81,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "solaredge",
   "teslaPowerhub",
   "sunpower",
+  "egauge",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
