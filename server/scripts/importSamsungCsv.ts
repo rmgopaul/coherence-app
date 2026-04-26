@@ -240,7 +240,7 @@ function aggregate(dir: string): ImportEntry[] {
     console.warn("oxygen_saturation CSV not found — SpO2 will be null");
   }
 
-  const sortedDateKeys = [...days.keys()].sort();
+  const sortedDateKeys = Array.from(days.keys()).sort();
   return sortedDateKeys.map((dateKey) => {
     const d = days.get(dateKey)!;
     const sleepHours =
