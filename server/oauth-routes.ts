@@ -7,6 +7,7 @@ import {
   addSamsungSyncPayload,
   getLatestSamsungSyncPayload,
   upsertSamsungDailyMetric,
+  getDailyMetricsHistory,
   getDb,
 } from "./db";
 import { samsungSyncPayloads } from "../drizzle/schema";
@@ -705,9 +706,7 @@ router.post("/webhooks/samsung-health/batch", async (req, res) => {
       });
     }
 
-    // Sort chronologically so the *last* payload is the newest; we let
-    // only the newest payload touch the live summary so a backfill
-    // doesn't overwrite a fresher sync.
+    // Sort chronologically (oldest → newest) for stable processing.
     const sorted = [...payloads].sort((a, b) => {
       const aDate = typeof a === "object" && a && "date" in (a as Record<string, unknown>)
         ? String((a as Record<string, unknown>).date ?? "")
@@ -718,13 +717,54 @@ router.post("/webhooks/samsung-health/batch", async (req, res) => {
       return aDate.localeCompare(bDate);
     });
 
+    // Only the payload whose date matches the live summary's "today"
+    // should update the integration's live summary. Earlier code used
+    // `isLast = (i === sorted.length - 1)` on the assumption that the
+    // most recent payload in a batch is always today. That assumption
+    // breaks for the historical worker: it explicitly excludes today
+    // (today is owned by the periodic single-day sync), so the batch's
+    // "last" is yesterday — and tagging yesterday as the live summary
+    // overwrites today's data on the dashboard. (2026-04-26 bug.)
+    //
+    // Compute today's dateKey from the request server side. We use the
+    // first payload's `timezone` if it carries one — Android sends
+    // `ZoneId.systemDefault()` — otherwise fall back to UTC. If the
+    // batch contains today, that one payload updates the live summary;
+    // if it doesn't, the live summary is left alone for the periodic
+    // single-day sync to manage.
+    const firstPayloadTz = (() => {
+      const first = sorted[0];
+      if (first && typeof first === "object" && "timezone" in (first as Record<string, unknown>)) {
+        const tz = (first as Record<string, unknown>).timezone;
+        if (typeof tz === "string" && tz.length > 0) return tz;
+      }
+      return "UTC";
+    })();
+    let todayDateKey: string;
+    try {
+      const fmt = new Intl.DateTimeFormat("en-CA", {
+        timeZone: firstPayloadTz,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      todayDateKey = fmt.format(new Date());
+    } catch {
+      todayDateKey = new Date().toISOString().slice(0, 10);
+    }
+
     const accepted: string[] = [];
     const rejected: Array<{ index: number; error: string }> = [];
 
     for (let i = 0; i < sorted.length; i++) {
-      const isLast = i === sorted.length - 1;
-      const result = await ingestSamsungPayload(auth.userId, sorted[i], {
-        updateLiveSummary: isLast,
+      const payload = sorted[i];
+      const payloadDate =
+        typeof payload === "object" && payload && "date" in (payload as Record<string, unknown>)
+          ? String((payload as Record<string, unknown>).date ?? "")
+          : "";
+      const isToday = payloadDate === todayDateKey;
+      const result = await ingestSamsungPayload(auth.userId, payload, {
+        updateLiveSummary: isToday,
       });
       if ("error" in result) {
         rejected.push({ index: i, error: result.error });
@@ -811,6 +851,14 @@ router.get("/webhooks/samsung-health/debug", async (req, res) => {
       .orderBy(desc(samsungSyncPayloads.capturedAt))
       .limit(limit);
 
+    // Surface the daily roll-up rows that the phone + CSV export read
+    // from. samsungSyncPayloads above tells us what the webhook ingest
+    // received; dailyHealthMetrics tells us whether `upsertSamsungDailyMetric`
+    // actually wrote a row per dateKey. If the two diverge for the
+    // same dates, the daily upsert is silently failing and historical
+    // backfill won't surface in the dashboard.
+    const dailyMetricsRows = await getDailyMetricsHistory(auth.userId, Math.min(limit * 5, 200));
+
     const latestPayload = await getLatestSamsungSyncPayload(auth.userId);
     let latestPayloadParsed: Record<string, unknown> | null = null;
     if (latestPayload?.payload) {
@@ -862,6 +910,16 @@ router.get("/webhooks/samsung-health/debug", async (req, res) => {
         capturedAt: row.capturedAt,
       })),
       totalRecentPayloads: recentPayloads.length,
+      dailyMetrics: dailyMetricsRows.map((row) => ({
+        dateKey: row.dateKey,
+        samsungSteps: row.samsungSteps,
+        samsungSleepHours: row.samsungSleepHours,
+        samsungSpo2AvgPercent: row.samsungSpo2AvgPercent,
+        samsungSleepScore: row.samsungSleepScore,
+        samsungEnergyScore: row.samsungEnergyScore,
+        updatedAt: row.updatedAt,
+      })),
+      totalDailyMetrics: dailyMetricsRows.length,
     });
   } catch (error) {
     console.error("[Samsung Health Webhook Debug] Error:", error);
