@@ -8,8 +8,13 @@ import { and, eq, sql } from "drizzle-orm";
 import {
   scheduleBImportFiles,
   scheduleBImportResults,
-  srDsTransferHistory,
+  srDsAbpReport,
+  srDsAccountSolarGeneration,
+  srDsContractedDate,
   srDsDeliverySchedule,
+  srDsGenerationEntry,
+  srDsSolarApplications,
+  srDsTransferHistory,
   solarRecActiveDatasetVersions,
   solarRecImportBatches,
   solarRecImportFiles,
@@ -745,6 +750,169 @@ export const solarRecDashboardRouter = router({
           _checkpoint: "getDatasetAssembled-v1",
           datasetKey: input.datasetKey,
           topPayload,
+          sources,
+        };
+      });
+    }),
+  /**
+   * Direct row-table hydration for the 7 datasets backed by `srDs*`
+   * tables. Skips the chunked-CSV fetch + reassembly + client-side CSV
+   * parse path entirely — those rows already live as parsed records in
+   * the active import batch.
+   *
+   * Returns `null` when:
+   *   - the datasetKey isn't in the row-table-backed set (caller must
+   *     fall back to `getDatasetAssembled`); or
+   *   - no active batch exists for this scope/datasetKey (the dataset
+   *     hasn't been ingested via the new sync path yet — caller falls
+   *     back to chunked CSV).
+   *
+   * Returns `{ rows, headers, sources }` otherwise. The `rows` are
+   * already deduped (dedup happens at parse time before persist), and
+   * `sources` mirrors the `_rawSourcesV1` source list shape so the
+   * client's "files loaded" count + force-sync UX still work.
+   *
+   * Why this matters: cold-cache hydration of the largest datasets
+   * (Account Solar Generation: 405k rows, Transfer History: 633k rows,
+   * Solar Applications: 32k rows) used to fetch 24 MB of chunked CSV +
+   * parse it in the browser. This endpoint streams the rows out of the
+   * DB in one query — closer to the <5s cold-load goal than even the
+   * `getDatasetAssembled` batched-fetch path.
+   */
+  getDatasetRowsFromSrDs: protectedProcedure
+    .input(
+      z.object({
+        datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      void ctx;
+      const TABLES_BY_DATASET_KEY = {
+        solarApplications: srDsSolarApplications,
+        abpReport: srDsAbpReport,
+        generationEntry: srDsGenerationEntry,
+        accountSolarGeneration: srDsAccountSolarGeneration,
+        contractedDate: srDsContractedDate,
+        deliveryScheduleBase: srDsDeliverySchedule,
+        transferHistory: srDsTransferHistory,
+      } as const;
+      type RowTableKey = keyof typeof TABLES_BY_DATASET_KEY;
+      const isRowTableKey = (k: string): k is RowTableKey =>
+        Object.prototype.hasOwnProperty.call(TABLES_BY_DATASET_KEY, k);
+      const rawDatasetKey: string = input.datasetKey;
+      if (!isRowTableKey(rawDatasetKey)) {
+        return null;
+      }
+      const datasetKey: RowTableKey = rawDatasetKey;
+
+      const { resolveSolarRecScopeId } = await import("../_core/solarRecAuth");
+      const scopeId = await resolveSolarRecScopeId();
+
+      return dashboardLoadSemaphore.run(async () => {
+        if (isHeapOverSoftLimit()) {
+          throw new TRPCError({
+            code: "TOO_MANY_REQUESTS",
+            message: "Server heap pressure — retry in a moment",
+          });
+        }
+
+        const db = await getDb();
+        if (!db) return null;
+        const versionRows = await db
+          .select({ batchId: solarRecActiveDatasetVersions.batchId })
+          .from(solarRecActiveDatasetVersions)
+          .where(
+            and(
+              eq(solarRecActiveDatasetVersions.scopeId, scopeId),
+              eq(solarRecActiveDatasetVersions.datasetKey, datasetKey)
+            )
+          )
+          .limit(1);
+        const batchId = versionRows[0]?.batchId ?? null;
+        if (!batchId) {
+          return null;
+        }
+
+        const { loadDatasetRows } = await import(
+          "../services/solar/buildSystemSnapshot"
+        );
+        const table = TABLES_BY_DATASET_KEY[datasetKey];
+        const rows = await loadDatasetRows(scopeId, batchId, table);
+
+        // Headers in original CSV order: take the first non-empty row's
+        // keys plus any extras from later rows. Rows persisted via the
+        // rawRow JSON path preserve insertion order; rows reconstructed
+        // from typed columns use the per-table remap (also stable).
+        const headers: string[] = [];
+        const seenHeaders = new Set<string>();
+        for (const row of rows) {
+          for (const key of Object.keys(row)) {
+            if (!seenHeaders.has(key)) {
+              seenHeaders.add(key);
+              headers.push(key);
+            }
+          }
+          // Once we've seen every key in the first row, stop scanning —
+          // schema-discovery doesn't need to walk 600k rows.
+          if (rows.length > 0 && seenHeaders.size >= Object.keys(rows[0] ?? {}).length) {
+            break;
+          }
+        }
+
+        const filesRows = await db
+          .select({
+            fileName: solarRecImportFiles.fileName,
+            rowCount: solarRecImportFiles.rowCount,
+            sizeBytes: solarRecImportFiles.sizeBytes,
+            createdAt: solarRecImportFiles.createdAt,
+          })
+          .from(solarRecImportFiles)
+          .where(eq(solarRecImportFiles.batchId, batchId));
+
+        let sources: Array<{
+          fileName: string;
+          uploadedAt: string;
+          rowCount: number;
+          sizeBytes: number | null;
+        }> = filesRows.map((f) => ({
+          fileName: f.fileName,
+          uploadedAt: (f.createdAt ?? new Date()).toISOString(),
+          rowCount: f.rowCount ?? 0,
+          sizeBytes: f.sizeBytes ?? null,
+        }));
+
+        if (sources.length === 0) {
+          // Fall back to the batch row when no per-file rows exist
+          // (older batches predating solarRecImportFiles, or scoped
+          // ingest paths that bypass file tracking).
+          const batchRows = await db
+            .select({
+              rowCount: solarRecImportBatches.rowCount,
+              createdAt: solarRecImportBatches.createdAt,
+            })
+            .from(solarRecImportBatches)
+            .where(eq(solarRecImportBatches.id, batchId))
+            .limit(1);
+          const batch = batchRows[0];
+          if (batch) {
+            sources = [
+              {
+                fileName: `${datasetKey}.csv`,
+                uploadedAt: batch.createdAt.toISOString(),
+                rowCount: batch.rowCount ?? rows.length,
+                sizeBytes: null,
+              },
+            ];
+          }
+        }
+
+        return {
+          _checkpoint: "getDatasetRowsFromSrDs-v1",
+          datasetKey,
+          batchId,
+          headers,
+          rows,
+          rowCount: rows.length,
           sources,
         };
       });
