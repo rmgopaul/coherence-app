@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import NotFound from "@/features/dashboard/NotFound";
 import { Route, Switch, useLocation } from "wouter";
-import { Suspense, lazy, type ComponentType } from "react";
+import { Suspense, lazy, useEffect, type ComponentType } from "react";
 import ErrorBoundary from "./components/ErrorBoundary";
 import GlobalFeedbackWidget from "./components/GlobalFeedbackWidget";
 import GlobalClockifyTimer from "./components/GlobalClockifyTimer";
@@ -21,12 +21,6 @@ const Canvas = lazy(() => import("@/features/dashboard/Canvas"));
 const CommandDeck = lazy(() => import("@/features/dashboard/CommandDeck"));
 const SolarRecDashboard = lazy(() => import("@/features/solar-rec/SolarRecDashboard"));
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
-const EnphaseV4MeterReads = lazy(() => import("@/features/solar-readings/EnphaseV4MeterReads"));
-const SolarEdgeMeterReads = lazy(() => import("@/features/solar-readings/SolarEdgeMeterReads"));
-const FroniusMeterReads = lazy(() => import("@/features/solar-readings/FroniusMeterReads"));
-const EnnexOsMeterReads = lazy(() => import("@/features/solar-readings/EnnexOsMeterReads"));
-const EGaugeApi = lazy(() => import("@/features/solar-readings/EGaugeApi"));
-const TeslaPowerhubApi = lazy(() => import("@/features/solar-readings/TeslaPowerhubApi"));
 const ZendeskTicketMetrics = lazy(() => import("@/features/dashboard/ZendeskTicketMetrics"));
 const DeepUpdateSynthesizer = lazy(() => import("@/features/dashboard/DeepUpdateSynthesizer"));
 const ContractScanner = lazy(() => import("@/features/dashboard/ContractScanner"));
@@ -35,7 +29,6 @@ const DinScrapeManager = lazy(() => import("@/features/dashboard/DinScrapeManage
 const AbpInvoiceSettlement = lazy(() => import("@/features/dashboard/AbpInvoiceSettlement"));
 const EarlyPayment = lazy(() => import("@/features/dashboard/EarlyPayment"));
 const AddressChecker = lazy(() => import("@/features/dashboard/AddressChecker"));
-const SunpowerReadings = lazy(() => import("@/features/solar-readings/SunpowerReadings"));
 const Notebook = lazy(() => import("@/features/notebook/Notebook"));
 const Settings = lazy(() => import("@/features/settings/Settings"));
 const Supplements = lazy(() => import("@/features/supplements/Supplements"));
@@ -46,15 +39,25 @@ const ClockifyWidget = lazy(() => import("@/features/dashboard/ClockifyWidget"))
 const ChatGPTWidget = lazy(() => import("@/features/dashboard/ChatGPTWidget"));
 const GoogleCalendarWidget = lazy(() => import("@/features/dashboard/GoogleCalendarWidget"));
 const GmailWidget = lazy(() => import("@/features/dashboard/GmailWidget"));
-const SolisMeterReads = lazy(() => import("@/features/solar-readings/SolisMeterReads"));
-const GoodWeMeterReads = lazy(() => import("@/features/solar-readings/GoodWeMeterReads"));
-const GeneracMeterReads = lazy(() => import("@/features/solar-readings/GeneracMeterReads"));
-const LocusMeterReads = lazy(() => import("@/features/solar-readings/LocusMeterReads"));
-const GrowattMeterReads = lazy(() => import("@/features/solar-readings/GrowattMeterReads"));
-const APsystemsMeterReads = lazy(() => import("@/features/solar-readings/APsystemsMeterReads"));
-const EkmMeterReads = lazy(() => import("@/features/solar-readings/EkmMeterReads"));
-const HoymilesMeterReads = lazy(() => import("@/features/solar-readings/HoymilesMeterReads"));
-const SolarLogMeterReads = lazy(() => import("@/features/solar-readings/SolarLogMeterReads"));
+
+const LEGACY_METER_READ_REDIRECTS = [
+  { from: "/sunpower-readings", to: "/solar-rec/meter-reads/sunpower" },
+  { from: "/enphase-v4-meter-reads", to: "/solar-rec/meter-reads/enphase-v4" },
+  { from: "/solaredge-meter-reads", to: "/solar-rec/meter-reads/solaredge" },
+  { from: "/fronius-meter-reads", to: "/solar-rec/meter-reads/fronius" },
+  { from: "/ennexos-meter-reads", to: "/solar-rec/meter-reads/ennexos" },
+  { from: "/egauge-api", to: "/solar-rec/meter-reads/egauge" },
+  { from: "/tesla-powerhub-api", to: "/solar-rec/meter-reads/tesla-powerhub" },
+  { from: "/solis-meter-reads", to: "/solar-rec/meter-reads/solis" },
+  { from: "/goodwe-meter-reads", to: "/solar-rec/meter-reads/goodwe" },
+  { from: "/generac-meter-reads", to: "/solar-rec/meter-reads/generac" },
+  { from: "/locus-meter-reads", to: "/solar-rec/meter-reads/locus" },
+  { from: "/growatt-meter-reads", to: "/solar-rec/meter-reads/growatt" },
+  { from: "/apsystems-meter-reads", to: "/solar-rec/meter-reads/apsystems" },
+  { from: "/ekm-meter-reads", to: "/solar-rec/meter-reads/ekm" },
+  { from: "/hoymiles-meter-reads", to: "/solar-rec/meter-reads/hoymiles" },
+  { from: "/solarlog-meter-reads", to: "/solar-rec/meter-reads/solarlog" },
+] as const;
 
 function RouteFallback() {
   return (
@@ -74,10 +77,23 @@ function withRouteSuspense(Component: ComponentType) {
   };
 }
 
+function ExternalRedirect({ to }: { to: string }) {
+  useEffect(() => {
+    window.location.assign(to);
+  }, [to]);
+
+  return <RouteFallback />;
+}
+
 /** Routes that live inside the AppShell (sidebar + command palette). */
 function AppRoutes() {
   return (
     <Switch>
+      {LEGACY_METER_READ_REDIRECTS.map(({ from, to }) => (
+        <Route key={from} path={from}>
+          <ExternalRedirect to={to} />
+        </Route>
+      ))}
       <Route path={"/dashboard"} component={withRouteSuspense(Dashboard)} />
       <Route path={"/dashboard/one-thing"} component={withRouteSuspense(OneThing)} />
       <Route path={"/dashboard/river"} component={withRouteSuspense(River)} />
@@ -93,22 +109,6 @@ function AppRoutes() {
       <Route path={"/abp-invoice-settlement"} component={withRouteSuspense(AbpInvoiceSettlement)} />
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
       <Route path={"/address-checker"} component={withRouteSuspense(AddressChecker)} />
-      <Route path={"/sunpower-readings"} component={withRouteSuspense(SunpowerReadings)} />
-      <Route path={"/enphase-v4-meter-reads"} component={withRouteSuspense(EnphaseV4MeterReads)} />
-      <Route path={"/solaredge-meter-reads"} component={withRouteSuspense(SolarEdgeMeterReads)} />
-      <Route path={"/fronius-meter-reads"} component={withRouteSuspense(FroniusMeterReads)} />
-      <Route path={"/ennexos-meter-reads"} component={withRouteSuspense(EnnexOsMeterReads)} />
-      <Route path={"/egauge-api"} component={withRouteSuspense(EGaugeApi)} />
-      <Route path={"/tesla-powerhub-api"} component={withRouteSuspense(TeslaPowerhubApi)} />
-      <Route path={"/solis-meter-reads"} component={withRouteSuspense(SolisMeterReads)} />
-      <Route path={"/goodwe-meter-reads"} component={withRouteSuspense(GoodWeMeterReads)} />
-      <Route path={"/generac-meter-reads"} component={withRouteSuspense(GeneracMeterReads)} />
-      <Route path={"/locus-meter-reads"} component={withRouteSuspense(LocusMeterReads)} />
-      <Route path={"/growatt-meter-reads"} component={withRouteSuspense(GrowattMeterReads)} />
-      <Route path={"/apsystems-meter-reads"} component={withRouteSuspense(APsystemsMeterReads)} />
-      <Route path={"/ekm-meter-reads"} component={withRouteSuspense(EkmMeterReads)} />
-      <Route path={"/hoymiles-meter-reads"} component={withRouteSuspense(HoymilesMeterReads)} />
-      <Route path={"/solarlog-meter-reads"} component={withRouteSuspense(SolarLogMeterReads)} />
       <Route path={"/zendesk-ticket-metrics"} component={withRouteSuspense(ZendeskTicketMetrics)} />
       <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
       <Route path={"/supplements"} component={withRouteSuspense(Supplements)} />

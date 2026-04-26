@@ -65,12 +65,12 @@ export const DASHBOARD_HEADER_BUTTONS: DashboardHeaderButtonConfig[] = [
   { key: "deepUpdate", label: "Deep Update", route: "/deep-update-synthesizer", icon: FileSpreadsheet },
   { key: "contractScanner", label: "Contract Scanner", route: "/contract-scanner", icon: FileText },
   { key: "contractScraper", label: "Contract Scraper", route: "/contract-scrape-manager", icon: FileText },
-  { key: "enphaseV4", label: "Enphase v4", route: "/enphase-v4-meter-reads", icon: Database },
-  { key: "solarEdgeApi", label: "SolarEdge API", route: "/solaredge-meter-reads", icon: Database },
-  { key: "froniusApi", label: "Fronius API", route: "/fronius-meter-reads", icon: Database },
-  { key: "ennexOsApi", label: "ennexOS API", route: "/ennexos-meter-reads", icon: Database },
-  { key: "egaugeApi", label: "eGauge API", route: "/egauge-api", icon: Database },
-  { key: "teslaPowerhubApi", label: "Tesla Powerhub API", route: "/tesla-powerhub-api", icon: Database },
+  { key: "enphaseV4", label: "Enphase v4", route: "/solar-rec/meter-reads/enphase-v4", icon: Database },
+  { key: "solarEdgeApi", label: "SolarEdge API", route: "/solar-rec/meter-reads/solaredge", icon: Database },
+  { key: "froniusApi", label: "Fronius API", route: "/solar-rec/meter-reads/fronius", icon: Database },
+  { key: "ennexOsApi", label: "ennexOS API", route: "/solar-rec/meter-reads/ennexos", icon: Database },
+  { key: "egaugeApi", label: "eGauge API", route: "/solar-rec/meter-reads/egauge", icon: Database },
+  { key: "teslaPowerhubApi", label: "Tesla Powerhub API", route: "/solar-rec/meter-reads/tesla-powerhub", icon: Database },
   { key: "zendeskApi", label: "Zendesk API", route: "/zendesk-ticket-metrics", icon: Database },
 ];
 

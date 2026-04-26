@@ -41,8 +41,7 @@ const FroniusMeterReads = lazy(
   () => import("./pages/meter-reads/FroniusMeterReads")
 );
 // Task 5.4 — Generac migrated to solar-rec-native page backed by team
-// credentials; main's per-user Generac page is the fallback while the
-// old URL (/generac-meter-reads) is still routable.
+// credentials.
 const GeneracMeterReads = lazy(
   () => import("./pages/meter-reads/GeneracMeterReads")
 );

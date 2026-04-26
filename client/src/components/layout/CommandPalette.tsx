@@ -60,12 +60,13 @@ const NAV_COMMANDS: CommandRoute[] = [
   { label: "DIN Scraper", href: "/din-scrape-manager", icon: FileText, keywords: ["din", "inverter", "meter", "photo", "csg", "portal"] },
   { label: "ABP Invoice Settlement", href: "/abp-invoice-settlement", icon: FileText, keywords: ["abp", "settlement", "invoice"] },
   { label: "Early Payment", href: "/early-payment", icon: FileText, keywords: ["early", "payment", "abp", "icc"] },
-  { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: FileText, keywords: ["enphase", "meter"] },
-  { label: "SolarEdge", href: "/solaredge-meter-reads", icon: FileText, keywords: ["solaredge", "meter"] },
-  { label: "Fronius", href: "/fronius-meter-reads", icon: FileText, keywords: ["fronius", "solar", "meter", "solarweb"] },
-  { label: "ennexOS", href: "/ennexos-meter-reads", icon: FileText, keywords: ["ennexos", "sma", "solarweb", "meter"] },
-  { label: "eGauge", href: "/egauge-api", icon: FileText, keywords: ["egauge", "meter", "register"] },
-  { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: FileText, keywords: ["tesla", "powerhub"] },
+  { label: "SunPower Reads", href: "/solar-rec/meter-reads/sunpower", icon: FileText, keywords: ["sunpower", "meter", "readings"] },
+  { label: "Enphase v4", href: "/solar-rec/meter-reads/enphase-v4", icon: FileText, keywords: ["enphase", "meter"] },
+  { label: "SolarEdge", href: "/solar-rec/meter-reads/solaredge", icon: FileText, keywords: ["solaredge", "meter"] },
+  { label: "Fronius", href: "/solar-rec/meter-reads/fronius", icon: FileText, keywords: ["fronius", "solar", "meter", "solarweb"] },
+  { label: "ennexOS", href: "/solar-rec/meter-reads/ennexos", icon: FileText, keywords: ["ennexos", "sma", "solarweb", "meter"] },
+  { label: "eGauge", href: "/solar-rec/meter-reads/egauge", icon: FileText, keywords: ["egauge", "meter", "register"] },
+  { label: "Tesla Powerhub", href: "/solar-rec/meter-reads/tesla-powerhub", icon: FileText, keywords: ["tesla", "powerhub"] },
   { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: FileText, keywords: ["zendesk", "tickets"] },
 ];
 
@@ -170,6 +171,10 @@ export function CommandPalette() {
 
   const navigate = (href: string) => {
     setOpen(false);
+    if (href === "/solar-rec" || href.startsWith("/solar-rec/")) {
+      window.location.assign(href);
+      return;
+    }
     setLocation(href);
   };
 

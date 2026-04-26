@@ -21,12 +21,9 @@ import {
   upsertIntegration,
 } from "../db";
 import {
-  TESLA_POWERHUB_PROVIDER,
   CSG_PORTAL_PROVIDER,
-  parseTeslaPowerhubMetadata,
   parseCsgPortalMetadata,
   serializeCsgPortalMetadata,
-  getTeslaPowerhubContext,
   abpSettlementJobs,
   abpSettlementActiveScanRunners,
   pruneAbpSettlementJobs,
@@ -43,11 +40,6 @@ import type {
   AbpSettlementContractScanJob,
 } from "./helpers";
 import {
-  getTeslaPowerhubGroupProductionMetricsCached,
-  normalizeTeslaPowerhubUrl,
-} from "../services/solar/teslaPowerhub";
-import { maskApiKey } from "./solarConnectionFactory";
-import {
   CsgPortalClient,
   testCsgPortalCredentials,
 } from "../services/integrations/csgPortal";
@@ -58,210 +50,6 @@ import {
 import { extractContractDataFromPdfBuffer } from "../services/core/contractScannerServer";
 import { cleanAddressBatch } from "../services/core/addressCleaner";
 import { verifyAddressBatch } from "../services/integrations/uspsAddressValidation";
-
-export const teslaPowerhubRouter = router({
-  getStatus: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
-    const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
-    const hasSecret = Boolean(toNonEmptyString(integration?.accessToken));
-    const connected = hasSecret && Boolean(metadata.clientId);
-    // Tesla Powerhub stores one connection per user. We shim it as a
-    // single-entry `connections: [...]` array to fit the shared
-    // MeterReadsPage's `StatusQueryResult` shape; per-user
-    // multi-connection support is a follow-up if needed.
-    const connections = connected
-      ? [
-          {
-            id: "default",
-            name: metadata.connectionName ?? "Tesla Powerhub",
-            isActive: true,
-            updatedAt: integration?.updatedAt
-              ? new Date(integration.updatedAt).toISOString()
-              : new Date().toISOString(),
-            apiKeyMasked: metadata.clientId ? maskApiKey(metadata.clientId) : undefined,
-          },
-        ]
-      : [];
-    return {
-      connected,
-      activeConnectionId: connected ? "default" : null,
-      connections,
-      // Legacy fields retained for any existing callers (dashboard
-      // status pills, etc.).
-      hasClientSecret: hasSecret,
-      clientId: metadata.clientId,
-      tokenUrl: metadata.tokenUrl,
-      apiBaseUrl: metadata.apiBaseUrl,
-      portalBaseUrl: metadata.portalBaseUrl,
-      groupId: metadata.groupId,
-    };
-  }),
-  connect: protectedProcedure
-    .input(
-      z.object({
-        clientId: z.string().optional(),
-        clientSecret: z.string().optional(),
-        tokenUrl: z.string().optional(),
-        apiBaseUrl: z.string().optional(),
-        portalBaseUrl: z.string().optional(),
-        groupId: z.string().optional(),
-        connectionName: z.string().optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const existing = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
-      const existingMetadata = parseTeslaPowerhubMetadata(existing?.metadata);
-
-      const incomingClientId = toNonEmptyString(input.clientId);
-      const resolvedClientId = incomingClientId ?? existingMetadata.clientId;
-      const persistedSecret = toNonEmptyString(existing?.accessToken);
-      const incomingSecret = toNonEmptyString(input.clientSecret);
-      const resolvedSecret = incomingSecret ?? persistedSecret;
-
-      if (!resolvedClientId) {
-        throw new Error("Client ID is required for initial Tesla Powerhub connection.");
-      }
-      if (!resolvedSecret) {
-        throw new Error("Client secret is required for initial Tesla Powerhub connection.");
-      }
-
-      const incomingTokenUrl = normalizeTeslaPowerhubUrl(input.tokenUrl);
-      const incomingApiBaseUrl = normalizeTeslaPowerhubUrl(input.apiBaseUrl);
-      const incomingPortalBaseUrl = normalizeTeslaPowerhubUrl(input.portalBaseUrl);
-      const incomingGroupId = toNonEmptyString(input.groupId);
-      const incomingConnectionName = toNonEmptyString(input.connectionName);
-
-      const metadata = JSON.stringify({
-        clientId: resolvedClientId,
-        tokenUrl: incomingTokenUrl ?? existingMetadata.tokenUrl,
-        apiBaseUrl: incomingApiBaseUrl ?? existingMetadata.apiBaseUrl,
-        portalBaseUrl: incomingPortalBaseUrl ?? existingMetadata.portalBaseUrl,
-        groupId: incomingGroupId ?? existingMetadata.groupId,
-        connectionName: incomingConnectionName ?? existingMetadata.connectionName,
-      });
-
-      await upsertIntegration({
-        id: nanoid(),
-        userId: ctx.user.id,
-        provider: TESLA_POWERHUB_PROVIDER,
-        accessToken: resolvedSecret,
-        refreshToken: null,
-        expiresAt: null,
-        scope: null,
-        metadata,
-      });
-
-      return {
-        success: true,
-        activeConnectionId: "default",
-        totalConnections: 1,
-      };
-    }),
-  setActiveConnection: protectedProcedure
-    .input(z.object({ connectionId: z.string().min(1) }))
-    .mutation(async () => {
-      // Tesla Powerhub currently stores a single connection. The
-      // shared MeterReadsPage calls this when the user picks a profile
-      // from the selector; with only one profile, it's a no-op that
-      // keeps the UI flow consistent.
-      return { success: true, activeConnectionId: "default" };
-    }),
-  removeConnection: protectedProcedure
-    .input(z.object({ connectionId: z.string().min(1) }))
-    .mutation(async ({ ctx }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
-      if (integration?.id) {
-        await deleteIntegration(integration.id);
-      }
-      return {
-        connected: false,
-        activeConnectionId: null,
-        totalConnections: 0,
-      };
-    }),
-  listSites: protectedProcedure.query(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
-    const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
-    if (!metadata.groupId) {
-      throw new Error(
-        "Tesla Powerhub is connected but no Group ID is saved. Reconnect and provide a Group ID."
-      );
-    }
-    const context = await getTeslaPowerhubContext(ctx.user.id);
-    const result = await getTeslaPowerhubGroupProductionMetricsCached(context, {
-      groupId: metadata.groupId,
-      cacheKey: `${ctx.user.id}:${metadata.groupId}`,
-    });
-    return {
-      sites: result.sites.map((site) => ({
-        siteId: site.siteId,
-        siteName: site.siteName ?? site.siteExternalId ?? site.siteId,
-      })),
-    };
-  }),
-  getProductionSnapshot: protectedProcedure
-    .input(
-      z.object({
-        siteId: z.string().min(1),
-        anchorDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
-      const metadata = parseTeslaPowerhubMetadata(integration?.metadata);
-      if (!metadata.groupId) {
-        throw new Error(
-          "Tesla Powerhub is connected but no Group ID is saved. Reconnect and provide a Group ID."
-        );
-      }
-      const context = await getTeslaPowerhubContext(ctx.user.id);
-      const result = await getTeslaPowerhubGroupProductionMetricsCached(context, {
-        groupId: metadata.groupId,
-        cacheKey: `${ctx.user.id}:${metadata.groupId}`,
-      });
-      const siteId = input.siteId.trim();
-      const anchorDate =
-        input.anchorDate ?? new Date().toISOString().slice(0, 10);
-      const match = result.sites.find(
-        (s) => s.siteId === siteId || s.siteExternalId === siteId
-      );
-      if (!match) {
-        return {
-          siteId,
-          name: null,
-          status: "Not Found" as const,
-          found: false,
-          lifetimeKwh: null,
-          dailyProductionKwh: null,
-          weeklyProductionKwh: null,
-          monthlyProductionKwh: null,
-          last12MonthsProductionKwh: null,
-          anchorDate,
-          error: null,
-        };
-      }
-      return {
-        siteId: match.siteId,
-        name: match.siteName ?? match.siteExternalId ?? null,
-        status: "Found" as const,
-        found: true,
-        lifetimeKwh: match.lifetimeKwh,
-        dailyProductionKwh: match.dailyKwh,
-        weeklyProductionKwh: match.weeklyKwh,
-        monthlyProductionKwh: match.monthlyKwh,
-        last12MonthsProductionKwh: match.yearlyKwh,
-        anchorDate,
-        error: null,
-      };
-    }),
-  disconnect: protectedProcedure.mutation(async ({ ctx }) => {
-    const integration = await getIntegrationByProvider(ctx.user.id, TESLA_POWERHUB_PROVIDER);
-    if (integration?.id) {
-      await deleteIntegration(integration.id);
-    }
-    return { success: true };
-  }),
-});
 
 export const csgPortalRouter = router({
   status: protectedProcedure.query(async ({ ctx }) => {

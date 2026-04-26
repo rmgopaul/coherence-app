@@ -83,8 +83,8 @@ const NAV_SECTIONS: NavSection[] = [
   {
     title: "Portfolio",
     items: [
-      { label: "SunPower Reads", href: "/sunpower-readings", icon: Zap, badgeKey: "sunpowerReadings" },
       { label: "Solar REC", href: "/solar-rec/", icon: BarChart3 },
+      { label: "SunPower Reads", href: "/solar-rec/meter-reads/sunpower", icon: Zap },
       { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
       { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
       { label: "Contract Scanner", href: "/contract-scanner", icon: FileSearch },
@@ -93,21 +93,21 @@ const NAV_SECTIONS: NavSection[] = [
       { label: "ABP Settlement", href: "/abp-invoice-settlement", icon: FileSpreadsheet },
       { label: "Early Payment", href: "/early-payment", icon: FileSpreadsheet },
       { label: "Address Checker", href: "/address-checker", icon: MapPin },
-      { label: "Enphase v4", href: "/enphase-v4-meter-reads", icon: Zap },
-      { label: "SolarEdge", href: "/solaredge-meter-reads", icon: Sun },
-      { label: "Fronius", href: "/fronius-meter-reads", icon: Sun },
-      { label: "ennexOS", href: "/ennexos-meter-reads", icon: Sun },
-      { label: "eGauge", href: "/egauge-api", icon: Sun },
-      { label: "Tesla Powerhub", href: "/tesla-powerhub-api", icon: Battery },
-      { label: "Solis", href: "/solis-meter-reads", icon: Sun },
-      { label: "GoodWe", href: "/goodwe-meter-reads", icon: Sun },
-      { label: "Generac", href: "/generac-meter-reads", icon: Battery },
-      { label: "Locus/SolarNOC", href: "/locus-meter-reads", icon: Sun },
-      { label: "Growatt", href: "/growatt-meter-reads", icon: Sun },
-      { label: "APsystems", href: "/apsystems-meter-reads", icon: Sun },
-      { label: "EKM", href: "/ekm-meter-reads", icon: Zap },
-      { label: "Hoymiles", href: "/hoymiles-meter-reads", icon: Sun },
-      { label: "Solar-Log", href: "/solarlog-meter-reads", icon: Sun },
+      { label: "Enphase v4", href: "/solar-rec/meter-reads/enphase-v4", icon: Zap },
+      { label: "SolarEdge", href: "/solar-rec/meter-reads/solaredge", icon: Sun },
+      { label: "Fronius", href: "/solar-rec/meter-reads/fronius", icon: Sun },
+      { label: "ennexOS", href: "/solar-rec/meter-reads/ennexos", icon: Sun },
+      { label: "eGauge", href: "/solar-rec/meter-reads/egauge", icon: Sun },
+      { label: "Tesla Powerhub", href: "/solar-rec/meter-reads/tesla-powerhub", icon: Battery },
+      { label: "Solis", href: "/solar-rec/meter-reads/solis", icon: Sun },
+      { label: "GoodWe", href: "/solar-rec/meter-reads/goodwe", icon: Sun },
+      { label: "Generac", href: "/solar-rec/meter-reads/generac", icon: Battery },
+      { label: "Locus/SolarNOC", href: "/solar-rec/meter-reads/locus", icon: Sun },
+      { label: "Growatt", href: "/solar-rec/meter-reads/growatt", icon: Sun },
+      { label: "APsystems", href: "/solar-rec/meter-reads/apsystems", icon: Sun },
+      { label: "EKM", href: "/solar-rec/meter-reads/ekm", icon: Zap },
+      { label: "Hoymiles", href: "/solar-rec/meter-reads/hoymiles", icon: Sun },
+      { label: "Solar-Log", href: "/solar-rec/meter-reads/solarlog", icon: Sun },
       { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: Headset },
     ],
   },
@@ -163,18 +163,12 @@ export function AppSidebar() {
     refetchOnWindowFocus: false,
   });
 
-  const { data: readingSummary } = trpc.solarReadings.summary.useQuery(undefined, {
-    staleTime: 120_000,
-    refetchOnWindowFocus: false,
-  });
-
   const badges = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
     const tasksDueToday = (todoistTasks ?? []).filter(
       (t) => t.due?.date && t.due.date <= today
     ).length;
     const eventsToday = (calendarEvents ?? []).length;
-    const readingCount = readingSummary?.totalReadings ?? 0;
     const noteCount = (notes ?? []).length;
     const supplementCount = (supplementLogs ?? []).length;
     const habitsTotal = (habitsForDate ?? []).length;
@@ -194,12 +188,10 @@ export function AppSidebar() {
       habits: habitsTotal > 0 ? `${habitsDone}/${habitsTotal}` : null,
       health: recovery,
       chat: chatCount > 0 ? chatCount : null,
-      sunpowerReadings: readingCount > 0 ? readingCount : null,
     } as Record<string, number | string | null>;
   }, [
     todoistTasks,
     calendarEvents,
-    readingSummary,
     notes,
     supplementLogs,
     habitsForDate,
