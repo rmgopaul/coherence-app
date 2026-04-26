@@ -154,8 +154,18 @@ function buildSamsungMetadata(
     activeMinutes: asNumber(activity.activeMinutes),
     caloriesTotalKcal: asNumber(activity.caloriesTotalKcal),
     sleepTotalMinutes: asNumber(sleep.totalSleepMinutes),
-    sleepScore: manualScores?.sleepScore ?? asNumber(sleep.sleepScore),
-    energyScore: manualScores?.energyScore ?? asNumber(cardio.recoveryScore),
+    // Manual scores only — no heuristic fallback. The Android mapper's
+    // `deriveSleepScore` produces a decimal (e.g. 82.4) computed from
+    // efficiency + deep/REM ratio + duration. Samsung's actual UI score
+    // is an integer the user might enter manually; falling back to the
+    // heuristic stamps decimals onto historical rows the user never
+    // entered, which looks like garbage in the dashboard. If no manual
+    // score exists for the date, leave the field null. `cardio.recoveryScore`
+    // is never populated anyway (the Android `CardioMetrics` data class
+    // has no recoveryScore field), so the energyScore line was already
+    // effectively `?? null`.
+    sleepScore: manualScores?.sleepScore ?? null,
+    energyScore: manualScores?.energyScore ?? null,
     restingHeartRateBpm: asNumber(cardio.restingHeartRateBpm),
     hrvRmssdMs: asNumber(cardio.hrvRmssdMs),
     spo2AvgPercent: asNumber(oxygenAndTemperature.spo2AvgPercent),
