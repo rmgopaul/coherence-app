@@ -155,6 +155,12 @@ export const monitoringApiRuns = mysqlTable(
     ).on(table.scopeId, table.provider, table.connectionId, table.siteId, table.dateKey),
     dateKeyIdx: index("monitoring_api_runs_date_key_idx").on(table.dateKey),
     scopeDateIdx: index("monitoring_api_runs_scope_date_idx").on(table.scopeId, table.dateKey),
+    scopeProviderSiteDateIdx: index(
+      "monitoring_api_runs_scope_provider_site_date_idx"
+    ).on(table.scopeId, table.provider, table.siteId, table.dateKey),
+    scopeDateProviderStatusIdx: index(
+      "monitoring_api_runs_scope_date_provider_status_idx"
+    ).on(table.scopeId, table.dateKey, table.provider, table.status, table.siteId),
     providerDateIdx: index("monitoring_api_runs_provider_date_idx").on(table.provider, table.dateKey),
     statusDateIdx: index("monitoring_api_runs_status_date_idx").on(table.status, table.dateKey),
   })
@@ -607,6 +613,10 @@ export const srDsSolarApplications = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_solar_apps_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_solar_apps_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeTrackingIdx: index("sr_ds_solar_apps_scope_tracking_idx").on(
       table.scopeId,
       table.trackingSystemRefId
@@ -638,6 +648,10 @@ export const srDsAbpReport = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_abp_report_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_report_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeAppIdIdx: index("sr_ds_abp_report_scope_appid_idx").on(
       table.scopeId,
       table.applicationId
@@ -667,6 +681,10 @@ export const srDsGenerationEntry = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_gen_entry_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_gen_entry_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeUnitIdx: index("sr_ds_gen_entry_scope_unit_idx").on(
       table.scopeId,
       table.unitId
@@ -693,6 +711,10 @@ export const srDsAccountSolarGeneration = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_acct_solar_gen_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_acct_solar_gen_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeGatsIdx: index("sr_ds_acct_solar_gen_scope_gats_idx").on(
       table.scopeId,
       table.gatsGenId
@@ -715,6 +737,10 @@ export const srDsContractedDate = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_contracted_date_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_contracted_date_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeSystemIdx: index("sr_ds_contracted_date_scope_system_idx").on(
       table.scopeId,
       table.systemId
@@ -741,6 +767,10 @@ export const srDsDeliverySchedule = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_delivery_schedule_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_delivery_schedule_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeTrackingIdx: index("sr_ds_delivery_schedule_scope_tracking_idx").on(
       table.scopeId,
       table.trackingSystemRefId
@@ -768,6 +798,10 @@ export const srDsTransferHistory = mysqlTable(
   },
   (table) => ({
     batchIdx: index("sr_ds_transfer_history_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_transfer_history_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
     scopeUnitIdx: index("sr_ds_transfer_history_scope_unit_idx").on(
       table.scopeId,
       table.unitId

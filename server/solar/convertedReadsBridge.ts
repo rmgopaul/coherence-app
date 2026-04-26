@@ -12,8 +12,8 @@
  *
  * Two stable source-ID families coexist in the manifest:
  *   - `mon_batch_<providerSlug>` — written by the monitoring batch runner.
- *     Replace semantics: each batch run overwrites the prior batch's rows
- *     for that provider.
+ *     Merge/dedup semantics: scheduled runs append new dated lifetime reads
+ *     for that provider while preserving prior read dates.
  *   - `individual_<providerSlug>` — written by the per-vendor meter-reads
  *     pages via the `pushConvertedReadsSource` tRPC mutation. Merge/dedup
  *     semantics: each run reads the prior source's rows and merges in any
@@ -375,8 +375,9 @@ async function writeSourceToManifest(
 
 /**
  * Push a provider's successful monitoring runs into the Converted Reads
- * dataset as a source-manifest source entry with REPLACE semantics — each
- * batch run overwrites the prior batch for the same provider.
+ * dataset as a source-manifest source entry with MERGE/DEDUP semantics.
+ * This preserves the 1st/12th/15th/last-day reads used by the Performance
+ * Ratio tab while still keeping one stable source per provider.
  *
  * Returns null if no rows qualified (no source created).
  */
@@ -404,12 +405,35 @@ export async function pushMonitoringRunsToConvertedReads(
   );
 
   const sourceId = providerSourceId(providerKey);
-  const fileName = `Monitoring batch: ${providerLabel} (${csvRows.length})`;
-  const result = await writeSourceToManifest(userId, sourceId, fileName, csvRows);
+  const existingSources = await readExistingManifest(userId);
+  const priorSource = existingSources.find((s) => s.id === sourceId);
+  const priorRows = priorSource ? await loadSourceRows(userId, priorSource) : [];
+
+  const existingKeys = new Set(priorRows.map(convertedReadsRowKey));
+  const uniqueNewRows = csvRows.filter(
+    (row) => !existingKeys.has(convertedReadsRowKey(row))
+  );
+
+  if (uniqueNewRows.length === 0) {
+    return {
+      pushed: 0,
+      skipped: runs.length,
+      sourceId,
+    };
+  }
+
+  const mergedRows = [...priorRows, ...uniqueNewRows];
+  const fileName = `Monitoring batch: ${providerLabel} (${mergedRows.length})`;
+  const result = await writeSourceToManifest(
+    userId,
+    sourceId,
+    fileName,
+    mergedRows
+  );
 
   return {
-    pushed: result.rowCount,
-    skipped: runs.length - result.rowCount,
+    pushed: uniqueNewRows.length,
+    skipped: runs.length - uniqueNewRows.length,
     sourceId: result.sourceId,
   };
 }

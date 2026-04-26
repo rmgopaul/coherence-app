@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { solarRecTrpc as trpc } from "../solarRecTrpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -724,44 +724,25 @@ function StatusCell({
 
 function SummaryCards({
   health,
-  gridData,
-  today,
+  stats,
 }: {
   health: HealthSummary[];
-  gridData: ApiRun[];
-  today: string;
+  stats?: {
+    todaySuccess: number;
+    todayErrors: number;
+    sitesWithGaps: number;
+  };
 }) {
   const totalSites = health.reduce((acc, h) => acc + h.uniqueSites, 0);
-  const todayRuns = gridData.filter((r) => r.dateKey === today);
-  const todaySuccess = todayRuns.filter((r) => r.status === "success").length;
-  const todayErrors = todayRuns.filter((r) => r.status === "error").length;
+  const todaySuccess = stats?.todaySuccess ?? 0;
+  const todayErrors = stats?.todayErrors ?? 0;
 
   const healthyProviders = health.filter(
     (h) => h.errorCount === 0 && h.successCount > 0
   ).length;
   const totalProviders = health.length;
 
-  // Sites missing 3+ consecutive days
-  const sitesWithGaps = useMemo(() => {
-    const siteLastSuccess = new Map<string, string>();
-    for (const run of gridData) {
-      if (run.status === "success") {
-        const key = `${run.provider}:${run.siteId}`;
-        const existing = siteLastSuccess.get(key);
-        if (!existing || run.dateKey > existing) {
-          siteLastSuccess.set(key, run.dateKey);
-        }
-      }
-    }
-    const threeDaysAgo = new Date();
-    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
-    const threshold = threeDaysAgo.toISOString().slice(0, 10);
-    let count = 0;
-    siteLastSuccess.forEach((lastDate) => {
-      if (lastDate < threshold) count++;
-    });
-    return count;
-  }, [gridData]);
+  const sitesWithGaps = stats?.sitesWithGaps ?? 0;
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -858,9 +839,23 @@ function MonitoringDashboardImpl() {
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
   const [showSystemPerformance, setShowSystemPerformance] = useState(false);
   const [visibleGridRowCount, setVisibleGridRowCount] = useState(GRID_PAGE_SIZE);
+  const deferredSearch = useDeferredValue(search);
 
-  const gridQuery = trpc.monitoring.getGrid.useQuery({ startDate, endDate });
+  const gridPageQuery = trpc.monitoring.getGridPage.useQuery(
+    {
+      startDate,
+      endDate,
+      search: deferredSearch,
+      limit: visibleGridRowCount,
+      offset: 0,
+    },
+    {
+      enabled: showSystemPerformance,
+      placeholderData: (previous) => previous,
+    }
+  );
   const healthQuery = trpc.monitoring.getHealthSummary.useQuery();
+  const overviewStatsQuery = trpc.monitoring.getOverviewStats.useQuery();
   const providersQuery = trpc.monitoring.getConfiguredProviders.useQuery();
   const credentialsQuery = trpc.monitoring.getConfiguredCredentials.useQuery(undefined, {
     enabled: isOperator,
@@ -878,10 +873,11 @@ function MonitoringDashboardImpl() {
     if (data.status === "completed" || data.status === "failed") {
       // Batch finished - stop polling, refresh grid
       setActiveBatchId(null);
-      gridQuery.refetch();
+      if (showSystemPerformance) gridPageQuery.refetch();
       healthQuery.refetch();
+      overviewStatsQuery.refetch();
     }
-  }, [batchStatusQuery.data]);
+  }, [batchStatusQuery.data, gridPageQuery, healthQuery, overviewStatsQuery, showSystemPerformance]);
 
   const runAllMutation = trpc.monitoring.runAll.useMutation({
     onSuccess: (data) => {
@@ -900,6 +896,17 @@ function MonitoringDashboardImpl() {
       });
     },
   });
+  const exportCsvMutation = trpc.monitoring.exportGridCsv.useMutation({
+    onSuccess: (data) => {
+      const blob = new Blob([data.csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = data.fileName || `monitoring-${today}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    },
+  });
 
   const isRunning = !!activeBatchId || runAllMutation.isPending;
 
@@ -907,11 +914,10 @@ function MonitoringDashboardImpl() {
   const providerOptions = useMemo(() => {
     const fromConfigured = providersQuery.data ?? [];
     const fromHealth = (healthQuery.data ?? []).map((item) => item.provider);
-    const fromGrid = (gridQuery.data ?? []).map((item) => item.provider);
-    return Array.from(new Set([...fromConfigured, ...fromHealth, ...fromGrid]))
+    return Array.from(new Set([...fromConfigured, ...fromHealth]))
       .filter((provider) => provider.trim().length > 0)
       .sort((a, b) => a.localeCompare(b));
-  }, [providersQuery.data, healthQuery.data, gridQuery.data]);
+  }, [providersQuery.data, healthQuery.data]);
 
   useEffect(() => {
     setSelectedProviders((prev) => prev.filter((provider) => providerOptions.includes(provider)));
@@ -930,17 +936,17 @@ function MonitoringDashboardImpl() {
 
   const gridRows = useMemo(() => {
     if (!showSystemPerformance) return [];
-    return buildGridRows(gridQuery.data ?? [], search);
-  }, [gridQuery.data, search, showSystemPerformance]);
+    return buildGridRows(gridPageQuery.data?.rows ?? [], "");
+  }, [gridPageQuery.data?.rows, showSystemPerformance]);
 
   const visibleGridRows = useMemo(
-    () => gridRows.slice(0, visibleGridRowCount),
-    [gridRows, visibleGridRowCount]
+    () => gridRows,
+    [gridRows]
   );
 
   useEffect(() => {
     setVisibleGridRowCount(GRID_PAGE_SIZE);
-  }, [search, showSystemPerformance]);
+  }, [deferredSearch, showSystemPerformance]);
 
   const handleRunAll = () => {
     runAllMutation.mutate({ providers: [] });
@@ -975,29 +981,7 @@ function MonitoringDashboardImpl() {
   };
 
   const handleExportCsv = () => {
-    const exportRows = buildGridRows(gridQuery.data ?? [], "");
-    const headers = ["Provider", "Site ID", "Site Name", ...dates.map(formatDate)];
-    const csvRows = exportRows.map((row) => [
-      row.provider,
-      row.siteId,
-      row.siteName,
-      ...dates.map((d) => {
-        const run = row.runs.get(d);
-        if (!run) return "";
-        if (run.status === "success") return String(run.readingsCount);
-        if (run.status === "error") return "ERROR";
-        return "NO_DATA";
-      }),
-    ]);
-
-    const csv = [headers, ...csvRows].map((r) => r.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `monitoring-${today}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    exportCsvMutation.mutate({ startDate, endDate });
   };
 
   return (
@@ -1018,10 +1002,14 @@ function MonitoringDashboardImpl() {
             variant="outline"
             size="sm"
             onClick={handleExportCsv}
-            disabled={(gridQuery.data?.length ?? 0) === 0}
+            disabled={exportCsvMutation.isPending}
           >
-            <Download className="h-3.5 w-3.5 mr-1" />
-            Export CSG CSV
+            {exportCsvMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+            ) : (
+              <Download className="h-3.5 w-3.5 mr-1" />
+            )}
+            {exportCsvMutation.isPending ? "Exporting..." : "Export CSG CSV"}
           </Button>
           {isOperator && (
             <Button
@@ -1302,8 +1290,7 @@ function MonitoringDashboardImpl() {
       {/* Summary cards */}
       <SummaryCards
         health={healthQuery.data ?? []}
-        gridData={gridQuery.data ?? []}
-        today={today}
+        stats={overviewStatsQuery.data}
       />
 
       {/* System-level performance */}
@@ -1321,7 +1308,7 @@ function MonitoringDashboardImpl() {
               variant={showSystemPerformance ? "outline" : "default"}
               size="sm"
               onClick={() => setShowSystemPerformance((prev) => !prev)}
-              disabled={gridQuery.isLoading && !showSystemPerformance}
+              disabled={gridPageQuery.isLoading && !showSystemPerformance}
             >
               {showSystemPerformance ? "Hide System-Level Performance" : "Show System-Level Performance"}
             </Button>
@@ -1338,7 +1325,7 @@ function MonitoringDashboardImpl() {
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                Showing {Math.min(visibleGridRows.length, gridRows.length)} of {gridRows.length} sites
+                Showing {visibleGridRows.length} of {gridPageQuery.data?.totalSites ?? gridRows.length} sites
               </p>
             </div>
           )}
@@ -1350,7 +1337,7 @@ function MonitoringDashboardImpl() {
                 Click <span className="font-medium text-foreground">Show System-Level Performance</span> to load the detailed site table. The export button above downloads the full CSG monitoring dataset without rendering every site in the page.
               </div>
             </div>
-          ) : gridQuery.isLoading ? (
+          ) : gridPageQuery.isLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
@@ -1413,7 +1400,7 @@ function MonitoringDashboardImpl() {
                   ))}
                 </tbody>
               </table>
-              {visibleGridRowCount < gridRows.length && (
+              {visibleGridRowCount < (gridPageQuery.data?.totalSites ?? gridRows.length) && (
                 <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
                   <p className="text-xs text-muted-foreground">
                     Load more if you want to inspect additional systems here. For the full set, use Export CSG CSV.
@@ -1423,7 +1410,10 @@ function MonitoringDashboardImpl() {
                     size="sm"
                     onClick={() =>
                       setVisibleGridRowCount((prev) =>
-                        Math.min(prev + GRID_PAGE_SIZE, gridRows.length)
+                        Math.min(
+                          prev + GRID_PAGE_SIZE,
+                          gridPageQuery.data?.totalSites ?? gridRows.length
+                        )
                       )
                     }
                   >

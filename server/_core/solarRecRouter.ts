@@ -1410,9 +1410,69 @@ const monitoringRouter = t.router({
       return getMonitoringGrid(ctx.scopeId, input.startDate, input.endDate);
     }),
 
+  getGridPage: solarRecViewerProcedure
+    .input(
+      z.object({
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        search: z.string().max(255).optional(),
+        limit: z.number().int().min(1).max(500).default(50),
+        offset: z.number().int().min(0).default(0),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getMonitoringGridPage } = await import("../db");
+      return getMonitoringGridPage(ctx.scopeId, input.startDate, input.endDate, {
+        search: input.search,
+        limit: input.limit,
+        offset: input.offset,
+      });
+    }),
+
+  exportGridCsv: solarRecViewerProcedure
+    .input(
+      z.object({
+        startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { exportMonitoringGridCsv } = await import("../db");
+      const csv = await exportMonitoringGridCsv(
+        ctx.scopeId,
+        input.startDate,
+        input.endDate
+      );
+      return {
+        fileName: `monitoring-${input.endDate}.csv`,
+        csv,
+      };
+    }),
+
   getHealthSummary: solarRecViewerProcedure.query(async ({ ctx }) => {
     const { getMonitoringHealthSummary } = await import("../db");
     return getMonitoringHealthSummary(ctx.scopeId);
+  }),
+
+  getOverviewStats: solarRecViewerProcedure.query(async ({ ctx }) => {
+    const { getMonitoringOverviewStats } = await import("../db");
+    const todayDateKey = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Chicago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    const toDateKey = (daysBack: number) => {
+      const date = new Date(`${todayDateKey}T00:00:00`);
+      date.setDate(date.getDate() - daysBack);
+      return date.toISOString().slice(0, 10);
+    };
+    return getMonitoringOverviewStats(
+      ctx.scopeId,
+      todayDateKey,
+      toDateKey(3),
+      toDateKey(30)
+    );
   }),
 
   getBatchStatus: solarRecViewerProcedure
@@ -1932,11 +1992,11 @@ const monitoringRouter = t.router({
       })
     )
     .query(async ({ ctx, input }) => {
-      const { getMonitoringGrid } = await import("../db");
-      const { listSolarRecTeamCredentials } = await import("../db");
+      const { getMonitoringOverview, listSolarRecTeamCredentials } =
+        await import("../db");
 
-      const [runs, creds] = await Promise.all([
-        getMonitoringGrid(ctx.scopeId, input.startDate, input.endDate),
+      const [overview, creds] = await Promise.all([
+        getMonitoringOverview(ctx.scopeId, input.startDate, input.endDate),
         listSolarRecTeamCredentials(),
       ]);
 
@@ -1946,7 +2006,7 @@ const monitoringRouter = t.router({
         provider: c.provider,
       }));
 
-      return { runs, credentials };
+      return { ...overview, credentials };
     }),
 });
 

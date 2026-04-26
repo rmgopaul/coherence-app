@@ -218,6 +218,13 @@
       "when": 1777082240632,
       "tag": "0034_add_monitoring_scope_id",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1777142432931,
+      "tag": "0035_cost_indexes_and_scope_storage_repair",
+      "breakpoints": true
     }
   ]
 }

@@ -92,7 +92,12 @@ function MonitoringOverviewImpl() {
   const providerGroups = useMemo<ProviderGroup[]>(() => {
     if (!overviewQuery.data) return [];
 
-    const { runs, credentials } = overviewQuery.data;
+    const {
+      daily,
+      providerSiteCounts,
+      connectionSiteCounts,
+      credentials,
+    } = overviewQuery.data;
 
     // Build credential name lookup
     const credNameMap = new Map<string, string>();
@@ -100,62 +105,76 @@ function MonitoringOverviewImpl() {
       credNameMap.set(c.id, c.name);
     }
 
-    // Group runs by provider → connectionId → dateKey
     const providerMap = new Map<
       string,
       {
         connectionMap: Map<
           string,
           {
-            siteIds: Set<string>;
+            siteCount: number;
             daily: Map<string, { attempts: number; successes: number }>;
           }
         >;
-        allSiteIds: Set<string>;
+        totalSites: number;
         daily: Map<string, { attempts: number; successes: number }>;
       }
     >();
 
-    for (const run of runs) {
-      const provider = run.provider;
-      const connId = run.connectionId ?? "unknown";
-
+    const ensureProvider = (provider: string) => {
       if (!providerMap.has(provider)) {
         providerMap.set(provider, {
           connectionMap: new Map(),
-          allSiteIds: new Set(),
+          totalSites: 0,
           daily: new Map(),
         });
       }
-      const pg = providerMap.get(provider)!;
+      return providerMap.get(provider)!;
+    };
 
-      // Provider-level
-      pg.allSiteIds.add(run.siteId);
-      const pd = pg.daily.get(run.dateKey) ?? { attempts: 0, successes: 0 };
-      pd.attempts++;
-      if (run.status === "success") pd.successes++;
-      pg.daily.set(run.dateKey, pd);
+    for (const row of providerSiteCounts) {
+      ensureProvider(row.provider).totalSites = row.siteCount;
+    }
 
-      // Connection-level
+    for (const row of connectionSiteCounts) {
+      const pg = ensureProvider(row.provider);
+      const connId = row.connectionId ?? "unknown";
       if (!pg.connectionMap.has(connId)) {
         pg.connectionMap.set(connId, {
-          siteIds: new Set(),
+          siteCount: row.siteCount,
+          daily: new Map(),
+        });
+      }
+      pg.connectionMap.get(connId)!.siteCount = row.siteCount;
+    }
+
+    for (const row of daily) {
+      const provider = row.provider;
+      const connId = row.connectionId ?? "unknown";
+      const pg = ensureProvider(provider);
+
+      const pd = pg.daily.get(row.dateKey) ?? { attempts: 0, successes: 0 };
+      pd.attempts += row.attempts;
+      pd.successes += row.successes;
+      pg.daily.set(row.dateKey, pd);
+
+      if (!pg.connectionMap.has(connId)) {
+        pg.connectionMap.set(connId, {
+          siteCount: 0,
           daily: new Map(),
         });
       }
       const conn = pg.connectionMap.get(connId)!;
-      conn.siteIds.add(run.siteId);
-      const cd = conn.daily.get(run.dateKey) ?? { attempts: 0, successes: 0 };
-      cd.attempts++;
-      if (run.status === "success") cd.successes++;
-      conn.daily.set(run.dateKey, cd);
+      conn.daily.set(row.dateKey, {
+        attempts: row.attempts,
+        successes: row.successes,
+      });
     }
 
     // Convert to sorted array
     return Array.from(providerMap.entries())
       .map(([provider, data]) => ({
         provider,
-        totalSites: data.allSiteIds.size,
+        totalSites: data.totalSites,
         dailyTotals: data.daily,
         connections: Array.from(data.connectionMap.entries())
           .map(([connId, connData]) => ({
@@ -164,7 +183,7 @@ function MonitoringOverviewImpl() {
               connId === "unknown"
                 ? "Unknown"
                 : credNameMap.get(connId) ?? `...${connId.slice(-6)}`,
-            siteCount: connData.siteIds.size,
+            siteCount: connData.siteCount,
             dailyStats: connData.daily,
           }))
           .sort((a, b) => b.siteCount - a.siteCount),
