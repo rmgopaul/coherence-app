@@ -129,10 +129,15 @@ export default function Settings() {
     enabled: false,
     retry: false,
   });
-  const dumpStructuredCsvQuery = trpc.dataExport.dumpStructuredCsv.useQuery(undefined, {
-    enabled: false,
-    retry: false,
-  });
+  // Pull the full historical horizon — 3650 = 10 years, the server's
+  // upper bound. A long-term Samsung Health user with the CSV import
+  // applied has ~3000 dailyHealthMetrics rows and the default of 365
+  // would silently truncate them. The endpoint already chunks date
+  // columns server-side so the response is fine even at this size.
+  const dumpStructuredCsvQuery = trpc.dataExport.dumpStructuredCsv.useQuery(
+    { limit: 3650 },
+    { enabled: false, retry: false },
+  );
 
   const { data: habitDefinitions, refetch: refetchHabits } = trpc.habits.listDefinitions.useQuery(
     undefined,

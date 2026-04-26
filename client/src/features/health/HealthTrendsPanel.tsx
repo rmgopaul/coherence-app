@@ -28,7 +28,18 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 
-const WINDOW_OPTIONS = [30, 90, 365] as const;
+// 3650 = 10 years — matches the server's upper bound on
+// `metrics.getTrendSeries.days` and lets a long-term Samsung Health
+// user with the full CSV import (~3000 days) view their entire
+// history. UI label maps "3650" to "All time" since "3650 days" is a
+// confusing way to spell "as much as you've got".
+const WINDOW_OPTIONS = [30, 90, 365, 3650] as const;
+const WINDOW_LABEL: Record<number, string> = {
+  30: "30 days",
+  90: "90 days",
+  365: "1 year",
+  3650: "All time",
+};
 
 interface SeriesMeta {
   key: string;
@@ -83,13 +94,13 @@ export function HealthTrendsPanel() {
         <CardHeader className="flex-row items-center justify-between gap-2 pb-2">
           <CardTitle className="text-sm">Trends</CardTitle>
           <Select value={String(days)} onValueChange={(v) => setDays(Number(v))}>
-            <SelectTrigger className="h-8 w-24">
+            <SelectTrigger className="h-8 w-28">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {WINDOW_OPTIONS.map((n) => (
                 <SelectItem key={n} value={String(n)}>
-                  {n} days
+                  {WINDOW_LABEL[n] ?? `${n} days`}
                 </SelectItem>
               ))}
             </SelectContent>

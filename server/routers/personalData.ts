@@ -117,7 +117,11 @@ export const metricsRouter = router({
     .input(
       z
         .object({
-          limit: z.number().min(1).max(120).optional(),
+          // 3650 = 10 years. Matches the upper bound on
+          // `dataExport.dumpStructuredCsv` so any client that holds a
+          // full historical CSV-import (~3000 days for a long-term
+          // Samsung Health user) can still pull every row.
+          limit: z.number().min(1).max(3650).optional(),
         })
         .optional()
     )
@@ -128,7 +132,7 @@ export const metricsRouter = router({
     .input(
       z
         .object({
-          days: z.number().int().min(7).max(365).optional(),
+          days: z.number().int().min(7).max(3650).optional(),
         })
         .optional()
     )
