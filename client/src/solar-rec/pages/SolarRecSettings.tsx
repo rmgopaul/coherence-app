@@ -318,7 +318,15 @@ const PROVIDERS = [
   {
     key: "enphase-v4",
     label: "Enphase V4",
-    fields: ["apiKey", "clientId", "clientSecret"],
+    fields: [
+      "apiKey",
+      "clientId",
+      "clientSecret",
+      "accessToken",
+      "refreshToken",
+      "expiresAt",
+      "baseUrl",
+    ],
   },
   {
     key: "fronius",
@@ -335,6 +343,7 @@ const PROVIDERS = [
     fields: ["clientId", "clientSecret", "partnerId"],
   },
   { key: "apsystems", label: "APsystems", fields: ["appId", "appSecret"] },
+  { key: "ekm", label: "EKM", fields: ["apiKey", "baseUrl"] },
   { key: "solarlog", label: "SolarLog", fields: ["deviceUrl", "password"] },
   { key: "growatt", label: "Growatt", fields: ["username", "password"] },
   { key: "ennexos", label: "EnnexOS (SMA)", fields: ["accessToken", "baseUrl"] },
@@ -357,6 +366,71 @@ const PROVIDERS = [
     ],
   },
 ];
+
+function compactCredentialFormFields(
+  fields: Record<string, string>
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(fields)
+      .map(([key, value]) => [key, value.trim()] as const)
+      .filter(([, value]) => value.length > 0)
+  );
+}
+
+function buildCredentialConnectPayload(
+  provider: string,
+  fields: Record<string, string>
+) {
+  const metadata = compactCredentialFormFields(fields);
+  const payload: {
+    metadata: string;
+    accessToken?: string;
+    refreshToken?: string;
+    expiresAt?: string;
+  } = {
+    metadata: "{}",
+  };
+
+  if (provider === "tesla-powerhub") {
+    payload.accessToken = metadata.clientSecret;
+    delete metadata.clientSecret;
+  }
+
+  if (provider === "enphase-v4") {
+    payload.accessToken = metadata.accessToken;
+    payload.refreshToken = metadata.refreshToken;
+    payload.expiresAt = metadata.expiresAt;
+    delete metadata.accessToken;
+    delete metadata.refreshToken;
+    delete metadata.expiresAt;
+  }
+
+  if (provider === "generac") {
+    payload.accessToken = metadata.accessToken;
+    if (metadata.accessToken && !metadata.apiKey) {
+      metadata.apiKey = metadata.accessToken;
+    }
+    delete metadata.accessToken;
+  }
+
+  payload.metadata = JSON.stringify(metadata);
+  return payload;
+}
+
+function inputTypeForCredentialField(field: string) {
+  const normalized = field.toLowerCase();
+  if (normalized.includes("expires")) return "datetime-local";
+  if (
+    normalized.includes("secret") ||
+    normalized.includes("password") ||
+    normalized.includes("token") ||
+    normalized === "apikey" ||
+    normalized === "accesskeyvalue"
+  ) {
+    return "password";
+  }
+  return "text";
+}
 
 function CredentialsManagement() {
   const gate = useSolarRecPermission("solar-rec-settings");
@@ -388,10 +462,14 @@ function CredentialsManagement() {
 
   const handleConnect = () => {
     if (!gate.canAdmin) return;
+    const credentialPayload = buildCredentialConnectPayload(
+      selectedProvider,
+      formFields
+    );
     connectMutation.mutate({
       provider: selectedProvider,
       connectionName: connectionName || providerConfig?.label,
-      metadata: JSON.stringify(formFields),
+      ...credentialPayload,
     });
   };
 
@@ -466,12 +544,7 @@ function CredentialsManagement() {
                               [field]: e.target.value,
                             }))
                           }
-                          type={
-                            field.toLowerCase().includes("secret") ||
-                            field.toLowerCase().includes("password")
-                              ? "password"
-                              : "text"
-                          }
+                          type={inputTypeForCredentialField(field)}
                         />
                       ))}
                       <Button

@@ -360,6 +360,113 @@ function serializeMetadata(data: Record<string, unknown>): string {
   return JSON.stringify(compact);
 }
 
+function isSensitiveCredentialMetadataKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return (
+    normalized === "apikey" ||
+    normalized === "apisecret" ||
+    normalized === "appsecret" ||
+    normalized === "clientsecret" ||
+    normalized === "password" ||
+    normalized === "passphrase" ||
+    normalized === "accesstoken" ||
+    normalized === "refreshtoken" ||
+    normalized === "accesskeyvalue" ||
+    normalized === "token" ||
+    normalized === "secret"
+  );
+}
+
+function redactCredentialMetadataValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactCredentialMetadataValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, nested]) => [
+      key,
+      isSensitiveCredentialMetadataKey(key)
+        ? "[redacted]"
+        : redactCredentialMetadataValue(nested),
+    ])
+  );
+}
+
+function redactCredentialMetadata(
+  metadata: string | null | undefined
+): string | null {
+  if (!metadata) return null;
+  const parsed = parseMetadataRecord(metadata);
+  return serializeMetadata(redactCredentialMetadataValue(parsed) as Record<string, unknown>);
+}
+
+function compactCredentialMetadata(
+  metadata: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(metadata)
+      .map(([key, value]) => [
+        key,
+        typeof value === "string" ? value.trim() : value,
+      ] as const)
+      .filter(([, value]) => value !== "")
+  );
+}
+
+function normalizeCredentialConnectInput(input: {
+  provider: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: string;
+  metadata?: string;
+}): {
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: Date;
+  metadata: string;
+} {
+  const provider = input.provider.trim().toLowerCase();
+  const metadata = compactCredentialMetadata(parseMetadataRecord(input.metadata));
+  let accessToken = toNonEmptyString(input.accessToken) ?? undefined;
+  let refreshToken = toNonEmptyString(input.refreshToken) ?? undefined;
+  let expiresAt =
+    toOptionalDate(input.expiresAt) ?? toOptionalDate(metadata.expiresAt);
+
+  if (provider === "tesla-powerhub") {
+    accessToken =
+      accessToken ?? toNonEmptyString(metadata.clientSecret) ?? undefined;
+    delete metadata.clientSecret;
+  }
+
+  if (provider === "enphase-v4") {
+    accessToken =
+      accessToken ?? toNonEmptyString(metadata.accessToken) ?? undefined;
+    refreshToken =
+      refreshToken ?? toNonEmptyString(metadata.refreshToken) ?? undefined;
+    expiresAt = expiresAt ?? toOptionalDate(metadata.expiresAt);
+    delete metadata.accessToken;
+    delete metadata.refreshToken;
+    delete metadata.expiresAt;
+  }
+
+  if (provider === "generac") {
+    accessToken =
+      accessToken ??
+      toNonEmptyString(metadata.accessToken) ??
+      toNonEmptyString(metadata.apiKey) ??
+      undefined;
+    if (accessToken && !toNonEmptyString(metadata.apiKey)) {
+      metadata.apiKey = accessToken;
+    }
+    delete metadata.accessToken;
+  }
+
+  return {
+    accessToken,
+    refreshToken,
+    expiresAt,
+    metadata: serializeMetadata(metadata),
+  };
+}
+
 function buildSourceMetadata(
   data: Record<string, unknown>,
   mainProvider: string,
@@ -456,7 +563,6 @@ function extractMigrationPayloads(
             expiresAt,
             metadata: buildSourceMetadata(
               {
-                accessToken,
                 apiKey,
                 clientId,
                 clientSecret,
@@ -891,6 +997,125 @@ function extractMigrationPayloads(
       ];
     }
 
+    case "ekm-encompass": {
+      const payloads = connections
+        .map((connection, index) => {
+          const apiKey = toNonEmptyString(connection.apiKey);
+          if (!apiKey) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `ekm-${index + 1}`;
+          return {
+            solarProvider: "ekm",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `EKM ${index + 1} (Migrated)`,
+              accessToken: apiKey,
+              metadata: buildSourceMetadata(
+                {
+                  apiKey,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
+      if (payloads.length > 0) return payloads;
+
+      const apiKey =
+        toNonEmptyString(metadata.apiKey) ??
+        toNonEmptyString(integration.accessToken);
+      if (!apiKey) return [];
+      return [
+        {
+          solarProvider: "ekm",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "EKM (Migrated)",
+            accessToken: apiKey,
+            metadata: buildSourceMetadata(
+              { apiKey, baseUrl: toNonEmptyString(metadata.baseUrl) },
+              integration.provider,
+              "legacy"
+            ),
+          },
+        },
+      ];
+    }
+
+    case "ennexos-monitoring": {
+      const payloads = connections
+        .map((connection, index) => {
+          const accessToken =
+            toNonEmptyString(connection.accessToken) ??
+            toNonEmptyString(connection.accessKeyId);
+          if (!accessToken) return null;
+          const sourceConnectionId =
+            toNonEmptyString(connection.id) ?? `ennexos-${index + 1}`;
+          return {
+            solarProvider: "ennexos",
+            payload: {
+              sourceConnectionId,
+              connectionName:
+                toNonEmptyString(connection.name) ??
+                `ennexOS ${index + 1} (Migrated)`,
+              accessToken,
+              metadata: buildSourceMetadata(
+                {
+                  accessToken,
+                  baseUrl:
+                    toNonEmptyString(connection.baseUrl) ??
+                    toNonEmptyString(connection.accessKeyValue) ??
+                    toNonEmptyString(metadata.baseUrl),
+                },
+                integration.provider,
+                sourceConnectionId
+              ),
+            },
+          };
+        })
+        .filter(item => item !== null) as Array<{
+        solarProvider: string;
+        payload: MigrationPayload;
+      }>;
+      if (payloads.length > 0) return payloads;
+
+      const accessToken =
+        toNonEmptyString(metadata.accessToken) ??
+        toNonEmptyString(metadata.accessKeyId) ??
+        toNonEmptyString(integration.accessToken);
+      if (!accessToken) return [];
+      return [
+        {
+          solarProvider: "ennexos",
+          payload: {
+            sourceConnectionId: "legacy",
+            connectionName: "ennexOS (Migrated)",
+            accessToken,
+            metadata: buildSourceMetadata(
+              {
+                accessToken,
+                baseUrl:
+                  toNonEmptyString(metadata.baseUrl) ??
+                  toNonEmptyString(metadata.accessKeyValue),
+              },
+              integration.provider,
+              "legacy"
+            ),
+          },
+        },
+      ];
+    }
+
     case "solar-log": {
       const payloads = connections
         .map((connection, index) => {
@@ -1093,7 +1318,6 @@ function extractMigrationPayloads(
             metadata: buildSourceMetadata(
               {
                 clientId,
-                clientSecret,
                 groupId: toNonEmptyString(metadata.groupId),
                 tokenUrl: toNonEmptyString(metadata.tokenUrl),
                 apiBaseUrl: toNonEmptyString(metadata.apiBaseUrl),
@@ -1122,7 +1346,6 @@ const credentialsRouter = t.router({
   list: requirePermission("solar-rec-settings", "read").query(async () => {
     const { listSolarRecTeamCredentials } = await import("../db");
     const creds = await listSolarRecTeamCredentials();
-    // Strip sensitive tokens for non-admin views
     return creds.map(c => ({
       id: c.id,
       provider: c.provider,
@@ -1130,7 +1353,7 @@ const credentialsRouter = t.router({
       hasAccessToken: !!c.accessToken,
       hasRefreshToken: !!c.refreshToken,
       expiresAt: c.expiresAt,
-      metadata: c.metadata, // Contains non-sensitive config like baseUrl
+      metadata: redactCredentialMetadata(c.metadata),
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
     }));
@@ -1144,18 +1367,21 @@ const credentialsRouter = t.router({
         connectionName: z.string().optional(),
         accessToken: z.string().optional(),
         refreshToken: z.string().optional(),
+        expiresAt: z.string().optional(),
         metadata: z.string().optional(),
       })
     )
     .mutation(async ({ ctx, input }) => {
       const { upsertSolarRecTeamCredential } = await import("../db");
+      const normalized = normalizeCredentialConnectInput(input);
       const id = await upsertSolarRecTeamCredential({
         id: input.id,
-        provider: input.provider,
+        provider: input.provider.trim(),
         connectionName: input.connectionName,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken,
-        metadata: input.metadata,
+        accessToken: normalized.accessToken,
+        refreshToken: normalized.refreshToken,
+        expiresAt: normalized.expiresAt,
+        metadata: normalized.metadata,
         createdBy: ctx.userId,
       });
       return { id };
@@ -1284,6 +1510,8 @@ const credentialsRouter = t.router({
         "solis-cloud",
         "locus-energy",
         "apsystems-ema",
+        "ekm-encompass",
+        "ennexos-monitoring",
         "solar-log",
         "growatt-server",
         "egauge-monitoring",
