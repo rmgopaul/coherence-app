@@ -790,6 +790,110 @@ router.post("/webhooks/samsung-health/batch", async (req, res) => {
 });
 
 /**
+ * One-shot importer for pre-aggregated daily Samsung Health metrics
+ * sourced from a Samsung Health "Download personal data" CSV export.
+ *
+ * Distinct from the regular `/api/webhooks/samsung-health[/batch]`
+ * ingest path because:
+ *   - Health Connect (the Android app's source) only retains records
+ *     from the moment Samsung Health was granted write access, so
+ *     anything older than that is invisible to the Android worker.
+ *   - The CSV export contains years of historical data (sleep_score,
+ *     vitality_score's total_score, daily steps, daily SpO2 average)
+ *     that we want to land directly in `dailyHealthMetrics` without
+ *     forcing it through the buildSamsungMetadata pipeline (which
+ *     deliberately ignores payload-derived sleep / energy scores —
+ *     those only flow from manualScores now).
+ *
+ * Authenticates via the same `x-sync-key` header. Body is a JSON
+ * object `{ entries: Array<DailyMetricImport> }` with up to
+ * `MAX_IMPORT_ENTRIES_PER_REQUEST` rows. Each entry's fields are
+ * optional except `dateKey`; null/missing fields fall through to the
+ * existing null-preservation in `upsertSamsungDailyMetric` for
+ * record-derived columns and to overwrite-with-null for the manual
+ * score columns.
+ */
+const MAX_IMPORT_ENTRIES_PER_REQUEST = 500;
+
+router.post("/webhooks/samsung-health/import-daily-metrics", async (req, res) => {
+  try {
+    const auth = resolveSamsungWebhookUser(req);
+    if ("error" in auth) {
+      return res.status(auth.status).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: auth.error,
+      });
+    }
+
+    const body = req.body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return res.status(400).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: "Invalid JSON body",
+      });
+    }
+
+    const rawEntries = (body as { entries?: unknown }).entries;
+    if (!Array.isArray(rawEntries) || rawEntries.length === 0) {
+      return res.status(400).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: "`entries` must be a non-empty array",
+      });
+    }
+    if (rawEntries.length > MAX_IMPORT_ENTRIES_PER_REQUEST) {
+      return res.status(400).json({
+        _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+        error: `Too many entries (max ${MAX_IMPORT_ENTRIES_PER_REQUEST} per request)`,
+      });
+    }
+
+    const accepted: string[] = [];
+    const rejected: Array<{ index: number; error: string }> = [];
+
+    for (let i = 0; i < rawEntries.length; i++) {
+      const entry = asRecord(rawEntries[i]);
+      const dateKey = asString(entry.dateKey);
+      if (!dateKey || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+        rejected.push({ index: i, error: "missing or malformed dateKey" });
+        continue;
+      }
+      try {
+        await upsertSamsungDailyMetric({
+          userId: auth.userId,
+          dateKey,
+          samsungSteps: asNumber(entry.samsungSteps),
+          samsungSleepHours: asNumber(entry.samsungSleepHours),
+          samsungSpo2AvgPercent: asNumber(entry.samsungSpo2AvgPercent),
+          samsungSleepScore: asNumber(entry.samsungSleepScore),
+          samsungEnergyScore: asNumber(entry.samsungEnergyScore),
+        });
+        accepted.push(dateKey);
+      } catch (error) {
+        rejected.push({
+          index: i,
+          error: (error as Error).message ?? "upsert failed",
+        });
+      }
+    }
+
+    return res.status(200).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      _checkpoint: "samsung-import-daily-metrics-v1" as const,
+      success: rejected.length === 0,
+      written: accepted.length,
+      acceptedDateKeys: accepted,
+      rejected,
+    });
+  } catch (error) {
+    console.error("[Samsung Health Import CSV] Error:", error);
+    return res.status(500).json({
+      _runnerVersion: SAMSUNG_HEALTH_WEBHOOK_VERSION,
+      error: "Failed to import Samsung Health daily metrics",
+    });
+  }
+});
+
+/**
  * Samsung Health webhook debug endpoint.
  *
  * Authenticates via the same `x-sync-key` header as the ingest
