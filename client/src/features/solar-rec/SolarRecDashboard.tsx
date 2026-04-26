@@ -6397,7 +6397,11 @@ const financialCsgIds = useMemo(() => {
   return Array.from(ids);
 }, [isFinancialsTabActive, isPipelineTabActive, isOverviewTabActive, datasets.abpCsgSystemMapping]);
 
-const contractScanResultsQuery = trpc.abpSettlement.getContractScanResultsByCsgIds.useQuery(
+// Task 5.7 PR-B (2026-04-26): getContractScanResultsByCsgIds moved
+// from main `abpSettlementRouter` to standalone `contractScan` —
+// dashboard already imports `solarRecTrpc` (PR #110) so this is a
+// straight call-site swap.
+const contractScanResultsQuery = solarRecTrpc.contractScan.getContractScanResultsByCsgIds.useQuery(
   { csgIds: financialCsgIds },
   { enabled: (isFinancialsTabActive || isPipelineTabActive || isOverviewTabActive) && financialCsgIds.length > 0 }
 );

@@ -24,6 +24,7 @@ import {
   type SolarRecContext,
 } from "./solarRecBase";
 import { solarRecDashboardRouter } from "./solarRecDashboardRouter";
+import { solarRecContractScanRouter } from "./solarRecContractScanRouter";
 
 // ---------------------------------------------------------------------------
 // Context — `createSolarRecContext` stays here because `_core/index.ts`
@@ -4501,6 +4502,7 @@ export const solarRecAppRouter = t.router({
   sunpower: sunpowerRouter,
   egauge: egaugeRouter,
   solarRecDashboard: solarRecDashboardRouter,
+  contractScan: solarRecContractScanRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

@@ -71,13 +71,16 @@ stop and discuss the migration timing first.
   `getLatestScheduleBImportJob` /
   `getOrCreateLatestScheduleBImportJob` to filter by scope.
 - ~~Contract scan runner + ContractScanner + ContractScrapeManager —
-  Task 5.7~~ **PARTIAL 2026-04-26.** PR-A added `scopeId` to the 3
-  `contractScan*` tables, backfilled, switched DB helpers + procs to
-  filter by scope. **Remaining (PR-B)**: move procs from main
-  `abpSettlementRouter` to standalone with `requirePermission(
-  "contract-scanner" | "contract-scrape-manager", level)`; move
-  `ContractScanner` and `ContractScrapeManager` pages to
-  `client/src/solar-rec/pages/`.
+  Task 5.7~~ **DONE 2026-04-26.** PR-A scope-keyed the 3
+  `contractScan*` tables (#117). PR-B moved the 11 db/result/override
+  procs from main `abpSettlementRouter` into a new standalone
+  `solarRecContractScanRouter.ts` (module key
+  `contract-scrape-manager`, 7 read / 3 edit / 1 admin), moved both
+  pages to `client/src/solar-rec/pages/`, and retired the legacy
+  `/contract-scanner` + `/contract-scrape-manager` URLs with Wouter
+  redirects. ContractScanner page (PDF parser, no procs) gates on
+  `contract-scanner`. Cross-tenant safety on `getContractScanJob`
+  ownership checks switched from `userId` to `scopeId`.
 - DIN scrape runner + DinScrapeManager — Task 5.8
 - ABP Invoice Settlement — Task 5.9
 - Early Payment + Invoice Match Dashboard — Task 5.10

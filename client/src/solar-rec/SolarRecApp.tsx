@@ -13,6 +13,14 @@ const SolarRecDashboard = lazy(
 const MonitoringDashboard = lazy(() => import("./pages/MonitoringDashboard"));
 const MonitoringOverview = lazy(() => import("./pages/MonitoringOverview"));
 const SolarRecSettings = lazy(() => import("./pages/SolarRecSettings"));
+// Task 5.7 PR-B (2026-04-26): contract-scan pages migrated from
+// `client/src/features/dashboard/`. Module keys: `contract-scanner`
+// for the PDF tool (no server procs — pure client-side parser),
+// `contract-scrape-manager` for the CSG portal scraper.
+const ContractScanner = lazy(() => import("./pages/ContractScanner"));
+const ContractScrapeManager = lazy(
+  () => import("./pages/ContractScrapeManager")
+);
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -133,6 +141,18 @@ function AuthenticatedApp() {
               </Route>
               <Route path="/solar-rec/settings">
                 <SolarRecSettings />
+              </Route>
+
+              {/* Task 5.7 PR-B (2026-04-26): contract-scan pages */}
+              <Route path="/solar-rec/contract-scanner">
+                <PermissionGate moduleKey="contract-scanner">
+                  <ContractScanner />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/contract-scrape-manager">
+                <PermissionGate moduleKey="contract-scrape-manager">
+                  <ContractScrapeManager />
+                </PermissionGate>
               </Route>
 
               {/* Meter read pages */}

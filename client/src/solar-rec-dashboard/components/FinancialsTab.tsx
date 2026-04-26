@@ -56,7 +56,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { trpc } from "@/lib/trpc";
+// Task 5.7 PR-B (2026-04-26): updateContractOverride +
+// rescanSingleContract migrated from main `abpSettlement` to
+// standalone Solar REC `contractScan`. Aliased so the existing call
+// shape stays unchanged after the abpSettlement → contractScan
+// rename below.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import {
   buildCsv,
   timestampForCsvFileName,
@@ -200,8 +205,8 @@ export default memo(function FinancialsTab(props: FinancialsTabProps) {
   const batchRescanCancelledRef = useRef(false);
 
   // --- tRPC mutations (owned by this component) ---
-  const updateContractOverride = trpc.abpSettlement.updateContractOverride.useMutation();
-  const rescanSingleContract = trpc.abpSettlement.rescanSingleContract.useMutation();
+  const updateContractOverride = trpc.contractScan.updateContractOverride.useMutation();
+  const rescanSingleContract = trpc.contractScan.rescanSingleContract.useMutation();
 
   // -------------------------------------------------------------------------
   // Derived: part-2-verified systems (drives revenue at risk)
