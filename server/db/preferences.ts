@@ -121,6 +121,77 @@ export async function getSolarRecDashboardPayload(userId: number, storageKey: st
   return rows.map((row) => row.payload ?? "").join("");
 }
 
+/**
+ * Batch read of multiple dashboard payloads in a single DB roundtrip.
+ *
+ * Returns a `Map<storageKey, assembledPayload>` where each entry's value
+ * is the chunk-joined payload (matching `getSolarRecDashboardPayload`'s
+ * single-key semantics). Keys with no rows are absent from the map —
+ * the caller should fall back to S3 for those.
+ *
+ * Uses a single `WHERE scopeId = ? AND storageKey IN (...) ORDER BY
+ * storageKey, chunkIndex` query, capped at 500 keys per query. Larger
+ * input lists are split into multiple queries (TiDB IN-list practical
+ * cap is around 1024 — 500 leaves headroom).
+ *
+ * Built for the `getDatasetAssembled` batch endpoint: a single
+ * cold-cache hydration of an 18-dataset portfolio used to fan out
+ * 2000+ tRPC calls; this collapses each dataset's chunk-fetch storm to
+ * one DB call.
+ */
+const BATCH_PAYLOAD_KEY_CAP = 500;
+export async function getSolarRecDashboardPayloadsBatch(
+  userId: number,
+  storageKeys: string[]
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (storageKeys.length === 0) return result;
+  const db = await getDb();
+  if (!db) return result;
+  const ensured = await ensureSolarRecDashboardStorageTable();
+  if (!ensured) return result;
+  const scopeId = await resolveScopeIdFromUserId(userId);
+
+  const uniqueKeys = Array.from(new Set(storageKeys));
+  const grouped = new Map<string, { chunkIndex: number; payload: string | null }[]>();
+
+  for (let offset = 0; offset < uniqueKeys.length; offset += BATCH_PAYLOAD_KEY_CAP) {
+    const slice = uniqueKeys.slice(offset, offset + BATCH_PAYLOAD_KEY_CAP);
+    const rows = await withDbRetry("batch load solar rec dashboard payloads", async () =>
+      db
+        .select({
+          storageKey: solarRecDashboardStorage.storageKey,
+          payload: solarRecDashboardStorage.payload,
+          chunkIndex: solarRecDashboardStorage.chunkIndex,
+        })
+        .from(solarRecDashboardStorage)
+        .where(
+          and(
+            eq(solarRecDashboardStorage.scopeId, scopeId),
+            inArray(solarRecDashboardStorage.storageKey, slice)
+          )
+        )
+    );
+
+    for (const row of rows) {
+      const list = grouped.get(row.storageKey) ?? [];
+      list.push({ chunkIndex: row.chunkIndex, payload: row.payload });
+      grouped.set(row.storageKey, list);
+    }
+  }
+
+  grouped.forEach((rows, storageKey) => {
+    rows.sort(
+      (a: { chunkIndex: number }, b: { chunkIndex: number }) => a.chunkIndex - b.chunkIndex
+    );
+    result.set(
+      storageKey,
+      rows.map((row: { payload: string | null }) => row.payload ?? "").join("")
+    );
+  });
+  return result;
+}
+
 export async function saveSolarRecDashboardPayload(userId: number, storageKey: string, payload: string): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
