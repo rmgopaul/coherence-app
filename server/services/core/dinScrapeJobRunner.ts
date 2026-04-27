@@ -311,6 +311,7 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
             result: {
               id: nanoid(),
               jobId: id,
+              scopeId: job.scopeId,
               csgId,
               systemPageUrl: fetched.systemPageUrl,
               inverterPhotoCount: inverterCount,
@@ -323,6 +324,7 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
             dins: deduped.map((d) => ({
               id: nanoid(),
               jobId: id,
+              scopeId: job.scopeId,
               csgId,
               dinValue: d.dinValue,
               sourceType: d.sourceType,

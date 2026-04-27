@@ -580,8 +580,10 @@ export const dinScrapeRouter = router({
         throw new Error("At least one CSG ID is required.");
       }
 
+      const scopeId = await resolveSolarRecScopeId();
       const jobId = await createDinScrapeJob({
         userId: ctx.user.id,
+        scopeId,
         totalSites: uniqueIds.length,
       });
       await bulkInsertDinScrapeJobCsgIds(jobId, uniqueIds);
@@ -697,8 +699,9 @@ export const dinScrapeRouter = router({
     .input(
       z.object({ limit: z.number().int().min(1).max(50).optional() }).optional()
     )
-    .query(async ({ ctx, input }) => {
-      return listDinScrapeJobs(ctx.user.id, input?.limit ?? 20);
+    .query(async ({ input }) => {
+      const scopeId = await resolveSolarRecScopeId();
+      return listDinScrapeJobs(scopeId, input?.limit ?? 20);
     }),
 
   getResults: protectedProcedure
