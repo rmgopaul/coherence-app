@@ -2162,14 +2162,6 @@ export default function SolarRecDashboard() {
   // errors or returns nothing usable.
   const getRemoteDatasetAssembled =
     solarRecTrpc.solarRecDashboard.getDatasetAssembled.useMutation();
-  // Direct row-table hydration for the 7 core datasets (Solar
-  // Applications / Account Solar Generation / Transfer History /
-  // ABP Report / Generation Entry / Contracted Date / Delivery
-  // Schedule). Skips chunked-CSV fetch + client-side parse entirely.
-  // Returns null when the key isn't row-backed or no active batch
-  // exists — caller falls through to getDatasetAssembled.
-  const getRemoteDatasetRowsFromSrDs =
-    solarRecTrpc.solarRecDashboard.getDatasetRowsFromSrDs.useMutation();
   const saveRemoteDataset = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
   // Atomic read-merge-write for the convertedReads manifest. Used in place
   // of saveRemoteDataset when key === "convertedReads" so server-managed
@@ -2457,8 +2449,6 @@ export default function SolarRecDashboard() {
   getRemoteDatasetRef.current = getRemoteDataset;
   const getRemoteDatasetAssembledRef = useRef(getRemoteDatasetAssembled);
   getRemoteDatasetAssembledRef.current = getRemoteDatasetAssembled;
-  const getRemoteDatasetRowsFromSrDsRef = useRef(getRemoteDatasetRowsFromSrDs);
-  getRemoteDatasetRowsFromSrDsRef.current = getRemoteDatasetRowsFromSrDs;
   const saveRemoteDatasetRef = useRef(saveRemoteDataset);
   saveRemoteDatasetRef.current = saveRemoteDataset;
   const syncConvertedReadsUserSourcesRef = useRef(syncConvertedReadsUserSources);
