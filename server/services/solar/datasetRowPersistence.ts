@@ -27,6 +27,7 @@ import {
   srDsGeneratorDetails,
   srDsAbpCsgSystemMapping,
   srDsAbpProjectApplicationRows,
+  srDsAbpPortalInvoiceMapRows,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -441,6 +442,37 @@ const persistAbpProjectApplicationRows: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-4: abpPortalInvoiceMapRows is a single-file replace
+// dataset (CSG ID → invoice number lookup). Both required headers map
+// to typed columns. The "Num" alias used in
+// `parseInvoiceNumberMap` is a header-detection fallback (when uploads
+// have abbreviated headers), not a separate field — so two columns
+// suffice.
+const persistAbpPortalInvoiceMapRows: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    csgId: clip(pick(row, "csgId", "CSG ID"), 64),
+    invoiceNumber: clip(
+      pick(row, "invoiceNumber", "Invoice Number", "Num"),
+      64
+    ),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpPortalInvoiceMapRows,
+    values,
+    "abpPortalInvoiceMapRows",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -456,6 +488,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   generatorDetails: persistGeneratorDetails,
   abpCsgSystemMapping: persistAbpCsgSystemMapping,
   abpProjectApplicationRows: persistAbpProjectApplicationRows,
+  abpPortalInvoiceMapRows: persistAbpPortalInvoiceMapRows,
 };
 
 /**
@@ -700,6 +733,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   generatorDetails: makeBatchDeleter("srDsGeneratorDetails"),
   abpCsgSystemMapping: makeBatchDeleter("srDsAbpCsgSystemMapping"),
   abpProjectApplicationRows: makeBatchDeleter("srDsAbpProjectApplicationRows"),
+  abpPortalInvoiceMapRows: makeBatchDeleter("srDsAbpPortalInvoiceMapRows"),
 };
 
 export async function appendRowExists(

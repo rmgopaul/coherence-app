@@ -53,6 +53,9 @@ export const CORE_DATASETS = [
   // Task 5.12 PR-3 (2026-04-27): abpProjectApplicationRows. Same
   // backfill rationale; shared with ABP Monthly Invoice Settlement.
   "abpProjectApplicationRows",
+  // Task 5.12 PR-4 (2026-04-27): abpPortalInvoiceMapRows. Same
+  // rationale.
+  "abpPortalInvoiceMapRows",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];

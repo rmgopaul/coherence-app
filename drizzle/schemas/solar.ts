@@ -959,6 +959,46 @@ export type SrDsAbpProjectApplicationRows =
 export type InsertSrDsAbpProjectApplicationRows =
   typeof srDsAbpProjectApplicationRows.$inferInsert;
 
+// Task 5.12 PR-4 (2026-04-27): ABP Portal Invoice Map Rows row table.
+// Single-file replace dataset shared with ABP Monthly Invoice Settlement.
+// Two stable typed columns (`csgId`, `invoiceNumber`) — both required
+// headers; the only fuzzy lookup in the consumer chain is the
+// "Num" header alias inside `parseInvoiceNumberMap`, which is a
+// header-detection fallback, not a separate column. Hot path is the
+// reverse `invoiceNumber → systemId` lookup in
+// `buildInvoiceNumberToSystemIdMap`, but that joins through the
+// settlement state in memory; the DB-side index that matters is
+// `(scopeId, csgId)` so the settlement engine can re-hydrate
+// per-system via paginated row reads (Task 5.13).
+export const srDsAbpPortalInvoiceMapRows = mysqlTable(
+  "srDsAbpPortalInvoiceMapRows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }),
+    invoiceNumber: varchar("invoiceNumber", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_portal_invoice_map_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_portal_invoice_map_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeCsgIdx: index("sr_ds_abp_portal_invoice_map_scope_csg_idx").on(
+      table.scopeId,
+      table.csgId
+    ),
+  })
+);
+
+export type SrDsAbpPortalInvoiceMapRows =
+  typeof srDsAbpPortalInvoiceMapRows.$inferSelect;
+export type InsertSrDsAbpPortalInvoiceMapRows =
+  typeof srDsAbpPortalInvoiceMapRows.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",
