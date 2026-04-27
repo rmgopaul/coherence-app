@@ -26,6 +26,7 @@ import {
   srDsTransferHistory,
   srDsGeneratorDetails,
   srDsAbpCsgSystemMapping,
+  srDsAbpProjectApplicationRows,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -396,6 +397,50 @@ const persistAbpCsgSystemMapping: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-3: abpProjectApplicationRows is a single-file replace
+// dataset shared with ABP Monthly Invoice Settlement. All four stable
+// fields are typed because every consumer uses the canonical header
+// names (see `parseProjectApplications` in client/src/lib/abpSettlement.ts
+// — there are no fuzzy fallback header lists). The two date columns
+// drive the application-fee cutoff logic (pre/post 2024-06-01) so the
+// settlement engine joins them on `applicationId`.
+const persistAbpProjectApplicationRows: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    applicationId: clip(pick(row, "applicationId", "Application_ID"), 64),
+    inverterSizeKwAcPart1: clip(
+      pick(row, "inverterSizeKwAcPart1", "Inverter_Size_kW_AC_Part_1"),
+      32
+    ),
+    part1SubmissionDate: clip(
+      pick(row, "part1SubmissionDate", "Part_1_Submission_Date"),
+      32
+    ),
+    part1OriginalSubmissionDate: clip(
+      pick(
+        row,
+        "part1OriginalSubmissionDate",
+        "Part_1_Original_Submission_Date"
+      ),
+      32
+    ),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpProjectApplicationRows,
+    values,
+    "abpProjectApplicationRows",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -410,6 +455,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   transferHistory: persistTransferHistory,
   generatorDetails: persistGeneratorDetails,
   abpCsgSystemMapping: persistAbpCsgSystemMapping,
+  abpProjectApplicationRows: persistAbpProjectApplicationRows,
 };
 
 /**
@@ -653,6 +699,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   transferHistory: makeBatchDeleter("srDsTransferHistory"),
   generatorDetails: makeBatchDeleter("srDsGeneratorDetails"),
   abpCsgSystemMapping: makeBatchDeleter("srDsAbpCsgSystemMapping"),
+  abpProjectApplicationRows: makeBatchDeleter("srDsAbpProjectApplicationRows"),
 };
 
 export async function appendRowExists(

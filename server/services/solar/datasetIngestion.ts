@@ -50,9 +50,9 @@ type IngestProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 // ---------------------------------------------------------------------------
 // Dataset definitions (server-side mirror of client DATASET_DEFINITIONS)
-// 7 + 2 datasets so far (Task 5.12 PRs 1–2 added generatorDetails and
-// abpCsgSystemMapping). Extend as the remaining 10 non-row-backed
-// datasets migrate.
+// 7 + 3 datasets so far (Task 5.12 PRs 1–3 added generatorDetails,
+// abpCsgSystemMapping, and abpProjectApplicationRows). Extend as the
+// remaining 9 non-row-backed datasets migrate.
 // ---------------------------------------------------------------------------
 
 const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
@@ -131,6 +131,14 @@ const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
     requiredHeaderSets: [
       ["csgId", "systemId"],
       ["CSG ID", "System ID"],
+    ],
+    multiFileAppend: false,
+  },
+  abpProjectApplicationRows: {
+    label: "ABP ProjectApplication Rows",
+    requiredHeaderSets: [
+      ["applicationId", "inverterSizeKwAcPart1"],
+      ["Application_ID", "Inverter_Size_kW_AC_Part_1"],
     ],
     multiFileAppend: false,
   },
