@@ -3130,6 +3130,149 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * CSV export for the 7 row-backed datasets.
+   *
+   * Builds the CSV server-side by paginating through the active batch's
+   * `srDs*` rows. Server memory is bounded by the page size (1000 rows
+   * ≈ 3 MB peak per page) — it never materializes the full row array
+   * at once, only accumulates the CSV text incrementally.
+   *
+   * Why a server-side mutation rather than an Express streaming route:
+   * the dashboard has tabs that need the CSV inline (e.g., "copy CSV"
+   * actions, downstream re-ingestion). For those a tRPC mutation is
+   * the right shape — caller awaits the string, creates a Blob in
+   * the browser, and triggers a download. Express streaming would be
+   * preferable for huge datasets but adds an auth-middleware seam
+   * we don't need yet (transferHistory's ~25 MB CSV is the largest;
+   * fits one tRPC response without OOMing the 4 GB Render heap).
+   *
+   * Future-proofing: when a dataset grows past the response-size
+   * comfort zone, swap this for a `getDatasetCsvStreamUrl` that
+   * returns a signed download URL pointing at an Express stream
+   * route. The internal page-cursor logic transfers directly.
+   */
+  getDatasetCsv: requirePermission("solar-rec-dashboard", "read")
+    .input(
+      z.object({
+        datasetKey: z.enum([
+          "solarApplications",
+          "abpReport",
+          "generationEntry",
+          "accountSolarGeneration",
+          "contractedDate",
+          "deliveryScheduleBase",
+          "transferHistory",
+        ]),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      void ctx;
+      const { resolveSolarRecScopeId } = await import("./solarRecAuth");
+      const { getActiveBatchForDataset } = await import("../db");
+      const { loadDatasetRowsPage } = await import(
+        "../services/solar/buildSystemSnapshot"
+      );
+      const { buildCsvText } = await import("../routers/helpers/scheduleB");
+
+      const TABLES_BY_DATASET_KEY = {
+        solarApplications: srDsSolarApplications,
+        abpReport: srDsAbpReport,
+        generationEntry: srDsGenerationEntry,
+        accountSolarGeneration: srDsAccountSolarGeneration,
+        contractedDate: srDsContractedDate,
+        deliveryScheduleBase: srDsDeliverySchedule,
+        transferHistory: srDsTransferHistory,
+      } as const;
+
+      const scopeId = await resolveSolarRecScopeId();
+      const activeBatch = await getActiveBatchForDataset(
+        scopeId,
+        input.datasetKey
+      );
+      if (!activeBatch) {
+        return {
+          _checkpoint: "dataset-csv-v1",
+          _runnerVersion: "data-flow-pr5" as const,
+          datasetKey: input.datasetKey,
+          batchId: null,
+          rowCount: 0,
+          csv: "",
+        };
+      }
+
+      const table = TABLES_BY_DATASET_KEY[input.datasetKey];
+
+      // Fetch first page to derive headers from the data itself.
+      // Prior approaches inferred headers from a hardcoded list per
+      // dataset — drift-prone. Discovering from row keys keeps the
+      // CSV in sync with whatever columns the row table actually has.
+      const PAGE_SIZE = 1000;
+      const firstPage = await loadDatasetRowsPage(scopeId, activeBatch.id, table, {
+        cursor: null,
+        limit: PAGE_SIZE,
+      });
+      if (firstPage.rows.length === 0) {
+        return {
+          _checkpoint: "dataset-csv-v1",
+          _runnerVersion: "data-flow-pr5" as const,
+          datasetKey: input.datasetKey,
+          batchId: activeBatch.id,
+          rowCount: 0,
+          csv: "",
+        };
+      }
+
+      // Header order: first row's keys (rawRow JSON preserves
+      // insertion order; typed-only tables use the per-table remap
+      // which is also stable). Subsequent rows extend the set if
+      // they have keys the first row didn't.
+      const headerSet = new Set<string>(Object.keys(firstPage.rows[0]));
+      for (const row of firstPage.rows) {
+        for (const key of Object.keys(row)) headerSet.add(key);
+      }
+
+      const segments: string[] = [];
+      segments.push(buildCsvText(Array.from(headerSet), firstPage.rows));
+      let totalRows = firstPage.rows.length;
+      let cursor = firstPage.nextCursor;
+
+      while (cursor !== null) {
+        const page = await loadDatasetRowsPage(scopeId, activeBatch.id, table, {
+          cursor,
+          limit: PAGE_SIZE,
+        });
+        if (page.rows.length === 0) break;
+        for (const row of page.rows) {
+          for (const key of Object.keys(row)) headerSet.add(key);
+        }
+        // buildCsvText emits its own header — we only want the body
+        // for subsequent pages. Strip the header by splitting once.
+        const text = buildCsvText(Array.from(headerSet), page.rows);
+        const newlineIdx = text.indexOf("\n");
+        segments.push(newlineIdx >= 0 ? text.slice(newlineIdx + 1) : "");
+        totalRows += page.rows.length;
+        cursor = page.nextCursor;
+      }
+
+      // If headers grew during pagination (rare but possible), the
+      // first segment's header row is stale relative to later body
+      // rows. Rebuild segment[0] from the final headerSet so the
+      // header row matches every body row's column count exactly.
+      if (firstPage.rows.length > 0) {
+        segments[0] = buildCsvText(Array.from(headerSet), firstPage.rows);
+      }
+
+      return {
+        _checkpoint: "dataset-csv-v1",
+        _runnerVersion: "data-flow-pr5" as const,
+        datasetKey: input.datasetKey,
+        batchId: activeBatch.id,
+        rowCount: totalRows,
+        csv: segments.join("\n"),
+      };
+    }),
+
+  /**
    * Cursor-paginated row reader for the 7 row-backed datasets.
    *
    * Returns at most `limit` rows per call, ordered by the row's PK.
