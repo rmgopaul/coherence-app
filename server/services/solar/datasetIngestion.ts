@@ -50,10 +50,11 @@ type IngestProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 // ---------------------------------------------------------------------------
 // Dataset definitions (server-side mirror of client DATASET_DEFINITIONS)
-// 7 + 6 datasets so far (Task 5.12 PRs 1–6 added generatorDetails,
+// 7 + 7 datasets so far (Task 5.12 PRs 1–7 added generatorDetails,
 // abpCsgSystemMapping, abpProjectApplicationRows, abpPortalInvoiceMapRows,
-// abpCsgPortalDatabaseRows, and abpQuickBooksRows). Extend as the
-// remaining 6 non-row-backed datasets migrate.
+// abpCsgPortalDatabaseRows, abpQuickBooksRows, and
+// abpUtilityInvoiceRows). Extend as the remaining 5 non-row-backed
+// datasets migrate.
 // ---------------------------------------------------------------------------
 
 const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
@@ -164,6 +165,20 @@ const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
     requiredHeaderSets: [
       ["invoiceNumber", "lineAmount", "description"],
       ["Date", "Num", "Customer", "Product/service description"],
+    ],
+    multiFileAppend: false,
+  },
+  abpUtilityInvoiceRows: {
+    label: "ABP Utility Invoice Rows",
+    requiredHeaderSets: [
+      ["systemId", "paymentNumber", "recQuantity", "recPrice", "invoiceAmount"],
+      [
+        "System ID",
+        "Payment Number",
+        "Total RECS",
+        "REC Price",
+        "Invoice Amount ($)",
+      ],
     ],
     multiFileAppend: false,
   },

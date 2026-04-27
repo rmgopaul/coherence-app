@@ -1080,6 +1080,48 @@ export type SrDsAbpQuickBooksRows = typeof srDsAbpQuickBooksRows.$inferSelect;
 export type InsertSrDsAbpQuickBooksRows =
   typeof srDsAbpQuickBooksRows.$inferInsert;
 
+// Task 5.12 PR-7 (2026-04-27): ABP Utility Invoice Rows row table.
+// Single-file replace dataset carrying utility invoice detail
+// (system × payment-cycle × monthly-true-up). The parser
+// (`parseUtilityInvoiceMatrix` in `client/src/lib/abpSettlement.ts`)
+// detects the header row by exact match on
+// "System ID + Payment Number + Total RECS + REC Price + Invoice Amount ($)"
+// and then reads each field via `readByNormalizedHeader` with
+// fuzzy alias lists (e.g. `["Invoice Amount ($)", "Invoice Amount"]`,
+// `["Total RECS", "REC Quantity"]`). Reproducing that fuzzy
+// detection in the persister would re-implement parser logic that
+// is already stable in the client. Only `systemId` is typed — it's
+// the join key for the CSG mapping and ICC report joins, and the
+// only field the parser reads canonically (no fuzzy fallback).
+// Hot path is `(scopeId, systemId)`.
+export const srDsAbpUtilityInvoiceRows = mysqlTable(
+  "srDsAbpUtilityInvoiceRows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    systemId: varchar("systemId", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_utility_invoice_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_utility_invoice_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeSystemIdx: index("sr_ds_abp_utility_invoice_scope_system_idx").on(
+      table.scopeId,
+      table.systemId
+    ),
+  })
+);
+
+export type SrDsAbpUtilityInvoiceRows =
+  typeof srDsAbpUtilityInvoiceRows.$inferSelect;
+export type InsertSrDsAbpUtilityInvoiceRows =
+  typeof srDsAbpUtilityInvoiceRows.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",

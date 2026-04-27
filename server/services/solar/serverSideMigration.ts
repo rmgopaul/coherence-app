@@ -61,6 +61,9 @@ export const CORE_DATASETS = [
   "abpCsgPortalDatabaseRows",
   // Task 5.12 PR-6 (2026-04-27): abpQuickBooksRows. Same rationale.
   "abpQuickBooksRows",
+  // Task 5.12 PR-7 (2026-04-27): abpUtilityInvoiceRows. Same
+  // rationale.
+  "abpUtilityInvoiceRows",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];
