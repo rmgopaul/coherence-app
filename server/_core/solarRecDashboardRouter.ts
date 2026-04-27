@@ -636,6 +636,7 @@ export const solarRecDashboardRouter = t.router({
         if (!topResult?.payload) {
           return {
             _checkpoint: "getDatasetAssembled-v1",
+          _runnerVersion: "data-flow-pr1" as const,
             datasetKey: input.datasetKey,
             topPayload: null,
             sources: null,
@@ -677,6 +678,7 @@ export const solarRecDashboardRouter = t.router({
         if (!sourceManifest) {
           return {
             _checkpoint: "getDatasetAssembled-v1",
+          _runnerVersion: "data-flow-pr1" as const,
             datasetKey: input.datasetKey,
             topPayload,
             sources: null,
@@ -748,6 +750,7 @@ export const solarRecDashboardRouter = t.router({
 
         return {
           _checkpoint: "getDatasetAssembled-v1",
+          _runnerVersion: "data-flow-pr1" as const,
           datasetKey: input.datasetKey,
           topPayload,
           sources,
@@ -844,6 +847,7 @@ export const solarRecDashboardRouter = t.router({
         // Version marker for CLAUDE.md "is my code actually running" checks.
         // Bump the suffix when the status derivation semantics change.
         _checkpoint: "dataset-sync-status-v1",
+        _runnerVersion: "data-flow-pr1" as const,
         statuses,
       };
     }),
@@ -961,6 +965,250 @@ export const solarRecDashboardRouter = t.router({
         chunkDiagnostics,
       };
     }),
+  /**
+   * Single-shot persistence audit for one dataset.
+   *
+   * Returns the raw rows from every layer of the persistence stack so a
+   * developer (or admin tool) can answer "is this dataset actually
+   * stored, and where?" without running ad-hoc SQL.
+   *
+   * Layers reported:
+   *   1. `solarRecDashboardStorage` — the chunked-CSV blob (legacy
+   *      primary representation). Reports row count + total bytes.
+   *   2. `solarRecDatasetSyncState` — the sync-state row used by the
+   *      cloud-status badge. Reports `dbPersisted` / `storageSynced` /
+   *      payloadSha256 / payloadBytes / updatedAt.
+   *   3. S3 object existence at both the scope-keyed and legacy paths
+   *      (post-Task-1.2b read-compat shim).
+   *   4. `solarRecImportBatches` — for the 7 row-backed datasets,
+   *      counts of batches by status + the active batch's metadata.
+   *   5. `solarRecActiveDatasetVersions` — the active-batch pointer.
+   *   6. `srDs*` — actual row count in the row table for the active
+   *      batch. (Compares against the batch's recorded `rowCount` so
+   *      drift is visible.)
+   *
+   * Plus a `verdict` string that classifies the state:
+   *   - `consistent` — every layer agrees data is present.
+   *   - `storage-only` — S3 has the blob, DB sync row is missing or
+   *     has `dbPersisted=false`. THIS IS THE "LOCAL-ONLY-NEVER-
+   *     PERSISTS" BUG.
+   *   - `db-only` — DB rows exist, S3 missing.
+   *   - `row-table-stale` — sync state says good but srDs* row count
+   *     doesn't match the batch's recorded count.
+   *   - `no-active-batch` — for row-backed datasets, ingestion ran
+   *     but never activated.
+   *   - `missing` — no trace of this dataset anywhere.
+   *
+   * Wired into the dashboard's per-dataset card as an admin-only
+   * "Inspect" link in PR-2. For now, callable via devtools / curl.
+   */
+  debugDatasetPersistenceRaw: requirePermission("solar-rec-dashboard", "read")
+    .input(
+      z.object({
+        datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const { getSolarRecDatasetSyncStates, getActiveBatchForDataset } =
+        await import("../db");
+      const { storageExists } = await import("../storage");
+      const { resolveSolarRecScopeId } = await import("./solarRecAuth");
+
+      const ROW_TABLES_BY_DATASET_KEY = {
+        solarApplications: srDsSolarApplications,
+        abpReport: srDsAbpReport,
+        generationEntry: srDsGenerationEntry,
+        accountSolarGeneration: srDsAccountSolarGeneration,
+        contractedDate: srDsContractedDate,
+        deliveryScheduleBase: srDsDeliverySchedule,
+        transferHistory: srDsTransferHistory,
+      } as const;
+      type RowTableKey = keyof typeof ROW_TABLES_BY_DATASET_KEY;
+      const isRowTableKey = (k: string): k is RowTableKey =>
+        Object.prototype.hasOwnProperty.call(ROW_TABLES_BY_DATASET_KEY, k);
+
+      const scopeId = await resolveSolarRecScopeId();
+      const storageUserId = await resolveDatasetUserId(input.datasetKey, ctx.userId);
+      const dbStorageKey = `dataset:${input.datasetKey}`;
+      const { key: scopeStoragePath, legacyKey: legacyStoragePath } =
+        await buildDashboardStorageKeys(
+          storageUserId,
+          `datasets/${input.datasetKey}.json`
+        );
+
+      // Layer 1: chunked-CSV blob in DB
+      const dbPayload = await getSolarRecDashboardPayload(storageUserId, dbStorageKey);
+      const dbBytes = dbPayload?.length ?? 0;
+      const dbPresent = dbPayload !== null && dbBytes > 0;
+
+      // Layer 2: sync-state row
+      const [syncRow] = await getSolarRecDatasetSyncStates(storageUserId, [
+        dbStorageKey,
+      ]);
+
+      // Layer 3: S3 object existence (both paths because of the read-compat shim)
+      const [scopeStorageExists, legacyStorageExists] = await Promise.all([
+        storageExists(scopeStoragePath),
+        storageExists(legacyStoragePath),
+      ]);
+
+      // Layer 4 + 5: import batches + active version (row-backed datasets only)
+      let rowTableLayer: {
+        isRowBacked: boolean;
+        activeBatchId: string | null;
+        activeBatchRowCount: number | null;
+        activeBatchActivatedAt: string | null;
+        actualRowCount: number | null;
+        pendingBatches: number;
+        failedBatches: number;
+      } = {
+        isRowBacked: false,
+        activeBatchId: null,
+        activeBatchRowCount: null,
+        activeBatchActivatedAt: null,
+        actualRowCount: null,
+        pendingBatches: 0,
+        failedBatches: 0,
+      };
+
+      if (isRowTableKey(input.datasetKey)) {
+        const db = await getDb();
+        const activeBatch = await getActiveBatchForDataset(scopeId, input.datasetKey);
+        let pendingBatches = 0;
+        let failedBatches = 0;
+        if (db) {
+          const batchStatusCounts = await db
+            .select({
+              status: solarRecImportBatches.status,
+              count: sql<number>`COUNT(*)`,
+            })
+            .from(solarRecImportBatches)
+            .where(
+              and(
+                eq(solarRecImportBatches.scopeId, scopeId),
+                eq(solarRecImportBatches.datasetKey, input.datasetKey)
+              )
+            )
+            .groupBy(solarRecImportBatches.status);
+          for (const row of batchStatusCounts) {
+            if (row.status === "pending" || row.status === "processing") {
+              pendingBatches += Number(row.count ?? 0);
+            } else if (row.status === "failed") {
+              failedBatches += Number(row.count ?? 0);
+            }
+          }
+        }
+
+        let actualRowCount: number | null = null;
+        if (db && activeBatch) {
+          const table = ROW_TABLES_BY_DATASET_KEY[input.datasetKey];
+          const rows = await db
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(table)
+            .where(
+              and(
+                eq(table.scopeId, scopeId),
+                eq(table.batchId, activeBatch.id)
+              )
+            );
+          actualRowCount = Number(rows[0]?.count ?? 0);
+        }
+
+        rowTableLayer = {
+          isRowBacked: true,
+          activeBatchId: activeBatch?.id ?? null,
+          activeBatchRowCount: activeBatch?.rowCount ?? null,
+          activeBatchActivatedAt:
+            activeBatch?.completedAt?.toISOString() ??
+            activeBatch?.createdAt?.toISOString() ??
+            null,
+          actualRowCount,
+          pendingBatches,
+          failedBatches,
+        };
+      }
+
+      // Verdict — single-line classification of the persistence state.
+      type Verdict =
+        | "consistent"
+        | "storage-only"
+        | "db-only"
+        | "row-table-stale"
+        | "no-active-batch"
+        | "missing";
+      let verdict: Verdict;
+      let explanation: string;
+      const anyStorage = scopeStorageExists || legacyStorageExists;
+
+      if (rowTableLayer.isRowBacked) {
+        if (rowTableLayer.activeBatchId === null) {
+          if (rowTableLayer.pendingBatches > 0 || rowTableLayer.failedBatches > 0) {
+            verdict = "no-active-batch";
+            explanation = `${rowTableLayer.pendingBatches} pending + ${rowTableLayer.failedBatches} failed batch(es) exist but none has been activated.`;
+          } else if (anyStorage || dbPresent) {
+            verdict = "storage-only";
+            explanation = "Chunked-CSV blob exists but the row-table ingest never ran (no batch).";
+          } else {
+            verdict = "missing";
+            explanation = "No trace of this dataset in any layer.";
+          }
+        } else if (
+          rowTableLayer.activeBatchRowCount !== null &&
+          rowTableLayer.actualRowCount !== null &&
+          rowTableLayer.activeBatchRowCount !== rowTableLayer.actualRowCount
+        ) {
+          verdict = "row-table-stale";
+          explanation = `Active batch claims ${rowTableLayer.activeBatchRowCount} rows but srDs* table has ${rowTableLayer.actualRowCount}.`;
+        } else {
+          verdict = "consistent";
+          explanation = `Active batch ${rowTableLayer.activeBatchId} with ${rowTableLayer.actualRowCount} rows.`;
+        }
+      } else {
+        // Non-row-backed: only the chunked-CSV layer exists.
+        if (dbPresent && anyStorage) {
+          verdict = "consistent";
+          explanation = `Chunked CSV present in DB (${dbBytes} bytes) and storage.`;
+        } else if (dbPresent && !anyStorage) {
+          verdict = "db-only";
+          explanation = "DB has the blob but neither storage path returned a hit.";
+        } else if (!dbPresent && anyStorage) {
+          verdict = "storage-only";
+          explanation = `Storage has the blob (scope=${scopeStorageExists}, legacy=${legacyStorageExists}) but DB has no row. THIS IS THE LOCAL-ONLY-NEVER-PERSISTS BUG.`;
+        } else {
+          verdict = "missing";
+          explanation = "No trace of this dataset in any layer.";
+        }
+      }
+
+      return {
+        _checkpoint: "debug-dataset-persistence-v1",
+        _runnerVersion: "data-flow-pr1" as const,
+        datasetKey: input.datasetKey,
+        scopeId,
+        storageUserId,
+        dbStorageKey,
+        storagePath: { scope: scopeStoragePath, legacy: legacyStoragePath },
+        storageBlob: {
+          dbPresent,
+          dbBytes,
+          storagePresentScope: scopeStorageExists,
+          storagePresentLegacy: legacyStorageExists,
+        },
+        syncState: {
+          record: syncRow
+            ? {
+                payloadSha256: syncRow.payloadSha256,
+                payloadBytes: syncRow.payloadBytes,
+                dbPersisted: syncRow.dbPersisted,
+                storageSynced: syncRow.storageSynced,
+                updatedAt: syncRow.updatedAt?.toISOString() ?? null,
+              }
+            : null,
+        },
+        rowTables: rowTableLayer,
+        verdict: { state: verdict, explanation },
+      };
+    }),
   saveDataset: requirePermission("solar-rec-dashboard", "edit")
     .input(
       z.object({
@@ -1006,6 +1254,7 @@ export const solarRecDashboardRouter = t.router({
         });
         return {
           _checkpoint: "saveDataset-scope-v1",
+          _runnerVersion: "data-flow-pr1" as const,
           success: true,
           key,
           persistedToDatabase,
@@ -1029,6 +1278,7 @@ export const solarRecDashboardRouter = t.router({
           });
           return {
             _checkpoint: "saveDataset-scope-v1",
+          _runnerVersion: "data-flow-pr1" as const,
             success: true,
             key,
             persistedToDatabase,
