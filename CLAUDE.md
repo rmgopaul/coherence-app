@@ -121,9 +121,13 @@ router file).
   the dual-import (`trpc` for abp/csg + `solarRecTrpc` for dashboard)
   to a single aliased `solarRecTrpc as trpc` import. Legacy
   `/abp-invoice-settlement` URL kept as Wouter `<Redirect />`.
-  **Task 2.3 (cross-month contamination override) deferred** — bundled
-  with this task in the original plan but excluded from PR-A scope to
-  keep the migration focused.
+  **Task 2.3 (cross-month contamination override) shipped separately
+  on 2026-04-27** in a focused fix PR — added `isCompleteMonthKey`
+  helper to `lib/abpSettlement/utils/dateUtils.ts`, guarded the
+  persistence `useEffect` against mid-typing keystrokes, and wrapped
+  `setMonthKey` in a handler that flushes overrides under the
+  previous month and loads the destination month's stored data
+  before swapping state.
 - ~~Address Checker — Task 5.11 PR-B~~ **DONE 2026-04-27 (with PR-A).**
   Unblocked by Task 5.9 the moment `abpSettlement.*` procs migrated
   to standalone. Pure file move + import swap + permission gate
