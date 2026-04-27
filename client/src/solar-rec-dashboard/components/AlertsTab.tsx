@@ -20,6 +20,12 @@
 
 import { memo, useMemo } from "react";
 import { AskAiPanel } from "@/components/AskAiPanel";
+// Task 5.13 PR-2 (2026-04-27): trendDeliveryPace moved server-side.
+// AlertsTab now reads it via tRPC instead of computing it from raw
+// `deliveryScheduleBase.rows` + `transferDeliveryLookup`. With this
+// PR, AlertsTab no longer reads any raw `datasets[k].rows` — it's
+// fully off the row-array consumption path.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,10 +48,7 @@ import {
   timestampForCsvFileName,
   triggerCsvDownload,
 } from "@/solar-rec-dashboard/lib/csvIo";
-import {
-  buildTrendDeliveryPace,
-  formatNumber,
-} from "@/solar-rec-dashboard/lib/helpers";
+import { formatNumber } from "@/solar-rec-dashboard/lib/helpers";
 import type {
   AlertItem,
   CsvDataset,
@@ -60,10 +63,12 @@ import type {
 export interface AlertsTabProps {
   systems: SystemRecord[];
   datasets: Partial<Record<DatasetKey, CsvDataset>>;
-  /** Schedule B base CSV — drives the delivery pace alert. */
-  deliveryScheduleBase: CsvDataset | null;
-  /** GATS transfer lookup, for the delivery pace alert. */
-  transferDeliveryLookup: Map<string, Map<number, number>>;
+  /**
+   * Whether this tab is currently active. Gates the
+   * `getDashboardTrendDeliveryPace` query so the network roundtrip
+   * only fires when the user is actually viewing alerts.
+   */
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,18 +80,22 @@ const PACE_THRESHOLD = 0.8;
 const SEVERITY_RANK = { critical: 0, warning: 1, info: 2 } as const;
 
 export default memo(function AlertsTab(props: AlertsTabProps) {
-  const { systems, datasets, deliveryScheduleBase, transferDeliveryLookup } = props;
+  const { systems, datasets, isActive } = props;
 
-  // Local trend delivery pace — same calculation TrendsTab makes, called
-  // here independently because the alert detection needs it.
-  const trendDeliveryPace = useMemo(
-    () =>
-      buildTrendDeliveryPace(
-        deliveryScheduleBase?.rows ?? [],
-        transferDeliveryLookup,
-      ),
-    [deliveryScheduleBase, transferDeliveryLookup],
-  );
+  // Task 5.13 PR-2: server-side aggregate. The result is identical to
+  // what `buildTrendDeliveryPace(deliveryScheduleBase.rows,
+  // transferDeliveryLookup)` produced locally — same shape, same
+  // values, computed by the same pure function on the server. Cache
+  // is keyed by the input batch hashes + UTC day.
+  const trendDeliveryPaceQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardTrendDeliveryPace.useQuery(
+      undefined,
+      {
+        enabled: isActive,
+        staleTime: 60_000,
+      }
+    );
+  const trendDeliveryPace = trendDeliveryPaceQuery.data?.rows ?? [];
 
   const alerts = useMemo<AlertItem[]>(() => {
     const items: AlertItem[] = [];

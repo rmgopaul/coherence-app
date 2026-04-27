@@ -2964,6 +2964,34 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Task 5.13 PR-2 (2026-04-27) — server-side delivery-pace aggregate
+   * shared by `AlertsTab` and `TrendsTab`. Replaces the parallel
+   * `useMemo(() => buildTrendDeliveryPace(deliveryScheduleBase.rows,
+   * transferDeliveryLookup))` calls those two tabs used to make.
+   *
+   * Output is small (one row per active utility contract — typically
+   * tens of rows), so cache hits return sub-KB. Cache key includes a
+   * UTC day bucket because `now` participates in active-window
+   * detection and the time-elapsed expected-pace calculation.
+   */
+  getDashboardTrendDeliveryPace: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildTrendDeliveryPace,
+      TREND_DELIVERY_PACE_RUNNER_VERSION,
+    } = await import("../services/solar/buildTrendDeliveryPace");
+
+    const result = await getOrBuildTrendDeliveryPace(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: TREND_DELIVERY_PACE_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Per-dataset summary metadata for ALL 18 datasets in a single
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.
