@@ -2927,6 +2927,209 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Per-dataset summary metadata for ALL 18 datasets in a single
+   * roundtrip. Replaces the browser's pattern of holding raw rows in
+   * memory just to read `.length` on the Data Quality tab.
+   *
+   * Response is small (one row per dataset, ~16 fields each → ~5 KB
+   * gzipped) and cheap to compute (one batch sync-state read + one
+   * batch active-version read + one COUNT per row-backed table).
+   *
+   * Per-dataset shape:
+   *   - `rowCount`: actual COUNT(*) from `srDs*` for the active batch
+   *     (row-backed datasets only). For non-row-backed datasets,
+   *     `null` — the chunked-CSV path doesn't expose a row count
+   *     server-side without parsing the blob.
+   *   - `byteCount`: bytes of the chunked-CSV payload, from
+   *     `solarRecDatasetSyncState.payloadBytes`.
+   *   - `lastUpdated`: from sync state, or the active batch's
+   *     `completedAt` / `createdAt`.
+   *   - `cloudStatus`: same semantics as `getDatasetCloudStatuses`
+   *     (`synced` | `failed` | `missing`) but derived inline from
+   *     the same DB read so callers don't have to issue both
+   *     queries.
+   */
+  getDatasetSummariesAll: requirePermission("solar-rec-dashboard", "read")
+    .query(async ({ ctx }) => {
+      void ctx;
+      const { resolveSolarRecScopeId } = await import("./solarRecAuth");
+      const { getSolarRecDatasetSyncStates } = await import("../db");
+
+      const ROW_TABLES_BY_DATASET_KEY = {
+        solarApplications: srDsSolarApplications,
+        abpReport: srDsAbpReport,
+        generationEntry: srDsGenerationEntry,
+        accountSolarGeneration: srDsAccountSolarGeneration,
+        contractedDate: srDsContractedDate,
+        deliveryScheduleBase: srDsDeliverySchedule,
+        transferHistory: srDsTransferHistory,
+      } as const;
+
+      // Source of truth for which dataset keys exist. Kept in sync
+      // with client `DATASET_DEFINITIONS` via the migration test
+      // (added in PR-8).
+      const ALL_DATASET_KEYS = [
+        // Row-backed (the 7 core datasets)
+        "solarApplications",
+        "abpReport",
+        "generationEntry",
+        "accountSolarGeneration",
+        "contractedDate",
+        "deliveryScheduleBase",
+        "transferHistory",
+        // Non-row-backed (chunked-CSV only — covered in PR-7)
+        "convertedReads",
+        "abpCsgSystemMapping",
+        "abpQuickbooksRows",
+        "abpProjectApplicationRows",
+        "abpPortalInvoiceMapRows",
+        "abpCsgPortalDatabaseRows",
+        "abpIccReport2Rows",
+        "abpIccReport3Rows",
+        "abpUtilityInvoiceRows",
+        "abpReportLatest",
+        "performanceSourceRows",
+      ] as const;
+
+      const scopeId = await resolveSolarRecScopeId();
+      const ownerUserId = await resolveSolarRecOwnerUserId();
+      const db = await getDb();
+
+      // Batch read sync states for every dataset key (one DB query).
+      const dbStorageKeys = ALL_DATASET_KEYS.map((k) => `dataset:${k}`);
+      const syncStates = await getSolarRecDatasetSyncStates(
+        ownerUserId,
+        dbStorageKeys
+      );
+      const syncByKey = new Map(syncStates.map((s) => [s.storageKey, s]));
+
+      // Batch read active versions for the row-backed datasets only.
+      // Skipped for non-row-backed since they don't have batches.
+      type ActiveVersion = {
+        datasetKey: string;
+        batchId: string;
+        rowCount: number | null;
+        completedAt: Date | null;
+        createdAt: Date;
+      };
+      const activeVersions = new Map<string, ActiveVersion>();
+      if (db) {
+        const rows = await db
+          .select({
+            datasetKey: solarRecActiveDatasetVersions.datasetKey,
+            batchId: solarRecActiveDatasetVersions.batchId,
+            rowCount: solarRecImportBatches.rowCount,
+            completedAt: solarRecImportBatches.completedAt,
+            createdAt: solarRecImportBatches.createdAt,
+          })
+          .from(solarRecActiveDatasetVersions)
+          .leftJoin(
+            solarRecImportBatches,
+            eq(solarRecActiveDatasetVersions.batchId, solarRecImportBatches.id)
+          )
+          .where(eq(solarRecActiveDatasetVersions.scopeId, scopeId));
+        for (const r of rows) {
+          activeVersions.set(r.datasetKey, {
+            datasetKey: r.datasetKey,
+            batchId: r.batchId,
+            rowCount: r.rowCount,
+            completedAt: r.completedAt,
+            createdAt: r.createdAt ?? new Date(),
+          });
+        }
+      }
+
+      // For row-backed datasets with an active batch, get actual
+      // COUNT(*). Bounded fan-out (max 7 queries, all indexed).
+      const actualRowCounts = new Map<string, number>();
+      if (db) {
+        await Promise.all(
+          (Object.keys(ROW_TABLES_BY_DATASET_KEY) as Array<
+            keyof typeof ROW_TABLES_BY_DATASET_KEY
+          >).map(async (key) => {
+            const batch = activeVersions.get(key);
+            if (!batch) return;
+            const table = ROW_TABLES_BY_DATASET_KEY[key];
+            const result = await db
+              .select({ count: sql<number>`COUNT(*)` })
+              .from(table)
+              .where(
+                and(
+                  eq(table.scopeId, scopeId),
+                  eq(table.batchId, batch.batchId)
+                )
+              );
+            actualRowCounts.set(key, Number(result[0]?.count ?? 0));
+          })
+        );
+      }
+
+      type Summary = {
+        datasetKey: string;
+        rowCount: number | null;
+        byteCount: number | null;
+        lastUpdated: string | null;
+        batchId: string | null;
+        payloadSha256: string | null;
+        cloudStatus: "synced" | "failed" | "missing";
+        isRowBacked: boolean;
+      };
+
+      const summaries: Summary[] = ALL_DATASET_KEYS.map((datasetKey) => {
+        const dbStorageKey = `dataset:${datasetKey}`;
+        const syncRow = syncByKey.get(dbStorageKey);
+        const isRowBacked = datasetKey in ROW_TABLES_BY_DATASET_KEY;
+        const activeBatch = activeVersions.get(datasetKey);
+        const actualRowCount = actualRowCounts.get(datasetKey) ?? null;
+
+        // Cloud status derivation — mirrors PR-2's tightened
+        // `isChildKeyRecoverable` semantics: dbPersisted is required
+        // for "synced"; storage-only state surfaces as "failed".
+        let cloudStatus: "synced" | "failed" | "missing";
+        if (!syncRow && !activeBatch) {
+          cloudStatus = "missing";
+        } else if (syncRow && (syncRow.payloadBytes ?? 0) <= 0) {
+          cloudStatus = "missing";
+        } else if (syncRow?.dbPersisted === true) {
+          cloudStatus = "synced";
+        } else if (isRowBacked && activeBatch) {
+          // Row-backed without sync row: treat presence of an active
+          // batch as proof of persistence (the srDs* path is
+          // canonical for these — sync-state row is a leftover from
+          // the chunked-CSV era).
+          cloudStatus = "synced";
+        } else {
+          cloudStatus = "failed";
+        }
+
+        return {
+          datasetKey,
+          rowCount: isRowBacked ? actualRowCount : null,
+          byteCount: syncRow?.payloadBytes ?? null,
+          lastUpdated:
+            syncRow?.updatedAt?.toISOString() ??
+            activeBatch?.completedAt?.toISOString() ??
+            activeBatch?.createdAt?.toISOString() ??
+            null,
+          batchId: activeBatch?.batchId ?? null,
+          payloadSha256:
+            syncRow?.payloadSha256 && syncRow.payloadSha256.length > 0
+              ? syncRow.payloadSha256
+              : null,
+          cloudStatus,
+          isRowBacked,
+        };
+      });
+
+      return {
+        _checkpoint: "dataset-summaries-all-v1",
+        _runnerVersion: "data-flow-pr3" as const,
+        scopeId,
+        summaries,
+      };
+    }),
+
+  /**
    * Fetch the (trackingId → energyYear → deliveredQuantity) lookup
    * computed from the active transferHistory batch. Used by tabs
    * that need per-system delivery totals without the client having
