@@ -747,10 +747,27 @@ class HealthConnectPayloadMapper {
         val minutes = durationMinutes(clippedStage.start, clippedStage.end)
         val stageLabel = when (stage.stage) {
           SleepSessionRecord.STAGE_TYPE_AWAKE,
-          SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED,
-          SleepSessionRecord.STAGE_TYPE_OUT_OF_BED -> {
+          SleepSessionRecord.STAGE_TYPE_AWAKE_IN_BED -> {
+            // STAGE_TYPE_AWAKE = fully awake during the session.
+            // STAGE_TYPE_AWAKE_IN_BED = brief wakings in bed
+            //   (Samsung's "movement_awakening").
+            // Both count toward Samsung Health's "awake" tally, which
+            // is what users compare us against in the SH UI.
             awakeIntervals += clippedStage
             "awake"
+          }
+          SleepSessionRecord.STAGE_TYPE_OUT_OF_BED -> {
+            // STAGE_TYPE_OUT_OF_BED = the user got out of bed
+            // mid-session (e.g. a bathroom trip). Samsung's UI does
+            // NOT subtract these minutes from "actual sleep" — the
+            // session continues and OUT_OF_BED time stays inside the
+            // total. Counting it as awake produces the "8h 18m sleep
+            // in SH UI but 8h 5m in our payload" 13-minute gap that
+            // tracked exactly to OUT_OF_BED minutes on the test
+            // night. Treat as "other sleep" so totalSleepFromStages
+            // includes it; do not add to awakeIntervals.
+            otherSleepIntervals += clippedStage
+            "other"
           }
           SleepSessionRecord.STAGE_TYPE_LIGHT -> {
             lightIntervals += clippedStage
