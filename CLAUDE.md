@@ -90,7 +90,20 @@ stop and discuss the migration timing first.
   `client/src/solar-rec/pages/`.
 - ABP Invoice Settlement — Task 5.9
 - Early Payment + Invoice Match Dashboard — Task 5.10
-- Address Checker, Zendesk Metrics, Deep Update Synthesizer — Task 5.11
+- Task 5.11 — split into 3 PRs because each utility has a different
+  blocker:
+  - ~~Zendesk Metrics — Task 5.11 PR-A~~ **DONE 2026-04-27.** Procs
+    moved to `solarRecZendeskRouter.ts` with `requirePermission(
+    "zendesk-metrics", level)`. Page moved to
+    `client/src/solar-rec/pages/`. `server/routers/solarMisc.ts` (the
+    zendesk-only file after #109's cleanup) deleted.
+  - Address Checker — Task 5.11 PR-B. **Blocked on Task 5.9** —
+    `AddressChecker.tsx` calls `trpc.abpSettlement.cleanMailingData`
+    and `verifyAddresses`, which move with ABP Settlement.
+  - Deep Update Synthesizer — Task 5.11 PR-C. **Blocked on the
+    dashboard data-flow refactor** — `DeepUpdateSynthesizer.tsx`
+    calls `solarRecDashboard.getDataset` / `saveDataset` whose
+    semantics are being reshaped by that plan's PR-2.
 
 ### Consequences of the split
 

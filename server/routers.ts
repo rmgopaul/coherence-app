@@ -15,7 +15,12 @@ import {
 // no longer mounted on the main /api/trpc tree — every call now goes
 // through /solar-rec/api/trpc/solarRecDashboard.* via the dispatcher
 // in _core/index.ts.
-import { zendeskRouter } from "./routers/solarMisc";
+// Task 5.11 PR-A (2026-04-27): zendeskRouter migrated to the
+// standalone Solar REC router (server/_core/solarRecZendeskRouter
+// .ts). Every call now goes through /solar-rec/api/trpc/zendesk.*
+// via the dispatcher in _core/index.ts. server/routers/solarMisc.ts
+// is deleted in this PR — it had no other exports left after the
+// 2026-04-26 cleanup (#109).
 import {
   csgPortalRouter,
   abpSettlementRouter,
@@ -68,9 +73,6 @@ export const appRouter = router({
   // server/_core/solarRecDashboardRouter.ts. Composed under
   // solarRecAppRouter; reachable via /solar-rec/api/trpc/
   // solarRecDashboard.* through the dispatcher in _core/index.ts.
-
-  // Solar misc monitoring
-  zendesk: zendeskRouter,
 
   // Job runners
   csgPortal: csgPortalRouter,

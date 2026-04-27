@@ -8,7 +8,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
-import { trpc } from "@/lib/trpc";
+// Task 5.11 PR-A (2026-04-27): zendesk procs migrated from main
+// `zendeskRouter` to the standalone Solar REC `zendesk` sub-router.
+// Aliased import keeps every `trpc.zendesk.*` call site routable
+// through the standalone tRPC client.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { toErrorMessage, clean, downloadTextFile } from "@/lib/helpers";
 import { ArrowLeft, Download, Loader2, PlugZap, RefreshCw, Unplug } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
