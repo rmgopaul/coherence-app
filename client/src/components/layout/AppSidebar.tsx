@@ -12,14 +12,6 @@ import {
   Mail,
   ChevronDown,
   BarChart3,
-  FileText,
-  FileSpreadsheet,
-  Zap,
-  Sun,
-  Battery,
-  Headset,
-  FileSearch,
-  MapPin,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -81,34 +73,19 @@ const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
+    // Single portal link to the standalone Solar REC app. Phase 5
+    // moved every business page (ABP Settlement, Early Payment,
+    // Invoice Match, Contract Scanner / Scraper, DIN Scraper,
+    // Deep Update Synth, Address Checker, Zendesk Metrics) and
+    // every per-vendor meter-reads page out of the personal app.
+    // The Solar REC sidebar (`client/src/solar-rec/components/
+    // SolarRecSidebar.tsx`) is the canonical access point for
+    // those, gated by per-module permissions. Keeping a single
+    // portal link here so the personal-app user can still cross
+    // over without typing the URL.
     title: "Portfolio",
     items: [
       { label: "Solar REC", href: "/solar-rec/", icon: BarChart3 },
-      { label: "SunPower Reads", href: "/solar-rec/meter-reads/sunpower", icon: Zap },
-      { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileSpreadsheet },
-      { label: "Deep Update", href: "/deep-update-synthesizer", icon: FileText },
-      { label: "Contract Scanner", href: "/contract-scanner", icon: FileSearch },
-      { label: "Contract Scraper", href: "/contract-scrape-manager", icon: FileSearch },
-      { label: "DIN Scraper", href: "/din-scrape-manager", icon: FileSearch },
-      { label: "ABP Settlement", href: "/abp-invoice-settlement", icon: FileSpreadsheet },
-      { label: "Early Payment", href: "/early-payment", icon: FileSpreadsheet },
-      { label: "Address Checker", href: "/address-checker", icon: MapPin },
-      { label: "Enphase v4", href: "/solar-rec/meter-reads/enphase-v4", icon: Zap },
-      { label: "SolarEdge", href: "/solar-rec/meter-reads/solaredge", icon: Sun },
-      { label: "Fronius", href: "/solar-rec/meter-reads/fronius", icon: Sun },
-      { label: "ennexOS", href: "/solar-rec/meter-reads/ennexos", icon: Sun },
-      { label: "eGauge", href: "/solar-rec/meter-reads/egauge", icon: Sun },
-      { label: "Tesla Powerhub", href: "/solar-rec/meter-reads/tesla-powerhub", icon: Battery },
-      { label: "Solis", href: "/solar-rec/meter-reads/solis", icon: Sun },
-      { label: "GoodWe", href: "/solar-rec/meter-reads/goodwe", icon: Sun },
-      { label: "Generac", href: "/solar-rec/meter-reads/generac", icon: Battery },
-      { label: "Locus/SolarNOC", href: "/solar-rec/meter-reads/locus", icon: Sun },
-      { label: "Growatt", href: "/solar-rec/meter-reads/growatt", icon: Sun },
-      { label: "APsystems", href: "/solar-rec/meter-reads/apsystems", icon: Sun },
-      { label: "EKM", href: "/solar-rec/meter-reads/ekm", icon: Zap },
-      { label: "Hoymiles", href: "/solar-rec/meter-reads/hoymiles", icon: Sun },
-      { label: "Solar-Log", href: "/solar-rec/meter-reads/solarlog", icon: Sun },
-      { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: Headset },
     ],
   },
 ];

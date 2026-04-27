@@ -28,6 +28,7 @@ import {
   Pin,
   FilePlus,
   Crown,
+  BarChart3,
   type LucideIcon,
 } from "lucide-react";
 import { useTheme } from "@/contexts/ThemeContext";
@@ -42,6 +43,12 @@ type CommandRoute = {
   keywords?: string[];
 };
 
+// Personal-app commands only. The Solar REC entry is a portal link
+// to the standalone team app — Phase 5 moved every business page
+// + per-vendor meter-reads page off this app, so they no longer
+// belong in this palette. They're discoverable from the Solar REC
+// app's own sidebar (gated by per-module permissions) once the
+// user crosses over.
 const NAV_COMMANDS: CommandRoute[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, keywords: ["home", "overview"] },
   { label: "Tasks (Todoist)", href: "/widget/todoist", icon: CheckSquare, keywords: ["todo", "tasks"] },
@@ -52,22 +59,7 @@ const NAV_COMMANDS: CommandRoute[] = [
   { label: "Clockify", href: "/widget/clockify", icon: Clock, keywords: ["time", "tracker"] },
   { label: "Gmail", href: "/widget/gmail", icon: FolderOpen, keywords: ["email", "mail"] },
   { label: "Settings", href: "/settings", icon: Settings },
-  { label: "Solar REC Dashboard", href: "/solar-rec-dashboard", icon: LayoutDashboard, keywords: ["solar", "rec"] },
-  { label: "Invoice Match", href: "/invoice-match-dashboard", icon: FileText, keywords: ["invoice"] },
-  { label: "Deep Update Synthesizer", href: "/deep-update-synthesizer", icon: FileText, keywords: ["deep", "update"] },
-  { label: "Contract Scanner", href: "/contract-scanner", icon: FileText, keywords: ["contract"] },
-  { label: "Contract Scraper", href: "/contract-scrape-manager", icon: FileText, keywords: ["contract", "scrape", "csg", "portal"] },
-  { label: "DIN Scraper", href: "/din-scrape-manager", icon: FileText, keywords: ["din", "inverter", "meter", "photo", "csg", "portal"] },
-  { label: "ABP Invoice Settlement", href: "/abp-invoice-settlement", icon: FileText, keywords: ["abp", "settlement", "invoice"] },
-  { label: "Early Payment", href: "/early-payment", icon: FileText, keywords: ["early", "payment", "abp", "icc"] },
-  { label: "SunPower Reads", href: "/solar-rec/meter-reads/sunpower", icon: FileText, keywords: ["sunpower", "meter", "readings"] },
-  { label: "Enphase v4", href: "/solar-rec/meter-reads/enphase-v4", icon: FileText, keywords: ["enphase", "meter"] },
-  { label: "SolarEdge", href: "/solar-rec/meter-reads/solaredge", icon: FileText, keywords: ["solaredge", "meter"] },
-  { label: "Fronius", href: "/solar-rec/meter-reads/fronius", icon: FileText, keywords: ["fronius", "solar", "meter", "solarweb"] },
-  { label: "ennexOS", href: "/solar-rec/meter-reads/ennexos", icon: FileText, keywords: ["ennexos", "sma", "solarweb", "meter"] },
-  { label: "eGauge", href: "/solar-rec/meter-reads/egauge", icon: FileText, keywords: ["egauge", "meter", "register"] },
-  { label: "Tesla Powerhub", href: "/solar-rec/meter-reads/tesla-powerhub", icon: FileText, keywords: ["tesla", "powerhub"] },
-  { label: "Zendesk", href: "/zendesk-ticket-metrics", icon: FileText, keywords: ["zendesk", "tickets"] },
+  { label: "Solar REC", href: "/solar-rec/", icon: BarChart3, keywords: ["solar", "rec", "business", "team", "portfolio"] },
 ];
 
 const SEARCH_DEBOUNCE_MS = 200;
