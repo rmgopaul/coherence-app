@@ -2931,6 +2931,39 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Task 5.13 PR-1 (2026-04-27) — server-side Delivery Tracker
+   * aggregate. Replaces the parent's
+   * `useMemo(() => buildDeliveryTrackerData({...}))` over raw
+   * `datasets.deliveryScheduleBase.rows` + `datasets.transferHistory.rows`.
+   *
+   * Cache strategy: synchronous fast-path through
+   * `solarRecComputedArtifacts` keyed by SHA-256 of the active batch
+   * IDs for the two input datasets. Cache miss recomputes inline (the
+   * aggregate is small — sub-second on prod data) and writes back, so
+   * subsequent tab activations are O(cache read).
+   *
+   * Wire payload: pure JSON aggregate; transfers/contracts/rows are
+   * pre-bucketed. Even on a portfolio with thousands of obligations the
+   * response stays under the 1 MB hard rule (rows are 9 fields each).
+   */
+  getDashboardDeliveryTrackerAggregates: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildDeliveryTrackerData,
+      DELIVERY_TRACKER_RUNNER_VERSION,
+    } = await import("../services/solar/buildDeliveryTrackerData");
+
+    const result = await getOrBuildDeliveryTrackerData(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: DELIVERY_TRACKER_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Per-dataset summary metadata for ALL 18 datasets in a single
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.
