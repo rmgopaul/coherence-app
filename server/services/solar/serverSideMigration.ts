@@ -47,6 +47,9 @@ export const CORE_DATASETS = [
   // ingests existing chunked-CSV uploads into the new srDsGeneratorDetails
   // row table so users don't have to re-upload.
   "generatorDetails",
+  // Task 5.12 PR-2 (2026-04-27): abpCsgSystemMapping. Same backfill
+  // rationale.
+  "abpCsgSystemMapping",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];

@@ -881,6 +881,40 @@ export const srDsGeneratorDetails = mysqlTable(
 export type SrDsGeneratorDetails = typeof srDsGeneratorDetails.$inferSelect;
 export type InsertSrDsGeneratorDetails = typeof srDsGeneratorDetails.$inferInsert;
 
+// Task 5.12 PR-2 (2026-04-27): ABP CSG-System Mapping row table.
+// Single-file replace dataset. Only two stable typed columns — both
+// come from `requiredHeaderSets` and both are read by every consumer
+// (FinancialsTab, AppPipelineTab, the financials profit-data joins
+// in SolarRecDashboard.tsx). Large portfolios can have 28k+ rows
+// (see solarRecContractScanRouter.ts:307); the typed indexes keep
+// CSG ID lookups O(log n).
+export const srDsAbpCsgSystemMapping = mysqlTable(
+  "srDsAbpCsgSystemMapping",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    csgId: varchar("csgId", { length: 64 }),
+    systemId: varchar("systemId", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_csg_system_mapping_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_csg_system_mapping_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeCsgIdx: index("sr_ds_abp_csg_system_mapping_scope_csg_idx").on(
+      table.scopeId,
+      table.csgId
+    ),
+  })
+);
+
+export type SrDsAbpCsgSystemMapping = typeof srDsAbpCsgSystemMapping.$inferSelect;
+export type InsertSrDsAbpCsgSystemMapping = typeof srDsAbpCsgSystemMapping.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",

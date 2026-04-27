@@ -25,6 +25,7 @@ import {
   srDsDeliverySchedule,
   srDsTransferHistory,
   srDsGeneratorDetails,
+  srDsAbpCsgSystemMapping,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -368,6 +369,33 @@ const persistGeneratorDetails: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-2: abpCsgSystemMapping is a single-file replace dataset
+// (CSG ID → System ID lookup). Both required headers map to typed
+// columns. Large portfolios can have 28k+ rows; the scope+csg index
+// keeps lookups O(log n) for the join paths in FinancialsTab and the
+// SolarRecDashboard profit-data useMemos.
+const persistAbpCsgSystemMapping: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    csgId: clip(pick(row, "csgId", "CSG ID"), 64),
+    systemId: clip(pick(row, "systemId", "System ID"), 64),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpCsgSystemMapping,
+    values,
+    "abpCsgSystemMapping",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -381,6 +409,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   deliveryScheduleBase: persistDeliverySchedule,
   transferHistory: persistTransferHistory,
   generatorDetails: persistGeneratorDetails,
+  abpCsgSystemMapping: persistAbpCsgSystemMapping,
 };
 
 /**
@@ -623,6 +652,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   deliveryScheduleBase: makeBatchDeleter("srDsDeliverySchedule"),
   transferHistory: makeBatchDeleter("srDsTransferHistory"),
   generatorDetails: makeBatchDeleter("srDsGeneratorDetails"),
+  abpCsgSystemMapping: makeBatchDeleter("srDsAbpCsgSystemMapping"),
 };
 
 export async function appendRowExists(
