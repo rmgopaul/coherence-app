@@ -7292,9 +7292,8 @@ const aiDataContext = useMemo(() => {
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading trends tab...</div>}>
                 <TrendsTabLazy
                   convertedReads={datasets.convertedReads ?? null}
-                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                  transferDeliveryLookup={transferDeliveryLookup}
                   logEntries={logEntries}
+                  isActive={activeTab === "trends"}
                 />
               </Suspense>
             </div>
@@ -7319,8 +7318,7 @@ const aiDataContext = useMemo(() => {
                 <AlertsTabLazy
                   systems={systems}
                   datasets={datasets}
-                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                  transferDeliveryLookup={transferDeliveryLookup}
+                  isActive={activeTab === "alerts"}
                 />
               </Suspense>
             </div>

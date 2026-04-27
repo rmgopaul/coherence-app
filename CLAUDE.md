@@ -585,11 +585,26 @@ will be eliminated for the 11 others once they migrate.
 PR-7 wired Data Quality + Total-Rows readout off in-memory rows.
 The remaining tabs that read raw rows for the 7 row-backed datasets:
 
-- `TrendsTab.tsx` — `accountSolarGeneration` + `deliveryScheduleBase`
+- `TrendsTab.tsx` — ~~`deliveryScheduleBase`~~ + `accountSolarGeneration`
+  + `convertedReads`. **PARTIAL DONE 2026-04-27 (Task 5.13 PR-2).**
+  The `deliveryScheduleBase` raw-row read (the `trendDeliveryPace`
+  useMemo, shared with `AlertsTab`) moved server-side via
+  `getDashboardTrendDeliveryPace`. The remaining
+  `trendProductionMoM` + `trendTopSiteIds` useMemos still iterate
+  `convertedReads.rows`; that dataset is in flight via Task 5.12 and
+  the rest of TrendsTab's migration follows.
 - `ApplicationPipelineTab.tsx` — `abpReport` + `abpIccReport3Rows`
 - `ContractsTab.tsx` — `deliveryScheduleBase`
 - `AnnualReviewTab.tsx` — `deliveryScheduleBase`
-- `AlertsTab.tsx` — `deliveryScheduleBase`
+- ~~`AlertsTab.tsx` — `deliveryScheduleBase`~~
+  **DONE 2026-04-27 (Task 5.13 PR-2).** Only raw-row read in this
+  tab was the shared `buildTrendDeliveryPace` useMemo over
+  `deliveryScheduleBase.rows` + `transferDeliveryLookup`. Both moved
+  server-side. AlertsTab now reads zero `datasets[k].rows` arrays
+  for any core dataset key — fully compliant with the data-flow
+  hard rule. The other AlertsTab inputs (`systems`,
+  `datasets[k].uploadedAt` for the staleness check) were already
+  off the row path.
 - ~~`DeliveryTrackerTab.tsx` — `deliveryScheduleBase` + `transferHistory`~~
   **DONE 2026-04-27 (Task 5.13 PR-1).** Server-side aggregator at
   `server/services/solar/buildDeliveryTrackerData.ts` runs over

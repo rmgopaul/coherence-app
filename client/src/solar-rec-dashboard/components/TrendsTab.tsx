@@ -32,8 +32,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { buildTrendDeliveryPace } from "@/solar-rec-dashboard/lib/helpers";
 import type { CsvDataset } from "@/solar-rec-dashboard/state/types";
+// Task 5.13 PR-2 (2026-04-27): trendDeliveryPace moved server-side
+// (shared with AlertsTab). The other two TrendsTab useMemos
+// (trendProductionMoM, trendTopSiteIds) still read raw rows from
+// `convertedReads`; that dataset is not yet row-backed (Task 5.12 is
+// migrating it). Until then, this tab is partially compliant — the
+// `deliveryScheduleBase` raw-row read is gone, but the
+// `convertedReads` reads remain.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 
 // ---------------------------------------------------------------------------
 // Props
@@ -54,12 +61,14 @@ export type TrendsLogEntry = {
 export interface TrendsTabProps {
   /** Converted reads CSV — drives the month-over-month production chart. */
   convertedReads: CsvDataset | null;
-  /** Schedule B base CSV — drives the delivery pace chart. */
-  deliveryScheduleBase: CsvDataset | null;
-  /** GATS transfer lookup, for the delivery pace chart. */
-  transferDeliveryLookup: Map<string, Map<number, number>>;
   /** Dashboard snapshots, for the reporting-rate-over-time chart. */
   logEntries: TrendsLogEntry[];
+  /**
+   * Whether this tab is currently active. Gates the
+   * `getDashboardTrendDeliveryPace` query so the network roundtrip
+   * only fires when the user is actually viewing trends.
+   */
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,21 +76,21 @@ export interface TrendsTabProps {
 // ---------------------------------------------------------------------------
 
 export default memo(function TrendsTab(props: TrendsTabProps) {
-  const { convertedReads, deliveryScheduleBase, transferDeliveryLookup, logEntries } =
-    props;
+  const { convertedReads, logEntries, isActive } = props;
 
-  // -------------------------------------------------------------------------
-  // Delivery pace: computed via the shared helper so the alerts tab can
-  // call it independently with the same inputs.
-  // -------------------------------------------------------------------------
-  const trendDeliveryPace = useMemo(
-    () =>
-      buildTrendDeliveryPace(
-        deliveryScheduleBase?.rows ?? [],
-        transferDeliveryLookup,
-      ),
-    [deliveryScheduleBase, transferDeliveryLookup],
-  );
+  // Task 5.13 PR-2: server-side aggregate. Same shape, same values
+  // as the prior `buildTrendDeliveryPace(deliveryScheduleBase.rows,
+  // transferDeliveryLookup)` call site — server runs the identical
+  // pure function over the canonical srDs* rows.
+  const trendDeliveryPaceQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardTrendDeliveryPace.useQuery(
+      undefined,
+      {
+        enabled: isActive,
+        staleTime: 60_000,
+      }
+    );
+  const trendDeliveryPace = trendDeliveryPaceQuery.data?.rows ?? [];
 
   // -------------------------------------------------------------------------
   // Month-over-month production for the top 10 sites by total output
