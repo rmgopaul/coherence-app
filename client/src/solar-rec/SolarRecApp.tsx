@@ -21,6 +21,11 @@ const ContractScanner = lazy(() => import("./pages/ContractScanner"));
 const ContractScrapeManager = lazy(
   () => import("./pages/ContractScrapeManager")
 );
+// Task 5.11 PR-A (2026-04-27): ZendeskTicketMetrics migrated from
+// `client/src/features/dashboard/`. Module key `zendesk-metrics`.
+const ZendeskTicketMetrics = lazy(
+  () => import("./pages/ZendeskTicketMetrics")
+);
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -152,6 +157,11 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/contract-scrape-manager">
                 <PermissionGate moduleKey="contract-scrape-manager">
                   <ContractScrapeManager />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/zendesk-ticket-metrics">
+                <PermissionGate moduleKey="zendesk-metrics">
+                  <ZendeskTicketMetrics />
                 </PermissionGate>
               </Route>
 

@@ -24,7 +24,8 @@ const CommandDeck = lazy(() => import("@/features/dashboard/CommandDeck"));
 // dashboard on the standalone Solar REC app. The route below now
 // redirects rather than rendering the page.
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
-const ZendeskTicketMetrics = lazy(() => import("@/features/dashboard/ZendeskTicketMetrics"));
+// Task 5.11 PR-A (2026-04-27): ZendeskTicketMetrics moved to the
+// standalone Solar REC app. Legacy URL kept as a Wouter <Redirect />.
 const DeepUpdateSynthesizer = lazy(() => import("@/features/dashboard/DeepUpdateSynthesizer"));
 // Task 5.7 PR-B (2026-04-26): ContractScanner + ContractScrapeManager
 // migrated to the standalone Solar REC app. The legacy URLs below are
@@ -124,7 +125,9 @@ function AppRoutes() {
       <Route path={"/abp-invoice-settlement"} component={withRouteSuspense(AbpInvoiceSettlement)} />
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
       <Route path={"/address-checker"} component={withRouteSuspense(AddressChecker)} />
-      <Route path={"/zendesk-ticket-metrics"} component={withRouteSuspense(ZendeskTicketMetrics)} />
+      <Route path={"/zendesk-ticket-metrics"}>
+        <Redirect to="/solar-rec/zendesk-ticket-metrics" />
+      </Route>
       <Route path={"/notes"} component={withRouteSuspense(Notebook)} />
       <Route path={"/supplements"} component={withRouteSuspense(Supplements)} />
       <Route path={"/habits"} component={withRouteSuspense(Habits)} />
