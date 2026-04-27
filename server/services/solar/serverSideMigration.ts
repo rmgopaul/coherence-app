@@ -64,6 +64,9 @@ export const CORE_DATASETS = [
   // Task 5.12 PR-7 (2026-04-27): abpUtilityInvoiceRows. Same
   // rationale.
   "abpUtilityInvoiceRows",
+  // Task 5.12 PR-8 (2026-04-27): annualProductionEstimates. Same
+  // rationale.
+  "annualProductionEstimates",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];

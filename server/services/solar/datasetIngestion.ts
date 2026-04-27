@@ -50,11 +50,14 @@ type IngestProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 // ---------------------------------------------------------------------------
 // Dataset definitions (server-side mirror of client DATASET_DEFINITIONS)
-// 7 + 7 datasets so far (Task 5.12 PRs 1–7 added generatorDetails,
+// 7 + 8 datasets so far (Task 5.12 PRs 1–8 added generatorDetails,
 // abpCsgSystemMapping, abpProjectApplicationRows, abpPortalInvoiceMapRows,
-// abpCsgPortalDatabaseRows, abpQuickBooksRows, and
-// abpUtilityInvoiceRows). Extend as the remaining 5 non-row-backed
-// datasets migrate.
+// abpCsgPortalDatabaseRows, abpQuickBooksRows, abpUtilityInvoiceRows,
+// and annualProductionEstimates). PR-8 corrected the planning doc:
+// `abpReportLatest` and `performanceSourceRows` were phantoms that
+// don't exist in the canonical DatasetKey union, so the real
+// remaining count is 3 (`convertedReads`, `abpIccReport2Rows`,
+// `abpIccReport3Rows`), not 5.
 // ---------------------------------------------------------------------------
 
 const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
@@ -178,6 +181,27 @@ const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
         "Total RECS",
         "REC Price",
         "Invoice Amount ($)",
+      ],
+    ],
+    multiFileAppend: false,
+  },
+  annualProductionEstimates: {
+    label: "Annual Production Estimates",
+    requiredHeaderSets: [
+      [
+        "Unit ID",
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+        "Jul",
+        "Aug",
+        "Sep",
+        "Oct",
+        "Nov",
+        "Dec",
       ],
     ],
     multiFileAppend: false,

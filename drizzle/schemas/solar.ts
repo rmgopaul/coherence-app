@@ -1122,6 +1122,66 @@ export type SrDsAbpUtilityInvoiceRows =
 export type InsertSrDsAbpUtilityInvoiceRows =
   typeof srDsAbpUtilityInvoiceRows.$inferInsert;
 
+// Task 5.12 PR-8 (2026-04-27): Annual Production Estimates row table.
+// Single-file replace dataset (one row per Unit ID = system) carrying
+// the 12-month expected production profile used by PerformanceRatioTab
+// and ForecastTab. Unlike the prior ABP migrations (PR-5/6/7) where
+// fuzzy header detection forced a strict 1-typed-column approach,
+// `annualProductionEstimates` has 13 stable canonical headers (Unit ID
+// + 12 months) read by exact match in `buildAnnualProductionByTrackingId`
+// (`client/src/solar-rec-dashboard/lib/helpers/system.ts`). All 12
+// months are typed as `double` so future server-side aggregators
+// (Task 5.13 TrendsTab/AlertsTab) can do `SUM(jan), SUM(feb)` without
+// JSON-parsing rawRow. `unitId` and `facilityName` are typed for
+// indexing and display. `rawRow` is preserved for forward-compat.
+//
+// PR-8 also removes phantom dataset keys `abpReportLatest` and
+// `performanceSourceRows` from `ALL_DATASET_KEYS` in the router —
+// neither key exists in the canonical `DatasetKey` union or
+// `DATASET_DEFINITIONS`; they were planning-doc artifacts. The real
+// remaining datasets after this PR are `convertedReads`,
+// `abpIccReport2Rows`, and `abpIccReport3Rows` (3 not 5).
+export const srDsAnnualProductionEstimates = mysqlTable(
+  "srDsAnnualProductionEstimates",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    unitId: varchar("unitId", { length: 64 }),
+    facilityName: varchar("facilityName", { length: 255 }),
+    jan: double("jan"),
+    feb: double("feb"),
+    mar: double("mar"),
+    apr: double("apr"),
+    may: double("may"),
+    jun: double("jun"),
+    jul: double("jul"),
+    aug: double("aug"),
+    sep: double("sep"),
+    oct: double("oct"),
+    nov: double("nov"),
+    decMonth: double("decMonth"),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_annual_production_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_annual_production_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeUnitIdx: index("sr_ds_annual_production_scope_unit_idx").on(
+      table.scopeId,
+      table.unitId
+    ),
+  })
+);
+
+export type SrDsAnnualProductionEstimates =
+  typeof srDsAnnualProductionEstimates.$inferSelect;
+export type InsertSrDsAnnualProductionEstimates =
+  typeof srDsAnnualProductionEstimates.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",
