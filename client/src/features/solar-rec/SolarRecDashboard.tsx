@@ -7262,15 +7262,9 @@ const aiDataContext = useMemo(() => {
             <div style={{ display: activeTab === "app-pipeline" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading app pipeline tab...</div>}>
                 <AppPipelineTabLazy
-                  abpReport={datasets.abpReport ?? null}
-                  generatorDetails={datasets.generatorDetails ?? null}
-                  abpCsgSystemMapping={datasets.abpCsgSystemMapping ?? null}
-                  abpIccReport3Rows={datasets.abpIccReport3Rows ?? null}
-                  systems={systems}
-                  part2VerifiedAbpRows={part2VerifiedAbpRows}
-                  contractScanResults={contractScanResultsQuery.data ?? []}
                   localOverrides={localOverrides}
                   financialCsgIdCount={financialCsgIds.length}
+                  isActive={activeTab === "app-pipeline"}
                 />
               </Suspense>
             </div>

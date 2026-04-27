@@ -595,7 +595,21 @@ The remaining tabs that read raw rows for the 7 row-backed datasets:
   chart data + legend-order site IDs in one payload. TrendsTab
   drops the `convertedReads` prop entirely; the tab now reads zero
   `datasets[k].rows` arrays.
-- `ApplicationPipelineTab.tsx` — `abpReport` + `abpIccReport3Rows`
+- ~~`ApplicationPipelineTab.tsx` — `abpReport` + `generatorDetails`
+  + `abpCsgSystemMapping` + `abpIccReport3Rows`~~
+  **DONE 2026-04-27 (Task 5.13 PR-5).** Two server-side aggregators:
+  `buildAppPipelineMonthly.ts` (Part 1 / Part 2 / Interconnected
+  monthly buckets from `srDsAbpReport` + `srDsGeneratorDetails`,
+  with `installedKwAc` fallback from the system snapshot) +
+  `buildAppPipelineCashFlow.ts` (vendor-fee / CC-auth / additional-
+  collateral monthly buckets joining `srDsAbpReport` Part-2 rows +
+  `srDsAbpCsgSystemMapping` + `srDsAbpIccReport3Rows` + cached
+  contract scan results, with the Financials-tab `localOverrides`
+  Map sent as query input + hashed into the cache key). Tab drops
+  9 props (4 raw datasets + `systems` + `part2VerifiedAbpRows` +
+  `contractScanResults` + `financialCsgIdCount` stays;
+  `localOverrides` stays). With this PR all 6 tabs are off raw
+  rows — Task 5.13 is complete.
 - ~~`ContractsTab.tsx` — `deliveryScheduleBase`~~
   **DONE 2026-04-27 (Task 5.13 PR-3).** Migrated alongside
   AnnualReviewTab via the shared `getDashboardContractVintageAggregates`

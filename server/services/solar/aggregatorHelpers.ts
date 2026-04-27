@@ -129,6 +129,164 @@ export function isPart2VerifiedAbpRow(row: CsvRow): boolean {
   return parsePart2VerificationDate(part2VerifiedDateRaw) !== null;
 }
 
+/**
+ * Round a money value to two decimal places. Mirrors
+ * `client/src/solar-rec-dashboard/lib/helpers/formatting.ts ::
+ * roundMoney`. Used by aggregators that bucket dollar amounts.
+ */
+export function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Same MM/YYYY → mid-month parser as
+ * `client/src/solar-rec-dashboard/lib/helpers/parsing.ts ::
+ * parseDateOnlineAsMidMonth`. The "Date Online" cell on the GATS
+ * Generator Details CSV is often a month-only string; parsing as
+ * the 15th gives a stable mid-month timestamp for monthly bucketing.
+ */
+export function parseDateOnlineAsMidMonth(
+  value: string | undefined
+): Date | null {
+  const raw = clean(value);
+  if (!raw) return null;
+
+  const slashMonthYear = raw.match(/^(\d{1,2})[\/-](\d{4})$/);
+  if (slashMonthYear) {
+    const month = Number(slashMonthYear[1]) - 1;
+    const year = Number(slashMonthYear[2]);
+    const date = new Date(year, month, 15);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const isoMonthYear = raw.match(/^(\d{4})[\/-](\d{1,2})$/);
+  if (isoMonthYear) {
+    const year = Number(isoMonthYear[1]);
+    const month = Number(isoMonthYear[2]) - 1;
+    const date = new Date(year, month, 15);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  const parsed = parseDate(raw);
+  if (!parsed) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), 15);
+}
+
+/**
+ * Case-insensitive header lookup on a CSV row. Mirrors
+ * `client/src/solar-rec-dashboard/lib/helpers/csvIdentity.ts ::
+ * getCsvValueByHeader`. Used by the AC-size resolvers below as a
+ * fallback when the canonical header doesn't appear verbatim.
+ */
+function getCsvValueByHeader(row: CsvRow, headerName: string): string {
+  const target = clean(headerName).toLowerCase();
+  for (const [header, value] of Object.entries(row)) {
+    if (clean(header).toLowerCase() === target) return clean(value);
+  }
+  return "";
+}
+
+/** ABP report's Part-2 inverter AC size lookup. */
+export function parseAbpAcSizeKw(row: CsvRow): number | null {
+  return parseNumber(
+    row.Inverter_Size_kW_AC_Part_2 ||
+      getCsvValueByHeader(row, "Inverter_Size_kW_AC_Part_2")
+  );
+}
+
+/**
+ * Headers we try in order when extracting AC size from a GATS
+ * Generator Details row. Mirrors
+ * `client/src/solar-rec-dashboard/lib/constants.ts ::
+ * GENERATOR_DETAILS_AC_SIZE_HEADERS`. Order matters — earlier
+ * entries are preferred.
+ */
+const GENERATOR_DETAILS_AC_SIZE_HEADERS = [
+  "AC Size (kW)",
+  "AC Size kW",
+  "System AC Size (kW)",
+  "System Size (kW AC)",
+  "Inverter Size (kW AC)",
+  "Inverter Size kW AC",
+  "Nameplate Capacity (kW)",
+  "Nameplate Capacity kW",
+  "Rated Capacity (kW)",
+  "Capacity (kW)",
+] as const;
+
+/**
+ * Generator Details AC-size resolver. Tries the canonical header
+ * list first, then falls back to a fuzzy header match on any
+ * column that mentions kW / AC / capacity / nameplate / inverter
+ * (excluding DC). Mirrors
+ * `client/src/solar-rec-dashboard/lib/helpers/parsing.ts ::
+ * parseGeneratorDetailsAcSizeKw`.
+ */
+export function parseGeneratorDetailsAcSizeKw(
+  row: CsvRow
+): number | null {
+  for (const header of GENERATOR_DETAILS_AC_SIZE_HEADERS) {
+    const parsed = parseNumber(
+      row[header] || getCsvValueByHeader(row, header)
+    );
+    if (parsed !== null) return parsed;
+  }
+
+  for (const [header, value] of Object.entries(row)) {
+    const normalizedHeader = clean(header).toLowerCase();
+    if (!normalizedHeader.includes("kw")) continue;
+    if (normalizedHeader.includes("dc")) continue;
+    if (
+      normalizedHeader.includes("ac") ||
+      normalizedHeader.includes("capacity") ||
+      normalizedHeader.includes("nameplate") ||
+      normalizedHeader.includes("inverter")
+    ) {
+      const parsed = parseNumber(value);
+      if (parsed !== null) return parsed;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolve a stable dedupe key for a Part-2 ABP project. Mirrors
+ * `client/src/solar-rec-dashboard/lib/helpers/csvIdentity.ts ::
+ * resolvePart2ProjectIdentity`. Order of fallback: portal system
+ * id → tracking id → application id → project name → row index.
+ * Returns the dedupe key plus the underlying identity fields the
+ * caller might need.
+ */
+export function resolvePart2ProjectIdentity(row: CsvRow, index: number) {
+  const applicationId =
+    clean(row.Application_ID) || clean(row.application_id);
+  const portalSystemId = clean(row.system_id);
+  const trackingId =
+    clean(row.PJM_GATS_or_MRETS_Unit_ID_Part_2) ||
+    clean(row.tracking_system_ref_id);
+  const projectName = clean(row.Project_Name) || clean(row.system_name);
+  const projectNameKey = projectName.toLowerCase();
+  const dedupeKey = portalSystemId
+    ? `system:${portalSystemId}`
+    : trackingId
+      ? `tracking:${trackingId}`
+      : applicationId
+        ? `application:${applicationId}`
+        : projectName
+          ? `name:${projectNameKey}`
+          : `row:${index}`;
+
+  return {
+    applicationId,
+    portalSystemId,
+    trackingId,
+    projectName,
+    projectNameKey,
+    dedupeKey,
+  };
+}
+
 export function toPercentValue(
   numerator: number,
   denominator: number

@@ -3071,6 +3071,79 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Task 5.13 PR-5 (2026-04-27) — server-side Application Pipeline
+   * monthly aggregate. Replaces the parent's `pipelineMonthlyRows`
+   * useMemo over `abpReport.rows` + `generatorDetails.rows` (with
+   * `installedKwAc` fallback from the system snapshot).
+   *
+   * Returns one row per active month (~36–60 rows on prod data) with
+   * Part 1 / Part 2 / Interconnected counts + AC kW + prior-year
+   * comparison fields.
+   */
+  getDashboardAppPipelineMonthly: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildAppPipelineMonthly,
+      APP_PIPELINE_MONTHLY_RUNNER_VERSION,
+    } = await import("../services/solar/buildAppPipelineMonthly");
+
+    const result = await getOrBuildAppPipelineMonthly(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: APP_PIPELINE_MONTHLY_RUNNER_VERSION,
+    };
+  }),
+
+  /**
+   * Task 5.13 PR-5 (2026-04-27) — server-side Application Pipeline
+   * cash-flow aggregate. Replaces the parent's `pipelineCashFlowRows`
+   * useMemo over `part2VerifiedAbpRows` + `abpCsgSystemMapping.rows`
+   * + `abpIccReport3Rows.rows` + cached contract scan results.
+   *
+   * Per-csgId vendor-fee % and additional-collateral % overrides
+   * come in as `input.overrides` because they're user-editable
+   * Financials-tab state that's not persisted server-side. The
+   * cache key bundles a stable hash of the override map so cache
+   * misses fire only when the user actually changes an override.
+   */
+  getDashboardAppPipelineCashFlow: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        overrides: z
+          .record(
+            z.string(),
+            z.object({
+              vfp: z.number(),
+              acp: z.number(),
+            })
+          )
+          .optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const {
+        getOrBuildAppPipelineCashFlow,
+        APP_PIPELINE_CASH_FLOW_RUNNER_VERSION,
+      } = await import("../services/solar/buildAppPipelineCashFlow");
+
+      const result = await getOrBuildAppPipelineCashFlow(
+        ctx.scopeId,
+        input.overrides ?? {}
+      );
+
+      return {
+        ...result,
+        _runnerVersion: APP_PIPELINE_CASH_FLOW_RUNNER_VERSION,
+      };
+    }),
+
+  /**
    * Per-dataset summary metadata for ALL 18 datasets in a single
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.
