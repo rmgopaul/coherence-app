@@ -8,92 +8,42 @@
  * via tRPC and receives the same `DeliveryTrackerData` shape it used
  * to build locally — no `datasets[key].rows` materialization needed.
  *
- * The pure function `buildDeliveryTrackerData` is a structural copy of
- * `client/src/solar-rec-dashboard/lib/buildDeliveryTrackerData.ts`;
- * the helpers it needs (`clean`, `parseNumber`, `parseDate`,
- * `buildDeliveryYearLabel`, `toPercentValue`, `UTILITY_PATTERNS`) are
- * inlined in this file rather than reaching into client/lib because:
- *   1. server code can't depend on `@/lib/helpers`;
- *   2. moving the client helpers to `shared/` would touch ~50 files;
- *   3. the helpers are small and stable.
+ * Task 5.13 cleanup (2026-04-27) — pure parsing helpers (`clean`,
+ * `parseNumber`, `parseDate`, `toPercentValue`) moved to
+ * `aggregatorHelpers.ts` and the cache state machine is now the
+ * generic `withArtifactCache` wrapper. `formatDate`,
+ * `buildDeliveryYearLabel`, and `UTILITY_PATTERNS` stay local —
+ * they're specific to delivery-tracker semantics and not reused by
+ * other aggregators.
  *
- * If a follow-up wants to consolidate, the right move is to keep this
- * file as the SOT and have the client import from a thin re-export
- * shim. For now, the in-source duplication is gated by the unit
- * test in this file's sibling `.test.ts`, which mirrors the client's
- * existing `buildDeliveryTrackerData.test.ts` so divergence shows up
- * in CI.
+ * The pure function `buildDeliveryTrackerData` is a structural copy of
+ * `client/src/solar-rec-dashboard/lib/buildDeliveryTrackerData.ts`.
+ * Divergence detector: the matched `.test.ts` files on each side
+ * (the client copy lives at
+ * `client/src/solar-rec-dashboard/lib/buildDeliveryTrackerData.test.ts`).
  */
 
 import { createHash } from "node:crypto";
-import superjson from "superjson";
-import { srDsDeliverySchedule, srDsTransferHistory } from "../../../drizzle/schemas/solar";
 import {
-  getActiveVersionsForKeys,
-  getComputedArtifact,
-  upsertComputedArtifact,
-} from "../../db/solarRecDatasets";
+  srDsDeliverySchedule,
+  srDsTransferHistory,
+} from "../../../drizzle/schemas/solar";
+import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
+import {
+  type CsvRow,
+  clean,
+  parseDate,
+  parseNumber,
+  toPercentValue,
+} from "./aggregatorHelpers";
 import { loadDatasetRows } from "./buildSystemSnapshot";
-
-type CsvRow = Record<string, string | undefined>;
+import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
-// Inlined helpers (parallel implementations of client/src/solar-rec-dashboard
-// /lib/parsers.ts + constants.ts). Keep these byte-equivalent to the client
-// versions; the test file asserts a fixed fixture aggregates identically on
-// both sides.
+// Local helpers — specific to delivery-tracker semantics.
 // ---------------------------------------------------------------------------
 
-function clean(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return String(value).trim();
-}
-
-function parseNumber(value: string | undefined): number | null {
-  const cleaned = clean(value).replace(/[$,%\s]/g, "").replaceAll(",", "");
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseDate(value: string | undefined): Date | null {
-  const raw = clean(value);
-  if (!raw) return null;
-
-  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) {
-    const year = Number(iso[1]);
-    const month = Number(iso[2]) - 1;
-    const day = Number(iso[3]);
-    const date = new Date(year, month, day);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const usDateTime = raw.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/
-  );
-  if (usDateTime) {
-    const month = Number(usDateTime[1]) - 1;
-    const day = Number(usDateTime[2]);
-    const year =
-      Number(usDateTime[3]) < 100
-        ? 2000 + Number(usDateTime[3])
-        : Number(usDateTime[3]);
-    let hours = usDateTime[4] ? Number(usDateTime[4]) : 0;
-    const minutes = usDateTime[5] ? Number(usDateTime[5]) : 0;
-    const meridiem = usDateTime[6]?.toUpperCase();
-
-    if (meridiem === "PM" && hours < 12) hours += 12;
-    if (meridiem === "AM" && hours === 12) hours = 0;
-
-    const date = new Date(year, month, day, hours, minutes);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const fallback = new Date(raw);
-  return Number.isNaN(fallback.getTime()) ? null : fallback;
-}
-
+/** Internal — only called by `buildDeliveryYearLabel` below. */
 function formatDate(value: Date | null): string {
   if (!value) return "N/A";
   return value.toLocaleDateString("en-US", {
@@ -114,17 +64,6 @@ function buildDeliveryYearLabel(
   if (startRaw) return startRaw;
   if (start) return formatDate(start);
   return "Unknown";
-}
-
-function toPercentValue(numerator: number, denominator: number): number | null {
-  if (
-    !Number.isFinite(numerator) ||
-    !Number.isFinite(denominator) ||
-    denominator <= 0
-  ) {
-    return null;
-  }
-  return (numerator / denominator) * 100;
 }
 
 const UTILITY_PATTERNS = ["comed", "ameren", "midamerican"] as const;
@@ -515,14 +454,13 @@ async function computeDeliveryTrackerInputHash(
 /**
  * Public entrypoint for the tRPC query. Returns the same
  * `DeliveryTrackerData` the client used to build locally, plus a
- * `_runnerVersion` marker (per the data-flow architecture's hard
- * rule) and a `fromCache` flag for visibility in devtools.
+ * `fromCache` flag for visibility in devtools.
  *
- * Cache strategy: synchronous fast-path through `solarRecComputedArtifacts`
- * keyed by a SHA-256 of the active batch IDs for `deliveryScheduleBase`
- * and `transferHistory`. Cache miss recomputes inline (no async run-claim
- * dance — the aggregate is small, sub-second on prod data) and writes
- * back. Cache hit skips both `loadDatasetRows` calls entirely.
+ * Cache strategy: `withArtifactCache` keyed by a SHA-256 of the
+ * active batch IDs for `deliveryScheduleBase` and `transferHistory`.
+ * Cache miss recomputes inline (no async run-claim dance — the
+ * aggregate is small, sub-second on prod data) and writes back.
+ * superjson serde because `yearStart` / `yearEnd` are `Date` fields.
  */
 export async function getOrBuildDeliveryTrackerData(
   scopeId: string
@@ -535,41 +473,28 @@ export async function getOrBuildDeliveryTrackerData(
     return { ...EMPTY_DELIVERY_TRACKER_DATA, fromCache: false };
   }
 
-  const cached = await getComputedArtifact(scopeId, ARTIFACT_TYPE, hash);
-  if (cached) {
-    try {
-      // superjson, not JSON.parse — yearStart/yearEnd are Date objects;
-      // plain JSON would deserialize them as strings and break the
-      // tRPC wire format (which also uses superjson) downstream.
-      const parsed = superjson.parse<DeliveryTrackerData>(cached.payload);
-      return { ...parsed, fromCache: true };
-    } catch {
-      // Corrupt cache row — fall through to recompute.
-    }
-  }
-
-  const [scheduleRows, transferRows] = await Promise.all([
-    loadDatasetRows(
-      scopeId,
-      versionMap.get("deliveryScheduleBase") ?? null,
-      srDsDeliverySchedule
-    ),
-    loadDatasetRows(
-      scopeId,
-      versionMap.get("transferHistory") ?? null,
-      srDsTransferHistory
-    ),
-  ]);
-
-  const result = buildDeliveryTrackerData({ scheduleRows, transferRows });
-
-  await upsertComputedArtifact({
+  const { result, fromCache } = await withArtifactCache<DeliveryTrackerData>({
     scopeId,
     artifactType: ARTIFACT_TYPE,
     inputVersionHash: hash,
-    payload: superjson.stringify(result),
-    rowCount: result.rows.length,
+    serde: superjsonSerde<DeliveryTrackerData>(),
+    rowCount: (data) => data.rows.length,
+    recompute: async () => {
+      const [scheduleRows, transferRows] = await Promise.all([
+        loadDatasetRows(
+          scopeId,
+          versionMap.get("deliveryScheduleBase") ?? null,
+          srDsDeliverySchedule
+        ),
+        loadDatasetRows(
+          scopeId,
+          versionMap.get("transferHistory") ?? null,
+          srDsTransferHistory
+        ),
+      ]);
+      return buildDeliveryTrackerData({ scheduleRows, transferRows });
+    },
   });
 
-  return { ...result, fromCache: false };
+  return { ...result, fromCache };
 }
