@@ -154,6 +154,26 @@ export async function captureDailySnapshotForUser(userId: number, dateKey = form
     todoistCompletedCount,
   });
 
+  // Task 6.1: pre-compute the supplement-vs-metric correlation grid
+  // for this user. Runs on the just-upserted `dailyHealthMetrics`
+  // row so the dashboard's top-signals card reads fresh numbers.
+  // Wrapped in try/catch so a correlation failure can't break the
+  // rest of the snapshot — the user's data still gets captured even
+  // if the stats step has a problem.
+  let correlationsWritten = 0;
+  try {
+    const { runNightlySupplementCorrelationsForUser } = await import(
+      "../supplements/correlationNightly"
+    );
+    const out = await runNightlySupplementCorrelationsForUser(userId);
+    correlationsWritten = out.slicesWritten;
+  } catch (error) {
+    console.error(
+      `[Nightly Snapshot] Supplement correlation compute failed for user ${userId}:`,
+      error
+    );
+  }
+
   return {
     userId,
     dateKey,
@@ -162,6 +182,7 @@ export async function captureDailySnapshotForUser(userId: number, dateKey = form
     samsungCaptured: Boolean(samsungPayload),
     supplementLogCount: supplements.length,
     habitCount: habits.length,
+    correlationsWritten,
   };
 }
 

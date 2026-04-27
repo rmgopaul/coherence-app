@@ -74,6 +74,7 @@ import {
   listDailySnapshots,
   listHabitCompletions,
   listHabitDefinitions,
+  getTopSignalsForUser,
   listNoteLinks,
   listNotes,
   listProductionReadings,
@@ -920,6 +921,48 @@ export const supplementsRouter = router({
         endKey,
       };
     }),
+  /**
+   * Task 6.1 (2026-04-27) — top correlation signals from the
+   * pre-computed `supplementCorrelations` table (populated by the
+   * nightly snapshot). Replaces the dashboard's old adherence-only
+   * card with real effect-size data.
+   *
+   * Returns rows with the supplement name joined in so the client
+   * doesn't have to issue a second query for each row's label.
+   * Skips slices flagged `insufficientData` and orders by absolute
+   * Cohen's d. Result is empty until the first nightly run lands.
+   */
+  getTopSignals: protectedProcedure
+    .input(
+      z
+        .object({
+          limit: z.number().int().min(1).max(20).default(5),
+        })
+        .optional()
+    )
+    .query(async ({ ctx, input }) => {
+      const limit = input?.limit ?? 5;
+      const [rows, defs] = await Promise.all([
+        getTopSignalsForUser(ctx.user.id, limit),
+        listSupplementDefinitions(ctx.user.id),
+      ]);
+      const nameById = new Map(defs.map((d) => [d.id, d.name]));
+      return rows.map((row) => ({
+        supplementId: row.supplementId,
+        supplementName: nameById.get(row.supplementId) ?? row.supplementId,
+        metric: row.metric,
+        windowDays: row.windowDays,
+        lagDays: row.lagDays,
+        cohensD: row.cohensD,
+        pearsonR: row.pearsonR,
+        onN: row.onN,
+        offN: row.offN,
+        onMean: row.onMean,
+        offMean: row.offMean,
+        computedAt: row.computedAt,
+      }));
+    }),
+
   getCostSummary: protectedProcedure.query(async ({ ctx }) => {
     const defs = await listSupplementDefinitions(ctx.user.id);
     const extremes = costExtremes(defs);
