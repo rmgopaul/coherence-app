@@ -43,6 +43,10 @@ export const CORE_DATASETS = [
   "contractedDate",
   "deliveryScheduleBase",
   "transferHistory",
+  // Task 5.12 PR-1 (2026-04-27): generatorDetails. The backfill tool
+  // ingests existing chunked-CSV uploads into the new srDsGeneratorDetails
+  // row table so users don't have to re-upload.
+  "generatorDetails",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];

@@ -849,6 +849,38 @@ export const srDsTransferHistory = mysqlTable(
   })
 );
 
+// Task 5.12 PR-1 (2026-04-27): Generator Details row table.
+// Added when migrating the 11 non-row-backed dashboard datasets to srDs*.
+// `gatsUnitId` and `dateOnline` are the only stable typed columns — both come
+// from the dataset's `requiredHeaderSets`. AC size headers are fuzzy-matched
+// at read time (see parseGeneratorDetailsAcSizeKw) so they stay in `rawRow`.
+export const srDsGeneratorDetails = mysqlTable(
+  "srDsGeneratorDetails",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    gatsUnitId: varchar("gatsUnitId", { length: 128 }),
+    dateOnline: varchar("dateOnline", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_generator_details_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_generator_details_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeUnitIdx: index("sr_ds_generator_details_scope_unit_idx").on(
+      table.scopeId,
+      table.gatsUnitId
+    ),
+  })
+);
+
+export type SrDsGeneratorDetails = typeof srDsGeneratorDetails.$inferSelect;
+export type InsertSrDsGeneratorDetails = typeof srDsGeneratorDetails.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",

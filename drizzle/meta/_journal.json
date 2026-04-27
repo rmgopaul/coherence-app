@@ -246,6 +246,13 @@
       "when": 1777304346734,
       "tag": "0038_din_scrape_scope_id",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1777312416483,
+      "tag": "0039_add_srds_generator_details",
+      "breakpoints": true
     }
   ]
 }
