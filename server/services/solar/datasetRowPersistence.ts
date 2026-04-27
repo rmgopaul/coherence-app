@@ -28,6 +28,7 @@ import {
   srDsAbpCsgSystemMapping,
   srDsAbpProjectApplicationRows,
   srDsAbpPortalInvoiceMapRows,
+  srDsAbpCsgPortalDatabaseRows,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -473,6 +474,37 @@ const persistAbpPortalInvoiceMapRows: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-5: abpCsgPortalDatabaseRows is a single-file replace
+// dataset that carries 12 fields (2 required + 10 optional). Only
+// `systemId` and `csgId` are typed — the remaining 10 fields use
+// fuzzy keyword-based header detection in the client parser
+// (`parseCsgPortalDatabase`), which is too fragile to reproduce in
+// the persister. Every consumer reads via canonical TS field names
+// after the parser runs, so the original payload (with whatever
+// headers the user uploaded) is preserved in `rawRow` for the
+// client to re-parse on read.
+const persistAbpCsgPortalDatabaseRows: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    systemId: clip(pick(row, "systemId", "System ID", "system_id"), 64),
+    csgId: clip(pick(row, "csgId", "CSG ID", "csg_id"), 64),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpCsgPortalDatabaseRows,
+    values,
+    "abpCsgPortalDatabaseRows",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -489,6 +521,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   abpCsgSystemMapping: persistAbpCsgSystemMapping,
   abpProjectApplicationRows: persistAbpProjectApplicationRows,
   abpPortalInvoiceMapRows: persistAbpPortalInvoiceMapRows,
+  abpCsgPortalDatabaseRows: persistAbpCsgPortalDatabaseRows,
 };
 
 /**
@@ -734,6 +767,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   abpCsgSystemMapping: makeBatchDeleter("srDsAbpCsgSystemMapping"),
   abpProjectApplicationRows: makeBatchDeleter("srDsAbpProjectApplicationRows"),
   abpPortalInvoiceMapRows: makeBatchDeleter("srDsAbpPortalInvoiceMapRows"),
+  abpCsgPortalDatabaseRows: makeBatchDeleter("srDsAbpCsgPortalDatabaseRows"),
 };
 
 export async function appendRowExists(
