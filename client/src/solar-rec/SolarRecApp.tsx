@@ -50,6 +50,18 @@ const AddressChecker = lazy(() => import("./pages/AddressChecker"));
 // procs that moved to `solarRecDinScrapeRouter.ts`. Module key
 // `din-scrape-manager`.
 const DinScrapeManager = lazy(() => import("./pages/DinScrapeManager"));
+// Task 5.10 (2026-04-27): EarlyPayment + InvoiceMatchDashboard
+// migrated from `client/src/features/dashboard/`. EarlyPayment's
+// server calls (`solarRecDashboard.*`, `abpSettlement.*`) were
+// already on the standalone router from earlier tasks; this PR
+// just collapses its dual-import compat shim and moves the file.
+// InvoiceMatchDashboard is a pure client-side page (no trpc) — file
+// move + permission gate. Module keys: `early-payment` and
+// `invoice-match`.
+const EarlyPayment = lazy(() => import("./pages/EarlyPayment"));
+const InvoiceMatchDashboard = lazy(
+  () => import("./pages/InvoiceMatchDashboard")
+);
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -206,6 +218,16 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/din-scrape-manager">
                 <PermissionGate moduleKey="din-scrape-manager">
                   <DinScrapeManager />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/early-payment">
+                <PermissionGate moduleKey="early-payment">
+                  <EarlyPayment />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/invoice-match-dashboard">
+                <PermissionGate moduleKey="invoice-match">
+                  <InvoiceMatchDashboard />
                 </PermissionGate>
               </Route>
 

@@ -31,12 +31,14 @@ import {
   formatDuration,
   toErrorMessage,
 } from "@/lib/helpers";
-import { trpc } from "@/lib/trpc";
-// Task 5.5 (2026-04-26): solarRecDashboard.* moved to the standalone
-// Solar REC router. Early Payment still lives on the main router
-// (Task 5.10 wrong-side feature) but its dashboard data calls have to
-// follow the procedure to the new home.
-import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
+// Task 5.10 (2026-04-27): Early Payment migrated to the standalone
+// Solar REC app. Every server call (`solarRecDashboard.{getDataset,
+// saveDataset}` from Task 5.5; `abpSettlement.{startContractScanJob,
+// getJobStatus}` from Task 5.9 PR-A) was already on the standalone
+// router; the dual-import compat shim from #133 is collapsed here
+// into a single aliased `solarRecTrpc as trpc` so call sites stay
+// uniform with the rest of `client/src/solar-rec/pages/`.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { ArrowLeft, Download, ExternalLink, FileSearch, Loader2, Play, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -504,19 +506,19 @@ export default function EarlyPayment() {
   const { user, loading: authLoading } = useAuth();
 
   const { mutateAsync: getDatasetAsync } =
-    solarRecTrpc.solarRecDashboard.getDataset.useMutation();
-  const saveDatasetMutation = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
+    trpc.solarRecDashboard.getDataset.useMutation();
+  const saveDatasetMutation = trpc.solarRecDashboard.saveDataset.useMutation();
   // Task 5.9 PR-A (2026-04-27): abpSettlement.* migrated to the
   // standalone Solar REC router. Early Payment isn't fully migrated
   // yet (Task 5.10), but its two `abpSettlement.*` call sites have
   // to follow the procedure to the new home or they 404 against
   // /api/trpc.
-  const startScanJobMutation = solarRecTrpc.abpSettlement.startContractScanJob.useMutation();
+  const startScanJobMutation = trpc.abpSettlement.startContractScanJob.useMutation();
   const [activeScanJobId, setActiveScanJobId] = useState<string | null>(() =>
     typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SCAN_JOB_STORAGE_KEY) : null
   );
 
-  const scanJobQuery = solarRecTrpc.abpSettlement.getJobStatus.useQuery(
+  const scanJobQuery = trpc.abpSettlement.getJobStatus.useQuery(
     { jobId: activeScanJobId ?? "" },
     {
       enabled: Boolean(activeScanJobId),
