@@ -20,6 +20,7 @@ import {
   srDsAccountSolarGeneration,
   srDsAnnualProductionEstimates,
   srDsContractedDate,
+  srDsConvertedReads,
   srDsDeliverySchedule,
   srDsGenerationEntry,
   srDsGeneratorDetails,
@@ -1029,6 +1030,7 @@ export const solarRecDashboardRouter = t.router({
         abpIccReport2Rows: srDsAbpIccReport2Rows,
         abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
+        convertedReads: srDsConvertedReads,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
         generatorDetails: srDsGeneratorDetails,
@@ -3077,6 +3079,7 @@ export const solarRecDashboardRouter = t.router({
         abpIccReport2Rows: srDsAbpIccReport2Rows,
         abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
+        convertedReads: srDsConvertedReads,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
         generatorDetails: srDsGeneratorDetails,
@@ -3092,14 +3095,12 @@ export const solarRecDashboardRouter = t.router({
       // with client `DATASET_DEFINITIONS` via the migration test
       // (added in PR-8).
       const ALL_DATASET_KEYS = [
-        // Row-backed (17 datasets — 7 from data-flow series + 10 added
-        // by Task 5.12 PRs 1–9 (generatorDetails, abpCsgSystemMapping,
-        // abpProjectApplicationRows, abpPortalInvoiceMapRows,
-        // abpCsgPortalDatabaseRows, abpQuickBooksRows,
-        // abpUtilityInvoiceRows, annualProductionEstimates,
-        // abpIccReport2Rows, abpIccReport3Rows) 2026-04-27. PR-9
-        // batched the two ICC reports together because they share
-        // the same parser, schema shape, and consumer access patterns.)
+        // ALL 18 datasets are now row-backed. Task 5.12 PR-10
+        // (2026-04-27) shipped `convertedReads` as the final
+        // migration; the chunked-CSV path remains active because
+        // the monitoring bridge still writes to it, but all dataset
+        // summaries, paginations, and CSV exports flow through
+        // `srDs*` row tables.
         "solarApplications",
         "abpReport",
         "generationEntry",
@@ -3124,10 +3125,6 @@ export const solarRecDashboardRouter = t.router({
         "abpUtilityInvoiceRows",
         "abpIccReport2Rows",
         "abpIccReport3Rows",
-        // Non-row-backed (chunked-CSV only — only `convertedReads`
-        // remains. PR-8 removed phantom keys `abpReportLatest` and
-        // `performanceSourceRows` (they don't exist in the canonical
-        // DatasetKey union or DATASET_DEFINITIONS).
         "convertedReads",
       ] as const;
 
@@ -3263,7 +3260,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-summaries-all-v1",
-        _runnerVersion: "task-5.12-pr9" as const,
+        _runnerVersion: "task-5.12-pr10" as const,
         scopeId,
         summaries,
       };
@@ -3303,6 +3300,7 @@ export const solarRecDashboardRouter = t.router({
           "abpIccReport2Rows",
           "abpIccReport3Rows",
           "contractedDate",
+          "convertedReads",
           "deliveryScheduleBase",
           "transferHistory",
           "generatorDetails",
@@ -3333,6 +3331,7 @@ export const solarRecDashboardRouter = t.router({
         abpIccReport2Rows: srDsAbpIccReport2Rows,
         abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
+        convertedReads: srDsConvertedReads,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
         generatorDetails: srDsGeneratorDetails,
@@ -3352,7 +3351,7 @@ export const solarRecDashboardRouter = t.router({
       if (!activeBatch) {
         return {
           _checkpoint: "dataset-csv-v1",
-          _runnerVersion: "task-5.12-pr9" as const,
+          _runnerVersion: "task-5.12-pr10" as const,
           datasetKey: input.datasetKey,
           batchId: null,
           rowCount: 0,
@@ -3374,7 +3373,7 @@ export const solarRecDashboardRouter = t.router({
       if (firstPage.rows.length === 0) {
         return {
           _checkpoint: "dataset-csv-v1",
-          _runnerVersion: "task-5.12-pr9" as const,
+          _runnerVersion: "task-5.12-pr10" as const,
           datasetKey: input.datasetKey,
           batchId: activeBatch.id,
           rowCount: 0,
@@ -3424,7 +3423,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-csv-v1",
-        _runnerVersion: "task-5.12-pr9" as const,
+        _runnerVersion: "task-5.12-pr10" as const,
         datasetKey: input.datasetKey,
         batchId: activeBatch.id,
         rowCount: totalRows,
@@ -3471,6 +3470,7 @@ export const solarRecDashboardRouter = t.router({
           "abpIccReport2Rows",
           "abpIccReport3Rows",
           "contractedDate",
+          "convertedReads",
           "deliveryScheduleBase",
           "transferHistory",
           "generatorDetails",
@@ -3502,6 +3502,7 @@ export const solarRecDashboardRouter = t.router({
         abpIccReport2Rows: srDsAbpIccReport2Rows,
         abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
+        convertedReads: srDsConvertedReads,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
         generatorDetails: srDsGeneratorDetails,
@@ -3521,7 +3522,7 @@ export const solarRecDashboardRouter = t.router({
       if (!activeBatch) {
         return {
           _checkpoint: "dataset-rows-page-v1",
-          _runnerVersion: "task-5.12-pr9" as const,
+          _runnerVersion: "task-5.12-pr10" as const,
           datasetKey: input.datasetKey,
           batchId: null,
           rows: [],
@@ -3539,7 +3540,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-rows-page-v1",
-        _runnerVersion: "task-5.12-pr9" as const,
+        _runnerVersion: "task-5.12-pr10" as const,
         datasetKey: input.datasetKey,
         batchId: activeBatch.id,
         rows: result.rows,
