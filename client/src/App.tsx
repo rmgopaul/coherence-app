@@ -23,7 +23,6 @@ const CommandDeck = lazy(() => import("@/features/dashboard/CommandDeck"));
 // retired the legacy /solar-rec-dashboard URL in favor of /solar-rec/
 // dashboard on the standalone Solar REC app. The route below now
 // redirects rather than rendering the page.
-const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
 // Task 5.11 PR-A (2026-04-27): ZendeskTicketMetrics moved to the
 // standalone Solar REC app. Legacy URL kept as a Wouter <Redirect />.
 // Task 5.11 PR-C (2026-04-27): DeepUpdateSynthesizer same — moved to
@@ -36,7 +35,10 @@ const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMat
 // AddressChecker also migrated; legacy URLs are <Redirect /> targets.
 // Task 5.8 PR-B (2026-04-27): DinScrapeManager migrated to the
 // standalone Solar REC app; legacy URL is a <Redirect /> target.
-const EarlyPayment = lazy(() => import("@/features/dashboard/EarlyPayment"));
+// Task 5.10 (2026-04-27): EarlyPayment + InvoiceMatchDashboard
+// migrated to the standalone Solar REC app; legacy URLs are
+// <Redirect /> targets. With this PR every "wrong-side" feature
+// from the Phase 5 plan has been relocated.
 const Notebook = lazy(() => import("@/features/notebook/Notebook"));
 const Settings = lazy(() => import("@/features/settings/Settings"));
 const Supplements = lazy(() => import("@/features/supplements/Supplements"));
@@ -115,7 +117,9 @@ function AppRoutes() {
       <Route path={"/solar-rec-dashboard"}>
         <Redirect to="/solar-rec/dashboard" />
       </Route>
-      <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
+      <Route path={"/invoice-match-dashboard"}>
+        <Redirect to="/solar-rec/invoice-match-dashboard" />
+      </Route>
       <Route path={"/deep-update-synthesizer"}>
         <Redirect to="/solar-rec/deep-update-synthesizer" />
       </Route>
@@ -131,7 +135,9 @@ function AppRoutes() {
       <Route path={"/abp-invoice-settlement"}>
         <Redirect to="/solar-rec/abp-invoice-settlement" />
       </Route>
-      <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
+      <Route path={"/early-payment"}>
+        <Redirect to="/solar-rec/early-payment" />
+      </Route>
       <Route path={"/address-checker"}>
         <Redirect to="/solar-rec/address-checker" />
       </Route>

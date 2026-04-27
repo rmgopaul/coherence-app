@@ -75,23 +75,25 @@ Personal productivity. No migration planned.
   daily/weekly brief
 - Preferences, OAuth creds storage for personal integrations
 
-### Main today, solar-rec tomorrow (`server/routers.ts` → pending
-migration)
+### Phase 5 migration history (`server/routers.ts` → solar-rec)
 
-These sit on `server/routers.ts` for historical reasons. They belong
-on solar-rec. Don't extend them without checking the migration timing.
+As of 2026-04-27, every feature on the original wrong-side list has
+shipped. These entries are kept for historical context — they record
+the migration order and what each task covered. The "wrong-side"
+state no longer exists; new business features go directly to
+`server/_core/solarRecRouter.ts` (or a sibling sub-router file).
 
-| Feature | Migrates in |
-|---|---|
-| ~~`solarRecDashboard.*` (dashboard + Schedule B scanner inside it)~~ | ~~Task 5.5~~ ✅ done |
-| Daily monitoring scheduler + `monitoringApiRuns` + `monitoringBatchRuns` | Task 5.3 |
-| 9 meter-read pages (Fronius, SolarEdge, EnnexOs, eGauge, APsystems, Hoymiles, TeslaPowerhub, EnphaseV4, TeslaSolar) — consolidated into `MeterReadsPage` by Task 4.7 first | Task 5.4 |
-| ~~Schedule B import + CSG Schedule B import~~ | ~~Task 5.6~~ ✅ done (folded into 5.5 since the procs lived in `solarRecDashboardRouter`) |
-| ~~Contract scan runner + ContractScanner + ContractScrapeManager~~ | ~~Task 5.7~~ ✅ done |
-| ~~DIN scrape runner + DinScrapeManager~~ | ~~Task 5.8~~ ✅ done |
-| ~~ABP Invoice Settlement (4,070 LOC)~~ | ~~Task 5.9~~ ✅ done |
-| Early Payment + Invoice Match Dashboard (EarlyPayment has a compat shim post-5.9) | Task 5.10 |
-| ~~Address Checker, Zendesk Metrics, Deep Update Synthesizer~~ | ~~Task 5.11~~ ✅ done (PR-A 5.11 zendesk; PR-B 5.11 address checker shipped with 5.9; PR-C 5.11 deep update) |
+| Feature | Task | Status |
+|---|---|---|
+| ~~`solarRecDashboard.*` (dashboard + Schedule B scanner inside it)~~ | Task 5.5 | ✅ done |
+| ~~Daily monitoring scheduler + `monitoringApiRuns` + `monitoringBatchRuns`~~ | Task 5.3 | ✅ done (#80) |
+| ~~9 meter-read pages (consolidated into `MeterReadsPage`)~~ | Task 5.4 | ✅ done (16/16 vendors, #81–#102) |
+| ~~Schedule B import + CSG Schedule B import~~ | Task 5.6 | ✅ done (folded into 5.5 since the procs lived in `solarRecDashboardRouter`) |
+| ~~Contract scan runner + ContractScanner + ContractScrapeManager~~ | Task 5.7 | ✅ done |
+| ~~DIN scrape runner + DinScrapeManager~~ | Task 5.8 | ✅ done |
+| ~~ABP Invoice Settlement (4,070 LOC)~~ | Task 5.9 | ✅ done |
+| ~~Early Payment + Invoice Match Dashboard~~ | Task 5.10 | ✅ done |
+| ~~Address Checker, Zendesk Metrics, Deep Update Synthesizer~~ | Task 5.11 | ✅ done (PR-A zendesk; PR-B address-checker shipped with 5.9; PR-C deep-update) |
 
 ### Solar-rec (`server/_core/solarRecRouter.ts`) — correct placement
 

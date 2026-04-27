@@ -48,12 +48,16 @@ every procedure lives today and where it's going.
 **Decision for a new feature:** who uses it? Just Rhett → `server/
 routers.ts`. The whole team → `server/_core/solarRecRouter.ts`.
 
-### Wrong-side features today (pending Phase 5 migration)
+### Wrong-side features (Phase 5 migration history)
 
-Every feature below currently lives on `server/routers.ts` but logically
-belongs on the solar-rec router. Do **not** add new sub-procedures to
-these while they're on the wrong side — if you need to extend them,
-stop and discuss the migration timing first.
+As of 2026-04-27, every feature on the original Phase 5 wrong-side
+list has been migrated. The entries below are kept as historical
+context — they record the order in which migrations shipped, the
+shape of each one, and what to grep for if you're reading old
+code that still references the pre-migration paths. Do **not** add
+new sub-procedures to `server/routers.ts` for solar-rec features —
+they belong on `server/_core/solarRecRouter.ts` (or a sibling sub-
+router file).
 
 - ~~`solarRecDashboard.*` (Solar REC Dashboard + Schedule B scanner)
   — migrates in Task 5.5~~ **DONE 2026-04-26.** Lives at
@@ -127,13 +131,19 @@ stop and discuss the migration timing first.
   `abpSettlement.cleanMailingData` and `verifyAddresses`, both now
   on `solarRecAppRouter`. Legacy `/address-checker` URL kept as
   Wouter `<Redirect />` to `/solar-rec/address-checker`.
-- Early Payment + Invoice Match Dashboard — Task 5.10. **Compat shim
-  applied 2026-04-27**: `EarlyPayment.tsx` calls
-  `trpc.abpSettlement.startContractScanJob` and
-  `trpc.abpSettlement.getJobStatus`, both of which moved off main in
-  Task 5.9 PR-A. Those two call sites swapped to `solarRecTrpc.*` to
-  keep the page working pre-migration. Full Task 5.10 page move
-  still pending.
+- ~~Early Payment + Invoice Match Dashboard — Task 5.10~~
+  **DONE 2026-04-27.** Pure file moves + permission gates + Wouter
+  redirects. Both pages had no procs left on the main router by the
+  time this task ran: `EarlyPayment` already called
+  `solarRecTrpc.solarRecDashboard.*` (Task 5.5) and
+  `solarRecTrpc.abpSettlement.*` (Task 5.9 PR-A compat shim from
+  #133); `InvoiceMatchDashboard` is a pure client-side page (no
+  trpc — file parsing + match logic only). The dual-import shim in
+  `EarlyPayment.tsx` collapsed into the standard
+  `solarRecTrpc as trpc` alias. The co-located `invoiceMatch/`
+  helper directory moved alongside `InvoiceMatchDashboard.tsx`.
+  Module keys: `early-payment` and `invoice-match` (both already
+  registered in `shared/solarRecModules.ts`).
 - Task 5.11 — split into 3 PRs because each utility has a different
   blocker:
   - ~~Zendesk Metrics — Task 5.11 PR-A~~ **DONE 2026-04-27.** Procs
