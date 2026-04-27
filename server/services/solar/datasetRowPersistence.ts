@@ -32,6 +32,8 @@ import {
   srDsAbpQuickBooksRows,
   srDsAbpUtilityInvoiceRows,
   srDsAnnualProductionEstimates,
+  srDsAbpIccReport2Rows,
+  srDsAbpIccReport3Rows,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -625,6 +627,64 @@ const persistAnnualProductionEstimates: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-9: abpIccReport2Rows + abpIccReport3Rows are
+// structurally-identical single-file replace datasets sharing the
+// same `parseIccContractRows` parser in `EarlyPayment.tsx` (only
+// the `sourceLabel` parameter — "icc2" vs "icc3" — differs). Both
+// migrate to identical typed schemas; only `applicationId` is
+// promoted to a typed column because the parser uses fuzzy alias
+// lists for every other field. Hot path is `(scopeId, applicationId)`
+// — `buildIccMap` keys per-application Map lookups on this column,
+// and `deepUpdateSynth` does the same with fallback Report 2 → 3
+// priority resolved entirely in client memory after row hydration.
+const persistAbpIccReport2Rows: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    applicationId: clip(
+      pick(row, "applicationId", "Application ID", "Application_ID", "application_id"),
+      64
+    ),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpIccReport2Rows,
+    values,
+    "abpIccReport2Rows",
+    options
+  );
+};
+
+const persistAbpIccReport3Rows: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    applicationId: clip(
+      pick(row, "applicationId", "Application ID", "Application_ID", "application_id"),
+      64
+    ),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpIccReport3Rows,
+    values,
+    "abpIccReport3Rows",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -645,6 +705,8 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   abpQuickBooksRows: persistAbpQuickBooksRows,
   abpUtilityInvoiceRows: persistAbpUtilityInvoiceRows,
   annualProductionEstimates: persistAnnualProductionEstimates,
+  abpIccReport2Rows: persistAbpIccReport2Rows,
+  abpIccReport3Rows: persistAbpIccReport3Rows,
 };
 
 /**
@@ -894,6 +956,8 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   abpQuickBooksRows: makeBatchDeleter("srDsAbpQuickBooksRows"),
   abpUtilityInvoiceRows: makeBatchDeleter("srDsAbpUtilityInvoiceRows"),
   annualProductionEstimates: makeBatchDeleter("srDsAnnualProductionEstimates"),
+  abpIccReport2Rows: makeBatchDeleter("srDsAbpIccReport2Rows"),
+  abpIccReport3Rows: makeBatchDeleter("srDsAbpIccReport3Rows"),
 };
 
 export async function appendRowExists(

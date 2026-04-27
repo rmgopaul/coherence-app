@@ -67,6 +67,10 @@ export const CORE_DATASETS = [
   // Task 5.12 PR-8 (2026-04-27): annualProductionEstimates. Same
   // rationale.
   "annualProductionEstimates",
+  // Task 5.12 PR-9 (2026-04-27): abpIccReport2Rows + abpIccReport3Rows
+  // — two structurally-identical ICC report tables migrated together.
+  "abpIccReport2Rows",
+  "abpIccReport3Rows",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];

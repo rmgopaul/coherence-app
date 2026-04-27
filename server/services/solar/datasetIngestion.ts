@@ -50,14 +50,13 @@ type IngestProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 // ---------------------------------------------------------------------------
 // Dataset definitions (server-side mirror of client DATASET_DEFINITIONS)
-// 7 + 8 datasets so far (Task 5.12 PRs 1–8 added generatorDetails,
+// 7 + 10 datasets so far (Task 5.12 PRs 1–9 added generatorDetails,
 // abpCsgSystemMapping, abpProjectApplicationRows, abpPortalInvoiceMapRows,
 // abpCsgPortalDatabaseRows, abpQuickBooksRows, abpUtilityInvoiceRows,
-// and annualProductionEstimates). PR-8 corrected the planning doc:
-// `abpReportLatest` and `performanceSourceRows` were phantoms that
-// don't exist in the canonical DatasetKey union, so the real
-// remaining count is 3 (`convertedReads`, `abpIccReport2Rows`,
-// `abpIccReport3Rows`), not 5.
+// annualProductionEstimates, abpIccReport2Rows, abpIccReport3Rows —
+// PR-9 batched the two ICC reports because their parser, schema, and
+// consumer access patterns are identical). Only `convertedReads`
+// remains.
 // ---------------------------------------------------------------------------
 
 const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
@@ -203,6 +202,22 @@ const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
         "Nov",
         "Dec",
       ],
+    ],
+    multiFileAppend: false,
+  },
+  abpIccReport2Rows: {
+    label: "ABP ICC Report 2 Rows",
+    requiredHeaderSets: [
+      ["Application ID", "Total Quantity of RECs Contracted", "REC Price"],
+      ["Application_ID", "Total Quantity of RECs Contracted", "REC Price"],
+    ],
+    multiFileAppend: false,
+  },
+  abpIccReport3Rows: {
+    label: "ABP ICC Report 3 Rows",
+    requiredHeaderSets: [
+      ["Application ID", "Total Quantity of RECs Contracted", "REC Price"],
+      ["Application_ID", "Total Quantity of RECs Contracted", "REC Price"],
     ],
     multiFileAppend: false,
   },
