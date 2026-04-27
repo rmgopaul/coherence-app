@@ -24,6 +24,7 @@ import {
   srDsContractedDate,
   srDsDeliverySchedule,
   srDsTransferHistory,
+  srDsGeneratorDetails,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -337,6 +338,36 @@ const persistTransferHistory: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-1: generatorDetails is a single-file replace dataset
+// (no `_rawSourcesV1` manifest, no append-row dedup). Only `gatsUnitId`
+// and `dateOnline` are stable typed columns; AC size headers are fuzzy-
+// matched at read time (parseGeneratorDetailsAcSizeKw) so we keep the
+// full original row in `rawRow`.
+const persistGeneratorDetails: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    gatsUnitId: clip(
+      pick(row, "GATS Unit ID", "gats_unit_id", "Unit ID", "unit_id"),
+      128
+    ),
+    dateOnline: clip(pick(row, "Date Online", "date_online"), 64),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsGeneratorDetails,
+    values,
+    "generatorDetails",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -349,6 +380,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   contractedDate: persistContractedDate,
   deliveryScheduleBase: persistDeliverySchedule,
   transferHistory: persistTransferHistory,
+  generatorDetails: persistGeneratorDetails,
 };
 
 /**
@@ -590,6 +622,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   contractedDate: makeBatchDeleter("srDsContractedDate"),
   deliveryScheduleBase: makeBatchDeleter("srDsDeliverySchedule"),
   transferHistory: makeBatchDeleter("srDsTransferHistory"),
+  generatorDetails: makeBatchDeleter("srDsGeneratorDetails"),
 };
 
 export async function appendRowExists(
