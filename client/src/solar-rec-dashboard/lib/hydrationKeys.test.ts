@@ -65,4 +65,14 @@ describe("resolveHydrationKeys", () => {
     });
     expect(result).toEqual(new Set(["abpReport", "solarApplications"]));
   });
+
+  it("can skip manifest entries for bounded cloud hydration", () => {
+    const result = resolveHydrationKeys({
+      manifestKeys: ["abpReport", "solarApplications", "deliveryScheduleBase"],
+      priorityKeys: ["transferHistory"],
+      isDatasetKey,
+      includeManifestEntries: false,
+    });
+    expect(result).toEqual(new Set(["transferHistory"]));
+  });
 });

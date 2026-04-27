@@ -5407,10 +5407,10 @@ export default function SolarRecDashboard() {
           }));
         }
 
-        // Load every dataset in the manifest plus any priority keys
-        // not yet in the manifest. Single source of truth for this
-        // decision lives in resolveHydrationKeys so the IDB-path and
-        // cloud-path can't drift again.
+        // Cloud fallback is network-bound and can include very large
+        // source CSVs, so automatic hydration only fetches the active
+        // tab's priority keys. The local IDB path can still hydrate the
+        // full manifest cheaply via lazy rows.
         const priorityKeys = buildHydrationPriorityKeys(
           getTabFromSearch(search) ?? DEFAULT_DASHBOARD_TAB
         );
@@ -5418,6 +5418,7 @@ export default function SolarRecDashboard() {
           manifestKeys: Object.keys(manifest),
           priorityKeys,
           isDatasetKey,
+          includeManifestEntries: false,
         });
 
         if (keysToLoad.size === 0) {
