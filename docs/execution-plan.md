@@ -397,6 +397,99 @@ Move together — they share utilities. ModuleKeys: `early-payment`, `invoice-ma
 ### Task 5.11 — Migrate Address Checker, Zendesk Metrics, Deep Update Synthesizer
 Smaller utilities. ModuleKeys: `address-checker`, `zendesk-metrics`, `deep-update-synthesizer`. Batch into one PR if scope migration + permission wrapping is trivial for each; otherwise one per utility.
 
+### Task 5.12 — Migrate the 11 non-row-backed dashboard datasets to `srDs*` row tables
+
+**Why this exists.** PRs #120–#130 (the "data-flow series", 2026-04-27) established the canonical architecture: server-side row tables (`srDs*`) are the source of truth for dashboard datasets; the browser holds aggregates and pages, never raw rows. That series migrated the **7 row-backed datasets** end-to-end. The **11 non-row-backed datasets** still use the legacy chunked-CSV path because they don't have row tables yet.
+
+This task creates row tables for the remaining 11 datasets and rewires their ingestion + reads through the same `srDs*` pattern. It is the precursor to the deferred TrendsTab and AppPipelineTab migrations (Task 5.13 below) — those tabs can't get off raw-row consumption until their datasets are queryable as rows.
+
+**Datasets to migrate.** Confirmed in `client/src/features/solar-rec/SolarRecDashboard.tsx` `DATASET_DEFINITIONS`:
+
+  - `convertedReads` *(team-shared, monitoring-bridge-written + user-uploaded)*
+  - `abpCsgSystemMapping`
+  - `abpQuickbooksRows`
+  - `abpProjectApplicationRows`
+  - `abpPortalInvoiceMapRows`
+  - `abpCsgPortalDatabaseRows`
+  - `abpIccReport2Rows`
+  - `abpIccReport3Rows`
+  - `abpUtilityInvoiceRows`
+  - `abpReportLatest`
+  - `performanceSourceRows` (drives the REC Performance Eval tab)
+  - `generatorDetails` (used by ApplicationPipelineTab; not in the 18-dataset list above but lives in the same chunked-CSV path)
+
+**Pattern per dataset.** Mirror the 7 already-migrated tables:
+
+1. New `srDs<Name>` table in `drizzle/schemas/solar.ts` with `id`, `scopeId`, `batchId`, `rawRow` (`mediumtext`), `createdAt`, plus typed columns for fields the app actually queries.
+2. New entry in `TYPED_COLUMN_TO_CSV_KEY` (`server/services/solar/buildSystemSnapshot.ts`) for any typed-only fields that need CSV-key remap. Add to `SKIP_RAW_ROW_TABLES` if the row count justifies skipping `rawRow` over the wire.
+3. Ingestion path through `server/services/solar/datasetIngestion.ts` and `datasetRowPersistence.ts` — extend `persistDatasetRows` to handle the new dataset key.
+4. Activation triggering through `coreDatasetSrDsSync` / `triggerCoreDatasetSrDsSync` in the dashboard router. Update `CORE_DATASET_KEYS_FOR_SNAPSHOT` and `SYSTEM_SNAPSHOT_DEPS` if the dataset participates in the system snapshot.
+5. `getDatasetSummariesAll` (PR-3 of the data-flow series) auto-extends — its `ROW_TABLES_BY_DATASET_KEY` map gains the new entry. `getDatasetRowsPage` (PR-4) likewise.
+6. `getDatasetCsv` (PR-5) gains the dataset to its enum.
+7. Drizzle migration generated via `pnpm db:push` — verify it lands in `drizzle/NNNN_*.sql` with a matching `_journal.json` entry, then run `drizzle-kit migrate` against prod **before** merging the code PR (per CLAUDE.md "Schema migration safety").
+
+**Special cases.**
+
+  - **`convertedReads`** — already team-shared via `convertedReadsBridge.ts`. The bridge's read-merge-write pattern must be re-implemented against the row table; the manifest-style `_rawSourcesV1` interleaving with monitoring-batch and individual-meter-reads writers needs careful translation. Recommend doing this dataset alone in its own PR.
+  - **`generatorDetails`** — has no `_rawSourcesV1` manifest; it's a single-file replace. Simpler.
+  - **`performanceSourceRows`** — feeds REC Performance Eval and Forecast. Verify its server-side consumers still work after migration.
+
+**Sub-PR cadence.** One PR per dataset is the safe cadence. ~11 PRs. Order: simplest to most complex.
+
+  1. `generatorDetails` (smallest, simplest)
+  2. `abpCsgSystemMapping`
+  3. `abpProjectApplicationRows`
+  4. `abpPortalInvoiceMapRows`
+  5. `abpCsgPortalDatabaseRows`
+  6. `abpQuickbooksRows`
+  7. `abpUtilityInvoiceRows`
+  8. `abpReportLatest`
+  9. `abpIccReport2Rows`
+  10. `abpIccReport3Rows`
+  11. `performanceSourceRows`
+  12. `convertedReads` (last — most complex due to the bridge)
+
+**Definition of Done per sub-PR.**
+
+  - Drizzle migration applied to prod DB (verify column existence with `SHOW COLUMNS`).
+  - Upload a CSV through the dashboard for that dataset → row count visible via `getDatasetSummariesAll` matches the file's row count → `debugDatasetPersistenceRaw(datasetKey)` reports `verdict: "consistent"`.
+  - Page through rows via `getDatasetRowsPage` and verify the page matches the original CSV.
+  - Existing chunked-CSV blob continues to work as a fallback during the transition.
+  - `tsc --noEmit --incremental false` clean; `vitest run` passes.
+
+**Gate after 5.12.** All 18 datasets are row-backed. The `getDatasetAssembled` legacy chunked-CSV path can be removed (or marked for removal in 5.13 cleanup). The hard rule "no client tab is allowed to read `datasets[key].rows.length` for a dataset key in `CORE_DATASET_KEYS_FOR_SNAPSHOT`" extends to all 18 datasets.
+
+### Task 5.13 — Migrate the 6 deferred dashboard tabs off raw rows
+
+**Depends on Task 5.12.** Once all 18 datasets are row-backed, these tab migrations become mechanical: extract the existing client-side `useMemo` computation into a shared pure function, run it server-side using `loadDatasetRows`, return the aggregate via tRPC, replace the client `useMemo` with the query.
+
+**Tabs to migrate** (per `CLAUDE.md` "Solar REC Dashboard data flow" section):
+
+  - `TrendsTab.tsx` — monthly production deltas from `convertedReads` + delivery pace from `deliveryScheduleBase`
+  - `ApplicationPipelineTab.tsx` — monthly Part-1/Part-2 counts from `abpReport`, monthly cash flow from `abpReport` + `abpCsgSystemMapping` + `abpIccReport3Rows` + scan results
+  - `ContractsTab.tsx` — contract+date delivery aggregates from `deliveryScheduleBase` + transfer lookup
+  - `AnnualReviewTab.tsx` — annual contract+vintage aggregates from `deliveryScheduleBase` (same data as ContractsTab; share the helper)
+  - `AlertsTab.tsx` — derived alert ruleset from systems snapshot + `deliveryScheduleBase` pace
+  - `DeliveryTrackerTab.tsx` — already structured correctly (parent computes via `buildDeliveryTrackerData`); migrate the parent helper
+
+**Pattern per tab.**
+
+1. Extract the tab's `useMemo` body into `shared/solarRecAggregates/<tabName>.ts` as a pure function `compute<TabName>Aggregates(rows, ...args)`.
+2. Add a tRPC query on `solarRecDashboardRouter.ts` named `getDashboard<TabName>Aggregates(scopeId)`. Internally calls `loadDatasetRows` for each input dataset, calls the shared compute, returns the aggregate. Mark `_runnerVersion: "data-flow-pr5_13_<tabname>"`.
+3. Cache results in `solarRecComputedArtifacts` keyed by the input version hash (same pattern as `getOrBuildSystemSnapshot`). Critical for AppPipelineTab where the inputs span 4 datasets.
+4. Replace the tab's `useMemo` with a `useQuery` of the new endpoint.
+5. Add a server-side test that asserts the aggregate matches the legacy client-side computation for a known fixture.
+
+**Sub-PR cadence.** One PR per tab. ~6 PRs.
+
+**Definition of Done per sub-PR.**
+
+  - Cold-load incognito of that tab uses < 50 MB of additional tab memory beyond the system-snapshot baseline.
+  - The tab's charts render identical numbers to the pre-migration version (golden test).
+  - The tab no longer reads `datasets[key].rows` for any key in `CORE_DATASET_KEYS_FOR_SNAPSHOT` (lint rule from CLAUDE.md "Hard rules").
+
+**Gate after 5.13.** Cold-load incognito tab memory peaks < 300 MB steady-state across all 18 datasets and 20 tabs. The hard-rules section in CLAUDE.md becomes CI-enforceable: a test scans for `\.rows\.length` and `\.rows\.forEach` on core dataset keys and fails if found.
+
 **Gate after Phase 5.** Main sidebar shows only personal features. Solar-rec sidebar respects per-user per-module permissions. A seeded `read`-only test user sees all data but cannot mutate anything. A seeded `edit` test user on a subset of modules sees only that subset. The permission matrix is editable by the scope owner from Settings. Lint from Task 4.1 reports zero cross-imports.
 
 ---
