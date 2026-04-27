@@ -7,6 +7,11 @@ import {
   LogOut,
   Users,
   ChevronDown,
+  FileSpreadsheet,
+  FileSearch,
+  FileText,
+  MapPin,
+  Headset,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -34,6 +39,71 @@ import { useSolarRecPermissions } from "../hooks/useSolarRecPermission";
 import type { ModuleKey, PermissionLevel } from "@shared/solarRecModules";
 
 type NavItem = { label: string; href: string; icon: LucideIcon };
+type ToolsNavItem = NavItem & { moduleKey: ModuleKey };
+
+/**
+ * Workbench tools. Each entry is permission-gated by its module
+ * key (the same one the corresponding tRPC router checks via
+ * `requirePermission`), so users without `none` access don't see
+ * the link. Order is "settlement-flow first, scrapers second,
+ * standalone tools last" — the daily ABP cycle reads top-to-bottom.
+ */
+const TOOLS_ITEMS: ToolsNavItem[] = [
+  {
+    label: "ABP Settlement",
+    href: "/solar-rec/abp-invoice-settlement",
+    icon: FileSpreadsheet,
+    moduleKey: "abp-invoice-settlement",
+  },
+  {
+    label: "Early Payment",
+    href: "/solar-rec/early-payment",
+    icon: FileSpreadsheet,
+    moduleKey: "early-payment",
+  },
+  {
+    label: "Invoice Match",
+    href: "/solar-rec/invoice-match-dashboard",
+    icon: FileSpreadsheet,
+    moduleKey: "invoice-match",
+  },
+  {
+    label: "Address Checker",
+    href: "/solar-rec/address-checker",
+    icon: MapPin,
+    moduleKey: "address-checker",
+  },
+  {
+    label: "Contract Scanner",
+    href: "/solar-rec/contract-scanner",
+    icon: FileSearch,
+    moduleKey: "contract-scanner",
+  },
+  {
+    label: "Contract Scraper",
+    href: "/solar-rec/contract-scrape-manager",
+    icon: FileSearch,
+    moduleKey: "contract-scrape-manager",
+  },
+  {
+    label: "DIN Scraper",
+    href: "/solar-rec/din-scrape-manager",
+    icon: FileSearch,
+    moduleKey: "din-scrape-manager",
+  },
+  {
+    label: "Deep Update Synth",
+    href: "/solar-rec/deep-update-synthesizer",
+    icon: FileText,
+    moduleKey: "deep-update-synthesizer",
+  },
+  {
+    label: "Zendesk",
+    href: "/solar-rec/zendesk-ticket-metrics",
+    icon: Headset,
+    moduleKey: "zendesk-metrics",
+  },
+];
 
 const METER_READ_ITEMS: NavItem[] = [
   { label: "SolarEdge", href: "/solar-rec/meter-reads/solaredge", icon: Zap },
@@ -153,6 +223,39 @@ export default function SolarRecSidebar({
         </SidebarGroup>
 
         <SidebarSeparator />
+
+        {/* Tools — workbench pages migrated from the personal app in
+            Phase 5. Each entry hides itself when the user has `none`
+            permission on the linked module. The group label hides
+            entirely if the user has zero accessible tools. */}
+        {(() => {
+          const visibleTools = TOOLS_ITEMS.filter((item) => canSee(item.moduleKey));
+          if (visibleTools.length === 0) return null;
+          return (
+            <>
+              <SidebarGroup>
+                <SidebarGroupLabel>Tools</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    {visibleTools.map((item) => (
+                      <SidebarMenuItem key={item.href}>
+                        <SidebarMenuButton
+                          onClick={() => setLocation(item.href)}
+                          isActive={location === item.href}
+                        >
+                          <item.icon className="h-4 w-4" />
+                          <span>{item.label}</span>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    ))}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+
+              <SidebarSeparator />
+            </>
+          );
+        })()}
 
         {/* Meter Reads (collapsible) */}
         {canSee("meter-reads") && (

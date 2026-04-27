@@ -15,6 +15,14 @@ interface AppShellProps {
   children: ReactNode;
 }
 
+// Personal-app routes only. The seven legacy `/solar-rec-dashboard`
+// `/invoice-match-dashboard` `/deep-update-synthesizer`
+// `/contract-scanner` `/contract-scrape-manager` `/din-scrape-manager`
+// `/zendesk-ticket-metrics` entries used to live here, but each is
+// a Wouter <Redirect /> target now (Phase 5 moved the actual pages
+// to /solar-rec/*). This title map only fires on routes that
+// actually render — the redirects never sit at one of these paths
+// long enough for the header to read it — so the entries were dead.
 const ROUTE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/dashboard/one-thing": "One Thing",
@@ -28,13 +36,6 @@ const ROUTE_TITLES: Record<string, string> = {
   "/widget/clockify": "Clockify",
   "/widget/gmail": "Gmail",
   "/settings": "Settings",
-  "/solar-rec-dashboard": "Solar REC",
-  "/invoice-match-dashboard": "Invoice Match",
-  "/deep-update-synthesizer": "Deep Update",
-  "/contract-scanner": "Contract Scanner",
-  "/contract-scrape-manager": "Contract Scraper",
-  "/din-scrape-manager": "DIN Scraper",
-  "/zendesk-ticket-metrics": "Zendesk",
 };
 
 export function AppShell({ children }: AppShellProps) {
