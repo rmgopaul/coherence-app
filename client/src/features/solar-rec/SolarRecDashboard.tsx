@@ -92,7 +92,6 @@ const SystemDetailSheetLazy = lazy(
 import { clean, formatPercent } from "@/lib/helpers";
 import { parseTabularFile } from "@/lib/csvParsing";
 import {
-  buildDeliveryTrackerData,
   EMPTY_DELIVERY_TRACKER_DATA,
 } from "@/solar-rec-dashboard/lib/buildDeliveryTrackerData";
 import { useSystemSnapshot } from "@/solar-rec-dashboard/hooks/useSystemSnapshot";
@@ -6397,14 +6396,23 @@ export default function SolarRecDashboard() {
 // The tracker now also surfaces `transfersMissingObligation` — distinct
 // tracking IDs that have transfers but no matching Schedule B PDF yet,
 // so the user can see exactly which systems still need scraping.
-const deliveryTrackerData = useMemo(() => {
-  if (!isDeliveryTrackerTabActive) return EMPTY_DELIVERY_TRACKER_DATA;
-  return buildDeliveryTrackerData({
-    scheduleRows: datasets.deliveryScheduleBase?.rows ?? [],
-    transferRows: datasets.transferHistory?.rows ?? [],
-  });
-}, [isDeliveryTrackerTabActive, datasets.deliveryScheduleBase, datasets.transferHistory],
-);
+// Task 5.13 PR-1 (2026-04-27): the Delivery Tracker aggregate moved
+// off raw-row materialization. Server reads `srDsDeliverySchedule` +
+// `srDsTransferHistory` for the active scope, runs
+// `buildDeliveryTrackerData`, and returns the same shape the client
+// used to build locally. Result is cached in
+// `solarRecComputedArtifacts` keyed by the input batch-IDs hash, so
+// repeat tab activations are O(cache-read). superjson preserves the
+// Date fields in `yearStart`/`yearEnd` end-to-end.
+const deliveryTrackerQuery =
+  solarRecTrpc.solarRecDashboard.getDashboardDeliveryTrackerAggregates.useQuery(
+    undefined,
+    {
+      enabled: isDeliveryTrackerTabActive,
+      staleTime: 60_000,
+    }
+  );
+const deliveryTrackerData = deliveryTrackerQuery.data ?? EMPTY_DELIVERY_TRACKER_DATA;
 
 // ── Alerts ──────────────────────────────────────────────────────
 // AlertItem type, alerts memo, alertSummary memo — moved to @/solar-rec-dashboard/components/AlertsTab

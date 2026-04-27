@@ -590,11 +590,22 @@ The remaining tabs that read raw rows for the 7 row-backed datasets:
 - `ContractsTab.tsx` — `deliveryScheduleBase`
 - `AnnualReviewTab.tsx` — `deliveryScheduleBase`
 - `AlertsTab.tsx` — `deliveryScheduleBase`
-- `DeliveryTrackerTab.tsx` — `deliveryScheduleBase`
+- ~~`DeliveryTrackerTab.tsx` — `deliveryScheduleBase` + `transferHistory`~~
+  **DONE 2026-04-27 (Task 5.13 PR-1).** Server-side aggregator at
+  `server/services/solar/buildDeliveryTrackerData.ts` runs over
+  `srDsDeliverySchedule` + `srDsTransferHistory`, caches result in
+  `solarRecComputedArtifacts` keyed by input batch hash. Client fetches
+  via `solarRecDashboard.getDashboardDeliveryTrackerAggregates` —
+  parent's `useMemo` over raw `datasets[k].rows` is gone. superjson
+  preserves `Date` fields end-to-end through the cache + wire.
 
 Pattern for each:
 - Aggregates → extend `getSystemSnapshot` to include the per-tab
-  pre-aggregate (monthly bucket map, alert list, etc.)
+  pre-aggregate (monthly bucket map, alert list, etc.) OR add a
+  dedicated `getDashboard<TabName>Aggregates` query backed by a
+  shared aggregator + `solarRecComputedArtifacts` cache (see
+  Task 5.13 PR-1's `buildDeliveryTrackerData.ts` for the canonical
+  template).
 - Detail rows → use `getDatasetRowsPage` infinite-query pattern
 
 ### Persistence write contract
