@@ -86,6 +86,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "sunpower",
   "egauge",
   "solarRecDashboard",
+  "contractScan",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {

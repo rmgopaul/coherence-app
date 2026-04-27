@@ -26,8 +26,10 @@ const CommandDeck = lazy(() => import("@/features/dashboard/CommandDeck"));
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
 const ZendeskTicketMetrics = lazy(() => import("@/features/dashboard/ZendeskTicketMetrics"));
 const DeepUpdateSynthesizer = lazy(() => import("@/features/dashboard/DeepUpdateSynthesizer"));
-const ContractScanner = lazy(() => import("@/features/dashboard/ContractScanner"));
-const ContractScrapeManager = lazy(() => import("@/features/dashboard/ContractScrapeManager"));
+// Task 5.7 PR-B (2026-04-26): ContractScanner + ContractScrapeManager
+// migrated to the standalone Solar REC app. The legacy URLs below are
+// kept as Wouter <Redirect /> targets so existing bookmarks land on
+// the new routes after the bundle hydrates.
 const DinScrapeManager = lazy(() => import("@/features/dashboard/DinScrapeManager"));
 const AbpInvoiceSettlement = lazy(() => import("@/features/dashboard/AbpInvoiceSettlement"));
 const EarlyPayment = lazy(() => import("@/features/dashboard/EarlyPayment"));
@@ -112,8 +114,12 @@ function AppRoutes() {
       </Route>
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
       <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
-      <Route path={"/contract-scanner"} component={withRouteSuspense(ContractScanner)} />
-      <Route path={"/contract-scrape-manager"} component={withRouteSuspense(ContractScrapeManager)} />
+      <Route path={"/contract-scanner"}>
+        <Redirect to="/solar-rec/contract-scanner" />
+      </Route>
+      <Route path={"/contract-scrape-manager"}>
+        <Redirect to="/solar-rec/contract-scrape-manager" />
+      </Route>
       <Route path={"/din-scrape-manager"} component={withRouteSuspense(DinScrapeManager)} />
       <Route path={"/abp-invoice-settlement"} component={withRouteSuspense(AbpInvoiceSettlement)} />
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />

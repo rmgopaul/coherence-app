@@ -1,5 +1,10 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { trpc } from "@/lib/trpc";
+// Task 5.7 PR-B (2026-04-26): contract-scrape procs migrated from
+// the main `abpSettlementRouter` to the standalone Solar REC
+// `contractScan` sub-router. Aliased import keeps every
+// `trpc.contractScan.*` call site routable through the standalone
+// tRPC client (which targets /solar-rec/api/trpc).
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -77,7 +82,7 @@ export default function ContractScrapeManager() {
   const startTimeRef = useRef<number | null>(null);
 
   // ── Mutations ─────────────────────────────────────────────────────
-  const startMutation = trpc.abpSettlement.startDbContractScanJob.useMutation({
+  const startMutation = trpc.contractScan.startDbContractScanJob.useMutation({
     onSuccess: (data) => {
       setActiveJobId(data.jobId);
       startTimeRef.current = Date.now();
@@ -87,12 +92,12 @@ export default function ContractScrapeManager() {
     onError: (err) => toast.error(err.message),
   });
 
-  const stopMutation = trpc.abpSettlement.stopDbContractScanJob.useMutation({
+  const stopMutation = trpc.contractScan.stopDbContractScanJob.useMutation({
     onSuccess: () => toast.info("Stop signal sent"),
     onError: (err) => toast.error(err.message),
   });
 
-  const resumeMutation = trpc.abpSettlement.resumeDbContractScanJob.useMutation({
+  const resumeMutation = trpc.contractScan.resumeDbContractScanJob.useMutation({
     onSuccess: (data) => {
       startTimeRef.current = Date.now();
       toast.success(`Resumed — ${data.pendingCount} contracts remaining`);
@@ -100,7 +105,7 @@ export default function ContractScrapeManager() {
     onError: (err) => toast.error(err.message),
   });
 
-  const deleteMutation = trpc.abpSettlement.deleteDbContractScanJob.useMutation({
+  const deleteMutation = trpc.contractScan.deleteDbContractScanJob.useMutation({
     onSuccess: () => {
       toast.success("Job deleted");
       setActiveJobId(null);
@@ -111,7 +116,7 @@ export default function ContractScrapeManager() {
   });
 
   // ── Queries ───────────────────────────────────────────────────────
-  const jobStatusQuery = trpc.abpSettlement.getDbJobStatus.useQuery(
+  const jobStatusQuery = trpc.contractScan.getDbJobStatus.useQuery(
     { jobId: activeJobId! },
     {
       enabled: !!activeJobId,
@@ -119,17 +124,17 @@ export default function ContractScrapeManager() {
     }
   );
 
-  const jobListQuery = trpc.abpSettlement.listDbContractScanJobs.useQuery(
+  const jobListQuery = trpc.contractScan.listDbContractScanJobs.useQuery(
     undefined,
     { refetchInterval: activeJobId ? 5000 : 30000 }
   );
 
-  const resultsQuery = trpc.abpSettlement.getDbContractScanResults.useQuery(
+  const resultsQuery = trpc.contractScan.getDbContractScanResults.useQuery(
     { jobId: viewingJobId!, limit: 50, offset: resultsPage * 50 },
     { enabled: !!viewingJobId }
   );
 
-  const csvQuery = trpc.abpSettlement.exportDbContractScanResultsCsv.useQuery(
+  const csvQuery = trpc.contractScan.exportDbContractScanResultsCsv.useQuery(
     { jobId: viewingJobId! },
     { enabled: false }
   );
