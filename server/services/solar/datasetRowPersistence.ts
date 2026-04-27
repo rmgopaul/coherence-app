@@ -31,6 +31,7 @@ import {
   srDsAbpCsgPortalDatabaseRows,
   srDsAbpQuickBooksRows,
   srDsAbpUtilityInvoiceRows,
+  srDsAnnualProductionEstimates,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -573,6 +574,57 @@ const persistAbpUtilityInvoiceRows: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-8: annualProductionEstimates is a single-file replace
+// dataset (one row per Unit ID = system) carrying the 12-month
+// expected production profile. Unlike PR-5/6/7 (strict 1-typed-column
+// because of fuzzy header detection), this dataset's parser
+// (`buildAnnualProductionByTrackingId` in
+// `client/src/solar-rec-dashboard/lib/helpers/system.ts`) reads the
+// 12 month columns by exact match (with lowercase fallback), so all
+// 12 months are typed as `double` for future SQL aggregation in
+// Task 5.13. `unitId` and `facilityName` typed for indexing /
+// display. Note: the December column is named `decMonth` in the
+// schema to avoid colliding with Drizzle's `dec` decimal helper —
+// the original "Dec" CSV header is preserved in `rawRow`.
+const persistAnnualProductionEstimates: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const monthValue = (row: CsvRow, label: string): number | null =>
+    parseNum(row[label] ?? row[label.toLowerCase()]);
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    unitId: clip(pick(row, "Unit ID", "unit_id", "unitId"), 64),
+    facilityName: clip(
+      pick(row, "Facility Name", "Facility", "facilityName"),
+      255
+    ),
+    jan: monthValue(row, "Jan"),
+    feb: monthValue(row, "Feb"),
+    mar: monthValue(row, "Mar"),
+    apr: monthValue(row, "Apr"),
+    may: monthValue(row, "May"),
+    jun: monthValue(row, "Jun"),
+    jul: monthValue(row, "Jul"),
+    aug: monthValue(row, "Aug"),
+    sep: monthValue(row, "Sep"),
+    oct: monthValue(row, "Oct"),
+    nov: monthValue(row, "Nov"),
+    decMonth: monthValue(row, "Dec"),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAnnualProductionEstimates,
+    values,
+    "annualProductionEstimates",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -592,6 +644,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   abpCsgPortalDatabaseRows: persistAbpCsgPortalDatabaseRows,
   abpQuickBooksRows: persistAbpQuickBooksRows,
   abpUtilityInvoiceRows: persistAbpUtilityInvoiceRows,
+  annualProductionEstimates: persistAnnualProductionEstimates,
 };
 
 /**
@@ -840,6 +893,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   abpCsgPortalDatabaseRows: makeBatchDeleter("srDsAbpCsgPortalDatabaseRows"),
   abpQuickBooksRows: makeBatchDeleter("srDsAbpQuickBooksRows"),
   abpUtilityInvoiceRows: makeBatchDeleter("srDsAbpUtilityInvoiceRows"),
+  annualProductionEstimates: makeBatchDeleter("srDsAnnualProductionEstimates"),
 };
 
 export async function appendRowExists(
