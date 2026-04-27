@@ -29,6 +29,8 @@ import {
 } from "../db";
 import { MONITORING_CANONICAL_NAMES } from "@shared/const";
 import { parseCsvText } from "../routers/helpers/scheduleB";
+import { startSyncJob } from "../services/solar/coreDatasetSyncJobs";
+import { syncOneCoreDatasetFromStorage } from "../services/solar/serverSideMigration";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -369,6 +371,42 @@ async function writeSourceToManifest(
   return { sourceId, storageKey, rowCount: rows.length };
 }
 
+/**
+ * Fire-and-forget trigger for the chunked-CSV → `srDsConvertedReads`
+ * sync job. Bridge writers call this after each successful manifest
+ * write so the row table eventually reflects the latest reads. The
+ * job runner is single-flight per (scopeId, datasetKey), so multiple
+ * bridge writes during a 17-vendor monitoring batch coalesce into
+ * one sync. Errors are logged inside the job's terminal state — this
+ * function never throws or blocks the bridge response.
+ *
+ * Task 5.13 follow-up note (2026-04-27): once the dashboard's
+ * cold-cache hydration is rewritten off `getDatasetAssembled` and
+ * the `datasets[k].rows` in-memory state is gone, the bridge can
+ * cut over to writing `srDsConvertedReads` directly + skip the
+ * chunked-CSV path entirely. Until then, the dual-sync is the
+ * cheapest way to keep the row table consistent without touching
+ * the bridge's existing manifest semantics.
+ */
+function scheduleConvertedReadsRowTableSync(userId: number): void {
+  // scopeId convention is `scope-user-${ownerUserId}` (single-scope
+  // model — see `resolveSolarRecScopeId` in `server/_core/solarRecAuth.ts`).
+  const scopeId = `scope-user-${userId}`;
+  try {
+    startSyncJob(scopeId, DATASET_KEY, (reportProgress) =>
+      syncOneCoreDatasetFromStorage(scopeId, DATASET_KEY, userId, reportProgress)
+    );
+  } catch (err) {
+    // Don't fail the bridge response if the scheduler itself errors.
+    // Worst case: the row table lags until the next bridge write.
+    // eslint-disable-next-line no-console
+    console.error(
+      "[convertedReadsBridge] failed to schedule srDs* sync:",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public push functions
 // ---------------------------------------------------------------------------
@@ -431,6 +469,11 @@ export async function pushMonitoringRunsToConvertedReads(
     mergedRows
   );
 
+  // Schedule the chunked-CSV → srDsConvertedReads sync. Single-flight
+  // coalesces this with the other monitoring-batch providers' writes
+  // into one sync per scope.
+  scheduleConvertedReadsRowTableSync(userId);
+
   return {
     pushed: uniqueNewRows.length,
     skipped: runs.length - uniqueNewRows.length,
@@ -488,6 +531,10 @@ export async function pushIndividualRunsToConvertedReads(
   const mergedRows = [...priorRows, ...uniqueNewRows];
   const fileName = `${providerLabel} API (${mergedRows.length} rows)`;
   await writeSourceToManifest(userId, sourceId, fileName, mergedRows);
+
+  // Schedule the chunked-CSV → srDsConvertedReads sync (single-flight
+  // per scope; see `scheduleConvertedReadsRowTableSync`).
+  scheduleConvertedReadsRowTableSync(userId);
 
   return {
     pushed: uniqueNewRows.length,
