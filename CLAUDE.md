@@ -88,8 +88,44 @@ stop and discuss the migration timing first.
   `dinScrapeRouter` to standalone with `requirePermission(
   "din-scrape-manager", level)`; move `DinScrapeManager.tsx` page to
   `client/src/solar-rec/pages/`.
-- ABP Invoice Settlement — Task 5.9
-- Early Payment + Invoice Match Dashboard — Task 5.10
+- ~~ABP Invoice Settlement — Task 5.9~~ **DONE 2026-04-27 (PR-A).**
+  Procs moved to `solarRecAbpSettlementRouter.ts` (7 procs:
+  `startContractScanJob`, `getJobStatus`, `cleanMailingData`,
+  `verifyAddresses`, `saveRun`, `getRun`, `listRuns`) +
+  `solarRecCsgPortalRouter.ts` (3 procs: `status`, `saveCredentials`,
+  `testConnection`). Two module gates: `abp-invoice-settlement` for
+  the main settlement procs, `solar-rec-settings` for CSG portal
+  credentials (credentials are settings, not settlement state).
+  Storage layer (`saveRun`/`getRun`/`listRuns`) keeps the existing
+  `readPayloadWithFallback`/`writePayloadWithFallback` helpers but
+  passes `resolveSolarRecOwnerUserId()` so every team member sees
+  the same runs in single-tenant prod. Cross-scope safety on
+  `getJobStatus` switched from `userId` to comparing the job's owner
+  against the resolved owner. Storage rewrite to `scopeId`-keyed keys
+  is deferred to a follow-up. `csgPortalRouter` + `abpSettlementRouter`
+  deleted from `server/routers/jobRunners.ts`; only `dinScrapeRouter`
+  remains there (Task 5.8 PR-B). Page `AbpInvoiceSettlement.tsx`
+  (4117 LOC) moved to `client/src/solar-rec/pages/` and switched from
+  the dual-import (`trpc` for abp/csg + `solarRecTrpc` for dashboard)
+  to a single aliased `solarRecTrpc as trpc` import. Legacy
+  `/abp-invoice-settlement` URL kept as Wouter `<Redirect />`.
+  **Task 2.3 (cross-month contamination override) deferred** — bundled
+  with this task in the original plan but excluded from PR-A scope to
+  keep the migration focused.
+- ~~Address Checker — Task 5.11 PR-B~~ **DONE 2026-04-27 (with PR-A).**
+  Unblocked by Task 5.9 the moment `abpSettlement.*` procs migrated
+  to standalone. Pure file move + import swap + permission gate
+  (`<PermissionGate moduleKey="address-checker">`). Page calls only
+  `abpSettlement.cleanMailingData` and `verifyAddresses`, both now
+  on `solarRecAppRouter`. Legacy `/address-checker` URL kept as
+  Wouter `<Redirect />` to `/solar-rec/address-checker`.
+- Early Payment + Invoice Match Dashboard — Task 5.10. **Compat shim
+  applied 2026-04-27**: `EarlyPayment.tsx` calls
+  `trpc.abpSettlement.startContractScanJob` and
+  `trpc.abpSettlement.getJobStatus`, both of which moved off main in
+  Task 5.9 PR-A. Those two call sites swapped to `solarRecTrpc.*` to
+  keep the page working pre-migration. Full Task 5.10 page move
+  still pending.
 - Task 5.11 — split into 3 PRs because each utility has a different
   blocker:
   - ~~Zendesk Metrics — Task 5.11 PR-A~~ **DONE 2026-04-27.** Procs
@@ -97,9 +133,8 @@ stop and discuss the migration timing first.
     "zendesk-metrics", level)`. Page moved to
     `client/src/solar-rec/pages/`. `server/routers/solarMisc.ts` (the
     zendesk-only file after #109's cleanup) deleted.
-  - Address Checker — Task 5.11 PR-B. **Blocked on Task 5.9** —
-    `AddressChecker.tsx` calls `trpc.abpSettlement.cleanMailingData`
-    and `verifyAddresses`, which move with ABP Settlement.
+  - ~~Address Checker — Task 5.11 PR-B~~ — see Task 5.9 entry above
+    (shipped together with the abpSettlement migration).
   - ~~Deep Update Synthesizer — Task 5.11 PR-C~~ **DONE 2026-04-27.**
     Page moved to `client/src/solar-rec/pages/`. Already used
     `solarRecTrpc` after Task 5.5 so no proc swap was needed —

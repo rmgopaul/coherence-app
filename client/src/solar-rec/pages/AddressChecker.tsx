@@ -6,7 +6,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { parseTabularFile } from "@/lib/csvParsing";
 import { clean, downloadTextFile, toErrorMessage } from "@/lib/helpers";
-import { trpc } from "@/lib/trpc";
+// Task 5.11 PR-B (2026-04-27): AddressChecker migrated to the
+// standalone Solar REC router. Its only server calls are
+// `abpSettlement.cleanMailingData` and `abpSettlement.verifyAddresses`,
+// both of which moved to /solar-rec/api/trpc in Task 5.9 PR-A.
+// Aliased import keeps every `trpc.*` call site unchanged.
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { CheckCircle, Download, FileUp, Loader2, MapPin, Sparkles } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { toast } from "sonner";
