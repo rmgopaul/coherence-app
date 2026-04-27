@@ -915,6 +915,50 @@ export const srDsAbpCsgSystemMapping = mysqlTable(
 export type SrDsAbpCsgSystemMapping = typeof srDsAbpCsgSystemMapping.$inferSelect;
 export type InsertSrDsAbpCsgSystemMapping = typeof srDsAbpCsgSystemMapping.$inferInsert;
 
+// Task 5.12 PR-3 (2026-04-27): ABP ProjectApplication Rows row table.
+// Single-file replace dataset shared between Solar REC dashboard and
+// ABP Monthly Invoice Settlement. Four stable typed columns — required
+// headers (`applicationId` + `inverterSizeKwAcPart1`) plus the two
+// date fields (`part1SubmissionDate`, `part1OriginalSubmissionDate`)
+// that drive the application-fee cutoff logic in
+// `client/src/lib/abpSettlement.ts`. No fuzzy header matching anywhere
+// in the consumer chain (EarlyPayment, AbpInvoiceSettlement,
+// parseProjectApplications), so all stable fields are typed; rawRow
+// is preserved for forward-compat with future consumers.
+export const srDsAbpProjectApplicationRows = mysqlTable(
+  "srDsAbpProjectApplicationRows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    applicationId: varchar("applicationId", { length: 64 }),
+    inverterSizeKwAcPart1: varchar("inverterSizeKwAcPart1", { length: 32 }),
+    part1SubmissionDate: varchar("part1SubmissionDate", { length: 32 }),
+    part1OriginalSubmissionDate: varchar(
+      "part1OriginalSubmissionDate",
+      { length: 32 }
+    ),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_project_app_rows_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_project_app_rows_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeAppIdx: index("sr_ds_abp_project_app_rows_scope_app_idx").on(
+      table.scopeId,
+      table.applicationId
+    ),
+  })
+);
+
+export type SrDsAbpProjectApplicationRows =
+  typeof srDsAbpProjectApplicationRows.$inferSelect;
+export type InsertSrDsAbpProjectApplicationRows =
+  typeof srDsAbpProjectApplicationRows.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",
