@@ -585,14 +585,16 @@ will be eliminated for the 11 others once they migrate.
 PR-7 wired Data Quality + Total-Rows readout off in-memory rows.
 The remaining tabs that read raw rows for the 7 row-backed datasets:
 
-- `TrendsTab.tsx` — ~~`deliveryScheduleBase`~~ + `accountSolarGeneration`
-  + `convertedReads`. **PARTIAL DONE 2026-04-27 (Task 5.13 PR-2).**
-  The `deliveryScheduleBase` raw-row read (the `trendDeliveryPace`
-  useMemo, shared with `AlertsTab`) moved server-side via
-  `getDashboardTrendDeliveryPace`. The remaining
-  `trendProductionMoM` + `trendTopSiteIds` useMemos still iterate
-  `convertedReads.rows`; that dataset is in flight via Task 5.12 and
-  the rest of TrendsTab's migration follows.
+- ~~`TrendsTab.tsx` — `deliveryScheduleBase` + `convertedReads`~~
+  **DONE 2026-04-27 (Task 5.13 PR-2 + PR-4).** PR-2 moved
+  `trendDeliveryPace` (over `deliveryScheduleBase` rows) server-side
+  via `getDashboardTrendDeliveryPace` (shared with AlertsTab). PR-4
+  moved `trendProductionMoM` + `trendTopSiteIds` (over
+  `convertedReads` rows — row-backed via Task 5.12 PR-10) to a
+  single `getDashboardTrendsProduction` query that returns the
+  chart data + legend-order site IDs in one payload. TrendsTab
+  drops the `convertedReads` prop entirely; the tab now reads zero
+  `datasets[k].rows` arrays.
 - `ApplicationPipelineTab.tsx` — `abpReport` + `abpIccReport3Rows`
 - ~~`ContractsTab.tsx` — `deliveryScheduleBase`~~
   **DONE 2026-04-27 (Task 5.13 PR-3).** Migrated alongside

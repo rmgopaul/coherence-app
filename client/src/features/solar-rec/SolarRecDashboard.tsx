@@ -7280,7 +7280,6 @@ const aiDataContext = useMemo(() => {
             <div style={{ display: activeTab === "trends" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading trends tab...</div>}>
                 <TrendsTabLazy
-                  convertedReads={datasets.convertedReads ?? null}
                   logEntries={logEntries}
                   isActive={activeTab === "trends"}
                 />
