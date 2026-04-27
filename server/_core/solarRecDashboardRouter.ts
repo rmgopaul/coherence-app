@@ -3071,6 +3071,68 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Task 5.13 PR-5 (2026-04-27) — server-side AppPipelineTab
+   * aggregator. Replaces the tab's 6 client useMemos:
+   *   - `pipelineMonthlyRows` (Part 1 / Part 2 / Interconnected
+   *     counts + kW per month from `abpReport` + `generatorDetails`
+   *     + system-snapshot fallback).
+   *   - `pipelineCashFlowRows` (per-month vendor fee + CC-auth
+   *     collateral + additional collateral, joined across
+   *     `abpReport` Part-2-verified rows ↦ `abpCsgSystemMapping` ↦
+   *     `abpIccReport3Rows` ↦ contract-scan results).
+   *
+   * Both aggregators run in one cached recompute pass. The 4
+   * remaining useMemos in AppPipelineTab (`pipelineRows3Year`,
+   * `pipelineRows12Month`, `cashFlowRows3Year`,
+   * `cashFlowRows12Month`) are cheap rolling-window slices on the
+   * detail arrays and stay client-side.
+   *
+   * `overrides` carries the Financials-tab `localOverrides` map
+   * (per-CSG-ID vendor-fee % + additional-collateral %). Including
+   * it as input rather than fetching server-side keeps the cache
+   * stable across users in the same scope: each user's overrides
+   * hash into a distinct cache key. When overrides are unchanged
+   * (the common case) the result is a cache hit; when they change,
+   * recompute is sub-second since the rows are already in srDs*.
+   */
+  getDashboardAppPipelineAggregates: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  )
+    .input(
+      z.object({
+        overrides: z
+          .array(
+            z.object({
+              csgId: z.string().min(1).max(64),
+              vfp: z.number().nullable().optional(),
+              acp: z.number().nullable().optional(),
+            })
+          )
+          .max(50000)
+          .optional(),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      const {
+        getOrBuildAppPipelineAggregates,
+        APP_PIPELINE_RUNNER_VERSION,
+      } = await import("../services/solar/buildPipelineAggregates");
+
+      const overrides = input.overrides ?? [];
+      const { result, fromCache } = await getOrBuildAppPipelineAggregates(
+        ctx.scopeId,
+        overrides
+      );
+
+      return {
+        ...result,
+        fromCache,
+        _runnerVersion: APP_PIPELINE_RUNNER_VERSION,
+      };
+    }),
+
+  /**
    * Per-dataset summary metadata for ALL 18 datasets in a single
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.

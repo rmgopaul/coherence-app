@@ -2,28 +2,36 @@
  * Application Pipeline tab.
  *
  * Extracted from SolarRecDashboard.tsx (2026-04-14). Phase 4 of the
- * god-component decomposition. Owns:
+ * god-component decomposition. After Task 5.13 PR-5 (2026-04-27), the
+ * 2 heavy useMemos (`pipelineMonthlyRows`, `pipelineCashFlowRows`)
+ * moved server-side. The component now owns:
  *   - 5 useStates (4 range toggles + pipelineReportLoading)
- *   - 6 useMemos (pipelineMonthlyRows, pipelineRows3Year, pipelineRows12Month,
- *     pipelineCashFlowRows, cashFlowRows3Year, cashFlowRows12Month)
+ *   - 1 tRPC query (getDashboardAppPipelineAggregates — both monthly
+ *     + cash-flow detail rows in a single roundtrip)
+ *   - 4 useMemos (pipelineRows3Year, pipelineRows12Month,
+ *     cashFlowRows3Year, cashFlowRows12Month) — cheap rolling-window
+ *     slices on the server result; kept client-side because they
+ *     read from the query data and a tab range toggle is a per-tab
+ *     state, not a server input.
  *   - 1 useRef (cashFlowRows12MonthRef for the PDF generator closure)
- *   - 1 tRPC mutation (generatePipelineReport) - owned locally now
+ *   - 1 tRPC mutation (generatePipelineReport)
  *   - 1 massive useCallback (handleGeneratePipelineReport) that builds the
  *     ~330-line jsPDF + autoTable ChatGPT-assisted pipeline report
  *
  * The parent still owns:
- *   - `systems` (master system list)
- *   - `part2VerifiedAbpRows` (ABP rows filtered by Part 2 verification)
- *   - `contractScanResultsQuery` (tRPC query shared with Overview +
- *     Financials + Pipeline)
  *   - `financialCsgIds` (length check for the cash flow "data available"
  *     indicator)
- *   - `localOverrides` (Financials-tab override cache, used by the cash
- *     flow aggregator)
+ *   - `localOverrides` (Financials-tab override cache; passed straight
+ *     through into the tRPC query input so server-side cash-flow
+ *     numbers reflect the user's current overrides)
  *
- * Those four values come in via props. Switching away from the tab
- * unmounts this component, so none of the pipeline memos run when the
- * user is on any other tab.
+ * The 4 dataset props (abpReport, generatorDetails,
+ * abpCsgSystemMapping, abpIccReport3Rows), `systems`,
+ * `part2VerifiedAbpRows`, and `contractScanResults` are now ALL loaded
+ * server-side inside the aggregator's recompute path — they no longer
+ * cross the wire. Switching away from the tab unmounts this component,
+ * and `isActive` gates the query so it doesn't fire from background
+ * tabs.
  */
 
 import { memo, useCallback, useMemo, useRef, useState } from "react";
@@ -62,27 +70,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { trpc } from "@/lib/trpc";
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 import {
   buildPipelineBands,
   formatNumber,
-  parseAbpAcSizeKw,
-  parseDate,
-  parseDateOnlineAsMidMonth,
-  parseGeneratorDetailsAcSizeKw,
-  parseNumber,
-  parsePart2VerificationDate,
   pipelineRowGroupIndex,
-  resolvePart2ProjectIdentity,
-  roundMoney,
 } from "@/solar-rec-dashboard/lib/helpers";
-import { clean } from "@/lib/helpers";
 import type {
-  ContractScanResultRow,
-  CsvDataset,
-  CsvRow,
   PipelineCashFlowRow,
   PipelineMonthRow,
-  SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
 
 // ---------------------------------------------------------------------------
@@ -90,18 +86,22 @@ import type {
 // ---------------------------------------------------------------------------
 
 export interface AppPipelineTabProps {
-  // Raw datasets
-  abpReport: CsvDataset | null;
-  generatorDetails: CsvDataset | null;
-  abpCsgSystemMapping: CsvDataset | null;
-  abpIccReport3Rows: CsvDataset | null;
-
-  // Upstream computed data from the parent
-  systems: SystemRecord[];
-  part2VerifiedAbpRows: CsvRow[];
-  contractScanResults: ContractScanResultRow[];
+  /**
+   * Financials-tab `localOverrides` map (per-CSG-ID vendor-fee % +
+   * additional-collateral %). Forwarded straight into the tRPC
+   * query input so server-side cash-flow numbers reflect the user's
+   * current overrides.
+   */
   localOverrides: Map<string, { vfp: number; acp: number }>;
+  /** Length check used to render the cash-flow "data available" indicator. */
   financialCsgIdCount: number;
+  /**
+   * Gates the aggregator query so it only fires when the tab is the
+   * active tab — switching away unmounts this component but the
+   * dashboard router uses `keepMounted` for the system-snapshot
+   * read, so we still want explicit gating here.
+   */
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -109,17 +109,7 @@ export interface AppPipelineTabProps {
 // ---------------------------------------------------------------------------
 
 export default memo(function AppPipelineTab(props: AppPipelineTabProps) {
-  const {
-    abpReport,
-    generatorDetails,
-    abpCsgSystemMapping,
-    abpIccReport3Rows,
-    systems,
-    part2VerifiedAbpRows,
-    contractScanResults,
-    localOverrides,
-    financialCsgIdCount,
-  } = props;
+  const { localOverrides, financialCsgIdCount, isActive } = props;
 
   // --- Range toggles ---
   const [pipelineCountRange, setPipelineCountRange] = useState<"3year" | "12month">("3year");
@@ -136,153 +126,42 @@ export default memo(function AppPipelineTab(props: AppPipelineTabProps) {
   const generatePipelineReport = trpc.openai.generatePipelineReport.useMutation();
 
   // -------------------------------------------------------------------------
-  // Part 1 / Part 2 / Interconnected monthly buckets from ABP + Generator CSVs
+  // Server aggregator — Part 1 / Part 2 / Interconnected monthly counts +
+  // monthly cash-flow projections in a single roundtrip. Replaces 2
+  // heavy client useMemos that walked `abpReport.rows`,
+  // `generatorDetails.rows`, `abpCsgSystemMapping.rows`,
+  // `abpIccReport3Rows.rows`, `part2VerifiedAbpRows`, and the
+  // `contractScanResults` array. See
+  // `server/services/solar/buildPipelineAggregates.ts`.
   // -------------------------------------------------------------------------
-  const pipelineMonthlyRows = useMemo<PipelineMonthRow[]>(() => {
-    type RawBucket = {
-      part1Count: number;
-      part2Count: number;
-      part1KwAc: number;
-      part2KwAc: number;
-      interconnectedCount: number;
-      interconnectedKwAc: number;
-    };
-    const buckets = new Map<string, RawBucket>();
+  const overridesInput = useMemo(
+    () =>
+      Array.from(localOverrides.entries()).map(([csgId, { vfp, acp }]) => ({
+        csgId,
+        vfp,
+        acp,
+      })),
+    [localOverrides],
+  );
 
-    const ensureBucket = (month: string) => {
-      if (!buckets.has(month)) {
-        buckets.set(month, {
-          part1Count: 0,
-          part2Count: 0,
-          part1KwAc: 0,
-          part2KwAc: 0,
-          interconnectedCount: 0,
-          interconnectedKwAc: 0,
-        });
-      }
-      return buckets.get(month)!;
-    };
+  const aggregatesQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardAppPipelineAggregates.useQuery(
+      { overrides: overridesInput },
+      {
+        enabled: isActive,
+        staleTime: 60_000,
+      },
+    );
+  const pipelineMonthlyRows: PipelineMonthRow[] =
+    aggregatesQuery.data?.monthlyRows ?? [];
+  const pipelineCashFlowRows: PipelineCashFlowRow[] =
+    aggregatesQuery.data?.cashFlowRows ?? [];
 
-    const today = new Date();
-    const isFuture = (d: Date) => d > today;
-
-    // Part 1 and Part 2 come from ABP report rows, deduped by canonical
-    // project key.
-    const seenPart1 = new Set<string>();
-    const seenPart2 = new Set<string>();
-    (abpReport?.rows ?? []).forEach((row, index) => {
-      const { dedupeKey } = resolvePart2ProjectIdentity(row, index);
-
-      // Part 1: keyed on Part_1_submission_date, kW from Inverter_Size_kW_AC_Part_1
-      if (!seenPart1.has(dedupeKey)) {
-        const submissionDate =
-          parseDate(row.Part_1_submission_date) ??
-          parseDate(row.Part_1_Submission_Date) ??
-          parseDate(row.Part_1_Original_Submission_Date);
-        if (submissionDate && !isFuture(submissionDate)) {
-          seenPart1.add(dedupeKey);
-          const month = `${submissionDate.getFullYear()}-${String(
-            submissionDate.getMonth() + 1,
-          ).padStart(2, "0")}`;
-          const bucket = ensureBucket(month);
-          bucket.part1Count += 1;
-
-          const acKw = parseNumber(row.Inverter_Size_kW_AC_Part_1);
-          if (acKw !== null) bucket.part1KwAc += acKw;
-        }
-      }
-
-      // Part 2: keyed on Part_2_App_Verification_Date, kW from
-      // Inverter_Size_kW_AC_Part_2
-      if (!seenPart2.has(dedupeKey)) {
-        const part2DateRaw =
-          clean(row.Part_2_App_Verification_Date) ||
-          clean(row.part_2_app_verification_date);
-        const verificationDate = parsePart2VerificationDate(part2DateRaw);
-        if (verificationDate && !isFuture(verificationDate)) {
-          seenPart2.add(dedupeKey);
-          const month = `${verificationDate.getFullYear()}-${String(
-            verificationDate.getMonth() + 1,
-          ).padStart(2, "0")}`;
-          const bucket = ensureBucket(month);
-          bucket.part2Count += 1;
-
-          const acKw = parseAbpAcSizeKw(row);
-          if (acKw !== null) bucket.part2KwAc += acKw;
-        }
-      }
-    });
-
-    // Interconnected comes from GATS Generator Details: Date Online /
-    // Interconnection date by GATS Unit ID.
-    const fallbackAcKwByTrackingId = new Map<string, number>();
-    systems.forEach((system) => {
-      const trackingId = clean(system.trackingSystemRefId);
-      if (!trackingId || system.installedKwAc === null) return;
-      if (!fallbackAcKwByTrackingId.has(trackingId)) {
-        fallbackAcKwByTrackingId.set(trackingId, system.installedKwAc);
-      }
-    });
-
-    const seenInterconnectedTrackingIds = new Set<string>();
-    (generatorDetails?.rows ?? []).forEach((row) => {
-      const trackingId =
-        clean(row["GATS Unit ID"]) ||
-        clean(row.gats_unit_id) ||
-        clean(row["Unit ID"]) ||
-        clean(row.unit_id);
-      if (!trackingId || seenInterconnectedTrackingIds.has(trackingId)) return;
-
-      const onlineDate =
-        parseDateOnlineAsMidMonth(
-          row["Date Online"] ??
-            row["Date online"] ??
-            row.date_online ??
-            row.date_online_month_year,
-        ) ??
-        parseDate(row.Interconnection_Approval_Date_UTC_Part_2) ??
-        parseDate(row.Project_Online_Date_Part_2) ??
-        parseDate(row["Date Online"] ?? row.date_online);
-      if (!onlineDate || isFuture(onlineDate)) return;
-      seenInterconnectedTrackingIds.add(trackingId);
-
-      const month = `${onlineDate.getFullYear()}-${String(
-        onlineDate.getMonth() + 1,
-      ).padStart(2, "0")}`;
-      const bucket = ensureBucket(month);
-      bucket.interconnectedCount += 1;
-
-      const acKw =
-        parseGeneratorDetailsAcSizeKw(row) ??
-        fallbackAcKwByTrackingId.get(trackingId) ??
-        null;
-      if (acKw !== null) bucket.interconnectedKwAc += acKw;
-    });
-
-    // Build rows with prior-year comparison
-    const rawRows = Array.from(buckets.entries())
-      .map(([month, data]) => ({ month, ...data }))
-      .sort((a, b) => a.month.localeCompare(b.month));
-
-    // Index raw data by month for prior-year lookup
-    const byMonth = new Map(rawRows.map((r) => [r.month, r]));
-
-    return rawRows.map((row) => {
-      const [yearStr, monthStr] = row.month.split("-");
-      const prevMonth = `${Number(yearStr) - 1}-${monthStr}`;
-      const prev = byMonth.get(prevMonth);
-      return {
-        ...row,
-        prevPart1Count: prev?.part1Count ?? 0,
-        prevPart2Count: prev?.part2Count ?? 0,
-        prevPart1KwAc: prev?.part1KwAc ?? 0,
-        prevPart2KwAc: prev?.part2KwAc ?? 0,
-        prevInterconnectedCount: prev?.interconnectedCount ?? 0,
-        prevInterconnectedKwAc: prev?.interconnectedKwAc ?? 0,
-      };
-    });
-  }, [abpReport, generatorDetails, systems]);
-
+  // -------------------------------------------------------------------------
+  // Cheap rolling-window slices on the server result. Range toggles
+  // are tab-local UI state; computing them in the browser keeps the
+  // server query stable across toggle clicks (no refetch on toggle).
+  // -------------------------------------------------------------------------
   const pipelineRows3Year = useMemo(() => {
     const now = new Date();
     const cutoff = `${now.getFullYear() - 3}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -295,143 +174,6 @@ export default memo(function AppPipelineTab(props: AppPipelineTabProps) {
     const cutoff = `${cutoffDate.getFullYear()}-${String(cutoffDate.getMonth() + 1).padStart(2, "0")}`;
     return pipelineMonthlyRows.filter((row) => row.month >= cutoff);
   }, [pipelineMonthlyRows]);
-
-  // -------------------------------------------------------------------------
-  // Cash flow aggregator — walks ABP Part II + CSG mapping + ICC + scan
-  // results to project monthly vendor fee / CC auth / additional collateral.
-  // Cash flow month = Part II verification month + 1.
-  // -------------------------------------------------------------------------
-  const pipelineCashFlowRows = useMemo<PipelineCashFlowRow[]>(() => {
-    if (contractScanResults.length === 0) return [];
-
-    // Build lookup maps (mirrors financialProfitData join chain)
-    const scanByCsgId = new Map<string, ContractScanResultRow>();
-    for (const r of contractScanResults) scanByCsgId.set(r.csgId, r);
-
-    const mappingRows = abpCsgSystemMapping?.rows ?? [];
-    const csgIdByAppId = new Map<string, string>();
-    for (const row of mappingRows) {
-      const csgId = (row.csgId || row["CSG ID"] || "").trim();
-      const systemId = (row.systemId || row["System ID"] || "").trim();
-      if (csgId && systemId) csgIdByAppId.set(systemId, csgId);
-    }
-
-    const iccRows = abpIccReport3Rows?.rows ?? [];
-    const iccByAppId = new Map<string, { grossContractValue: number }>();
-    for (const row of iccRows) {
-      const appId = (
-        row["Application ID"] ||
-        row.Application_ID ||
-        row.application_id ||
-        ""
-      ).trim();
-      if (!appId) continue;
-      const gcv =
-        parseNumber(
-          row["Total REC Delivery Contract Value"] ||
-            row["REC Delivery Contract Value"] ||
-            row["Total Contract Value"],
-        ) ?? 0;
-      const rq =
-        parseNumber(
-          row["Total Quantity of RECs Contracted"] ||
-            row["Contracted SRECs"] ||
-            row.SRECs,
-        ) ?? 0;
-      const rp = parseNumber(row["REC Price"]) ?? 0;
-      const gross = gcv > 0 ? gcv : rq * rp;
-      if (gross > 0) iccByAppId.set(appId, { grossContractValue: gross });
-    }
-
-    // Aggregate into monthly buckets keyed on cash-flow month (Part II month + 1)
-    type CfBucket = {
-      vendorFee: number;
-      ccAuth: number;
-      addlColl: number;
-      count: number;
-    };
-    const byMonth = new Map<string, CfBucket>();
-    const now = new Date();
-
-    for (const abpRow of part2VerifiedAbpRows) {
-      const appId = (abpRow.Application_ID || abpRow.application_id || "").trim();
-      if (!appId) continue;
-
-      const csgId = csgIdByAppId.get(appId);
-      if (!csgId) continue;
-      const scan = scanByCsgId.get(csgId);
-      const icc = iccByAppId.get(appId);
-      if (!scan || !icc) continue;
-
-      // Parse Part II verification date
-      const p2Raw =
-        abpRow.Part_2_App_Verification_Date ||
-        abpRow.part_2_app_verification_date ||
-        "";
-      const p2Date = parsePart2VerificationDate(p2Raw);
-      if (!p2Date || p2Date > now) continue;
-
-      // Cash flow month = verification month + 1
-      const cfDate = new Date(p2Date.getFullYear(), p2Date.getMonth() + 1, 1);
-      const cfMonth = `${cfDate.getFullYear()}-${String(cfDate.getMonth() + 1).padStart(2, "0")}`;
-
-      const gcv = icc.grossContractValue;
-      const localOv = localOverrides.get(csgId);
-      const vfp =
-        localOv?.vfp ?? scan.overrideVendorFeePercent ?? scan.vendorFeePercent ?? 0;
-      const vendorFee = roundMoney(gcv * (vfp / 100));
-      const ccAuth =
-        scan.ccAuthorizationCompleted === false ? roundMoney(gcv * 0.05) : 0;
-      const acp =
-        localOv?.acp ??
-        scan.overrideAdditionalCollateralPercent ??
-        scan.additionalCollateralPercent ??
-        0;
-      const addlColl = roundMoney(gcv * (acp / 100));
-
-      const bucket = byMonth.get(cfMonth) ?? {
-        vendorFee: 0,
-        ccAuth: 0,
-        addlColl: 0,
-        count: 0,
-      };
-      bucket.vendorFee = roundMoney(bucket.vendorFee + vendorFee);
-      bucket.ccAuth = roundMoney(bucket.ccAuth + ccAuth);
-      bucket.addlColl = roundMoney(bucket.addlColl + addlColl);
-      bucket.count += 1;
-      byMonth.set(cfMonth, bucket);
-    }
-
-    // Build rows with prior-year comparison
-    const sortedMonths = Array.from(byMonth.keys()).sort();
-    return sortedMonths.map((month) => {
-      const b = byMonth.get(month)!;
-      const [yearStr, monthStr] = month.split("-");
-      const prevMonth = `${Number(yearStr) - 1}-${monthStr}`;
-      const pb = byMonth.get(prevMonth);
-      return {
-        month,
-        vendorFee: b.vendorFee,
-        ccAuthCollateral: b.ccAuth,
-        additionalCollateral: b.addlColl,
-        totalCashFlow: roundMoney(b.vendorFee + b.ccAuth + b.addlColl),
-        projectCount: b.count,
-        prevVendorFee: pb?.vendorFee ?? 0,
-        prevCcAuthCollateral: pb?.ccAuth ?? 0,
-        prevAdditionalCollateral: pb?.addlColl ?? 0,
-        prevTotalCashFlow: pb
-          ? roundMoney(pb.vendorFee + pb.ccAuth + pb.addlColl)
-          : 0,
-        prevProjectCount: pb?.count ?? 0,
-      };
-    });
-  }, [
-    abpCsgSystemMapping,
-    abpIccReport3Rows,
-    contractScanResults,
-    localOverrides,
-    part2VerifiedAbpRows,
-  ]);
 
   const cashFlowRows3Year = useMemo(() => {
     const now = new Date();
@@ -1543,9 +1285,12 @@ export default memo(function AppPipelineTab(props: AppPipelineTabProps) {
           cashFlowRows12Month: cashFlowRows12Month,
           financialCsgIdCount,
           totals: {
-            systems: systems.length,
-            part2VerifiedAbp: part2VerifiedAbpRows.length,
-            contractScanResults: contractScanResults.length,
+            // Counts that used to be derived from props now live on the
+            // server aggregator's response. The Ask AI panel reads only
+            // a few summary numbers — pulling exhaustive system /
+            // contract-scan counts is out of scope for the migration.
+            monthlyRows: pipelineMonthlyRows.length,
+            cashFlowRows: pipelineCashFlowRows.length,
             localOverrides: localOverrides.size,
           },
         })}
