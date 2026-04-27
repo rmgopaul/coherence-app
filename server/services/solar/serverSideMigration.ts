@@ -71,6 +71,11 @@ export const CORE_DATASETS = [
   // — two structurally-identical ICC report tables migrated together.
   "abpIccReport2Rows",
   "abpIccReport3Rows",
+  // Task 5.12 PR-10 (2026-04-27): convertedReads — the final dataset
+  // migration. Multi-file append; backfill flows through
+  // `loadDatasetPayload` → unwrap `_rawSourcesV1` manifest → merge
+  // sources → ingestDataset(mode="append").
+  "convertedReads",
 ] as const;
 
 export type CoreDatasetKey = (typeof CORE_DATASETS)[number];
@@ -90,6 +95,7 @@ type DatasetSyncProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 const APPEND_CORE_DATASETS: ReadonlySet<CoreDatasetKey> = new Set<CoreDatasetKey>([
   "accountSolarGeneration",
   "transferHistory",
+  "convertedReads",
 ]);
 
 function modeForDataset(datasetKey: CoreDatasetKey): "replace" | "append" {

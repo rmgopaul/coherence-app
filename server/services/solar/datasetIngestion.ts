@@ -50,13 +50,8 @@ type IngestProgressReporter = (progress: CoreDatasetSyncProgress) => void;
 
 // ---------------------------------------------------------------------------
 // Dataset definitions (server-side mirror of client DATASET_DEFINITIONS)
-// 7 + 10 datasets so far (Task 5.12 PRs 1–9 added generatorDetails,
-// abpCsgSystemMapping, abpProjectApplicationRows, abpPortalInvoiceMapRows,
-// abpCsgPortalDatabaseRows, abpQuickBooksRows, abpUtilityInvoiceRows,
-// annualProductionEstimates, abpIccReport2Rows, abpIccReport3Rows —
-// PR-9 batched the two ICC reports because their parser, schema, and
-// consumer access patterns are identical). Only `convertedReads`
-// remains.
+// All 18 datasets are now row-backed (Task 5.12 PR-10 shipped
+// `convertedReads` as the final migration on 2026-04-27).
 // ---------------------------------------------------------------------------
 
 const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
@@ -220,6 +215,32 @@ const CORE_DATASET_DEFINITIONS: Record<string, DatasetDefinition> = {
       ["Application_ID", "Total Quantity of RECs Contracted", "REC Price"],
     ],
     multiFileAppend: false,
+  },
+  // Task 5.12 PR-10: convertedReads is the final dataset migration.
+  // Multi-file append (data accumulates across uploads); the
+  // monitoring bridge programmatically writes meter readings here
+  // every batch run via `convertedReadsBridge.ts`. Dedup composite
+  // is the 5 required headers — see `convertedReadsRowKey` in the
+  // bridge for the canonical identity.
+  convertedReads: {
+    label: "Converted Reads",
+    requiredHeaderSets: [
+      [
+        "monitoring",
+        "monitoring_system_id",
+        "monitoring_system_name",
+        "lifetime_meter_read_wh",
+        "read_date",
+      ],
+    ],
+    multiFileAppend: true,
+    rowKeyFields: [
+      "monitoring",
+      "monitoring_system_id",
+      "monitoring_system_name",
+      "lifetime_meter_read_wh",
+      "read_date",
+    ],
   },
 };
 

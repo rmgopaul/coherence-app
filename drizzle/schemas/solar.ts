@@ -1256,6 +1256,71 @@ export type SrDsAbpIccReport3Rows =
 export type InsertSrDsAbpIccReport3Rows =
   typeof srDsAbpIccReport3Rows.$inferInsert;
 
+// Task 5.12 PR-10 (2026-04-27): Converted Reads row table — the FINAL
+// dataset migration in Task 5.12. Multi-file append (mirrors
+// `srDsAccountSolarGeneration` and `srDsTransferHistory`) carrying
+// per-system meter readings written BOTH by user uploads and by the
+// monitoring bridge (`server/solar/convertedReadsBridge.ts`).
+//
+// Five typed columns matching the canonical required headers — every
+// consumer (`PerformanceRatioTab`, `TrendsTab`, `DataQualityTab`,
+// `SystemDetailSheet`) reads them via stable snake_case keys, no fuzzy
+// matching anywhere in the chain. `lifetimeMeterReadWh` is `double`
+// because consumers do `parseFloat(row.lifetime_meter_read_wh)`
+// directly; typing it enables future server-side aggregation in
+// Task 5.13 (TrendsTab / PerformanceRatioTab moves) without rawRow
+// JSON parsing.
+//
+// `status` and `alertSeverity` are bridge padding columns (always
+// empty strings from `buildConvertedReadRow`) so they stay in
+// `rawRow` rather than getting dedicated typed columns.
+//
+// Hot-path index is `(scopeId, monitoringSystemId, readDate)` —
+// PerformanceRatioTab does a per-system time-series scan, and the
+// dedup checker for append uploads matches against the same prefix.
+//
+// Dedup key for append: all 5 required fields (per the bridge's
+// `convertedReadsRowKey` at `convertedReadsBridge.ts:251`). Two reads
+// that share scope/system/date but differ on `lifetimeMeterReadWh`
+// (e.g., a corrected reading) are kept as separate rows so the
+// downstream parser can resolve which one wins.
+//
+// PR-10 does NOT modify the bridge. The bridge continues writing to
+// the chunked-CSV manifest as before. The server-side migration
+// (`serverSideMigration.ts`) backfills `srDsConvertedReads` from
+// existing chunked-CSV manifests on demand. Cutover to row-table-
+// authoritative reads happens in a follow-up workstream alongside
+// the TrendsTab / PerformanceRatioTab Task 5.13 migrations.
+export const srDsConvertedReads = mysqlTable(
+  "srDsConvertedReads",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    monitoring: varchar("monitoring", { length: 64 }),
+    monitoringSystemId: varchar("monitoringSystemId", { length: 128 }),
+    monitoringSystemName: varchar("monitoringSystemName", { length: 255 }),
+    lifetimeMeterReadWh: double("lifetimeMeterReadWh"),
+    readDate: varchar("readDate", { length: 32 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_converted_reads_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_converted_reads_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeSystemDateIdx: index(
+      "sr_ds_converted_reads_scope_system_date_idx"
+    ).on(table.scopeId, table.monitoringSystemId, table.readDate),
+  })
+);
+
+export type SrDsConvertedReads = typeof srDsConvertedReads.$inferSelect;
+export type InsertSrDsConvertedReads =
+  typeof srDsConvertedReads.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",

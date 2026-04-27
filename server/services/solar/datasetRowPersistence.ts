@@ -34,6 +34,7 @@ import {
   srDsAnnualProductionEstimates,
   srDsAbpIccReport2Rows,
   srDsAbpIccReport3Rows,
+  srDsConvertedReads,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -685,6 +686,39 @@ const persistAbpIccReport3Rows: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-10: convertedReads is a multi-file append dataset
+// (mirrors `accountSolarGeneration` and `transferHistory`). Five
+// typed columns map directly to the canonical snake_case headers
+// the bridge writes; `lifetimeMeterReadWh` is `double` so future
+// SQL aggregation can avoid JSON parsing rawRow. Dedup composite
+// matches the bridge's `convertedReadsRowKey` exactly so server-
+// side migration backfills produce the same row identity as the
+// existing chunked-CSV manifest.
+const persistConvertedReads: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    monitoring: clip(pick(row, "monitoring"), 64),
+    monitoringSystemId: clip(pick(row, "monitoring_system_id"), 128),
+    monitoringSystemName: clip(pick(row, "monitoring_system_name"), 255),
+    lifetimeMeterReadWh: parseNum(row.lifetime_meter_read_wh),
+    readDate: clip(pick(row, "read_date"), 32),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsConvertedReads,
+    values,
+    "convertedReads",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -707,6 +741,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   annualProductionEstimates: persistAnnualProductionEstimates,
   abpIccReport2Rows: persistAbpIccReport2Rows,
   abpIccReport3Rows: persistAbpIccReport3Rows,
+  convertedReads: persistConvertedReads,
 };
 
 /**
@@ -915,14 +950,94 @@ const cloneTransferHistoryBatch: BatchRowCloner = async (
   return getDbExecuteAffectedRows(result);
 };
 
+// Task 5.12 PR-10: convertedReads dedup checker. Mirrors the bridge's
+// `convertedReadsRowKey` (`server/solar/convertedReadsBridge.ts:251`)
+// — five-field composite, all `<=>` so nullable columns compare safely.
+const convertedReadsRowExists: AppendRowChecker = async (
+  scopeId,
+  batchId,
+  row
+) => {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const monitoring = clip(pick(row, "monitoring"), 64);
+  const monitoringSystemId = clip(pick(row, "monitoring_system_id"), 128);
+  const monitoringSystemName = clip(pick(row, "monitoring_system_name"), 255);
+  const lifetimeMeterReadWh = parseNum(row.lifetime_meter_read_wh);
+  const readDate = clip(pick(row, "read_date"), 32);
+
+  const rows = await withDbRetry("check converted reads append row", () =>
+    db
+      .select({ id: srDsConvertedReads.id })
+      .from(srDsConvertedReads)
+      .where(sql`
+        ${srDsConvertedReads.scopeId} = ${scopeId}
+        AND ${srDsConvertedReads.batchId} = ${batchId}
+        AND ${srDsConvertedReads.monitoring} <=> ${monitoring}
+        AND ${srDsConvertedReads.monitoringSystemId} <=> ${monitoringSystemId}
+        AND ${srDsConvertedReads.monitoringSystemName} <=> ${monitoringSystemName}
+        AND ${srDsConvertedReads.lifetimeMeterReadWh} <=> ${lifetimeMeterReadWh}
+        AND ${srDsConvertedReads.readDate} <=> ${readDate}
+      `)
+      .limit(1)
+  );
+
+  return rows.length > 0;
+};
+
+const cloneConvertedReadsBatch: BatchRowCloner = async (
+  scopeId,
+  fromBatchId,
+  toBatchId
+) => {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await withDbRetry("clone converted reads batch", () =>
+    db.execute(sql`
+      INSERT INTO srDsConvertedReads (
+        id,
+        scopeId,
+        batchId,
+        monitoring,
+        monitoringSystemId,
+        monitoringSystemName,
+        lifetimeMeterReadWh,
+        readDate,
+        rawRow,
+        createdAt
+      )
+      SELECT
+        REPLACE(UUID(), '-', ''),
+        ${scopeId},
+        ${toBatchId},
+        monitoring,
+        monitoringSystemId,
+        monitoringSystemName,
+        lifetimeMeterReadWh,
+        readDate,
+        rawRow,
+        CURRENT_TIMESTAMP
+      FROM srDsConvertedReads
+      WHERE scopeId = ${scopeId}
+        AND batchId = ${fromBatchId}
+    `)
+  );
+
+  return getDbExecuteAffectedRows(result);
+};
+
 const APPEND_ROW_CHECKERS: Record<string, AppendRowChecker> = {
   accountSolarGeneration: accountSolarGenerationRowExists,
   transferHistory: transferHistoryRowExists,
+  convertedReads: convertedReadsRowExists,
 };
 
 const BATCH_CLONERS: Record<string, BatchRowCloner> = {
   accountSolarGeneration: cloneAccountSolarGenerationBatch,
   transferHistory: cloneTransferHistoryBatch,
+  convertedReads: cloneConvertedReadsBatch,
 };
 
 function makeBatchDeleter(tableName: string): BatchRowDeleter {
@@ -958,6 +1073,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   annualProductionEstimates: makeBatchDeleter("srDsAnnualProductionEstimates"),
   abpIccReport2Rows: makeBatchDeleter("srDsAbpIccReport2Rows"),
   abpIccReport3Rows: makeBatchDeleter("srDsAbpIccReport3Rows"),
+  convertedReads: makeBatchDeleter("srDsConvertedReads"),
 };
 
 export async function appendRowExists(
@@ -1035,6 +1151,23 @@ function rowKey(datasetKey: string, row: CsvRow): string {
       .map((v) => (v ?? "").trim().toLowerCase())
       .join("|");
   }
+  if (datasetKey === "convertedReads") {
+    // Five-field composite — mirrors `convertedReadsRowKey` in the
+    // bridge (`server/solar/convertedReadsBridge.ts:251`). All five
+    // required headers contribute to the row identity so that two
+    // reads with identical system+date but different lifetime values
+    // (e.g., a corrected read replacing an earlier one) keep both
+    // historical rows.
+    return [
+      pick(row, "monitoring"),
+      pick(row, "monitoring_system_id"),
+      pick(row, "monitoring_system_name"),
+      String(parseNum(row.lifetime_meter_read_wh) ?? ""),
+      pick(row, "read_date"),
+    ]
+      .map((v) => (v ?? "").trim().toLowerCase())
+      .join("|");
+  }
   return "";
 }
 
@@ -1078,6 +1211,26 @@ function typedRowKey(
       s(row.unitId),
       s(row.transferCompletionDate),
       qtyKey,
+    ].join("|");
+  }
+  if (datasetKey === "convertedReads") {
+    // Mirror rowKey above for convertedReads. `lifetimeMeterReadWh`
+    // is stored as `double` so we serialize via String(), matching
+    // how `parseNum(...)` round-trips through `String()` on the CSV
+    // side.
+    const wh = row.lifetimeMeterReadWh;
+    const whKey =
+      wh === null || wh === undefined
+        ? ""
+        : typeof wh === "number"
+          ? String(wh)
+          : String(wh).trim().toLowerCase();
+    return [
+      s(row.monitoring),
+      s(row.monitoringSystemId),
+      s(row.monitoringSystemName),
+      whKey,
+      s(row.readDate),
     ].join("|");
   }
   return "";
@@ -1138,6 +1291,27 @@ export async function loadExistingRowKeys(
         .where(
           sql`${srDsTransferHistory.scopeId} = ${scopeId}
             AND ${srDsTransferHistory.batchId} = ${batchId}`
+        )
+    )) as Array<Record<string, unknown>>;
+    const set = new Set<string>();
+    for (const row of rows) set.add(typedRowKey(datasetKey, row));
+    return set;
+  }
+
+  if (datasetKey === "convertedReads") {
+    const rows = (await withDbRetry("load converted reads keys", () =>
+      db
+        .select({
+          monitoring: srDsConvertedReads.monitoring,
+          monitoringSystemId: srDsConvertedReads.monitoringSystemId,
+          monitoringSystemName: srDsConvertedReads.monitoringSystemName,
+          lifetimeMeterReadWh: srDsConvertedReads.lifetimeMeterReadWh,
+          readDate: srDsConvertedReads.readDate,
+        })
+        .from(srDsConvertedReads)
+        .where(
+          sql`${srDsConvertedReads.scopeId} = ${scopeId}
+            AND ${srDsConvertedReads.batchId} = ${batchId}`
         )
     )) as Array<Record<string, unknown>>;
     const set = new Set<string>();
