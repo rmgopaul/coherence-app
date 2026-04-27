@@ -757,73 +757,13 @@ export const solarRecDashboardRouter = t.router({
         };
       });
     }),
-  /**
-   * Direct row-table hydration for `srDs*`-backed datasets. Skips the
-   * chunked-CSV fetch + reassembly + client-side CSV parse path
-   * entirely — those rows already live as parsed records in the
-   * active import batch.
-   *
-   * Returns `null` when:
-   *   - the datasetKey isn't in the row-table-backed set;
-   *   - the datasetKey is row-backed but **temporarily excluded** to
-   *     stay under Render's ~4 GB Node heap (currently
-   *     `accountSolarGeneration` and `transferHistory` — see
-   *     `ROW_HYDRATION_EXCLUDED` for the rationale and the lift
-   *     condition); or
-   *   - no active batch exists for this scope/datasetKey.
-   *
-   * In every `null` case the client falls through to
-   * `getDatasetAssembled` (#103), which is bounded by chunk size and
-   * therefore memory-safe.
-   *
-   * Returns `{ rows, headers, sources }` otherwise. The `rows` are
-   * already deduped (dedup happens at parse time before persist), and
-   * `sources` mirrors the `_rawSourcesV1` source list shape so the
-   * client's "files loaded" count + force-sync UX still work.
-   */
-  getDatasetRowsFromSrDs: requirePermission("solar-rec-dashboard", "read")
-    .input(
-      z.object({
-        datasetKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      void ctx;
-      void input;
-      // ---------------------------------------------------------------
-      // Globally disabled (2026-04-26).
-      //
-      // PR #107 introduced direct row-table hydration for the 7
-      // srDs*-backed datasets. PR #111 trimmed the hot two
-      // (accountSolarGeneration, transferHistory) after a server-side
-      // OOM. Production then surfaced a SECOND OOM: Chrome tabs
-      // blowing past their ~4 GB cap while parsing the JSON response
-      // for the still-enabled 5 medium tables — the response sizes
-      // (50–150 MB each) peak the browser at 2-3× during JSON.parse,
-      // and several datasets hydrating in parallel pushed the tab over.
-      //
-      // Until we ship server-side gzip + per-batch artifact caching
-      // (so the wire payload is compressed AND the client never
-      // double-buffers the parsed array), every datasetKey returns
-      // `null` and the client falls through to `getDatasetAssembled`
-      // (#103). That path is memory-bounded by chunk size and was
-      // working pre-#107.
-      //
-      // The schema mapping below is preserved (referenced by tests
-      // and follow-up PRs) but unused by the runtime path.
-      // ---------------------------------------------------------------
-      const TABLES_BY_DATASET_KEY = {
-        solarApplications: srDsSolarApplications,
-        abpReport: srDsAbpReport,
-        generationEntry: srDsGenerationEntry,
-        accountSolarGeneration: srDsAccountSolarGeneration,
-        contractedDate: srDsContractedDate,
-        deliveryScheduleBase: srDsDeliverySchedule,
-        transferHistory: srDsTransferHistory,
-      } as const;
-      void TABLES_BY_DATASET_KEY;
-      return null;
-    }),
+  // PR-8 (data-flow series, 2026-04-27): the dead `getDatasetRowsFromSrDs`
+  // stub from the failed bulk row-hydration experiment (#107 / #111 /
+  // #114) is removed here. Its replacement is the cursor-paginated
+  // `getDatasetRowsPage` (PR-4, see below) which is memory-safe by
+  // construction — wire-bound by page size, never the full dataset.
+  // The client hook and ref were also removed in this PR.
+
   getDatasetCloudStatuses: requirePermission("solar-rec-dashboard", "read")
     .input(
       z.object({

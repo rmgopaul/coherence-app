@@ -470,3 +470,113 @@ A checklist distilled from painful experience (see
    setup, auth middleware). Others are dead copies. `grep` for
    imports + trace all the URL mount points before touching
    anything in that directory.
+
+---
+
+## Solar REC Dashboard data flow (canonical, post 2026-04-27)
+
+This section locks down the architecture established by PRs #120–#129
+(the "data-flow series"). Read this before adding any new tRPC
+procedure that touches dashboard data, before changing how rows are
+loaded, or before extending `getSystemSnapshot`.
+
+### Source of truth per dataset
+
+For the **7 row-backed datasets** (`solarApplications`, `abpReport`,
+`generationEntry`, `accountSolarGeneration`, `contractedDate`,
+`deliveryScheduleBase`, `transferHistory`):
+
+→ **`srDs*` row tables are canonical.**
+→ The chunked-CSV blob in `solarRecDashboardStorage` + S3 is a
+  derived artifact (rebuilt on demand from rows; never authored
+  directly).
+→ Active version is pinned by `solarRecActiveDatasetVersions`.
+→ "Cloud verified" REQUIRES `solarRecDatasetSyncState.dbPersisted = true`
+  (PR-2). Storage existence alone never qualifies.
+
+For the **11 non-row-backed datasets** (ABP QuickBooks, ABP ICC
+reports, etc.):
+
+→ Chunked-CSV remains the source of truth pending a follow-up
+  workstream that creates `srDs*` schemas + ingest paths for them.
+→ Same persistence semantics — `dbPersisted = true` required for
+  the badge.
+
+### Wire payload contracts (max sizes the server will ship)
+
+| Endpoint | Returns | Max size |
+|---|---|---|
+| `getSystemSnapshot` | Pre-computed system records | ~200 KB |
+| `getDatasetSummariesAll` | Counts + metadata for all 18 datasets | ~5 KB |
+| `getDatasetRowsPage` | One page of `srDs*` rows | ~30-300 KB |
+| `getDatasetCsv` | Server-built CSV from paginated reads | ≤25 MB |
+| `getDatasetAssembled` | **Legacy** chunked-CSV reassembly | up to 50 MB |
+| `getDatasetCloudStatuses` | Recoverability per dataset | ~10 KB |
+| `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
+
+**No new tRPC response will ever exceed 1 MB uncompressed under
+normal use.** The 50–150 MB responses that caused the 2026-04-26
+Chrome tab OOM are eliminated for the 7 row-backed datasets and
+will be eliminated for the 11 others once they migrate.
+
+### Tabs that still need migration off raw `datasets[key].rows`
+
+PR-7 wired Data Quality + Total-Rows readout off in-memory rows.
+The remaining tabs that read raw rows for the 7 row-backed datasets:
+
+- `TrendsTab.tsx` — `accountSolarGeneration` + `deliveryScheduleBase`
+- `ApplicationPipelineTab.tsx` — `abpReport` + `abpIccReport3Rows`
+- `ContractsTab.tsx` — `deliveryScheduleBase`
+- `AnnualReviewTab.tsx` — `deliveryScheduleBase`
+- `AlertsTab.tsx` — `deliveryScheduleBase`
+- `DeliveryTrackerTab.tsx` — `deliveryScheduleBase`
+
+Pattern for each:
+- Aggregates → extend `getSystemSnapshot` to include the per-tab
+  pre-aggregate (monthly bucket map, alert list, etc.)
+- Detail rows → use `getDatasetRowsPage` infinite-query pattern
+
+### Persistence write contract
+
+Every dataset upload must end with EITHER:
+
+- All three layers consistent: `solarRecDashboardStorage` row written
+  + S3 blob written + `solarRecDatasetSyncState.dbPersisted=true`,
+  `storageSynced=true` + (for row-backed) active batch in
+  `solarRecActiveDatasetVersions` with `rowCount > 0` in srDs*; OR
+- A surfaced error that the client UI shows. **No silent partial-success.**
+
+`saveDataset` returns `dbError: string | null` (PR-2). When non-null,
+the client should render the actual message — not a generic "synced"
+badge. The badge logic itself (`isChildKeyRecoverable` in
+`datasetCloudStatus.ts`) requires `dbPersisted=true`.
+
+### Diagnostic surface
+
+- **`debugDatasetPersistenceRaw(datasetKey)`** — raw row from every
+  persistence layer + verdict (`consistent` / `storage-only` /
+  `db-only` / `row-table-stale` / `no-active-batch` / `missing`).
+  Use this BEFORE chasing a hypothesis about why a dataset shows
+  "LOCAL-ONLY" or "Cloud sync failed."
+- **`debugDatasetSyncStateRaw(datasetKey)`** — chunk-level walk for
+  chunked-CSV datasets (the 11 non-row-backed).
+- **`_runnerVersion`** appears on every saveDataset /
+  getDatasetAssembled / getDatasetCloudStatuses /
+  getDatasetSummariesAll / getDatasetRowsPage / getDatasetCsv /
+  debugDatasetPersistenceRaw response. Verify it matches what you
+  just deployed before assuming the new code is running.
+
+### Hard rules
+
+1. **No tRPC procedure is allowed to materialize a full `CsvRow[]`
+   greater than 5,000 rows in memory.** Use `loadDatasetRowsPage`
+   for pagination or `loadDatasetRows` only after confirming the
+   target table is bounded.
+2. **No client tab is allowed to read `datasets[key].rows.length`
+   for a dataset key in `CORE_DATASET_KEYS_FOR_SNAPSHOT`.** Use
+   `datasetSummariesByKey[key]?.rowCount` instead.
+3. **No new procedure that returns rows is allowed to omit a
+   `_runnerVersion` marker.** Future deploys depend on it.
+4. **No silent error swallowing in persistence paths.** `console.warn`
+   is for normal-but-noteworthy events; persistence failures are
+   `console.error` and surface to the client response.
