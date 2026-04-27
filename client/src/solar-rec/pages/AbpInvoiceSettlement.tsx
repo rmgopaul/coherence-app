@@ -55,6 +55,7 @@ import {
 import {
   buildLinkedCsvDatasetPayload,
   buildMonthKey,
+  isCompleteMonthKey,
   buildPersistedUploadStatePayload,
   buildUpcomingTuesdayLabel,
   deserializePayeeUpdateRows,
@@ -2292,9 +2293,18 @@ export default function AbpInvoiceSettlement() {
     }
   };
 
-  // Persist overrides to localStorage so they survive page refresh
+  // Persist overrides to localStorage so they survive page refresh.
+  // Task 2.3 (2026-04-27): skip persistence while the month input is
+  // mid-typing (e.g. "2026-0"). Without this guard, every keystroke
+  // wrote to a fresh `abp-overrides:<partial>` key, *and* the final
+  // keystroke wrote stale overrides to the new month's key before
+  // `handleMonthKeyChange` could load the destination's stored value.
+  // Result: overrides leaked across months. The handler below is the
+  // single place that writes during month-boundary transitions.
   useEffect(() => {
-    const key = `abp-overrides:${clean(monthKey) || buildMonthKey()}`;
+    const resolved = clean(monthKey) || buildMonthKey();
+    if (!isCompleteMonthKey(resolved)) return;
+    const key = `abp-overrides:${resolved}`;
     const hasOverrides = Object.keys(manualOverridesByRowId).length > 0;
     try {
       if (hasOverrides) {
@@ -2304,6 +2314,64 @@ export default function AbpInvoiceSettlement() {
       }
     } catch { /* localStorage full or unavailable */ }
   }, [manualOverridesByRowId, monthKey]);
+
+  // Task 2.3 (2026-04-27): wrap setMonthKey so a real month-boundary
+  // transition (`2026-03` → `2026-04`) FLUSHES the current overrides
+  // back to the *previous* month's localStorage key BEFORE swapping
+  // state to the new month, then LOADS that new month's stored
+  // overrides (or clears in-memory state when nothing's stored).
+  // Mid-typing values (`2026-0`, `2026-`, etc.) just update the
+  // input; the persistence useEffect above silences itself for those
+  // so we don't write orphans. The month-load path on `applyLoadedRun`
+  // is unaffected — it sets `manualOverridesByRowId` from the saved
+  // payload, not from localStorage.
+  const handleMonthKeyChange = useCallback(
+    (newRawValue: string) => {
+      if (!isCompleteMonthKey(newRawValue)) {
+        setMonthKey(newRawValue);
+        return;
+      }
+      const previousResolved = clean(monthKey) || buildMonthKey();
+      const nextResolved = newRawValue.trim();
+      if (previousResolved === nextResolved) {
+        setMonthKey(newRawValue);
+        return;
+      }
+      // Flush current overrides under the previous resolved key —
+      // but only if that key was itself a complete YYYY-MM. (If we
+      // just exited a mid-typing state, the persistence useEffect
+      // already skipped writes; nothing to flush.)
+      if (isCompleteMonthKey(previousResolved)) {
+        const previousStorageKey = `abp-overrides:${previousResolved}`;
+        try {
+          if (Object.keys(manualOverridesByRowId).length > 0) {
+            localStorage.setItem(
+              previousStorageKey,
+              JSON.stringify(manualOverridesByRowId)
+            );
+          } else {
+            localStorage.removeItem(previousStorageKey);
+          }
+        } catch { /* ignore */ }
+      }
+      // Load overrides for the new month (or clear when nothing's
+      // stored).
+      const nextStorageKey = `abp-overrides:${nextResolved}`;
+      let nextOverrides: Record<string, ManualOverride> = {};
+      try {
+        const stored = localStorage.getItem(nextStorageKey);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            nextOverrides = parsed as Record<string, ManualOverride>;
+          }
+        }
+      } catch { /* corrupt localStorage entry — fall through to {} */ }
+      setManualOverridesByRowId(nextOverrides);
+      setMonthKey(newRawValue);
+    },
+    [monthKey, manualOverridesByRowId]
+  );
 
   const updateOverride = (rowId: string, patch: Partial<ManualOverride>) => {
     setManualOverridesByRowId((current) => {
@@ -2429,7 +2497,7 @@ export default function AbpInvoiceSettlement() {
                 <Input
                   id="month-key"
                   value={monthKey}
-                  onChange={(event) => setMonthKey(event.target.value)}
+                  onChange={(event) => handleMonthKeyChange(event.target.value)}
                   placeholder="2026-03"
                 />
               </div>
