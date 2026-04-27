@@ -652,6 +652,22 @@ export const solarRecDashboardRouter = t.router({
    *      that weren't in the DB result — covers data written before
    *      Task 1.2b's saveDataset scope-path migration that didn't yet
    *      mirror writes to the database.
+   *
+   * **DEPRECATED 2026-04-27.** Tasks 5.12 + 5.13 closed the gap:
+   * every dataset is row-backed and every dashboard tab reads
+   * server-side aggregates. The only remaining caller is the
+   * dashboard's cold-cache hydration in `SolarRecDashboard.tsx`,
+   * which still populates the in-memory `datasets[k].rows` arrays
+   * because the Step 1 upload UI + DataQualityTab inspector + the
+   * Ask AI panels haven't yet been rewritten to source rows
+   * directly from `getDatasetRowsPage`. Do not call this
+   * procedure from new code. The follow-up workstream will:
+   *   1. Replace the Step 1 / DataQualityTab / Ask AI consumers
+   *      with `getDatasetSummariesAll` (metadata) +
+   *      `getDatasetRowsPage` (row detail) reads.
+   *   2. Drop the dashboard parent's `datasets` state.
+   *   3. Remove this procedure + the `parseChunkPointerPayload`
+   *      reassembly path it relies on.
    */
   getDatasetAssembled: requirePermission("solar-rec-dashboard", "read")
     .input(

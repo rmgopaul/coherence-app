@@ -1,6 +1,6 @@
 # Productivity Hub
 
-> **Last updated:** 2026-04-20
+> **Last updated:** 2026-04-27
 
 Full-stack personal productivity dashboard integrating Google Calendar, Gmail, Drive, Todoist, ChatGPT, health tracking (Whoop, Samsung Health), and 25+ solar energy monitoring systems.
 
@@ -258,9 +258,9 @@ Anything marked `M` or `??` is active WIP — **ask before touching**.
   `firstDayOfMonth`, `lastDayOfPreviousMonth`, `asDateKey`,
   `parseIsoDate`, `formatIsoDate`, `shiftIsoDate`, `toNullableString`,
   `safeRound`, `sumKwh`, and more. Import — do not redefine.
-- **DB barrel** (`server/db.ts`): 31-line barrel over 19 domain
+- **DB barrel** (`server/db.ts`): 38-line barrel over 26 domain
   modules in `server/db/`. New queries go in the right domain file.
-- **tRPC index** (`server/routers.ts`): 134-line composition.
+- **tRPC index** (`server/routers.ts`): 110-line composition.
   Procedures live in `server/routers/*.ts` — never add directly
   to `routers.ts`.
 
@@ -371,47 +371,48 @@ the PR that first uses the column, or apply the migration to prod
 │   ├── client/src/                # React 19 frontend
 │   │   ├── main.tsx               # Main app entry (URL: /)
 │   │   ├── solar-rec-main.tsx     # Solar REC standalone entry (URL: /solar-rec/*)
-│   │   ├── features/              # ~41 route pages, organized by domain
-│   │   │   ├── dashboard/         # Home, Dashboard, widgets, ContractScanner, etc.
+│   │   ├── features/              # ~45 route pages, organized by domain
+│   │   │   ├── _shared/           # Cross-feature helpers (insights/, etc.)
+│   │   │   ├── dashboard/         # Home, Dashboard, widgets, AbpInvoiceSettlement, AddressChecker, EarlyPayment, InvoiceMatchDashboard, DinScrapeManager, etc.
 │   │   │   ├── habits/            # Habits.tsx + sub-panels (protocol, today, history, insights, sleep)
 │   │   │   ├── health/            # Health.tsx + sub-panels (today, trends, sleep, insights)
 │   │   │   ├── notebook/          # Notebook.tsx
 │   │   │   ├── settings/          # Settings.tsx
-│   │   │   ├── solar-readings/    # Per-vendor meter read pages (18 files; 17 vendors, Enphase has 2 pages: V2, V4)
 │   │   │   ├── solar-rec/         # SolarRecDashboard.tsx
 │   │   │   └── supplements/       # Supplements.tsx + sub-panels (today, protocol, adherence, cost, insights, restock, experiments, prices)
-│   │   ├── workers/               # Web workers (csvParser, systems)
+│   │   ├── workers/               # Web workers (csvParser)
 │   │   ├── solar-rec/             # Solar REC standalone-only components
 │   │   │   ├── SolarRecApp.tsx    # Wouter router for the standalone app
 │   │   │   ├── solarRecTrpc.ts    # solarRecTrpc client (NOT the main trpc)
-│   │   │   └── pages/             # MonitoringDashboard, MonitoringOverview, Settings
+│   │   │   └── pages/             # MonitoringDashboard, MonitoringOverview, SolarRecSettings, ContractScanner, ContractScrapeManager, DeepUpdateSynthesizer, ZendeskTicketMetrics, meter-reads/ (16 per-vendor pages)
 │   │   ├── solar-rec-dashboard/   # Extracted modules for SolarRecDashboard.tsx
 │   │   ├── components/
 │   │   ├── hooks/
 │   │   ├── contexts/
 │   │   └── lib/
-│   │       ├── trpc.ts            # Main trpc client, typed against server/routers.ts
-│   │       └── solarRecTrpc.ts    # (legacy re-export; prefer solar-rec/solarRecTrpc.ts)
+│   │       └── trpc.ts            # Main trpc client, typed against server/routers.ts
 │   ├── server/
 │   │   ├── routers.ts             # MAIN tRPC router (see warning above)
 │   │   ├── _core/
 │   │   │   ├── index.ts           # Express setup, tRPC mount points, dispatcher
 │   │   │   ├── solarRecRouter.ts  # Standalone solar-rec tRPC router (see warning above)
+│   │   │   ├── solarRecBase.ts    # Shared `t` and `requirePermission` for solar-rec sub-routers
+│   │   │   ├── solarRecDashboardRouter.ts   # Solar REC dashboard sub-router (Task 5.5)
+│   │   │   ├── solarRecContractScanRouter.ts # Solar REC contract-scan sub-router
+│   │   │   ├── solarRecZendeskRouter.ts     # Zendesk ticket metrics sub-router (Task 5.11)
 │   │   │   ├── solarRecAuth.ts    # /solar-rec/api/auth/* endpoints
 │   │   │   ├── vite.ts            # Serves the right HTML for main vs /solar-rec/
-│   │   │   └── ...                # security, pinGate, env, sdk, misc infrastructure
+│   │   │   └── ...                # security, pinGate, env, sdk, schedulers, misc infrastructure
 │   │   ├── db.ts                  # Database client & query helpers
 │   │   ├── services/              # 30+ external API integrations + job runners
 │   │   │   ├── core/              # Job runners, contract scanners, address cleaning
 │   │   │   ├── integrations/      # Google, Todoist, Clockify, etc.
 │   │   │   ├── notifications/     # Notification services
-│   │   │   ├── solar/             # 17 vendor APIs (Enphase, SolarEdge, eGauge, etc.)
+│   │   │   ├── solar/             # 15 vendor adapters (APSystems, eGauge, EKM, eNNexos, EnphaseV4, Fronius, Generac, GoodWE, Growatt, Hoymiles, Locus, SolarEdge, SolarLog, Solis, TeslaPowerhub) + dataset/snapshot helpers
 │   │   │   └── supplements/       # Supplement correlation & price-watcher services
 │   │   ├── scripts/               # Migration & reconciliation utilities
 │   │   └── helpers/
 │   ├── shared/
-│   ├── packages/
-│   │   └── config/                # Shared configuration package (@config/*)
 │   ├── drizzle/                   # DB migrations, schema.ts (root-level)
 │   ├── docs/
 │   │   └── server-routing.md      # Canonical URL → router file map
@@ -445,6 +446,7 @@ pnpm format                 # Prettier format
 pnpm test                   # Vitest (server tests only)
 pnpm db:push                # Generate + run Drizzle migrations
 pnpm scheduleb:reconcile    # Reconcile Schedule B import state
+pnpm solarrec:migrate-scope # Backfill scopeId on solar-rec dashboard tables
 ```
 
 ## Environment
@@ -461,7 +463,7 @@ Most API keys (Google, Todoist, OpenAI) are stored per-user in the database via 
 ## Code Conventions
 
 - **Formatting**: Prettier - 2 spaces, double quotes, semicolons, 80-char width
-- **Path aliases**: `@/*` -> `client/src/*`, `@shared/*` -> `shared/*`, `@client/*` -> `client/src/*`, `@server/*` -> `server/*`, `@config/*` -> `packages/config/src/*`
+- **Path aliases**: `@/*` -> `client/src/*`, `@shared/*` -> `shared/*`, `@client/*` -> `client/src/*`, `@server/*` -> `server/*`
 - **DB columns**: snake_case; JS variables: camelCase
 - **API**: tRPC procedures (`publicProcedure`, `protectedProcedure`, `adminProcedure`)
 - **State**: React Query for server state, React Context for theme only - no Redux/Zustand
@@ -491,20 +493,30 @@ Most API keys (Google, Todoist, OpenAI) are stored per-user in the database via 
   pattern after the 2026-04-10 rewrite.
 - OAuth tokens for integrations are stored in the `integrations`
   DB table and refreshed via `tokenRefresh.ts`.
-- Solar integrations span 17 vendor APIs: APSystems, eGauge, EKM,
-  eNNexos, Enphase (V2, V4), Fronius, Generac, GoodWE, Growatt,
-  Hoymiles, Locus, SolarEdge, SolarLog, Solis, SunPower, Tesla
-  Powerhub, Tesla Solar.
+- Solar integrations span 15 vendor adapters in
+  `server/services/solar/`: APSystems, eGauge, EKM, eNNexos,
+  EnphaseV4, Fronius, Generac, GoodWE, Growatt, Hoymiles, Locus,
+  SolarEdge, SolarLog, Solis, Tesla Powerhub. Enphase V2 was
+  deprecated; SunPower and Tesla Solar are read via CSV/manual
+  meter-read pages, not a server-side adapter.
 - Tests run in Node env with timezone America/Chicago. Server tests:
-  `server/**/*.test.ts`. Client pure-function tests:
-  `client/src/solar-rec-dashboard/**/*.test.ts`.
+  `server/**/*.test.ts`. Shared tests: `shared/**/*.test.ts`. Client
+  pure-function tests: `client/src/solar-rec-dashboard/**/*.test.ts`
+  plus selected feature dirs (`client/src/features/dashboard/**`,
+  `supplements/**`, `habits/**`, `health/**`). See `vitest.config.ts`
+  for the exact include list.
 
 ## Testing
 
 Vitest config: `productivity-hub/vitest.config.ts`
 - Node environment, no jsdom
-- Server tests: `server/**/*.test.ts`
-- Client pure-function tests: `client/src/solar-rec-dashboard/**/*.test.ts`
+- Server tests: `server/**/*.test.ts`, `server/**/*.spec.ts`
+- Shared tests: `shared/**/*.test.ts`
+- Client pure-function tests:
+  `client/src/solar-rec-dashboard/**/*.test.ts`,
+  `client/src/features/dashboard/*.test.ts` plus the
+  `frontpage/`, `river/`, `canvas/`, `command/` subtrees, and
+  `client/src/features/{supplements,habits,health}/**/*.test.ts`
 - TZ=America/Chicago
 
 ## Before shipping any server-side fix
@@ -534,34 +546,45 @@ A checklist distilled from painful experience (see
 
 ---
 
-## Solar REC Dashboard data flow (canonical, post 2026-04-27)
+## Solar REC Dashboard data flow (canonical, post 2026-04-27 — Tasks 5.12 + 5.13 complete)
 
-This section locks down the architecture established by PRs #120–#129
-(the "data-flow series"). Read this before adding any new tRPC
-procedure that touches dashboard data, before changing how rows are
-loaded, or before extending `getSystemSnapshot`.
+This section locks down the architecture established by PRs #120–#156
+(the data-flow series + Task 5.12 + Task 5.13). Read this before
+adding any new tRPC procedure that touches dashboard data, before
+changing how rows are loaded, or before extending `getSystemSnapshot`.
 
 ### Source of truth per dataset
 
-For the **7 row-backed datasets** (`solarApplications`, `abpReport`,
-`generationEntry`, `accountSolarGeneration`, `contractedDate`,
-`deliveryScheduleBase`, `transferHistory`):
+**All 18 dashboard datasets are row-backed.** Task 5.12 (PRs 1–10)
+migrated the 11 non-row-backed datasets that the original data-flow
+series didn't cover; Task 5.13 (PRs 1–5) moved every dashboard tab
+off raw `datasets[k].rows` arrays. The split between "row-backed"
+and "non-row-backed" no longer exists.
+
+For every dataset:
 
 → **`srDs*` row tables are canonical.**
 → The chunked-CSV blob in `solarRecDashboardStorage` + S3 is a
   derived artifact (rebuilt on demand from rows; never authored
-  directly).
+  directly), kept only as a fallback for the dashboard's cold-cache
+  hydration path until that path itself is rewritten off the
+  legacy `getDatasetAssembled` procedure.
 → Active version is pinned by `solarRecActiveDatasetVersions`.
 → "Cloud verified" REQUIRES `solarRecDatasetSyncState.dbPersisted = true`
-  (PR-2). Storage existence alone never qualifies.
+  (data-flow PR-2). Storage existence alone never qualifies.
 
-For the **11 non-row-backed datasets** (ABP QuickBooks, ABP ICC
-reports, etc.):
+The 18 dataset keys (`DatasetKey` union in
+`client/src/solar-rec-dashboard/state/types.ts`):
 
-→ Chunked-CSV remains the source of truth pending a follow-up
-  workstream that creates `srDs*` schemas + ingest paths for them.
-→ Same persistence semantics — `dbPersisted = true` required for
-  the badge.
+`solarApplications`, `abpReport`, `generationEntry`,
+`accountSolarGeneration`, `annualProductionEstimates`,
+`contractedDate`, `convertedReads`, `deliveryScheduleBase`,
+`transferHistory`, `generatorDetails`, `abpCsgSystemMapping`,
+`abpProjectApplicationRows`, `abpPortalInvoiceMapRows`,
+`abpCsgPortalDatabaseRows`, `abpQuickBooksRows`,
+`abpUtilityInvoiceRows`, `abpIccReport2Rows`, `abpIccReport3Rows`.
+
+Each maps 1:1 to a `srDs*` table in `drizzle/schemas/solar.ts`.
 
 ### Wire payload contracts (max sizes the server will ship)
 
@@ -571,89 +594,39 @@ reports, etc.):
 | `getDatasetSummariesAll` | Counts + metadata for all 18 datasets | ~5 KB |
 | `getDatasetRowsPage` | One page of `srDs*` rows | ~30-300 KB |
 | `getDatasetCsv` | Server-built CSV from paginated reads | ≤25 MB |
-| `getDatasetAssembled` | **Legacy** chunked-CSV reassembly | up to 50 MB |
+| `getDatasetAssembled` | **DEPRECATED** chunked-CSV reassembly. Last live caller is the dashboard's cold-cache hydration in `SolarRecDashboard.tsx`. Do NOT use in new code; reach for `getDatasetSummariesAll` (metadata) + `getDatasetRowsPage` / `getDatasetCsv` (row data) instead. | up to 50 MB |
 | `getDatasetCloudStatuses` | Recoverability per dataset | ~10 KB |
 | `debugDatasetPersistenceRaw` | Raw rows from every layer + verdict | ~2 KB |
+| `getDashboard<TabName>Aggregates` (DeliveryTracker / TrendDeliveryPace / TrendsProduction / ContractVintage / AppPipelineMonthly / AppPipelineCashFlow) | Per-tab aggregate result | ~10–500 KB |
 
 **No new tRPC response will ever exceed 1 MB uncompressed under
 normal use.** The 50–150 MB responses that caused the 2026-04-26
-Chrome tab OOM are eliminated for the 7 row-backed datasets and
-will be eliminated for the 11 others once they migrate.
+Chrome tab OOM are eliminated everywhere except the deprecated
+`getDatasetAssembled` codepath.
 
-### Tabs that still need migration off raw `datasets[key].rows`
+### Tabs migration — DONE
 
-PR-7 wired Data Quality + Total-Rows readout off in-memory rows.
-The remaining tabs that read raw rows for the 7 row-backed datasets:
+All 6 dashboard tabs scheduled in Task 5.13 are off raw rows:
 
-- ~~`TrendsTab.tsx` — `deliveryScheduleBase` + `convertedReads`~~
-  **DONE 2026-04-27 (Task 5.13 PR-2 + PR-4).** PR-2 moved
-  `trendDeliveryPace` (over `deliveryScheduleBase` rows) server-side
-  via `getDashboardTrendDeliveryPace` (shared with AlertsTab). PR-4
-  moved `trendProductionMoM` + `trendTopSiteIds` (over
-  `convertedReads` rows — row-backed via Task 5.12 PR-10) to a
-  single `getDashboardTrendsProduction` query that returns the
-  chart data + legend-order site IDs in one payload. TrendsTab
-  drops the `convertedReads` prop entirely; the tab now reads zero
-  `datasets[k].rows` arrays.
-- ~~`ApplicationPipelineTab.tsx` — `abpReport` + `generatorDetails`
-  + `abpCsgSystemMapping` + `abpIccReport3Rows`~~
-  **DONE 2026-04-27 (Task 5.13 PR-5).** Two server-side aggregators:
-  `buildAppPipelineMonthly.ts` (Part 1 / Part 2 / Interconnected
-  monthly buckets from `srDsAbpReport` + `srDsGeneratorDetails`,
-  with `installedKwAc` fallback from the system snapshot) +
-  `buildAppPipelineCashFlow.ts` (vendor-fee / CC-auth / additional-
-  collateral monthly buckets joining `srDsAbpReport` Part-2 rows +
-  `srDsAbpCsgSystemMapping` + `srDsAbpIccReport3Rows` + cached
-  contract scan results, with the Financials-tab `localOverrides`
-  Map sent as query input + hashed into the cache key). Tab drops
-  9 props (4 raw datasets + `systems` + `part2VerifiedAbpRows` +
-  `contractScanResults` + `financialCsgIdCount` stays;
-  `localOverrides` stays). With this PR all 6 tabs are off raw
-  rows — Task 5.13 is complete.
-- ~~`ContractsTab.tsx` — `deliveryScheduleBase`~~
-  **DONE 2026-04-27 (Task 5.13 PR-3).** Migrated alongside
-  AnnualReviewTab via the shared `getDashboardContractVintageAggregates`
-  query. Server runs the same per-(contract, deliveryStartDate)
-  bucketing the parent's `contractDeliveryRows` useMemo used to do,
-  with the same Part-2 eligibility filter applied (server replicates
-  the parent's `part2EligibleSystemsForSizeReporting` derivation by
-  reading `srDsAbpReport` rows + the system snapshot). Tab applies
-  its `(contractId, deliveryStartDate)` sort locally on the
-  aggregate. ContractsTab now reads zero core-dataset row arrays.
-- ~~`AnnualReviewTab.tsx` — `deliveryScheduleBase`~~
-  **DONE 2026-04-27 (Task 5.13 PR-3).** Same migration as
-  ContractsTab — both tabs hit the same `getDashboardContract
-  VintageAggregates` query. Server returns the union of fields both
-  tabs need (`pricedProjectCount` for ContractsTab,
-  `reportingProjectCount` + `reportingProjectPercent` for
-  AnnualReviewTab); per-tab sort + downstream roll-ups
-  (`annualVintageRows`, `annualContractSummaryRows`, etc.) stay
-  client-side because they don't read raw rows.
-- ~~`AlertsTab.tsx` — `deliveryScheduleBase`~~
-  **DONE 2026-04-27 (Task 5.13 PR-2).** Only raw-row read in this
-  tab was the shared `buildTrendDeliveryPace` useMemo over
-  `deliveryScheduleBase.rows` + `transferDeliveryLookup`. Both moved
-  server-side. AlertsTab now reads zero `datasets[k].rows` arrays
-  for any core dataset key — fully compliant with the data-flow
-  hard rule. The other AlertsTab inputs (`systems`,
-  `datasets[k].uploadedAt` for the staleness check) were already
-  off the row path.
-- ~~`DeliveryTrackerTab.tsx` — `deliveryScheduleBase` + `transferHistory`~~
-  **DONE 2026-04-27 (Task 5.13 PR-1).** Server-side aggregator at
-  `server/services/solar/buildDeliveryTrackerData.ts` runs over
-  `srDsDeliverySchedule` + `srDsTransferHistory`, caches result in
-  `solarRecComputedArtifacts` keyed by input batch hash. Client fetches
-  via `solarRecDashboard.getDashboardDeliveryTrackerAggregates` —
-  parent's `useMemo` over raw `datasets[k].rows` is gone. superjson
-  preserves `Date` fields end-to-end through the cache + wire.
+| Tab | PR | Server aggregator |
+|---|---|---|
+| DeliveryTrackerTab | #142 (PR-1) | `buildDeliveryTrackerData.ts` |
+| AlertsTab | #144 (PR-2, shared) | `buildTrendDeliveryPace.ts` |
+| TrendsTab (delivery pace) | #144 (PR-2, shared) | `buildTrendDeliveryPace.ts` |
+| TrendsTab (production) | #153 (PR-4) | `buildTrendsProduction.ts` |
+| ContractsTab | #146 (PR-3, shared) | `buildContractVintageAggregates.ts` |
+| AnnualReviewTab | #146 (PR-3, shared) | `buildContractVintageAggregates.ts` |
+| ApplicationPipelineTab | #156 (PR-5) | `buildAppPipelineMonthly.ts` + `buildAppPipelineCashFlow.ts` |
 
-Pattern for each:
+Pattern for any new tab aggregate:
 - Aggregates → extend `getSystemSnapshot` to include the per-tab
   pre-aggregate (monthly bucket map, alert list, etc.) OR add a
   dedicated `getDashboard<TabName>Aggregates` query backed by a
-  shared aggregator + `solarRecComputedArtifacts` cache (see
-  Task 5.13 PR-1's `buildDeliveryTrackerData.ts` for the canonical
-  template).
+  shared aggregator + `solarRecComputedArtifacts` cache. The
+  canonical templates are `buildDeliveryTrackerData.ts` (single-
+  dataset, Date round-trip via superjson) and
+  `buildContractVintageAggregates.ts` (multi-dataset, joins through
+  the system snapshot's eligibility filter).
 - Detail rows → use `getDatasetRowsPage` infinite-query pattern
 
 ### Persistence write contract
@@ -662,14 +635,23 @@ Every dataset upload must end with EITHER:
 
 - All three layers consistent: `solarRecDashboardStorage` row written
   + S3 blob written + `solarRecDatasetSyncState.dbPersisted=true`,
-  `storageSynced=true` + (for row-backed) active batch in
+  `storageSynced=true` + active batch in
   `solarRecActiveDatasetVersions` with `rowCount > 0` in srDs*; OR
 - A surfaced error that the client UI shows. **No silent partial-success.**
 
-`saveDataset` returns `dbError: string | null` (PR-2). When non-null,
-the client should render the actual message — not a generic "synced"
-badge. The badge logic itself (`isChildKeyRecoverable` in
+`saveDataset` returns `dbError: string | null` (data-flow PR-2). When
+non-null, the client should render the actual message — not a generic
+"synced" badge. The badge logic itself (`isChildKeyRecoverable` in
 `datasetCloudStatus.ts`) requires `dbPersisted=true`.
+
+The `convertedReads` monitoring bridge
+(`server/solar/convertedReadsBridge.ts`) writes via the chunked-CSV
+manifest path (multi-source `_rawSourcesV1` semantics) and then
+schedules a fire-and-forget `startSyncJob(scopeId, "convertedReads",
+…)` so `srDsConvertedReads` reaches consistency without blocking the
+bridge call. Single-flight in `coreDatasetSyncJobs` coalesces
+multiple bridge writes (e.g., the 17-vendor monitoring batch) into
+one sync job per scope.
 
 ### Diagnostic surface
 
@@ -678,23 +660,35 @@ badge. The badge logic itself (`isChildKeyRecoverable` in
   `db-only` / `row-table-stale` / `no-active-batch` / `missing`).
   Use this BEFORE chasing a hypothesis about why a dataset shows
   "LOCAL-ONLY" or "Cloud sync failed."
-- **`debugDatasetSyncStateRaw(datasetKey)`** — chunk-level walk for
-  chunked-CSV datasets (the 11 non-row-backed).
+- **`debugDatasetSyncStateRaw(datasetKey)`** — chunk-level walk of
+  the chunked-CSV manifest for cases where the row-table verdict is
+  `consistent` but the legacy hydration path looks wrong.
 - **`_runnerVersion`** appears on every saveDataset /
   getDatasetAssembled / getDatasetCloudStatuses /
   getDatasetSummariesAll / getDatasetRowsPage / getDatasetCsv /
-  debugDatasetPersistenceRaw response. Verify it matches what you
-  just deployed before assuming the new code is running.
+  debugDatasetPersistenceRaw / getDashboard<TabName>Aggregates
+  response. Verify it matches what you just deployed before
+  assuming the new code is running.
 
 ### Hard rules
 
 1. **No tRPC procedure is allowed to materialize a full `CsvRow[]`
-   greater than 5,000 rows in memory.** Use `loadDatasetRowsPage`
-   for pagination or `loadDatasetRows` only after confirming the
-   target table is bounded.
-2. **No client tab is allowed to read `datasets[key].rows.length`
-   for a dataset key in `CORE_DATASET_KEYS_FOR_SNAPSHOT`.** Use
-   `datasetSummariesByKey[key]?.rowCount` instead.
+   greater than 5,000 rows in memory** for wire-payload purposes.
+   Use `loadDatasetRowsPage` for pagination or `loadDatasetRows`
+   only when the result is consumed in-process by an aggregator
+   that itself returns a small result. The legacy
+   `getDatasetAssembled` is grandfathered until its sole remaining
+   caller (dashboard cold-cache hydration in `SolarRecDashboard.tsx`)
+   is rewritten off the in-memory `datasets[k].rows` state.
+2. **No client tab is allowed to read `datasets[key].rows` or
+   `datasets[key].rows.length` for ANY of the 18 dataset keys.** Use
+   `getDatasetSummariesAll` for counts, `getDatasetRowsPage` /
+   `getDatasetCsv` for detail rows, or
+   `getDashboard<TabName>Aggregates` for tab-level rollups. Reading
+   `datasets[key].uploadedAt` for staleness checks is still allowed
+   for tabs that haven't migrated their per-dataset metadata
+   readouts (DataQualityTab, AlertsTab) — that path comes from the
+   summaries query, not the legacy hydration.
 3. **No new procedure that returns rows is allowed to omit a
    `_runnerVersion` marker.** Future deploys depend on it.
 4. **No silent error swallowing in persistence paths.** `console.warn`
