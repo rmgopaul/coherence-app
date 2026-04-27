@@ -25,6 +25,7 @@ export type DinScrapeJobWithCounts = DinScrapeJob & { totalDins: number };
 
 export async function createDinScrapeJob(data: {
   userId: number;
+  scopeId: string;
   totalSites: number;
 }) {
   const db = await getDb();
@@ -35,6 +36,7 @@ export async function createDinScrapeJob(data: {
     await db.insert(dinScrapeJobs).values({
       id,
       userId: data.userId,
+      scopeId: data.scopeId,
       status: "queued",
       totalSites: data.totalSites,
       successCount: 0,
@@ -51,6 +53,30 @@ export async function createDinScrapeJob(data: {
   return id;
 }
 
+/**
+ * Resolve the scopeId for a DIN scrape job by reading the parent
+ * `dinScrapeJobs` row. Used by insert helpers in this module that
+ * take a `jobId` but need to set `scopeId` on the new child row to
+ * satisfy the post-Task-5.8-PR-A NOT NULL constraint.
+ */
+async function resolveScopeIdForJob(jobId: string): Promise<string> {
+  const db = await getDb();
+  if (!db) {
+    throw new Error("Database unavailable");
+  }
+  const [row] = await db
+    .select({ scopeId: dinScrapeJobs.scopeId })
+    .from(dinScrapeJobs)
+    .where(eq(dinScrapeJobs.id, jobId))
+    .limit(1);
+  if (!row?.scopeId) {
+    throw new Error(
+      `DIN scrape job ${jobId} has no scopeId — backfill migration may not have run`
+    );
+  }
+  return row.scopeId;
+}
+
 export async function getDinScrapeJob(id: string) {
   const db = await getDb();
   if (!db) return null;
@@ -65,7 +91,7 @@ export async function getDinScrapeJob(id: string) {
 }
 
 export async function listDinScrapeJobs(
-  userId: number,
+  scopeId: string,
   limit = 20
 ): Promise<DinScrapeJobWithCounts[]> {
   const db = await getDb();
@@ -74,7 +100,7 @@ export async function listDinScrapeJobs(
     const jobs = await db
       .select()
       .from(dinScrapeJobs)
-      .where(eq(dinScrapeJobs.userId, userId))
+      .where(eq(dinScrapeJobs.scopeId, scopeId))
       .orderBy(desc(dinScrapeJobs.createdAt))
       .limit(limit);
     if (jobs.length === 0) return [];
@@ -153,6 +179,7 @@ export async function bulkInsertDinScrapeJobCsgIds(
     // surface the outage immediately so the caller fails the job.
     throw new Error("Database unavailable while inserting DIN scrape CSG IDs");
   }
+  const scopeId = await resolveScopeIdForJob(jobId);
   const batchSize = 500;
   for (let i = 0; i < csgIds.length; i += batchSize) {
     const batch = csgIds.slice(i, i + batchSize);
@@ -163,6 +190,7 @@ export async function bulkInsertDinScrapeJobCsgIds(
           batch.map((csgId) => ({
             id: nanoid(),
             jobId,
+            scopeId,
             csgId,
           }))
         );
@@ -191,9 +219,11 @@ export async function persistDinScrapeSiteResult(input: {
   const scannedAt = result.scannedAt
     ? new Date(Math.floor(result.scannedAt.getTime() / 1000) * 1000)
     : new Date();
+  const scopeId = result.scopeId ?? (await resolveScopeIdForJob(result.jobId));
   const resultRow = {
     id: result.id ?? nanoid(),
     jobId: result.jobId,
+    scopeId,
     csgId: result.csgId,
     systemPageUrl: result.systemPageUrl ?? null,
     inverterPhotoCount: result.inverterPhotoCount ?? 0,
@@ -217,8 +247,13 @@ export async function persistDinScrapeSiteResult(input: {
       .limit(1);
 
     if (existing.length > 0) {
-      const { id: _id, jobId: _jobId, csgId: _csgId, ...updateFields } =
-        resultRow;
+      const {
+        id: _id,
+        jobId: _jobId,
+        scopeId: _scopeId,
+        csgId: _csgId,
+        ...updateFields
+      } = resultRow;
       await db
         .update(dinScrapeResults)
         .set(updateFields)
@@ -243,6 +278,7 @@ export async function persistDinScrapeSiteResult(input: {
         dins.map((r) => ({
           id: r.id ?? nanoid(),
           jobId: r.jobId,
+          scopeId: r.scopeId ?? scopeId,
           csgId: r.csgId,
           dinValue: r.dinValue,
           sourceType: r.sourceType ?? "unknown",

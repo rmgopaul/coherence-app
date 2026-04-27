@@ -886,6 +886,11 @@ export const dinScrapeJobs = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     userId: int("userId").notNull(),
+    // Task 5.8 PR-A (2026-04-27): scope tenancy key. Backfilled to
+    // `scope-user-${userId}` for existing rows. Same pattern as
+    // contractScanJobs.scopeId (#117) and scheduleBImportJobs.scopeId
+    // (#115).
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     status: mysqlEnum("status", [
       "queued",
       "running",
@@ -909,6 +914,7 @@ export const dinScrapeJobs = mysqlTable(
   },
   (table) => ({
     userIdx: index("din_scrape_jobs_user_idx").on(table.userId),
+    scopeIdx: index("din_scrape_jobs_scope_idx").on(table.scopeId),
     statusIdx: index("din_scrape_jobs_status_idx").on(table.status),
   })
 );
@@ -921,6 +927,10 @@ export const dinScrapeJobCsgIds = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.8 PR-A (2026-04-27): denormalized scope tenancy key.
+    // Mirrors the parent job's scopeId. Backfilled via UPDATE…JOIN
+    // dinScrapeJobs in the migration.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     csgId: varchar("csgId", { length: 64 }).notNull(),
   },
   (table) => ({
@@ -929,6 +939,7 @@ export const dinScrapeJobCsgIds = mysqlTable(
       table.csgId
     ),
     jobIdx: index("din_scrape_job_csg_ids_job_idx").on(table.jobId),
+    scopeIdx: index("din_scrape_job_csg_ids_scope_idx").on(table.scopeId),
   })
 );
 
@@ -941,6 +952,9 @@ export const dinScrapeResults = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.8 PR-A (2026-04-27): denormalized scope tenancy key.
+    // Backfilled via UPDATE…JOIN dinScrapeJobs.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     csgId: varchar("csgId", { length: 64 }).notNull(),
     systemPageUrl: varchar("systemPageUrl", { length: 512 }),
     inverterPhotoCount: int("inverterPhotoCount").default(0).notNull(),
@@ -964,6 +978,7 @@ export const dinScrapeResults = mysqlTable(
       table.csgId
     ),
     csgIdx: index("din_scrape_results_csg_idx").on(table.csgId),
+    scopeIdx: index("din_scrape_results_scope_idx").on(table.scopeId),
   })
 );
 
@@ -976,6 +991,9 @@ export const dinScrapeDins = mysqlTable(
   {
     id: varchar("id", { length: 64 }).primaryKey(),
     jobId: varchar("jobId", { length: 64 }).notNull(),
+    // Task 5.8 PR-A (2026-04-27): denormalized scope tenancy key.
+    // Backfilled via UPDATE…JOIN dinScrapeJobs.
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
     csgId: varchar("csgId", { length: 64 }).notNull(),
     dinValue: varchar("dinValue", { length: 128 }).notNull(),
     sourceType: mysqlEnum("sourceType", ["inverter", "meter", "unknown"])
@@ -1002,6 +1020,7 @@ export const dinScrapeDins = mysqlTable(
       table.csgId,
       table.dinValue
     ),
+    scopeIdx: index("din_scrape_dins_scope_idx").on(table.scopeId),
   })
 );
 

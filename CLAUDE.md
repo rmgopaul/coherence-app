@@ -81,7 +81,13 @@ stop and discuss the migration timing first.
   redirects. ContractScanner page (PDF parser, no procs) gates on
   `contract-scanner`. Cross-tenant safety on `getContractScanJob`
   ownership checks switched from `userId` to `scopeId`.
-- DIN scrape runner + DinScrapeManager — Task 5.8
+- ~~DIN scrape runner + DinScrapeManager — Task 5.8~~
+  **PARTIAL 2026-04-27.** PR-A added `scopeId` to all 4
+  `dinScrape*` tables, backfilled, switched DB helpers + procs to
+  filter by scope. **Remaining (PR-B)**: move procs from main
+  `dinScrapeRouter` to standalone with `requirePermission(
+  "din-scrape-manager", level)`; move `DinScrapeManager.tsx` page to
+  `client/src/solar-rec/pages/`.
 - ABP Invoice Settlement — Task 5.9
 - Early Payment + Invoice Match Dashboard — Task 5.10
 - Address Checker, Zendesk Metrics, Deep Update Synthesizer — Task 5.11
