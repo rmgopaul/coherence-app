@@ -26,6 +26,13 @@ const ContractScrapeManager = lazy(
 const ZendeskTicketMetrics = lazy(
   () => import("./pages/ZendeskTicketMetrics")
 );
+// Task 5.11 PR-C (2026-04-27): DeepUpdateSynthesizer migrated from
+// `client/src/features/dashboard/`. Module key
+// `deep-update-synthesizer`. Page already used `solarRecTrpc` after
+// Task 5.5 — this PR is purely a file move + permission gate.
+const DeepUpdateSynthesizer = lazy(
+  () => import("./pages/DeepUpdateSynthesizer")
+);
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -162,6 +169,11 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/zendesk-ticket-metrics">
                 <PermissionGate moduleKey="zendesk-metrics">
                   <ZendeskTicketMetrics />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/deep-update-synthesizer">
+                <PermissionGate moduleKey="deep-update-synthesizer">
+                  <DeepUpdateSynthesizer />
                 </PermissionGate>
               </Route>
 

@@ -26,7 +26,8 @@ const CommandDeck = lazy(() => import("@/features/dashboard/CommandDeck"));
 const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMatchDashboard"));
 // Task 5.11 PR-A (2026-04-27): ZendeskTicketMetrics moved to the
 // standalone Solar REC app. Legacy URL kept as a Wouter <Redirect />.
-const DeepUpdateSynthesizer = lazy(() => import("@/features/dashboard/DeepUpdateSynthesizer"));
+// Task 5.11 PR-C (2026-04-27): DeepUpdateSynthesizer same — moved to
+// the standalone Solar REC app, legacy URL kept as <Redirect />.
 // Task 5.7 PR-B (2026-04-26): ContractScanner + ContractScrapeManager
 // migrated to the standalone Solar REC app. The legacy URLs below are
 // kept as Wouter <Redirect /> targets so existing bookmarks land on
@@ -114,7 +115,9 @@ function AppRoutes() {
         <Redirect to="/solar-rec/dashboard" />
       </Route>
       <Route path={"/invoice-match-dashboard"} component={withRouteSuspense(InvoiceMatchDashboard)} />
-      <Route path={"/deep-update-synthesizer"} component={withRouteSuspense(DeepUpdateSynthesizer)} />
+      <Route path={"/deep-update-synthesizer"}>
+        <Redirect to="/solar-rec/deep-update-synthesizer" />
+      </Route>
       <Route path={"/contract-scanner"}>
         <Redirect to="/solar-rec/contract-scanner" />
       </Route>

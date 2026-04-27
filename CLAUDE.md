@@ -100,10 +100,14 @@ stop and discuss the migration timing first.
   - Address Checker — Task 5.11 PR-B. **Blocked on Task 5.9** —
     `AddressChecker.tsx` calls `trpc.abpSettlement.cleanMailingData`
     and `verifyAddresses`, which move with ABP Settlement.
-  - Deep Update Synthesizer — Task 5.11 PR-C. **Blocked on the
-    dashboard data-flow refactor** — `DeepUpdateSynthesizer.tsx`
-    calls `solarRecDashboard.getDataset` / `saveDataset` whose
-    semantics are being reshaped by that plan's PR-2.
+  - ~~Deep Update Synthesizer — Task 5.11 PR-C~~ **DONE 2026-04-27.**
+    Page moved to `client/src/solar-rec/pages/`. Already used
+    `solarRecTrpc` after Task 5.5 so no proc swap was needed —
+    purely a file move + `<PermissionGate moduleKey=
+    "deep-update-synthesizer">` + Wouter redirect. The data-flow
+    PR-2 (#121) saveDataset signature change is backward-compatible
+    (added `dbError: string | null`); existing call sites continue
+    to work and show the actual error when one surfaces.
 
 ### Consequences of the split
 
