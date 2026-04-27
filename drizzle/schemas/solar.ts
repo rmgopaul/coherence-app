@@ -1040,6 +1040,46 @@ export type SrDsAbpCsgPortalDatabaseRows =
 export type InsertSrDsAbpCsgPortalDatabaseRows =
   typeof srDsAbpCsgPortalDatabaseRows.$inferInsert;
 
+// Task 5.12 PR-6 (2026-04-27): ABP QuickBooks Rows row table.
+// Single-file replace dataset that carries QuickBooks invoice-line
+// detail rows. The parser (`parseQuickBooksDetailedReport` in
+// `client/src/lib/abpSettlement.ts`) detects the raw QB export
+// format by looking at the first three column headers
+// (`Date`, `Num`, `Customer`) and then resolves all other fields
+// via fuzzy keyword matching on normalized headers. Reproducing
+// that detection in the persister would re-implement parser logic
+// already stable in the client. Only `invoiceNumber` (the QB "Num"
+// column) is typed — it's the join key the settlement engine uses
+// to group multi-line invoices and reconcile against the portal
+// invoice map. Everything else stays in `rawRow` for the client to
+// re-parse on read.
+export const srDsAbpQuickBooksRows = mysqlTable(
+  "srDsAbpQuickBooksRows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    invoiceNumber: varchar("invoiceNumber", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_quick_books_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_quick_books_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeInvoiceIdx: index("sr_ds_abp_quick_books_scope_invoice_idx").on(
+      table.scopeId,
+      table.invoiceNumber
+    ),
+  })
+);
+
+export type SrDsAbpQuickBooksRows = typeof srDsAbpQuickBooksRows.$inferSelect;
+export type InsertSrDsAbpQuickBooksRows =
+  typeof srDsAbpQuickBooksRows.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",

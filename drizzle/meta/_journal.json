@@ -281,6 +281,13 @@
       "when": 1777319653437,
       "tag": "0043_add_srds_abp_csg_portal_database_rows",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "5",
+      "when": 1777321455772,
+      "tag": "0044_add_srds_abp_quick_books_rows",
+      "breakpoints": true
     }
   ]
 }
