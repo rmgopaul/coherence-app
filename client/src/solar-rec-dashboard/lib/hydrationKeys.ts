@@ -14,11 +14,14 @@
  * `dataset.rows` saw empty arrays (notably ICC Report 3 → empty
  * Financials).
  *
- * Rule: hydrate EVERY manifest entry, plus any priority keys not in
- * the manifest (so the landing tab's CORE_REQUIRED_DATASET_KEYS
- * always get a fetch attempt even on a fresh scope). Lazy-rows
- * (buildLazyCsvDataset) makes full hydration cheap — tabs that never
- * mount never materialize row objects.
+ * Rule for local IDB: hydrate EVERY manifest entry, plus any priority
+ * keys not in the manifest. Lazy-rows (buildLazyCsvDataset) makes full
+ * local hydration cheap.
+ *
+ * Rule for remote cloud fallback: callers may opt out of manifest-wide
+ * hydration and fetch priority keys only. Cloud payloads can be raw CSV
+ * source files, so automatic full-manifest hydration can overload the
+ * server and browser on large portfolios.
  */
 
 import type { DatasetKey } from "../state/types";
@@ -27,12 +30,20 @@ export function resolveHydrationKeys(params: {
   manifestKeys: readonly string[];
   priorityKeys: ReadonlySet<DatasetKey> | readonly DatasetKey[];
   isDatasetKey: (value: string) => value is DatasetKey;
+  includeManifestEntries?: boolean;
 }): Set<DatasetKey> {
-  const { manifestKeys, priorityKeys, isDatasetKey } = params;
+  const {
+    manifestKeys,
+    priorityKeys,
+    isDatasetKey,
+    includeManifestEntries = true,
+  } = params;
   const keys = new Set<DatasetKey>();
-  manifestKeys.forEach((rawKey) => {
-    if (isDatasetKey(rawKey)) keys.add(rawKey);
-  });
+  if (includeManifestEntries) {
+    manifestKeys.forEach((rawKey) => {
+      if (isDatasetKey(rawKey)) keys.add(rawKey);
+    });
+  }
   priorityKeys.forEach((key) => {
     keys.add(key);
   });

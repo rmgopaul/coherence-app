@@ -260,6 +260,46 @@ function isHeapOverSoftLimit(): boolean {
   }
 }
 
+const MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES = 5 * 1024 * 1024;
+const MAX_ASSEMBLED_SOURCE_CHUNK_KEYS = 32;
+
+type SourceManifestEntry = {
+  storageKey?: unknown;
+  chunkKeys?: unknown;
+  sizeBytes?: unknown;
+};
+
+function getSourceManifestSize(sourceManifest: {
+  sources: SourceManifestEntry[];
+}): {
+  sourceBytes: number;
+  chunkKeyCount: number;
+  shouldAssembleSources: boolean;
+} {
+  let sourceBytes = 0;
+  let chunkKeyCount = 0;
+
+  for (const source of sourceManifest.sources) {
+    if (
+      typeof source?.sizeBytes === "number" &&
+      Number.isFinite(source.sizeBytes)
+    ) {
+      sourceBytes += Math.max(0, source.sizeBytes);
+    }
+    if (Array.isArray(source?.chunkKeys)) {
+      chunkKeyCount += source.chunkKeys.length;
+    }
+  }
+
+  return {
+    sourceBytes,
+    chunkKeyCount,
+    shouldAssembleSources:
+      sourceBytes <= MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES &&
+      chunkKeyCount <= MAX_ASSEMBLED_SOURCE_CHUNK_KEYS,
+  };
+}
+
 async function loadDashboardPayloadSingleFlight(
   flightKey: string,
   loader: () => Promise<{ key: string; payload: string } | null>
@@ -638,7 +678,7 @@ export const solarRecDashboardRouter = t.router({
         if (!topResult?.payload) {
           return {
             _checkpoint: "getDatasetAssembled-v1",
-          _runnerVersion: "data-flow-pr1" as const,
+            _runnerVersion: "data-flow-pr1" as const,
             datasetKey: input.datasetKey,
             topPayload: null,
             sources: null,
@@ -661,7 +701,7 @@ export const solarRecDashboardRouter = t.router({
 
         // 3. Try parsing as a source manifest.
         let sourceManifest:
-          | { _rawSourcesV1: true; sources: Array<{ storageKey?: unknown; chunkKeys?: unknown }> }
+          | { _rawSourcesV1: true; sources: SourceManifestEntry[] }
           | null = null;
         try {
           const parsed = JSON.parse(topPayload);
@@ -680,10 +720,26 @@ export const solarRecDashboardRouter = t.router({
         if (!sourceManifest) {
           return {
             _checkpoint: "getDatasetAssembled-v1",
-          _runnerVersion: "data-flow-pr1" as const,
+            _runnerVersion: "data-flow-pr1" as const,
             datasetKey: input.datasetKey,
             topPayload,
             sources: null,
+          };
+        }
+
+        const sourceSize = getSourceManifestSize(sourceManifest);
+        if (!sourceSize.shouldAssembleSources) {
+          return {
+            _checkpoint: "getDatasetAssembled-v2",
+            _runnerVersion: "data-flow-pr1" as const,
+            datasetKey: input.datasetKey,
+            topPayload,
+            sources: null,
+            sourceAssemblySkipped: true as const,
+            sourceBytes: sourceSize.sourceBytes,
+            sourceChunkKeyCount: sourceSize.chunkKeyCount,
+            maxAssembledSourcePayloadBytes: MAX_ASSEMBLED_SOURCE_PAYLOAD_BYTES,
+            maxAssembledSourceChunkKeys: MAX_ASSEMBLED_SOURCE_CHUNK_KEYS,
           };
         }
 
