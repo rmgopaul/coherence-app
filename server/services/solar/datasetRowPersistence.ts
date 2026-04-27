@@ -29,6 +29,7 @@ import {
   srDsAbpProjectApplicationRows,
   srDsAbpPortalInvoiceMapRows,
   srDsAbpCsgPortalDatabaseRows,
+  srDsAbpQuickBooksRows,
 } from "../../../drizzle/schema";
 import {
   getDb,
@@ -505,6 +506,39 @@ const persistAbpCsgPortalDatabaseRows: DatasetInserter = async (
   );
 };
 
+// Task 5.12 PR-6: abpQuickBooksRows is a single-file replace dataset
+// carrying QuickBooks invoice-line detail. The parser
+// (`parseQuickBooksDetailedReport`) detects format from the first 3
+// columns (Date / Num / Customer) and uses fuzzy keyword matching
+// for everything else; reproducing that detection in the persister
+// would re-implement parser logic. Only `invoiceNumber` (the QB
+// "Num" column) is typed — it's the join key the settlement engine
+// uses to group multi-line invoices and reconcile against the
+// portal invoice map. The rest stays in `rawRow`.
+const persistAbpQuickBooksRows: DatasetInserter = async (
+  scopeId,
+  batchId,
+  rows,
+  options
+) => {
+  const values = rows.map((row) => ({
+    id: nanoid(),
+    scopeId,
+    batchId,
+    invoiceNumber: clip(
+      pick(row, "Num", "invoiceNumber", "Invoice Number", "Invoice #"),
+      64
+    ),
+    rawRow: JSON.stringify(row),
+  }));
+  return chunkedInsert(
+    srDsAbpQuickBooksRows,
+    values,
+    "abpQuickBooksRows",
+    options
+  );
+};
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -522,6 +556,7 @@ const PERSISTERS: Record<string, DatasetInserter> = {
   abpProjectApplicationRows: persistAbpProjectApplicationRows,
   abpPortalInvoiceMapRows: persistAbpPortalInvoiceMapRows,
   abpCsgPortalDatabaseRows: persistAbpCsgPortalDatabaseRows,
+  abpQuickBooksRows: persistAbpQuickBooksRows,
 };
 
 /**
@@ -768,6 +803,7 @@ const BATCH_DELETERS: Record<string, BatchRowDeleter> = {
   abpProjectApplicationRows: makeBatchDeleter("srDsAbpProjectApplicationRows"),
   abpPortalInvoiceMapRows: makeBatchDeleter("srDsAbpPortalInvoiceMapRows"),
   abpCsgPortalDatabaseRows: makeBatchDeleter("srDsAbpCsgPortalDatabaseRows"),
+  abpQuickBooksRows: makeBatchDeleter("srDsAbpQuickBooksRows"),
 };
 
 export async function appendRowExists(

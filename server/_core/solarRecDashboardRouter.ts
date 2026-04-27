@@ -12,6 +12,7 @@ import {
   srDsAbpCsgSystemMapping,
   srDsAbpPortalInvoiceMapRows,
   srDsAbpProjectApplicationRows,
+  srDsAbpQuickBooksRows,
   srDsAbpReport,
   srDsAccountSolarGeneration,
   srDsContractedDate,
@@ -1028,6 +1029,7 @@ export const solarRecDashboardRouter = t.router({
         abpProjectApplicationRows: srDsAbpProjectApplicationRows,
         abpPortalInvoiceMapRows: srDsAbpPortalInvoiceMapRows,
         abpCsgPortalDatabaseRows: srDsAbpCsgPortalDatabaseRows,
+        abpQuickBooksRows: srDsAbpQuickBooksRows,
       } as const;
       type RowTableKey = keyof typeof ROW_TABLES_BY_DATASET_KEY;
       const isRowTableKey = (k: string): k is RowTableKey =>
@@ -3035,16 +3037,17 @@ export const solarRecDashboardRouter = t.router({
         abpProjectApplicationRows: srDsAbpProjectApplicationRows,
         abpPortalInvoiceMapRows: srDsAbpPortalInvoiceMapRows,
         abpCsgPortalDatabaseRows: srDsAbpCsgPortalDatabaseRows,
+        abpQuickBooksRows: srDsAbpQuickBooksRows,
       } as const;
 
       // Source of truth for which dataset keys exist. Kept in sync
       // with client `DATASET_DEFINITIONS` via the migration test
       // (added in PR-8).
       const ALL_DATASET_KEYS = [
-        // Row-backed (12 datasets — 7 from data-flow series + 5 added
-        // by Task 5.12 PRs 1–5 (generatorDetails, abpCsgSystemMapping,
+        // Row-backed (13 datasets — 7 from data-flow series + 6 added
+        // by Task 5.12 PRs 1–6 (generatorDetails, abpCsgSystemMapping,
         // abpProjectApplicationRows, abpPortalInvoiceMapRows,
-        // abpCsgPortalDatabaseRows) 2026-04-27).
+        // abpCsgPortalDatabaseRows, abpQuickBooksRows) 2026-04-27).
         "solarApplications",
         "abpReport",
         "generationEntry",
@@ -3057,10 +3060,17 @@ export const solarRecDashboardRouter = t.router({
         "abpProjectApplicationRows",
         "abpPortalInvoiceMapRows",
         "abpCsgPortalDatabaseRows",
-        // Non-row-backed (chunked-CSV only — Task 5.12 PRs 6–12 will
-        // migrate the remaining 7 to srDs* row tables).
+        // PR-6 also fixed an existing typo: this entry was previously
+        // `"abpQuickbooksRows"` (lowercase b) which never matched the
+        // canonical key `abpQuickBooksRows` used in DATASET_DEFINITIONS,
+        // so the dataset was always reported as missing in the
+        // summaries response. Verified canonical spelling is the
+        // capital-B form across `state/types.ts`, `financialsVersion.ts`,
+        // `EarlyPayment.tsx`, and `AbpInvoiceSettlement.tsx`.
+        "abpQuickBooksRows",
+        // Non-row-backed (chunked-CSV only — Task 5.12 PRs 7–12 will
+        // migrate the remaining 6 to srDs* row tables).
         "convertedReads",
-        "abpQuickbooksRows",
         "abpIccReport2Rows",
         "abpIccReport3Rows",
         "abpUtilityInvoiceRows",
@@ -3200,7 +3210,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-summaries-all-v1",
-        _runnerVersion: "task-5.12-pr5" as const,
+        _runnerVersion: "task-5.12-pr6" as const,
         scopeId,
         summaries,
       };
@@ -3244,6 +3254,7 @@ export const solarRecDashboardRouter = t.router({
           "abpProjectApplicationRows",
           "abpPortalInvoiceMapRows",
           "abpCsgPortalDatabaseRows",
+          "abpQuickBooksRows",
         ]),
       })
     )
@@ -3269,6 +3280,7 @@ export const solarRecDashboardRouter = t.router({
         abpProjectApplicationRows: srDsAbpProjectApplicationRows,
         abpPortalInvoiceMapRows: srDsAbpPortalInvoiceMapRows,
         abpCsgPortalDatabaseRows: srDsAbpCsgPortalDatabaseRows,
+        abpQuickBooksRows: srDsAbpQuickBooksRows,
       } as const;
 
       const scopeId = await resolveSolarRecScopeId();
@@ -3279,7 +3291,7 @@ export const solarRecDashboardRouter = t.router({
       if (!activeBatch) {
         return {
           _checkpoint: "dataset-csv-v1",
-          _runnerVersion: "task-5.12-pr5" as const,
+          _runnerVersion: "task-5.12-pr6" as const,
           datasetKey: input.datasetKey,
           batchId: null,
           rowCount: 0,
@@ -3301,7 +3313,7 @@ export const solarRecDashboardRouter = t.router({
       if (firstPage.rows.length === 0) {
         return {
           _checkpoint: "dataset-csv-v1",
-          _runnerVersion: "task-5.12-pr5" as const,
+          _runnerVersion: "task-5.12-pr6" as const,
           datasetKey: input.datasetKey,
           batchId: activeBatch.id,
           rowCount: 0,
@@ -3351,7 +3363,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-csv-v1",
-        _runnerVersion: "task-5.12-pr5" as const,
+        _runnerVersion: "task-5.12-pr6" as const,
         datasetKey: input.datasetKey,
         batchId: activeBatch.id,
         rowCount: totalRows,
@@ -3402,6 +3414,7 @@ export const solarRecDashboardRouter = t.router({
           "abpProjectApplicationRows",
           "abpPortalInvoiceMapRows",
           "abpCsgPortalDatabaseRows",
+          "abpQuickBooksRows",
         ]),
         cursor: z.string().nullable().optional(),
         limit: z.number().int().min(1).max(500).default(100),
@@ -3428,6 +3441,7 @@ export const solarRecDashboardRouter = t.router({
         abpProjectApplicationRows: srDsAbpProjectApplicationRows,
         abpPortalInvoiceMapRows: srDsAbpPortalInvoiceMapRows,
         abpCsgPortalDatabaseRows: srDsAbpCsgPortalDatabaseRows,
+        abpQuickBooksRows: srDsAbpQuickBooksRows,
       } as const;
 
       const scopeId = await resolveSolarRecScopeId();
@@ -3438,7 +3452,7 @@ export const solarRecDashboardRouter = t.router({
       if (!activeBatch) {
         return {
           _checkpoint: "dataset-rows-page-v1",
-          _runnerVersion: "task-5.12-pr5" as const,
+          _runnerVersion: "task-5.12-pr6" as const,
           datasetKey: input.datasetKey,
           batchId: null,
           rows: [],
@@ -3456,7 +3470,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-rows-page-v1",
-        _runnerVersion: "task-5.12-pr5" as const,
+        _runnerVersion: "task-5.12-pr6" as const,
         datasetKey: input.datasetKey,
         batchId: activeBatch.id,
         rows: result.rows,
