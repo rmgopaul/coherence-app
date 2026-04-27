@@ -34,7 +34,8 @@ const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMat
 // the new routes after the bundle hydrates.
 // Task 5.9 PR-A + 5.11 PR-B (2026-04-27): AbpInvoiceSettlement +
 // AddressChecker also migrated; legacy URLs are <Redirect /> targets.
-const DinScrapeManager = lazy(() => import("@/features/dashboard/DinScrapeManager"));
+// Task 5.8 PR-B (2026-04-27): DinScrapeManager migrated to the
+// standalone Solar REC app; legacy URL is a <Redirect /> target.
 const EarlyPayment = lazy(() => import("@/features/dashboard/EarlyPayment"));
 const Notebook = lazy(() => import("@/features/notebook/Notebook"));
 const Settings = lazy(() => import("@/features/settings/Settings"));
@@ -124,7 +125,9 @@ function AppRoutes() {
       <Route path={"/contract-scrape-manager"}>
         <Redirect to="/solar-rec/contract-scrape-manager" />
       </Route>
-      <Route path={"/din-scrape-manager"} component={withRouteSuspense(DinScrapeManager)} />
+      <Route path={"/din-scrape-manager"}>
+        <Redirect to="/solar-rec/din-scrape-manager" />
+      </Route>
       <Route path={"/abp-invoice-settlement"}>
         <Redirect to="/solar-rec/abp-invoice-settlement" />
       </Route>

@@ -28,6 +28,7 @@ import { solarRecContractScanRouter } from "./solarRecContractScanRouter";
 import { solarRecZendeskRouter } from "./solarRecZendeskRouter";
 import { solarRecAbpSettlementRouter } from "./solarRecAbpSettlementRouter";
 import { solarRecCsgPortalRouter } from "./solarRecCsgPortalRouter";
+import { solarRecDinScrapeRouter } from "./solarRecDinScrapeRouter";
 
 // ---------------------------------------------------------------------------
 // Context — `createSolarRecContext` stays here because `_core/index.ts`
@@ -4509,6 +4510,7 @@ export const solarRecAppRouter = t.router({
   zendesk: solarRecZendeskRouter,
   abpSettlement: solarRecAbpSettlementRouter,
   csgPortal: solarRecCsgPortalRouter,
+  dinScrape: solarRecDinScrapeRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

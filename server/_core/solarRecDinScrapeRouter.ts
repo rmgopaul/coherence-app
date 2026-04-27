@@ -1,117 +1,85 @@
-import { protectedProcedure, router } from "../_core/trpc";
+/**
+ * Task 5.8 PR-B (2026-04-27) — standalone Solar REC sub-router for
+ * the DIN Scrape Manager. Migrated out of `dinScrapeRouter` in
+ * `server/routers/jobRunners.ts`, which becomes empty after this PR
+ * and is deleted along with its sole import in `server/routers.ts`.
+ *
+ * Module key: `din-scrape-manager`. Permission classification:
+ *   - 6 read: getJobStatus, listJobs, getResults, getDins, debugRaw,
+ *     exportDinsCsv
+ *   - 3 edit: startJob, stopJob, resumeJob
+ *   - 1 admin: deleteJob (destructive — deletes job + all child rows)
+ *
+ * Cross-scope safety: PR-A (#119) added `scopeId` to all 4
+ * `dinScrape*` tables and backfilled. Ownership checks switch from
+ * `job.userId !== ctx.user.id` to `job.scopeId !== ctx.scopeId` per
+ * the architectural-split rule "data visibility is team-wide within
+ * a scope". Single-tenant prod is functionally identical (the scope
+ * resolves to `scope-user-${ownerUserId}` and matches the only user);
+ * multi-tenant future prevents cross-team job visibility.
+ *
+ * CSG portal credentials lookup (`startJob`): keeps `ctx.userId`
+ * because the `integrations` table is per-user. Single-tenant prod
+ * has only Rhett's tokens; multi-user team-shared CSG access is a
+ * future migration to `solarRecTeamCredentials`.
+ */
+
 import { z } from "zod";
-import { nanoid } from "nanoid";
-import { callLlmForAddressCleaning, sanitizeMailingFields, toNonEmptyString } from "../services/core/addressCleaning";
-import {
-  bulkInsertContractScanJobCsgIds,
-  createContractScanJob,
-  deleteContractScanJobData,
-  deleteIntegration,
-  getAllContractScanResultsForJob,
-  getCompletedCsgIdsForJob,
-  getContractScanJob,
-  getIntegrationByProvider,
-  getLatestContractScanJob,
-  getLatestScanResultsByCsgIds,
-  insertContractScanResult,
-  listContractScanJobs,
-  listContractScanResults,
-  updateContractScanJob,
-  updateContractScanResultOverrides,
-  upsertIntegration,
-} from "../db";
-// Task 5.7 PR-A (2026-04-26): contract-scan tables are now scope-keyed.
-// Until Task 5.7 PR-B moves these procedures onto the standalone Solar
-// REC router (where `ctx.scopeId` is part of the context), the procs
-// resolve scope inline via the canonical helper. Single-tenant prod
-// returns `scope-user-${ownerUserId}` so this matches what
-// `getLatestContractScanJob` etc. now filter on.
-import { resolveSolarRecScopeId } from "../_core/solarRecAuth";
-import {
-  CSG_PORTAL_PROVIDER,
-  parseCsgPortalMetadata,
-  serializeCsgPortalMetadata,
-  abpSettlementJobs,
-  abpSettlementActiveScanRunners,
-  pruneAbpSettlementJobs,
-  saveAbpSettlementScanJobSnapshot,
-  loadAbpSettlementScanJobSnapshot,
-  runAbpSettlementContractScanJob,
-  saveAbpSettlementRun,
-  getAbpSettlementRun,
-  getAbpSettlementRunsIndex,
-  parseJsonMetadata,
-  resolveOpenAIModel,
-} from "./helpers";
-import type {
-  AbpSettlementContractScanJob,
-} from "./helpers";
-import {
-  CsgPortalClient,
-  testCsgPortalCredentials,
-} from "../services/integrations/csgPortal";
-import {
-  runContractScanJob,
-  isContractScanRunnerActive,
-} from "../services/core/contractScanJobRunner";
-import { extractContractDataFromPdfBuffer } from "../services/core/contractScannerServer";
-import { cleanAddressBatch } from "../services/core/addressCleaner";
-import { verifyAddressBatch } from "../services/integrations/uspsAddressValidation";
+import { TRPCError } from "@trpc/server";
+import { t, requirePermission } from "./solarRecBase";
 
-
-// ---------------------------------------------------------------------------
-// DIN scrape router — inverter/meter photo → DIN extraction
-// ---------------------------------------------------------------------------
-
-import {
-  createDinScrapeJob,
-  getDinScrapeJob,
-  listDinScrapeJobs,
-  updateDinScrapeJob,
-  bulkInsertDinScrapeJobCsgIds,
-  listDinScrapeResults,
-  listDinScrapeDinsForJob,
-  getAllDinScrapeDinsForJob,
-  getCompletedCsgIdsForDinJob,
-  deleteDinScrapeJobData,
-  getDinScrapeDebugSnapshot,
-} from "../db";
-import {
-  runDinScrapeJob,
-  isDinScrapeRunnerActive,
-  DIN_SCRAPE_RUNNER_VERSION,
-} from "../services/core/dinScrapeJobRunner";
-
-export const dinScrapeRouter = router({
-  startJob: protectedProcedure
+export const solarRecDinScrapeRouter = t.router({
+  startJob: requirePermission("din-scrape-manager", "edit")
     .input(
       z.object({
         csgIds: z.array(z.string().min(1).max(64)).min(1).max(10000),
       })
     )
     .mutation(async ({ ctx, input }) => {
+      const {
+        getIntegrationByProvider,
+        createDinScrapeJob,
+        bulkInsertDinScrapeJobCsgIds,
+      } = await import("../db");
+      const { CSG_PORTAL_PROVIDER } = await import(
+        "../routers/helpers/constants"
+      );
+      const { parseCsgPortalMetadata } = await import(
+        "../routers/helpers/providerMetadata"
+      );
+      const { toNonEmptyString } = await import(
+        "../services/core/addressCleaning"
+      );
+      const { runDinScrapeJob } = await import(
+        "../services/core/dinScrapeJobRunner"
+      );
+
       const integration = await getIntegrationByProvider(
-        ctx.user.id,
+        ctx.userId,
         CSG_PORTAL_PROVIDER
       );
       const metadata = parseCsgPortalMetadata(integration?.metadata);
       if (!metadata.email || !toNonEmptyString(integration?.accessToken)) {
-        throw new Error(
-          "Missing CSG portal credentials. Save portal email/password first."
-        );
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            "Missing CSG portal credentials. Save portal email/password first.",
+        });
       }
 
       const uniqueIds = Array.from(
         new Set(input.csgIds.map((v) => v.trim()).filter(Boolean))
       );
       if (uniqueIds.length === 0) {
-        throw new Error("At least one CSG ID is required.");
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "At least one CSG ID is required.",
+        });
       }
 
-      const scopeId = await resolveSolarRecScopeId();
       const jobId = await createDinScrapeJob({
-        userId: ctx.user.id,
-        scopeId,
+        userId: ctx.userId,
+        scopeId: ctx.scopeId,
         totalSites: uniqueIds.length,
       });
       await bulkInsertDinScrapeJobCsgIds(jobId, uniqueIds);
@@ -121,19 +89,30 @@ export const dinScrapeRouter = router({
       return { jobId, status: "queued" as const, total: uniqueIds.length };
     }),
 
-  stopJob: protectedProcedure
+  stopJob: requirePermission("din-scrape-manager", "edit")
     .input(z.object({ jobId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
+      const { getDinScrapeJob, updateDinScrapeJob } = await import("../db");
+      const { isDinScrapeRunnerActive } = await import(
+        "../services/core/dinScrapeJobRunner"
+      );
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       if (
         job.status !== "running" &&
         job.status !== "queued" &&
         job.status !== "stopping"
       ) {
-        throw new Error(`Cannot stop job with status "${job.status}".`);
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot stop job with status "${job.status}".`,
+        });
       }
       // If no runner is actually alive on this process, don't bother
       // with the "stopping" dance — nobody's polling to flip it to
@@ -153,15 +132,30 @@ export const dinScrapeRouter = router({
       return { success: true, forced: false };
     }),
 
-  resumeJob: protectedProcedure
+  resumeJob: requirePermission("din-scrape-manager", "edit")
     .input(z.object({ jobId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
+      const {
+        getDinScrapeJob,
+        updateDinScrapeJob,
+        getCompletedCsgIdsForDinJob,
+      } = await import("../db");
+      const { runDinScrapeJob } = await import(
+        "../services/core/dinScrapeJobRunner"
+      );
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       if (job.status !== "stopped" && job.status !== "failed") {
-        throw new Error(`Cannot resume job with status "${job.status}".`);
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `Cannot resume job with status "${job.status}".`,
+        });
       }
       const completedIds = await getCompletedCsgIdsForDinJob(job.id);
       const pendingCount = job.totalSites - completedIds.size;
@@ -174,26 +168,43 @@ export const dinScrapeRouter = router({
       return { success: true, pendingCount };
     }),
 
-  deleteJob: protectedProcedure
+  deleteJob: requirePermission("din-scrape-manager", "admin")
     .input(z.object({ jobId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
+      const { getDinScrapeJob, deleteDinScrapeJobData } = await import(
+        "../db"
+      );
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       if (job.status === "running" || job.status === "queued") {
-        throw new Error("Stop the job before deleting.");
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Stop the job before deleting.",
+        });
       }
       await deleteDinScrapeJobData(job.id);
       return { success: true };
     }),
 
-  getJobStatus: protectedProcedure
+  getJobStatus: requirePermission("din-scrape-manager", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
+      const { getDinScrapeJob } = await import("../db");
+      const { isDinScrapeRunnerActive, runDinScrapeJob, DIN_SCRAPE_RUNNER_VERSION } =
+        await import("../services/core/dinScrapeJobRunner");
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       // Auto-resume if the runner died (process restart, etc.).
       // Also covers "stopping" — when the runner is dead and status
@@ -223,16 +234,16 @@ export const dinScrapeRouter = router({
       };
     }),
 
-  listJobs: protectedProcedure
+  listJobs: requirePermission("din-scrape-manager", "read")
     .input(
       z.object({ limit: z.number().int().min(1).max(50).optional() }).optional()
     )
-    .query(async ({ input }) => {
-      const scopeId = await resolveSolarRecScopeId();
-      return listDinScrapeJobs(scopeId, input?.limit ?? 20);
+    .query(async ({ ctx, input }) => {
+      const { listDinScrapeJobs } = await import("../db");
+      return listDinScrapeJobs(ctx.scopeId, input?.limit ?? 20);
     }),
 
-  getResults: protectedProcedure
+  getResults: requirePermission("din-scrape-manager", "read")
     .input(
       z.object({
         jobId: z.string().min(1),
@@ -241,9 +252,14 @@ export const dinScrapeRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
+      const { getDinScrapeJob, listDinScrapeResults } = await import("../db");
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       return listDinScrapeResults(job.id, {
         limit: input.limit ?? 100,
@@ -251,7 +267,7 @@ export const dinScrapeRouter = router({
       });
     }),
 
-  getDins: protectedProcedure
+  getDins: requirePermission("din-scrape-manager", "read")
     .input(
       z.object({
         jobId: z.string().min(1),
@@ -260,9 +276,16 @@ export const dinScrapeRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
+      const { getDinScrapeJob, listDinScrapeDinsForJob } = await import(
+        "../db"
+      );
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       return listDinScrapeDinsForJob(job.id, {
         limit: input.limit ?? 500,
@@ -270,12 +293,22 @@ export const dinScrapeRouter = router({
       });
     }),
 
-  debugRaw: protectedProcedure
+  debugRaw: requirePermission("din-scrape-manager", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
+      const { getDinScrapeJob, getDinScrapeDebugSnapshot } = await import(
+        "../db"
+      );
+      const { DIN_SCRAPE_RUNNER_VERSION } = await import(
+        "../services/core/dinScrapeJobRunner"
+      );
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       const snapshot = await getDinScrapeDebugSnapshot(job.id);
       return {
@@ -284,12 +317,19 @@ export const dinScrapeRouter = router({
       };
     }),
 
-  exportDinsCsv: protectedProcedure
+  exportDinsCsv: requirePermission("din-scrape-manager", "read")
     .input(z.object({ jobId: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
+      const { getDinScrapeJob, getAllDinScrapeDinsForJob } = await import(
+        "../db"
+      );
+
       const job = await getDinScrapeJob(input.jobId.trim());
-      if (!job || job.userId !== ctx.user.id) {
-        throw new Error("DIN scrape job not found.");
+      if (!job || job.scopeId !== ctx.scopeId) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "DIN scrape job not found.",
+        });
       }
       const rows = await getAllDinScrapeDinsForJob(job.id);
       const headers = [

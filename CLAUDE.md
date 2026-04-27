@@ -82,12 +82,20 @@ stop and discuss the migration timing first.
   `contract-scanner`. Cross-tenant safety on `getContractScanJob`
   ownership checks switched from `userId` to `scopeId`.
 - ~~DIN scrape runner + DinScrapeManager — Task 5.8~~
-  **PARTIAL 2026-04-27.** PR-A added `scopeId` to all 4
-  `dinScrape*` tables, backfilled, switched DB helpers + procs to
-  filter by scope. **Remaining (PR-B)**: move procs from main
-  `dinScrapeRouter` to standalone with `requirePermission(
-  "din-scrape-manager", level)`; move `DinScrapeManager.tsx` page to
-  `client/src/solar-rec/pages/`.
+  **DONE 2026-04-27.** PR-A added `scopeId` to all 4 `dinScrape*`
+  tables, backfilled, switched DB helpers + procs to filter by scope.
+  PR-B moved the 10 `dinScrape.*` procs from the main `dinScrapeRouter`
+  in `server/routers/jobRunners.ts` to a new standalone
+  `server/_core/solarRecDinScrapeRouter.ts` (gated on
+  `requirePermission("din-scrape-manager", level)` — 6 read / 3 edit
+  / 1 admin (`deleteJob`)). Cross-tenant safety: ownership checks
+  switched from `job.userId !== ctx.user.id` to
+  `job.scopeId !== ctx.scopeId`. `DinScrapeManager.tsx` (931 LOC)
+  moved to `client/src/solar-rec/pages/` with the standard aliased
+  `solarRecTrpc as trpc` import. Legacy `/din-scrape-manager` URL
+  kept as Wouter `<Redirect />`. **`server/routers/jobRunners.ts`
+  deleted entirely** — `dinScrapeRouter` was its last export after
+  the Task 5.9 PR-A cleanup.
 - ~~ABP Invoice Settlement — Task 5.9~~ **DONE 2026-04-27 (PR-A).**
   Procs moved to `solarRecAbpSettlementRouter.ts` (7 procs:
   `startContractScanJob`, `getJobStatus`, `cleanMailingData`,
