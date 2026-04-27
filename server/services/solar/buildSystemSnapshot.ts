@@ -188,36 +188,130 @@ export async function loadDatasetRows(
           .where(and(eq(table.scopeId, scopeId), eq(table.batchId, batchId)))
   );
 
-  // Reconstruct CsvRow from rawRow JSON + typed columns.
-  return (rows as Record<string, unknown>[]).map((row) => {
-    const rawRowStr = row.rawRow as string | null;
-    const base: CsvRow = rawRowStr ? JSON.parse(rawRowStr) : {};
+  return (rows as Record<string, unknown>[]).map((row) =>
+    reconstructCsvRow(row, remap)
+  );
+}
 
-    // For tables without rawRow, the typed columns are the only
-    // source of truth. Apply the per-table column→CSV mapping so
-    // buildSystems finds the keys it expects (e.g. `id`, `contracted`
-    // for contractedDate rather than `systemId`, `contractedDate`).
-    for (const [key, value] of Object.entries(row)) {
-      if (
-        key === "id" ||
-        key === "scopeId" ||
-        key === "batchId" ||
-        key === "rawRow" ||
-        key === "createdAt"
-      ) {
-        continue;
-      }
-      if (value === null || value === undefined) continue;
-      const mapped = remap?.[key];
-      if (mapped) {
-        base[mapped] = String(value);
-      } else {
-        base[key] = String(value);
-      }
+/**
+ * Reconstruct a single CsvRow from a raw DB row using the same
+ * typed-column → CSV-key remap as `loadDatasetRows`. Extracted so the
+ * paginated row loader and the bulk loader share one implementation
+ * (the remap table is the only source of truth and must not be
+ * duplicated).
+ */
+function reconstructCsvRow(
+  row: Record<string, unknown>,
+  remap: Record<string, string> | undefined
+): CsvRow {
+  const rawRowStr = row.rawRow as string | null;
+  const base: CsvRow = rawRowStr ? JSON.parse(rawRowStr) : {};
+  for (const [key, value] of Object.entries(row)) {
+    if (
+      key === "id" ||
+      key === "scopeId" ||
+      key === "batchId" ||
+      key === "rawRow" ||
+      key === "createdAt"
+    ) {
+      continue;
     }
+    if (value === null || value === undefined) continue;
+    const mapped = remap?.[key];
+    if (mapped) {
+      base[mapped] = String(value);
+    } else {
+      base[key] = String(value);
+    }
+  }
+  return base;
+}
 
-    return base;
-  });
+/**
+ * PR-4: paginated row loader for the row-backed datasets.
+ *
+ * Returns at most `limit` rows, ordered by `id` (the primary key) for
+ * stable keyset pagination. Pass the last returned `id` back as
+ * `cursor` to fetch the next page.
+ *
+ * Memory bound per call: `limit` rows × per-row size. With the default
+ * limit of 100 and accountSolarGeneration's ~3 KB rawRow, each call
+ * peaks at ~300 KB on the wire — well below the per-tab 800 MB
+ * incognito memory ceiling we're holding ourselves to.
+ *
+ * Reuses `reconstructCsvRow` so output is bit-identical to the bulk
+ * `loadDatasetRows`. Same typed-column remap table; same handling of
+ * skipRawRow tables. The row's `id` is returned alongside the CsvRow
+ * because callers need it for the cursor (the CsvRow itself excludes
+ * `id` to match the original CSV column shape).
+ */
+export async function loadDatasetRowsPage(
+  scopeId: string,
+  batchId: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- drizzle table types are complex unions
+  table: any,
+  options: { cursor: string | null; limit: number }
+): Promise<{
+  rows: CsvRow[];
+  rowIds: string[];
+  nextCursor: string | null;
+}> {
+  if (!batchId) return { rows: [], rowIds: [], nextCursor: null };
+  const db = await getDb();
+  if (!db) return { rows: [], rowIds: [], nextCursor: null };
+
+  const NAME_SYMBOL = Symbol.for("drizzle:Name");
+  const tableName: string | undefined =
+    (table as unknown as { [k: symbol]: unknown })?.[NAME_SYMBOL] as
+      | string
+      | undefined;
+  const remap = tableName ? TYPED_COLUMN_TO_CSV_KEY[tableName] : undefined;
+  const skipRawRow = tableName ? SKIP_RAW_ROW_TABLES.has(tableName) : false;
+
+  const selectCols = skipRawRow
+    ? (() => {
+        const cols: Record<string, unknown> = {};
+        const fromTable = table as Record<string, unknown>;
+        for (const [col, val] of Object.entries(fromTable)) {
+          if (col === "rawRow") continue;
+          cols[col] = val;
+        }
+        return cols;
+      })()
+    : undefined;
+
+  const { gt } = await import("drizzle-orm");
+  const limitPlusOne = options.limit + 1;
+  const cursorClause = options.cursor ? gt(table.id, options.cursor) : undefined;
+  const whereClause = cursorClause
+    ? and(eq(table.scopeId, scopeId), eq(table.batchId, batchId), cursorClause)
+    : and(eq(table.scopeId, scopeId), eq(table.batchId, batchId));
+
+  const rawRows = await withDbRetry("load dataset rows page", () =>
+    selectCols
+      ? db
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- dynamic column set
+          .select(selectCols as any)
+          .from(table)
+          .where(whereClause)
+          .orderBy(table.id)
+          .limit(limitPlusOne)
+      : db
+          .select()
+          .from(table)
+          .where(whereClause)
+          .orderBy(table.id)
+          .limit(limitPlusOne)
+  );
+
+  const fetched = rawRows as Record<string, unknown>[];
+  const hasMore = fetched.length > options.limit;
+  const sliced = hasMore ? fetched.slice(0, options.limit) : fetched;
+  const rows = sliced.map((row) => reconstructCsvRow(row, remap));
+  const rowIds = sliced.map((row) => String(row.id ?? ""));
+  const nextCursor = hasMore ? rowIds[rowIds.length - 1] : null;
+
+  return { rows, rowIds, nextCursor };
 }
 
 // ---------------------------------------------------------------------------

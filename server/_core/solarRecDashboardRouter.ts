@@ -3130,6 +3130,103 @@ export const solarRecDashboardRouter = t.router({
     }),
 
   /**
+   * Cursor-paginated row reader for the 7 row-backed datasets.
+   *
+   * Returns at most `limit` rows per call, ordered by the row's PK.
+   * Pass the response's `nextCursor` back as the `cursor` input to
+   * fetch the next page. `nextCursor === null` means no more rows.
+   *
+   * Why this exists: tabs that show row-level detail (Ownership,
+   * Contracts, Annual REC Review, Schedule B detail) used to read
+   * the entire CsvRow[] from the in-memory `loadedDatasets` state
+   * and filter/paginate client-side. That holds 100k+ rows in JS
+   * heap on every cold load. With this endpoint, the browser holds
+   * one page (~100-500 rows) at a time. Filter/sort move to the
+   * server in a follow-up; this PR is unsorted-natural-order paging
+   * only — sufficient for the "load more" UX.
+   *
+   * Memory bound:
+   *   - Server: one indexed `WHERE scopeId = ? AND batchId = ? AND id > ?`
+   *     query against the srDs* table, LIMIT N+1. The +1 row is used
+   *     to detect end-of-stream without a separate `COUNT(*)`.
+   *   - Wire: at default limit=100, ~30-300 KB depending on rawRow
+   *     density. transferHistory's rawRow is skipped (typed columns
+   *     only) so it's the lighter end of the range.
+   *   - Client: caller decides whether to keep all pages (infinite
+   *     scroll) or drop on page change. Either way, never the full
+   *     dataset.
+   */
+  getDatasetRowsPage: requirePermission("solar-rec-dashboard", "read")
+    .input(
+      z.object({
+        datasetKey: z.enum([
+          "solarApplications",
+          "abpReport",
+          "generationEntry",
+          "accountSolarGeneration",
+          "contractedDate",
+          "deliveryScheduleBase",
+          "transferHistory",
+        ]),
+        cursor: z.string().nullable().optional(),
+        limit: z.number().int().min(1).max(500).default(100),
+      })
+    )
+    .query(async ({ ctx, input }) => {
+      void ctx;
+      const { resolveSolarRecScopeId } = await import("./solarRecAuth");
+      const { getActiveBatchForDataset } = await import("../db");
+      const { loadDatasetRowsPage } = await import(
+        "../services/solar/buildSystemSnapshot"
+      );
+
+      const TABLES_BY_DATASET_KEY = {
+        solarApplications: srDsSolarApplications,
+        abpReport: srDsAbpReport,
+        generationEntry: srDsGenerationEntry,
+        accountSolarGeneration: srDsAccountSolarGeneration,
+        contractedDate: srDsContractedDate,
+        deliveryScheduleBase: srDsDeliverySchedule,
+        transferHistory: srDsTransferHistory,
+      } as const;
+
+      const scopeId = await resolveSolarRecScopeId();
+      const activeBatch = await getActiveBatchForDataset(
+        scopeId,
+        input.datasetKey
+      );
+      if (!activeBatch) {
+        return {
+          _checkpoint: "dataset-rows-page-v1",
+          _runnerVersion: "data-flow-pr4" as const,
+          datasetKey: input.datasetKey,
+          batchId: null,
+          rows: [],
+          rowIds: [],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+
+      const table = TABLES_BY_DATASET_KEY[input.datasetKey];
+      const result = await loadDatasetRowsPage(scopeId, activeBatch.id, table, {
+        cursor: input.cursor ?? null,
+        limit: input.limit,
+      });
+
+      return {
+        _checkpoint: "dataset-rows-page-v1",
+        _runnerVersion: "data-flow-pr4" as const,
+        datasetKey: input.datasetKey,
+        batchId: activeBatch.id,
+        rows: result.rows,
+        rowIds: result.rowIds,
+        nextCursor: result.nextCursor,
+        hasMore: result.nextCursor !== null,
+      };
+    }),
+
+  /**
    * Fetch the (trackingId → energyYear → deliveredQuantity) lookup
    * computed from the active transferHistory batch. Used by tabs
    * that need per-system delivery totals without the client having
