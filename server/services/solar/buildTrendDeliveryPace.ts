@@ -21,49 +21,27 @@
 
 import { createHash } from "node:crypto";
 import { srDsDeliverySchedule } from "../../../drizzle/schemas/solar";
+import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
-  getActiveVersionsForKeys,
-  getComputedArtifact,
-  upsertComputedArtifact,
-} from "../../db/solarRecDatasets";
+  type CsvRow,
+  clean,
+  getDeliveredForYear,
+} from "./aggregatorHelpers";
 import { loadDatasetRows } from "./buildSystemSnapshot";
 import {
   buildTransferDeliveryLookupForScope,
   type TransferDeliveryLookupPayload,
 } from "./buildTransferDeliveryLookup";
+import { jsonSerde, withArtifactCache } from "./withArtifactCache";
 
-type CsvRow = Record<string, string | undefined>;
-
-// ---------------------------------------------------------------------------
-// Inlined `clean` — the only client helper this aggregator needs. Same
-// implementation as `client/src/lib/helpers.ts`. Kept inline rather than
-// reaching into client/lib for the same reason as Task 5.13 PR-1: moving
-// the client helpers to shared/ would touch ~50 files.
-// ---------------------------------------------------------------------------
-
-function clean(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return String(value).trim();
-}
-
-// ---------------------------------------------------------------------------
-// `getDeliveredForYear` — looks up the GATS transfer total credited to a
-// (trackingId, energyYear) bucket. Server-side `transferDeliveryLookup`
-// is shaped as `Record<string, Record<string, number>>` (vs the client's
-// `Map<string, Map<number, number>>`) because that's what
-// `buildTransferDeliveryLookupForScope` returns. Helper hides the shape.
-// ---------------------------------------------------------------------------
-
-function getDeliveredForYear(
-  lookup: TransferDeliveryLookupPayload,
-  trackingId: string,
-  energyYear: number
-): number {
-  const byYear = lookup.byTrackingId[trackingId];
-  if (!byYear) return 0;
-  const value = byYear[String(energyYear)];
-  return typeof value === "number" ? value : 0;
-}
+// Note: `parseFloat` (not `parseNumber`) is used below for
+// `year${y}_quantity_required` to match the client helper at
+// `client/src/solar-rec-dashboard/lib/helpers/trends.ts:47`. This
+// preserves byte-equivalent behavior with the original client
+// implementation; it also means the helper is forgiving about
+// trailing characters where `parseNumber` would return null.
+// Normalizing to `parseNumber` is a follow-up — the matched test
+// fixtures lock the current behavior in place.
 
 // ---------------------------------------------------------------------------
 // Output type — kept structurally identical to the client version so
@@ -217,14 +195,12 @@ async function computeTrendDeliveryPaceInputHash(
 /**
  * Public entrypoint for the tRPC query. Returns the same
  * `TrendDeliveryPaceRow[]` array the two client tabs used to build
- * locally, plus a `_runnerVersion` marker per the data-flow hard
- * rules.
+ * locally.
  *
- * Cache: synchronous fast-path through `solarRecComputedArtifacts`
- * keyed by SHA-256 of (scheduleBatchId, transferBatchId, UTC day).
- * Cache miss recomputes (loadDatasetRows + transfer lookup +
- * aggregator), writes back, returns. The result has no Date fields,
- * so plain JSON cache serde is fine.
+ * Cache: `withArtifactCache` keyed by SHA-256 of
+ * (scheduleBatchId, transferBatchId, UTC day). Cache miss recomputes
+ * (loadDatasetRows + transfer lookup + aggregator), writes back,
+ * returns. Plain JSON serde — the result has no Date fields.
  */
 export async function getOrBuildTrendDeliveryPace(
   scopeId: string,
@@ -239,32 +215,20 @@ export async function getOrBuildTrendDeliveryPace(
     return { rows: [], fromCache: false };
   }
 
-  const cached = await getComputedArtifact(scopeId, ARTIFACT_TYPE, hash);
-  if (cached) {
-    try {
-      const parsed = JSON.parse(cached.payload) as TrendDeliveryPaceRow[];
-      if (Array.isArray(parsed)) {
-        return { rows: parsed, fromCache: true };
-      }
-    } catch {
-      // Corrupt cache row — fall through to recompute.
-    }
-  }
-
-  const [scheduleRows, transferLookup] = await Promise.all([
-    loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
-    buildTransferDeliveryLookupForScope(scopeId),
-  ]);
-
-  const rows = buildTrendDeliveryPace(scheduleRows, transferLookup, now);
-
-  await upsertComputedArtifact({
+  const { result, fromCache } = await withArtifactCache<TrendDeliveryPaceRow[]>({
     scopeId,
     artifactType: ARTIFACT_TYPE,
     inputVersionHash: hash,
-    payload: JSON.stringify(rows),
-    rowCount: rows.length,
+    serde: jsonSerde<TrendDeliveryPaceRow[]>(),
+    rowCount: (rows) => rows.length,
+    recompute: async () => {
+      const [scheduleRows, transferLookup] = await Promise.all([
+        loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
+        buildTransferDeliveryLookupForScope(scopeId),
+      ]);
+      return buildTrendDeliveryPace(scheduleRows, transferLookup, now);
+    },
   });
 
-  return { rows, fromCache: false };
+  return { rows: result, fromCache };
 }

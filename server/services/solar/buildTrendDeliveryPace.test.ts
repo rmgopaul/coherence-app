@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildTrendDeliveryPace } from "./buildTrendDeliveryPace";
-import type { TransferDeliveryLookupPayload } from "./buildTransferDeliveryLookup";
+import { buildTransferDeliveryLookupFixture as lookupFor } from "./aggregatorTestFixtures";
 
-// Server-side parity tests for the delivery-pace aggregator. The
-// matched client-side test is at
-// `client/src/solar-rec-dashboard/lib/helpers/trends.test.ts`
-// (currently absent — see comment below). If a client equivalent is
-// added in the future, keep these fixtures in lockstep so divergence
-// in the duplicated implementation gets caught in CI.
+// Server-side parity tests for the delivery-pace aggregator.
 //
 // As of 2026-04-27 there is no `trends.test.ts` on the client side;
 // the helper was extracted from `SolarRecDashboard.tsx` without a
@@ -19,16 +14,6 @@ import type { TransferDeliveryLookupPayload } from "./buildTransferDeliveryLooku
 type CsvRow = Record<string, string | undefined>;
 
 const NOW = new Date("2025-03-15T12:00:00Z");
-
-function lookupFor(
-  byTrackingId: Record<string, Record<string, number>> = {}
-): TransferDeliveryLookupPayload {
-  return {
-    byTrackingId,
-    inputVersionHash: "test-hash",
-    transferHistoryBatchId: "test-batch",
-  };
-}
 
 function scheduleRow(overrides: Partial<CsvRow> = {}): CsvRow {
   return {

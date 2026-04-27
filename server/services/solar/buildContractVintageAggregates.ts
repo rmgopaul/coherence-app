@@ -12,6 +12,12 @@
  * `reportingProjectPercent` for AnnualReviewTab) so a single query
  * serves both tabs unchanged at the field level.
  *
+ * Task 5.13 cleanup (2026-04-27) — pure parsing helpers + the
+ * cache-state-machine moved to `aggregatorHelpers.ts` +
+ * `withArtifactCache.ts`; the unsafe `as readonly SnapshotSystem[]`
+ * cast on the snapshot return value is now a runtime-validating
+ * `extractSnapshotSystems` call.
+ *
  * The aggregator depends on three pieces of derived state that the
  * parent component used to compute and pass as props:
  *   - `eligibleTrackingIds` — Part-2-verified systems in the
@@ -29,11 +35,11 @@
  * deliveryScheduleBase batch, transferHistory batch). Recompute is
  * sub-second on prod-scale inputs.
  *
- * The matched test files (server side here, client side in the two
- * existing tab implementations) are the divergence detector: change
- * the server logic and the tab will render different numbers; the
- * unit tests in this file's sibling `.test.ts` and the structural
- * mirror against the original tab code are what guard against drift.
+ * Divergence detector: the unit tests in this file's sibling
+ * `.test.ts`. Note there is no matched client-side test for the
+ * original `contractDeliveryRows` / `annualContractVintageRows`
+ * useMemos — those bodies were never independently tested. The
+ * server suite is the only test for the shared logic.
  */
 
 import { createHash } from "node:crypto";
@@ -42,153 +48,28 @@ import {
   srDsAbpReport,
   srDsDeliverySchedule,
 } from "../../../drizzle/schemas/solar";
+import { getActiveVersionsForKeys } from "../../db/solarRecDatasets";
 import {
-  getActiveVersionsForKeys,
-  getComputedArtifact,
-  upsertComputedArtifact,
-} from "../../db/solarRecDatasets";
-import { loadDatasetRows } from "./buildSystemSnapshot";
+  type CsvRow,
+  type SnapshotSystem,
+  clean,
+  extractSnapshotSystems,
+  getDeliveredForYear,
+  isPart2VerifiedAbpRow,
+  parseDate,
+  parseNumber,
+  toPercentValue,
+} from "./aggregatorHelpers";
+import {
+  computeSystemSnapshotHash,
+  getOrBuildSystemSnapshot,
+  loadDatasetRows,
+} from "./buildSystemSnapshot";
 import {
   buildTransferDeliveryLookupForScope,
   type TransferDeliveryLookupPayload,
 } from "./buildTransferDeliveryLookup";
-import { computeSystemSnapshotHash, getOrBuildSystemSnapshot } from "./buildSystemSnapshot";
-
-type CsvRow = Record<string, string | undefined>;
-
-// ---------------------------------------------------------------------------
-// Inlined helpers — byte-equivalent to the client versions in
-// `client/src/solar-rec-dashboard/lib/parsers.ts`,
-// `client/src/solar-rec-dashboard/lib/helpers/parsing.ts`, and
-// `client/src/solar-rec-dashboard/lib/helpers/abp.ts`. Kept inline rather
-// than reaching into client/lib for the same reason as PR-1 + PR-2:
-// migrating the client helpers to shared/ would touch ~50 files. Test
-// files on both sides catch divergence.
-// ---------------------------------------------------------------------------
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-function clean(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return String(value).trim();
-}
-
-function parseNumber(value: string | undefined): number | null {
-  const cleaned = clean(value).replace(/[$,%\s]/g, "").replaceAll(",", "");
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseDate(value: string | undefined): Date | null {
-  const raw = clean(value);
-  if (!raw) return null;
-
-  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) {
-    const year = Number(iso[1]);
-    const month = Number(iso[2]) - 1;
-    const day = Number(iso[3]);
-    const date = new Date(year, month, day);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const usDateTime = raw.match(
-    /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?:\s*([AaPp][Mm]))?)?$/
-  );
-  if (usDateTime) {
-    const month = Number(usDateTime[1]) - 1;
-    const day = Number(usDateTime[2]);
-    const year =
-      Number(usDateTime[3]) < 100
-        ? 2000 + Number(usDateTime[3])
-        : Number(usDateTime[3]);
-    let hours = usDateTime[4] ? Number(usDateTime[4]) : 0;
-    const minutes = usDateTime[5] ? Number(usDateTime[5]) : 0;
-    const meridiem = usDateTime[6]?.toUpperCase();
-
-    if (meridiem === "PM" && hours < 12) hours += 12;
-    if (meridiem === "AM" && hours === 12) hours = 0;
-
-    const date = new Date(year, month, day, hours, minutes);
-    return Number.isNaN(date.getTime()) ? null : date;
-  }
-
-  const fallback = new Date(raw);
-  return Number.isNaN(fallback.getTime()) ? null : fallback;
-}
-
-/**
- * Mirror of `client/src/solar-rec-dashboard/lib/helpers/parsing.ts ::
- * parsePart2VerificationDate`. Returns `null` for empty / "null" /
- * sentinel values; accepts Excel serial dates (5-digit integers in a
- * specific range) and calendar-formatted dates.
- */
-function parsePart2VerificationDate(
-  value: string | undefined
-): Date | null {
-  const raw = clean(value);
-  if (!raw || raw.toLowerCase() === "null") return null;
-
-  const excelSerial = raw.match(/^\d{5}(?:\.\d+)?$/);
-  if (excelSerial) {
-    const serial = Number(raw);
-    if (Number.isFinite(serial) && serial >= 20_000 && serial <= 80_000) {
-      const excelEpoch = new Date(Date.UTC(1899, 11, 30));
-      const utcDate = new Date(
-        excelEpoch.getTime() + Math.round(serial * DAY_MS)
-      );
-      const converted = new Date(
-        utcDate.getUTCFullYear(),
-        utcDate.getUTCMonth(),
-        utcDate.getUTCDate()
-      );
-      const year = converted.getFullYear();
-      if (year >= 2009 && year <= 2100) return converted;
-    }
-    return null;
-  }
-
-  const looksLikeCalendarDate =
-    /(?:19|20)\d{2}/.test(raw) &&
-    (raw.includes("/") || raw.includes("-") || /[A-Za-z]{3,9}/.test(raw));
-  if (!looksLikeCalendarDate) return null;
-
-  const parsed = parseDate(raw);
-  if (!parsed) return null;
-  const year = parsed.getFullYear();
-  if (year < 2009 || year > 2100) return null;
-  return parsed;
-}
-
-function isPart2VerifiedAbpRow(row: CsvRow): boolean {
-  const part2VerifiedDateRaw =
-    clean(row.Part_2_App_Verification_Date) ||
-    clean(row.part_2_app_verification_date);
-  return parsePart2VerificationDate(part2VerifiedDateRaw) !== null;
-}
-
-function toPercentValue(numerator: number, denominator: number): number | null {
-  if (
-    !Number.isFinite(numerator) ||
-    !Number.isFinite(denominator) ||
-    denominator <= 0
-  ) {
-    return null;
-  }
-  return (numerator / denominator) * 100;
-}
-
-function getDeliveredForYear(
-  lookup: TransferDeliveryLookupPayload,
-  trackingId: string,
-  energyYear: number
-): number {
-  const byYear = lookup.byTrackingId[trackingId];
-  if (!byYear) return 0;
-  const value = byYear[String(energyYear)];
-  return typeof value === "number" ? value : 0;
-}
+import { superjsonSerde, withArtifactCache } from "./withArtifactCache";
 
 // ---------------------------------------------------------------------------
 // Output type — superset of what either tab consumes. Both tabs receive
@@ -340,18 +221,13 @@ export function buildContractVintageAggregates(input: {
 // Server-side replication of the parent's
 // `part2EligibleSystemsForSizeReporting` filter. The IDs used to match
 // abpReport → systems mirror the client's three-way OR (portalSystemId
-// ∨ applicationId ∨ trackingId).
+// ∨ applicationId ∨ trackingId). `SnapshotSystem` lives in
+// `aggregatorHelpers.ts` (the canonical server-side subset of the
+// client `SystemRecord` shape; runtime-validated by
+// `extractSnapshotSystems`).
 // ---------------------------------------------------------------------------
 
-type SnapshotSystem = {
-  systemId: string | null;
-  stateApplicationRefId: string | null;
-  trackingSystemRefId: string | null;
-  recPrice: number | null;
-  isReporting: boolean;
-};
-
-function buildPart2EligibilityMaps(
+export function buildPart2EligibilityMaps(
   abpReportRows: CsvRow[],
   systems: readonly SnapshotSystem[]
 ): {
@@ -482,18 +358,22 @@ async function computeContractVintageInputHash(
  * deliveryStartDate) detail rows that ContractsTab and AnnualReviewTab
  * used to build locally.
  *
- * Cache hit path returns a previously-computed aggregate keyed by the
- * input batch hashes. Cache miss path:
+ * Cache miss path:
  *   1. Loads system snapshot (already cached on its own).
  *   2. Loads abpReport rows.
- *   3. Computes Part-2 eligibility maps from snapshot + abpReport.
+ *   3. Computes Part-2 eligibility maps via
+ *      `buildPart2EligibilityMaps(abpReport, snapshot)`.
  *   4. Loads deliveryScheduleBase rows.
  *   5. Loads (cached) transfer-delivery lookup.
- *   6. Runs the pure aggregator.
- *   7. Writes back.
+ *   6. Runs the pure `buildContractVintageAggregates`.
  *
- * superjson cache serde because `deliveryStartDate: Date | null` needs
- * to round-trip cleanly (same as PR-1).
+ * Early bails on missing scheduleBatch OR abpReportBatch — without a
+ * Part-2 verified abpReport there are no eligible tracking IDs and
+ * the aggregator's filter would produce an empty array anyway, just
+ * after wasting a snapshot build + transfer-lookup load.
+ *
+ * superjson cache serde because `deliveryStartDate: Date | null`
+ * needs to round-trip cleanly.
  */
 export async function getOrBuildContractVintageAggregates(
   scopeId: string
@@ -504,71 +384,59 @@ export async function getOrBuildContractVintageAggregates(
   const { hash, abpReportBatchId, scheduleBatchId } =
     await computeContractVintageInputHash(scopeId);
 
+  // No delivery-schedule data → nothing to aggregate. Mirror the
+  // client's empty-state behavior.
   if (!scheduleBatchId) {
-    // No delivery-schedule data → nothing to aggregate. Mirror the
-    // client's empty-state behavior.
     return { rows: [], fromCache: false };
   }
 
-  const cached = await getComputedArtifact(scopeId, ARTIFACT_TYPE, hash);
-  if (cached) {
-    try {
-      // superjson preserves the `Date | null` field on each row.
-      const { default: superjson } = await import("superjson");
-      const parsed = superjson.parse<ContractVintageAggregate[]>(
-        cached.payload
-      );
-      if (Array.isArray(parsed)) {
-        return { rows: parsed, fromCache: true };
-      }
-    } catch {
-      // Corrupt cache row — fall through to recompute.
-    }
+  // No Part-2 verified rows possible without an active abpReport
+  // batch → eligibility filter is empty → result is empty. Skip
+  // the snapshot build and the transfer-lookup load entirely.
+  if (!abpReportBatchId) {
+    return { rows: [], fromCache: false };
   }
 
-  // Compute fresh.
-  const [snapshot, abpReportRows, scheduleRows, transferLookup] =
-    await Promise.all([
-      getOrBuildSystemSnapshot(scopeId),
-      abpReportBatchId
-        ? loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport)
-        : Promise.resolve([] as CsvRow[]),
-      loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
-      buildTransferDeliveryLookupForScope(scopeId),
-    ]);
+  const { result, fromCache } = await withArtifactCache<
+    ContractVintageAggregate[]
+  >({
+    scopeId,
+    artifactType: ARTIFACT_TYPE,
+    inputVersionHash: hash,
+    serde: superjsonSerde<ContractVintageAggregate[]>(),
+    rowCount: (rows) => rows.length,
+    recompute: async () => {
+      const [snapshot, abpReportRows, scheduleRows, transferLookup] =
+        await Promise.all([
+          getOrBuildSystemSnapshot(scopeId),
+          loadDatasetRows(scopeId, abpReportBatchId, srDsAbpReport),
+          loadDatasetRows(scopeId, scheduleBatchId, srDsDeliverySchedule),
+          buildTransferDeliveryLookupForScope(scopeId),
+        ]);
 
-  // The snapshot returns `unknown[]` server-side because SystemRecord
-  // is typed in client-land; cast through SnapshotSystem (the subset
-  // we need). The cache-hit path stores serialized JSON of these
-  // fields, so this cast is safe whenever the snapshot is present.
-  const systems = snapshot.systems as readonly SnapshotSystem[];
+      // Runtime-validated extraction — `snapshot.systems` is
+      // declared `unknown[]` because `SystemRecord` is typed in
+      // client-land. `extractSnapshotSystems` validates each row
+      // and substitutes `null` / `false` defaults for missing or
+      // wrong-typed fields, so a future change to the snapshot
+      // payload schema can't silently corrupt the aggregate.
+      const systems: SnapshotSystem[] = extractSnapshotSystems(
+        snapshot.systems
+      );
+      const eligibilityMaps = buildPart2EligibilityMaps(
+        abpReportRows,
+        systems
+      );
 
-  const eligibilityMaps = buildPart2EligibilityMaps(abpReportRows, systems);
-
-  const rows = buildContractVintageAggregates({
-    scheduleRows,
-    eligibleTrackingIds: eligibilityMaps.eligibleTrackingIds,
-    recPriceByTrackingId: eligibilityMaps.recPriceByTrackingId,
-    isReportingByTrackingId: eligibilityMaps.isReportingByTrackingId,
-    transferDeliveryLookup: transferLookup,
+      return buildContractVintageAggregates({
+        scheduleRows,
+        eligibleTrackingIds: eligibilityMaps.eligibleTrackingIds,
+        recPriceByTrackingId: eligibilityMaps.recPriceByTrackingId,
+        isReportingByTrackingId: eligibilityMaps.isReportingByTrackingId,
+        transferDeliveryLookup: transferLookup,
+      });
+    },
   });
 
-  try {
-    const { default: superjson } = await import("superjson");
-    await upsertComputedArtifact({
-      scopeId,
-      artifactType: ARTIFACT_TYPE,
-      inputVersionHash: hash,
-      payload: superjson.stringify(rows),
-      rowCount: rows.length,
-    });
-  } catch (error) {
-    // Best-effort cache write.
-    console.warn(
-      `[buildContractVintageAggregates] cache write failed:`,
-      error instanceof Error ? error.message : error
-    );
-  }
-
-  return { rows, fromCache: false };
+  return { rows: result, fromCache };
 }

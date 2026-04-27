@@ -1,28 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { buildContractVintageAggregates } from "./buildContractVintageAggregates";
-import type { TransferDeliveryLookupPayload } from "./buildTransferDeliveryLookup";
+import { buildTransferDeliveryLookupFixture as lookupFor } from "./aggregatorTestFixtures";
 
 // Server-side fixtures for the per-(contract, deliveryStartDate)
 // aggregator. The function runs over already-derived inputs (the
 // eligibility maps + transfer-delivery lookup); these tests exercise
 // the bucketing + math, not the upstream filtering.
 //
-// The matched client-side structural mirror is the existing
-// ContractsTab `contractDeliveryRows` and AnnualReviewTab
-// `annualContractVintageRows` useMemos before this PR — anyone
-// changing this aggregator should re-read those for parity.
+// There is no matched client-side test for the original
+// `contractDeliveryRows` / `annualContractVintageRows` useMemos —
+// those bodies were never independently tested. This server suite
+// is the only test for the shared aggregator logic.
 
 type CsvRow = Record<string, string | undefined>;
-
-function lookupFor(
-  byTrackingId: Record<string, Record<string, number>> = {}
-): TransferDeliveryLookupPayload {
-  return {
-    byTrackingId,
-    inputVersionHash: "test-hash",
-    transferHistoryBatchId: "test-batch",
-  };
-}
 
 function scheduleRow(overrides: Partial<CsvRow> = {}): CsvRow {
   return {
