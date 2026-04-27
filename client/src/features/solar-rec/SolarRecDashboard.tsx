@@ -7361,7 +7361,10 @@ const aiDataContext = useMemo(() => {
           {visitedTabsRef.current.has("data-quality") && (
             <div style={{ display: activeTab === "data-quality" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading data quality tab...</div>}>
-                <DataQualityTabLazy datasets={datasets} />
+                <DataQualityTabLazy
+                  datasets={datasets}
+                  datasetSummariesByKey={datasetSummariesByKey}
+                />
               </Suspense>
             </div>
           )}
