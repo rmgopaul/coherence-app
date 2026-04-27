@@ -151,21 +151,36 @@ async function loadDatasetPayload(
   );
 }
 
-async function isChildKeyRecoverable(
+/**
+ * "Recoverable" = the dataset can be hydrated from canonical storage.
+ *
+ * The badge logic depends on this being TRUE only when the data is
+ * actually readable via the DB-first hydration path. Prior to PR-2 of
+ * the data-flow series this returned true on storage-only state
+ * (`storageSynced=true` + S3 file present, even with `dbPersisted=false`).
+ * That's the LOCAL-ONLY-NEVER-PERSISTS bug: the badge claimed "Cloud
+ * verified" but the chunked-CSV hydration read DB first, found
+ * nothing, and either failed slowly or silently degraded.
+ *
+ * The new contract: **`dbPersisted=true` is required**. Storage is a
+ * backup mirror, not a substitute for DB persistence — if the DB
+ * write failed, the dataset must surface as not-recoverable so the
+ * UI shows "Cloud sync failed" and the user can re-trigger ingest.
+ *
+ * The fallback "no sync record" branch (record === undefined) keeps
+ * the live-DB-probe + storage-probe logic for legacy datasets that
+ * predate the sync-state table — those don't have a `dbPersisted`
+ * flag to consult, so we use the live read directly.
+ */
+export async function isChildKeyRecoverable(
   userId: number,
   rawKey: string,
   record: SolarRecDatasetSyncStateRecord | undefined
 ): Promise<boolean> {
   if (record) {
     if ((record.payloadBytes ?? 0) <= 0) return false;
-    if (record.dbPersisted) return true;
-    if (record.storageSynced) {
-      // Same read-compat shim: check scope path then legacy path.
-      const scopedPath = await buildDatasetStoragePath(userId, rawKey);
-      if (await storageExists(scopedPath)) return true;
-      return storageExists(buildLegacyUserDatasetStoragePath(userId, rawKey));
-    }
-    return false;
+    // Storage existence alone no longer qualifies. DB is canonical.
+    return record.dbPersisted === true;
   }
 
   const dbPayload = await getSolarRecDashboardPayload(
@@ -238,6 +253,26 @@ export async function getRawDatasetCloudStatuses(
               ? topLevelRecord.payloadSha256
               : null,
           updatedAt: topLevelRecord?.updatedAt?.toISOString() ?? null,
+          missingKeys: [datasetKey],
+        };
+      }
+
+      // PR-2: top-level payload found, but if the sync record exists
+      // and reports `dbPersisted=false`, the data is in S3 only and
+      // not actually recoverable via the canonical hydration path.
+      // Mark the dataset itself as a missing key so the badge renders
+      // as "Cloud sync failed" and the user can re-trigger ingest.
+      // (No sync record at all → fall back to live-payload verdict.)
+      if (topLevelRecord && topLevelRecord.dbPersisted !== true) {
+        return {
+          datasetKey,
+          storageUserId,
+          recoverable: false,
+          payloadSha256:
+            topLevelRecord.payloadSha256.length > 0
+              ? topLevelRecord.payloadSha256
+              : hashSolarRecPayload(topLevelPayload),
+          updatedAt: topLevelRecord.updatedAt?.toISOString() ?? null,
           missingKeys: [datasetKey],
         };
       }

@@ -846,8 +846,8 @@ export const solarRecDashboardRouter = t.router({
       return {
         // Version marker for CLAUDE.md "is my code actually running" checks.
         // Bump the suffix when the status derivation semantics change.
-        _checkpoint: "dataset-sync-status-v1",
-        _runnerVersion: "data-flow-pr1" as const,
+        _checkpoint: "dataset-sync-status-v2",
+        _runnerVersion: "data-flow-pr2" as const,
         statuses,
       };
     }),
@@ -1224,15 +1224,22 @@ export const solarRecDashboardRouter = t.router({
       );
       const dbStorageKey = `dataset:${input.key}`;
       let persistedToDatabase = false;
+      let persistError: string | null = null;
 
       try {
         persistedToDatabase = await saveSolarRecDashboardPayload(storageUserId, dbStorageKey, input.payload);
       } catch (dbError) {
         persistedToDatabase = false;
-        console.warn(
+        persistError = dbError instanceof Error ? dbError.message : String(dbError);
+        // PR-2: bumped from console.warn to console.error so the
+        // failure shows up in Render's error log surface, not buried
+        // in info. The silent-warn in prior versions is the reason
+        // the LOCAL-ONLY-NEVER-PERSISTS bug went undiagnosed for so
+        // long.
+        console.error(
           "[saveDataset] DB persist failed:",
           dbStorageKey,
-          dbError instanceof Error ? dbError.message : dbError
+          persistError
         );
       }
 
@@ -1245,7 +1252,7 @@ export const solarRecDashboardRouter = t.router({
           dbPersisted: persistedToDatabase,
           storageSynced: true,
         }).catch((err) => {
-          console.warn(
+          console.error(
             "[saveDataset] sync-state upsert failed (storage ok):",
             dbStorageKey,
             err instanceof Error ? err.message : err
@@ -1253,12 +1260,18 @@ export const solarRecDashboardRouter = t.router({
           return false;
         });
         return {
-          _checkpoint: "saveDataset-scope-v1",
-          _runnerVersion: "data-flow-pr1" as const,
+          _checkpoint: "saveDataset-scope-v2",
+          _runnerVersion: "data-flow-pr2" as const,
           success: true,
           key,
           persistedToDatabase,
           storageSynced: true,
+          // PR-2: surface the DB error so the client can show a real
+          // message instead of silently treating partial-success as
+          // OK. `getDatasetCloudStatuses` will independently report
+          // the dataset as not-recoverable until a re-ingest succeeds
+          // (see datasetCloudStatus.ts isChildKeyRecoverable).
+          dbError: persistError,
         };
       } catch (storageError) {
         if (persistedToDatabase) {
@@ -1269,7 +1282,7 @@ export const solarRecDashboardRouter = t.router({
             dbPersisted: true,
             storageSynced: false,
           }).catch((err) => {
-            console.warn(
+            console.error(
               "[saveDataset] sync-state upsert failed (storage failed):",
               dbStorageKey,
               err instanceof Error ? err.message : err
@@ -1277,12 +1290,13 @@ export const solarRecDashboardRouter = t.router({
             return false;
           });
           return {
-            _checkpoint: "saveDataset-scope-v1",
-          _runnerVersion: "data-flow-pr1" as const,
+            _checkpoint: "saveDataset-scope-v2",
+            _runnerVersion: "data-flow-pr2" as const,
             success: true,
             key,
             persistedToDatabase,
             storageSynced: false,
+            dbError: null,
           };
         }
         throw storageError;
