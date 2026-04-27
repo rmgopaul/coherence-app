@@ -2125,6 +2125,34 @@ export default function SolarRecDashboard() {
         refetchOnReconnect: true,
       }
     );
+  // PR-6 (data-flow series): server-side dataset summaries replace
+  // the in-memory `rows.length` reads that powered the Datasets-Loaded
+  // counter, the Total-Rows readout, and (in PR-7) the Data Quality
+  // tab. This query is cheap (~5 KB response, 2-3 DB roundtrips) and
+  // lets the dashboard report accurate counts WITHOUT having every
+  // dataset's CsvRow[] materialized in JS heap. Keyed off scope so
+  // refetch-on-tab-focus picks up uploads from teammates.
+  const datasetSummariesQuery =
+    solarRecTrpc.solarRecDashboard.getDatasetSummariesAll.useQuery(undefined, {
+      staleTime: 30_000,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    });
+  const datasetSummariesByKey = useMemo(() => {
+    const map: Partial<Record<string, { rowCount: number | null; byteCount: number | null; cloudStatus: "synced" | "failed" | "missing"; lastUpdated: string | null; isRowBacked: boolean }>> = {};
+    if (datasetSummariesQuery.data?.summaries) {
+      for (const s of datasetSummariesQuery.data.summaries) {
+        map[s.datasetKey] = {
+          rowCount: s.rowCount,
+          byteCount: s.byteCount,
+          cloudStatus: s.cloudStatus,
+          lastUpdated: s.lastUpdated,
+          isRowBacked: s.isRowBacked,
+        };
+      }
+    }
+    return map;
+  }, [datasetSummariesQuery.data]);
   const saveRemoteDashboardState = solarRecTrpc.solarRecDashboard.saveState.useMutation();
   const getRemoteDataset = solarRecTrpc.solarRecDashboard.getDataset.useMutation();
   // Single-roundtrip batch read of a whole dataset (manifest + every
@@ -6249,7 +6277,22 @@ export default function SolarRecDashboard() {
 
   const dataHealthSummary = useMemo(() => {
     const loadedDatasetKeys = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).filter((key) => Boolean(datasets[key]));
-    const totalRowsLoaded = loadedDatasetKeys.reduce((sum, key) => sum + (datasets[key]?.rows.length ?? 0), 0);
+    // PR-6 (data-flow series): Total-Rows-Loaded prefers the
+    // server-side `rowCount` from `getDatasetSummariesAll` — it's
+    // accurate even before the browser has materialized the rows
+    // (cold-load + tap-to-load). Falls back to in-memory rows.length
+    // for datasets the server hasn't reported on yet (e.g., 11
+    // non-row-backed datasets where rowCount is null until PR-7).
+    const totalRowsLoaded = (Object.keys(DATASET_DEFINITIONS) as DatasetKey[]).reduce(
+      (sum, key) => {
+        const serverRowCount = datasetSummariesByKey[key]?.rowCount;
+        if (typeof serverRowCount === "number" && serverRowCount > 0) {
+          return sum + serverRowCount;
+        }
+        return sum + (datasets[key]?.rows.length ?? 0);
+      },
+      0
+    );
     const staleDatasets = loadedDatasetKeys.filter((key) => isStaleUpload(datasets[key]?.uploadedAt));
 
     // Header sync status rolls up serverDatasetCloudStatusByKey across
@@ -6315,6 +6358,8 @@ export default function SolarRecDashboard() {
     saveRemoteDashboardState.isPending,
     saveRemoteDataset.isPending,
     serverDatasetCloudStatusByKey,
+    // PR-6 (data-flow): Total-Rows-Loaded prefers server-side counts.
+    datasetSummariesByKey,
   ]);
 
   const part2FilterAudit = useMemo(() => {
