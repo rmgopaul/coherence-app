@@ -594,8 +594,25 @@ The remaining tabs that read raw rows for the 7 row-backed datasets:
   `convertedReads.rows`; that dataset is in flight via Task 5.12 and
   the rest of TrendsTab's migration follows.
 - `ApplicationPipelineTab.tsx` — `abpReport` + `abpIccReport3Rows`
-- `ContractsTab.tsx` — `deliveryScheduleBase`
-- `AnnualReviewTab.tsx` — `deliveryScheduleBase`
+- ~~`ContractsTab.tsx` — `deliveryScheduleBase`~~
+  **DONE 2026-04-27 (Task 5.13 PR-3).** Migrated alongside
+  AnnualReviewTab via the shared `getDashboardContractVintageAggregates`
+  query. Server runs the same per-(contract, deliveryStartDate)
+  bucketing the parent's `contractDeliveryRows` useMemo used to do,
+  with the same Part-2 eligibility filter applied (server replicates
+  the parent's `part2EligibleSystemsForSizeReporting` derivation by
+  reading `srDsAbpReport` rows + the system snapshot). Tab applies
+  its `(contractId, deliveryStartDate)` sort locally on the
+  aggregate. ContractsTab now reads zero core-dataset row arrays.
+- ~~`AnnualReviewTab.tsx` — `deliveryScheduleBase`~~
+  **DONE 2026-04-27 (Task 5.13 PR-3).** Same migration as
+  ContractsTab — both tabs hit the same `getDashboardContract
+  VintageAggregates` query. Server returns the union of fields both
+  tabs need (`pricedProjectCount` for ContractsTab,
+  `reportingProjectCount` + `reportingProjectPercent` for
+  AnnualReviewTab); per-tab sort + downstream roll-ups
+  (`annualVintageRows`, `annualContractSummaryRows`, etc.) stay
+  client-side because they don't read raw rows.
 - ~~`AlertsTab.tsx` — `deliveryScheduleBase`~~
   **DONE 2026-04-27 (Task 5.13 PR-2).** Only raw-row read in this
   tab was the shared `buildTrendDeliveryPace` useMemo over

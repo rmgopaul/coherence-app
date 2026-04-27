@@ -31,7 +31,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { clean, formatCurrency, formatPercent } from "@/lib/helpers";
+import { formatCurrency, formatPercent } from "@/lib/helpers";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -51,11 +51,8 @@ import {
 import {
   formatDate,
   formatNumber,
-  parseDate,
-  parseNumber,
   toPercentValue,
 } from "@/solar-rec-dashboard/lib/helpers";
-import { getDeliveredForYear } from "@/solar-rec-dashboard/lib/transferHistoryDeliveries";
 import {
   ANNUAL_CONTRACT_SUMMARY_PAGE_SIZE,
   ANNUAL_CONTRACT_VINTAGE_PAGE_SIZE,
@@ -63,28 +60,26 @@ import {
 import type {
   AnnualContractVintageAggregate,
   AnnualVintageAggregate,
-  CsvDataset,
-  SystemRecord,
 } from "@/solar-rec-dashboard/state/types";
+// Task 5.13 PR-3 (2026-04-27): annualContractVintageRows moved
+// server-side, shared with ContractsTab. AnnualReviewTab now reads
+// the aggregate via tRPC and applies its own
+// (deliveryStartDate, contractId) sort locally. With this PR,
+// AnnualReviewTab no longer reads any raw `datasets[k].rows` arrays.
+import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 
 export interface AnnualReviewTabProps {
-  /** Phase 1a delivery obligation rows from the schedule base CSV. */
-  deliveryScheduleBase: CsvDataset | null;
-  /** Set of trackingSystemRefIds that pass the Part-2-verification gate. */
-  eligibleTrackingIds: Set<string>;
-  /** Per-tracking-ID REC price (used to value required vs delivered). */
-  recPriceByTrackingId: Map<string, number>;
   /**
-   * Per-tracking-ID system lookup. The reporting-project counts in
-   * the annual vintage table read `.isReporting` from this map.
+   * Whether this tab is currently active. Gates the
+   * `getDashboardContractVintageAggregates` query so the network
+   * roundtrip only fires when the user is actually viewing annual
+   * review.
    */
-  systemsByTrackingId: Map<string, SystemRecord>;
-  /** Per-tracking-ID, per-energy-year delivered REC quantity from GATS. */
-  transferDeliveryLookup: Map<string, Map<number, number>>;
+  isActive: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,16 +87,25 @@ export interface AnnualReviewTabProps {
 // ---------------------------------------------------------------------------
 
 export default memo(function AnnualReviewTab(props: AnnualReviewTabProps) {
-  const {
-    deliveryScheduleBase,
-    eligibleTrackingIds,
-    recPriceByTrackingId,
-    systemsByTrackingId,
-    transferDeliveryLookup,
-  } = props;
+  const { isActive } = props;
 
   const [annualContractVintagePage, setAnnualContractVintagePage] = useState(1);
   const [annualContractSummaryPage, setAnnualContractSummaryPage] = useState(1);
+
+  // Task 5.13 PR-3: server-side aggregate (shared with ContractsTab).
+  // The Annual Review consumes the same per-(contract, deliveryStartDate)
+  // detail rows ContractsTab does, plus the `reportingProjectCount`
+  // field that the server-side aggregator computes from the system
+  // snapshot's `isReporting` flag. Both tabs hit the same
+  // `getDashboardContractVintageAggregates` query.
+  const contractVintageQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardContractVintageAggregates.useQuery(
+      undefined,
+      {
+        enabled: isActive,
+        staleTime: 60_000,
+      }
+    );
 
   // -------------------------------------------------------------------------
   // Per (contractId, deliveryStartDate) aggregation. Same shape as the
@@ -109,107 +113,26 @@ export default memo(function AnnualReviewTab(props: AnnualReviewTabProps) {
   // counts so the annual review can show what % of each vintage's
   // projects are still reporting.
   // -------------------------------------------------------------------------
-  const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(() => {
-    const groups = new Map<
-      string,
-      {
-        contractId: string;
-        deliveryStartDate: Date | null;
-        deliveryStartRaw: string;
-        required: number;
-        delivered: number;
-        requiredValue: number;
-        deliveredValue: number;
-        trackingIds: Set<string>;
-        reportingTrackingIds: Set<string>;
-      }
-    >();
-
-    (deliveryScheduleBase?.rows ?? []).forEach((row) => {
-      const trackingId = clean(row.tracking_system_ref_id);
-      if (!trackingId || !eligibleTrackingIds.has(trackingId)) return;
-
-      const contractId = clean(row.utility_contract_number) || "Unassigned";
-      const deliveryStartRaw = clean(row.year1_start_date);
-      if (!deliveryStartRaw) return;
-
-      const deliveryStartDate = parseDate(deliveryStartRaw);
-      const required = parseNumber(row.year1_quantity_required) ?? 0;
-      const delivered = deliveryStartDate
-        ? getDeliveredForYear(
-            transferDeliveryLookup,
-            trackingId,
-            deliveryStartDate.getFullYear(),
-          )
-        : 0;
-      const recPrice = recPriceByTrackingId.get(trackingId) ?? null;
-
-      const dateKey = deliveryStartDate
-        ? toDateKey(deliveryStartDate)
-        : deliveryStartRaw;
-      const key = `${contractId}__${dateKey}`;
-
-      let current = groups.get(key);
-      if (!current) {
-        current = {
-          contractId,
-          deliveryStartDate,
-          deliveryStartRaw,
-          required: 0,
-          delivered: 0,
-          requiredValue: 0,
-          deliveredValue: 0,
-          trackingIds: new Set<string>(),
-          reportingTrackingIds: new Set<string>(),
-        };
-        groups.set(key, current);
-      }
-
-      current.required += required;
-      current.delivered += delivered;
-      current.trackingIds.add(trackingId);
-      if (recPrice !== null) {
-        current.requiredValue += required * recPrice;
-        current.deliveredValue += delivered * recPrice;
-      }
-      if (systemsByTrackingId.get(trackingId)?.isReporting) {
-        current.reportingTrackingIds.add(trackingId);
-      }
-    });
-
-    return Array.from(groups.values())
-      .map((group) => ({
-        contractId: group.contractId,
-        deliveryStartDate: group.deliveryStartDate,
-        deliveryStartRaw: group.deliveryStartRaw,
-        required: group.required,
-        delivered: group.delivered,
-        gap: group.required - group.delivered,
-        deliveredPercent: toPercentValue(group.delivered, group.required),
-        requiredValue: group.requiredValue,
-        deliveredValue: group.deliveredValue,
-        valueGap: group.requiredValue - group.deliveredValue,
-        valueDeliveredPercent: toPercentValue(group.deliveredValue, group.requiredValue),
-        projectCount: group.trackingIds.size,
-        reportingProjectCount: group.reportingTrackingIds.size,
-        reportingProjectPercent: toPercentValue(
-          group.reportingTrackingIds.size,
-          group.trackingIds.size,
-        ),
-      }))
-      .sort((a, b) => {
+  // Server returns the union-of-fields aggregate; AnnualReviewTab
+  // reads `reportingProjectCount` + `reportingProjectPercent`
+  // (computed server-side from the system snapshot's `isReporting`
+  // flag). The extra `pricedProjectCount` field that the server
+  // includes for ContractsTab is benign here.
+  // Sort by (deliveryStartDate, contractId) — annual-review's
+  // chronological view; ContractsTab applies its own
+  // (contractId, deliveryStartDate) sort.
+  const annualContractVintageRows = useMemo<AnnualContractVintageAggregate[]>(
+    () => {
+      const rows = contractVintageQuery.data?.rows ?? [];
+      return [...rows].sort((a, b) => {
         const aTime = a.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
         const bTime = b.deliveryStartDate?.getTime() ?? Number.POSITIVE_INFINITY;
         if (aTime !== bTime) return aTime - bTime;
         return a.contractId.localeCompare(b.contractId);
       });
-  }, [
-    deliveryScheduleBase,
-    eligibleTrackingIds,
-    recPriceByTrackingId,
-    systemsByTrackingId,
-    transferDeliveryLookup,
-  ]);
+    },
+    [contractVintageQuery.data]
+  );
 
   // -------------------------------------------------------------------------
   // Roll up per (contractId, vintage) → per vintage (across all contracts)
