@@ -1182,6 +1182,80 @@ export type SrDsAnnualProductionEstimates =
 export type InsertSrDsAnnualProductionEstimates =
   typeof srDsAnnualProductionEstimates.$inferInsert;
 
+// Task 5.12 PR-9 (2026-04-27): ABP ICC Report 2 + Report 3 row tables.
+// Two structurally-identical tables for the two ICC reports — they
+// share the same `parseIccContractRows` parser (`EarlyPayment.tsx`),
+// the same join key (`applicationId`), and the same field-alias
+// reads in every consumer (EarlyPayment, deepUpdateSynth,
+// SolarRecDashboard FinancialsTab/AppPipelineTab). Strict typed
+// approach (mirrors PR-5/6/7): only `applicationId` is typed —
+// every other field uses fuzzy alias lists in the parser, so
+// reproducing that detection in the persister would re-implement
+// stable client logic. Hot path is `(scopeId, applicationId)` for
+// the per-application Map lookup in `buildIccMap`.
+//
+// The two reports are migrated together because their parser,
+// schema shape, and consumer access patterns are identical — Report 3
+// is the primary consumer in dashboard tabs, Report 2 is a fallback
+// in EarlyPayment + deepUpdateSynth, and only one ABP-specific field
+// (`Scheduled Energization Date`) is read from Report 2 only. That
+// field is preserved in `rawRow` per the established pattern.
+export const srDsAbpIccReport2Rows = mysqlTable(
+  "srDsAbpIccReport2Rows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    applicationId: varchar("applicationId", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_icc_report_2_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_icc_report_2_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeAppIdx: index("sr_ds_abp_icc_report_2_scope_app_idx").on(
+      table.scopeId,
+      table.applicationId
+    ),
+  })
+);
+
+export type SrDsAbpIccReport2Rows =
+  typeof srDsAbpIccReport2Rows.$inferSelect;
+export type InsertSrDsAbpIccReport2Rows =
+  typeof srDsAbpIccReport2Rows.$inferInsert;
+
+export const srDsAbpIccReport3Rows = mysqlTable(
+  "srDsAbpIccReport3Rows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    applicationId: varchar("applicationId", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_icc_report_3_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_icc_report_3_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeAppIdx: index("sr_ds_abp_icc_report_3_scope_app_idx").on(
+      table.scopeId,
+      table.applicationId
+    ),
+  })
+);
+
+export type SrDsAbpIccReport3Rows =
+  typeof srDsAbpIccReport3Rows.$inferSelect;
+export type InsertSrDsAbpIccReport3Rows =
+  typeof srDsAbpIccReport3Rows.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",

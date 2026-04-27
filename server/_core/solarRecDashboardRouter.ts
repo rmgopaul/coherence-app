@@ -10,6 +10,8 @@ import {
   scheduleBImportResults,
   srDsAbpCsgPortalDatabaseRows,
   srDsAbpCsgSystemMapping,
+  srDsAbpIccReport2Rows,
+  srDsAbpIccReport3Rows,
   srDsAbpPortalInvoiceMapRows,
   srDsAbpProjectApplicationRows,
   srDsAbpQuickBooksRows,
@@ -1024,6 +1026,8 @@ export const solarRecDashboardRouter = t.router({
         generationEntry: srDsGenerationEntry,
         accountSolarGeneration: srDsAccountSolarGeneration,
         annualProductionEstimates: srDsAnnualProductionEstimates,
+        abpIccReport2Rows: srDsAbpIccReport2Rows,
+        abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
@@ -3070,6 +3074,8 @@ export const solarRecDashboardRouter = t.router({
         generationEntry: srDsGenerationEntry,
         accountSolarGeneration: srDsAccountSolarGeneration,
         annualProductionEstimates: srDsAnnualProductionEstimates,
+        abpIccReport2Rows: srDsAbpIccReport2Rows,
+        abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
@@ -3086,11 +3092,14 @@ export const solarRecDashboardRouter = t.router({
       // with client `DATASET_DEFINITIONS` via the migration test
       // (added in PR-8).
       const ALL_DATASET_KEYS = [
-        // Row-backed (15 datasets — 7 from data-flow series + 8 added
-        // by Task 5.12 PRs 1–8 (generatorDetails, abpCsgSystemMapping,
+        // Row-backed (17 datasets — 7 from data-flow series + 10 added
+        // by Task 5.12 PRs 1–9 (generatorDetails, abpCsgSystemMapping,
         // abpProjectApplicationRows, abpPortalInvoiceMapRows,
         // abpCsgPortalDatabaseRows, abpQuickBooksRows,
-        // abpUtilityInvoiceRows, annualProductionEstimates) 2026-04-27).
+        // abpUtilityInvoiceRows, annualProductionEstimates,
+        // abpIccReport2Rows, abpIccReport3Rows) 2026-04-27. PR-9
+        // batched the two ICC reports together because they share
+        // the same parser, schema shape, and consumer access patterns.)
         "solarApplications",
         "abpReport",
         "generationEntry",
@@ -3113,15 +3122,13 @@ export const solarRecDashboardRouter = t.router({
         // `EarlyPayment.tsx`, and `AbpInvoiceSettlement.tsx`.
         "abpQuickBooksRows",
         "abpUtilityInvoiceRows",
-        // Non-row-backed (chunked-CSV only — Task 5.12 PRs 9–11 will
-        // migrate the remaining 3 to srDs* row tables). PR-8 also
-        // removed phantom keys `abpReportLatest` and
-        // `performanceSourceRows` from this list — neither key
-        // exists in the canonical `DatasetKey` union or
-        // `DATASET_DEFINITIONS`; they were planning-doc artifacts.
-        "convertedReads",
         "abpIccReport2Rows",
         "abpIccReport3Rows",
+        // Non-row-backed (chunked-CSV only — only `convertedReads`
+        // remains. PR-8 removed phantom keys `abpReportLatest` and
+        // `performanceSourceRows` (they don't exist in the canonical
+        // DatasetKey union or DATASET_DEFINITIONS).
+        "convertedReads",
       ] as const;
 
       const scopeId = await resolveSolarRecScopeId();
@@ -3256,7 +3263,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-summaries-all-v1",
-        _runnerVersion: "task-5.12-pr8" as const,
+        _runnerVersion: "task-5.12-pr9" as const,
         scopeId,
         summaries,
       };
@@ -3293,6 +3300,8 @@ export const solarRecDashboardRouter = t.router({
           "generationEntry",
           "accountSolarGeneration",
           "annualProductionEstimates",
+          "abpIccReport2Rows",
+          "abpIccReport3Rows",
           "contractedDate",
           "deliveryScheduleBase",
           "transferHistory",
@@ -3321,6 +3330,8 @@ export const solarRecDashboardRouter = t.router({
         generationEntry: srDsGenerationEntry,
         accountSolarGeneration: srDsAccountSolarGeneration,
         annualProductionEstimates: srDsAnnualProductionEstimates,
+        abpIccReport2Rows: srDsAbpIccReport2Rows,
+        abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
@@ -3341,7 +3352,7 @@ export const solarRecDashboardRouter = t.router({
       if (!activeBatch) {
         return {
           _checkpoint: "dataset-csv-v1",
-          _runnerVersion: "task-5.12-pr8" as const,
+          _runnerVersion: "task-5.12-pr9" as const,
           datasetKey: input.datasetKey,
           batchId: null,
           rowCount: 0,
@@ -3363,7 +3374,7 @@ export const solarRecDashboardRouter = t.router({
       if (firstPage.rows.length === 0) {
         return {
           _checkpoint: "dataset-csv-v1",
-          _runnerVersion: "task-5.12-pr8" as const,
+          _runnerVersion: "task-5.12-pr9" as const,
           datasetKey: input.datasetKey,
           batchId: activeBatch.id,
           rowCount: 0,
@@ -3413,7 +3424,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-csv-v1",
-        _runnerVersion: "task-5.12-pr8" as const,
+        _runnerVersion: "task-5.12-pr9" as const,
         datasetKey: input.datasetKey,
         batchId: activeBatch.id,
         rowCount: totalRows,
@@ -3457,6 +3468,8 @@ export const solarRecDashboardRouter = t.router({
           "generationEntry",
           "accountSolarGeneration",
           "annualProductionEstimates",
+          "abpIccReport2Rows",
+          "abpIccReport3Rows",
           "contractedDate",
           "deliveryScheduleBase",
           "transferHistory",
@@ -3486,6 +3499,8 @@ export const solarRecDashboardRouter = t.router({
         generationEntry: srDsGenerationEntry,
         accountSolarGeneration: srDsAccountSolarGeneration,
         annualProductionEstimates: srDsAnnualProductionEstimates,
+        abpIccReport2Rows: srDsAbpIccReport2Rows,
+        abpIccReport3Rows: srDsAbpIccReport3Rows,
         contractedDate: srDsContractedDate,
         deliveryScheduleBase: srDsDeliverySchedule,
         transferHistory: srDsTransferHistory,
@@ -3506,7 +3521,7 @@ export const solarRecDashboardRouter = t.router({
       if (!activeBatch) {
         return {
           _checkpoint: "dataset-rows-page-v1",
-          _runnerVersion: "task-5.12-pr8" as const,
+          _runnerVersion: "task-5.12-pr9" as const,
           datasetKey: input.datasetKey,
           batchId: null,
           rows: [],
@@ -3524,7 +3539,7 @@ export const solarRecDashboardRouter = t.router({
 
       return {
         _checkpoint: "dataset-rows-page-v1",
-        _runnerVersion: "task-5.12-pr8" as const,
+        _runnerVersion: "task-5.12-pr9" as const,
         datasetKey: input.datasetKey,
         batchId: activeBatch.id,
         rows: result.rows,
