@@ -45,6 +45,31 @@ import type {
 export interface DataQualityTabProps {
   /** Full dataset bag — drives both the freshness table and the reconciliation. */
   datasets: Partial<Record<DatasetKey, CsvDataset>>;
+  /**
+   * PR-7 (data-flow series): server-side summaries from
+   * `getDatasetSummariesAll`. When present for a given key, the
+   * freshness table prefers the server-side `rowCount` and
+   * `lastUpdated` instead of reading `ds.rows.length` / `ds.uploadedAt`
+   * from the in-memory dataset. This means the Data Quality tab
+   * shows accurate counts even before (or after) the row arrays
+   * have been materialized into JS heap — which is the whole point
+   * of the data-flow refactor.
+   *
+   * Optional so the tab degrades gracefully if the parent hasn't
+   * wired the prop yet (PR-6 added the query; PR-7 wires it here).
+   */
+  datasetSummariesByKey?: Partial<
+    Record<
+      string,
+      {
+        rowCount: number | null;
+        byteCount: number | null;
+        cloudStatus: "synced" | "failed" | "missing";
+        lastUpdated: string | null;
+        isRowBacked: boolean;
+      }
+    >
+  >;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,17 +90,30 @@ const DATASET_LABELS: Record<string, string> = {
 };
 
 export default memo(function DataQualityTab(props: DataQualityTabProps) {
-  const { datasets } = props;
+  const { datasets, datasetSummariesByKey } = props;
 
   const dataQualityFreshness = useMemo(() => {
     const now = new Date();
     return Object.entries(DATASET_LABELS).map(([key, label]) => {
       const ds = datasets[key as keyof typeof datasets];
-      const uploadedAt = ds?.uploadedAt ?? null;
+      const summary = datasetSummariesByKey?.[key];
+
+      // PR-7: prefer the server-side summary's lastUpdated +
+      // rowCount when available. Falls back to the in-memory
+      // dataset for the 11 non-row-backed datasets where the
+      // server `rowCount` is null until PR-7's row-table
+      // migration ships (deferred — see PR-8 series notes).
+      const serverUpdatedAt = summary?.lastUpdated
+        ? new Date(summary.lastUpdated)
+        : null;
+      const uploadedAt = serverUpdatedAt ?? ds?.uploadedAt ?? null;
       const ageDays = uploadedAt
         ? Math.floor((now.getTime() - uploadedAt.getTime()) / (1000 * 60 * 60 * 24))
         : null;
-      const rowCount = ds?.rows?.length ?? 0;
+      const rowCount =
+        typeof summary?.rowCount === "number" && summary.rowCount > 0
+          ? summary.rowCount
+          : (ds?.rows?.length ?? 0);
       const status = !uploadedAt
         ? "Missing"
         : ageDays! <= 7
@@ -92,7 +130,7 @@ export default memo(function DataQualityTab(props: DataQualityTabProps) {
         status,
       };
     });
-  }, [datasets]);
+  }, [datasets, datasetSummariesByKey]);
 
   const dataQualityUnmatched = useMemo(() => {
     const scheduleIds = new Set<string>();
