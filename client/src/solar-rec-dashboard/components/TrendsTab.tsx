@@ -2,16 +2,15 @@
  * Trends tab.
  *
  * Extracted from SolarRecDashboard.tsx (2026-04-14). Phase 7 of the
- * god-component decomposition — first of four "easy isolated tabs" in
- * one shipping batch. Owns:
- *   - 3 useMemos (trendDeliveryPace, trendProductionMoM, trendTopSiteIds)
- *
- * `trendDeliveryPace` is computed via `buildTrendDeliveryPace` from
- * `lib/helpers/trends.ts` — the same pure helper the AlertsTab calls
- * to detect delivery pace alerts.
+ * god-component decomposition. Originally owned 3 useMemos (delivery
+ * pace, production MoM, top site IDs) all reading raw row arrays
+ * from datasets. After Task 5.13, all three are server-aggregated:
+ * delivery-pace via `getDashboardTrendDeliveryPace` (PR-2),
+ * production-MoM + top-site-IDs via `getDashboardTrendsProduction`
+ * (PR-4). This tab now reads zero `datasets[k].rows` arrays.
  */
 
-import { memo, useMemo } from "react";
+import { memo } from "react";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import {
   Bar,
@@ -32,14 +31,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { CsvDataset } from "@/solar-rec-dashboard/state/types";
-// Task 5.13 PR-2 (2026-04-27): trendDeliveryPace moved server-side
-// (shared with AlertsTab). The other two TrendsTab useMemos
-// (trendProductionMoM, trendTopSiteIds) still read raw rows from
-// `convertedReads`; that dataset is not yet row-backed (Task 5.12 is
-// migrating it). Until then, this tab is partially compliant — the
-// `deliveryScheduleBase` raw-row read is gone, but the
-// `convertedReads` reads remain.
 import { solarRecTrpc } from "@/solar-rec/solarRecTrpc";
 
 // ---------------------------------------------------------------------------
@@ -59,14 +50,12 @@ export type TrendsLogEntry = {
 };
 
 export interface TrendsTabProps {
-  /** Converted reads CSV — drives the month-over-month production chart. */
-  convertedReads: CsvDataset | null;
   /** Dashboard snapshots, for the reporting-rate-over-time chart. */
   logEntries: TrendsLogEntry[];
   /**
-   * Whether this tab is currently active. Gates the
-   * `getDashboardTrendDeliveryPace` query so the network roundtrip
-   * only fires when the user is actually viewing trends.
+   * Whether this tab is currently active. Gates the two server
+   * queries (delivery pace + monthly production) so neither
+   * roundtrip fires unless the user is actually viewing trends.
    */
   isActive: boolean;
 }
@@ -76,12 +65,12 @@ export interface TrendsTabProps {
 // ---------------------------------------------------------------------------
 
 export default memo(function TrendsTab(props: TrendsTabProps) {
-  const { convertedReads, logEntries, isActive } = props;
+  const { logEntries, isActive } = props;
 
-  // Task 5.13 PR-2: server-side aggregate. Same shape, same values
-  // as the prior `buildTrendDeliveryPace(deliveryScheduleBase.rows,
-  // transferDeliveryLookup)` call site — server runs the identical
-  // pure function over the canonical srDs* rows.
+  // Task 5.13 PR-2: server-side delivery-pace aggregate (shared with
+  // AlertsTab). Same shape + values as the original
+  // `buildTrendDeliveryPace(deliveryScheduleBase.rows, transferDelivery
+  // Lookup)` useMemo.
   const trendDeliveryPaceQuery =
     solarRecTrpc.solarRecDashboard.getDashboardTrendDeliveryPace.useQuery(
       undefined,
@@ -92,83 +81,23 @@ export default memo(function TrendsTab(props: TrendsTabProps) {
     );
   const trendDeliveryPace = trendDeliveryPaceQuery.data?.rows ?? [];
 
-  // -------------------------------------------------------------------------
-  // Month-over-month production for the top 10 sites by total output
-  // -------------------------------------------------------------------------
-  const trendProductionMoM = useMemo(() => {
-    const rows = convertedReads?.rows ?? [];
-    if (rows.length === 0) return [];
-
-    // Group by system_id + month
-    const siteMonths = new Map<string, Map<string, number>>();
-    for (const row of rows) {
-      const sysId = row.monitoring_system_id || row.monitoring_system_name || "";
-      if (!sysId) continue;
-      const rawWh = parseFloat(row.lifetime_meter_read_wh || "");
-      if (!Number.isFinite(rawWh)) continue;
-      const readDate = row.read_date || "";
-      if (!readDate) continue;
-      // Parse M/D/YYYY or YYYY-MM-DD
-      const d = new Date(readDate);
-      if (isNaN(d.getTime())) continue;
-      const monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-
-      if (!siteMonths.has(sysId)) siteMonths.set(sysId, new Map());
-      const months = siteMonths.get(sysId)!;
-      // Keep the max lifetime read per month
-      const existing = months.get(monthKey) ?? 0;
-      if (rawWh > existing) months.set(monthKey, rawWh);
-    }
-
-    // Calculate deltas
-    type SiteTrend = { siteId: string; months: { month: string; deltaKwh: number }[] };
-    const siteTrends: SiteTrend[] = [];
-
-    siteMonths.forEach((months, siteId) => {
-      const sorted = Array.from(months.entries()).sort((a, b) =>
-        a[0].localeCompare(b[0]),
-      );
-      const deltas: { month: string; deltaKwh: number }[] = [];
-      for (let i = 1; i < sorted.length; i++) {
-        const delta = (sorted[i][1] - sorted[i - 1][1]) / 1000; // Wh to kWh
-        if (delta > 0)
-          deltas.push({ month: sorted[i][0], deltaKwh: Math.round(delta) });
+  // Task 5.13 PR-4: server-side production aggregate. Replaces the
+  // pair of useMemos (`trendProductionMoM` + `trendTopSiteIds`) that
+  // iterated `convertedReads.rows` to build the month-over-month
+  // top-10-sites chart. The server reads `srDsConvertedReads`
+  // directly, runs the same MAX-per-(site,month) → delta → top-10
+  // sort, and returns both the chart rows and the legend-order site
+  // IDs in one payload.
+  const trendsProductionQuery =
+    solarRecTrpc.solarRecDashboard.getDashboardTrendsProduction.useQuery(
+      undefined,
+      {
+        enabled: isActive,
+        staleTime: 60_000,
       }
-      if (deltas.length > 0) siteTrends.push({ siteId, months: deltas });
-    });
-
-    // Get all months across all sites
-    const allMonths = Array.from(
-      new Set(siteTrends.flatMap((s) => s.months.map((m) => m.month))),
-    ).sort();
-
-    // Top 10 sites by total production
-    const sorted = siteTrends
-      .map((s) => ({
-        ...s,
-        total: s.months.reduce((a, m) => a + m.deltaKwh, 0),
-      }))
-      .sort((a, b) => b.total - a.total)
-      .slice(0, 10);
-
-    // Build chart data: each row is a month, each column is a site
-    return allMonths.map((month) => {
-      const point: Record<string, string | number> = { month };
-      for (const site of sorted) {
-        const m = site.months.find((mm) => mm.month === month);
-        point[site.siteId] = m?.deltaKwh ?? 0;
-      }
-      return point;
-    });
-  }, [convertedReads]);
-
-  const trendTopSiteIds = useMemo(() => {
-    if (trendProductionMoM.length === 0) return [];
-    const first = trendProductionMoM[0];
-    return Object.keys(first)
-      .filter((k) => k !== "month")
-      .slice(0, 10);
-  }, [trendProductionMoM]);
+    );
+  const trendProductionMoM = trendsProductionQuery.data?.chartRows ?? [];
+  const trendTopSiteIds = trendsProductionQuery.data?.topSiteIds ?? [];
 
   // -------------------------------------------------------------------------
   // Render

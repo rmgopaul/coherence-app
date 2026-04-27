@@ -3042,6 +3042,35 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Task 5.13 PR-4 (2026-04-27) — server-side production-trend
+   * aggregate for the Trends tab. Replaces the parent's two raw-row
+   * useMemos (`trendProductionMoM` over `convertedReads.rows` +
+   * `trendTopSiteIds` derived from that). With this PR shipped,
+   * TrendsTab reads zero `datasets[k].rows` arrays.
+   *
+   * Result is small (top 10 sites × tens of months ≈ a few hundred
+   * cells), so plain JSON cache serde is fine. Cache key bundles
+   * the `convertedReads` batch ID — recompute fires only when a
+   * new convertedReads dataset lands.
+   */
+  getDashboardTrendsProduction: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildTrendsProduction,
+      TRENDS_PRODUCTION_RUNNER_VERSION,
+    } = await import("../services/solar/buildTrendsProduction");
+
+    const result = await getOrBuildTrendsProduction(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: TRENDS_PRODUCTION_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Per-dataset summary metadata for ALL 18 datasets in a single
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.
