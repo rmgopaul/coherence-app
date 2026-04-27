@@ -274,6 +274,13 @@
       "when": 1777316125514,
       "tag": "0042_add_srds_abp_portal_invoice_map_rows",
       "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "5",
+      "when": 1777319653437,
+      "tag": "0043_add_srds_abp_csg_portal_database_rows",
+      "breakpoints": true
     }
   ]
 }

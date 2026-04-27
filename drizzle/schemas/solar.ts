@@ -999,6 +999,47 @@ export type SrDsAbpPortalInvoiceMapRows =
 export type InsertSrDsAbpPortalInvoiceMapRows =
   typeof srDsAbpPortalInvoiceMapRows.$inferInsert;
 
+// Task 5.12 PR-5 (2026-04-27): ABP CSG Portal Database Rows row table.
+// Single-file replace dataset that carries 12 fields (2 required +
+// 10 optional installer/company/location/email/payment-note attrs).
+// Only `systemId` and `csgId` are promoted to typed columns: every
+// other field in `parseCsgPortalDatabase` uses fuzzy keyword-based
+// header detection (e.g., `["installer"]`, `["customer", "email"]`,
+// `["collateral", "reimburs"]`), so reproducing that detection in
+// the persister would re-implement parser logic that's already
+// stable in the client. Keeping the 10 fuzzy fields in `rawRow`
+// preserves the parser's authority and keeps the schema portable.
+// Hot path is `(scopeId, csgId)` — `buildCsgPortalLookup` keys the
+// per-system settlement-engine map on csgId.
+export const srDsAbpCsgPortalDatabaseRows = mysqlTable(
+  "srDsAbpCsgPortalDatabaseRows",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    batchId: varchar("batchId", { length: 64 }).notNull(),
+    systemId: varchar("systemId", { length: 64 }),
+    csgId: varchar("csgId", { length: 64 }),
+    rawRow: mediumtext("rawRow"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    batchIdx: index("sr_ds_abp_csg_portal_db_batch_idx").on(table.batchId),
+    scopeBatchIdx: index("sr_ds_abp_csg_portal_db_scope_batch_idx").on(
+      table.scopeId,
+      table.batchId
+    ),
+    scopeCsgIdx: index("sr_ds_abp_csg_portal_db_scope_csg_idx").on(
+      table.scopeId,
+      table.csgId
+    ),
+  })
+);
+
+export type SrDsAbpCsgPortalDatabaseRows =
+  typeof srDsAbpCsgPortalDatabaseRows.$inferSelect;
+export type InsertSrDsAbpCsgPortalDatabaseRows =
+  typeof srDsAbpCsgPortalDatabaseRows.$inferInsert;
+
 // Step 7: Scope-Aware Contract Scan Bridge
 export const solarRecScopeContractScanVersion = mysqlTable(
   "solarRecScopeContractScanVersion",
