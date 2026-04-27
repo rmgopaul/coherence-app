@@ -2994,6 +2994,42 @@ export const solarRecDashboardRouter = t.router({
   }),
 
   /**
+   * Task 5.13 PR-3 (2026-04-27) — server-side per-(contract,
+   * deliveryStartDate) aggregate shared by `ContractsTab` and
+   * `AnnualReviewTab`. Replaces the parallel
+   * `useMemo(() => contractDeliveryRows / annualContractVintageRows)`
+   * passes both tabs used to make over `deliveryScheduleBase.rows`,
+   * with the same per-tracking-id Part-2 eligibility filter applied.
+   *
+   * Output is the union of fields both tabs need
+   * (`pricedProjectCount` for ContractsTab, `reportingProjectCount` +
+   * `reportingProjectPercent` for AnnualReviewTab), so a single
+   * endpoint serves both. Per-tab sort + downstream roll-ups
+   * (annualVintageRows, contractSummaryRows, etc.) stay client-side
+   * since they don't read raw rows.
+   *
+   * Cache key bundles abpReport + deliveryScheduleBase + transferHistory
+   * batch IDs and the system-snapshot hash, so any input invalidation
+   * (new ABP report upload, snapshot refresh, etc.) propagates.
+   */
+  getDashboardContractVintageAggregates: requirePermission(
+    "solar-rec-dashboard",
+    "read"
+  ).query(async ({ ctx }) => {
+    const {
+      getOrBuildContractVintageAggregates,
+      CONTRACT_VINTAGE_RUNNER_VERSION,
+    } = await import("../services/solar/buildContractVintageAggregates");
+
+    const result = await getOrBuildContractVintageAggregates(ctx.scopeId);
+
+    return {
+      ...result,
+      _runnerVersion: CONTRACT_VINTAGE_RUNNER_VERSION,
+    };
+  }),
+
+  /**
    * Per-dataset summary metadata for ALL 18 datasets in a single
    * roundtrip. Replaces the browser's pattern of holding raw rows in
    * memory just to read `.length` on the Data Quality tab.

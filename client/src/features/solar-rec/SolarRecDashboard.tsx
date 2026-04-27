@@ -7156,12 +7156,7 @@ const aiDataContext = useMemo(() => {
           {visitedTabsRef.current.has("contracts") && (
             <div style={{ display: activeTab === "contracts" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading utility contracts tab...</div>}>
-                <ContractsTabLazy
-                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                  eligibleTrackingIds={eligibleTrackingIds}
-                  recPriceByTrackingId={recPriceByTrackingId}
-                  transferDeliveryLookup={transferDeliveryLookup}
-                />
+                <ContractsTabLazy isActive={activeTab === "contracts"} />
               </Suspense>
             </div>
           )}
@@ -7169,13 +7164,7 @@ const aiDataContext = useMemo(() => {
           {visitedTabsRef.current.has("annual-review") && (
             <div style={{ display: activeTab === "annual-review" ? "contents" : "none" }}>
               <Suspense fallback={<div className="mt-4 text-sm text-slate-500">Loading annual REC review tab...</div>}>
-                <AnnualReviewTabLazy
-                  deliveryScheduleBase={datasets.deliveryScheduleBase ?? null}
-                  eligibleTrackingIds={eligibleTrackingIds}
-                  recPriceByTrackingId={recPriceByTrackingId}
-                  systemsByTrackingId={systemsByTrackingId}
-                  transferDeliveryLookup={transferDeliveryLookup}
-                />
+                <AnnualReviewTabLazy isActive={activeTab === "annual-review"} />
               </Suspense>
             </div>
           )}
