@@ -506,12 +506,17 @@ export default function EarlyPayment() {
   const { mutateAsync: getDatasetAsync } =
     solarRecTrpc.solarRecDashboard.getDataset.useMutation();
   const saveDatasetMutation = solarRecTrpc.solarRecDashboard.saveDataset.useMutation();
-  const startScanJobMutation = trpc.abpSettlement.startContractScanJob.useMutation();
+  // Task 5.9 PR-A (2026-04-27): abpSettlement.* migrated to the
+  // standalone Solar REC router. Early Payment isn't fully migrated
+  // yet (Task 5.10), but its two `abpSettlement.*` call sites have
+  // to follow the procedure to the new home or they 404 against
+  // /api/trpc.
+  const startScanJobMutation = solarRecTrpc.abpSettlement.startContractScanJob.useMutation();
   const [activeScanJobId, setActiveScanJobId] = useState<string | null>(() =>
     typeof window !== "undefined" ? localStorage.getItem(ACTIVE_SCAN_JOB_STORAGE_KEY) : null
   );
 
-  const scanJobQuery = trpc.abpSettlement.getJobStatus.useQuery(
+  const scanJobQuery = solarRecTrpc.abpSettlement.getJobStatus.useQuery(
     { jobId: activeScanJobId ?? "" },
     {
       enabled: Boolean(activeScanJobId),

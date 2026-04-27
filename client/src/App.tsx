@@ -32,10 +32,10 @@ const InvoiceMatchDashboard = lazy(() => import("@/features/dashboard/InvoiceMat
 // migrated to the standalone Solar REC app. The legacy URLs below are
 // kept as Wouter <Redirect /> targets so existing bookmarks land on
 // the new routes after the bundle hydrates.
+// Task 5.9 PR-A + 5.11 PR-B (2026-04-27): AbpInvoiceSettlement +
+// AddressChecker also migrated; legacy URLs are <Redirect /> targets.
 const DinScrapeManager = lazy(() => import("@/features/dashboard/DinScrapeManager"));
-const AbpInvoiceSettlement = lazy(() => import("@/features/dashboard/AbpInvoiceSettlement"));
 const EarlyPayment = lazy(() => import("@/features/dashboard/EarlyPayment"));
-const AddressChecker = lazy(() => import("@/features/dashboard/AddressChecker"));
 const Notebook = lazy(() => import("@/features/notebook/Notebook"));
 const Settings = lazy(() => import("@/features/settings/Settings"));
 const Supplements = lazy(() => import("@/features/supplements/Supplements"));
@@ -125,9 +125,13 @@ function AppRoutes() {
         <Redirect to="/solar-rec/contract-scrape-manager" />
       </Route>
       <Route path={"/din-scrape-manager"} component={withRouteSuspense(DinScrapeManager)} />
-      <Route path={"/abp-invoice-settlement"} component={withRouteSuspense(AbpInvoiceSettlement)} />
+      <Route path={"/abp-invoice-settlement"}>
+        <Redirect to="/solar-rec/abp-invoice-settlement" />
+      </Route>
       <Route path={"/early-payment"} component={withRouteSuspense(EarlyPayment)} />
-      <Route path={"/address-checker"} component={withRouteSuspense(AddressChecker)} />
+      <Route path={"/address-checker"}>
+        <Redirect to="/solar-rec/address-checker" />
+      </Route>
       <Route path={"/zendesk-ticket-metrics"}>
         <Redirect to="/solar-rec/zendesk-ticket-metrics" />
       </Route>

@@ -100,7 +100,7 @@ I need to edit trpc.FOO.BAR
        Server/routers.ts no longer defines these.
 
 2. Is FOO anything else (everything personal/main — todoist, gmail,
-   abpSettlement, csgPortal, etc.)?
+   widgets, dock, weather, news, etc.)?
    ↓ → Edit server/routers.ts. server/_core/solarRecRouter.ts does
        not define these and should never need to.
 ```

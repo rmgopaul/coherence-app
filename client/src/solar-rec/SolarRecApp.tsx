@@ -33,6 +33,18 @@ const ZendeskTicketMetrics = lazy(
 const DeepUpdateSynthesizer = lazy(
   () => import("./pages/DeepUpdateSynthesizer")
 );
+// Task 5.9 PR-A (2026-04-27): AbpInvoiceSettlement migrated from
+// `client/src/features/dashboard/`. Module key
+// `abp-invoice-settlement` (matches the server-side router gate in
+// `solarRecAbpSettlementRouter.ts`).
+const AbpInvoiceSettlement = lazy(
+  () => import("./pages/AbpInvoiceSettlement")
+);
+// Task 5.11 PR-B (2026-04-27): AddressChecker migrated from
+// `client/src/features/dashboard/`. Page only calls
+// `abpSettlement.cleanMailingData` and `abpSettlement.verifyAddresses`
+// — both now on the standalone router. Module key `address-checker`.
+const AddressChecker = lazy(() => import("./pages/AddressChecker"));
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -174,6 +186,16 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/deep-update-synthesizer">
                 <PermissionGate moduleKey="deep-update-synthesizer">
                   <DeepUpdateSynthesizer />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/abp-invoice-settlement">
+                <PermissionGate moduleKey="abp-invoice-settlement">
+                  <AbpInvoiceSettlement />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/address-checker">
+                <PermissionGate moduleKey="address-checker">
+                  <AddressChecker />
                 </PermissionGate>
               </Route>
 

@@ -88,6 +88,8 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "solarRecDashboard",
   "contractScan",
   "zendesk",
+  "abpSettlement",
+  "csgPortal",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {
