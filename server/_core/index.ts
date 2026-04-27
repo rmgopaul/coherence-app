@@ -90,6 +90,7 @@ const SOLAR_REC_ROUTER_ROOTS = new Set([
   "zendesk",
   "abpSettlement",
   "csgPortal",
+  "dinScrape",
 ]);
 
 function getTrpcProcedureRoots(pathname: string): string[] {

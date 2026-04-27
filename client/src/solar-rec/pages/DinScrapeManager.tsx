@@ -1,5 +1,9 @@
 import { useAuth } from "@/_core/hooks/useAuth";
-import { trpc } from "@/lib/trpc";
+// Task 5.8 PR-B (2026-04-27): dinScrape procs migrated to the
+// standalone Solar REC router. Aliased import keeps every
+// `trpc.dinScrape.*` call site routable through the standalone
+// tRPC client (which targets /solar-rec/api/trpc).
+import { solarRecTrpc as trpc } from "@/solar-rec/solarRecTrpc";
 import { AskAiPanel } from "@/components/AskAiPanel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

@@ -26,10 +26,12 @@ import {
 // solarRecCsgPortalRouter.ts + server/_core/solarRecAbpSettlement
 // Router.ts). Every call now goes through /solar-rec/api/trpc/
 // {csgPortal,abpSettlement}.* via the dispatcher in _core/index.ts.
-// dinScrapeRouter remains here pending Task 5.8 PR-B.
-import {
-  dinScrapeRouter,
-} from "./routers/jobRunners";
+// Task 5.8 PR-B (2026-04-27): dinScrapeRouter migrated to the
+// standalone Solar REC router (server/_core/solarRecDinScrape
+// Router.ts). Every call now goes through /solar-rec/api/trpc/
+// dinScrape.* via the dispatcher. server/routers/jobRunners.ts is
+// deleted in this PR — it had no other exports left after the
+// Task 5.9 PR-A cleanup.
 import {
   clockifyRouter,
   todoistRouter,
@@ -78,10 +80,10 @@ export const appRouter = router({
   // solarRecAppRouter; reachable via /solar-rec/api/trpc/
   // solarRecDashboard.* through the dispatcher in _core/index.ts.
 
-  // Job runners — `csgPortal` + `abpSettlement` migrated to the
-  // standalone Solar REC router in Task 5.9 PR-A (2026-04-27); see
-  // import comment above. `dinScrape` follows in Task 5.8 PR-B.
-  dinScrape: dinScrapeRouter,
+  // Job runners (csgPortal, abpSettlement, dinScrape) all migrated to
+  // the standalone Solar REC router by Task 5.8 PR-B + Task 5.9 PR-A
+  // (2026-04-27). server/routers/jobRunners.ts is deleted; see the
+  // import comment block above for the rationale and target files.
 
   // Productivity integrations
   clockify: clockifyRouter,

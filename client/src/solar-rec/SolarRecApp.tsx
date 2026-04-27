@@ -45,6 +45,11 @@ const AbpInvoiceSettlement = lazy(
 // `abpSettlement.cleanMailingData` and `abpSettlement.verifyAddresses`
 // — both now on the standalone router. Module key `address-checker`.
 const AddressChecker = lazy(() => import("./pages/AddressChecker"));
+// Task 5.8 PR-B (2026-04-27): DinScrapeManager migrated from
+// `client/src/features/dashboard/`. Page calls 10 `dinScrape.*`
+// procs that moved to `solarRecDinScrapeRouter.ts`. Module key
+// `din-scrape-manager`.
+const DinScrapeManager = lazy(() => import("./pages/DinScrapeManager"));
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -196,6 +201,11 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/address-checker">
                 <PermissionGate moduleKey="address-checker">
                   <AddressChecker />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/din-scrape-manager">
+                <PermissionGate moduleKey="din-scrape-manager">
+                  <DinScrapeManager />
                 </PermissionGate>
               </Route>
 
