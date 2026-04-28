@@ -204,6 +204,11 @@ function SystemDetailImpl() {
             registry={data.registry}
             onJump={() => setLocation("/solar-rec/dashboard")}
           />
+          <MonitoringHistorySection
+            monitoringHistory={data.monitoringHistory}
+            registry={data.registry}
+            onJump={() => setLocation("/solar-rec/monitoring-overview")}
+          />
           <p className="text-[10px] text-muted-foreground text-right font-mono">
             runner: {data._runnerVersion}
           </p>
@@ -1535,6 +1540,225 @@ function OwnershipSection({
                         title={t.transactionId ?? ""}
                       >
                         {t.transactionId ?? "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Monitoring history section (Task 9.5 PR-6)
+// ---------------------------------------------------------------------------
+
+function pctOrDash(n: number, d: number): string {
+  if (d === 0) return "—";
+  return `${((n / d) * 100).toFixed(0)}%`;
+}
+
+function MonitoringHistorySection({
+  monitoringHistory,
+  registry,
+  onJump,
+}: {
+  monitoringHistory: SystemDetailResponse["monitoringHistory"];
+  registry: SystemDetailResponse["registry"];
+  onJump: () => void;
+}) {
+  const trackingId = registry?.trackingSystemRefId ?? null;
+  const noVendor = !monitoringHistory.provider;
+  const noActivity =
+    monitoringHistory.last30Attempts === 0 &&
+    monitoringHistory.recentRuns.length === 0;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-start justify-between">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">
+              Monitoring history
+              {monitoringHistory.last30Attempts > 0 && (
+                <Badge variant="outline" className="text-xs">
+                  {monitoringHistory.last30Successes}/
+                  {monitoringHistory.last30Attempts} 30d
+                </Badge>
+              )}
+            </CardTitle>
+            <CardDescription>
+              Recent scheduler activity for this system's monitoring
+              vendor (last 30 days). Joins to the same{" "}
+              <code>monitoringApiRuns</code> rows shown on the
+              Monitoring Overview page, filtered to this vendor +
+              site.
+            </CardDescription>
+          </div>
+          <Button variant="outline" size="sm" onClick={onJump}>
+            <ArrowUpRight className="h-3.5 w-3.5 mr-1" />
+            Open Monitoring Overview
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {noVendor ? (
+          <NoData
+            primary="No monitoring vendor resolved for this system."
+            secondary={
+              trackingId
+                ? "The Generation Entry dataset has no row matching this tracking ID, so we can't pin the vendor + site ID needed to look up `monitoringApiRuns` activity."
+                : "The Solar Applications row for this system is missing `tracking_system_ref_id`. Without it, the join chain to monitoring vendors can't run."
+            }
+          />
+        ) : noActivity ? (
+          <>
+            <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 text-sm mb-3">
+              <Field
+                label="Vendor"
+                value={monitoringHistory.provider ?? "—"}
+              />
+              <Field
+                label="Site ID"
+                value={monitoringHistory.siteId ?? "—"}
+              />
+            </dl>
+            <NoData
+              primary="No scheduler runs in the last 30 days."
+              secondary="The vendor + site ID are configured but the daily monitoring batch hasn't picked them up yet. Trigger Run All from the Monitoring Dashboard or wait for the next scheduled run."
+            />
+          </>
+        ) : (
+          <>
+            <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3 text-sm">
+              <Field
+                label="Vendor"
+                value={monitoringHistory.provider ?? "—"}
+              />
+              <Field
+                label="Site ID"
+                value={monitoringHistory.siteId ?? "—"}
+              />
+              <Field
+                label="7-day rate"
+                value={`${pctOrDash(
+                  monitoringHistory.last7Successes,
+                  monitoringHistory.last7Attempts
+                )} (${monitoringHistory.last7Successes}/${monitoringHistory.last7Attempts})`}
+              />
+              <Field
+                label="30-day rate"
+                value={`${pctOrDash(
+                  monitoringHistory.last30Successes,
+                  monitoringHistory.last30Attempts
+                )} (${monitoringHistory.last30Successes}/${monitoringHistory.last30Attempts})`}
+              />
+              <Field
+                label="Last success"
+                value={monitoringHistory.lastSuccessAt ?? "—"}
+              />
+              <Field
+                label="Last run"
+                value={
+                  monitoringHistory.lastRunAt
+                    ? `${monitoringHistory.lastRunAt}${
+                        monitoringHistory.lastRunStatus &&
+                        monitoringHistory.lastRunStatus !== "success"
+                          ? ` (${monitoringHistory.lastRunStatus})`
+                          : ""
+                      }`
+                    : "—"
+                }
+              />
+              <Field
+                label="Last 30d errors"
+                value={monitoringHistory.last30Errors.toString()}
+              />
+              <Field
+                label="Last 30d no-data"
+                value={monitoringHistory.last30NoData.toString()}
+              />
+            </dl>
+
+            {monitoringHistory.lastErrorMessage && (
+              <div className="mt-3 pt-3 border-t">
+                <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">
+                  Most recent error
+                </p>
+                <p className="text-xs">
+                  <span className="font-mono text-muted-foreground mr-2">
+                    {monitoringHistory.lastErrorAt ?? ""}
+                  </span>
+                  <span title={monitoringHistory.lastErrorMessage}>
+                    {monitoringHistory.lastErrorMessage}
+                  </span>
+                </p>
+              </div>
+            )}
+
+            <div className="mt-3 pt-3 border-t">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
+                Recent runs
+              </p>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead className="text-right">Readings</TableHead>
+                    <TableHead className="text-right">
+                      Lifetime kWh
+                    </TableHead>
+                    <TableHead className="text-right">Duration</TableHead>
+                    <TableHead>Error</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {monitoringHistory.recentRuns.map((run) => (
+                    <TableRow key={`${run.dateKey}-${run.status}`}>
+                      <TableCell className="text-xs font-mono">
+                        {run.dateKey}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            run.status === "success"
+                              ? "default"
+                              : run.status === "error"
+                                ? "destructive"
+                                : run.status === "no_data"
+                                  ? "secondary"
+                                  : "outline"
+                          }
+                          className="text-[10px]"
+                        >
+                          {run.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs text-right">
+                        {run.readingsCount > 0
+                          ? formatNumber(run.readingsCount, 0)
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-right">
+                        {run.lifetimeKwh !== null
+                          ? formatNumber(run.lifetimeKwh, 0)
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs text-right">
+                        {run.durationMs !== null
+                          ? `${(run.durationMs / 1000).toFixed(1)}s`
+                          : "—"}
+                      </TableCell>
+                      <TableCell
+                        className="text-xs truncate max-w-[220px]"
+                        title={run.errorMessage ?? ""}
+                      >
+                        {run.errorMessage ?? "—"}
                       </TableCell>
                     </TableRow>
                   ))}
