@@ -247,20 +247,42 @@ export async function getDockItemById(
  * doesn't exist, belongs to another user, or `title` is empty
  * after trimming). The proc layer uses the boolean to decide
  * whether to invalidate `dock.list`.
+ *
+ * Optional `source` + `meta` parameters cover the case where a
+ * chip's original classification was wrong (most commonly:
+ * Calendar `htmlLink` URLs stored as `source: "url"` because
+ * `classifyUrl` didn't recognize `www.google.com/calendar/...`
+ * URLs before that fix landed). When provided, they're updated
+ * alongside the title in a single round-trip — so the chip's
+ * badge label and color also self-heal, not just the title.
+ *
+ * Empty/whitespace `title` is rejected up-front so a re-
+ * enrichment that returns null doesn't blow away an existing
+ * value.
  */
 export async function updateDockItemTitle(
   userId: number,
   id: string,
-  title: string
+  title: string,
+  opts: { source?: DockSource; meta?: string | null } = {}
 ): Promise<boolean> {
   const db = await getDb();
   if (!db) return false;
   const trimmed = title.trim();
   if (!trimmed) return false;
+  const update: Record<string, unknown> = {
+    title: trimmed.slice(0, 500),
+  };
+  if (opts.source) update.source = opts.source;
+  // Only touch `meta` when the caller explicitly provided one — null
+  // here means "clear the existing meta" (per the partial-update
+  // semantics used elsewhere in this file). `undefined` leaves the
+  // existing meta alone.
+  if (opts.meta !== undefined) update.meta = opts.meta;
   const result = await withDbRetry("update dock item title", async () =>
     db
       .update(dockItems)
-      .set({ title: trimmed.slice(0, 500) })
+      .set(update)
       .where(and(eq(dockItems.userId, userId), eq(dockItems.id, id)))
   );
   const affected =
