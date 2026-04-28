@@ -448,6 +448,8 @@ class DashboardViewModel(
           SamsungHealthDisplay(
             sleepTotalMinutes = todayMetric.samsungSleepHours?.let { (it * 60).toInt() },
             energyScore = todayMetric.samsungEnergyScore?.toInt(),
+            sleepScore = todayMetric.samsungSleepScore?.toInt(),
+            spo2AvgPercent = todayMetric.samsungSpo2AvgPercent,
             steps = todayMetric.samsungSteps,
             activeCalories = null,
             heartRateAvg = null,

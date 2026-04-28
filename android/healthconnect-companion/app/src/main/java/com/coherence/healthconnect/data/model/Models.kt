@@ -188,6 +188,8 @@ data class ClockifyStopResult(
 data class SamsungHealthDisplay(
   val sleepTotalMinutes: Int? = null,
   val energyScore: Int? = null,
+  val sleepScore: Int? = null,
+  val spo2AvgPercent: Double? = null,
   val steps: Int? = null,
   val activeCalories: Double? = null,
   val heartRateAvg: Int? = null,
