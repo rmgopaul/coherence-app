@@ -73,3 +73,25 @@ export function isPwaStandaloneMode(
   if (!fn) return false;
   return Boolean(fn("(display-mode: standalone)").matches);
 }
+
+/**
+ * Pick the shell URL whose cached HTML should serve as the offline
+ * fallback for `pathname`. The origin serves two SPAs from the same
+ * domain — `/` (personal) and `/solar-rec/` (team) — so a
+ * `/solar-rec/*` navigation must fall back to `/solar-rec/` and not
+ * `/`. Mirrored in `client/public/service-worker.js` —
+ * `shellFallbackFor()` there is the source of truth at runtime;
+ * this is the testable surface so the routing logic can't drift.
+ *
+ * v1 of the SW (PR #223) collapsed this to `/`-or-`/dashboard`
+ * regardless of pathname, which crashed the solar-rec app when an
+ * offline navigation hit the fallback path. PR #235 splits them.
+ *
+ * Pure.
+ */
+export function selectShellFallback(pathname: string): "/" | "/solar-rec/" {
+  if (typeof pathname !== "string") return "/";
+  if (pathname.startsWith("/solar-rec/")) return "/solar-rec/";
+  if (pathname === "/solar-rec") return "/solar-rec/";
+  return "/";
+}

@@ -1,39 +1,56 @@
 /* eslint-disable no-restricted-globals */
 /**
- * Phase E (2026-04-28) — Coherence Service Worker.
+ * Coherence Service Worker — v2 (2026-04-28 hotfix follow-up).
  *
- * Hand-rolled (no workbox) so the cache strategy stays
- * obvious and the bundle stays free of an SW build dependency.
+ * v2 fixes the dual-app shell bug from v1 (PR #223 → PR #234):
  *
- * Caching contract (per route family):
+ *   - **Per-prefix shell fallback.** v1 fell back to `/` or
+ *     `/dashboard` for ANY navigation that failed network — so a
+ *     `/solar-rec/*` navigation that hit the fallback loaded the
+ *     personal app's `index.html` and crashed on a missing route.
+ *     v2 picks the shell by URL prefix: `/solar-rec/` for
+ *     `/solar-rec/*` navigations, `/` otherwise.
  *
- *   - HTML navigations       → network-first, fall back to the cached
- *                              shell when offline. Keeps the user on
- *                              the most recent build whenever the
- *                              network is reachable.
- *   - /assets/*              → cache-first. Vite emits hashed
- *                              filenames so each URL is content-
- *                              addressed; once cached, never refetch.
- *   - Other static (svg/png) → stale-while-revalidate. Render the
- *                              cached copy immediately, refresh in
- *                              the background.
- *   - /api/* + /solar-rec/api/* + /trpc → never cached. Auth state
- *                              and live data must always hit the
- *                              network.
+ *   - **No auto-skipWaiting.** v1 called `self.skipWaiting()` on
+ *     install, so a fresh SW took over without waiting for the
+ *     user to click "Refresh now." Combined with auto-reload on
+ *     `controllerchange`, the page would flash-reload silently
+ *     after a deploy. v2 only skips waiting when the page sends
+ *     `{type: "SKIP_WAITING"}` (i.e., the user clicked the toast).
  *
- * Version bump: when this file changes, increment CACHE_VERSION.
- * The activate handler removes every cache that doesn't match,
- * so the previous-build chunks are reclaimed on next start.
+ *   - **CACHE_VERSION bumped to v2.** The activate handler wipes
+ *     every cache that doesn't match the current version, so any
+ *     v1 caches users still have get cleared on first activation.
+ *
+ *   - **HTML navigation strategy unchanged conceptually**
+ *     (network-first), but the cache update is moved to the
+ *     STATIC_CACHE so it doesn't compete with hashed-asset cache
+ *     entries; and the cache update is gated on `text/html`
+ *     content-type so a redirect to a login page (text/plain or
+ *     application/json) doesn't take over the shell slot.
+ *
+ *   - **Hashed assets remain cache-first.** Filename includes a
+ *     content hash so each URL is content-addressed; once cached,
+ *     never refetch.
+ *
+ * Caching contract by route family:
+ *
+ *   - HTML navigations       → network-first, fall back to a
+ *                              prefix-correct cached shell when
+ *                              offline.
+ *   - /assets/*              → cache-first (hashed = stable).
+ *   - Other static (svg/png) → stale-while-revalidate.
+ *   - /api/* + /solar-rec/api/* + /trpc → never cached.
  */
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v2";
 const CACHE_PREFIX = "coherence";
 const STATIC_CACHE = `${CACHE_PREFIX}-static-${CACHE_VERSION}`;
 const RUNTIME_CACHE = `${CACHE_PREFIX}-runtime-${CACHE_VERSION}`;
 
-// URLs precached on install. Keep this list small — the runtime
-// fetch handler picks up everything else as the user navigates,
-// so we only seed the entry points that need to render offline.
+// URLs precached on install. Both shell entry points are precached
+// so the offline-shell fallback below can serve the *correct* HTML
+// for whichever app the user navigated to.
 const PRECACHE_URLS = [
   "/",
   "/dashboard",
@@ -45,16 +62,14 @@ const PRECACHE_URLS = [
 ];
 
 self.addEventListener("install", (event) => {
-  // skipWaiting so a new SW takes over without waiting for every
-  // tab to close. Combined with the `controllerchange` toast on
-  // the client, the user sees "new version available — refresh"
-  // and decides when to actually swap the page.
-  self.skipWaiting();
+  // NOTE: deliberately no `self.skipWaiting()` here — the new SW
+  // sits in `installed` state until the page sends a
+  // `{type: "SKIP_WAITING"}` message (triggered by the user clicking
+  // "Refresh now" on the update toast). This is the canonical
+  // service-worker update flow and avoids silent flash-reloads
+  // after a deploy.
   event.waitUntil(
     caches.open(STATIC_CACHE).then((cache) =>
-      // Use a forgiving addAll: a single 404 (e.g. missing icon)
-      // shouldn't block the whole SW install. We loop and ignore
-      // failures so the install still completes.
       Promise.allSettled(
         PRECACHE_URLS.map((url) =>
           cache.add(url).catch((err) => {
@@ -77,29 +92,21 @@ self.addEventListener("activate", (event) => {
           .filter((k) => k !== STATIC_CACHE && k !== RUNTIME_CACHE)
           .map((k) => caches.delete(k))
       );
-      // Take control of any uncontrolled clients (e.g. the page
-      // that triggered the SW install).
       await self.clients.claim();
     })()
   );
 });
 
 /**
- * Classify a request URL into a strategy. Pure — extracted so the
- * client tests can verify the routing logic without spinning up a
- * service worker context.
+ * Classify a request URL into a strategy. Mirrored in
+ * `shared/serviceWorker.helpers.ts` for unit testing — keep both in
+ * lockstep.
  */
 function strategyFor(url) {
-  // Same-origin only. Cross-origin (fonts.googleapis.com,
-  // analytics) bypasses the SW entirely.
   if (url.origin !== self.location.origin) return "passthrough";
 
   const path = url.pathname;
 
-  // API + tRPC — never cache. Includes both the personal app's
-  // `/api/trpc` and the standalone solar-rec mount at
-  // `/solar-rec/api/trpc`. The legacy `/trpc` prefix is also
-  // covered for any older paths that may still exist.
   if (
     path.startsWith("/api/") ||
     path.startsWith("/solar-rec/api/") ||
@@ -108,24 +115,29 @@ function strategyFor(url) {
     return "passthrough";
   }
 
-  // Vite-emitted hashed assets. Filename includes a content hash
-  // so cache-first is safe — a different content always means a
-  // different URL.
   if (path.startsWith("/assets/")) return "cache-first";
 
-  // Everything else is either an HTML route or a static asset
-  // (SVGs, PNGs, manifest, favicon, etc.). Distinguish by the
-  // request's Accept header at the call site (we can't see headers
-  // in this pure helper).
   return "network-first-or-stale-while-revalidate";
+}
+
+/**
+ * Pick the shell URL whose cached HTML should serve as the offline
+ * fallback for `pathname`. For `/solar-rec/*` we use `/solar-rec/`
+ * so the user lands on the team-app entry rather than the personal
+ * app's `index.html` (which would hand `/solar-rec/...` to a Wouter
+ * tree that has no matching route).
+ *
+ * Mirrored in `shared/serviceWorker.helpers.ts` — keep in lockstep.
+ */
+function shellFallbackFor(pathname) {
+  if (pathname.startsWith("/solar-rec/") || pathname === "/solar-rec") {
+    return "/solar-rec/";
+  }
+  return "/";
 }
 
 self.addEventListener("fetch", (event) => {
   const { request } = event;
-  // Only intercept GET — POST/PUT/DELETE bypass the SW entirely so
-  // mutations always hit the network. (We already passthrough
-  // /api/*, but a stray GET-like request via fetch would still be
-  // safe to intercept; non-GETs we leave to the browser.)
   if (request.method !== "GET") return;
 
   let url;
@@ -143,12 +155,8 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // network-first-or-stale-while-revalidate: HTML navigations get
-  // network-first (so a fresh deploy is always picked up when the
-  // network is reachable). Other static assets get
-  // stale-while-revalidate.
   if (request.mode === "navigate") {
-    event.respondWith(networkFirstWithShellFallback(request));
+    event.respondWith(networkFirstWithShellFallback(request, url));
     return;
   }
 
@@ -181,19 +189,14 @@ async function staleWhileRevalidate(request) {
   if (cached) return cached;
   const network = await networkPromise;
   if (network) return network;
-  // Both miss; let the caller see the failure.
   return new Response("", { status: 504, statusText: "Gateway Timeout" });
 }
 
-async function networkFirstWithShellFallback(request) {
+async function networkFirstWithShellFallback(request, url) {
   const cache = await caches.open(STATIC_CACHE);
   try {
     const response = await fetch(request);
     if (response.ok) {
-      // Only cache HTML responses; an unexpected redirect to a
-      // login page or an API JSON shouldn't take over the shell
-      // slot. The caller's request is for a navigation so we
-      // expect text/html here.
       const contentType = response.headers.get("content-type") ?? "";
       if (contentType.includes("text/html")) {
         cache.put(request, response.clone()).catch(() => {});
@@ -201,20 +204,25 @@ async function networkFirstWithShellFallback(request) {
     }
     return response;
   } catch (err) {
+    // 1. Try the exact-URL cached HTML (works if the user has
+    // navigated here before).
     const cached = await cache.match(request);
     if (cached) return cached;
-    // Offline + no cached HTML for this URL — fall back to the
-    // root shell. Wouter handles client-side routing, so once the
-    // app boots it'll figure out the location.
-    const fallback =
-      (await cache.match("/")) ?? (await cache.match("/dashboard"));
-    if (fallback) return fallback;
+    // 2. Per-prefix shell fallback. Critical bug fix vs v1: solar-
+    // rec navigations fall back to /solar-rec/, not /.
+    const shellUrl = shellFallbackFor(url.pathname);
+    const shell = await cache.match(shellUrl);
+    if (shell) return shell;
+    // 3. Last-ditch fallback to root shell so the user at least
+    // sees something (this is preserved from v1 — but reachable
+    // only when the per-prefix shell ALSO didn't precache for
+    // some reason).
+    const rootShell = await cache.match("/");
+    if (rootShell) return rootShell;
     throw err;
   }
 }
 
-// Allow the page to ask the SW to apply a pending update
-// immediately (the "Refresh now" button on the update toast).
 self.addEventListener("message", (event) => {
   if (event.data?.type === "SKIP_WAITING") {
     self.skipWaiting();

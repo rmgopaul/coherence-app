@@ -1,6 +1,14 @@
 import { Suspense, lazy, type ReactNode } from "react";
 import { Route, Switch, Redirect, Router } from "wouter";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
+// PR #235 (2026-04-28) — restoring the Toaster mount that was
+// removed in the PR #234 hotfix, but this time wrapped in
+// ThemeProvider so `useTheme()` resolves. The CLAUDE.md
+// "component context-dependency check" rule (rule 6 under
+// "Contemplate practical execution") was added to ensure this
+// pairing isn't broken again.
+import { ThemeProvider } from "@/contexts/ThemeContext";
+import { Toaster } from "@/components/ui/sonner";
 import { useSolarRecAuth } from "./hooks/useSolarRecAuth";
 import SolarRecSidebar from "./components/SolarRecSidebar";
 import SolarRecLoginPage from "./SolarRecLoginPage";
@@ -342,6 +350,21 @@ function AuthenticatedApp() {
 }
 
 export default function SolarRecApp() {
+  return (
+    // ThemeProvider is the outermost wrapper so every descendant
+    // (including the Toaster, which calls useTheme) can resolve
+    // its context. Mirrors `client/src/App.tsx`'s structure.
+    // `switchable={false}` keeps the team app on a single theme
+    // for now — change to `true` if/when team-side theme toggling
+    // is wanted.
+    <ThemeProvider defaultTheme="dark" switchable={false}>
+      <Toaster />
+      <SolarRecAppInner />
+    </ThemeProvider>
+  );
+}
+
+function SolarRecAppInner() {
   const { loading, authenticated } = useSolarRecAuth();
 
   if (loading) {

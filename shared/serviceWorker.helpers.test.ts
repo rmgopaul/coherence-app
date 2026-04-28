@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyServiceWorkerRequest,
   isPwaStandaloneMode,
+  selectShellFallback,
 } from "./serviceWorker.helpers";
 
 const ORIGIN = "https://app.example.com";
@@ -135,5 +136,59 @@ describe("isPwaStandaloneMode", () => {
   it("returns false when standalone does not match", () => {
     const fakeMatch = () => ({ matches: false });
     expect(isPwaStandaloneMode(fakeMatch)).toBe(false);
+  });
+});
+
+describe("selectShellFallback", () => {
+  it("returns / for the personal app's root", () => {
+    expect(selectShellFallback("/")).toBe("/");
+  });
+
+  it("returns / for personal-app pages", () => {
+    expect(selectShellFallback("/dashboard")).toBe("/");
+    expect(selectShellFallback("/notes")).toBe("/");
+    expect(selectShellFallback("/habits")).toBe("/");
+    expect(selectShellFallback("/widget/todoist")).toBe("/");
+    expect(selectShellFallback("/settings")).toBe("/");
+    expect(selectShellFallback("/feedback")).toBe("/");
+  });
+
+  it("returns /solar-rec/ for solar-rec pages", () => {
+    expect(selectShellFallback("/solar-rec/")).toBe("/solar-rec/");
+    expect(selectShellFallback("/solar-rec/dashboard")).toBe("/solar-rec/");
+    expect(selectShellFallback("/solar-rec/monitoring")).toBe("/solar-rec/");
+    expect(selectShellFallback("/solar-rec/system/CSG-12345")).toBe(
+      "/solar-rec/"
+    );
+    expect(selectShellFallback("/solar-rec/meter-reads/enphase-v4")).toBe(
+      "/solar-rec/"
+    );
+  });
+
+  it("treats /solar-rec (no trailing slash) as solar-rec too", () => {
+    // Edge case — Wouter normalizes URLs but a hard navigation
+    // typed in the URL bar can land here.
+    expect(selectShellFallback("/solar-rec")).toBe("/solar-rec/");
+  });
+
+  it("does NOT confuse /solar-rec-prefixed siblings", () => {
+    // A future personal-app route at /solar-rec-archive (or similar)
+    // would NOT be a solar-rec navigation — only `/solar-rec/<...>`
+    // and the bare `/solar-rec` qualify.
+    expect(selectShellFallback("/solar-rec-archive")).toBe("/");
+    expect(selectShellFallback("/solar-recap")).toBe("/");
+  });
+
+  it("returns / defensively on non-string input", () => {
+    // Hardening: any future caller passing something exotic gets
+    // the personal shell rather than throwing. The runtime SW
+    // already type-narrows pathnames, so this is belt-and-
+    // suspenders.
+    expect(
+      selectShellFallback(null as unknown as string)
+    ).toBe("/");
+    expect(
+      selectShellFallback(undefined as unknown as string)
+    ).toBe("/");
   });
 });
