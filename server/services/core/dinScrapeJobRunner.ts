@@ -1,5 +1,5 @@
 import { nanoid } from "nanoid";
-import { mapWithConcurrency } from "./concurrency";
+import { runJobWithAtomicCounters } from "./jobRunner";
 import { parseJsonMetadata } from "../../routers/helpers/utils";
 import { CSG_PORTAL_PROVIDER } from "../../routers/helpers/constants";
 
@@ -17,8 +17,10 @@ const DIN_SCRAPE_CONCURRENCY = 4;
  * site, even after the rate limit cleared.
  */
 const CLAUDE_FAILURE_THRESHOLD = 20;
-/** Bumped when the runner behavior changes — surface via getDinJobStatus. */
-export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@14";
+/** Bumped when the runner behavior changes — surface via getDinJobStatus.
+ *  Task 8.1 (2026-04-28): bump to @15 — inner loop now uses
+ *  shared `runJobWithAtomicCounters` from `./jobRunner.ts`. */
+export const DIN_SCRAPE_RUNNER_VERSION = "din-scrape-runner@15";
 
 const activeRunners = new Set<string>();
 
@@ -163,28 +165,30 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
     let claudeFailureCount = 0;
     let claudeDisabled = false;
 
-    let cancelled = false;
+    let cancellationLatch = false;
     let lastCancelCheckAt = 0;
     const CANCEL_CHECK_INTERVAL_MS = 5_000;
     /**
-     * Poll the DB for a "stopping" status. We rate-limit DB hits to
-     * once every 5s — under concurrency=4 with photo-level checks
+     * Poll the DB for a "stopping" status. Rate-limited to once
+     * every 5s — under concurrency=4 with photo-level checks
      * that's still plenty responsive, and keeps the load off the
-     * jobs table. Once cancelled, subsequent calls short-circuit.
+     * jobs table. Once latched, subsequent calls short-circuit.
+     * Used by both the outer `runJobWithAtomicCounters` helper
+     * and the mid-photo check inside `processSingleSite`.
      */
     const checkCancelled = async (): Promise<boolean> => {
-      if (cancelled) return true;
+      if (cancellationLatch) return true;
       const now = Date.now();
       if (now - lastCancelCheckAt < CANCEL_CHECK_INTERVAL_MS) return false;
       lastCancelCheckAt = now;
       const freshJob = await getDinScrapeJob(id);
-      if (!freshJob || freshJob.status === "stopping") cancelled = true;
-      return cancelled;
+      if (!freshJob || freshJob.status === "stopping") cancellationLatch = true;
+      return cancellationLatch;
     };
 
-    const processSingleSite = async (csgId: string): Promise<void> => {
-      if (await checkCancelled()) return;
-
+    const processSingleSite = async (
+      csgId: string
+    ): Promise<{ outcome: "success" | "failure" }> => {
       try {
         await updateDinScrapeJob(id, { currentCsgId: csgId });
         await refreshSessionIfNeeded();
@@ -342,37 +346,33 @@ export async function runDinScrapeJob(jobId: string): Promise<void> {
           );
         }
 
-        // Accounting: a site is either processed (no portal error) or
-        // failed. "Zero DINs found" is still a successful scan — the
-        // dinCount column already tells that story; conflating it with
-        // failure misleads the UI. The dinCount per site is the truth.
-        if (siteError) {
-          await incrementDinScrapeJobCounter(id, "failureCount");
-        } else {
-          await incrementDinScrapeJobCounter(id, "successCount");
-        }
-
+        // Accounting: a site is either processed (no portal error)
+        // or failed. "Zero DINs found" is still a successful scan —
+        // the dinCount column already tells that story; conflating
+        // it with failure misleads the UI. The dinCount per site is
+        // the truth. Counter increment is done by the outer
+        // `runJobWithAtomicCounters` helper using this return value.
         completedSinceLastRefresh += 1;
+        return {
+          outcome: siteError ? ("failure" as const) : ("success" as const),
+        };
       } catch (err) {
         console.warn(
           `[dinScrapeJob] Skipping ${csgId} due to error:`,
           err instanceof Error ? err.message : err
         );
-        try {
-          await incrementDinScrapeJobCounter(id, "failureCount");
-        } catch {
-          /* ignore */
-        }
+        return { outcome: "failure" as const };
       }
     };
 
-    await mapWithConcurrency(
-      pendingIds,
-      DIN_SCRAPE_CONCURRENCY,
-      async (csgId) => {
-        await processSingleSite(csgId);
-      }
-    );
+    const { cancelled } = await runJobWithAtomicCounters<string>({
+      jobId: id,
+      pendingItems: pendingIds,
+      concurrency: DIN_SCRAPE_CONCURRENCY,
+      isCancelled: checkCancelled,
+      incrementCounter: (field) => incrementDinScrapeJobCounter(id, field),
+      processItem: async (csgId) => processSingleSite(csgId),
+    });
 
     if (cancelled) {
       await updateDinScrapeJob(id, {

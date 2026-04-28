@@ -8,11 +8,15 @@
  * session refresh, and error handling patterns.
  */
 
-import { mapWithConcurrency } from "./concurrency";
+import { runJobWithAtomicCounters } from "./jobRunner";
 
 const CSG_SCHEDULE_B_CONCURRENCY = 3;
 const CSG_SCHEDULE_B_SESSION_REFRESH_INTERVAL = 80;
 const LOG_PREFIX = "[csgScheduleBImport]";
+
+/** Task 8.1: ship a version marker so deploys are observable. */
+export const CSG_SCHEDULE_B_IMPORT_RUNNER_VERSION =
+  "csg-schedule-b-import-runner@1";
 
 const activeRunners = new Set<string>();
 
@@ -107,7 +111,7 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
     // ── Session refresh mutex ───────────────────────────────────
     let completedSinceLastRefresh = 0;
     let sessionRefreshInFlight: Promise<void> | null = null;
-    let cancelled = false;
+    let cancellationLatch = false;
 
     const refreshSessionIfNeeded = async (): Promise<void> => {
       if (completedSinceLastRefresh < CSG_SCHEDULE_B_SESSION_REFRESH_INTERVAL) return;
@@ -124,20 +128,28 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
       await sessionRefreshInFlight;
     };
 
-    // ── Process each CSG ID ─────────────────────────────────────
-    await mapWithConcurrency(
-      pendingCsgIds,
-      CSG_SCHEDULE_B_CONCURRENCY,
-      async (row) => {
-        if (cancelled) return;
+    /**
+     * Cancellation poll. Runs before every item via the shared
+     * `runJobWithAtomicCounters` helper. The original runner polled
+     * the job row once per item — kept that cadence here (no
+     * throttle) since portal-fetch latency dominates the cost.
+     */
+    const isCancelled = async (): Promise<boolean> => {
+      if (cancellationLatch) return true;
+      const currentJob = await getScheduleBImportJob(id).catch(() => null);
+      if (currentJob?.status === "stopping") cancellationLatch = true;
+      return cancellationLatch;
+    };
 
-        // Check for cancellation
-        const currentJob = await getScheduleBImportJob(id).catch(() => null);
-        if (currentJob?.status === "stopping") {
-          cancelled = true;
-          return;
-        }
-
+    // ── Process each CSG ID via the shared runner ───────────────
+    await runJobWithAtomicCounters<{ csgId: string }>({
+      jobId: id,
+      pendingItems: pendingCsgIds,
+      concurrency: CSG_SCHEDULE_B_CONCURRENCY,
+      isCancelled,
+      incrementCounter: (field) =>
+        incrementScheduleBImportJobCounter(id, field),
+      processItem: async (row) => {
         const csgId = row.csgId;
         const fileName = makeCsgFileName(csgId);
 
@@ -145,7 +157,9 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
         await refreshSessionIfNeeded();
 
         let rowError: string | null = null;
-        let extraction: Awaited<ReturnType<typeof extractScheduleBDataFromPdfBuffer>> | null = null;
+        let extraction: Awaited<
+          ReturnType<typeof extractScheduleBDataFromPdfBuffer>
+        > | null = null;
 
         try {
           let fetchResult = await client.fetchScheduleBFile(csgId);
@@ -169,17 +183,25 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
             rowError = "No PDF data returned from portal.";
           } else {
             extraction = await Promise.race([
-              extractScheduleBDataFromPdfBuffer(fetchResult.pdfData, fetchResult.pdfFileName || fileName),
+              extractScheduleBDataFromPdfBuffer(
+                fetchResult.pdfData,
+                fetchResult.pdfFileName || fileName
+              ),
               new Promise<never>((_, reject) =>
-                setTimeout(() => reject(new Error("Schedule B extraction timed out (120s)")), 120_000)
+                setTimeout(
+                  () =>
+                    reject(new Error("Schedule B extraction timed out (120s)")),
+                  120_000
+                )
               ),
             ]);
-            if (extraction.error) {
-              rowError = extraction.error;
-            }
+            if (extraction.error) rowError = extraction.error;
           }
         } catch (err) {
-          rowError = err instanceof Error ? err.message : "Unknown CSG Schedule B runner error.";
+          rowError =
+            err instanceof Error
+              ? err.message
+              : "Unknown CSG Schedule B runner error.";
         }
 
         // ── ALWAYS write a result row ─────────────────────────
@@ -200,27 +222,30 @@ export async function runCsgScheduleBImportJob(jobId: string): Promise<void> {
             scannedAt: new Date(),
           });
         } catch (dbErr) {
+          // DB-write failure is logged as a hard error; the helper
+          // will treat this as a failure outcome below.
           console.error(
             `${LOG_PREFIX} upsertScheduleBImportResult FAILED for job=${id.slice(0, 8)} csg=${csgId}:`,
             dbErr instanceof Error ? dbErr.message : dbErr
           );
-          return;
-        }
-
-        // ── Increment counter ─────────────────────────────────
-        try {
-          if (!rowError && extraction && extraction.deliveryYears.length > 0) {
-            await incrementScheduleBImportJobCounter(id, "successCount");
-          } else {
-            await incrementScheduleBImportJobCounter(id, "failureCount");
-          }
-        } catch {
-          // Non-fatal — counter might be slightly off
+          return { outcome: "failure" as const };
         }
 
         completedSinceLastRefresh += 1;
-      }
-    );
+
+        // Counter increment is handled by the outer helper using
+        // this return value. Same logic as before:
+        // success ↔ extraction has at least one delivery year.
+        if (
+          !rowError &&
+          extraction &&
+          extraction.deliveryYears.length > 0
+        ) {
+          return { outcome: "success" as const };
+        }
+        return { outcome: "failure" as const };
+      },
+    });
 
     // ── Final status ────────────────────────────────────────────
     const finalJob = await getScheduleBImportJob(id).catch(() => null);

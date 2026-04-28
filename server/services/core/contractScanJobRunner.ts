@@ -1,8 +1,11 @@
 import { nanoid } from "nanoid";
-import { mapWithConcurrency } from "./concurrency";
+import { runJobWithAtomicCounters } from "./jobRunner";
 
 const CONTRACT_SCAN_SESSION_REFRESH_INTERVAL = 80;
 const CONTRACT_SCAN_CONCURRENCY = 3;
+
+/** Task 8.1: ship a version marker so deploys are observable. */
+export const CONTRACT_SCAN_RUNNER_VERSION = "contract-scan-runner@1";
 
 /** Set of job IDs with active runners on this process. */
 const activeRunners = new Set<string>();
@@ -150,29 +153,36 @@ export async function runContractScanJob(
       await sessionRefreshInFlight;
     };
 
-    // ── Cancellation flag ───────────────────────────────────────
-    let cancelled = false;
+    // ── Cancellation poll (throttled to every 3 contracts) ─────
+    // Wrapped in an outer counter so the helper's per-item poll
+    // doesn't hit the DB on every single item.
     let cancelCheckCounter = 0;
-
-    const checkCancelled = async (): Promise<boolean> => {
-      // Only check DB every 3 contracts to limit queries
+    let cancellationLatch = false;
+    const isCancelled = async (): Promise<boolean> => {
+      if (cancellationLatch) return true;
       cancelCheckCounter += 1;
-      if (cancelCheckCounter % 3 !== 0) return cancelled;
-
+      if (cancelCheckCounter % 3 !== 0) return false;
       const freshJob = await getContractScanJob(id);
       if (!freshJob || freshJob.status === "stopping") {
-        cancelled = true;
+        cancellationLatch = true;
       }
-      return cancelled;
+      return cancellationLatch;
     };
 
-    // ── Process a single contract ───────────────────────────────
-    const processSingleContract = async (
-      csgId: string
-    ): Promise<void> => {
-      if (await checkCancelled()) return;
-
-      try {
+    // ── Run inner loop via the shared runJobWithAtomicCounters ─
+    // The helper handles the mapWithConcurrency wrap, per-item
+    // try/catch, atomic counter increments, and cancellation
+    // skip-after-flip. Provider-specific work — fetch the PDF,
+    // session refresh, parse, write result row — stays in
+    // `processItem`.
+    const { cancelled } = await runJobWithAtomicCounters<string>({
+      jobId: id,
+      pendingItems: pendingIds,
+      concurrency: CONTRACT_SCAN_CONCURRENCY,
+      isCancelled,
+      incrementCounter: (field) =>
+        incrementContractScanJobCounter(id, field),
+      processItem: async (csgId) => {
         await updateContractScanJob(id, { currentCsgId: csgId });
         await refreshSessionIfNeeded();
 
@@ -220,15 +230,15 @@ export async function runContractScanJob(
           }
         }
 
-        // Write result row to database immediately
+        // Write result row immediately. Best-effort — a DB hiccup
+        // here isn't worth aborting the whole job.
         try {
           await insertContractScanResult({
             id: nanoid(),
             jobId: id,
             scopeId: job.scopeId,
             csgId,
-            systemName:
-              (extraction?.systemName as string) ?? null,
+            systemName: (extraction?.systemName as string) ?? null,
             vendorFeePercent:
               (extraction?.vendorFeePercent as number) ?? null,
             additionalCollateralPercent:
@@ -242,18 +252,14 @@ export async function runContractScanJob(
               null,
             ccCardAsteriskCount:
               (extraction?.ccCardAsteriskCount as number) ?? null,
-            paymentMethod:
-              (extraction?.paymentMethod as string) ?? null,
-            payeeName:
-              (extraction?.payeeName as string) ?? null,
+            paymentMethod: (extraction?.paymentMethod as string) ?? null,
+            payeeName: (extraction?.payeeName as string) ?? null,
             mailingAddress1:
               (extraction?.mailingAddress1 as string) ?? null,
             mailingAddress2:
               (extraction?.mailingAddress2 as string) ?? null,
-            cityStateZip:
-              (extraction?.cityStateZip as string) ?? null,
-            recQuantity:
-              (extraction?.recQuantity as number) ?? null,
+            cityStateZip: (extraction?.cityStateZip as string) ?? null,
+            recQuantity: (extraction?.recQuantity as number) ?? null,
             recPrice: (extraction?.recPrice as number) ?? null,
             acSizeKw: (extraction?.acSizeKw as number) ?? null,
             dcSizeKw: (extraction?.dcSizeKw as number) ?? null,
@@ -269,34 +275,14 @@ export async function runContractScanJob(
           );
         }
 
-        // Atomic counter increment
-        if (!rowError && extraction) {
-          await incrementContractScanJobCounter(id, "successCount");
-        } else {
-          await incrementContractScanJobCounter(id, "failureCount");
-        }
-
         completedSinceLastRefresh += 1;
-      } catch (err) {
-        // Contract-level failure — log and skip, don't stop the job
-        console.warn(
-          `[contractScanJob] Skipping ${csgId} due to error:`,
-          err instanceof Error ? err.message : err
-        );
-        try {
-          await incrementContractScanJobCounter(id, "failureCount");
-        } catch { /* ignore */ }
-      }
-    };
 
-    // ── Run concurrent workers ──────────────────────────────────
-    await mapWithConcurrency(
-      pendingIds,
-      CONTRACT_SCAN_CONCURRENCY,
-      async (csgId) => {
-        await processSingleContract(csgId);
-      }
-    );
+        return {
+          outcome:
+            !rowError && extraction ? ("success" as const) : ("failure" as const),
+        };
+      },
+    });
 
     // ── Final status ────────────────────────────────────────────
     if (cancelled) {

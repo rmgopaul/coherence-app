@@ -35,7 +35,7 @@
  *      cleanly if the caller set status to "stopping".
  */
 
-import { mapWithConcurrency } from "./concurrency";
+import { runJobWithAtomicCounters } from "./jobRunner";
 
 const activeRunners = new Set<string>();
 const SCHEDULE_B_IMPORT_CONCURRENCY = Math.max(
@@ -46,11 +46,14 @@ const FILE_PROCESSING_TIMEOUT_MS = 120_000; // 2 minutes per file
 const JOB_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours max
 const TOKEN_REFRESH_INTERVAL = 100; // refresh OAuth token every N files
 
+/** Task 8.1: ship a version marker so deploys are observable. */
+export const SCHEDULE_B_IMPORT_RUNNER_VERSION = "schedule-b-import-runner@1";
+
 export function isScheduleBImportRunnerActive(jobId: string): boolean {
   return activeRunners.has(jobId.trim());
 }
 
-const LOG_PREFIX = "[scheduleBImport v2_atomic_counters]";
+const LOG_PREFIX = "[scheduleBImport v3_jobRunner]";
 
 export async function runScheduleBImportJob(jobId: string): Promise<void> {
   const id = jobId.trim();
@@ -205,9 +208,7 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
     const processSingleFile = async (file: {
       fileName: string;
       storageKey: string | null;
-    }): Promise<void> => {
-      if (await checkCancelled()) return;
-
+    }): Promise<{ outcome: "success" | "failure" }> => {
       let rowError: string | null = null;
       let extraction: Awaited<
         ReturnType<typeof extractScheduleBDataFromPdfBuffer>
@@ -327,32 +328,36 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
         rowError = rowError ?? "Failed to persist extraction result.";
       }
 
-      // ── Atomic counter increment. Always runs after a result write. ─
-      try {
-        if (!rowError && extraction) {
-          await incrementScheduleBImportJobCounter(id, "successCount");
-          console.log(
-            `${LOG_PREFIX} ✓ job=${id.slice(0, 8)} file=${file.fileName} success resultWritten=${resultWriteSucceeded} gatsId=${extraction.gatsId ?? "none"} years=${extraction.deliveryYears?.length ?? 0}`
-          );
-        } else {
-          await incrementScheduleBImportJobCounter(id, "failureCount");
-          console.log(
-            `${LOG_PREFIX} ✗ job=${id.slice(0, 8)} file=${file.fileName} failure resultWritten=${resultWriteSucceeded} error=${rowError ?? "unknown"}`
-          );
-        }
-      } catch (err) {
-        console.error(
-          `${LOG_PREFIX} counter increment FAILED for job=${id.slice(0, 8)} file=${file.fileName}:`,
-          err instanceof Error ? err.message : err
+      // ── Outcome → outer helper increments the counter ───────────────
+      // The outer `runJobWithAtomicCounters` consumes this return
+      // value and bumps successCount or failureCount atomically.
+      // Logging stays here so we keep the per-file diagnostic lines
+      // we relied on for debugging stale-result-row incidents.
+      if (!rowError && extraction) {
+        console.log(
+          `${LOG_PREFIX} ✓ job=${id.slice(0, 8)} file=${file.fileName} success resultWritten=${resultWriteSucceeded} gatsId=${extraction.gatsId ?? "none"} years=${extraction.deliveryYears?.length ?? 0}`
         );
+        return { outcome: "success" as const };
+      } else {
+        console.log(
+          `${LOG_PREFIX} ✗ job=${id.slice(0, 8)} file=${file.fileName} failure resultWritten=${resultWriteSucceeded} error=${rowError ?? "unknown"}`
+        );
+        return { outcome: "failure" as const };
       }
     };
 
-    await mapWithConcurrency(
-      pendingFiles,
-      SCHEDULE_B_IMPORT_CONCURRENCY,
-      processSingleFile
-    );
+    await runJobWithAtomicCounters<{
+      fileName: string;
+      storageKey: string | null;
+    }>({
+      jobId: id,
+      pendingItems: pendingFiles,
+      concurrency: SCHEDULE_B_IMPORT_CONCURRENCY,
+      isCancelled: checkCancelled,
+      incrementCounter: (field) =>
+        incrementScheduleBImportJobCounter(id, field),
+      processItem: async (file) => processSingleFile(file),
+    });
 
     // ── Automatic retry pass for transient failures ──────────────────
     // Re-process files that failed with retryable errors (Drive
@@ -366,11 +371,18 @@ export async function runScheduleBImportJob(jobId: string): Promise<void> {
         console.log(
           `${LOG_PREFIX} retrying ${retryableFiles.length} files with transient errors`
         );
-        await mapWithConcurrency(
-          retryableFiles,
-          SCHEDULE_B_IMPORT_CONCURRENCY,
-          processSingleFile
-        );
+        await runJobWithAtomicCounters<{
+          fileName: string;
+          storageKey: string | null;
+        }>({
+          jobId: id,
+          pendingItems: retryableFiles,
+          concurrency: SCHEDULE_B_IMPORT_CONCURRENCY,
+          isCancelled: checkCancelled,
+          incrementCounter: (field) =>
+            incrementScheduleBImportJobCounter(id, field),
+          processItem: async (file) => processSingleFile(file),
+        });
         // Reconcile counters after retry — some failures may now be
         // successes and the atomic counters will have drifted.
         await reconcileScheduleBImportJobState(id);
