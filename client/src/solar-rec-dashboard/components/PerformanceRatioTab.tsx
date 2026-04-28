@@ -45,6 +45,7 @@ import {
   matchesExpectedHeaders,
   parseCsv,
 } from "@/solar-rec-dashboard/lib/csvIo";
+import { getDatasetColumnarSource } from "@/solar-rec-dashboard/lib/lazyDataset";
 import {
   buildGeneratorDateOnlineByTrackingId,
   calculateExpectedWhForRange,
@@ -388,20 +389,80 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
     let invalidConvertedReads = 0;
     let convertedReadCount = 0;
 
-    const rawRows = deferredConvertedReads?.rows ?? [];
-    for (let index = 0; index < rawRows.length; index += 1) {
+    // Read directly from the columnar source so we never trigger the
+    // lazy `.rows` getter and never allocate a 700k-element CsvRow[]
+    // just to walk it. The columnar source is what the hydrator
+    // already produced; we just need column-index lookups for the 5
+    // fields this tab actually reads. Falls back to materialized
+    // `.rows` if the dataset wasn't built via buildLazyCsvDataset
+    // (legacy in-memory datasets, e.g. fresh uploads).
+    const columnar = getDatasetColumnarSource(deferredConvertedReads);
+    const rowCount = columnar
+      ? columnar.rowCount
+      : deferredConvertedReads?.rows.length ?? 0;
+    const monitoringCol = columnar ? columnar.headers.indexOf("monitoring") : -1;
+    const monitoringSystemIdCol = columnar
+      ? columnar.headers.indexOf("monitoring_system_id")
+      : -1;
+    const monitoringSystemNameCol = columnar
+      ? columnar.headers.indexOf("monitoring_system_name")
+      : -1;
+    const lifetimeReadCol = columnar
+      ? columnar.headers.indexOf("lifetime_meter_read_wh")
+      : -1;
+    const readDateCol = columnar ? columnar.headers.indexOf("read_date") : -1;
+    const monitoringColumn = columnar && monitoringCol >= 0 ? columnar.columnData[monitoringCol] : null;
+    const monitoringSystemIdColumn =
+      columnar && monitoringSystemIdCol >= 0 ? columnar.columnData[monitoringSystemIdCol] : null;
+    const monitoringSystemNameColumn =
+      columnar && monitoringSystemNameCol >= 0 ? columnar.columnData[monitoringSystemNameCol] : null;
+    const lifetimeReadColumn =
+      columnar && lifetimeReadCol >= 0 ? columnar.columnData[lifetimeReadCol] : null;
+    const readDateColumn = columnar && readDateCol >= 0 ? columnar.columnData[readDateCol] : null;
+    // Fallback path: when no columnar source is available, walk the
+    // already-materialized rows array. This still allocates the
+    // CsvRow[] cache, but avoids re-reading from a non-existent
+    // columnar source.
+    const fallbackRows = columnar ? null : deferredConvertedReads?.rows ?? null;
+
+    for (let index = 0; index < rowCount; index += 1) {
       convertedReadCount += 1;
-      const row = rawRows[index]!;
-      const monitoring = clean(row.monitoring);
+      const monitoringRaw = monitoringColumn
+        ? monitoringColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.monitoring ?? ""
+          : "";
+      const monitoringSystemIdRaw = monitoringSystemIdColumn
+        ? monitoringSystemIdColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.monitoring_system_id ?? ""
+          : "";
+      const monitoringSystemNameRaw = monitoringSystemNameColumn
+        ? monitoringSystemNameColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.monitoring_system_name ?? ""
+          : "";
+      const lifetimeReadRaw = lifetimeReadColumn
+        ? lifetimeReadColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.lifetime_meter_read_wh ?? ""
+          : "";
+      const readDateRawCell = readDateColumn
+        ? readDateColumn[index] ?? ""
+        : fallbackRows
+          ? fallbackRows[index]?.read_date ?? ""
+          : "";
+
+      const monitoring = clean(monitoringRaw);
       const monitoringNormalized = normalizeMonitoringMatch(monitoring);
       const lifetimeReadWh = parseEnergyToWh(
-        row.lifetime_meter_read_wh,
+        lifetimeReadRaw,
         "lifetime_meter_read_wh",
         "wh",
       );
-      const monitoringSystemId = clean(row.monitoring_system_id);
+      const monitoringSystemId = clean(monitoringSystemIdRaw);
       const monitoringSystemIdNormalized = normalizeSystemIdMatch(monitoringSystemId);
-      const monitoringSystemName = clean(row.monitoring_system_name);
+      const monitoringSystemName = clean(monitoringSystemNameRaw);
       const monitoringSystemNameNormalized = normalizeSystemNameMatch(monitoringSystemName);
 
       if (
@@ -413,7 +474,7 @@ export default memo(function PerformanceRatioTab(props: PerformanceRatioTabProps
         continue;
       }
 
-      const readDateRaw = clean(row.read_date);
+      const readDateRaw = clean(readDateRawCell);
       const readDate = parseDate(readDateRaw);
       const readKey = `converted-${index}`;
 
