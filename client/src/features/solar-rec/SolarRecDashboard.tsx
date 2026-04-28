@@ -7707,7 +7707,19 @@ const aiDataContext = useMemo(() => {
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge className="border-emerald-200 bg-emerald-100 text-emerald-800">
-                            {dataset.rows.length} rows loaded
+                            {/*
+                              Task 5.14 PR-3: read the scalar
+                              `dataset.rowCount` (PR-1) instead of
+                              `dataset.rows.length`. The latter would
+                              trip the lazy `.rows` getter and walk
+                              the columnar source into a full
+                              CsvRow[] just to call `.length` on it
+                              — wasteful on every Step 1 render.
+                              `rowCount` is set at construction time
+                              by `buildLazyCsvDataset` and matches
+                              `rows.length` exactly.
+                            */}
+                            {dataset.rowCount} rows loaded
                           </Badge>
                           {localOnlyDatasets[key] ? (
                             <Badge className="border-amber-200 bg-amber-100 text-amber-900">
