@@ -89,35 +89,50 @@ export const solarRecSystemsRouter = t.router({
         getLatestScheduleBResultForSystem,
         getLatestMeterReadsForCsgId,
         getInvoiceStatusForCsgId,
+        getOwnershipForCsgId,
       } = await import("../db");
 
       // Pull the registry first — its fields drive several
-      // downstream join keys (trackingSystemRefId + systemId for
-      // Schedule B + meter reads, applicationId for ICC report).
-      // We then fan out the five other reads in parallel.
+      // downstream join keys (trackingSystemRefId for Schedule B +
+      // meter reads + ownership, systemId for Schedule B,
+      // applicationId for ICC report). We then fan out the
+      // remaining reads in parallel.
       const registry = await getSystemByCsgId(ctx.scopeId, input.csgId);
 
-      const [contractScans, dinScrape, scheduleBResult, meterReads, invoiceStatus] =
-        await Promise.all([
-          getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
-          getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
-          getLatestScheduleBResultForSystem(ctx.scopeId, {
-            csgId: input.csgId,
-            systemId: registry?.systemId ?? null,
-            trackingSystemRefId: registry?.trackingSystemRefId ?? null,
-          }),
-          // Task 9.5 PR-1 (2026-04-28): meter-read history.
-          getLatestMeterReadsForCsgId(ctx.scopeId, input.csgId, {
-            preResolvedRegistry: registry,
-            limit: 30,
-          }),
-          // Task 9.5 PR-2 (2026-04-28): invoice status (utility
-          // invoices + ICC contract value).
-          getInvoiceStatusForCsgId(ctx.scopeId, input.csgId, {
-            preResolvedRegistry: registry,
-            limit: 12,
-          }),
-        ]);
+      const [
+        contractScans,
+        dinScrape,
+        scheduleBResult,
+        meterReads,
+        invoiceStatus,
+        ownership,
+      ] = await Promise.all([
+        getLatestScanResultsByCsgIds(ctx.scopeId, [input.csgId]),
+        getLatestDinScrapeForCsgId(ctx.scopeId, input.csgId),
+        getLatestScheduleBResultForSystem(ctx.scopeId, {
+          csgId: input.csgId,
+          systemId: registry?.systemId ?? null,
+          trackingSystemRefId: registry?.trackingSystemRefId ?? null,
+        }),
+        // Task 9.5 PR-1 (2026-04-28): meter-read history.
+        getLatestMeterReadsForCsgId(ctx.scopeId, input.csgId, {
+          preResolvedRegistry: registry,
+          limit: 30,
+        }),
+        // Task 9.5 PR-2 (2026-04-28): invoice status (utility
+        // invoices + ICC contract value).
+        getInvoiceStatusForCsgId(ctx.scopeId, input.csgId, {
+          preResolvedRegistry: registry,
+          limit: 12,
+        }),
+        // Task 9.5 PR-5 (2026-04-28): transfer history + ownership
+        // rollup. Joins srDsTransferHistory by GATS Unit ID; falls
+        // through to empty when the registry has no trackingId.
+        getOwnershipForCsgId(ctx.scopeId, input.csgId, {
+          preResolvedRegistry: registry,
+          limit: 30,
+        }),
+      ]);
 
       const contractScan = contractScans[0] ?? null;
 
@@ -130,6 +145,7 @@ export const solarRecSystemsRouter = t.router({
         scheduleBResult,
         meterReads,
         invoiceStatus,
+        ownership,
       };
     }),
 
