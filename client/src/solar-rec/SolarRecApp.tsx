@@ -62,6 +62,10 @@ const EarlyPayment = lazy(() => import("./pages/EarlyPayment"));
 const InvoiceMatchDashboard = lazy(
   () => import("./pages/InvoiceMatchDashboard")
 );
+// Task 8.2 (2026-04-27): unified `/solar-rec/jobs` index page —
+// surfaces live + recent runs across all four job runners.
+// Module key `jobs` (already in MODULES). Read-only page.
+const JobsIndex = lazy(() => import("./pages/JobsIndex"));
 
 // Meter read pages (existing, reused from main app)
 // Task 5.4 vendor 13/16 — SolarEdge migrated to solar-rec-native page
@@ -228,6 +232,11 @@ function AuthenticatedApp() {
               <Route path="/solar-rec/invoice-match-dashboard">
                 <PermissionGate moduleKey="invoice-match">
                   <InvoiceMatchDashboard />
+                </PermissionGate>
+              </Route>
+              <Route path="/solar-rec/jobs">
+                <PermissionGate moduleKey="jobs">
+                  <JobsIndex />
                 </PermissionGate>
               </Route>
 
