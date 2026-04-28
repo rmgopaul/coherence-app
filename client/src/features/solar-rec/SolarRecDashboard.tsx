@@ -3311,6 +3311,80 @@ export default function SolarRecDashboard() {
       if (uploads.length === 0) return false;
       setDatasetCloudSyncBadge(key, "pending");
       try {
+        // Append-mode safety: when the user clicks "Add CSV(s)" on a
+        // multi-append dataset that's still "Tap tab to load" (cloud-
+        // saved but not locally hydrated), `remoteSourceManifestsRef`
+        // is empty for this key. Pre-fix, this caused
+        // `previousSources = []` → the merge collapsed every prior
+        // source down to just the new upload — silently clobbering
+        // the cloud manifest. (User-visible regression: a
+        // transferHistory dataset with 68 accumulated GATS uploads
+        // shrank to 1 after a single Add CSV(s) click.) Fetch the
+        // authoritative manifest from server before merging; if the
+        // fetch fails on append, abort the upload rather than
+        // collapse the manifest.
+        if (
+          mode === "append" &&
+          MULTI_APPEND_DATASET_KEYS.has(key) &&
+          !remoteSourceManifestsRef.current[key]
+        ) {
+          try {
+            const response = await withRetry(
+              () => getRemoteDatasetRef.current.mutateAsync({ key }),
+              3,
+              250
+            );
+            const payload = response?.payload;
+            if (payload) {
+              const chunkKeys = parseChunkPointerPayload(payload);
+              let manifestText: string | null = payload;
+              if (chunkKeys && chunkKeys.length > 0) {
+                const chunkResponses = await mapWithBoundedConcurrency(
+                  chunkKeys,
+                  REMOTE_READ_CONCURRENCY,
+                  (chunkKey) =>
+                    withRetry(
+                      () => getRemoteDatasetRef.current.mutateAsync({ key: chunkKey }),
+                      3,
+                      250
+                    ).catch(() => null)
+                );
+                let combined = "";
+                let allOk = true;
+                for (const chunkResponse of chunkResponses) {
+                  if (!chunkResponse?.payload) {
+                    allOk = false;
+                    break;
+                  }
+                  combined += chunkResponse.payload;
+                }
+                manifestText = allOk ? combined : null;
+              }
+              const fetchedManifest = manifestText
+                ? parseRemoteSourceManifestPayload(manifestText)
+                : null;
+              if (fetchedManifest) {
+                remoteSourceManifestsRef.current[key] = fetchedManifest;
+                setRemoteSourceManifests((previous) => ({
+                  ...previous,
+                  [key]: fetchedManifest,
+                }));
+              }
+            }
+          } catch (manifestError) {
+            // Hard fail: surfacing this is critical because the
+            // alternative is a silent manifest clobber.
+            setDatasetCloudSyncBadge(key, "failed");
+            const message =
+              manifestError instanceof Error
+                ? manifestError.message
+                : "Unknown error while fetching the existing source manifest.";
+            setStorageNotice(
+              `Could not read the existing ${DATASET_DEFINITIONS[key].label} manifest from cloud — append aborted to avoid clobbering prior sources. ${message}`
+            );
+            return false;
+          }
+        }
         const previousManifest = remoteSourceManifestsRef.current[key];
         const previousSources = previousManifest?.sources ?? [];
         const uploadedSources: RemoteDatasetSourceRef[] = [];
