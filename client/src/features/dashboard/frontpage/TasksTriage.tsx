@@ -25,6 +25,9 @@ import {
 } from "./triage.helpers";
 // Task 10.1 (2026-04-28): cross-cutting per-row action menu.
 import { SignalActions } from "./SignalActions";
+// Task 10.3 (2026-04-28): "📎 N linked notes" badge for tasks
+// that have notes attached via the Notebook→Todoist forward link.
+import { LinkedNotesBadge } from "./LinkedNotesBadge";
 
 interface TasksTriageProps {
   tasks: {
@@ -40,6 +43,10 @@ interface BandProps {
   items: TodoistTask[];
   onComplete: (taskId: string) => void;
   busyTaskId: string | null;
+  /** Task 10.3: per-row note count, threaded down from the parent
+   *  so we make ONE batched count query for the whole feed
+   *  rather than N separate listForExternal calls. */
+  noteCountsByTaskId: Record<string, number>;
 }
 
 function Band({
@@ -49,6 +56,7 @@ function Band({
   items,
   onComplete,
   busyTaskId,
+  noteCountsByTaskId,
 }: BandProps) {
   if (items.length === 0) return null;
   return (
@@ -93,6 +101,14 @@ function Band({
               <span className={`fp-triage-row__pri fp-triage-row__pri--${priorityLabel(task).toLowerCase()}`}>
                 {priorityLabel(task)}
               </span>
+              {/* Task 10.3: 📎 N linked notes badge — only renders
+                  when the count is > 0, so most rows are unaffected. */}
+              <LinkedNotesBadge
+                linkType="todoist_task"
+                externalId={task.id}
+                count={noteCountsByTaskId[task.id]}
+                className="fp-triage-row__notes inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              />
               {/* Task 10.1: cross-cutting actions (Drop to Dock /
                   Pin as King / Defer to tomorrow). The bx button
                   keeps "Mark complete" because it's the most-used
@@ -128,6 +144,22 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
     () => splitTriageBands(tasks.dueToday),
     [tasks.dueToday]
   );
+
+  // Task 10.3: batched note-count query so the 📎 badge gets its
+  // count without N separate listForExternal calls. The dashboard
+  // typically has 5-15 tasks; one round-trip handles all of them.
+  const taskIds = useMemo(
+    () => tasks.dueToday.map((t) => t.id),
+    [tasks.dueToday]
+  );
+  const noteCountsQuery = trpc.notes.countLinksByExternalIds.useQuery(
+    { linkType: "todoist_task" as const, externalIds: taskIds },
+    {
+      enabled: taskIds.length > 0,
+      staleTime: 60_000,
+    }
+  );
+  const noteCountsByTaskId = noteCountsQuery.data?.counts ?? {};
 
   const open = tasks.dueToday.length;
   const done = tasks.completedCount;
@@ -175,6 +207,7 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
             items={overdue}
             onComplete={(taskId) => completeMut.mutate({ taskId })}
             busyTaskId={busyId}
+            noteCountsByTaskId={noteCountsByTaskId}
           />
           <Band
             variant="today"
@@ -183,6 +216,7 @@ export function TasksTriage({ tasks }: TasksTriageProps) {
             items={today}
             onComplete={(taskId) => completeMut.mutate({ taskId })}
             busyTaskId={busyId}
+            noteCountsByTaskId={noteCountsByTaskId}
           />
         </div>
       )}
