@@ -31,6 +31,7 @@ import { solarRecCsgPortalRouter } from "./solarRecCsgPortalRouter";
 import { solarRecDinScrapeRouter } from "./solarRecDinScrapeRouter";
 import { solarRecJobsRouter } from "./solarRecJobsRouter";
 import { solarRecSystemsRouter } from "./solarRecSystemsRouter";
+import { solarRecWorksetsRouter } from "./solarRecWorksetsRouter";
 
 // ---------------------------------------------------------------------------
 // Context — `createSolarRecContext` stays here because `_core/index.ts`
@@ -4515,6 +4516,7 @@ export const solarRecAppRouter = t.router({
   dinScrape: solarRecDinScrapeRouter,
   jobs: solarRecJobsRouter,
   systems: solarRecSystemsRouter,
+  worksets: solarRecWorksetsRouter,
 });
 
 export type SolarRecAppRouter = typeof solarRecAppRouter;

@@ -1498,3 +1498,58 @@ export const dinScrapeDins = mysqlTable(
 
 export type DinScrapeDin = typeof dinScrapeDins.$inferSelect;
 export type InsertDinScrapeDin = typeof dinScrapeDins.$inferInsert;
+
+// ---------------------------------------------------------------------------
+// Task 9.2 (2026-04-28) — Saved CSG-ID worksets (Phase 9 MVP).
+//
+// A workset is a named bag of CSG IDs scoped to a team. Created by
+// any team member with `portfolio-workbench: edit`, visible to the
+// whole scope so a teammate can pick up where another left off.
+//
+// CSG IDs are stored as a JSON-stringified `string[]` in `csgIdsJson`.
+// Reasonable for an MVP — typical worksets hold 10–500 IDs and
+// no procedure needs to filter by CSG-ID inside the JSON. If we ever
+// need that, migrate to a join table `idWorksetCsgIds` mirroring the
+// pattern in `contractScanJobCsgIds`. The mediumtext column gives us
+// ~16 MB headroom — a workset of 250 K CSG IDs at 16 bytes each fits
+// comfortably, and we cap inserts at 10 K via the proc layer.
+//
+// `createdByUserId` is preserved as the original author for audit;
+// edits don't bump it. The proc layer additionally writes
+// `lastEditedByUserId` so the team can see who last touched a workset.
+// ---------------------------------------------------------------------------
+
+export const idWorksets = mysqlTable(
+  "idWorksets",
+  {
+    id: varchar("id", { length: 64 }).primaryKey(),
+    scopeId: varchar("scopeId", { length: 64 }).notNull(),
+    createdByUserId: int("createdByUserId").notNull(),
+    lastEditedByUserId: int("lastEditedByUserId"),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    csgIdsJson: mediumtext("csgIdsJson").notNull(),
+    csgIdCount: int("csgIdCount").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    scopeIdx: index("id_worksets_scope_idx").on(table.scopeId),
+    scopeUpdatedIdx: index("id_worksets_scope_updated_idx").on(
+      table.scopeId,
+      table.updatedAt
+    ),
+    // Names are unique per scope so the "load workset" picker can
+    // surface a single deduped list. Two team members editing the
+    // same name simultaneously is acceptable — last writer wins via
+    // updatedAt and the proc returns the conflict via the standard
+    // duplicate-key path on insert.
+    scopeNameIdx: uniqueIndex("id_worksets_scope_name_idx").on(
+      table.scopeId,
+      table.name
+    ),
+  })
+);
+
+export type IdWorkset = typeof idWorksets.$inferSelect;
+export type InsertIdWorkset = typeof idWorksets.$inferInsert;
