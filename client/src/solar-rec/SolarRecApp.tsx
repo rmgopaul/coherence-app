@@ -354,10 +354,15 @@ export default function SolarRecApp() {
     // ThemeProvider is the outermost wrapper so every descendant
     // (including the Toaster, which calls useTheme) can resolve
     // its context. Mirrors `client/src/App.tsx`'s structure.
-    // `switchable={false}` keeps the team app on a single theme
-    // for now — change to `true` if/when team-side theme toggling
-    // is wanted.
-    <ThemeProvider defaultTheme="dark" switchable={false}>
+    //
+    // `defaultTheme="light"` preserves solar-rec's pre-PR-#223
+    // visual behavior — solar-rec had no ThemeProvider before, so
+    // `<html>` never carried the `dark` class, so the page rendered
+    // in light mode by default. The team-side CSS hasn't been
+    // audited for dark-mode contrast (PR #236 launched with dark
+    // and headers were unreadable). Switch to dark/switchable=true
+    // once the dark-mode pass is complete.
+    <ThemeProvider defaultTheme="light" switchable={false}>
       <Toaster />
       <SolarRecAppInner />
     </ThemeProvider>
