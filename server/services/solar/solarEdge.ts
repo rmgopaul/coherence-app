@@ -14,7 +14,49 @@ import {
 } from "./helpers";
 import { mapWithConcurrency } from "../core/concurrency";
 
-export const SOLAR_EDGE_DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com/v2";
+// All paths in this module (`/sites/list`, `/site/{id}/overview`,
+// `/site/{id}/energy`, etc.) are SolarEdge Monitoring API v1 paths.
+// The default base URL therefore must NOT include a `/v2` prefix —
+// `https://monitoringapi.solaredge.com/v2/sites/list` is a malformed
+// URL that SolarEdge's gateway returns 403 for, even with a valid key.
+// Admins who genuinely need the v2 REST endpoints can override
+// `baseUrl` per-credential, in which case `getSolarEdgeJson` falls
+// back to a stripped-`/v2` retry to keep v1 paths working.
+export const SOLAR_EDGE_DEFAULT_BASE_URL = "https://monitoringapi.solaredge.com";
+
+// Keys pasted from the SolarEdge admin portal can pick up zero-width
+// characters or BOM bytes from the clipboard that survive `.trim()` and
+// then break URL-encoded auth (`%E2%80%8B` appended to `?api_key=...`).
+// `sanitizeApiKey` strips both ordinary whitespace AND those invisible
+// codepoints from BOTH boundaries of the key.
+function isInvisibleBoundaryChar(codepoint: number): boolean {
+  // Standard whitespace.
+  if (codepoint <= 0x20) return true;
+  if (codepoint === 0x7f) return true;
+  // NBSP, NEXT LINE, etc.
+  if (codepoint === 0x00a0 || codepoint === 0x0085) return true;
+  // ZWSP (200B), ZWNJ (200C), ZWJ (200D).
+  if (codepoint >= 0x200b && codepoint <= 0x200d) return true;
+  // LRM, RLM, ALM (201C/201D/061C — bidi marks).
+  if (codepoint === 0x200e || codepoint === 0x200f) return true;
+  // LINE/PARAGRAPH SEPARATOR (2028, 2029).
+  if (codepoint === 0x2028 || codepoint === 0x2029) return true;
+  // WORD JOINER (2060) and BOM / ZWNBSP (FEFF).
+  if (codepoint === 0x2060 || codepoint === 0xfeff) return true;
+  return false;
+}
+export function sanitizeApiKey(raw: string | null | undefined): string {
+  if (typeof raw !== "string") return "";
+  let start = 0;
+  let end = raw.length;
+  while (start < end && isInvisibleBoundaryChar(raw.charCodeAt(start))) {
+    start += 1;
+  }
+  while (end > start && isInvisibleBoundaryChar(raw.charCodeAt(end - 1))) {
+    end -= 1;
+  }
+  return raw.slice(start, end);
+}
 
 export type SolarEdgeApiContext = {
   apiKey: string;
@@ -527,7 +569,7 @@ function buildApiUrl(
   const url = new URL(`${baseUrl}${safePath}`);
 
   if (options?.includeApiKeyQuery !== false) {
-    url.searchParams.set("api_key", context.apiKey);
+    url.searchParams.set("api_key", sanitizeApiKey(context.apiKey));
   }
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value === null || value === undefined) continue;
@@ -542,7 +584,7 @@ function buildApiUrl(
 type SolarEdgeAuthMode = "query-only" | "bearer-plus-query";
 
 function buildApiHeaders(context: SolarEdgeApiContext, authMode: SolarEdgeAuthMode): HeadersInit {
-  const apiKey = context.apiKey.trim();
+  const apiKey = sanitizeApiKey(context.apiKey);
   if (authMode === "query-only") {
     return {
       Accept: "application/json",
@@ -554,10 +596,26 @@ function buildApiHeaders(context: SolarEdgeApiContext, authMode: SolarEdgeAuthMo
   };
 }
 
+function redactApiKeyFingerprint(apiKey: string): string {
+  const sanitized = sanitizeApiKey(apiKey);
+  if (!sanitized) return "(empty)";
+  if (sanitized.length <= 8) return `len=${sanitized.length}`;
+  return `len=${sanitized.length} ${sanitized.slice(0, 4)}…${sanitized.slice(-4)}`;
+}
+
 function stripV2Suffix(rawBaseUrl: string | null | undefined): string | null {
   const base = normalize(rawBaseUrl);
   if (!base.toLowerCase().endsWith("/v2")) return null;
   return base.slice(0, -3).replace(/\/+$/, "");
+}
+
+function describeAttempt(
+  baseUrl: string,
+  path: string,
+  authMode: SolarEdgeAuthMode
+): string {
+  const safePath = path.startsWith("/") ? path : `/${path}`;
+  return `${baseUrl}${safePath} (${authMode})`;
 }
 
 async function getSolarEdgeJson(
@@ -588,6 +646,9 @@ async function getSolarEdgeJson(
   addAttempt(fallbackBase, "bearer-plus-query");
 
   let lastFailureMessage = "SolarEdge request failed.";
+  let lastAttemptedDescription: string | null = null;
+  const attemptHistory: Array<{ description: string; status: number; statusText: string; bodyPreview: string }> = [];
+
   for (let index = 0; index < attempts.length; index += 1) {
     const attempt = attempts[index];
     const attemptContext: SolarEdgeApiContext = {
@@ -598,6 +659,8 @@ async function getSolarEdgeJson(
     const url = buildApiUrl(path, attemptContext, query, {
       includeApiKeyQuery: true,
     });
+    lastAttemptedDescription = describeAttempt(attempt.baseUrl, path, attempt.authMode);
+
     const response = await fetch(url, {
       headers: buildApiHeaders(attemptContext, attempt.authMode),
       signal: AbortSignal.timeout(15_000),
@@ -608,14 +671,35 @@ async function getSolarEdgeJson(
     }
 
     const errorText = await response.text().catch(() => "");
-    lastFailureMessage = `SolarEdge request failed (${response.status} ${response.statusText})${errorText ? `: ${errorText}` : ""}`;
+    const bodyPreview = errorText.replace(/\s+/g, " ").slice(0, 240);
+    attemptHistory.push({
+      description: lastAttemptedDescription,
+      status: response.status,
+      statusText: response.statusText,
+      bodyPreview,
+    });
+    lastFailureMessage = `SolarEdge request failed (${response.status} ${response.statusText}) at ${lastAttemptedDescription} [key ${redactApiKeyFingerprint(context.apiKey)}]${bodyPreview ? `: ${bodyPreview}` : ""}`;
 
-    // Retry auth permutations only for auth failures.
+    // Retry auth permutations only for auth failures (401/403). 404 means
+    // the path/base mismatch, which we also retry against so a v2-default
+    // base falls back to v1-style paths transparently.
     const isAuthFailure = response.status === 401 || response.status === 403;
-    if (isAuthFailure && index < attempts.length - 1) {
+    const isNotFound = response.status === 404;
+    if ((isAuthFailure || isNotFound) && index < attempts.length - 1) {
       continue;
     }
 
+    if (attemptHistory.length > 1) {
+      const summary = attemptHistory
+        .map((a) => `${a.status} at ${a.description}`)
+        .join("; ");
+      lastFailureMessage = `${lastFailureMessage} | tried: ${summary}`;
+    }
+    console.warn(
+      `[SolarEdge] ${attemptHistory.length} attempt(s) failed for ${path}: ${attemptHistory
+        .map((a) => `${a.status} ${a.description}`)
+        .join(" → ")}`
+    );
     throw new Error(lastFailureMessage);
   }
 
