@@ -5,7 +5,8 @@
  * lifecycle in Solar REC Settings → Credentials.
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -43,6 +44,13 @@ export default function APsystemsMeterReads() {
   const snapshotMutation = trpc.apsystems.getProductionSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
+
+  // Phase E (2026-04-28) — Test Connection probe. Times the
+  // listSystems refetch as a lightweight credential check.
+  const probeFn = useCallback(async () => {
+    const r = await listSystemsQuery.refetch({ throwOnError: true });
+    return r.data?.systems?.length ?? 0;
+  }, [listSystemsQuery]);
 
   const [systemId, setSystemId] = useState("");
   const [anchorDate, setAnchorDate] = useState("");
@@ -91,6 +99,13 @@ export default function APsystemsMeterReads() {
               : "Ask an admin to register an APsystems appId + appSecret in Settings → Credentials."}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="systems"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>

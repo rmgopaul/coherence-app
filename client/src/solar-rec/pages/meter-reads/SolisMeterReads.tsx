@@ -6,7 +6,8 @@
  * Credentials; this page only runs API calls.
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -41,6 +42,13 @@ export default function SolisMeterReads() {
     enabled: statusQuery.data?.connected === true,
     retry: false,
   });
+  // Phase E (2026-04-28) — Test Connection probe times the
+  // listStationsQuery refetch as a lightweight credential check.
+  const probeFn = useCallback(async () => {
+    const r = await listStationsQuery.refetch({ throwOnError: true });
+    return r.data?.stations?.length ?? 0;
+  }, [listStationsQuery]);
+
   const snapshotMutation = trpc.solis.getProductionSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -92,6 +100,13 @@ export default function SolisMeterReads() {
               : "Ask an admin to register a Solis API key + secret in Settings → Credentials."}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="stations"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>

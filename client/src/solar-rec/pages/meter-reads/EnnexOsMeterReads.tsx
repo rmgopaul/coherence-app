@@ -5,7 +5,8 @@
  * runs single-plant lifetime-kWh snapshots.
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -40,6 +41,11 @@ export default function EnnexOsMeterReads() {
     enabled: statusQuery.data?.connected === true,
     retry: false,
   });
+  const probeFn = useCallback(async () => {
+    const r = await listPlantsQuery.refetch({ throwOnError: true });
+    return r.data?.plants?.length ?? 0;
+  }, [listPlantsQuery]);
+
   const snapshotMutation = trpc.ennexos.getProductionSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -91,6 +97,13 @@ export default function EnnexOsMeterReads() {
               : "Ask an admin to register an EnnexOS access token in Settings → Credentials."}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="plants"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>

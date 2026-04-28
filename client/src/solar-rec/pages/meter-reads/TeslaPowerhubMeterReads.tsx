@@ -12,7 +12,8 @@
  * in the metadata JSON. Lifecycle is admin-managed in Settings.
  */
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { MeterReadConnectionProbe } from "../../components/MeterReadConnectionProbe";
 import { PersistConfirmation, readMeterLifetimeKwh, readMeterName, readMeterStatus } from "../../components/PersistConfirmation";
 import { solarRecTrpc as trpc } from "../../solarRecTrpc";
 import { useSolarRecPermission } from "../../hooks/useSolarRecPermission";
@@ -47,6 +48,13 @@ export default function TeslaPowerhubMeterReads() {
     enabled: statusQuery.data?.connected === true,
     retry: false,
   });
+  // Phase E (2026-04-28) — Test Connection probe times the
+  // listSitesQuery refetch as a lightweight credential check.
+  const probeFn = useCallback(async () => {
+    const r = await listSitesQuery.refetch({ throwOnError: true });
+    return r.data?.sites?.length ?? 0;
+  }, [listSitesQuery]);
+
   const snapshotMutation = trpc.teslaPowerhub.getSiteSnapshot.useMutation({
     onError: (err) => toast.error(err.message),
   });
@@ -109,6 +117,13 @@ export default function TeslaPowerhubMeterReads() {
             )}
           </CardDescription>
         </CardHeader>
+        <CardContent>
+          <MeterReadConnectionProbe
+            runProbe={probeFn}
+            sampleNoun="sites"
+            disabled={!statusQuery.data?.connected}
+          />
+        </CardContent>
       </Card>
 
       <Card>
