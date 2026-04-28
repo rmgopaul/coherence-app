@@ -52,6 +52,11 @@ import {
 import { toast } from "sonner";
 import { parseCsvMatrix } from "@/lib/csvParsing";
 import { clean, downloadTextFile } from "@/lib/helpers";
+import {
+  buildConvertedReadRow,
+  pushConvertedReadsToRecDashboard,
+  type ConvertedReadRow,
+} from "@/lib/convertedReads";
 
 type SnapshotKind = "production" | "meter" | "inverter";
 type ConnectionScope = "active" | "all";
@@ -356,6 +361,17 @@ export default function SolarEdgeMeterReads() {
   const meterBulk = trpc.solaredge.getMeterSnapshots.useMutation();
   const inverterBulk = trpc.solaredge.getInverterSnapshots.useMutation();
   const debugCredential = trpc.solaredge.debugCredential.useMutation();
+  const pushConvertedReads =
+    trpc.solarRecDashboard.pushConvertedReadsSource.useMutation();
+  // After a successful production bulk, lifetime kWh rows auto-push
+  // to `convertedReads`. This state surfaces the result so the user
+  // doesn't have to dig through toasts.
+  const [pushStatus, setPushStatus] = useState<{
+    state: "idle" | "pushing" | "ok" | "error";
+    pushed?: number;
+    skipped?: number;
+    message?: string;
+  }>({ state: "idle" });
 
   // Single-site snapshot state.
   const [siteId, setSiteId] = useState("");
@@ -537,12 +553,75 @@ export default function SolarEdgeMeterReads() {
         toast.success(
           `Done. ${NUMBER_FORMATTER.format(found)} found, ${NUMBER_FORMATTER.format(notFound)} not found, ${NUMBER_FORMATTER.format(errored)} errored.`
         );
+        // Auto-push to convertedReads — production runs only (meter +
+        // inverter snapshots have no lifetime kWh field). Cancelled
+        // runs skip the push so we never write a partial source.
+        if (bulkKind === "production" && bulkAnchorDate) {
+          await autoPushProductionToConvertedReads(
+            collected as ProductionRow[],
+            bulkAnchorDate
+          );
+        }
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Bulk run failed.");
     } finally {
       setBulkRunning(false);
       bulkCancelRef.current = false;
+    }
+  };
+
+  const autoPushProductionToConvertedReads = async (
+    rows: ProductionRow[],
+    anchorDate: string
+  ) => {
+    const eligible = rows.filter(
+      (r) =>
+        r.status === "Found" &&
+        typeof r.lifetimeKwh === "number" &&
+        Number.isFinite(r.lifetimeKwh)
+    );
+    if (eligible.length === 0) {
+      setPushStatus({
+        state: "ok",
+        pushed: 0,
+        skipped: 0,
+        message:
+          "No Found rows with lifetime kWh — nothing to push to converted reads.",
+      });
+      return;
+    }
+    const convertedRows: ConvertedReadRow[] = eligible.map((r) =>
+      buildConvertedReadRow(
+        "SolarEdge",
+        r.siteId,
+        r.siteName ?? "",
+        r.lifetimeKwh as number,
+        anchorDate
+      )
+    );
+    setPushStatus({ state: "pushing" });
+    try {
+      const result = await pushConvertedReadsToRecDashboard(
+        (input) => pushConvertedReads.mutateAsync(input),
+        convertedRows,
+        "SolarEdge"
+      );
+      setPushStatus({
+        state: "ok",
+        pushed: result.pushed,
+        skipped: result.skipped,
+      });
+      toast.success(
+        `Pushed ${NUMBER_FORMATTER.format(result.pushed)} row${
+          result.pushed === 1 ? "" : "s"
+        } to converted reads (${NUMBER_FORMATTER.format(result.skipped)} dedup-skipped).`
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to push converted reads.";
+      setPushStatus({ state: "error", message });
+      toast.error(`Converted reads push failed: ${message}`);
     }
   };
 
@@ -1000,6 +1079,10 @@ export default function SolarEdgeMeterReads() {
           </div>
           {bulkRunning && <Progress value={progressPct} className="h-2" />}
 
+          {bulkKind === "production" && pushStatus.state !== "idle" && (
+            <ConvertedReadsPushBadge status={pushStatus} />
+          )}
+
           {bulkRows.length > 0 && (
             <BulkResultsTable kind={bulkKind} rows={bulkRows} />
           )}
@@ -1348,6 +1431,41 @@ function BulkResultsTable({
           ))}
         </TableBody>
       </Table>
+    </div>
+  );
+}
+
+type PushStatus = {
+  state: "idle" | "pushing" | "ok" | "error";
+  pushed?: number;
+  skipped?: number;
+  message?: string;
+};
+
+function ConvertedReadsPushBadge({ status }: { status: PushStatus }) {
+  if (status.state === "idle") return null;
+  if (status.state === "pushing") {
+    return (
+      <div className="text-xs rounded-md border bg-muted/40 p-2 max-w-xl flex items-center gap-2">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Pushing to converted reads…
+      </div>
+    );
+  }
+  if (status.state === "ok") {
+    return (
+      <div className="text-xs rounded-md border bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 p-2 max-w-xl">
+        {status.message ??
+          `Pushed ${(status.pushed ?? 0).toLocaleString()} row${
+            status.pushed === 1 ? "" : "s"
+          } to converted reads (${(status.skipped ?? 0).toLocaleString()} dedup-skipped).`}
+      </div>
+    );
+  }
+  return (
+    <div className="text-xs rounded-md border bg-destructive/10 border-destructive/40 p-2 max-w-xl">
+      <span className="font-medium">Converted reads push failed:</span>{" "}
+      {status.message ?? "unknown error"}
     </div>
   );
 }
