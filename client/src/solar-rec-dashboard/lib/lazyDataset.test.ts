@@ -101,6 +101,16 @@ describe("buildLazyCsvDataset", () => {
     expect(source?.columnData).toHaveLength(2);
   });
 
+  it("exposes scalar rowCount without forcing row materialization (Task 5.14 PR-1)", () => {
+    const dataset = buildLazyCsvDataset(baseInput);
+    // Reading dataset.rowCount must not trigger the lazy `.rows`
+    // getter — that's the whole point of the field. We can't observe
+    // "didn't materialize" directly, but we can verify the value is
+    // correct + matches the rows.length once we DO read the rows.
+    expect(dataset.rowCount).toBe(2);
+    expect(dataset.rows).toHaveLength(dataset.rowCount);
+  });
+
   it("keeps the columnar source consistent with visible headers", () => {
     const dataset = buildLazyCsvDataset(baseInput);
     const source = getDatasetColumnarSource(dataset)!;
@@ -113,6 +123,7 @@ describe("buildLazyCsvDataset", () => {
       uploadedAt: new Date(),
       headers: ["x"],
       rows: [{ x: "1" }],
+      rowCount: 1,
     };
     expect(getDatasetColumnarSource(plain)).toBeNull();
   });

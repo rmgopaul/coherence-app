@@ -42,6 +42,17 @@ export type CsvDataset = {
   uploadedAt: Date;
   headers: string[];
   rows: CsvRow[];
+  /**
+   * Scalar row count. Reads `dataset.rowCount` for the Step 1 upload
+   * UI badge + dashboard staleness/loaded checks instead of
+   * `dataset.rows.length`, which forces full row materialization on
+   * lazy datasets (see `buildLazyCsvDataset`). Task 5.14 PR-1.
+   * Always equal to `rows.length` at construction time; the lazy
+   * implementation guarantees the columnar source's `rowCount`
+   * matches the eager-row materialization length, so a future PR
+   * can drop the `rows` field without changing the value.
+   */
+  rowCount: number;
   sources?: Array<{
     fileName: string;
     uploadedAt: Date;
