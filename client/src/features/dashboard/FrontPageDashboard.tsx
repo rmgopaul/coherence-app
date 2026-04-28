@@ -16,6 +16,8 @@ import { DropDock } from "./frontpage/DropDock";
 import { NewsprintColumns } from "./frontpage/NewsprintColumns";
 import { InboxPanel } from "./frontpage/InboxPanel";
 import { WireFeedsGrid } from "./frontpage/WireFeedsGrid";
+// Phase E (2026-04-28): AI Weekly Review card.
+import { WeeklyReviewCard } from "./frontpage/WeeklyReviewCard";
 import { FocusModeRail } from "./frontpage/FocusModeRail";
 import { PinDialog } from "./frontpage/PinDialog";
 import { useDashboardData } from "./useDashboardData";
@@ -117,6 +119,7 @@ export default function FrontPageDashboard() {
           />
           <InboxPanel messages={data.inbox} />
           <WireFeedsGrid data={data} />
+          <WeeklyReviewCard />
           <AskAiPanel
             moduleKey="dashboard"
             title="Ask AI about today"
