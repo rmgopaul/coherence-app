@@ -31,6 +31,11 @@ import {
   getUserPreferences,
   listRecentUserFeedback,
   listUserFeedback,
+  // Phase E (2026-04-28): admin feedback review dashboard.
+  updateUserFeedbackStatus,
+  isFeedbackStatus,
+  FEEDBACK_STATUSES,
+  summarizeFeedbackByStatus,
   markTotpVerified,
   saveRecoveryCodes,
   saveTotpSecret,
@@ -548,6 +553,35 @@ export const feedbackRouter = router({
         .optional()
     )
     .query(async ({ input }) => {
-      return listRecentUserFeedback(input?.limit ?? 200);
+      const rows = await listRecentUserFeedback(input?.limit ?? 200);
+      // Phase E (2026-04-28) — return rows + a status rollup so the
+      // admin dashboard can render its pipeline summary chips
+      // without re-scanning the same array client-side.
+      return {
+        rows,
+        statusCounts: summarizeFeedbackByStatus(rows),
+      };
+    }),
+  /**
+   * Phase E (2026-04-28) — admin status update. Validates the
+   * status against the recognized enum so a bad client doesn't
+   * insert "WIP" or other free-form values into the column.
+   */
+  updateStatus: adminProcedure
+    .input(
+      z.object({
+        id: z.string().min(1).max(64),
+        status: z.enum(FEEDBACK_STATUSES),
+      })
+    )
+    .mutation(async ({ input }) => {
+      // Belt-and-suspenders: zod already validated, but a future
+      // refactor that broadens the input enum should still trip
+      // the runtime guard.
+      if (!isFeedbackStatus(input.status)) {
+        throw new Error(`Invalid feedback status: ${input.status}`);
+      }
+      const updated = await updateUserFeedbackStatus(input.id, input.status);
+      return { updated };
     }),
 });
